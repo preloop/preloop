@@ -54,6 +54,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import '../../components/capability-extension';
 
 /**
  * Runtime ids as the product spells them.
@@ -470,9 +471,6 @@ export class FlowView extends LitElement {
     this.unsubscribe = unifiedWebSocketManager.subscribe(
       'flow_executions',
       (message) => {
-        // Handle incoming WebSocket messages
-        console.log('Received flow update:', message);
-
         // If this is an execution_started event for our flow, add it to recent executions
         if (
           message.type === 'execution_started' &&
@@ -515,11 +513,6 @@ export class FlowView extends LitElement {
         }
       }
     );
-
-    // Track connection state
-    unifiedWebSocketManager.onStateChange((state) => {
-      console.log(`Flow view WebSocket state: ${state}`);
-    });
   }
 
   /**
@@ -807,6 +800,10 @@ export class FlowView extends LitElement {
               }
             </div>
           </sl-card>
+          <capability-extension
+            name="resource-access"
+            .context=${{ kind: 'flow', resourceId: this.flowId ?? '' }}
+          ></capability-extension>
 
           ${
             this.flow.prompt_template
@@ -844,7 +841,7 @@ ${this.flow.review_instructions}</pre>
           ${this.renderScheduleCard()}
           ${
             this.flow.trigger_event_source === 'webhook' &&
-            this.flow.webhook_config
+            this.flow.webhook_config?.webhook_secret
               ? html`
                   <sl-card>
                     <div slot="header">
@@ -1308,14 +1305,20 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         is_enabled: newEnabledState,
       };
 
-      // Show feedback
-      const message = newEnabledState
-        ? 'Flow enabled successfully'
-        : 'Flow disabled successfully';
-      console.log(message);
+      // The switch already moved. Say so where the operator can see it.
+      showToast(
+        newEnabledState
+          ? 'Flow enabled successfully'
+          : 'Flow disabled successfully',
+        'success'
+      );
     } catch (error) {
       console.error('Failed to toggle flow enabled state:', error);
-      alert('Failed to update flow. Please try again.');
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to update flow. Please try again.';
+      showToast(detail, 'danger');
     }
   }
 
@@ -1379,7 +1382,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
   }
 
   copyWebhookUrl() {
-    if (!this.flow.webhook_config) return;
+    if (!this.flow.webhook_config?.webhook_secret) return;
     const webhookUrl = `${window.location.origin}/api/v1/webhooks/flows/${this.flowId}/${this.flow.webhook_config.webhook_secret}`;
     navigator.clipboard.writeText(webhookUrl).then(() => {
       alert('Webhook URL copied to clipboard!');
@@ -1655,11 +1658,6 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       this.customEventType = '';
     }
     this.requestUpdate();
-  }
-
-  openFilterModal() {
-    // TODO: Implement the filter modal
-    alert('Filter modal not yet implemented');
   }
 
   getDefaultSelectedTools(): { server_name: string; tool_name: string }[] {
@@ -2046,7 +2044,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
 
   renderWebhookTriggerFields() {
     // If editing and webhook config exists, show the URL
-    if (!this.isNew && this.flow.webhook_config) {
+    if (!this.isNew && this.flow.webhook_config?.webhook_secret) {
       return html`
         <div>
           <p

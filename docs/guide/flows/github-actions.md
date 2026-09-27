@@ -61,8 +61,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the payload
         run: |
-          jq -n --arg url "${{ github.event.pull_request.html_url }}" \
-            '{pull_request: {url: $url}}' > payload.json
+          jq '{source: "github", type: "pull_request_opened",
+               payload: {pull_request: .pull_request, repository: .repository}}' \
+            "$GITHUB_EVENT_PATH" > payload.json
       - uses: ./.github/actions/run-flow
         id: flow
         with:
@@ -71,6 +72,10 @@ jobs:
           token: ${{ secrets.PRELOOP_TOKEN }}
       - run: echo "${{ steps.flow.outputs.execution-url }}"
 ```
+
+The pull request goes under `payload`, in GitHub's own event shape: see
+[trigger a flow from CI](ci-trigger.md) for why a body that puts it at the
+top level renders the reviewer prompt empty.
 
 The `payload` input takes either a path to a JSON file (as above) or a
 JSON string. The action pipes it through `preloop flow trigger

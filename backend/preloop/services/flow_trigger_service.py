@@ -42,8 +42,13 @@ from preloop.services.kill_switch import FlowHaltActiveError, flows_halted
 from preloop.sync.event_normalizer import (
     LABEL_CHANGE_ACTIONS,
     LABEL_CHANGE_EVENT_TYPES,
+    PR_CLOSE_STOP_SOURCES,
+    PR_HEAD_UPDATE_EVENT_TYPES,
+    PR_STOP_SOURCE_MERGED,
+    PR_STOP_SOURCE_SUPERSEDED,
     attach_trigger_subject,
     gitlab_label_delta,
+    pr_close_stop_source,
 )
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.services.webhook_delivery_dedupe import (
@@ -91,6 +96,46 @@ TRACKER_OBJECT_ACTIVE_STATUSES = (
 COALESCE_EXEMPT_EVENT_TYPES: frozenset = frozenset(
     {"comment_created", "comment_updated", "comment_deleted"}
 ) | frozenset(GITHUB_CI_EVENT_TYPES)
+
+# Resource-key kinds that name a pull or merge request, the objects whose
+# executions are stopped when the request is merged, closed or gets a new
+# head (#1032).
+PR_OBJECT_KINDS: frozenset = frozenset({"pr", "merge_request"})
+
+
+def flow_supersedes_on_update(flow: Any) -> bool:
+    """Whether a new head on a pull request stops this flow's older run.
+
+    Opt-in per flow through ``webhook_config.supersede_on_update`` (#1032).
+    Off by default, so a flow that wants every head reviewed keeps today's
+    behaviour; the Pull Request Reviewer preset turns it on.
+    """
+    config = getattr(flow, "webhook_config", None)
+    return isinstance(config, dict) and config.get("supersede_on_update") is True
+
+
+def flow_handles_pr_close(flow: Any) -> bool:
+    """Whether the flow itself triggers on a merged or closed pull request.
+
+    Such a flow runs *because* the request ended, so its executions on that
+    request are never stopped for it.
+    """
+    types = getattr(flow, "trigger_event_types", None) or []
+    return any(event_type in PR_CLOSE_STOP_SOURCES for event_type in types)
+
+
+def _describe_pr_object(object_key: str) -> str:
+    """``pull request owner/repo#12`` or ``merge request group/project!7``."""
+    parts = object_key.split(":")
+    repo = ":".join(parts[1:-2])
+    kind, ident = parts[-2], parts[-1]
+    if kind == "merge_request":
+        return f"merge request {repo}!{ident}"
+    return f"pull request {repo}#{ident}"
+
+
+def _short(sha: str) -> str:
+    return sha[:8]
 
 
 def _label_name(item: Any) -> Optional[str]:
@@ -254,6 +299,14 @@ def _record_local_run_failure(
             ),
         )
         db.commit()
+        # The dispatch died before the orchestrator's terminal hook, so record
+        # the issue cost fact here. Never raises; a failure is picked up by
+        # the scheduled rebuild.
+        from preloop.services.issue_cost_rollup import (
+            record_execution_finished_safely,
+        )
+
+        record_execution_finished_safely(db, execution_id)
         return True
     except Exception:
         logger.exception(
@@ -771,6 +824,251 @@ class FlowTriggerService:
                 object_key,
                 exc_info=True,
             )
+
+    @staticmethod
+    def _execution_event_data(execution: FlowExecution) -> Dict[str, Any]:
+        """The ``source``/``type``/``payload`` an execution was started from."""
+        trigger_details = execution.trigger_event_details or {}
+        payload = trigger_details.get("payload", {})
+        return {
+            "source": trigger_details.get("source", ""),
+            "type": trigger_details.get("type"),
+            "payload": payload if isinstance(payload, dict) else {},
+        }
+
+    def _extract_pr_object_key(self, event_data: Dict[str, Any]) -> Optional[str]:
+        """Resource key of the pull or merge request an event is about.
+
+        Includes comments on the request: a GitHub ``issue_comment`` names
+        the PR as an ``issue`` with a ``pull_request`` link, a GitLab note
+        as ``merge_request``. Mirrors
+        :func:`preloop.models.crud.flow_execution.pull_request_payload_match`.
+        """
+        key = self._extract_tracker_object_key(event_data)
+        if key and key.split(":")[-2] in PR_OBJECT_KINDS:
+            return key
+        source = str(event_data.get("source") or "").lower()
+        payload = event_data.get("payload") or {}
+        if not isinstance(payload, dict):
+            return None
+        if source == "github":
+            issue = payload.get("issue") or {}
+            repo = (payload.get("repository") or {}).get("full_name")
+            if isinstance(issue, dict) and issue.get("pull_request") and repo:
+                number = issue.get("number")
+                if number:
+                    return f"github:{repo}:pr:{number}"
+        elif source == "gitlab":
+            merge_request = payload.get("merge_request") or {}
+            path = (payload.get("project") or {}).get("path_with_namespace")
+            if isinstance(merge_request, dict) and merge_request.get("iid") and path:
+                return f"gitlab:{path}:merge_request:{merge_request['iid']}"
+        return None
+
+    async def _stop_for_pull_request(
+        self,
+        execution: FlowExecution,
+        *,
+        flow: Any,
+        object_key: str,
+        stop_source: str,
+        reason: str,
+        event_data: Dict[str, Any],
+        nats_client: Any,
+    ) -> bool:
+        """Stop one execution through the shared stop path and audit it."""
+        from preloop.services.flow_execution_stop import stop_execution
+
+        outcome = await stop_execution(
+            self.db,
+            execution,
+            account_id=flow.account_id,
+            nats_client=nats_client,
+            error_message=reason,
+            stop_reason=reason,
+            stop_source=stop_source,
+        )
+        if not outcome.stopped:
+            return False
+        logger.info(
+            "Stopped execution %s of flow '%s' (%s): %s",
+            execution.id,
+            flow.name,
+            flow.id,
+            reason,
+        )
+        try:
+            from preloop.models.crud import crud_event
+
+            crud_event.log_event(
+                self.db,
+                event_type="flow_execution_stopped_for_pull_request",
+                account_id=flow.account_id,
+                event_data={
+                    "flow_id": str(flow.id),
+                    "flow_name": flow.name,
+                    "execution_id": str(execution.id),
+                    "object_key": object_key,
+                    "stop_source": stop_source,
+                    "trigger_source": event_data.get("source"),
+                    "trigger_type": event_data.get("type"),
+                },
+            )
+        except Exception:  # noqa: BLE001 - audit must never block the stop
+            logger.warning(
+                "Could not record the pull request stop of execution %s",
+                execution.id,
+                exc_info=True,
+            )
+        return True
+
+    async def stop_executions_for_ended_pull_request(
+        self,
+        event_data: Dict[str, Any],
+        *,
+        nats_client: Any = None,
+    ) -> List[str]:
+        """Stop every execution still working on a merged or closed PR (#1032).
+
+        Runs for every normalized ``pull_request_merged``/``_closed`` and
+        ``merge_request_merged``/``_closed`` delivery, whether or not a flow
+        subscribes to it. Covers every flow in the account and every status
+        that still holds the request (queued, running, parked). Left alone:
+        executions not bound to this request, and executions of flows that
+        trigger on the merge or close themselves.
+
+        Args:
+            event_data: The normalized event.
+            nats_client: Connected NATS client, fetched on demand when None.
+
+        Returns:
+            Ids of the executions this call stopped. Empty, and nothing
+            written, when no execution is bound to the request.
+        """
+        stop_source = pr_close_stop_source(event_data.get("type"))
+        account_id = event_data.get("account_id")
+        if not stop_source or not account_id:
+            return []
+        object_key = self._extract_pr_object_key(event_data)
+        if not object_key:
+            return []
+        candidates = crud_flow_execution.get_active_for_pull_request(
+            self.db,
+            account_id=uuid.UUID(str(account_id)),
+            tracker_object_key=object_key,
+            statuses=TRACKER_OBJECT_ACTIVE_STATUSES,
+        )
+        described = _describe_pr_object(object_key)
+        outcome_text = (
+            "was merged"
+            if stop_source == PR_STOP_SOURCE_MERGED
+            else "was closed without merging"
+        )
+        reason = f"Stopped because {described} {outcome_text}"
+        stopped: List[str] = []
+        for execution in candidates:
+            exec_event = self._execution_event_data(execution)
+            if self._extract_pr_object_key(exec_event) != object_key:
+                continue
+            flow = execution.flow
+            if flow is None or flow_handles_pr_close(flow):
+                continue
+            if exec_event.get("type") in PR_CLOSE_STOP_SOURCES:
+                continue
+            if nats_client is None:
+                try:
+                    nats_client = await get_nats_client()
+                except Exception:  # noqa: BLE001 - the stop is durable without it
+                    logger.warning("No NATS client for the pull request stop")
+            try:
+                if await self._stop_for_pull_request(
+                    execution,
+                    flow=flow,
+                    object_key=object_key,
+                    stop_source=stop_source,
+                    reason=reason,
+                    event_data=event_data,
+                    nats_client=nats_client,
+                ):
+                    stopped.append(str(execution.id))
+            except Exception:
+                logger.exception(
+                    "Could not stop execution %s for %s", execution.id, object_key
+                )
+                self._rollback_quietly()
+        return stopped
+
+    async def supersede_older_heads(
+        self,
+        flow: Flow,
+        event_data: Dict[str, Any],
+        *,
+        commit_sha: str,
+        nats_client: Any = None,
+    ) -> List[str]:
+        """Stop this flow's runs on an older head of the same PR (#1032).
+
+        Called for a ``pull_request_updated``/``merge_request_updated``
+        delivery on a flow with ``webhook_config.supersede_on_update`` set,
+        before the execution for the new head is created. A run whose own
+        head is unknown or equals ``commit_sha`` is left alone, and so is a
+        comment or CI resume: those feed the run more input, they do not
+        review a head.
+
+        Returns:
+            Ids of the executions this call stopped.
+        """
+        object_key = self._extract_pr_object_key(event_data)
+        if not object_key or not commit_sha:
+            return []
+        actives = crud_flow_execution.get_running_by_flow(
+            self.db,
+            flow_id=flow.id,
+            account_id=flow.account_id,
+            running_statuses=list(TRACKER_OBJECT_ACTIVE_STATUSES),
+            tracker_object_key=object_key,
+        )
+        described = _describe_pr_object(object_key)
+        stopped: List[str] = []
+        for execution in actives:
+            exec_event = self._execution_event_data(execution)
+            if self._extract_pr_object_key(exec_event) != object_key:
+                continue
+            if exec_event.get("type") in COALESCE_EXEMPT_EVENT_TYPES:
+                continue
+            old_sha = self._extract_commit_sha(exec_event)
+            if not old_sha or old_sha == commit_sha:
+                continue
+            reason = (
+                f"Stopped because {described} got a new head "
+                f"{_short(commit_sha)}; this run on {_short(old_sha)} was superseded"
+            )
+            try:
+                if await self._stop_for_pull_request(
+                    execution,
+                    flow=flow,
+                    object_key=object_key,
+                    stop_source=PR_STOP_SOURCE_SUPERSEDED,
+                    reason=reason,
+                    event_data=event_data,
+                    nats_client=nats_client,
+                ):
+                    stopped.append(str(execution.id))
+            except Exception:
+                logger.exception(
+                    "Could not stop superseded execution %s for %s",
+                    execution.id,
+                    object_key,
+                )
+                self._rollback_quietly()
+        return stopped
+
+    def _rollback_quietly(self) -> None:
+        """Leave the session usable after a failed stop; triggering goes on."""
+        try:
+            self.db.rollback()
+        except Exception:  # noqa: BLE001 - nothing more to undo
+            logger.debug("Rollback after a failed pull request stop failed")
 
     def _extract_repo_key(self, event_data: Dict[str, Any]) -> Optional[str]:
         """
@@ -1877,6 +2175,21 @@ class FlowTriggerService:
 
         ingest_feedback(self.db, event_data)
 
+        # A merged or closed pull request ends every run still working on it
+        # (#1032), before anything else: the flow lookup below returns early
+        # when no flow subscribes to the merge, which is the common case, and
+        # a merge done by the Preloop bot is still a merge.
+        if pr_close_stop_source(event_type):
+            try:
+                await self.stop_executions_for_ended_pull_request(event_data)
+            except Exception:
+                logger.exception(
+                    "Could not stop executions for %s event from %s",
+                    event_type,
+                    event_source,
+                )
+                self._rollback_quietly()
+
         # Check if this event was triggered by Preloop itself to prevent infinite loops
         if self._is_preloop_triggered_event(event_data):
             logger.info(
@@ -2051,6 +2364,24 @@ class FlowTriggerService:
                                 f"are triggered for the same commit."
                             )
                             continue
+
+                    # A new head on a pull request supersedes this flow's
+                    # run on the older head when the flow opts in (#1032).
+                    # Stopped before the new execution is created, and before
+                    # the one-active-run guard below, which would otherwise
+                    # keep the stale run and drop the new head.
+                    if (
+                        commit_sha
+                        and account_id
+                        and event_type in PR_HEAD_UPDATE_EVENT_TYPES
+                        and flow_supersedes_on_update(flow)
+                    ):
+                        await self.supersede_older_heads(
+                            flow,
+                            event_data,
+                            commit_sha=commit_sha,
+                            nats_client=nats_client,
+                        )
 
                     # Fallback dedup for commit-less deliveries (generic
                     # webhooks, release events): coalesce on a resource key.

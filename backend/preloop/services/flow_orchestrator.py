@@ -54,9 +54,14 @@ from preloop.agents.verification import (
 )
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+    FAILURE_CATEGORY_MODEL_STREAM_IDLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
     derive_failure_category,
+)
+from preloop.services.stream_stall import (
+    STREAM_STALL_RESULT_KEY,
+    detect_stream_stall,
 )
 from preloop.services.no_progress_guard import (
     NO_COMMITS_MARKER,
@@ -131,6 +136,7 @@ from preloop.services.tracker_git_token import (
     resolve_tracker_git_username,
 )
 from preloop.sync.event_normalizer import attach_trigger_subject
+from preloop.sync.trackers.base import BaseTracker
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
     GitCredential,
@@ -525,27 +531,38 @@ class TimeoutBudget:
     #: the approval took.
     consumed_seconds: int = 0
 
+    def label(self) -> str:
+        """Which budget this is, for a sentence about it expiring."""
+        if self.consumed_seconds:
+            return "the remainder of this flow's timeout budget"
+        if self.source == "flow":
+            return "this flow's timeout budget"
+        return "the default timeout budget"
+
     def timeout_message(self) -> str:
-        """Operator-facing failure message naming the budget that expired."""
+        """Operator-facing failure message naming the budget that expired.
+
+        The budget is named by ``label()``, the same words the stream stall
+        message uses, so the two cannot describe one budget differently.
+        """
+        label = self.label()
         if self.consumed_seconds:
             return (
-                f"Execution timed out after {self.seconds} seconds, the "
-                f"remainder of this flow's timeout budget after "
-                f"{self.consumed_seconds} seconds already spent before it was "
-                "parked for a human decision (waiting for the human did not "
-                "count). Raise timeout_seconds on the flow if the work "
-                "genuinely needs longer."
+                f"Execution timed out after {self.seconds} seconds, {label} "
+                f"after {self.consumed_seconds} seconds already spent before "
+                "it was parked for a human decision (waiting for the human "
+                "did not count). Raise timeout_seconds on the flow if the "
+                "work genuinely needs longer."
             )
         if self.source == "flow":
             return (
-                f"Execution timed out after {self.seconds} seconds "
-                f"(this flow's timeout budget). Raise timeout_seconds on the "
-                "flow if the work genuinely needs longer."
+                f"Execution timed out after {self.seconds} seconds ({label}). "
+                "Raise timeout_seconds on the flow if the work genuinely "
+                "needs longer."
             )
         return (
-            f"Execution timed out after {self.seconds} seconds (the default "
-            "timeout budget). Set timeout_seconds on the flow to give it a "
-            "budget of its own."
+            f"Execution timed out after {self.seconds} seconds ({label}). "
+            "Set timeout_seconds on the flow to give it a budget of its own."
         )
 
 
@@ -1095,6 +1112,9 @@ class FlowExecutionOrchestrator:
                 context=self._status_context,
                 description=description,
                 target_url=target_url,
+                # Bitbucket attaches a build status to a pull request only
+                # when refname names its source branch.
+                refname=self._extract_pr_branch_from_trigger(),
             )
 
             logger.info(
@@ -2114,19 +2134,39 @@ class FlowExecutionOrchestrator:
         return None
 
     def _resolve_repository_url_from_trigger(self) -> Optional[str]:
-        """Extract repository URL from trigger event data."""
-        try:
-            # GitHub structure
-            if "repository" in self.trigger_event_data:
-                repo = self.trigger_event_data["repository"]
-                if isinstance(repo, dict):
-                    return repo.get("clone_url") or repo.get("html_url")
+        """Extract repository URL from trigger event data.
 
-            # GitLab structure
-            if "project" in self.trigger_event_data:
-                project = self.trigger_event_data["project"]
+        Trigger events nest the provider payload under ``payload`` (see
+        ``FlowTriggerService.process_event``), so the repository is looked up
+        there first. The top level is still checked for callers that pass a
+        bare provider payload.
+        """
+        try:
+            payload = self.trigger_event_data.get("payload")
+            candidates = [payload, self.trigger_event_data]
+            for data in candidates:
+                if not isinstance(data, dict):
+                    continue
+
+                # GitHub and Bitbucket structure
+                repo = data.get("repository")
+                if isinstance(repo, dict):
+                    url = repo.get("clone_url") or repo.get("git_http_url")
+                    if not url:
+                        # Bitbucket webhooks carry only the HTML link.
+                        html = repo.get("html_url") or (
+                            (repo.get("links") or {}).get("html") or {}
+                        ).get("href")
+                        url = html
+                    if url:
+                        return url
+
+                # GitLab structure
+                project = data.get("project")
                 if isinstance(project, dict):
-                    return project.get("http_url_to_repo") or project.get("web_url")
+                    url = project.get("http_url_to_repo") or project.get("web_url")
+                    if url:
+                        return url
 
             return None
         except Exception as e:
@@ -2181,6 +2221,20 @@ class FlowExecutionOrchestrator:
             username = resolve_tracker_git_username(tracker)
             if username:
                 credentials["username"] = username
+            if str(tracker.tracker_type or "").lower() == "bitbucket":
+                # The container's post-execution REST calls send Bearer and
+                # retry HTTP Basic <email>:<token> on a 401, exactly like the
+                # tracker client. Only a personal API token has that fallback;
+                # access and OAuth tokens are Bearer-only. The email is not a
+                # secret.
+                details = tracker.connection_details or {}
+                email = details.get("email")
+                auth_type = str(
+                    details.get("auth_type") or tracker.auth_type or "api_token"
+                ).lower()
+                token_kind = str(details.get("token_kind") or "api_token").lower()
+                if email and auth_type == "api_token" and token_kind == "api_token":
+                    credentials["email"] = str(email)
             return credentials
 
         except Exception as e:
@@ -2274,7 +2328,11 @@ class FlowExecutionOrchestrator:
                 return None
 
             host_kind = tracker_host_kind(repo_url)
-            if host_kind is None and tracker_type not in {"github", "gitlab"}:
+            if host_kind is None and tracker_type not in {
+                "github",
+                "gitlab",
+                "bitbucket",
+            }:
                 logger.warning(
                     "Could not determine tracker type for %s; "
                     "using the generic credential username",
@@ -2434,12 +2492,21 @@ class FlowExecutionOrchestrator:
         only what the checkout resolvers read, so the delivery path can turn
         it into a validated, per-repository checkout plan.
 
+        A repository binding applies here exactly as on container runs: a
+        Jira-triggered flow clones the bound code-host repository with that
+        tracker's credential only.
+
         Returns:
             The checkout context, or None when the flow does not clone.
+
+        Raises:
+            RepositoryBindingError: A binding exists but cannot be applied.
         """
-        clone = self.flow.git_clone_config
-        if not isinstance(clone, dict) or not clone.get("enabled"):
+        stored = self.flow.git_clone_config
+        if not isinstance(stored, dict) or not stored.get("enabled"):
             return None
+        self._apply_repository_binding()
+        clone = self._effective_git_clone_config()
         context: Dict[str, Any] = {
             "flow_id": str(self.flow_id),
             "flow_name": self.flow.name,
@@ -2449,6 +2516,11 @@ class FlowExecutionOrchestrator:
             "trigger_event_data": self.trigger_event_data,
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
+        binding = getattr(self, "_repository_binding", None)
+        if binding is not None:
+            # Read by the shared clone resolvers: the git credential must come
+            # from the bound code-host tracker only, never the issue tracker.
+            context["repository_binding"] = binding.summary()
         await self._attach_git_credentials(context)
         return context
 
@@ -2562,6 +2634,9 @@ class FlowExecutionOrchestrator:
             "prompt": resolved_prompt,
             "agent_type": effective_agent_type,
             "agent_config": self.flow.agent_config,
+            # The wall clock this run may spend. Harnesses keep their own
+            # waits (the Codex stream idle timeout) inside it.
+            "flow_timeout_seconds": self._execution_timeout_budget().seconds,
             "allowed_mcp_servers": self.flow.allowed_mcp_servers,
             "allowed_mcp_tools": self.flow.allowed_mcp_tools,
             "account_id": self.flow.account_id,
@@ -4536,39 +4611,32 @@ class FlowExecutionOrchestrator:
 
     @staticmethod
     def _tracker_kind(client: Any) -> Optional[str]:
-        from preloop.sync.trackers.github import GitHubTracker
-        from preloop.sync.trackers.gitlab import GitLabTracker
-
-        if isinstance(client, GitLabTracker):
-            return "gitlab"
-        if isinstance(client, GitHubTracker):
-            return "github"
-        return None
+        """The git host kind of a tracker client, or None for issue trackers."""
+        kind = str(getattr(client, "tracker_type", "") or "").lower()
+        return kind if kind in {"github", "gitlab", "bitbucket"} else None
 
     async def _lookup_published_pr(
         self, client: Any, branch: str
     ) -> Optional[Dict[str, str]]:
-        """The open PR/MR whose head is ``branch`` on ``client``'s repo."""
+        """The open PR/MR whose head is ``branch`` on ``client``'s repo.
+
+        The forge's ``created_at`` is carried along, so "PR opened" is the
+        forge's time, not the bind time.
+        """
         kind = self._tracker_kind(client)
-        if kind == "gitlab":
-            listing = await client.list_merge_requests(
-                state="open", limit=5, page=1, source_branch=branch
-            )
-        elif kind == "github":
-            listing = await client.list_pull_requests(
-                state="open", limit=5, page=1, head_branch=branch
-            )
-        else:
+        lookup = getattr(client, "list_open_pull_requests_by_source_branch", None)
+        if kind is None or lookup is None:
             return None
-        for item in (listing or {}).get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            # The provider filter is authoritative; this guards a tracker
-            # that ignored it and returned unrelated PRs.
-            if item.get("source_branch") != branch or not item.get("url"):
-                continue
-            return {"url": str(item["url"]), "branch": branch, "provider": kind}
-        return None
+        # The provider filter is authoritative; the guard skips anything a
+        # tracker returned for another branch or without a URL.
+        item = BaseTracker._first_listed_for_branch(await lookup(branch), branch)
+        if item is None:
+            return None
+        found = {"url": str(item["url"]), "branch": branch, "provider": kind}
+        created_at = item.get("created_at")
+        if created_at:
+            found["created_at"] = str(created_at)
+        return found
 
     def _execution_already_bound(self) -> bool:
         """True when another path (MCP create_pull_request) bound a PR."""
@@ -4619,6 +4687,7 @@ class FlowExecutionOrchestrator:
                 self.execution_log.id,
                 found["url"],
                 source_branch=found["branch"],
+                opened_at=found.get("created_at"),
             )
             self._opened_pr_bound = True
             logger.info("Bound the published pull request by head branch lookup")
@@ -5471,6 +5540,36 @@ class FlowExecutionOrchestrator:
             )
         return self._budget_after_park(TimeoutBudget(seconds=clamped, source="flow"))
 
+    def _name_stream_stall(
+        self, timeout_result: Dict[str, Any], budget: TimeoutBudget
+    ) -> None:
+        """Say so when a timed-out run was waiting on a silent model stream.
+
+        Without this, a run that spent its budget on a stream that sent
+        nothing reads exactly like a run that needed more time (issue #872).
+        When the log shows the stall was still on at the deadline, the
+        message names it, ``failure_category`` is ``model_stream_idle``, and
+        ``result.stream_stall`` carries the evidence. Otherwise the result is
+        left as the plain timeout it is.
+
+        Args:
+            timeout_result: The monitor's timeout result, updated in place.
+            budget: The budget that expired.
+        """
+        stall = detect_stream_stall(self.execution_logger.get_agent_output_lines())
+        if stall is None:
+            return
+        evidence = stall.as_result()
+        timeout_result["error_message"] = stall.timeout_message(
+            budget.seconds, budget.label()
+        )
+        timeout_result["failure_category"] = FAILURE_CATEGORY_MODEL_STREAM_IDLE
+        result = timeout_result.get("result")
+        result = dict(result) if isinstance(result, dict) else {}
+        result[STREAM_STALL_RESULT_KEY] = evidence
+        timeout_result["result"] = result
+        self.execution_logger.log_milestone("agent_stream_stalled", evidence)
+
     def _chain_consumed_seconds(self) -> int:
         """Agent wall clock already spent by the park chain this run continues."""
         from preloop.services.approval_park import consumed_seconds_from_details
@@ -6176,17 +6275,19 @@ class FlowExecutionOrchestrator:
             )
             await agent_executor.stop(session_reference)
 
-            return {
+            # A timed-out eval run may still have written result.json; the
+            # stopped container is kept, so the artifact is reachable.
+            timeout_result = {
                 "status": "FAILED",
                 "error_message": timeout_budget.timeout_message(),
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                # A timed-out eval run may still have written result.json;
-                # the stopped container is kept, so the artifact is reachable.
                 "result": await self._capture_result_artifact(
                     agent_executor, session_reference
                 ),
             }
+            self._name_stream_stall(timeout_result, timeout_budget)
+            return timeout_result
 
         except Exception as e:
             error_message = _exception_message(e)

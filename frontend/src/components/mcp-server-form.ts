@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import './capability-extension';
 
 @customElement('mcp-server-form')
 export class MCPServerForm extends LitElement {
@@ -190,6 +191,16 @@ export class MCPServerForm extends LitElement {
         ${
           this.errorMessage
             ? html`<p class="error">${this.errorMessage}</p>`
+            : ''
+        }
+        ${
+          // Sharing and tags of an existing server, where the deployment
+          // reports the capability; nothing otherwise.
+          this.server?.id
+            ? html`<capability-extension
+                name="resource-access"
+                .context=${{ kind: 'mcp_server', resourceId: this.server.id }}
+              ></capability-extension>`
             : ''
         }
 

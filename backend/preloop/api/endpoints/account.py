@@ -44,6 +44,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.attention_dismissal import AttentionDismissal
 from preloop.models.models.user import User as UserModel
+from preloop.plugins.account_hooks import VISIBLE_MANAGED_AGENT, filter_viewable
 from preloop.schemas.attention import (
     AttentionDismissalListResponse,
     AttentionDismissalResponse,
@@ -1348,7 +1349,12 @@ def list_account_managed_agents(
         items=_enrich_managed_agent_summaries(
             db,
             account_id=str(account.id),
-            summaries=[dict(item) for item in result["items"]],
+            summaries=filter_viewable(
+                db,
+                current_user,
+                VISIBLE_MANAGED_AGENT,
+                [dict(item) for item in result["items"]],
+            ),
         ),
     )
 

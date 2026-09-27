@@ -34,6 +34,7 @@ import {
   canRetryExecution,
   confirmRetryExecution,
 } from '../../actions/flow-execution-actions';
+import { showToast } from '../../components/confirm-dialog';
 import '../../components/resource-actions.ts';
 import '../../components/operator-note-composer.ts';
 import {
@@ -120,6 +121,13 @@ interface FlowExecution {
   trigger_event_id?: string;
   agent_session_reference?: string;
   error_message?: string;
+  /**
+   * Why an automatic stop ended this run, e.g. its pull request was merged
+   * (#1032). Absent on a run an operator stopped and on older servers.
+   */
+  stop_reason?: string | null;
+  /** Machine-readable cause of the automatic stop (`pr_merged`, ...). */
+  stop_source?: string | null;
   /**
    * Which layer broke this run (#361). Absent on a run that did not fail and
    * on servers that do not derive it yet.
@@ -216,6 +224,21 @@ function firstErrorLine(message?: string | null): string {
   if (!message) return '';
   const line = message.split('\n').find((part) => part.trim().length > 0);
   return (line || '').trim();
+}
+
+/**
+ * Why a stopped run stopped, when the server stopped it on its own: its
+ * pull request was merged, closed or got a new head (#1032). The row's
+ * error_message is overwritten by the orchestrator's generic "stopped by
+ * user request" line once the container is gone, so stop_reason is the
+ * durable answer.
+ */
+function automaticStopReason(execution: {
+  status: string;
+  stop_reason?: string | null;
+}): string {
+  if ((execution.status || '').toUpperCase() !== 'STOPPED') return '';
+  return (execution.stop_reason || '').trim();
 }
 
 /**
@@ -534,6 +557,21 @@ export class FlowExecutionView extends LitElement {
         overflow: hidden;
         overflow-wrap: anywhere;
         white-space: normal;
+      }
+      /* A run the server stopped because its pull request moved on is not
+         broken: neutral, and it says why. */
+      .stop-line {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: -4px 0 16px;
+        color: var(--sl-color-neutral-700);
+        font-size: var(--console-text-body);
+        overflow-wrap: anywhere;
+      }
+      .stop-line sl-icon {
+        flex-shrink: 0;
+        margin-top: 3px;
       }
       /* A parked run is waiting on a person, not broken: amber, and it says
          who and until when rather than spinning. */
@@ -1983,6 +2021,12 @@ export class FlowExecutionView extends LitElement {
     if (!isExecutionRequestFailureStatus(execution.status)) {
       return '';
     }
+    // A run the server stopped because its pull request moved on did not
+    // fail; the stop line says why, and the stored error_message is only
+    // the orchestrator's generic "stopped by user request" (#1032).
+    if (automaticStopReason(execution)) {
+      return '';
+    }
     const failed = this.firstFailedGatewayEvent();
     if (failed) {
       const message = providerErrorMessage(
@@ -2609,7 +2653,9 @@ export class FlowExecutionView extends LitElement {
           timestamp: execution.end_time,
           statusLabel: executionStatusLabel(execution.status),
           statusVariant: executionStatusVariant(execution.status),
-          statusDetail: firstErrorLine(execution.error_message),
+          statusDetail: firstErrorLine(
+            automaticStopReason(execution) || execution.error_message
+          ),
         });
       }
     }
@@ -2922,7 +2968,9 @@ export class FlowExecutionView extends LitElement {
   }
 
   private renderOutputPanel(execution: FlowExecution) {
+    const stopReason = automaticStopReason(execution);
     const hasAnything =
+      stopReason ||
       execution.error_message ||
       execution.result ||
       execution.model_output_summary ||
@@ -2973,7 +3021,17 @@ export class FlowExecutionView extends LitElement {
             : ''
         }
         ${
-          execution.error_message
+          stopReason
+            ? html`
+                <section class="output-section" data-testid="stop-reason">
+                  <h2 class="section-title">Why it stopped</h2>
+                  <p>${stopReason}</p>
+                </section>
+              `
+            : ''
+        }
+        ${
+          execution.error_message && !stopReason
             ? html`
                 <section class="output-section">
                   <h2 class="section-title">Error</h2>
@@ -3618,6 +3676,7 @@ ${execution.resolved_input_prompt}</pre>
     const running = this.isExecutionRunning();
     const statusVariant = executionStatusVariant(execution.status);
     const errorLine = this.errorLineText(execution);
+    const stopLine = automaticStopReason(execution);
 
     return html`
       <view-header
@@ -3681,6 +3740,14 @@ ${execution.resolved_input_prompt}</pre>
                 >
                   <sl-icon name="exclamation-triangle"></sl-icon>
                   <span class="error-text">${errorLine}</span>
+                </div>`
+              : ''
+          }
+          ${
+            stopLine
+              ? html`<div class="stop-line" data-testid="stop-line">
+                  <sl-icon name="stop-circle"></sl-icon>
+                  <span>${stopLine}</span>
                 </div>`
               : ''
           }
@@ -3950,7 +4017,11 @@ ${log.payload.content}</pre>
       this.requestUpdate();
     } catch (error) {
       console.error('Failed to stop execution:', error);
-      // TODO: Show error notification to user
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to stop the run.';
+      showToast(detail, 'danger');
     }
   }
 

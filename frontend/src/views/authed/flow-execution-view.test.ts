@@ -662,9 +662,13 @@ describe('FlowExecutionView', () => {
     await waitUntil(
       () =>
         (element as any).execution?.id === 'exec-running' &&
-        !(element as any).isLoading,
+        !(element as any).isLoading &&
+        // The mcp_call entries are synthesized after the logs land, which
+        // is after first paint.
+        !(element as any).isLoadingLogs,
       'Running execution view did not finish loading'
     );
+    await element.updateComplete;
 
     expect((element as any).toolCalls).to.equal(3);
     expect(
@@ -1607,6 +1611,55 @@ describe('FlowExecutionView', () => {
       );
     });
 
+    it('says why the server stopped a run on its own', async () => {
+      const element = await load('exec-1');
+      const reason =
+        'Stopped because pull request example-org/widgets#12 was merged';
+      (element as any).execution = {
+        ...(element as any).execution,
+        status: 'STOPPED',
+        stop_reason: reason,
+        stop_source: 'pr_merged',
+        // What the orchestrator writes once the container is gone.
+        error_message: 'Execution stopped by user request after 42 seconds',
+      };
+      await element.updateComplete;
+
+      const line = element.shadowRoot!.querySelector(
+        '[data-testid="stop-line"]'
+      )!;
+      expect(line.textContent!.trim()).to.equal(reason);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="error-line"]') === null
+      ).to.equal(true, 'a stopped run shows no error line');
+
+      const output = element.shadowRoot!.querySelector(
+        'sl-tab-panel[name="output"]'
+      )!;
+      const section = output.querySelector('[data-testid="stop-reason"]')!;
+      expect(section.textContent).to.contain(reason);
+      expect(output.textContent).to.not.contain('by user request');
+    });
+
+    it('shows no stop reason on a run an operator stopped', async () => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        status: 'STOPPED',
+        stop_reason: null,
+        error_message: 'Manually stopped by user',
+      };
+      await element.updateComplete;
+
+      expect(element.shadowRoot!.querySelector('[data-testid="stop-line"]')).to
+        .not.exist;
+      const output = element.shadowRoot!.querySelector(
+        'sl-tab-panel[name="output"]'
+      )!;
+      expect(output.querySelector('[data-testid="stop-reason"]')).to.not.exist;
+      expect(output.textContent).to.contain('Manually stopped by user');
+    });
+
     it('explains an OOMKilled container in the failure summary', async () => {
       const element = await load('exec-1');
       (element as any).execution = {
@@ -2256,5 +2309,34 @@ describe('FlowExecutionView', () => {
         element.shadowRoot!.querySelectorAll('sl-tab-group sl-tab').length
       ).to.equal(5);
     });
+  });
+
+  it('tells the operator when stopping a run fails', async () => {
+    const element = (await fixture(
+      html`<flow-execution-view></flow-execution-view>`
+    )) as FlowExecutionView;
+    (element as any).executionId = 'exec-pending';
+    (element as any).execution = {
+      id: 'exec-pending',
+      flow_id: 'flow-1',
+      status: 'RUNNING',
+    };
+    await element.updateComplete;
+    fetchStub.callsFake(
+      async () =>
+        new Response(JSON.stringify({ detail: 'no' }), { status: 500 })
+    );
+    try {
+      await (element as any).stopExecution();
+      const alert = document.body.querySelector('sl-alert');
+      expect(alert?.textContent).to.contain(
+        'Failed to send command to execution'
+      );
+      expect((element as any).execution.status).to.equal('RUNNING');
+    } finally {
+      document.body.querySelectorAll('sl-alert').forEach((node) => {
+        node.remove();
+      });
+    }
   });
 });

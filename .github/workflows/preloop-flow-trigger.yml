@@ -1,27 +1,72 @@
-# Trial: run a Preloop flow from GitHub Actions with the CLI.
+# Trigger the prod Pull Request Reviewer from GitHub Actions.
 #
-# Two ways in, both opt-in so the webhook-driven reviewer is not doubled:
-#   1. Add the label `preloop-ci-review` to a pull request.
-#   2. Run the workflow by hand with a pull request number.
+# This is the reviewer for github.com/preloop/preloop. It replaces the
+# staging.preloop.ai webhook flow: the job talks to https://preloop.ai
+# and waits for the verdict. Disable the staging GitHub trigger when
+# PRELOOP_PROD_REVIEW is switched on, or every PR is reviewed twice.
 #
-# The CLI blocks while the execution runs (stdin is not a TTY), streams the
-# execution log into this job, and exits non-zero on FAILED, STOPPED or
-# TIMEOUT, so the check goes red when the review does. Compute stays where the
-# flow says (hosted, or a private runner via `runner_pool`); this job only
+# Rollout switch: pull request events only call prod when the repository
+# variable PRELOOP_PROD_REVIEW is `enabled`. Until then the job skips
+# with a notice, so landing this file does not put a red check on every
+# PR while the prod flow is being prepared. `workflow_dispatch` ignores
+# the switch: it is how a maintainer trials the flow on one PR.
+#
+# Runs on open, non-draft PRs. Skip a PR with the label
+# `preloop-skip-review`; removing that label retriggers. Manual dispatch
+# also respects the draft, label and open-state gates. Same-repo PRs use
+# `pull_request` (this file on the PR). Fork PRs use
+# `pull_request_target` so PRELOOP_TOKEN is available; the job still
+# checks out the default branch, never the PR head.
+#
+# Fork posture: a fork PR is reviewed automatically only when its author
+# is an OWNER, MEMBER or COLLABORATOR. Any other fork PR is skipped (it
+# would spend a prod execution per push and feed untrusted text into the
+# review agent). A maintainer who has read the PR can review it with
+# `workflow_dispatch`.
+#
+# The CLI blocks while the execution runs (stdin is not a TTY), streams
+# the execution log into this job, and exits non-zero on FAILED, STOPPED
+# or TIMEOUT, so the check goes red when the review does. If the job is
+# cancelled (a newer push supersedes it) or fails while the execution is
+# still running, a cleanup step stops that execution, so a superseded
+# head does not keep a review running. Compute stays where the flow says
+# (hosted, or a private runner via `runner_pool`); this job only
 # triggers and waits. See docs/guide/flows/ci-trigger.md.
 #
+# The trigger body mirrors a GitHub webhook event: `source: github`, a
+# normalized `type`, and the pull request under `payload.pull_request`.
+# Preloop normalizes that into `trigger_event.payload.object_attributes`,
+# which is what the Pull Request Reviewer prompt reads.
+#
 # Required repository settings:
-#   secret   PRELOOP_TOKEN  least-privilege account API token scoped to the
-#                           review flow (not a personal admin token). This job
-#                           cannot rotate the secret; keep the account's grants
-#                           narrow enough that a mis-applied label is recoverable.
-#   variable PRELOOP_URL    optional, defaults to https://preloop.ai
-#   variable PRELOOP_FLOW   optional, flow id or name, defaults to "Pull Request Reviewer"
+#   secret   PRELOOP_TOKEN        least-privilege account API token scoped
+#                                 to the prod review flow (not a personal
+#                                 admin token). This job cannot rotate it.
+#   variable PRELOOP_PROD_REVIEW  `enabled` to review PRs automatically.
+#   variable PRELOOP_FLOW         optional, flow id or name, defaults to
+#                                 "Pull Request Reviewer". Prefer the id.
+# PRELOOP_URL is pinned to prod below. A repository variable of that
+# name is deliberately ignored.
 name: Preloop flow trigger
 
 on:
   pull_request:
-    types: [labeled]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - unlabeled
+  # Fork PRs do not receive repo secrets on `pull_request`. This event
+  # runs from the base branch and can use PRELOOP_TOKEN. Checkout below
+  # is the default branch only; do not point it at the PR head.
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - unlabeled
   workflow_dispatch:
     inputs:
       pr:
@@ -33,25 +78,95 @@ permissions:
   contents: read
   pull-requests: read
 
+# Both pull_request and pull_request_target fire for every PR, and only
+# one of them reviews (see the job condition). Keep the other one in a
+# separate group, or it would cancel the reviewing run for the same PR.
 concurrency:
-  group: preloop-flow-${{ github.event.pull_request.number || inputs.pr }}
-  cancel-in-progress: false
+  group: preloop-flow-${{ github.event.pull_request.number || inputs.pr }}-${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request') == (github.event.pull_request.head.repo.full_name == github.repository)) && 'review' || 'noop' }}
+  cancel-in-progress: true
 
 jobs:
   trigger:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'preloop-ci-review'
+    # Same-repo: pull_request only. Forks: pull_request_target only.
+    # Both events fire on a same-repo PR; the fork clause prevents a
+    # double review. unlabeled only retriggers when skip-review is removed.
+    # Dependabot: runs it triggers get no repository secrets, so skip
+    # both its PRs and any event it is the actor of.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.draft == false &&
+        github.event.pull_request.user.login != 'dependabot[bot]' &&
+        github.actor != 'dependabot[bot]' &&
+        !contains(github.event.pull_request.labels.*.name, 'preloop-skip-review') &&
+        (github.event.action != 'unlabeled' || github.event.label.name == 'preloop-skip-review') &&
+        (
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository
+          ) ||
+          (
+            github.event_name == 'pull_request_target' &&
+            github.event.pull_request.head.repo.full_name != github.repository
+          )
+        )
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Gate (rollout switch, state, draft, label, fork author)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No checkout has happened yet, so gh needs the repository.
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          EVENT_NAME: ${{ github.event_name }}
+          PROD_REVIEW: ${{ vars.PRELOOP_PROD_REVIEW }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+        run: |
+          set -euo pipefail
+          skip() {
+            echo "::notice title=Preloop review skipped::$1"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if [ "$EVENT_NAME" != "workflow_dispatch" ] && [ "${PROD_REVIEW}" != "enabled" ]; then
+            skip "PR #${PR_NUMBER}: repository variable PRELOOP_PROD_REVIEW is not 'enabled', so the prod reviewer is not called."
+          fi
+          meta=$(gh pr view "$PR_NUMBER" --json state,isDraft,labels)
+          state=$(printf '%s' "$meta" | jq -r .state)
+          draft=$(printf '%s' "$meta" | jq -r .isDraft)
+          label=$(printf '%s' "$meta" | jq -r '[.labels[].name] | index("preloop-skip-review") != null')
+          if [ "$state" != "OPEN" ]; then
+            skip "PR #${PR_NUMBER} is ${state}, not OPEN."
+          fi
+          if [ "$draft" = "true" ]; then
+            skip "PR #${PR_NUMBER} is a draft."
+          fi
+          if [ "$label" = "true" ]; then
+            skip "PR #${PR_NUMBER} has the preloop-skip-review label."
+          fi
+          if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$IS_FORK" = "true" ]; then
+            case "$AUTHOR_ASSOCIATION" in
+              OWNER|MEMBER|COLLABORATOR) ;;
+              *) skip "Fork PR #${PR_NUMBER} from a ${AUTHOR_ASSOCIATION:-unknown} author. A maintainer can review it with workflow_dispatch." ;;
+            esac
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
       # This job only needs scripts/install-cli.sh. Check out the default
-      # branch so a labeled PR cannot supply the installer (or a replacement
+      # branch so a PR cannot supply the installer (or a replacement
       # preloop binary) that then runs with PRELOOP_TOKEN.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.gate.outputs.skip != 'true'
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Install the Preloop CLI
+        if: steps.gate.outputs.skip != 'true'
         env:
           # Pin the downloaded release. install-cli.sh from the default
           # branch already fetches SHA256SUMS; the check below fails the
@@ -80,35 +195,111 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve PR head SHA
+      - name: Trigger the flow and wait for the verdict
+        id: trigger
+        if: steps.gate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          if [ -n "${PR_HEAD}" ]; then
-            echo "HEAD_SHA=${PR_HEAD}" >> "$GITHUB_ENV"
-          else
-            echo "HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)" >> "$GITHUB_ENV"
-          fi
-
-      - name: Trigger the flow and wait for the verdict
-        env:
+          GH_REPO: ${{ github.repository }}
           PRELOOP_TOKEN: ${{ secrets.PRELOOP_TOKEN }}
-          PRELOOP_URL: ${{ vars.PRELOOP_URL || 'https://preloop.ai' }}
+          # Pinned to prod. Do not point this at staging; the staging
+          # webhook reviewer is the flow this job replaces.
+          PRELOOP_URL: https://preloop.ai
           PRELOOP_FLOW: ${{ vars.PRELOOP_FLOW || 'Pull Request Reviewer' }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
-          PR_URL: ${{ github.event.pull_request.html_url || format('{0}/pull/{1}', github.event.repository.html_url, inputs.pr) }}
-          GH_REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ env.HEAD_SHA }}
+          # The commit this run is for. Empty on workflow_dispatch, where
+          # the live head is used.
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_ACTION: ${{ github.event.action || 'dispatch' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           if [ -z "${PRELOOP_TOKEN}" ]; then
             echo "PRELOOP_TOKEN secret is not set" >&2
             exit 1
           fi
-          payload=$(jq -cn --arg url "$PR_URL" --argjson number "$PR_NUMBER" \
-            --arg repo "$GH_REPO" --arg sha "$HEAD_SHA" \
-            '{pull_request: {url: $url, number: $number, head_sha: $sha}, repository: {full_name: $repo}, source: "github-actions"}')
-          echo "$payload" | preloop flow trigger "$PRELOOP_FLOW" --payload - --timeout 40m
+          # Same type names the GitHub webhook path produces. Anything
+          # after the first review is `pull_request_updated`, which lets
+          # the reviewer do an incremental pass from its last reviewed SHA.
+          case "$EVENT_ACTION" in
+            opened) type=pull_request_opened ;;
+            reopened) type=pull_request_reopened ;;
+            ready_for_review) type=pull_request_ready_for_review ;;
+            *) type=pull_request_updated ;;
+          esac
+          pr_json="${RUNNER_TEMP}/pr.json"
+          gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}" > "$pr_json"
+          payload="${RUNNER_TEMP}/preloop-payload.json"
+          jq -c --arg type "$type" --arg action "$EVENT_ACTION" \
+            --arg sha "$EVENT_HEAD_SHA" --arg run_url "$RUN_URL" '
+            {
+              source: "github",
+              type: $type,
+              payload: {
+                action: $action,
+                number: .number,
+                pull_request: {
+                  number: .number,
+                  title: .title,
+                  body: (.body // ""),
+                  html_url: .html_url,
+                  state: .state,
+                  draft: .draft,
+                  user: {login: .user.login},
+                  author_association: .author_association,
+                  head: {
+                    ref: .head.ref,
+                    sha: (if $sha == "" then .head.sha else $sha end),
+                    repo: {full_name: .head.repo.full_name}
+                  },
+                  base: {ref: .base.ref, sha: .base.sha}
+                },
+                repository: {
+                  id: .base.repo.id,
+                  full_name: .base.repo.full_name,
+                  html_url: .base.repo.html_url,
+                  clone_url: .base.repo.clone_url,
+                  default_branch: .base.repo.default_branch
+                }
+              },
+              ci: {provider: "github-actions", run_url: $run_url}
+            }' "$pr_json" > "$payload"
+          jq '{type, pr: .payload.pull_request | {number, html_url, head, base}}' "$payload"
+          # Keep the CLI output so the cleanup step can find the execution id.
+          preloop flow trigger "$PRELOOP_FLOW" --payload - --timeout 40m \
+            < "$payload" 2>&1 | tee "${RUNNER_TEMP}/preloop-trigger.log"
+
+      # A cancelled job (superseded by a newer push) or a CLI wait timeout
+      # leaves the prod execution running. Stop it if, and only if, it is
+      # still in a non-terminal state: the stop endpoint marks anything it
+      # is sent as STOPPED, which would overwrite a real FAILED verdict.
+      - name: Stop the execution if this job did not finish it
+        if: (cancelled() || failure()) && steps.gate.outputs.skip == 'false'
+        env:
+          PRELOOP_TOKEN: ${{ secrets.PRELOOP_TOKEN }}
+          PRELOOP_URL: https://preloop.ai
+        run: |
+          set -uo pipefail
+          log="${RUNNER_TEMP}/preloop-trigger.log"
+          exec_id=$(sed -n 's/^Triggered flow .* (execution \([0-9a-f-]\{36\}\), status .*/\1/p' "$log" 2>/dev/null | head -n1)
+          if [ -z "$exec_id" ] || [ -z "${PRELOOP_TOKEN}" ]; then
+            echo "No execution was started; nothing to stop."
+            exit 0
+          fi
+          api="${PRELOOP_URL}/api/v1/flows/executions/${exec_id}"
+          status=$(curl -fsS -H "Authorization: Bearer ${PRELOOP_TOKEN}" "$api" | jq -r .status) || {
+            echo "::warning::Could not read execution ${exec_id}; not stopping it."
+            exit 0
+          }
+          case "$status" in
+            RUNNING|STARTING|INITIALIZING|PENDING)
+              echo "Stopping execution ${exec_id} (status ${status})."
+              curl -fsS -X POST -H "Authorization: Bearer ${PRELOOP_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d '{"command":"stop"}' "${api}/command" > /dev/null \
+                || echo "::warning::Stopping execution ${exec_id} failed."
+              ;;
+            *)
+              echo "Execution ${exec_id} is ${status}; leaving it."
+              ;;
+          esac

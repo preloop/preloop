@@ -21,6 +21,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CHART_DIR = REPO_ROOT / "helm" / "preloop"
 CHART_VALUES = CHART_DIR / "values.yaml"
 
+# The chart fails closed on an empty or placeholder jwtSecret (see
+# templates/secret.yaml), so renders in this suite supply a test value
+# unless a test overrides it explicitly to exercise the guard itself.
+TEST_JWT_SECRET = "helm-test-signing-key-not-a-real-secret"
+
 
 def load_values() -> Dict:
     """Return the chart's default values."""
@@ -66,6 +71,10 @@ def _run_helm(
     helm = shutil.which("helm")
     if helm is None:  # pragma: no cover - depends on the local toolchain
         pytest.skip("helm binary not available")
+
+    overrides = list(overrides or [])
+    if not any(o.startswith("environment.jwtSecret=") for o in overrides):
+        overrides.append(f"environment.jwtSecret={TEST_JWT_SECRET}")
 
     command = [helm, "template", "preloop", str(chart_dir)]
     if template:

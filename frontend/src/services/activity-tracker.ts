@@ -13,6 +13,7 @@ import {
 } from './unified-websocket-manager';
 import { getVisitorId } from './visitor-id';
 import { getAttribution } from './attribution';
+import { debugLog } from '../utils/debug';
 
 /**
  * Browser-side counterpart to the `PRELOOP_DISABLE_TELEMETRY` env var.
@@ -100,7 +101,7 @@ export class ActivityTracker {
     if (!sent) {
       // Queue the message if it couldn't be sent
       this.messageQueue.push(message);
-      console.debug('Queued activity message:', message.event);
+      debugLog('Queued activity message:', message.event);
     }
   }
 
@@ -111,9 +112,7 @@ export class ActivityTracker {
     if (this.isProcessingQueue || this.messageQueue.length === 0) return;
 
     this.isProcessingQueue = true;
-    console.debug(
-      `Flushing ${this.messageQueue.length} queued activity messages`
-    );
+    debugLog(`Flushing ${this.messageQueue.length} queued activity messages`);
 
     while (this.messageQueue.length > 0) {
       const message = this.messageQueue.shift();

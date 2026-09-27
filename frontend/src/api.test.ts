@@ -1014,6 +1014,31 @@ describe('api', () => {
       expect(body).to.not.have.property('auth_type');
     });
 
+    it('validateTrackerToken does not write the token to the console', async () => {
+      fetchStub.resolves(okJson({ success: true, orgs: [] }));
+      const log = sinon.spy(console, 'log');
+      const debug = sinon.spy(console, 'debug');
+      try {
+        await validateTrackerToken(
+          'github',
+          'secret-token-value',
+          'https://tracker.example.com',
+          'someone'
+        );
+        const dumped = [log, debug]
+          .flatMap((spy) => spy.args)
+          .flat()
+          .map((part) => String(part))
+          .join('\n');
+        expect(dumped).to.not.contain('secret-token-value');
+        expect(log.called).to.equal(false);
+        expect(debug.called).to.equal(false);
+      } finally {
+        log.restore();
+        debug.restore();
+      }
+    });
+
     it('listProjectsForOrg forwards Bitbucket options', async () => {
       fetchStub.resolves(okJson({ projects: [] }));
 

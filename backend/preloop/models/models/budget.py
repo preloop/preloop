@@ -38,9 +38,13 @@ class BudgetPolicy(Base):
         UUID(as_uuid=True), ForeignKey("account.id", ondelete="CASCADE"), nullable=False
     )
 
-    subject_type = Column(
-        String, nullable=False, index=True
-    )  # 'account', 'flow', 'api_key', 'managed_agent'
+    # 'account', 'flow', 'api_key', 'managed_agent'. The account hierarchy
+    # reserves 'subaccount' (subject_id is the subaccount) and
+    # 'subaccounts_total' (subject_id NULL, all subaccounts together), both
+    # stored under the parent's account_id; see access_values.BUDGET_SUBJECT_*.
+    # Those two are not accepted by
+    # crud.budget_configuration.validate_budget_subject yet.
+    subject_type = Column(String, nullable=False, index=True)
     subject_id = Column(
         UUID(as_uuid=True), nullable=True, index=True
     )  # UUID of the flow, api_key, etc. None if subject_type is account.

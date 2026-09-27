@@ -9,7 +9,24 @@ ARG DEV_IMAGE=ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab307
 FROM ${DEV_IMAGE}
 USER root
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/preloop-browsers \
-    PRELOOP_DISABLE_TELEMETRY=true
+    PRELOOP_DISABLE_TELEMETRY=true \
+    DEBIAN_FRONTEND=noninteractive
+# Distro Perl for version linting and project tests. Versions are not
+# pinned: apt-get update reads noble-updates, which drops superseded
+# point releases, so an exact pin fails the next security update.
+# Dockerfile.dev installs the same way. The smoke script is the build gate.
+# perlver has no --version flag; the smoke runs it on a fixture.
+COPY environments/preloop/perl-toolchain-smoke.sh /opt/preloop-perl/perl-toolchain-smoke.sh
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        perl \
+        cpanminus \
+        libperl-minimumversion-perl \
+        libperl-critic-perl \
+        libtest-harness-perl \
+        libtest-simple-perl \
+    && rm -rf /var/lib/apt/lists/* \
+    && bash /opt/preloop-perl/perl-toolchain-smoke.sh
 COPY environments/preloop/tools/package.json \
      environments/preloop/tools/package-lock.json \
      /opt/preloop-env-tools/

@@ -43,6 +43,7 @@ from preloop.schemas.auth import (
     ApiKeyResponse,
     ApiKeySummary,
     ApiUsageStatistics,
+    CliSessionResponse,
     EmailVerificationRequest,
     EmailVerificationResendRequest,
     LoginRequest,
@@ -80,6 +81,7 @@ from preloop.models.crud import (
     AmbiguousEmailError,
     crud_account,
     crud_audit_log,
+    crud_cli_session,
     crud_team,
     crud_user,
     crud_api_key,
@@ -95,6 +97,11 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User as UserModel
 from preloop.models.models.api_key import ApiKey
 from pydantic import BaseModel
+from preloop.plugins.account_hooks import (
+    get_login_row_selector,
+    select_email_rows,
+    select_login_row,
+)
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_MANAGED_AGENTS,
@@ -701,12 +708,17 @@ async def register(
 
 
 def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
-    """The exact user row a verification or reset token was issued for.
+    """The user row a verification or reset link acts on.
 
     The token names the row by id, never by address: one address can hold a
     row in several accounts. It also carries the address it was mailed to,
     and a row whose address has since changed does not honour it, so an old
     link cannot verify or reset whatever address the row holds now.
+
+    A login row selector (account hook H1) may move the link to another row,
+    but only to one that holds the same address: the link proves possession
+    of that address and nothing else, so it can never verify or reset a row
+    whose address it did not prove.
 
     Args:
         session: Database session.
@@ -714,10 +726,11 @@ def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
         token_type: "email_verification" or "password_reset".
 
     Returns:
-        The user row the token names.
+        The user row the token names, or the row the selector chose.
 
     Raises:
-        TokenError: If the token is invalid or no longer matches its row.
+        TokenError: If the token is invalid, no longer matches its row, or
+            the selected row holds a different address.
         HTTPException: 404 if the row no longer exists.
     """
     claims = verify_user_token(token, token_type)
@@ -731,7 +744,13 @@ def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
         raise TokenError(
             "This link is no longer valid. Request a new one and use that instead."
         )
-    return user
+    purpose = "verify_email" if token_type == "email_verification" else "reset_password"
+    selected = select_login_row(session, user, purpose=purpose)
+    if selected is not user and (selected.email or "").lower() != claims.email.lower():
+        raise TokenError(
+            "This link is no longer valid. Request a new one and use that instead."
+        )
+    return selected
 
 
 @router.post("/verify-email", status_code=status.HTTP_200_OK)
@@ -846,7 +865,13 @@ def resend_verification(
     # One address can hold a row in several accounts. Each unverified row
     # gets its own link, bound to that row, so following one never verifies
     # another.
-    for user in crud_user.list_by_email(db, email=email):
+    rows = select_email_rows(
+        db,
+        email,
+        crud_user.list_by_email(db, email=email),
+        purpose="resend_verification",
+    )
+    for user in rows:
         if user.email_verified:
             continue
         background_tasks.add_task(
@@ -902,7 +927,13 @@ async def forgot_password(
     Returns:
         The same neutral message whether or not the address is registered.
     """
-    for user in crud_user.list_by_email(db, email=reset_data.email):
+    rows = select_email_rows(
+        db,
+        reset_data.email,
+        crud_user.list_by_email(db, email=reset_data.email),
+        purpose="forgot_password",
+    )
+    for user in rows:
         token = create_password_reset_token(user.email, user_id=user.id)
         background_tasks.add_task(
             send_password_reset_email,
@@ -957,6 +988,19 @@ async def reset_password(
         )
 
 
+async def _landing_row(user: UserModel, db: Session) -> UserModel:
+    """The row a password sign-in lands on (the checked row unless H1 says).
+
+    Without a registered login row selector this returns ``user`` without
+    leaving the event loop or touching the database.
+    """
+    if get_login_row_selector() is None:
+        return user
+    from preloop.api.loop_safety import run_db_off_loop
+
+    return await run_db_off_loop(lambda: select_login_row(db, user, purpose="login"))
+
+
 @router.post("/token", response_model=Token)
 async def login_form(
     request: Request,
@@ -987,6 +1031,7 @@ async def login_form(
             headers={"WWW-Authenticate": "Bearer"},
         )
     enforce_verified_email(user)
+    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1043,6 +1088,7 @@ async def login_json(
             headers={"WWW-Authenticate": "Bearer"},
         )
     enforce_verified_email(user)
+    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1093,7 +1139,10 @@ def refresh_token(
         # Check if it's a refresh token before touching the database: an
         # access token presented here is always invalid, regardless of user
         # state.
-        if not token_data.refresh:
+        # A CLI login refresh token (sid claim) rotates only at /oauth/token,
+        # where its cli_session row is checked and advanced. Minting console
+        # tokens from it here would drop the sid and escape revocation.
+        if not token_data.refresh or token_data.sid is not None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token",
@@ -1184,10 +1233,70 @@ def revoke_all_sessions(
 
     Increments ``auth_generation`` so every outstanding access and refresh
     token (including this request's) fails the generation check on the next
-    use. API keys and runner tokens are unchanged.
+    use. Active ``cli_session`` rows are marked revoked in the same commit so
+    the CLI session list matches what is enforced. API keys and runner tokens
+    are unchanged.
     """
+    crud_cli_session.revoke_all(db, user_id=current_user.id, commit=False)
     new_generation = crud_user.bump_auth_generation(db, user_id=current_user.id)
     return {"auth_generation": new_generation}
+
+
+def _request_cli_session_id(request: Request) -> Optional[str]:
+    """Return the ``sid`` of the request's bearer JWT, if it has one."""
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or "." not in token:
+        return None
+    try:
+        return decode_token(token.strip()).sid
+    except HTTPException:
+        return None
+
+
+@router.get("/sessions/cli", response_model=List[CliSessionResponse])
+def list_cli_sessions(
+    request: Request,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> List[CliSessionResponse]:
+    """List the signed-in user's active CLI login sessions.
+
+    Each ``preloop auth login`` creates one. Revoked sessions are omitted.
+    """
+    current_sid = _request_cli_session_id(request)
+    return [
+        CliSessionResponse(
+            id=row.id,
+            created_at=row.created_at,
+            last_seen_at=row.last_seen_at,
+            user_agent=row.user_agent,
+            hostname=row.hostname,
+            current=str(row.id) == current_sid,
+        )
+        for row in crud_cli_session.list_active(db, user_id=current_user.id)
+    ]
+
+
+@router.delete("/sessions/cli/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_cli_session(
+    session_id: UUID,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> None:
+    """Revoke one CLI login session of the signed-in user.
+
+    Its access and refresh tokens are rejected on their next use. Other
+    sessions are unaffected.
+
+    Raises:
+        HTTPException: 404 when no active session with this id belongs to
+            the caller.
+    """
+    if not crud_cli_session.revoke(db, session_id=session_id, user_id=current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="CLI session not found"
+        )
 
 
 @router.get("/users/me", response_model=AuthUserResponse)

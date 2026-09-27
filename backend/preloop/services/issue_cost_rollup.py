@@ -50,6 +50,11 @@ from preloop.schemas.issue_cost import (
     IssueCostUnassigned,
 )
 from preloop.services.flow_pr_binding import normalize_pr_url
+from preloop.services.issue_estimate import (
+    estimate_config,
+    label_names,
+    read_estimate,
+)
 from preloop.services.issue_references import KIND_CLOSES, extract_issue_references
 
 logger = logging.getLogger(__name__)
@@ -99,9 +104,20 @@ CSV_COLUMNS: tuple[str, ...] = (
     "approved_to_merged_hours",
     "issue_url",
     "pr_url",
+    "pr_opened_at_source",
+    "estimate_hours",
+    "estimate_hours_source",
+    "estimate_points",
+    "estimate_points_source",
 )
 
 UNASSIGNED_ISSUE_KEY = "(unassigned)"
+
+#: ``IssueCostPullRequest.opened_at_source`` values. A forge time replaces a
+#: bind or run-end time; otherwise the first recorded time wins.
+OPENED_FORGE = "forge"
+OPENED_BIND = "bind"
+OPENED_RUN_END = "run_end"
 
 
 # --- parsing ---------------------------------------------------------------
@@ -122,6 +138,8 @@ class TriggerSubject:
         repo_path: Repository path (``org/repo``), when known.
         host: Web host of the repository, when known.
         platform: ``github``, ``gitlab`` or ``jira``.
+        fields: Raw issue fields, for reading the tracker estimate.
+        labels: Issue label names, for reading the tracker estimate.
     """
 
     kind: str
@@ -134,6 +152,8 @@ class TriggerSubject:
     repo_path: Optional[str] = None
     host: Optional[str] = None
     platform: Optional[str] = None
+    fields: Optional[dict[str, Any]] = field(default=None, compare=False)
+    labels: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -284,6 +304,7 @@ def _parse_github(payload: dict[str, Any]) -> Optional[TriggerSubject]:
             url=_str(issue.get("html_url")),
             repo_path=repo_path,
             platform="github",
+            labels=tuple(label_names(issue.get("labels"))),
         )
     return None
 
@@ -310,7 +331,7 @@ def _gitlab_pr(
 
 
 def _gitlab_issue(
-    issue: dict[str, Any], repo_path: Optional[str]
+    issue: dict[str, Any], repo_path: Optional[str], labels: Any = None
 ) -> Optional[TriggerSubject]:
     iid = _str(issue.get("iid"))
     key = canonical_issue_key(f"{repo_path}#{iid}") if repo_path and iid else None
@@ -323,6 +344,10 @@ def _gitlab_issue(
         url=_str(issue.get("web_url")) or _str(issue.get("url")),
         repo_path=repo_path,
         platform="gitlab",
+        fields=issue,
+        # Issue webhooks list labels next to object_attributes; notes and
+        # the API put them on the issue itself.
+        labels=tuple(label_names(issue.get("labels")) or label_names(labels)),
     )
 
 
@@ -333,7 +358,7 @@ def _parse_gitlab(payload: dict[str, Any]) -> Optional[TriggerSubject]:
     if kind == "merge_request":
         return _gitlab_pr(attributes, repo_path)
     if kind in {"issue", "work_item"}:
-        return _gitlab_issue(attributes, repo_path)
+        return _gitlab_issue(attributes, repo_path, payload.get("labels"))
     if kind == "note":
         if _dict(payload.get("merge_request")):
             return _gitlab_pr(_dict(payload.get("merge_request")), repo_path)
@@ -350,11 +375,14 @@ def _parse_jira(payload: dict[str, Any]) -> Optional[TriggerSubject]:
     canonical = canonical_issue_key(key)
     if not canonical:
         return None
+    fields = _dict(issue.get("fields"))
     return TriggerSubject(
         kind="issue",
         issue_key=canonical,
-        title=_str(_dict(issue.get("fields")).get("summary")),
+        title=_str(fields.get("summary")),
         platform="jira",
+        fields=fields,
+        labels=tuple(label_names(fields.get("labels"))),
     )
 
 
@@ -446,6 +474,71 @@ def parse_event_time(value: Any, *, now: datetime) -> datetime:
             if parsed <= now + timedelta(minutes=5):
                 return parsed
     return now
+
+
+def parse_forge_time(value: Any, *, now: datetime) -> Optional[datetime]:
+    """A pull request ``created_at`` the forge reported, or None.
+
+    Unlike ``parse_event_time`` there is no fallback: a value that is
+    missing, does not parse or lies in the future is not a forge time.
+    Accepts ISO 8601 (``2026-09-01T08:00:00Z``), the older GitLab webhook
+    form (``2026-09-01 08:00:00 UTC``) and datetimes.
+
+    Args:
+        value: The reported time.
+        now: Current time (timezone aware).
+
+    Returns:
+        A timezone-aware timestamp, or None.
+    """
+    if isinstance(value, datetime):
+        parsed: Optional[datetime] = value
+    else:
+        text = _str(value)
+        if not text:
+            return None
+        if text.endswith(" UTC"):
+            text = text[: -len(" UTC")] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    assert parsed is not None
+    parsed = _aware(parsed)
+    if parsed > now + timedelta(minutes=5):
+        return None
+    return parsed
+
+
+def stamp_opened(
+    pull: models.IssueCostPullRequest, stamp: datetime, source: str
+) -> bool:
+    """Set a pull request's "opened" time according to its source.
+
+    The forge's own ``created_at`` is the truth, so it replaces a time
+    Preloop recorded (the bind or the run's end) even when that time is
+    earlier. Between two forge times the earlier wins. A bind or run-end
+    time only fills an empty value, so a replay never moves it.
+
+    Args:
+        pull: The pull request row.
+        stamp: The candidate time.
+        source: ``forge``, ``bind`` or ``run_end``.
+
+    Returns:
+        True when the row changed.
+    """
+    current = _optional_aware(pull.opened_at)
+    if current is None:
+        replace = True
+    elif source == OPENED_FORGE:
+        replace = pull.opened_at_source != OPENED_FORGE or stamp < current
+    else:
+        replace = False
+    if replace:
+        pull.opened_at = stamp
+        pull.opened_at_source = source
+    return replace
 
 
 def interval_hours(
@@ -763,6 +856,95 @@ def _rollup_for(
     return rollup
 
 
+# ``Session.info`` key of the per-pass tracker estimate settings cache.
+_TRACKER_SETTINGS_CACHE = "issue_cost_tracker_estimate_settings"
+
+
+def _tracker_estimate_settings(
+    db: Session, *, tracker_id: uuid.UUID
+) -> tuple[str, dict[str, Any]]:
+    """Tracker type and estimate configuration, cached for a scheduled pass.
+
+    ``scheduled_rebuild`` puts a dict on ``db.info`` for the length of one
+    pass, so each tracker's configuration is read once per pass instead of
+    once per execution and issue row. Outside a pass every call reads it.
+    """
+    cache = db.info.get(_TRACKER_SETTINGS_CACHE)
+    if not isinstance(cache, dict):
+        return crud_issue_cost.tracker_estimate_settings(db, tracker_id=tracker_id)
+    if tracker_id not in cache:
+        cache[tracker_id] = crud_issue_cost.tracker_estimate_settings(
+            db, tracker_id=tracker_id
+        )
+    return cache[tracker_id]
+
+
+def observe_estimate(
+    db: Session,
+    *,
+    rollup: models.IssueCostRollup,
+    subject: Optional[TriggerSubject] = None,
+) -> bool:
+    """Refresh an issue row's estimate from what the tracker says.
+
+    Two readings, applied in order so the second wins where both have a
+    value: the trigger payload (only when it is about this very issue),
+    then the synced issue row, which the tracker sync keeps current. A part
+    neither reading states keeps its stored value; nothing is invented.
+
+    Args:
+        db: Database session. The caller commits.
+        rollup: The issue row.
+        subject: The trigger subject of the execution being recorded.
+
+    Returns:
+        True when the stored estimate changed.
+    """
+    tracker_type, raw_config = _tracker_estimate_settings(
+        db, tracker_id=rollup.tracker_id
+    )
+    config = estimate_config(raw_config)
+    readings = []
+    if (
+        subject is not None
+        and subject.kind == "issue"
+        and subject.issue_key == rollup.issue_key
+    ):
+        readings.append(
+            read_estimate(
+                tracker_type=tracker_type,
+                fields=subject.fields,
+                labels=subject.labels,
+                config=config,
+            )
+        )
+    if rollup.issue_id is not None:
+        issue = crud_issue_cost.get_issue(db, issue_id=rollup.issue_id)
+        meta = _dict(issue.meta_data) if issue is not None else {}
+        if issue is not None:
+            readings.append(
+                read_estimate(
+                    tracker_type=tracker_type,
+                    fields=_dict(meta.get("estimate_fields")),
+                    labels=label_names(meta.get("labels")),
+                    config=config,
+                )
+            )
+    changed = False
+    for estimate in readings:
+        if estimate.empty:
+            continue
+        changed |= crud_issue_cost.set_rollup_estimate(
+            db,
+            rollup=rollup,
+            hours=estimate.hours,
+            hours_source=estimate.hours_source,
+            points=estimate.points,
+            points_source=estimate.points_source,
+        )
+    return changed
+
+
 def _trigger_project(
     db: Session, *, account_id: uuid.UUID, execution: models.FlowExecution
 ) -> Optional[uuid.UUID]:
@@ -852,6 +1034,11 @@ def record_execution_finished(
             target=attribution.target,
             fallback_project_id=trigger_project,
         )
+        observe_estimate(
+            db,
+            rollup=rollup,
+            subject=parse_trigger_subject(execution.trigger_event_details),
+        )
 
     touched: set[Optional[uuid.UUID]] = {previous.rollup_id if previous else None}
     end_time = _optional_aware(execution.end_time)
@@ -867,7 +1054,7 @@ def record_execution_finished(
             # The runner normally records the publication time mid-run
             # (record_publication). A publication that reached this row
             # only through the final result falls back to the run's end.
-            pull.opened_at = end_time or datetime.now(UTC)
+            stamp_opened(pull, end_time or datetime.now(UTC), OPENED_RUN_END)
             db.flush()
             touched.add(pull.rollup_id)
         if rollup is not None:
@@ -913,17 +1100,22 @@ def record_publication(
     pr_url: str,
     *,
     now: Optional[datetime] = None,
+    forge_opened_at: Any = None,
 ) -> Optional[models.IssueCostPullRequest]:
     """Stamp the moment an execution opened a pull request.
 
-    The first recorded time wins, so a repeated handoff marker or a replay
+    With ``forge_opened_at`` (the pull request's ``created_at`` read from
+    the forge), that time is used. Otherwise the bind time is used and the
+    first recorded time wins, so a repeated handoff marker or a replay
     never moves "PR opened" later.
 
     Args:
         db: Database session. The caller commits.
         execution: The publishing execution.
         pr_url: The pull request URL the runner reported.
-        now: Publication time, for tests.
+        now: Bind time, for tests.
+        forge_opened_at: The forge's ``created_at`` (ISO text or datetime),
+            when the caller read the pull request from the forge.
 
     Returns:
         The pull request row, or None when the URL is not a PR URL.
@@ -939,13 +1131,24 @@ def record_publication(
         db, account_id=account_id, pr_key=pr_key
     )
     touched: set[Optional[uuid.UUID]] = set()
-    if pull.opened_at is None:
-        pull.opened_at = now or datetime.now(UTC)
+    bound_at = now or datetime.now(UTC)
+    forge_time = parse_forge_time(forge_opened_at, now=bound_at)
+    changed = (
+        stamp_opened(pull, forge_time, OPENED_FORGE)
+        if forge_time is not None
+        else stamp_opened(pull, bound_at, OPENED_BIND)
+    )
+    if changed:
         db.flush()
         touched.add(pull.rollup_id)
     attribution = resolve_execution(db, account_id=account_id, execution=execution)
     if attribution.target is not None:
         rollup = _rollup_for(db, account_id=account_id, target=attribution.target)
+        observe_estimate(
+            db,
+            rollup=rollup,
+            subject=parse_trigger_subject(execution.trigger_event_details),
+        )
         touched |= _claim_pull_request(
             db, account_id=account_id, pull=pull, rollup_id=rollup.id
         )
@@ -956,7 +1159,7 @@ def record_publication(
 def record_pull_request_event(
     db: Session, event_data: dict[str, Any], *, now: Optional[datetime] = None
 ) -> Optional[models.IssueCostPullRequest]:
-    """Record an approval or merge webhook on its pull request.
+    """Record an approval, merge or "opened" time webhook on its pull request.
 
     Approval is GitHub ``pull_request_review`` with review state approved
     (webhooks send lower case ``approved``; the API spelling ``APPROVE`` is
@@ -965,6 +1168,11 @@ def record_pull_request_event(
     ``pull_request_merged`` or ``merge_request_merged``. The earliest
     timestamp wins, so a redelivered webhook never moves a milestone.
 
+    Every pull request event also carries the forge's ``created_at``, which
+    replaces a bind or run-end "opened" time (``stamp_opened``). Events other
+    than approval and merge only apply it to a pull request already on
+    record.
+
     Args:
         db: Database session. The caller commits.
         event_data: Normalized webhook event (``type``, ``payload``,
@@ -972,7 +1180,7 @@ def record_pull_request_event(
         now: Arrival time, for tests.
 
     Returns:
-        The pull request row, or None for any other event.
+        The pull request row, or None when nothing was recorded.
     """
     event_type = _str(event_data.get("type")) or ""
     payload = _dict(event_data.get("payload"))
@@ -982,8 +1190,6 @@ def record_pull_request_event(
         and (_str(review.get("state")) or "").lower() in {"approved", "approve"}
     )
     merged = event_type in MERGE_EVENT_TYPES
-    if not approved and not merged:
-        return None
     account_id = _uuid(event_data.get("account_id"))
     subject = parse_trigger_subject(event_data)
     if account_id is None or subject is None or subject.kind != "pull_request":
@@ -991,10 +1197,24 @@ def record_pull_request_event(
     if not subject.url:
         return None
     arrival = now or datetime.now(UTC)
+    attributes = _dict(payload.get("object_attributes"))
+    created = parse_forge_time(
+        _dict(payload.get("pull_request")).get("created_at")
+        or attributes.get("created_at")
+        or _dict(payload.get("merge_request")).get("created_at"),
+        now=arrival,
+    )
+    if not approved and not merged:
+        # Any other pull request event only corrects the "opened" time of a
+        # pull request already on record; it never creates one.
+        return _stamp_forge_opened(
+            db, account_id=account_id, pr_key=subject.url, created=created
+        )
     pull = crud_issue_cost.get_or_create_pull_request(
         db, account_id=account_id, pr_key=subject.url
     )
-    attributes = _dict(payload.get("object_attributes"))
+    if created is not None:
+        stamp_opened(pull, created, OPENED_FORGE)
     if approved:
         stamp = parse_event_time(review.get("submitted_at"), now=arrival)
         if pull.approved_at is None or stamp < _aware(pull.approved_at):
@@ -1031,6 +1251,34 @@ def record_pull_request_event(
                         db, account_id=account_id, pull=pull, rollup_id=rollup.id
                     )
     _recompute(db, touched)
+    return pull
+
+
+def _stamp_forge_opened(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    pr_key: str,
+    created: Optional[datetime],
+) -> Optional[models.IssueCostPullRequest]:
+    """Apply a webhook's ``created_at`` to a pull request already on record.
+
+    Args:
+        db: Database session. The caller commits.
+        account_id: Owning account.
+        pr_key: Normalized pull request URL.
+        created: The forge's ``created_at``, or None.
+
+    Returns:
+        The pull request row when it changed, else None.
+    """
+    if created is None:
+        return None
+    pull = crud_issue_cost.get_pull_request(db, account_id=account_id, pr_key=pr_key)
+    if pull is None or not stamp_opened(pull, created, OPENED_FORGE):
+        return None
+    db.flush()
+    _recompute(db, {pull.rollup_id})
     return pull
 
 
@@ -1089,8 +1337,18 @@ def record_execution_finished_safely(db: Session, execution_id: Any) -> None:
         db.rollback()
 
 
-def record_publication_safely(db: Session, execution_id: Any, pr_url: str) -> None:
-    """Publication hook for ``record_opened_pr``; commits its own write."""
+def record_publication_safely(
+    db: Session, execution_id: Any, pr_url: str, *, forge_opened_at: Any = None
+) -> None:
+    """Publication hook for ``record_opened_pr``; commits its own write.
+
+    Args:
+        db: The caller's session.
+        execution_id: The publishing execution.
+        pr_url: The bound pull request URL.
+        forge_opened_at: The forge's ``created_at`` for the pull request,
+            when the bind path read it from the forge.
+    """
     execution_uuid = _uuid(execution_id)
     if execution_uuid is None:
         return
@@ -1098,7 +1356,7 @@ def record_publication_safely(db: Session, execution_id: Any, pr_url: str) -> No
     def operation() -> None:
         execution = db.get(models.FlowExecution, execution_uuid)
         if execution is not None:
-            record_publication(db, execution, pr_url)
+            record_publication(db, execution, pr_url, forge_opened_at=forge_opened_at)
 
     _savepoint(db, "publication", operation)
     try:
@@ -1188,6 +1446,165 @@ def rebuild(
     return len(executions), recorded, failed
 
 
+@dataclass
+class ScheduledRebuildSummary:
+    """Counts of one scheduled rebuild pass, logged as one line."""
+
+    accounts: int = 0
+    # Another replica held the account's lock; benign.
+    accounts_skipped: int = 0
+    # The account's rebuild raised and was rolled back.
+    accounts_failed: int = 0
+    examined: int = 0
+    recorded: int = 0
+    failed: int = 0
+    limit_reached: int = 0
+    estimates_checked: int = 0
+    estimates_changed: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        """The counts, for logging."""
+        return {
+            "accounts": self.accounts,
+            "accounts_skipped": self.accounts_skipped,
+            "accounts_failed": self.accounts_failed,
+            "examined": self.examined,
+            "recorded": self.recorded,
+            "failed": self.failed,
+            "limit_reached": self.limit_reached,
+            "estimates_checked": self.estimates_checked,
+            "estimates_changed": self.estimates_changed,
+        }
+
+
+def rebuild_lock_key(account_id: uuid.UUID) -> str:
+    """Advisory lock name that keeps two replicas off one account's rebuild."""
+    return f"issue_cost_rebuild:{account_id}"
+
+
+def scheduled_rebuild(
+    db: Session,
+    *,
+    lookback: timedelta,
+    per_account_limit: int = MAX_REBUILD_EXECUTIONS,
+    max_accounts: int = 500,
+    estimate_limit: int = 1000,
+    now: Optional[datetime] = None,
+) -> ScheduledRebuildSummary:
+    """Record recent finished executions that no hook recorded.
+
+    The terminal hooks are best effort: a failed savepoint, a crash between
+    the status write and the hook, or a terminal path without a hook leaves
+    an execution without a fact. This pass finds them for the last
+    ``lookback`` and records them, one account at a time, each account in
+    its own transaction under a try-lock so two replicas never rebuild the
+    same account at once (the work is idempotent either way). It then
+    re-reads the estimate of recent issues from their synced issue rows.
+
+    Args:
+        db: Database session. Committed per account.
+        lookback: How far back to look, by execution start.
+        per_account_limit: Executions recorded per account per pass.
+        max_accounts: Accounts visited per pass.
+        estimate_limit: Issue rows whose estimate is re-read per pass.
+        now: Current time, for tests.
+
+    Returns:
+        The pass summary.
+    """
+    db.info[_TRACKER_SETTINGS_CACHE] = {}
+    try:
+        return _scheduled_rebuild(
+            db,
+            lookback=lookback,
+            per_account_limit=per_account_limit,
+            max_accounts=max_accounts,
+            estimate_limit=estimate_limit,
+            now=now,
+        )
+    finally:
+        db.info.pop(_TRACKER_SETTINGS_CACHE, None)
+
+
+def _scheduled_rebuild(
+    db: Session,
+    *,
+    lookback: timedelta,
+    per_account_limit: int,
+    max_accounts: int,
+    estimate_limit: int,
+    now: Optional[datetime],
+) -> ScheduledRebuildSummary:
+    """The body of ``scheduled_rebuild``, run with the settings cache set."""
+    summary = ScheduledRebuildSummary()
+    end = now or datetime.now(UTC)
+    start = end - lookback
+    account_ids = crud_issue_cost.accounts_with_unrecorded_executions(
+        db,
+        start=start,
+        end=end,
+        terminal_statuses=crud_flow_execution.TERMINAL_EXECUTION_STATUSES,
+        limit=max_accounts,
+    )
+    db.rollback()
+    for account_id in account_ids:
+        try:
+            if not crud_issue_cost.try_account_lock(
+                db, key=rebuild_lock_key(account_id)
+            ):
+                summary.accounts_skipped += 1
+                db.rollback()
+                continue
+            examined, recorded, failed = rebuild(
+                db,
+                account_id=account_id,
+                start=start,
+                end=end,
+                limit=per_account_limit,
+            )
+            db.commit()
+        except Exception:
+            logger.warning(
+                "Scheduled issue cost rebuild failed for account %s",
+                account_id,
+                exc_info=True,
+            )
+            db.rollback()
+            summary.accounts_failed += 1
+            continue
+        summary.accounts += 1
+        summary.examined += examined
+        summary.recorded += recorded
+        summary.failed += failed
+        if examined >= per_account_limit:
+            summary.limit_reached += 1
+
+    for rollup in crud_issue_cost.rollups_with_issue_since(
+        db, since=start, limit=estimate_limit
+    ):
+        summary.estimates_checked += 1
+        rollup_id = rollup.id
+        try:
+            with db.begin_nested():
+                if observe_estimate(db, rollup=rollup):
+                    summary.estimates_changed += 1
+        except Exception:
+            logger.warning(
+                "Could not refresh the estimate of issue row %s",
+                rollup_id,
+                exc_info=True,
+            )
+    db.commit()
+    if (
+        summary.recorded
+        or summary.failed
+        or summary.accounts_failed
+        or summary.estimates_changed
+    ):
+        logger.info("Issue cost scheduled rebuild: %s", summary.as_dict())
+    return summary
+
+
 # --- report --------------------------------------------------------------------
 
 
@@ -1211,6 +1628,10 @@ class _Totals:
 
 def _money(value: Optional[Decimal]) -> float:
     return float(round(value or Decimal("0"), 4))
+
+
+def _optional_float(value: Optional[Decimal]) -> Optional[float]:
+    return None if value is None else float(value)
 
 
 def build_report(
@@ -1357,6 +1778,11 @@ def build_report(
                 approved_to_merged_hours=interval_hours(
                     rollup.approved_at, rollup.merged_at
                 ),
+                pr_opened_at_source=rollup.pr_opened_at_source,
+                estimate_hours=_optional_float(rollup.estimate_hours),
+                estimate_hours_source=rollup.estimate_hours_source,
+                estimate_points=_optional_float(rollup.estimate_points),
+                estimate_points_source=rollup.estimate_points_source,
                 execution_ids=execution_ids.get(rollup.id, [])
                 if include_execution_ids
                 else None,
@@ -1456,6 +1882,48 @@ def list_issue_executions(
     ]
 
 
+def list_unassigned_executions(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    project_id: Optional[uuid.UUID] = None,
+    flow_id: Optional[uuid.UUID] = None,
+    limit: int = MAX_REPORT_ROWS,
+) -> list[IssueCostExecutionRow]:
+    """Executions in the unassigned bucket of a report filter, oldest first.
+
+    Uses the same filters as the bucket totals in ``build_report``, so the
+    list adds up to the unassigned row (up to ``limit``).
+
+    Args:
+        db: Database session.
+        account_id: Owning account.
+        start: Inclusive lower bound on execution start.
+        end: Exclusive upper bound on execution start.
+        project_id: Only executions of this project.
+        flow_id: Only executions of this flow.
+        limit: Row cap.
+
+    Returns:
+        The executions, each with the reason it is unassigned in ``link``.
+    """
+    return [
+        _execution_row(fact, name)
+        for fact, name in crud_issue_cost.list_facts(
+            db,
+            account_id=account_id,
+            unassigned=True,
+            start=_optional_aware(start),
+            end=_optional_aware(end),
+            project_id=project_id,
+            flow_id=flow_id,
+            limit=limit,
+        )
+    ]
+
+
 # --- export --------------------------------------------------------------------
 
 
@@ -1506,6 +1974,11 @@ def report_to_csv(report: IssueCostReport) -> str:
                     row.approved_to_merged_hours,
                     row.issue_url,
                     row.pr_url,
+                    row.pr_opened_at_source,
+                    row.estimate_hours,
+                    row.estimate_hours_source,
+                    row.estimate_points,
+                    row.estimate_points_source,
                 )
             ]
         )
@@ -1523,17 +1996,9 @@ def report_to_csv(report: IssueCostReport) -> str:
                     bucket.total_tokens,
                     bucket.run_count,
                     bucket.failed_run_count,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
                 )
             ]
+            + [""] * (len(CSV_COLUMNS) - 8)
         )
     return buffer.getvalue()
 

@@ -30,6 +30,10 @@ from preloop.services.report_publication import (
     MAX_COMMIT_MESSAGE_LENGTH,
     MAX_PATH_LENGTH,
 )
+from preloop.services.stream_stall import (
+    STREAM_IDLE_TIMEOUT_CONFIG_KEY,
+    validate_stream_idle_timeout,
+)
 from preloop.utils.schedule_text import (
     WEEKDAYS,
     describe_cron,
@@ -1152,8 +1156,21 @@ class FlowNotifications(BaseModel):
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
 
-    webhook_secret: str = Field(
-        description="Secure token for authenticating webhook requests (auto-generated)"
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description=(
+            "Secure token for authenticating webhook requests (auto-generated "
+            "for webhook triggers; unset on flows triggered by tracker events)"
+        ),
+    )
+    supersede_on_update: bool = Field(
+        default=False,
+        description=(
+            "When a pull or merge request gets a new head, stop this flow's "
+            "executions still working on an older head of the same request "
+            "before starting the new one. Off by default; the Pull Request "
+            "Reviewer preset turns it on."
+        ),
     )
     dedupe_path: Optional[str] = Field(
         default=None,
@@ -1488,6 +1505,9 @@ class FlowBase(BaseModel):
         limits = v.get("limits")
         if limits is not None:
             FlowExecutionLimits.model_validate(limits)
+        idle = v.get(STREAM_IDLE_TIMEOUT_CONFIG_KEY)
+        if idle is not None:
+            validate_stream_idle_timeout(idle)
         return v
 
     @field_validator("trigger_project_ids", mode="before")

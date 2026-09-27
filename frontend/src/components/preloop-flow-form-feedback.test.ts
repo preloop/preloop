@@ -210,6 +210,46 @@ describe('PreloopFlowForm PR feedback controls', () => {
     });
   });
 
+  it('accepts Bitbucket account ids and user UUIDs as trusted reviewers', async () => {
+    const element = await mount();
+    await toggle(element, true);
+    await change(
+      element,
+      'trusted_reviewer_ids',
+      '{a1b2c3d4-e5f6-4890-abcd-ef1234567890}, 712020:a1b2c3d4-e5f6-4890-abcd-ef1234567890, a1b2c3d4-e5f6-4890-abcd-ef1234567890'
+    );
+    const event = await submit(element);
+    expect(event.callCount).to.equal(1);
+    expect(
+      event.firstCall.args[0].detail.flow.agent_config.feedback
+        .trusted_reviewer_ids
+    ).to.deep.equal([
+      '{a1b2c3d4-e5f6-4890-abcd-ef1234567890}',
+      '712020:a1b2c3d4-e5f6-4890-abcd-ef1234567890',
+      'a1b2c3d4-e5f6-4890-abcd-ef1234567890',
+    ]);
+  });
+
+  it('accepts legacy Bitbucket account ids and rejects resource identifiers', async () => {
+    const element = await mount();
+    await toggle(element, true);
+    await change(element, 'trusted_reviewer_ids', '5b10ac8d82e05b22cc7d4ef5');
+    let event = await submit(element);
+    expect(event.callCount).to.equal(1);
+    expect(
+      event.firstCall.args[0].detail.flow.agent_config.feedback
+        .trusted_reviewer_ids
+    ).to.deep.equal(['5b10ac8d82e05b22cc7d4ef5']);
+
+    await change(
+      element,
+      'trusted_reviewer_ids',
+      'ari:cloud:identity::user/5b10ac8d82e05b22cc7d4ef5'
+    );
+    event = await submit(element);
+    expect(event.callCount).to.equal(0);
+  });
+
   for (const [field, value] of [
     ['max_turns', '0'],
     ['max_turns', '1.5'],

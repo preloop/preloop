@@ -18,7 +18,8 @@ copy of the application.
 
 `environments/preloop/Dockerfile` is a Preloop-specific example and integration
 fixture, not a default agent image. It extends the existing `Dockerfile.dev` image
-with pinned Codex, Playwright/Chromium and a PostgreSQL Python driver. Build
+with pinned Codex, Playwright/Chromium, a PostgreSQL Python driver, and a
+distro Perl toolchain (`perlver`, `perlcritic`, and `prove`). Build
 from the repository root so the hash-pinned `tools/` lockfile and
 `requirements.txt` copy in. Build the dev image first, then pass its digest as
 `DEV_IMAGE`. Register the resulting image digest. `environments/preloop/profile.json.example` contains

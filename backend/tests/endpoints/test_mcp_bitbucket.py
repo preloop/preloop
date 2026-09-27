@@ -459,3 +459,113 @@ async def test_string_line_numbers_are_accepted() -> None:
         review_comments=[{"path": "a.py", "line": "12", "body": "x"}],
     )
     assert fake.bodies("POST", "/comments")[0]["inline"] == {"path": "a.py", "to": 12}
+
+
+CREATE_PATH = "/2.0/repositories/ws/repo/pullrequests"
+
+
+async def test_create_pull_request_maps_options_and_reports_ignored() -> None:
+    fake = FakeBitbucket(
+        overrides={("POST", CREATE_PATH): httpx.Response(201, json=PR)}
+    )
+    result = await mcp_bitbucket.create_pull_request(
+        client_for(fake),
+        title="Add parser",
+        source_branch="feature",
+        target_branch="main",
+        description="Adds a parser",
+        labels=["bug"],
+        milestone="v1",
+        extra_options={"remove_source_branch": True},
+    )
+    body = json.loads(fake.requests[0].content)
+    assert body["close_source_branch"] is True
+    assert body["source"] == {"branch": {"name": "feature"}}
+    assert body["destination"] == {"branch": {"name": "main"}}
+    assert result.number == 7
+    assert result.status == "created"
+    assert result.url == "https://bitbucket.org/ws/repo/pull-requests/7"
+    assert result.source_branch == "feature"
+    assert result.target_branch == "main"
+    assert "ignored on Bitbucket Cloud: labels, milestone" in result.message
+
+
+async def test_create_pull_request_applies_reviewers() -> None:
+    fake = FakeBitbucket(
+        overrides={
+            ("POST", CREATE_PATH): httpx.Response(201, json=PR),
+            ("PUT", ""): httpx.Response(200, json=PR),
+        }
+    )
+    result = await mcp_bitbucket.create_pull_request(
+        client_for(fake),
+        title="Add parser",
+        source_branch="feature",
+        target_branch="main",
+        reviewers=["712020:abcd"],
+    )
+    assert result.number == 7
+    put_bodies = fake.bodies("PUT", "")
+    assert put_bodies == [
+        {"title": "Add parser", "reviewers": [{"account_id": "712020:abcd"}]}
+    ]
+
+
+async def test_create_pull_request_dispatches_to_bitbucket(
+    db_session: Session, test_user: User
+) -> None:
+    tracker = Tracker(
+        name="bb",
+        account_id=test_user.account_id,
+        tracker_type="bitbucket",
+        api_key="tok",
+        url="https://bitbucket.org",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+    organization = Organization(name="ws", identifier="ws", tracker_id=tracker.id)
+    db_session.add(organization)
+    db_session.commit()
+    project = Project(
+        name="repo",
+        identifier="r-uuid",
+        slug="ws/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    fake = FakeBitbucket(
+        overrides={("POST", CREATE_PATH): httpx.Response(201, json=PR)}
+    )
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user",
+            new_callable=AsyncMock,
+        ) as mock_auth,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+        patch(
+            "preloop.api.endpoints.mcp._record_opened_pr_on_execution"
+        ) as mock_record,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer t"}
+        mock_auth.return_value = (MagicMock(wraps=db_session), test_user)
+        mock_get_tracker.return_value = client_for(fake)
+        result = await mcp.create_pull_request(
+            project="https://bitbucket.org/ws/repo",
+            title="Add parser",
+            source_branch="feature",
+            target_branch="main",
+        )
+
+    assert result.number == 7
+    assert fake.requests[0].method == "POST"
+    assert fake.requests[0].url.path == CREATE_PATH
+    assert mock_record.call_args.kwargs["url"] == (
+        "https://bitbucket.org/ws/repo/pull-requests/7"
+    )
+    assert mock_record.call_args.kwargs["source_branch"] == "feature"

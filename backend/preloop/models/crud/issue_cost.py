@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Iterable, Optional, Sequence
 
-from sqlalchemy import exists, func, select
+from sqlalchemy import exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,13 @@ class FlowFactTotals:
     estimated_cost: Decimal
     run_count: int
     failed_run_count: int
+
+
+def _naive_utc(value: datetime) -> datetime:
+    """``value`` as naive UTC, for comparing with naive timestamp columns."""
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 class CRUDIssueCost:
@@ -248,6 +255,78 @@ class CRUDIssueCost:
             rollup.issue_url = issue_url[:1000]
         db.flush()
 
+    def set_rollup_estimate(
+        self,
+        db: Session,
+        *,
+        rollup: models.IssueCostRollup,
+        hours: Optional[Decimal],
+        hours_source: Optional[str],
+        points: Optional[Decimal],
+        points_source: Optional[str],
+    ) -> bool:
+        """Store the parts of a tracker estimate that were observed.
+
+        A part that is None was not observed and keeps its stored value: a
+        payload that lacks the field says nothing about it.
+
+        Args:
+            db: Database session.
+            rollup: The issue row.
+            hours: Estimated hours, or None when not observed.
+            hours_source: Where ``hours`` came from.
+            points: Estimated points, or None when not observed.
+            points_source: Where ``points`` came from.
+
+        Returns:
+            True when a stored value changed.
+        """
+        changed = False
+        if hours is not None and (
+            rollup.estimate_hours != hours
+            or rollup.estimate_hours_source != hours_source
+        ):
+            rollup.estimate_hours = hours
+            rollup.estimate_hours_source = (hours_source or "")[:128] or None
+            changed = True
+        if points is not None and (
+            rollup.estimate_points != points
+            or rollup.estimate_points_source != points_source
+        ):
+            rollup.estimate_points = points
+            rollup.estimate_points_source = (points_source or "")[:128] or None
+            changed = True
+        if changed:
+            db.flush()
+        return changed
+
+    def tracker_estimate_settings(
+        self, db: Session, *, tracker_id: uuid.UUID
+    ) -> tuple[str, dict[str, Any]]:
+        """Tracker type and its ``meta_data.issue_estimate`` configuration.
+
+        Args:
+            db: Database session.
+            tracker_id: The issue's tracker.
+
+        Returns:
+            ``(tracker_type, config)``; an empty config when none is set.
+        """
+        row = db.execute(
+            select(models.Tracker.tracker_type, models.Tracker.meta_data).where(
+                models.Tracker.id == tracker_id
+            )
+        ).first()
+        if row is None:
+            return "", {}
+        meta = row[1] if isinstance(row[1], dict) else {}
+        config = meta.get("issue_estimate")
+        return str(row[0] or ""), config if isinstance(config, dict) else {}
+
+    def get_issue(self, db: Session, *, issue_id: uuid.UUID) -> Optional[models.Issue]:
+        """The synced issue row a rollup points at."""
+        return db.get(models.Issue, issue_id)
+
     def recompute_rollup(
         self, db: Session, *, rollup_id: uuid.UUID
     ) -> Optional[models.IssueCostRollup]:
@@ -300,6 +379,11 @@ class CRUDIssueCost:
         )
         rollup.pr_url = pulls[0].pr_key if pulls else None
         rollup.pr_opened_at = _earliest(p.opened_at for p in pulls)
+        # ``pulls`` is ordered by opened_at, so the first one with a time is
+        # the one that set pr_opened_at.
+        rollup.pr_opened_at_source = next(
+            (p.opened_at_source for p in pulls if p.opened_at is not None), None
+        )
         rollup.approved_at = _earliest(p.approved_at for p in pulls)
         rollup.merged_at = _earliest(p.merged_at for p in pulls)
         db.flush()
@@ -699,6 +783,105 @@ class CRUDIssueCost:
                 .order_by(execution.start_time.asc())
                 .limit(limit)
             )
+        )
+
+    def accounts_with_unrecorded_executions(
+        self,
+        db: Session,
+        *,
+        start: datetime,
+        end: datetime,
+        terminal_statuses: Iterable[str],
+        limit: int,
+    ) -> list[uuid.UUID]:
+        """Accounts that have a finished execution in the window with no fact.
+
+        Drives the scheduled rebuild, so a pass only visits accounts with
+        work instead of every account on the instance.
+
+        Args:
+            db: Database session.
+            start: Inclusive lower bound on execution start (aware or naive UTC).
+            end: Exclusive upper bound on execution start.
+            terminal_statuses: Statuses that mean the execution finished.
+            limit: Maximum accounts returned.
+
+        Returns:
+            Account ids, in a stable order.
+        """
+        execution = models.FlowExecution
+        rows = db.execute(
+            select(models.Flow.account_id)
+            .join(execution, execution.flow_id == models.Flow.id)
+            .where(
+                models.Flow.account_id.is_not(None),
+                execution.status.in_(tuple(terminal_statuses)),
+                execution.start_time >= _naive_utc(start),
+                execution.start_time < _naive_utc(end),
+                ~exists().where(models.IssueCostExecution.execution_id == execution.id),
+            )
+            .group_by(models.Flow.account_id)
+            .order_by(models.Flow.account_id)
+            .limit(limit)
+        ).all()
+        return [row[0] for row in rows]
+
+    def rollups_with_issue_since(
+        self, db: Session, *, since: datetime, limit: int
+    ) -> list[models.IssueCostRollup]:
+        """Issue rows whose synced issue or own totals changed recently.
+
+        Used to re-read estimates from the synced issue, which the tracker
+        sync keeps current: an issue the sync touched may carry a new
+        estimate, and a row with new work should show the current one.
+
+        Args:
+            db: Database session.
+            since: Inclusive lower bound on either row's ``updated_at``.
+            limit: Row cap.
+
+        Returns:
+            Rows, most recently synced issue first.
+        """
+        rollup = models.IssueCostRollup
+        issue = models.Issue
+        naive_since = _naive_utc(since)
+        return list(
+            db.scalars(
+                select(rollup)
+                .join(issue, issue.id == rollup.issue_id)
+                .where(
+                    or_(
+                        issue.updated_at >= naive_since,
+                        rollup.updated_at >= naive_since,
+                    )
+                )
+                .order_by(issue.updated_at.desc(), rollup.id)
+                .limit(limit)
+            )
+        )
+
+    def try_account_lock(self, db: Session, *, key: str) -> bool:
+        """Take a transaction-scoped advisory lock, without waiting.
+
+        Released by the next commit or rollback. Non-Postgres dialects always
+        win: there is no second replica to exclude.
+
+        Args:
+            db: Database session.
+            key: Lock name.
+
+        Returns:
+            True when this transaction holds the lock.
+        """
+        bind = db.get_bind()
+        if getattr(getattr(bind, "dialect", None), "name", None) != "postgresql":
+            return True
+        return bool(
+            db.execute(
+                text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": key},
+            ).scalar()
         )
 
     def commit(self, db: Session) -> None:

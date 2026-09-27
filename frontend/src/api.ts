@@ -514,18 +514,12 @@ async function performFetchWithAuth(
     }
 
     if (isUpstreamGatewayError) {
-      console.log(
-        'Gateway upstream returned 401, returning error directly without refreshing token'
-      );
       return response;
     }
-
-    console.log('Access token expired, attempting to refresh...');
 
     // If another tab or process already refreshed the token, use the new one directly
     const currentToken = localStorage.getItem('accessToken');
     if (currentToken && currentToken !== accessToken) {
-      console.log('Token was already refreshed, retrying request');
       headers.set('Authorization', `Bearer ${currentToken}`);
       options.headers = headers;
       return fetch(url, options);
@@ -1367,6 +1361,13 @@ export interface IssueCostRow {
   first_event_to_pr_opened_hours: number | null;
   pr_opened_to_approved_hours: number | null;
   approved_to_merged_hours: number | null;
+  /** forge (the PR's own created_at), bind or run_end; null without a PR. */
+  pr_opened_at_source: string | null;
+  /** The tracker's estimate; null when the tracker states none. */
+  estimate_hours: number | null;
+  estimate_hours_source: string | null;
+  estimate_points: number | null;
+  estimate_points_source: string | null;
 }
 
 export interface IssueCostSummary {
@@ -1439,6 +1440,20 @@ export async function getIssueCostExecutions(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch the executions of this issue');
+  }
+  return response.json();
+}
+
+/** Executions in the unassigned bucket of the current filter. */
+export async function getUnassignedIssueCostExecutions(
+  filter: IssueCostFilter = {}
+): Promise<IssueCostExecution[]> {
+  const query = issueCostQuery(filter).toString();
+  const response = await fetchWithAuth(
+    `/api/v1/cost/by-issue/unassigned/executions${query ? `?${query}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch the unassigned executions');
   }
   return response.json();
 }
@@ -3428,6 +3443,40 @@ export async function changePassword(passwords: {
   }
 }
 
+/** One CLI login (`preloop auth login`) of the signed-in user. */
+export interface CliSession {
+  id: string;
+  created_at: string;
+  last_seen_at: string | null;
+  user_agent: string | null;
+  hostname: string | null;
+  /** True for the session the request's own token belongs to. */
+  current: boolean;
+}
+
+/** List the signed-in user's active CLI logins. */
+export async function listCliSessions(): Promise<CliSession[]> {
+  const response = await fetchWithAuth('/api/v1/auth/sessions/cli');
+  if (!response.ok) {
+    throw new Error('Failed to load CLI sessions');
+  }
+  return response.json();
+}
+
+/** Revoke one CLI login; its access and refresh tokens stop working. */
+export async function revokeCliSession(sessionId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/auth/sessions/cli/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to revoke CLI session')
+    );
+  }
+}
+
 // API Keys
 export async function getApiKeys(): Promise<ApiKey[]> {
   const response = await fetchWithAuth('/api/v1/auth/api-keys');
@@ -4554,6 +4603,65 @@ export async function updateRunnerConcurrency(
   return response.json();
 }
 
+/** Raised when the server refuses to delete a runner that holds leases. */
+export class RunnerHasLeasesError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunnerHasLeasesError';
+  }
+}
+
+export interface RunnerDeleteResult {
+  id: string;
+  deleted: boolean;
+  halted_execution_ids: string[];
+}
+
+/**
+ * Delete a persistent runner. Without ``force`` the server answers 409
+ * while the runner holds an execution; with it those executions are halted.
+ */
+export async function deleteRunner(
+  runnerId: string,
+  force = false
+): Promise<RunnerDeleteResult> {
+  const query = force ? '?force=true' : '';
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}${query}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const message = extractErrorMessage(errorData, 'Failed to delete runner');
+    if (response.status === 409) {
+      throw new RunnerHasLeasesError(message);
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+/**
+ * Issue a new token for a runner. The old token stops working at once and
+ * the connected runner is disconnected. The response carries the new token
+ * a single time.
+ */
+export async function rotateRunnerToken(
+  runnerId: string
+): Promise<RunnerRecord & { token: string }> {
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}/token`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to rotate runner token')
+    );
+  }
+  return response.json();
+}
+
 export async function sendCommandToExecution(
   executionId: string,
   command: string,
@@ -4795,7 +4903,6 @@ export async function getProjectDuplicateStats(options: {
   params.append('status', status);
   params.append('similarity_threshold', similarity_threshold.toString());
   const url = `/api/v1/project-duplicate-stats?${params.toString()}`;
-  console.log(url);
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch project duplicate stats');
@@ -4807,8 +4914,6 @@ export async function dismissDuplicatePair(
   issue1Id: string,
   issue2Id: string
 ): Promise<{ success: boolean }> {
-  console.log(`Dismissing duplicate pair: ${issue1Id} and ${issue2Id}`);
-
   // Simulate network delay
   await new Promise((resolve) => setTimeout(resolve, 500));
 

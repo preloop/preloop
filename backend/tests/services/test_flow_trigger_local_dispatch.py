@@ -285,12 +285,18 @@ class TestSuperviseLocalRun:
             factory_threads.append(threading.get_ident())
             return session
 
-        with patch.object(fts, "crud_flow_execution") as crud:
+        execution_id = uuid.uuid4()
+        with (
+            patch.object(fts, "crud_flow_execution") as crud,
+            patch(
+                "preloop.services.issue_cost_rollup.record_execution_finished_safely"
+            ) as record_issue_cost,
+        ):
             crud.get.return_value = SimpleNamespace(
                 status="PENDING", agent_session_reference=None
             )
             fts._supervise_local_run(
-                task, execution_id=uuid.uuid4(), session_factory=_factory
+                task, execution_id=execution_id, session_factory=_factory
             )
             # Nothing touched the database on the loop thread.
             assert factory_threads == []
@@ -301,6 +307,9 @@ class TestSuperviseLocalRun:
         assert factory_threads[0] != threading.get_ident()
         crud.update.assert_called_once()
         session.commit.assert_called_once()
+        # The run never reached the orchestrator's terminal hook, so its issue
+        # cost fact is recorded here, after the status commit.
+        record_issue_cost.assert_called_once_with(session, execution_id)
         assert not fts._LOCAL_RUN_FAILURE_WRITES
 
     async def test_crashed_failure_write_is_logged(self) -> None:

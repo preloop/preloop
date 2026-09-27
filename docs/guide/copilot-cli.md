@@ -8,7 +8,7 @@ session behaves like a direct `copilot` launch.
 Model traffic goes through Preloop. GitHub-hosted models are not used for
 that path. Missing `copilot` on `PATH`, a missing Preloop credential, or a
 missing model alias exits with a named error and does **not** start
-Copilot — launching without the BYOK variables would fall through to
+Copilot, because launching without the BYOK variables would fall through to
 GitHub-hosted models.
 
 MCP onboarding for Copilot CLI (`~/.copilot/mcp-config.json`) is separate.
@@ -38,8 +38,11 @@ preloop --url https://preloop.example.com --token "$PRELOOP_TOKEN" \
 ```
 
 Arguments after Preloop's own flags are passed through to `copilot`. Global
-Preloop flags (`--token`, `--url`) belong **before** the `copilot`
-subcommand, same as `preloop cursor`.
+Preloop flags (`--token`, `--url`, `-v`) belong **before** the
+`copilot` subcommand. Preloop reads them there and does not forward them to
+`copilot`, so a `--token` value never appears in the Copilot process
+arguments. Anything after `copilot` (other than `--model` and `--provider`)
+is passed through unchanged, even if it looks like a Preloop flag.
 
 ### `--model`
 
@@ -171,13 +174,22 @@ Tool permissions are local to the profile:
 - `force_writes`, `--allow-all`, `--yolo`, `--model`, `--agent`, prompt,
   resume and MCP flags cannot be set in profile `argv`.
 
-The runner removes `COPILOT_PROVIDER_*`, `COPILOT_OFFLINE` and
-`COPILOT_ALLOW_ALL` from the Copilot environment so a host profile always
-uses the seat, never a BYOK endpoint. It also installs the Preloop usage
-hooks in `~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks`) before
-each run, leaving other hook files untouched. An unchanged hooks file is
-not rewritten, and a changed one is replaced atomically, so concurrent runs
+The Copilot environment is built from an allowlist: a per-OS system
+baseline, `COPILOT_*`, `GH_*` and `GITHUB_TOKEN` (so the seat login is
+preserved), proxy and TLS variables, and any names the profile lists in
+`pass_env`. `COPILOT_PROVIDER_*`, `COPILOT_OFFLINE` and `COPILOT_ALLOW_ALL`
+are removed on top of that, so a host profile always uses the seat, never a
+BYOK endpoint, and the operator's unrelated environment never reaches the
+run. The runner also installs the Preloop usage hooks in
+`~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks`) before each run,
+leaving other hook files untouched; hook entries use the `bash` command form
+on POSIX and `powershell` on Windows. An unchanged hooks file is not
+rewritten, and a changed one is replaced atomically, so concurrent runs
 never read a partial file.
+
+Host profiles run on Linux, macOS and Windows runners; see the
+[Windows quickstart](runners/quickstart-windows.md) for npm `.cmd` shim
+handling and command-line limits.
 
 Named errors:
 

@@ -147,6 +147,36 @@ class TestCheckStaleExecutions:
                 mock_db.commit.assert_called_once()
                 mock_db.close.assert_called_once()
 
+    async def test_stale_pass_records_issue_costs_of_finished_runs(
+        self, execution_monitor, sample_execution
+    ):
+        """Runs the pass made terminal get their issue cost fact."""
+        still_running = MagicMock(spec=FlowExecution)
+        still_running.id = str(uuid4())
+        still_running.status = "RUNNING"
+
+        async def finish(db, execution):
+            if execution is sample_execution:
+                execution.status = "FAILED"
+
+        with patch("preloop.services.execution_monitor.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.all.return_value = [
+                sample_execution,
+                still_running,
+            ]
+            mock_get_db.return_value = iter([mock_db])
+            with (
+                patch.object(execution_monitor, "_check_execution", side_effect=finish),
+                patch(
+                    "preloop.services.issue_cost_rollup."
+                    "record_execution_finished_safely"
+                ) as record,
+            ):
+                await execution_monitor._check_stale_executions()
+
+        record.assert_called_once_with(mock_db, sample_execution.id)
+
     async def test_check_stale_executions_error_handling(self, execution_monitor):
         """Test error handling in _check_stale_executions."""
         with patch("preloop.services.execution_monitor.get_db") as mock_get_db:

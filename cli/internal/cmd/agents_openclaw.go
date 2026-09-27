@@ -3283,10 +3283,24 @@ func (c *claudeOAuthCredential) Payload() map[string]interface{} {
 	if refresh := strings.TrimSpace(c.RefreshToken); refresh != "" {
 		payload["refresh"] = refresh
 	}
-	if c.ExpiresAtMS > 0 {
-		payload["expires"] = c.ExpiresAtMS
+	if expires := oauthPayloadEpochMillis(c.ExpiresAtMS); expires > 0 {
+		payload["expires"] = expires
 	}
 	return payload
+}
+
+// minOAuthPayloadEpochMillis is 2001-09-09 in epoch milliseconds. The server
+// rejects a smaller positive credential_payload "expires" as epoch seconds.
+const minOAuthPayloadEpochMillis int64 = 1_000_000_000_000
+
+// oauthPayloadEpochMillis returns an OAuth expiry in the epoch milliseconds
+// the server's credential_payload contract requires. Some credential blobs
+// record expires_at in seconds; those are scaled so the push is accepted.
+func oauthPayloadEpochMillis(value int64) int64 {
+	if value > 0 && value < minOAuthPayloadEpochMillis {
+		return value * 1000
+	}
+	return value
 }
 
 // printClaudeCodeOAuthOffboardNote warns when Claude Code's local Anthropic
@@ -3894,7 +3908,7 @@ func (c *codexOAuthCredential) Payload() map[string]interface{} {
 	payload := map[string]interface{}{
 		"access":  strings.TrimSpace(c.AccessToken),
 		"refresh": strings.TrimSpace(c.RefreshToken),
-		"expires": c.ExpiresAtMS,
+		"expires": oauthPayloadEpochMillis(c.ExpiresAtMS),
 	}
 	if accountID := strings.TrimSpace(c.AccountID); accountID != "" {
 		payload["account_id"] = accountID
@@ -4694,8 +4708,8 @@ func resolveRuntimeExecutable(command string) (string, error) {
 		return path, nil
 	}
 	for _, candidate := range runtimeExecutableFallbackPaths(command) {
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-			if info.Mode().Perm()&0111 != 0 {
+		if info, statErr := os.Stat(candidate); statErr == nil {
+			if isExecutableFileInfo(candidate, info) {
 				return candidate, nil
 			}
 		}
@@ -4711,11 +4725,11 @@ func runtimeExecutableFallbackPaths(command string) []string {
 	if err != nil {
 		return nil
 	}
-	candidates := []string{
-		filepath.Join(homeDir, ".local", "bin", command),
-		filepath.Join(homeDir, ".npm-global", "bin", command),
-		filepath.Join(homeDir, ".openclaw", "bin", command),
-		filepath.Join(homeDir, "Library", "pnpm", command),
+	candidates := runtimeExecutableFallbackPathsFor(
+		runtime.GOOS, homeDir, os.Getenv("APPDATA"), command,
+	)
+	if runtime.GOOS == "windows" {
+		return candidates
 	}
 	if nvmMatches, globErr := filepath.Glob(
 		filepath.Join(homeDir, ".nvm", "versions", "node", "*", "bin", command),

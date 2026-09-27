@@ -51,6 +51,7 @@ from preloop.schemas.session_search import (
 )
 from preloop.services.model_pricing import estimate_external_model_usage_cost
 from preloop.services.session_embedding import (
+    daily_cap_for,
     CHARS_PER_TOKEN,
     SESSION_EMBEDDING_PURPOSE,
     EmbeddingProvider,
@@ -199,13 +200,6 @@ def _day_start(now: Optional[datetime] = None) -> datetime:
     return datetime.combine(stamp.date(), day_time.min, tzinfo=UTC)
 
 
-def _daily_cap_for(setting: Any) -> float:
-    """The account's cap, falling back to the deployment default."""
-    if getattr(setting, "daily_cap_usd", None) is not None:
-        return max(0.0, float(setting.daily_cap_usd))
-    return max(0.0, float(getattr(settings, "session_embedding_daily_cap_usd", 2.0)))
-
-
 def _estimated_tokens(query: str) -> int:
     """Token count for a query when the provider reported none."""
     return max(1, int(len(query or "") / CHARS_PER_TOKEN))
@@ -270,7 +264,7 @@ def embed_query(
             )
         )
 
-    cap = _daily_cap_for(setting)
+    cap = daily_cap_for(setting)
     spent = crud_api_usage.get_gateway_spend(
         db,
         account_id=str(account_id),

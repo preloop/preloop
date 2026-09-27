@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/preloop/preloop/cli/internal/api"
@@ -319,9 +320,10 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	case permissionSourceCopilotCLI:
 		// One Preloop-owned file under ~/.copilot/hooks/; re-onboard replaces
 		// only our preToolUse entry and leaves any usage lifecycle entries.
+		// The invocation is per OS (PowerShell quoting on Windows).
 		if err := upsertCopilotHookEvent(
 			"preToolUse",
-			command,
+			copilotApprovalHookCommand(),
 			hostTimeoutSeconds,
 		); err != nil {
 			return err
@@ -581,17 +583,46 @@ func copilotPreloopHooksPath() (string, error) {
 }
 
 func copilotUsageHookCommand() string {
-	return fmt.Sprintf("%s usage hook --from copilot", preloopExecutableForHooks())
+	return copilotHookInvocationFor(runtime.GOOS, "usage hook --from copilot")
 }
 
-// copilotCommandHookEntry builds one Copilot hooks-reference command object.
-// Existing writers put the executable invocation in `bash`; they do not set
-// powershell, so neither do we (the cross-platform `command` fallback is also
-// unused so the file matches the documented bash-shaped example).
-func copilotCommandHookEntry(bash string, timeoutSec int) map[string]interface{} {
-	entry := map[string]interface{}{
-		"type": "command",
-		"bash": bash,
+// copilotApprovalHookCommand is the Copilot CLI preToolUse entry. It carries
+// the same "agents permission-hook" marker approvalHookCommand uses, in the
+// per-OS invocation form Copilot hook entries need.
+func copilotApprovalHookCommand() string {
+	return copilotHookInvocationFor(
+		runtime.GOOS, "agents permission-hook --source "+permissionSourceCopilotCLI,
+	)
+}
+
+// copilotHookInvocationFor renders a preloop invocation for a Copilot hook
+// entry on one OS. The Windows entry runs under PowerShell, where a bare
+// path containing spaces (C:\Program Files\...) would not parse, so the
+// executable is single-quoted and invoked with the call operator.
+func copilotHookInvocationFor(goos, args string) string {
+	exe := preloopExecutableForHooks()
+	if goos == "windows" {
+		return fmt.Sprintf("& '%s' %s", strings.ReplaceAll(exe, "'", "''"), args)
+	}
+	return fmt.Sprintf("%s %s", exe, args)
+}
+
+// copilotCommandHookEntry builds one Copilot hooks-reference command object
+// for the OS this runner is on.
+func copilotCommandHookEntry(command string, timeoutSec int) map[string]interface{} {
+	return copilotCommandHookEntryFor(runtime.GOOS, command, timeoutSec)
+}
+
+// copilotCommandHookEntryFor builds one Copilot hooks-reference command
+// object. POSIX hosts keep the documented bash-shaped entry. Windows hosts
+// get a powershell entry, because Copilot never executes the bash key there
+// and the hooks would silently not run.
+func copilotCommandHookEntryFor(goos, command string, timeoutSec int) map[string]interface{} {
+	entry := map[string]interface{}{"type": "command"}
+	if goos == "windows" {
+		entry["powershell"] = command
+	} else {
+		entry["bash"] = command
 	}
 	if timeoutSec > 0 {
 		entry["timeoutSec"] = timeoutSec

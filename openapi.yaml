@@ -288,7 +288,11 @@ paths:
 
         token (including this request''s) fails the generation check on the next
 
-        use. API keys and runner tokens are unchanged.'
+        use. Active ``cli_session`` rows are marked revoked in the same commit so
+
+        the CLI session list matches what is enforced. API keys and runner tokens
+
+        are unchanged.'
       operationId: revoke_all_sessions_api_v1_auth_sessions_revoke_all_post
       responses:
         '200':
@@ -303,6 +307,57 @@ paths:
                   Post
       security:
       - OAuth2PasswordBearer: []
+  /api/v1/auth/sessions/cli:
+    get:
+      tags:
+      - Auth
+      summary: List Cli Sessions
+      description: 'List the signed-in user''s active CLI login sessions.
+
+
+        Each ``preloop auth login`` creates one. Revoked sessions are omitted.'
+      operationId: list_cli_sessions_api_v1_auth_sessions_cli_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/CliSessionResponse'
+                type: array
+                title: Response List Cli Sessions Api V1 Auth Sessions Cli Get
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/sessions/cli/{session_id}:
+    delete:
+      tags:
+      - Auth
+      summary: Revoke Cli Session
+      description: "Revoke one CLI login session of the signed-in user.\n\nIts access\
+        \ and refresh tokens are rejected on their next use. Other\nsessions are unaffected.\n\
+        \nRaises:\n    HTTPException: 404 when no active session with this id belongs\
+        \ to\n        the caller."
+      operationId: revoke_cli_session_api_v1_auth_sessions_cli__session_id__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Session Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/auth/users/me:
     get:
       tags:
@@ -8481,6 +8536,67 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/ai-models/{model_id}/credentials/marker:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Read Subscription OAuth Rotation Marker
+      description: 'Return the rotation marker of a stored subscription-OAuth bundle.
+
+
+        Subscription OAuth grants (Claude Code, Codex) use single-use refresh
+
+        tokens. When both the operator''s laptop and Preloop hold a copy, the CLI
+
+        keeps them on one lineage: it pushes a newer local bundle, and pulls
+
+        Preloop''s bundle through ``POST /ai-models/{model_id}/credentials/export``
+
+        when Preloop''s copy is newer. This read tells the CLI which side is newer
+
+        without downloading tokens on every Codex permission-hook call.
+
+
+        The response carries no token material: ``expires`` is the stored
+
+        access-token expiry in epoch milliseconds and moves forward on every
+
+        rotation, ``last_refresh`` is when Preloop last wrote the bundle (import,
+
+        CLI push, or server-side refresh), ``credentials_status`` is ``error``
+
+        when the last server-side refresh failed, and ``account_id`` names the
+
+        provider account the bundle belongs to. This read never refreshes the
+
+        bundle, so it cannot rotate the grant by itself. API-key credentials are
+
+        refused with 400.'
+      operationId: read_ai_model_credential_marker_api_v1_ai_models__model_id__credentials_marker_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCredentialMarkerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/{model_id}/credentials/export:
     post:
       tags:
@@ -8498,9 +8614,21 @@ paths:
 
         live lineage. The CLI calls this at offboard time to restore the agent''s
 
-        local login before the Preloop-held credential is removed. API-key
+        local login before the Preloop-held credential is removed, and from the
 
-        credentials are never exportable.'
+        Codex permission hook and ``preloop agents sync-credentials`` to pull
+
+        Preloop''s copy back into the local login when
+
+        ``GET /ai-models/{model_id}/credentials/marker`` shows it is newer. A
+
+        stored bundle that is about to expire is refreshed before it is returned.
+
+        ``last_refresh`` is when Preloop last wrote the bundle. Every export is
+
+        written to the audit log without token material. API-key credentials are
+
+        never exportable.'
       operationId: export_ai_model_credentials_api_v1_ai_models__model_id__credentials_export_post
       security:
       - bearerAuth: []
@@ -9309,6 +9437,74 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/by-issue/unassigned/executions:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: List Unassigned Issue Cost Executions
+      description: Executions in the unassigned bucket, for the report's drill-down.
+      operationId: list_unassigned_issue_cost_executions_api_v1_cost_by_issue_unassigned_executions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Executions that started at or after this time.
+          title: Start Date
+        description: Executions that started at or after this time.
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Executions that started before this time.
+          title: End Date
+        description: Executions that started before this time.
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IssueCostExecutionRow'
+                title: Response List Unassigned Issue Cost Executions Api V1 Cost
+                  By Issue Unassigned Executions Get
         '422':
           description: Validation Error
           content:
@@ -11013,7 +11209,16 @@ paths:
       tags:
       - Flows
       summary: Send Execution Command
-      description: Send a command to a running flow execution.
+      description: 'Send a command to a running flow execution.
+
+
+        ``stop`` goes through ``preloop.services.flow_execution_stop``, the same
+
+        code path the automatic pull request stops use (#1032). It is idempotent:
+
+        stopping an execution that already ended changes nothing and answers with
+
+        the status it ended in.'
       operationId: send_execution_command_api_v1_flows_executions__execution_id__command_post
       security:
       - bearerAuth: []
@@ -11482,6 +11687,57 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runners/{runner_id}:
+    delete:
+      tags:
+      - Runners
+      summary: Delete Runner
+      description: 'Delete a runner and reject its token from now on.
+
+
+        A runner that holds executions is refused with 409 unless ``force`` is
+
+        set. With ``force`` each held execution is stopped (the stop intent an
+
+        account halt writes, settled here because the runner can no longer
+
+        report back) and its runtime API keys are revoked. A live socket in this
+
+        process is told which executions to halt and then closed; one on another
+
+        replica ends on its next frame. Flows that route to the runner''s labels
+
+        see one runner fewer and fall back to their configured behaviour.'
+      operationId: delete_runner_api_v1_runners__runner_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      - name: force
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Force
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerDeleteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     get:
       tags:
       - Runners
@@ -11504,6 +11760,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunnerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runners/{runner_id}/token:
+    post:
+      tags:
+      - Runners
+      summary: Rotate Runner Token
+      description: 'Mint a new runner token; the previous one is rejected immediately.
+
+
+        The new token is in this response and nowhere else. A socket
+
+        authenticated with the old token is closed: in this process now, on
+
+        another replica at its next frame.'
+      operationId: rotate_runner_token_api_v1_runners__runner_id__token_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerRegisterResponse'
         '422':
           description: Validation Error
           content:
@@ -13047,15 +13340,19 @@ paths:
     put:
       tags:
       - Runtime Sessions
-      summary: Set how much of a session this account embeds
-      description: 'Change the scope. Existing vectors are never touched by this call.
+      summary: Opt in to session embedding, or change its scope and cap
+      description: 'Change what this account embeds. Existing vectors are never touched.
 
 
         Narrowing to ``summaries_only`` stops new transcript chunks being
 
         embedded from the next worker pass; widening to ``full`` gives the
 
-        untouched backlog back to the worker, still under the daily cap.'
+        untouched backlog back to the worker, still under the daily cap.
+
+        Turning embedding off keeps the provider details, so turning it back on
+
+        needs only ``{"enabled": true}``.'
       operationId: update_session_embedding_setting_api_v1_runtime_sessions_settings_embedding_put
       requestBody:
         content:
@@ -13262,8 +13559,16 @@ components:
             type: object
           - type: 'null'
           title: Credential Payload
-          description: Optional inline credential payload for non-API-key auth, stored
-            encrypted when provided
+          description: 'Inline credential payload for non-API-key auth, stored encrypted.
+            Validated per credential_type at write time; an invalid payload returns
+            422 and nothing is stored. For ''oauth_openai_codex'' send {access, refresh,
+            account_id, expires}: access, refresh and account_id are non-empty strings
+            and expires is the access-token expiry as an integer in epoch milliseconds.
+            For ''oauth_anthropic_claude_code'' send {access} plus optional refresh
+            (non-empty string) and expires (epoch milliseconds). The key names from
+            the tools'' own auth files (access_token, refresh_token, expires_at) are
+            rejected. This is the same shape POST /ai-models/{model_id}/credentials/export
+            returns.'
         credentials_backend_type:
           anyOf:
           - type: string
@@ -13341,6 +13646,14 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        last_refresh:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Refresh
+          description: When Preloop last wrote this bundle (import, CLI push, or server-side
+            refresh), in UTC
       type: object
       required:
       - credential_type
@@ -13356,6 +13669,52 @@ components:
         single-use, so the Preloop-held copy is the only live lineage after a
 
         server-side refresh). Token material must never be logged.'
+    AIModelCredentialMarkerResponse:
+      properties:
+        credential_type:
+          type: string
+          title: Credential Type
+          description: Logical credential type stored for the model
+        expires:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expires
+          description: Access-token expiry of the stored bundle in epoch milliseconds.
+            It moves forward every time the bundle is rotated.
+        last_refresh:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Refresh
+          description: When Preloop last wrote this bundle (import, CLI push, or server-side
+            refresh), in UTC
+        credentials_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credentials Status
+          description: Status of the model's credential secret
+        account_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Account Id
+          description: Provider account the bundle belongs to (the ChatGPT account
+            id for Codex), so the CLI never pulls another account's login
+      type: object
+      required:
+      - credential_type
+      title: AIModelCredentialMarkerResponse
+      description: 'Rotation marker for a stored subscription-OAuth bundle.
+
+
+        Carries no token material. The CLI reads it on the Codex permission hook
+
+        to decide whether Preloop''s copy is newer than the local login before it
+
+        downloads the bundle through the export endpoint.'
     AIModelGatewayUsageSummaryResponse:
       properties:
         ai_model_id:
@@ -13900,6 +14259,16 @@ components:
             type: object
           - type: 'null'
           title: Credential Payload
+          description: 'Inline credential payload for non-API-key auth, stored encrypted.
+            Validated per credential_type at write time; an invalid payload returns
+            422 and nothing is stored. For ''oauth_openai_codex'' send {access, refresh,
+            account_id, expires}: access, refresh and account_id are non-empty strings
+            and expires is the access-token expiry as an integer in epoch milliseconds.
+            For ''oauth_anthropic_claude_code'' send {access} plus optional refresh
+            (non-empty string) and expires (epoch milliseconds). The key names from
+            the tools'' own auth files (access_token, refresh_token, expires_at) are
+            rejected. This is the same shape POST /ai-models/{model_id}/credentials/export
+            returns.'
         credentials_backend_type:
           anyOf:
           - type: string
@@ -18054,6 +18423,44 @@ components:
       - checkpoints_verified
       title: ChainVerifyRead
       description: Verdict of a server side walk over a range of the chain.
+    CliSessionResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        last_seen_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Seen At
+        user_agent:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Agent
+        hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hostname
+        current:
+          type: boolean
+          title: Current
+          description: True for the session the request's own token belongs to
+          default: false
+      type: object
+      required:
+      - id
+      - created_at
+      title: CliSessionResponse
+      description: One CLI login session (``preloop auth login``) of the signed-in
+        user.
     CommentCreate:
       properties:
         body:
@@ -20216,8 +20623,10 @@ components:
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
             budget_exceeded, model_config, no_confirmation, agent_no_progress, setup_failed,
-            tool_error, agent_error, timeout, cancelled, unknown. Null for successful
-            or still-running executions, and for executions that predate this field.'
+            verification_failed, verification_blocked, tool_error, agent_error, model_stream_idle
+            (timed out while the model stream was silent), timeout, cancelled, unknown.
+            Null for successful or still-running executions, and for executions that
+            predate this field.'
         queued_reason:
           anyOf:
           - type: string
@@ -22562,6 +22971,42 @@ components:
           - type: 'null'
           title: Approved To Merged Hours
           description: Blank when the pull request was not merged yet.
+        pr_opened_at_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr Opened At Source
+          description: 'Where pr_opened_at came from: forge (the pull request''s own
+            created_at), bind (when Preloop bound it to a run) or run_end (the publishing
+            run''s end).'
+        estimate_hours:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimate Hours
+          description: Human estimate in hours as the tracker states it. Blank when
+            the tracker has none; never derived.
+        estimate_hours_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Estimate Hours Source
+          description: Where estimate_hours was read, for example jira:timeoriginalestimate,
+            gitlab:time_estimate or label:estimate:.
+        estimate_points:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimate Points
+          description: Human estimate in points as the tracker states it. Blank when
+            the tracker has none; never derived.
+        estimate_points_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Estimate Points Source
+          description: Where estimate_points was read, for example jira:customfield_10016,
+            gitlab:weight or label:points:.
         execution_ids:
           anyOf:
           - items:
@@ -27014,6 +27459,27 @@ components:
       - concurrency
       title: RunnerConcurrencyUpdate
       description: Edit one runner's slot ceiling from the console.
+    RunnerDeleteResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        deleted:
+          type: boolean
+          title: Deleted
+          default: true
+        halted_execution_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Halted Execution Ids
+      type: object
+      required:
+      - id
+      title: RunnerDeleteResponse
+      description: Outcome of deleting a runner; its token is rejected from now on.
     RunnerFleetSummary:
       properties:
         runner_count:
@@ -28873,6 +29339,38 @@ components:
       - evicted_count_30d
       title: SessionArtifactUsageResponse
       description: Account session-artifact usage against the storage budget.
+    SessionEmbeddingCorpus:
+      properties:
+        vectors:
+          type: integer
+          title: Vectors
+          description: Chunks carrying a vector of any model.
+          default: 0
+        model_vectors:
+          type: integer
+          title: Model Vectors
+          description: Chunks embedded with the model configured now.
+          default: 0
+        pending:
+          type: integer
+          title: Pending
+          description: Chunks inside the current scope still waiting for one.
+          default: 0
+        embedded_through:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Embedded Through
+          description: Newest chunk embedded with the configured model.
+      type: object
+      title: SessionEmbeddingCorpus
+      description: 'How much of this account''s corpus semantic search can read.
+
+
+        The same counts search uses to explain a thin semantic answer, published
+
+        so a user who opted in yesterday can see the backlog rather than guess.'
     SessionEmbeddingSettingResponse:
       properties:
         enabled:
@@ -28920,6 +29418,15 @@ components:
           - type: 'null'
           title: Daily Cap Usd
           description: Account cap in USD; null falls back to the deployment.
+        deployment_daily_cap_usd:
+          type: number
+          title: Deployment Daily Cap Usd
+          description: The deployment default cap a null account cap uses.
+        deployment_embedding_enabled:
+          type: boolean
+          title: Deployment Embedding Enabled
+          description: False when the deployment kill switch has turned embedding
+            off for every account, whatever this setting says.
         degraded_reason:
           anyOf:
           - type: string
@@ -28933,29 +29440,82 @@ components:
           - type: 'null'
           title: Degraded At
           description: When that degraded state was recorded.
+        corpus:
+          $ref: '#/components/schemas/SessionEmbeddingCorpus'
+          description: How far embedding has got through this account's corpus.
       type: object
       required:
       - enabled
       - scope
       - provider
       - dimensions
+      - deployment_daily_cap_usd
+      - deployment_embedding_enabled
       title: SessionEmbeddingSettingResponse
       description: What one account's embedding setting says right now.
     SessionEmbeddingSettingUpdate:
       properties:
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+          description: Turn embedding on or off. Turning it on needs a model, either
+            in this body or already on the setting from an earlier opt in.
         scope:
-          type: string
-          enum:
-          - summaries_only
-          - full
+          anyOf:
+          - type: string
+            enum:
+            - summaries_only
+            - full
+          - type: 'null'
           title: Scope
           description: summaries_only (default) or full.
+        daily_cap_usd:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Daily Cap Usd
+          description: Account cap in USD. An explicit null clears it back to the
+            deployment default; leaving the field out keeps the current cap.
+        provider:
+          anyOf:
+          - type: string
+            enum:
+            - openai_compatible
+            - local
+          - type: 'null'
+          title: Provider
+          description: Provider family; only accepted when enabling.
+        model_identifier:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Model Identifier
+          description: Model name as the provider knows it; only when enabling.
+        base_url:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Base Url
+          description: https endpoint for openai_compatible; only when enabling.
       additionalProperties: false
       type: object
-      required:
-      - scope
       title: SessionEmbeddingSettingUpdate
-      description: The one thing this endpoint lets an account change.
+      description: 'What the console''s opt in card saves. Absent fields are left
+        alone.
+
+
+        An explicit ``null`` is read as absent for every field except
+
+        ``daily_cap_usd``, where it is the documented way to clear the account
+
+        cap. A client that round trips nullable values must not turn embedding
+
+        off, or be refused for naming a provider, by sending ``null``.'
     SessionSavedSearchCreate:
       properties:
         name:
@@ -31561,7 +32121,9 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Updated connection details
+          description: Updated connection details. The legacy key 'config' is still
+            accepted. A null connection_details is treated as absent and falls back
+            to config. When both are objects, connection_details wins.
         meta_data:
           anyOf:
           - additionalProperties: true
@@ -32281,9 +32843,20 @@ components:
     WebhookConfig:
       properties:
         webhook_secret:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Webhook Secret
-          description: Secure token for authenticating webhook requests (auto-generated)
+          description: Secure token for authenticating webhook requests (auto-generated
+            for webhook triggers; unset on flows triggered by tracker events)
+        supersede_on_update:
+          type: boolean
+          title: Supersede On Update
+          description: When a pull or merge request gets a new head, stop this flow's
+            executions still working on an older head of the same request before starting
+            the new one. Off by default; the Pull Request Reviewer preset turns it
+            on.
+          default: false
         dedupe_path:
           anyOf:
           - type: string
@@ -32293,8 +32866,6 @@ components:
             key (e.g. 'data.issue.id'). When unset, defaults to 'attachments.0.title_link'
             then 'data.issue.id'.
       type: object
-      required:
-      - webhook_secret
       title: WebhookConfig
       description: Configuration for webhook triggers.
     WebhookDeliveryRead:

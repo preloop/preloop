@@ -1199,6 +1199,12 @@ git_clone_config:
   target_branch: null
   create_pull_request: false
 trigger_config: null
+# A review of a head that is no longer the PR's head is wasted: its findings
+# are about code the author already replaced. When the flow also triggers on
+# pull_request_updated and the PR gets a new head, stop the run still
+# reviewing the older one and review the new head instead (#1032). A merged or closed PR stops the run whatever this says.
+webhook_config:
+  supersede_on_update: true
 # A PR review reads a diff and writes comments. When it has not finished in
 # half an hour it is stuck on a tool or a loop, not still thinking, and the
 # author is waiting: fail it early rather than hold the slot for an hour.

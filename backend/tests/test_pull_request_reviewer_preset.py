@@ -444,3 +444,20 @@ class TestCompatibilityPolicy:
 
     def test_findings_use_the_compatibility_category(self, prompt: str) -> None:
         assert "Documentation|Compatibility" in prompt
+
+
+def test_preset_supersedes_older_heads_on_update(preset: dict) -> None:
+    """A new PR head stops the reviewer's run on the older head (#1032)."""
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.services.flow_trigger_service import flow_supersedes_on_update
+
+    assert preset["webhook_config"] == {"supersede_on_update": True}
+    flow_in = FlowCreate(**{**preset, "account_id": None})
+    assert flow_in.webhook_config is not None
+    assert flow_in.webhook_config.supersede_on_update is True
+    # No secret: the preset is triggered by tracker events, not the webhook
+    # endpoint, so the console must not treat it as a webhook flow.
+    assert flow_in.webhook_config.webhook_secret is None
+    assert flow_supersedes_on_update(
+        MagicMock(webhook_config=flow_in.webhook_config.model_dump())
+    )

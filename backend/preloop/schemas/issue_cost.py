@@ -64,6 +64,43 @@ class IssueCostRow(BaseModel):
     approved_to_merged_hours: Optional[float] = Field(
         None, description="Blank when the pull request was not merged yet."
     )
+    pr_opened_at_source: Optional[str] = Field(
+        None,
+        description=(
+            "Where pr_opened_at came from: forge (the pull request's own "
+            "created_at), bind (when Preloop bound it to a run) or run_end "
+            "(the publishing run's end)."
+        ),
+    )
+    estimate_hours: Optional[float] = Field(
+        None,
+        description=(
+            "Human estimate in hours as the tracker states it. Blank when "
+            "the tracker has none; never derived."
+        ),
+    )
+    estimate_hours_source: Optional[str] = Field(
+        None,
+        description=(
+            "Where estimate_hours was read, for example "
+            "jira:timeoriginalestimate, gitlab:time_estimate or "
+            "label:estimate:."
+        ),
+    )
+    estimate_points: Optional[float] = Field(
+        None,
+        description=(
+            "Human estimate in points as the tracker states it. Blank when "
+            "the tracker has none; never derived."
+        ),
+    )
+    estimate_points_source: Optional[str] = Field(
+        None,
+        description=(
+            "Where estimate_points was read, for example "
+            "jira:customfield_10016, gitlab:weight or label:points:."
+        ),
+    )
     execution_ids: Optional[List[UUID]] = Field(
         None, description="Contributing execution ids (JSON export only)."
     )

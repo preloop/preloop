@@ -285,3 +285,41 @@ def test_a_scope_this_build_does_not_know_embeds_less_not_more(db_session, test_
     assert effective_scope(setting.scope) == EMBEDDING_SCOPE_SUMMARIES_ONLY
     assert effective_scope(EMBEDDING_SCOPE_FULL) == EMBEDDING_SCOPE_FULL
     assert effective_scope(None) == EMBEDDING_SCOPE_SUMMARIES_ONLY
+
+
+def test_the_daily_cap_is_set_and_cleared_without_clearing_degraded(
+    db_session, test_user
+):
+    """A cap edit is not a fresh opt in; the reason the worker stopped stays."""
+    account_id = str(test_user.account_id)
+    crud_session_embedding_setting.enable(
+        db_session,
+        account_id=account_id,
+        provider=PROVIDER_LOCAL,
+        model_identifier="test-embed",
+    )
+    crud_session_embedding_setting.mark_degraded(
+        db_session, account_id=account_id, reason=DEGRADED_DAILY_CAP
+    )
+
+    capped = crud_session_embedding_setting.set_daily_cap(
+        db_session, account_id=account_id, daily_cap_usd=4
+    )
+    assert capped.daily_cap_usd == 4.0
+    assert capped.degraded_reason == DEGRADED_DAILY_CAP
+    assert capped.enabled is True
+
+    cleared = crud_session_embedding_setting.set_daily_cap(
+        db_session, account_id=account_id, daily_cap_usd=None
+    )
+    assert cleared.daily_cap_usd is None
+
+
+def test_a_negative_daily_cap_is_refused(db_session, test_user):
+    """The CRUD layer refuses it too, not only the request schema."""
+    with pytest.raises(SessionEmbeddingConfigError) as refused:
+        crud_session_embedding_setting.set_daily_cap(
+            db_session, account_id=str(test_user.account_id), daily_cap_usd=-0.01
+        )
+
+    assert refused.value.code == "invalid_daily_cap"

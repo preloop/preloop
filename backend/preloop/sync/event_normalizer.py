@@ -47,6 +47,46 @@ LABEL_CHANGE_EVENT_TYPES: frozenset = frozenset(
 # event type ends up being.
 LABEL_CHANGE_ACTIONS: frozenset = frozenset({"labeled", "unlabeled"})
 
+# ``stop_source`` recorded on an execution that was stopped because the pull
+# or merge request it works on went away (#1032). Machine-readable, next to
+# ``account_halt`` and ``parent_stop``; the sentence a person reads is in
+# ``stop_reason``.
+PR_STOP_SOURCE_MERGED = "pr_merged"
+PR_STOP_SOURCE_CLOSED = "pr_closed"
+PR_STOP_SOURCE_SUPERSEDED = "pr_superseded"
+
+# Normalized event types that end a pull or merge request, mapped to the
+# ``stop_source`` an execution still working on it is stopped with. GitHub
+# ``pull_request.closed``, GitLab ``merge``/``close`` and Bitbucket
+# ``pullrequest:fulfilled``/``pullrequest:rejected`` all land here.
+PR_CLOSE_STOP_SOURCES: Dict[str, str] = {
+    "pull_request_merged": PR_STOP_SOURCE_MERGED,
+    "merge_request_merged": PR_STOP_SOURCE_MERGED,
+    "pull_request_closed": PR_STOP_SOURCE_CLOSED,
+    "merge_request_closed": PR_STOP_SOURCE_CLOSED,
+}
+
+# Normalized event types that can carry a new head commit for an open pull or
+# merge request (GitHub ``synchronize`` and ``edited``, GitLab ``update``,
+# Bitbucket ``pullrequest:updated``). Whether the head actually moved is
+# decided by comparing commit SHAs, not by the type.
+PR_HEAD_UPDATE_EVENT_TYPES: frozenset = frozenset(
+    {"pull_request_updated", "merge_request_updated"}
+)
+
+
+def pr_close_stop_source(event_type: Optional[str]) -> Optional[str]:
+    """``stop_source`` for an event that ends a pull request, else None.
+
+    Args:
+        event_type: Normalized event type from ``normalize_event_type``.
+
+    Returns:
+        ``pr_merged`` or ``pr_closed``, or None when the event does not end
+        a pull or merge request.
+    """
+    return PR_CLOSE_STOP_SOURCES.get(event_type or "")
+
 
 def matching_event_types(event_type: str) -> Tuple[str, ...]:
     """Return the canonical event type plus legacy aliases that should match.

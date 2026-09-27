@@ -33,10 +33,12 @@ import logging
 from collections import OrderedDict
 import time
 from threading import Lock
-from typing import TYPE_CHECKING, FrozenSet, Optional, Set
+from typing import TYPE_CHECKING, FrozenSet, Iterable, Optional, Set
 from uuid import UUID
 
 from sqlalchemy.orm import Session
+
+from preloop.plugins.account_hooks import get_halt_ancestry
 
 from preloop.models.crud import crud_account_halt
 from preloop.models.models.account_halt import (
@@ -106,6 +108,26 @@ def invalidate_kill_switch_cache(account_id: Optional[str | UUID] = None) -> Non
             _CACHE.pop(str(account_id), None)
 
 
+def invalidate_kill_switch_cache_for_accounts(
+    account_ids: Iterable[str | UUID],
+) -> None:
+    """Drop cached halt state for several accounts under one generation bump.
+
+    A halt on one account can reach others through account hook H6 (for
+    example every descendant of a halted parent). The plugin that toggled
+    it calls this with those accounts so each process enforces the halt on
+    their next request, as it does for the toggled account itself.
+
+    Args:
+        account_ids: Accounts whose cached halt state is stale.
+    """
+    global _GENERATION
+    with _LOCK:
+        _GENERATION += 1
+        for account_id in account_ids:
+            _CACHE.pop(str(account_id), None)
+
+
 def halted_scopes(db: Session, account_id: str | UUID) -> Set[str]:
     """Return the set of currently-halted scopes for an account.
 
@@ -129,7 +151,13 @@ def halted_scopes(db: Session, account_id: str | UUID) -> Set[str]:
                     return set(scopes)
                 _CACHE.pop(key, None)
 
-        scopes = frozenset(crud_account_halt.active_scopes(db, account_id=account_id))
+        found = set(crud_account_halt.active_scopes(db, account_id=account_id))
+        ancestry = get_halt_ancestry()
+        if ancestry is not None:
+            # Scopes halted elsewhere that also stop this account, such as
+            # an ancestor's (account hook H6).
+            found.update(ancestry.extra_halted_scopes(db, account_id) or ())
+        scopes = frozenset(found)
         with _LOCK:
             # An invalidation while the query ran must neither repopulate the
             # cache nor return its stale result to this caller.

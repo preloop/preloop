@@ -324,6 +324,15 @@ func TestCodexOAuthSyncNoChangeDoesNotOpenHTTPClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	saveCodexSyncState(t, agent, lastRefresh, info.ModTime().UnixNano())
+	// A marker check ran recently, so the pull side is not due either.
+	checked, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked.CodexOAuthServerCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := saveLocalEnrollmentState(checked); err != nil {
+		t.Fatal(err)
+	}
 
 	calls := 0
 	prev := newCodexOAuthSyncClient
