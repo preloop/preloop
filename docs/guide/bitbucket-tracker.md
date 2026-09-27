@@ -198,14 +198,18 @@ accept a Bitbucket pull request URL
 (`https://bitbucket.org/<workspace>/<repo>/pull-requests/<id>`) or
 `workspace/repo#id`.
 
-- `add_comment`: `path` and `line` make an inline comment. `side: "LEFT"`
-  comments on the old file line. `in_reply_to` is the parent comment id.
+- `add_comment`: `path` and `line` make an inline comment; passing only one
+  of them is rejected. `side: "LEFT"` comments on the old file line.
+  `in_reply_to` is the parent comment id.
 - `update_pull_request`: `review_action` is `approve`, `request_changes` or
   `comment`, and on Bitbucket also `unapprove` and `remove_request_changes`.
   `review_body` is posted as a comment. Each `review_comments` entry becomes
   an inline comment; add `"task": true` to also open a task on it. Title and
   description can be changed. Labels, assignees, reviewers, draft and
-  reactions are not supported and are reported as ignored.
+  reactions are not supported and are reported as ignored. Bitbucket has no
+  atomic review, so every input is validated before the first call, the
+  comments are posted first and the verdict is applied last. If a comment
+  fails, no approval or change request is recorded.
 - `update_comment`: `body` edits the comment, `resolved` resolves or reopens
   the thread. Pass the thread's top comment as `thread_id` when you resolve
   from a reply.

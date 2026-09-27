@@ -15,6 +15,8 @@ Mapping notes:
   ``remove_request_changes`` to withdraw a verdict.
 * A review comment with ``"task": true`` also opens a pull request task on
   that comment. Tasks are optional: a 403 is skipped with a note.
+* Bitbucket has no atomic review. Inputs are validated before any call, the
+  inline comments and the summary are posted first, and the verdict last.
 * Closing, declining or merging a pull request is refused. Labels,
   assignees, reviewers, draft and reactions have no Bitbucket equivalent in
   this tool and are reported as ignored.
@@ -198,6 +200,12 @@ async def add_comment(
         The created comment.
     """
     number = _pr_number(pr_number)
+    if bool(path) != (line is not None):
+        raise HTTPException(
+            status_code=400,
+            detail="An inline comment needs both 'path' and 'line'. Omit both "
+            "for a general comment.",
+        )
     new_line: Optional[int] = None
     old_line: Optional[int] = None
     if path and line is not None:
@@ -219,7 +227,7 @@ async def add_comment(
         number,
         comment,
         repo_full_name=repo_full_name,
-        path=path if line is not None else None,
+        path=path or None,
         line=new_line,
         old_line=old_line,
         parent_id=parent_id,
@@ -253,6 +261,20 @@ def _validate_review_comments(review_comments: List[Any]) -> None:
                 detail=f"review_comments[{idx}] is missing required "
                 f"field(s): {', '.join(missing)}. "
                 "Each comment must have 'path', 'line', and 'body'.",
+            )
+        line = rc["line"]
+        if isinstance(line, bool) or not str(line).strip().isdigit():
+            raise HTTPException(
+                status_code=400,
+                detail=f"review_comments[{idx}].line must be a positive "
+                f"integer, got {line!r}",
+            )
+        side = str(rc.get("side") or "RIGHT").upper()
+        if side not in ("LEFT", "RIGHT"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"review_comments[{idx}].side must be 'LEFT' or "
+                f"'RIGHT', got {rc.get('side')!r}",
             )
 
 
@@ -336,32 +358,13 @@ async def update_pull_request(
     result_id: Optional[str] = None
     result_url: Optional[str] = None
 
-    if action == "approve":
-        await client.set_approval(number, True, repo_full_name=repo_full_name)
-        actions.append("review (approve)")
-    elif action == "unapprove":
-        await client.set_approval(number, False, repo_full_name=repo_full_name)
-        actions.append("review (unapprove)")
-    elif action == "request_changes":
-        await client.set_changes_requested(number, True, repo_full_name=repo_full_name)
-        actions.append("review (request_changes)")
-    elif action == "remove_request_changes":
-        await client.set_changes_requested(number, False, repo_full_name=repo_full_name)
-        actions.append("review (remove_request_changes)")
-    elif action == "comment":
-        actions.append("review (comment)")
-
-    if action and review_body:
-        created = await client.add_pull_request_comment(
-            number, review_body, repo_full_name=repo_full_name
-        )
-        result_id = str(created.get("id", "")) or None
-        result_url = _href(created)
-
+    # Post the content first and apply the verdict last: Bitbucket has no
+    # atomic review, so a failure part way must never leave an approval or a
+    # change request without the comments that explain it.
     tasks_skipped = 0
     for rc in review_comments or []:
         side = str(rc.get("side") or "RIGHT").upper()
-        line = int(rc["line"])
+        line = int(str(rc["line"]).strip())
         created = await client.add_pull_request_comment(
             number,
             rc["body"],
@@ -379,6 +382,25 @@ async def update_pull_request(
             )
             if task is None:
                 tasks_skipped += 1
+
+    if action and review_body:
+        created = await client.add_pull_request_comment(
+            number, review_body, repo_full_name=repo_full_name
+        )
+        result_id = str(created.get("id", "")) or None
+        result_url = _href(created)
+
+    if action == "approve":
+        await client.set_approval(number, True, repo_full_name=repo_full_name)
+    elif action == "unapprove":
+        await client.set_approval(number, False, repo_full_name=repo_full_name)
+    elif action == "request_changes":
+        await client.set_changes_requested(number, True, repo_full_name=repo_full_name)
+    elif action == "remove_request_changes":
+        await client.set_changes_requested(number, False, repo_full_name=repo_full_name)
+    if action:
+        actions.append(f"review ({action})")
+
     if review_comments:
         actions.append(f"{len(review_comments)} inline comment(s)")
     if tasks_skipped:

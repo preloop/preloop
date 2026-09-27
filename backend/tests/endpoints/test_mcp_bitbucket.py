@@ -14,6 +14,7 @@ from preloop.models.models.organization import Organization
 from preloop.models.models.project import Project
 from preloop.models.models.tracker import Tracker
 from preloop.models.models.user import User
+from preloop.sync.exceptions import TrackerResponseError
 from preloop.sync.trackers.bitbucket import BitbucketTracker
 
 pytestmark = pytest.mark.asyncio
@@ -178,6 +179,20 @@ async def test_add_comment_variants() -> None:
     assert bodies[3]["parent"] == {"id": 1}
 
 
+@pytest.mark.parametrize(
+    "kwargs", [{"path": "a.py"}, {"line": 3}, {"path": "", "line": 3}]
+)
+async def test_add_comment_rejects_partial_inline_position(
+    kwargs: Dict[str, Any],
+) -> None:
+    fake = FakeBitbucket()
+    with pytest.raises(HTTPException) as exc:
+        await mcp_bitbucket.add_comment(client_for(fake), 7, "x", **kwargs)
+    assert exc.value.status_code == 400
+    assert "both 'path' and 'line'" in exc.value.detail
+    assert fake.requests == []
+
+
 async def test_add_comment_rejects_non_numeric_reply() -> None:
     with pytest.raises(HTTPException) as exc:
         await mcp_bitbucket.add_comment(
@@ -220,9 +235,11 @@ async def test_review_with_body_comments_and_tasks() -> None:
         ],
     )
     comment_bodies = fake.bodies("POST", "/comments")
-    assert comment_bodies[0] == {"content": {"raw": "Summary"}}
-    assert comment_bodies[1]["inline"] == {"path": "a.py", "to": 3}
-    assert comment_bodies[2]["inline"] == {"path": "a.py", "from": 1}
+    assert comment_bodies[0]["inline"] == {"path": "a.py", "to": 3}
+    assert comment_bodies[1]["inline"] == {"path": "a.py", "from": 1}
+    assert comment_bodies[2] == {"content": {"raw": "Summary"}}
+    # The verdict is applied last, after every comment and task.
+    assert fake.calls()[-1] == ("POST", "/request-changes")
     task_bodies = fake.bodies("POST", "/tasks")
     assert len(task_bodies) == 1
     assert task_bodies[0]["content"] == {"raw": "Fix this"}
@@ -249,6 +266,21 @@ async def test_refuses_close_decline_merge(state: str) -> None:
         {"review_action": "comment"},
         {"review_action": "comment", "review_comments": [{"path": "a"}]},
         {"review_action": "comment", "review_comments": ["text"]},
+        {
+            "review_action": "approve",
+            "review_comments": [
+                {"path": "a", "line": 1, "body": "ok"},
+                {"path": "a", "line": "ten", "body": "bad"},
+            ],
+        },
+        {
+            "review_action": "approve",
+            "review_comments": [{"path": "a", "line": True, "body": "b"}],
+        },
+        {
+            "review_action": "approve",
+            "review_comments": [{"path": "a", "line": 1, "body": "b", "side": "UP"}],
+        },
     ],
 )
 async def test_update_pull_request_validation(kwargs: Dict[str, Any]) -> None:
@@ -396,3 +428,34 @@ async def test_get_pull_request_dispatches_to_bitbucket(
     assert result.number == 7
     assert mock_get_tracker.await_args.args[1] == project.id
     assert fake.calls() == [("GET", ""), ("GET", "/comments")]
+
+
+async def test_failed_inline_comment_leaves_no_verdict() -> None:
+    """A comment Bitbucket refuses stops the review before the approval."""
+    fake = FakeBitbucket(
+        overrides={
+            ("POST", "/comments"): httpx.Response(
+                400, json={"error": {"message": "line not in diff"}}
+            )
+        }
+    )
+    with pytest.raises(TrackerResponseError):
+        await mcp_bitbucket.update_pull_request(
+            client_for(fake),
+            7,
+            review_action="approve",
+            review_body="Looks good",
+            review_comments=[{"path": "a.py", "line": 999, "body": "nit"}],
+        )
+    assert ("POST", "/approve") not in fake.calls()
+
+
+async def test_string_line_numbers_are_accepted() -> None:
+    fake = FakeBitbucket()
+    await mcp_bitbucket.update_pull_request(
+        client_for(fake),
+        7,
+        review_action="comment",
+        review_comments=[{"path": "a.py", "line": "12", "body": "x"}],
+    )
+    assert fake.bodies("POST", "/comments")[0]["inline"] == {"path": "a.py", "to": 12}
