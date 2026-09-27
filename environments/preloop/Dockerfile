@@ -9,7 +9,22 @@ ARG DEV_IMAGE=ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab307
 FROM ${DEV_IMAGE}
 USER root
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/preloop-browsers \
-    PRELOOP_DISABLE_TELEMETRY=true
+    PRELOOP_DISABLE_TELEMETRY=true \
+    DEBIAN_FRONTEND=noninteractive
+# Distro Perl for version linting and project tests. Versions are the
+# Ubuntu 24.04 packages apt resolves against this base image. perlver 1.40
+# has no --version flag; perl-toolchain-smoke.sh runs it on a fixture.
+COPY environments/preloop/perl-toolchain-smoke.sh /opt/preloop-perl/perl-toolchain-smoke.sh
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        perl=5.38.2-3.2ubuntu0.6 \
+        cpanminus=1.7047-1 \
+        libperl-minimumversion-perl=1.40-1 \
+        libperl-critic-perl=1.152-1 \
+        libtest-harness-perl=3.48-1 \
+        libtest-simple-perl=1.302198-1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && bash /opt/preloop-perl/perl-toolchain-smoke.sh
 COPY environments/preloop/tools/package.json \
      environments/preloop/tools/package-lock.json \
      /opt/preloop-env-tools/

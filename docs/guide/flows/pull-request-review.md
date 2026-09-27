@@ -232,21 +232,15 @@ A reported version newer than `minimum_version` is a HIGH finding. An equal
 version is not. Dotted numbers compare numerically: 5.10 is newer than 5.9
 and older than 5.16.
 
-The reviewer sandbox is `ghcr.io/openai/codex-universal` (see
+The default reviewer sandbox is `ghcr.io/openai/codex-universal` (see
 `backend/preloop/agents/images.py`). That image is not built from this
-repository. `environments/preloop/Dockerfile` is an integration fixture,
-not the reviewer image, and it does not install Perl. When `perl` or
+repository and does not guarantee Perl. When `perl` or
 `Perl::MinimumVersion` is absent, the review says "version linter
 unavailable in this sandbox" and judges the diff from the policy. That is
 not a pass.
 
-An image you build can add the smallest useful Perl toolchain.
-`Perl::MinimumVersion` is pure Perl (it pulls PPI):
-
-```text
-apt-get install -y --no-install-recommends perl cpanminus
-cpanm --notest Perl::MinimumVersion
-```
+The environment image built from `environments/preloop/Dockerfile` ships
+`perlver`. A private runner gets it with `cpanm Perl::MinimumVersion`.
 
 ### Perl 5.10 example
 
