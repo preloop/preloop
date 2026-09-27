@@ -288,7 +288,11 @@ paths:
 
         token (including this request''s) fails the generation check on the next
 
-        use. API keys and runner tokens are unchanged.'
+        use. Active ``cli_session`` rows are marked revoked in the same commit so
+
+        the CLI session list matches what is enforced. API keys and runner tokens
+
+        are unchanged.'
       operationId: revoke_all_sessions_api_v1_auth_sessions_revoke_all_post
       responses:
         '200':
@@ -303,6 +307,57 @@ paths:
                   Post
       security:
       - OAuth2PasswordBearer: []
+  /api/v1/auth/sessions/cli:
+    get:
+      tags:
+      - Auth
+      summary: List Cli Sessions
+      description: 'List the signed-in user''s active CLI login sessions.
+
+
+        Each ``preloop auth login`` creates one. Revoked sessions are omitted.'
+      operationId: list_cli_sessions_api_v1_auth_sessions_cli_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/CliSessionResponse'
+                type: array
+                title: Response List Cli Sessions Api V1 Auth Sessions Cli Get
+      security:
+      - OAuth2PasswordBearer: []
+  /api/v1/auth/sessions/cli/{session_id}:
+    delete:
+      tags:
+      - Auth
+      summary: Revoke Cli Session
+      description: "Revoke one CLI login session of the signed-in user.\n\nIts access\
+        \ and refresh tokens are rejected on their next use. Other\nsessions are unaffected.\n\
+        \nRaises:\n    HTTPException: 404 when no active session with this id belongs\
+        \ to\n        the caller."
+      operationId: revoke_cli_session_api_v1_auth_sessions_cli__session_id__delete
+      security:
+      - OAuth2PasswordBearer: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Session Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/auth/users/me:
     get:
       tags:
@@ -18067,6 +18122,44 @@ components:
       - checkpoints_verified
       title: ChainVerifyRead
       description: Verdict of a server side walk over a range of the chain.
+    CliSessionResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        last_seen_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Seen At
+        user_agent:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Agent
+        hostname:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Hostname
+        current:
+          type: boolean
+          title: Current
+          description: True for the session the request's own token belongs to
+          default: false
+      type: object
+      required:
+      - id
+      - created_at
+      title: CliSessionResponse
+      description: One CLI login session (``preloop auth login``) of the signed-in
+        user.
     CommentCreate:
       properties:
         body:
