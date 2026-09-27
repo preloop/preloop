@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import socket
 import secrets
+import weakref
 from copy import deepcopy
 from datetime import datetime, timezone
 from string import ascii_letters, digits
 from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID, uuid4, uuid5
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -24,18 +33,20 @@ from preloop.api.auth import get_current_active_user
 from preloop.models import models, schemas
 from preloop.models.crud import (
     crud_api_key,
+    crud_audit_log,
     crud_flow,
     crud_flow_execution,
     crud_flow_execution_log,
     crud_user,
 )
-from preloop.models.crud.flow_runner import crud_flow_runner
+from preloop.models.crud.flow_runner import RunnerHasLeasesError, crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.db.session import release_transaction
 
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
 from preloop.services.runner_service import (
     derive_execution_runner,
+    emit_runner_deleted,
     emit_runner_updated,
     hash_runner_token,
     mint_runner_token,
@@ -65,7 +76,15 @@ logger = logging.getLogger(__name__)
 
 # runner_id -> live websocket (this process only)
 _live: Dict[str, WebSocket] = {}
+# Sockets closed because their credential was revoked. The session loop
+# stops reading them instead of answering on a closed channel.
+_evicted: "weakref.WeakSet[WebSocket]" = weakref.WeakSet()
 RUNNER_LOG_BROADCAST_TIMEOUT = 1.0
+
+#: Error frames that end a runner session because its credential was
+#: revoked. The CLI treats any error frame as fatal and exits.
+RUNNER_DELETED_ERROR = "Runner was deleted"
+RUNNER_TOKEN_ROTATED_ERROR = "Runner token was rotated"
 
 
 def _valid_publication_helper_image(value: object) -> bool:
@@ -90,6 +109,48 @@ def _release_live_runner(runner_key: str, connection: WebSocket) -> bool:
         _live.pop(runner_key, None)
         return True
     return False
+
+
+async def _evict_live_runner(
+    runner_key: str, error: str, halted_execution_ids: Optional[List[str]] = None
+) -> bool:
+    """End the session of a runner whose credential was just revoked.
+
+    Only reaches a socket held by this process. A socket on another replica
+    ends on its next frame, when the loop finds the row gone or its token
+    hash changed. A forced delete first names the executions it stopped so
+    a runner that is still listening kills them before it exits.
+
+    Args:
+        runner_key: Runner id as stored in ``_live``.
+        error: Error frame text explaining why the session ends.
+        halted_execution_ids: Executions to halt before the error frame.
+
+    Returns:
+        True when a live socket in this process was closed.
+    """
+    connection = _live.pop(runner_key, None)
+    if connection is None:
+        return False
+    _evicted.add(connection)
+    try:
+        if halted_execution_ids:
+            await connection.send_json(
+                {
+                    "type": "halt",
+                    "halt": True,
+                    "halt_execution_id": halted_execution_ids[0],
+                    "halt_execution_ids": halted_execution_ids,
+                }
+            )
+        await connection.send_json({"type": "error", "error": error})
+    except Exception:
+        logger.debug("runner %s: revocation frame not delivered", runner_key)
+    try:
+        await connection.close(code=1008)
+    except Exception:
+        logger.debug("runner %s: socket already closed", runner_key)
+    return True
 
 
 def _to_response(
@@ -230,6 +291,115 @@ def update_runner_concurrency(
     return _to_response(row, db)
 
 
+@router.delete("/runners/{runner_id}", response_model=schemas.RunnerDeleteResponse)
+@require_permission("execute_flows")
+async def delete_runner(
+    runner_id: UUID,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Delete a runner and reject its token from now on.
+
+    A runner that holds executions is refused with 409 unless ``force`` is
+    set. With ``force`` each held execution is stopped (the stop intent an
+    account halt writes, settled here because the runner can no longer
+    report back) and its runtime API keys are revoked. A live socket in this
+    process is told which executions to halt and then closed; one on another
+    replica ends on its next frame. Flows that route to the runner's labels
+    see one runner fewer and fall back to their configured behaviour.
+    """
+    account_id = current_user.account_id
+
+    def delete() -> Optional[List[UUID]]:
+        halted = crud_flow_runner.delete_runner(
+            db, runner_id=runner_id, account_id=account_id, force=force
+        )
+        if halted is not None:
+            crud_audit_log.log_action(
+                db,
+                account_id=account_id,
+                user_id=current_user.id,
+                action="runner_deleted",
+                resource_type="flow_runner",
+                resource_id=str(runner_id),
+                status="success",
+                details={
+                    "force": force,
+                    "halted_execution_ids": [str(value) for value in halted],
+                },
+            )
+        return halted
+
+    try:
+        halted = await run_in_threadpool(delete)
+    except RunnerHasLeasesError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Runner holds {len(exc.execution_ids)} active execution(s). "
+                "Stop them first, or retry with force=true to halt them and "
+                "delete the runner."
+            ),
+        ) from exc
+    if halted is None:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    emit_runner_deleted(account_id, runner_id)
+    await _evict_live_runner(
+        str(runner_id), RUNNER_DELETED_ERROR, [str(value) for value in halted]
+    )
+    return schemas.RunnerDeleteResponse(
+        id=runner_id, deleted=True, halted_execution_ids=halted
+    )
+
+
+@router.post(
+    "/runners/{runner_id}/token", response_model=schemas.RunnerRegisterResponse
+)
+@require_permission("execute_flows")
+async def rotate_runner_token(
+    runner_id: UUID,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Mint a new runner token; the previous one is rejected immediately.
+
+    The new token is in this response and nowhere else. A socket
+    authenticated with the old token is closed: in this process now, on
+    another replica at its next frame.
+    """
+    account_id = current_user.account_id
+    token = mint_runner_token()
+
+    def rotate() -> Optional[schemas.RunnerResponse]:
+        row = crud_flow_runner.rotate_token(
+            db,
+            runner_id=runner_id,
+            account_id=account_id,
+            token_hash=hash_runner_token(token),
+        )
+        if row is None:
+            return None
+        crud_audit_log.log_action(
+            db,
+            account_id=account_id,
+            user_id=current_user.id,
+            action="runner_token_rotated",
+            resource_type="flow_runner",
+            resource_id=str(runner_id),
+            status="success",
+        )
+        return _to_response(row, db)
+
+    rotated = await run_in_threadpool(rotate)
+    if rotated is None:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    await _evict_live_runner(str(runner_id), RUNNER_TOKEN_ROTATED_ERROR)
+    response.headers["Cache-Control"] = "no-store"
+    return schemas.RunnerRegisterResponse(**rotated.model_dump(), token=token)
+
+
 @router.get("/runners/{runner_id}", response_model=schemas.RunnerResponse)
 @require_permission("view_flows")
 def get_runner(
@@ -318,7 +488,9 @@ async def persist_runner_logs(
 
 def _authenticate_runner(db: Session, runner_id: UUID, token: str) -> FlowRunner:
     row = crud_flow_runner.get(db, id=runner_id)
-    if not row or row.token_hash != hash_runner_token(token):
+    if not row or not hmac.compare_digest(
+        str(row.token_hash or ""), hash_runner_token(token)
+    ):
         raise HTTPException(status_code=401, detail="Invalid runner credentials")
     return row
 
@@ -441,6 +613,11 @@ async def runner_ws(
         return
 
     runner_key = str(runner.id)
+    # The credential this session was admitted with. A rotation or a
+    # re-registration replaces the hash; the session must not outlive it.
+    authenticated_hash = getattr(runner, "token_hash", None)
+    if not isinstance(authenticated_hash, str):
+        authenticated_hash = None
     _live[runner_key] = websocket
     connection_id = secrets.token_hex(32)
     crud_flow_runner.set_publication_capabilities(
@@ -533,10 +710,20 @@ async def runner_ws(
             # a rolling upgrade and, through it, every query behind it.
             release_transaction(db)
             raw = await websocket.receive_json()
+            if websocket in _evicted:
+                # Closed by a delete or a token rotation while waiting.
+                break
             msg_type = str(raw.get("type") or "")
             runner = crud_flow_runner.get(db, id=runner_id)
             if not runner:
                 await websocket.send_json({"type": "error", "error": "gone"})
+                break
+            if authenticated_hash is not None and not hmac.compare_digest(
+                str(getattr(runner, "token_hash", None) or ""), authenticated_hash
+            ):
+                await websocket.send_json(
+                    {"type": "error", "error": RUNNER_TOKEN_ROTATED_ERROR}
+                )
                 break
 
             if (runner.publication_capabilities or {}).get(

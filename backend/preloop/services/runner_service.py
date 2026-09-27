@@ -536,3 +536,18 @@ def emit_runner_updated(runner: FlowRunner, db: Optional[Session] = None) -> Non
             payload=runner_console_payload(runner, registered_by_email=email),
         )
     )
+
+
+def emit_runner_deleted(account_id: Any, runner_id: Any) -> None:
+    """Tell console websockets subscribed to ``runners`` that a row is gone."""
+    if not account_id or not runner_id:
+        return
+    emit_account_event(
+        build_account_event(
+            account_id=str(account_id),
+            topic=ACCOUNT_TOPIC_RUNNERS,
+            event_type="runner_deleted",
+            runner_id=str(runner_id),
+            payload={"id": str(runner_id)},
+        )
+    )
