@@ -44,6 +44,15 @@ describe('DeleteAccountView', () => {
         String(c.args[0]).includes('/api/v1/account/deletion-request')
       );
 
+  it('labels the signed-in account as an account', async () => {
+    (el as any)._orgName = 'Acme';
+    await el.updateComplete;
+    const field = [...el.shadowRoot!.querySelectorAll('sl-input')].find(
+      (i) => (i as HTMLInputElement).value === 'Acme'
+    );
+    expect(field?.getAttribute('label')).to.equal('Account');
+  });
+
   it('renders the deletion request form and data-retention info', () => {
     expect(el.shadowRoot?.querySelector('form')).to.exist;
     expect(el.shadowRoot?.querySelector('sl-button[variant="danger"]')).to

@@ -24,6 +24,7 @@ from preloop.services.model_content_policy import (
     is_notify_only,
     wrap_stream_for_response_policy,
 )
+from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.policy.schema import (
     ConditionAction,
@@ -300,11 +301,15 @@ def test_is_notify_only() -> None:
     assert not is_notify_only(mixed)
 
 
-def _gateway():
+def _gateway(api_key=None):
+    # The real context, so the fake exposes the same ``account_id`` contract
+    # the gateway reads (the key's account for key-authenticated requests).
     return SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(
-            account_id=ACCOUNT, user=SimpleNamespace(account_id=ACCOUNT, id=USER)
+        auth_context=ModelGatewayAuthContext(
+            token="t",
+            user=SimpleNamespace(account_id=ACCOUNT, id=USER),
+            api_key=api_key,
         ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.message}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
@@ -348,6 +353,38 @@ def test_notify_only_stream_is_not_buffered(captured) -> None:
     assert len(captured.notices) == 1
     assert captured.notices[0].target == "model.response"
     assert "project-x" in (captured.notices[0].excerpt or "")
+
+
+def test_notify_only_stream_attributes_to_the_keys_account(captured) -> None:
+    rule = _rule(
+        target="model.response",
+        conditions=[
+            ToolCondition(
+                expression="response.text.contains('project-x')", action="notify"
+            )
+        ],
+    )
+    key_account = uuid4()
+    api_key = SimpleNamespace(id=uuid4(), account_id=key_account)
+    events = [
+        'data: {"choices":[{"delta":{"content":"project-x"}}]}\n\n',
+        "data: [DONE]\n\n",
+    ]
+    with patch.object(mcp, "load_model_io_rules", return_value=[rule]) as load:
+        list(
+            wrap_stream_for_response_policy(
+                iter(events),
+                gateway=_gateway(api_key=api_key),
+                payload={},
+                ai_model=None,
+                provider="openai",
+            )
+        )
+
+    assert load.call_args.args[1] == key_account
+    assert len(captured.notices) == 1
+    assert captured.notices[0].account_id == key_account
+    assert captured.notices[0].user_id == USER
 
 
 def test_notify_only_stream_closed_early_still_evaluates(captured) -> None:

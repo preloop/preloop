@@ -12,6 +12,21 @@ from preloop.api.endpoints.runners import job_for_runner_replay
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
 
+def _patch_delivery_lookup(monkeypatch, flow, execution):
+    """Serve the execution and flow rows the host delivery path reloads."""
+    flow.allowed_mcp_tools = getattr(flow, "allowed_mcp_tools", None)
+    flow.allowed_mcp_servers = getattr(flow, "allowed_mcp_servers", None)
+    row = SimpleNamespace(id=execution.id, flow_id=uuid4(), trigger_event_details={})
+    monkeypatch.setattr(
+        "preloop.services.host_exec_delivery.crud_flow_execution.get",
+        MagicMock(return_value=row),
+    )
+    monkeypatch.setattr(
+        "preloop.services.host_exec_delivery.crud_flow.get",
+        MagicMock(return_value=flow),
+    )
+
+
 @pytest.mark.asyncio
 async def test_native_context_lease_and_replay_never_prepare_cloud_secrets(monkeypatch):
     orchestrator = object.__new__(FlowExecutionOrchestrator)
@@ -73,6 +88,7 @@ async def test_native_context_lease_and_replay_never_prepare_cloud_secrets(monke
     monkeypatch.setattr(
         "preloop.services.flow_runtime_token.create_flow_runtime_token", mint
     )
+    _patch_delivery_lookup(monkeypatch, orchestrator.flow, orchestrator.execution_log)
     for initial_context in (context, None):
         delivered = await prepare_runner_delivery(MagicMock(), job, initial_context)
         assert delivered == job
@@ -85,7 +101,10 @@ async def test_native_context_lease_and_replay_never_prepare_cloud_secrets(monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "field,value",
-    [("git_clone_config", {"enabled": True}), ("custom_commands", {"enabled": True})],
+    [
+        ("git_clone_config", {"enabled": True, "setup_commands": ["make deps"]}),
+        ("custom_commands", {"enabled": True}),
+    ],
 )
 async def test_native_unsupported_setup_fails_before_credentials(
     field, value, monkeypatch
@@ -103,7 +122,7 @@ async def test_native_unsupported_setup_fails_before_credentials(
     orchestrator.trigger_event_data = {}
     mint = MagicMock(side_effect=AssertionError("must not mint credentials"))
     monkeypatch.setattr(orchestrator, "_create_temporary_api_token", mint)
-    with pytest.raises(ValueError, match="does not support remote"):
+    with pytest.raises(ValueError, match="does not (support|run) remote"):
         await orchestrator._prepare_execution_context(resolved_prompt="question")
     mint.assert_not_called()
 
@@ -195,6 +214,7 @@ async def test_copilot_context_and_lease_use_local_login_only(monkeypatch):
     assert "launch_version" not in job
     hydrate = AsyncMock(side_effect=AssertionError("must not hydrate Docker"))
     monkeypatch.setattr("preloop.agents.runner_launch.hydrate_runner_job", hydrate)
+    _patch_delivery_lookup(monkeypatch, orchestrator.flow, orchestrator.execution_log)
     assert await prepare_runner_delivery(MagicMock(), job, context) == job
     mint.assert_not_called()
     hydrate.assert_not_called()

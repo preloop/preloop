@@ -265,6 +265,7 @@ func runUsageHook(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	stampUsageHookFlowExecution(records, os.Getenv("PRELOOP_FLOW_EXECUTION_ID"))
 	resolvedSource := resolveUsageHookSource(detected, source, sourceChanged)
 	timeout := usageHookTimeout
 	if filePath != "" {
@@ -544,6 +545,26 @@ func attachCursorCompactionContext(input cursorHookInput, record map[string]inte
 	}
 	if input.IsFirstCompaction != nil {
 		metadata["is_first_compaction"] = *input.IsFirstCompaction
+	}
+}
+
+// stampUsageHookFlowExecution links hook records to the flow execution a
+// private runner started this CLI for. The runner exports the id to the
+// host-exec CLI process and hooks inherit it. The control plane checks the
+// id belongs to the caller's account and to a host profile run before it
+// links anything, so a stray value cannot attach usage to another flow.
+func stampUsageHookFlowExecution(records []map[string]interface{}, executionID string) {
+	executionID = strings.ToLower(strings.TrimSpace(executionID))
+	if !uuidRe.MatchString(executionID) {
+		return
+	}
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		if _, exists := record["flow_execution_id"]; !exists {
+			record["flow_execution_id"] = executionID
+		}
 	}
 }
 

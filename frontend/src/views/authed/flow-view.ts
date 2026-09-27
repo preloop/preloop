@@ -54,6 +54,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import '../../components/capability-extension';
 
 /**
  * Runtime ids as the product spells them.
@@ -807,6 +808,10 @@ export class FlowView extends LitElement {
               }
             </div>
           </sl-card>
+          <capability-extension
+            name="resource-access"
+            .context=${{ kind: 'flow', resourceId: this.flowId ?? '' }}
+          ></capability-extension>
 
           ${
             this.flow.prompt_template
