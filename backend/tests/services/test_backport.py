@@ -465,3 +465,75 @@ async def test_summary_comment_can_be_turned_off(repo: Repo) -> None:
 
     assert host.comments == []
     assert report.comment_status == "skipped"
+
+
+def test_push_never_overwrites_a_branch_that_appeared_meanwhile(
+    repo: Repo, tmp_path: Path
+) -> None:
+    from preloop.services.backport_git import BackportGitError, BackportWorkspace
+
+    sha = merge_pull_request(repo)
+    # Someone pushes the backport branch by hand after the runner checked.
+    git(repo.work, "push", "-q", "origin", "main:refs/heads/backport/pr-812-to-main")
+    manual_tip = repo.remote_sha("backport/pr-812-to-main")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    workspace = BackportWorkspace(
+        scratch,
+        repository_url=repo.url,
+        token=None,
+        auth_username="x-access-token",
+        committer_name="Preloop",
+        committer_email="bot@example.com",
+        allow_file_protocol=True,
+    )
+    workspace.init()
+    workspace.fetch_commit(sha, fallback_branch="release/1.0")
+    base = workspace.fetch_branch("main")
+    outcome = workspace.cherry_pick(
+        base_ref=base, branch="backport/pr-812-to-main", sha=sha, mainline=1
+    )
+    assert outcome.status == "applied"
+
+    with pytest.raises(BackportGitError, match="push failed"):
+        workspace.push_new_branch("backport/pr-812-to-main")
+    assert repo.remote_sha("backport/pr-812-to-main") == manual_tip
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://github.com/acme/widgets.git",
+        "https://user:secret@github.com/acme/widgets.git",
+        "https://github.com/acme/widgets.git?x=1",
+        "file:///tmp/remote.git",
+        "ext::sh -c touch% /tmp/pwned",
+    ],
+)
+def test_only_credential_free_https_remotes_are_accepted(url: str) -> None:
+    from preloop.services.backport_git import BackportGitError, validate_repository_url
+
+    with pytest.raises(BackportGitError):
+        validate_repository_url(url)
+
+
+def test_token_is_sent_as_a_scoped_header_never_in_the_url(tmp_path: Path) -> None:
+    from preloop.services.backport_git import BackportWorkspace
+
+    workspace = BackportWorkspace(
+        tmp_path,
+        repository_url="https://github.com/acme/widgets.git",
+        token="s3cr3t",
+        auth_username="x-access-token",
+        committer_name="Preloop",
+        committer_email="bot@example.com",
+    )
+    env = workspace._environment
+    assert workspace.repository_url == "https://github.com/acme/widgets.git"
+    assert env["GIT_CONFIG_KEY_0"] == (
+        "http.https://github.com/acme/widgets.git.extraHeader"
+    )
+    assert env["GIT_CONFIG_VALUE_0"].startswith("Authorization: Basic ")
+    assert "s3cr3t" not in env["GIT_CONFIG_VALUE_0"]
+    assert env["GIT_ALLOW_PROTOCOL"] == "https"
+    assert env["GIT_CONFIG_GLOBAL"] == os.devnull
