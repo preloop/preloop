@@ -260,6 +260,11 @@ class PreloopSyncNatsWorker:
         if getattr(self, "_price_refresher", None) is None:
             self._price_refresher = start_reviewed_price_refresh()
 
+        from preloop.services.model_price_catalog import start_price_map_refresh
+
+        if getattr(self, "_price_map_refresher", None) is None:
+            self._price_map_refresher = start_price_map_refresh()
+
         subjects_to_subscribe = self._subjects_to_subscribe()
 
         logger.info(
@@ -690,6 +695,9 @@ class PreloopSyncNatsWorker:
         if getattr(self, "_price_refresher", None) is not None:
             await self._price_refresher.stop()
             self._price_refresher = None
+        if getattr(self, "_price_map_refresher", None) is not None:
+            await self._price_map_refresher.stop()
+            self._price_map_refresher = None
         await self.begin_drain()
         for subject, sub in self.subs:
             try:
