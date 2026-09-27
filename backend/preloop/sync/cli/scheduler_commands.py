@@ -33,6 +33,20 @@ def optimization_digest_trigger() -> CronTrigger:
     return CronTrigger(day_of_week="mon", hour=9, minute=0, timezone="UTC")
 
 
+def spend_outlier_daily_trigger() -> CronTrigger:
+    """Return the daily spend outlier trigger: 00:30 UTC.
+
+    Half an hour after the UTC day closes, so yesterday is complete, and well
+    before the Monday 09:00 UTC digest that lists the findings.
+    """
+    return CronTrigger(hour=0, minute=30, timezone="UTC")
+
+
+#: How often the per-session cost check runs. Not per request: a session that
+#: crosses its threshold is reported within this interval.
+SPEND_OUTLIER_SESSION_CHECK_MINUTES = 15
+
+
 def shutdown_scheduler():
     """Function to shut down the scheduler."""
     global scheduler
@@ -235,6 +249,43 @@ async def run_scheduler_async(
     logger.info(
         "Scheduled subscription reconciliation every %d hour(s).",
         subscription_reconcile_hours,
+    )
+
+    # Spend outlier alerts (#960). A daily pass for yesterday's per-user spend
+    # and model mix, and a periodic check of recently active sessions. Both
+    # record each finding once, so a restart that re-runs them is harmless.
+    async def _publish_spend_outlier_daily() -> None:
+        try:
+            await event_bus_service.publish_task("evaluate_spend_outliers")
+        except Exception:
+            logger.exception("Failed to publish spend outlier daily pass")
+
+    scheduler.add_job(
+        _publish_spend_outlier_daily,
+        trigger=spend_outlier_daily_trigger(),
+        id="spend_outlier_daily_job",
+        name="Evaluate Spend Outliers",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    async def _publish_spend_outlier_sessions() -> None:
+        try:
+            await event_bus_service.publish_task("evaluate_spend_outlier_sessions")
+        except Exception:
+            logger.exception("Failed to publish spend outlier session check")
+
+    scheduler.add_job(
+        _publish_spend_outlier_sessions,
+        trigger=IntervalTrigger(minutes=SPEND_OUTLIER_SESSION_CHECK_MINUTES),
+        id="spend_outlier_session_job",
+        name="Check Session Spend Outliers",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    logger.info(
+        "Scheduled spend outlier checks: daily 00:30 UTC, sessions every %d min.",
+        SPEND_OUTLIER_SESSION_CHECK_MINUTES,
     )
 
     # Weekly cost digest. Cron only: the job store is in-memory, so a

@@ -34,6 +34,8 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "cleanup_flow_workspaces",
     "reconcile_flow_feedback",
     "reconcile_security_maintenance",
+    "evaluate_spend_outliers",
+    "evaluate_spend_outlier_sessions",
 )
 
 
@@ -499,6 +501,43 @@ def reconcile_stripe_subscriptions(account_id: str | None = None) -> object | No
         return service(db, account_id=account_id)
     except Exception as e:
         logger.error("Subscription reconciliation failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+def evaluate_spend_outliers() -> dict[str, int] | None:
+    """Daily spend outlier pass (#960): yesterday's spend and model mix.
+
+    Runs once a day after the UTC day closes, ahead of the Monday digest, and
+    also re-checks sessions active in the last day. Findings are recorded once
+    per fingerprint, so a repeated run on the same day adds nothing.
+    """
+    from preloop.services.spend_outliers import run_daily_pass
+
+    db = next(get_db_session())
+    try:
+        return run_daily_pass(db)
+    except Exception as e:
+        logger.error("Spend outlier daily pass failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+def evaluate_spend_outlier_sessions() -> dict[str, int] | None:
+    """Periodic session cost check (#960) for accounts with a threshold set.
+
+    Only sessions with gateway activity in the last two hours are summed, so
+    the check does not run on every request and does not rescan history.
+    """
+    from preloop.services.spend_outliers import run_session_pass
+
+    db = next(get_db_session())
+    try:
+        return run_session_pass(db)
+    except Exception as e:
+        logger.error("Spend outlier session check failed: %s", e, exc_info=True)
         return None
     finally:
         db.close()

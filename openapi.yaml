@@ -8822,6 +8822,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/attention/spend-outliers:
+    get:
+      tags:
+      - Attention
+      - Attention
+      summary: List Spend Outliers
+      description: 'Open spend outliers: the latest finding per rule and user (or
+        session).
+
+
+        The console applies ``/attention/dismissals`` to these like any other
+
+        attention item.'
+      operationId: list_spend_outliers_api_v1_attention_spend_outliers_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendOutlierListResponse'
+      security:
+      - bearerAuth: []
+  /api/v1/attention/spend-outliers/settings:
+    get:
+      tags:
+      - Attention
+      - Attention
+      summary: Get Spend Outlier Settings
+      description: The account's spend outlier thresholds (defaults when never set).
+      operationId: get_spend_outlier_settings_api_v1_attention_spend_outliers_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendOutlierSettingsResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Attention
+      - Attention
+      summary: Update Spend Outlier Settings
+      description: 'Replace the account''s spend outlier thresholds.
+
+
+        Writing takes ``manage_budgets``, the same permission as budget limits.
+
+        Changing a threshold does not rewrite findings already recorded.'
+      operationId: update_spend_outlier_settings_api_v1_attention_spend_outliers_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpendOutlierSettingsPayload'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpendOutlierSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/cost/summary:
     get:
       tags:
@@ -28479,6 +28552,177 @@ components:
       - model_identifier
       title: SpeechToTextResponse
       description: Transcript returned from a resolved STT model.
+    SpendOutlierFindingResponse:
+      properties:
+        id:
+          type: string
+          title: Id
+        item_id:
+          type: string
+          title: Item Id
+          description: Attention item id for dismissals
+        fingerprint:
+          type: string
+          title: Fingerprint
+          description: Rule, user, and UTC day (or session id). A new day that still
+            matches is a new fingerprint, so a dismissed card comes back.
+        rule:
+          type: string
+          enum:
+          - daily_spend
+          - model_mix
+          - session_cost
+          title: Rule
+        rule_label:
+          type: string
+          title: Rule Label
+        user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Id
+        user_name:
+          type: string
+          title: User Name
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        session_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Title
+        day:
+          type: string
+          title: Day
+          description: UTC day the finding is about
+        detected_at:
+          type: string
+          title: Detected At
+        details:
+          additionalProperties: true
+          type: object
+          title: Details
+          description: 'The numbers: spend_usd, median_usd, multiple (daily_spend);
+            model, share, previous_share (model_mix); spend_usd, threshold_usd (session_cost).
+            imported_usd is spend the gateway did not meter.'
+        summary:
+          type: string
+          title: Summary
+      type: object
+      required:
+      - id
+      - item_id
+      - fingerprint
+      - rule
+      - rule_label
+      - user_name
+      - day
+      - detected_at
+      - summary
+      title: SpendOutlierFindingResponse
+      description: One open spend outlier, as the Attention page shows it.
+    SpendOutlierListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/SpendOutlierFindingResponse'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      title: SpendOutlierListResponse
+      description: Open spend outliers for the account.
+    SpendOutlierSettingsPayload:
+      properties:
+        daily_multiple:
+          type: number
+          maximum: 100.0
+          minimum: 1.0
+          title: Daily Multiple
+          description: Fire when yesterday is at least this multiple of the median
+          default: 3.0
+        min_history_days:
+          type: integer
+          maximum: 28.0
+          minimum: 1.0
+          title: Min History Days
+          description: Days with spend in the trailing 28 before the rule runs
+          default: 7
+        top_tier_model_prefixes:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          title: Top Tier Model Prefixes
+          description: Model name prefixes to treat as top-tier (case-insensitive)
+        top_tier_share:
+          type: number
+          exclusiveMaximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Top Tier Share
+          description: Share of a user's daily spend, as a fraction (0.5 = 50%)
+          default: 0.5
+        session_cost_threshold_usd:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Session Cost Threshold Usd
+          description: Per-session cost threshold in USD; null turns the rule off
+      type: object
+      title: SpendOutlierSettingsPayload
+      description: Body of ``PUT /attention/spend-outliers/settings``.
+    SpendOutlierSettingsResponse:
+      properties:
+        daily_multiple:
+          type: number
+          maximum: 100.0
+          minimum: 1.0
+          title: Daily Multiple
+          description: Fire when yesterday is at least this multiple of the median
+          default: 3.0
+        min_history_days:
+          type: integer
+          maximum: 28.0
+          minimum: 1.0
+          title: Min History Days
+          description: Days with spend in the trailing 28 before the rule runs
+          default: 7
+        top_tier_model_prefixes:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          title: Top Tier Model Prefixes
+          description: Model name prefixes to treat as top-tier (case-insensitive)
+        top_tier_share:
+          type: number
+          exclusiveMaximum: 1.0
+          exclusiveMinimum: 0.0
+          title: Top Tier Share
+          description: Share of a user's daily spend, as a fraction (0.5 = 50%)
+          default: 0.5
+        session_cost_threshold_usd:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Session Cost Threshold Usd
+          description: Per-session cost threshold in USD; null turns the rule off
+        configured:
+          type: boolean
+          title: Configured
+          description: False while the account uses every default
+          default: false
+      type: object
+      title: SpendOutlierSettingsResponse
+      description: The account's thresholds; defaults when never configured.
     SubjectGovernanceConfig:
       properties:
         allowed_models:
