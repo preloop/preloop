@@ -33,6 +33,7 @@ from preloop.services.policy.schema import (
 )
 
 ACCOUNT = uuid4()
+USER_ACCOUNT = uuid4()
 USER = uuid4()
 
 
@@ -305,7 +306,7 @@ def _gateway():
         db=MagicMock(),
         auth_context=SimpleNamespace(
             account_id=ACCOUNT,
-            user=SimpleNamespace(account_id=ACCOUNT, id=USER),
+            user=SimpleNamespace(account_id=USER_ACCOUNT, id=USER),
         ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.message}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
@@ -347,6 +348,7 @@ def test_notify_only_stream_is_not_buffered(captured) -> None:
 
     assert len(rest) == 3
     assert len(captured.notices) == 1
+    assert captured.notices[0].account_id == ACCOUNT
     assert captured.notices[0].target == "model.response"
     assert "project-x" in (captured.notices[0].excerpt or "")
 
@@ -375,6 +377,7 @@ def test_notify_only_stream_closed_early_still_evaluates(captured) -> None:
         next(stream)
         stream.close()
     assert len(captured.notices) == 1
+    assert captured.notices[0].account_id == ACCOUNT
 
 
 def test_mixed_response_rules_still_buffer_and_deny(captured) -> None:
@@ -413,3 +416,4 @@ def test_mixed_response_rules_still_buffer_and_deny(captured) -> None:
         )
     assert all("project-x" not in event for event in out)
     assert len(captured.notices) == 1
+    assert captured.notices[0].account_id == ACCOUNT
