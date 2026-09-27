@@ -91,6 +91,25 @@ class GitHubResponse:
     body: Any
 
 
+def _header_seconds(value: Optional[str]) -> Optional[float]:
+    """Parse a numeric rate-limit header, or None when absent or malformed.
+
+    Args:
+        value: Raw header value (``Retry-After`` seconds or
+            ``x-ratelimit-reset`` epoch seconds).
+
+    Returns:
+        The number, or None so the caller falls back to backoff.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        logger.debug("Ignoring non-numeric GitHub rate-limit header %r", value)
+        return None
+
+
 class GitHubCopilotClient:
     """Thin GitHub REST client for the Copilot import routes."""
 
@@ -129,16 +148,14 @@ class GitHubCopilotClient:
         )
         if not limited:
             return None
-        wait = float(2**attempt)
-        retry_after = headers.get("retry-after")
-        reset = headers.get("x-ratelimit-reset")
-        try:
-            if retry_after is not None:
-                wait = float(retry_after)
-            elif reset is not None:
-                wait = float(reset) - datetime.now(UTC).timestamp()
-        except ValueError:
-            pass
+        wait = _header_seconds(headers.get("retry-after"))
+        if wait is None:
+            reset = _header_seconds(headers.get("x-ratelimit-reset"))
+            if reset is not None:
+                wait = reset - datetime.now(UTC).timestamp()
+        if wait is None:
+            # No usable header: exponential backoff.
+            wait = float(2**attempt)
         return min(max(wait, 1.0), MAX_RATE_LIMIT_WAIT_SECONDS)
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> GitHubResponse:

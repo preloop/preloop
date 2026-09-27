@@ -1009,3 +1009,17 @@ def test_summary_reads_only_the_connected_organization(
 
     # The rows are kept, not deleted.
     assert _rows(db_session, account_id, LINE_ITEM_PREMIUM_REQUEST)
+
+
+def test_rate_limit_wait_falls_back_to_reset_then_backoff() -> None:
+    reset = str(int(datetime.now(UTC).timestamp()) + 30)
+    by_reset = svc.GitHubCopilotClient._rate_limit_wait(
+        httpx.Response(429, headers={"x-ratelimit-reset": reset}), 0
+    )
+    assert by_reset is not None
+    assert 20 <= by_reset <= 31
+    malformed = svc.GitHubCopilotClient._rate_limit_wait(
+        httpx.Response(429, headers={"retry-after": "soon"}), 2
+    )
+    assert malformed == 4.0
+    assert svc.GitHubCopilotClient._rate_limit_wait(httpx.Response(403), 0) is None
