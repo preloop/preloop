@@ -1109,6 +1109,14 @@ def _register_control_plane_routes(
         tags=["Policies"],
         dependencies=[Depends(get_current_active_user)],
     )
+    from preloop.api.endpoints import policy_notices
+
+    app.include_router(
+        policy_notices.router,
+        prefix="/api/v1",
+        tags=["Policies"],
+        dependencies=[Depends(get_current_active_user)],
+    )
 
     # Security-screen scoring endpoint (QM external proxy contract).
     # Auth is handled in-endpoint: callers send an API key in x-api-key.
