@@ -320,9 +320,10 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	case permissionSourceCopilotCLI:
 		// One Preloop-owned file under ~/.copilot/hooks/; re-onboard replaces
 		// only our preToolUse entry and leaves any usage lifecycle entries.
+		// The invocation is per OS (PowerShell quoting on Windows).
 		if err := upsertCopilotHookEvent(
 			"preToolUse",
-			command,
+			copilotApprovalHookCommand(),
 			hostTimeoutSeconds,
 		); err != nil {
 			return err
@@ -582,22 +583,28 @@ func copilotPreloopHooksPath() (string, error) {
 }
 
 func copilotUsageHookCommand() string {
-	return copilotUsageHookCommandFor(runtime.GOOS)
+	return copilotHookInvocationFor(runtime.GOOS, "usage hook --from copilot")
 }
 
-// copilotUsageHookCommandFor renders the usage hook invocation for one OS.
-// The Windows entry runs under PowerShell, where a bare path containing
-// spaces (C:\Program Files\...) would not parse, so the executable is
-// single-quoted and invoked with the call operator.
-func copilotUsageHookCommandFor(goos string) string {
+// copilotApprovalHookCommand is the Copilot CLI preToolUse entry. It carries
+// the same "agents permission-hook" marker approvalHookCommand uses, in the
+// per-OS invocation form Copilot hook entries need.
+func copilotApprovalHookCommand() string {
+	return copilotHookInvocationFor(
+		runtime.GOOS, "agents permission-hook --source "+permissionSourceCopilotCLI,
+	)
+}
+
+// copilotHookInvocationFor renders a preloop invocation for a Copilot hook
+// entry on one OS. The Windows entry runs under PowerShell, where a bare
+// path containing spaces (C:\Program Files\...) would not parse, so the
+// executable is single-quoted and invoked with the call operator.
+func copilotHookInvocationFor(goos, args string) string {
 	exe := preloopExecutableForHooks()
 	if goos == "windows" {
-		return fmt.Sprintf(
-			"& '%s' usage hook --from copilot",
-			strings.ReplaceAll(exe, "'", "''"),
-		)
+		return fmt.Sprintf("& '%s' %s", strings.ReplaceAll(exe, "'", "''"), args)
 	}
-	return fmt.Sprintf("%s usage hook --from copilot", exe)
+	return fmt.Sprintf("%s %s", exe, args)
 }
 
 // copilotCommandHookEntry builds one Copilot hooks-reference command object

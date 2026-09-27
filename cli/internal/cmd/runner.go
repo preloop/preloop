@@ -1355,8 +1355,10 @@ func xmlEscape(value string) string {
 // launchd starts agents with a minimal PATH, so the common Homebrew and
 // local-bin locations are appended for the runner's child processes.
 func launchdPlistBody(bin, logPath, home string) string {
+	// The plist targets macOS, so the PATH is joined with "/" regardless of
+	// the OS this code compiles on (the unit test runs everywhere).
 	path := strings.Join([]string{
-		filepath.Join(home, ".local", "bin"),
+		strings.TrimRight(home, "/") + "/.local/bin",
 		"/opt/homebrew/bin",
 		"/usr/local/bin",
 		"/usr/bin", "/bin", "/usr/sbin", "/sbin",
