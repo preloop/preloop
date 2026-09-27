@@ -607,6 +607,10 @@ class FlowExecutionOrchestrator:
         # True after this orchestrator has already persisted ``_opened_pr``.
         # Live log frames bind immediately; terminal rescan must not bind twice.
         self._opened_pr_bound = False
+        # Repository binding applied to a Jira-triggered execution (see
+        # preloop.services.repository_binding); None when the flow clones
+        # its own repositories or no binding applies.
+        self._repository_binding: Optional[Any] = None
         # True when ``_opened_pr`` came from the tracker lookup by head
         # branch rather than from the wrapper's marker line.
         self._opened_pr_by_lookup = False
@@ -2035,6 +2039,39 @@ class FlowExecutionOrchestrator:
             logger.debug(f"Error extracting PR branch: {e}")
             return None
 
+    def _effective_git_clone_config(self) -> Any:
+        """Clone config this execution runs with.
+
+        The flow's stored ``git_clone_config``, or, when a repository binding
+        was applied, the copy the binding filled with the bound repository.
+        The flow row itself is never modified.
+        """
+        binding = getattr(self, "_repository_binding", None)
+        if binding is not None:
+            return binding.git_clone_config
+        flow = getattr(self, "flow", None)
+        return getattr(flow, "git_clone_config", None) if flow is not None else None
+
+    def _apply_repository_binding(self) -> None:
+        """Resolve the repository binding for this execution, if any.
+
+        Sets ``self._repository_binding`` (None when no binding applies).
+
+        Raises:
+            RepositoryBindingError: A binding exists but cannot be applied.
+        """
+        from preloop.services.repository_binding import resolve_repository_binding
+
+        trigger = self.trigger_event_data or {}
+        self._repository_binding = resolve_repository_binding(
+            self.db,
+            account_id=str(self.flow.account_id) if self.flow.account_id else None,
+            git_clone_config=self.flow.git_clone_config,
+            trigger_tracker_id=trigger.get("tracker_id"),
+            trigger_source=trigger.get("source"),
+            trigger_project_id=self._resolve_trigger_project_id(),
+        )
+
     def _resolve_trigger_project_id(
         self, *, allow_first_project_fallback: bool = True
     ) -> Optional[str]:
@@ -2422,6 +2459,12 @@ class FlowExecutionOrchestrator:
                 or (self.ai_model.model_identifier if self.ai_model else None),
             }
 
+        # A Jira-triggered flow has no repository of its own: the binding
+        # names the code-host repository. Raises RepositoryBindingError (a
+        # ValueError) when a binding exists but cannot be applied, so run()
+        # fails the execution with that message instead of guessing.
+        self._apply_repository_binding()
+
         # Create short-lived API token for this flow execution
         account_api_token = None
         if self.flow.account_id:
@@ -2445,7 +2488,7 @@ class FlowExecutionOrchestrator:
             "allowed_mcp_tools": self.flow.allowed_mcp_tools,
             "account_id": self.flow.account_id,
             "account_api_token": account_api_token,
-            "git_clone_config": self.flow.git_clone_config,
+            "git_clone_config": self._effective_git_clone_config(),
             "custom_commands": self.flow.custom_commands,
             "trigger_event_data": self.trigger_event_data,
             "trigger_project_ids": [str(pid) for pid in self.flow.trigger_project_ids]
@@ -2454,6 +2497,11 @@ class FlowExecutionOrchestrator:
             # Singular form used by container.py for git clone and credential lookup
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
+        binding = getattr(self, "_repository_binding", None)
+        if binding is not None:
+            # Read by container.py: the git credential must come from the
+            # bound code-host tracker only, never the issue tracker.
+            execution_context["repository_binding"] = binding.summary()
 
         # Resolve a previous run's stored result into this run's workspace
         # when the payload names one. Account-scoped, size-capped, and
@@ -2533,7 +2581,7 @@ class FlowExecutionOrchestrator:
         self._isolated_publication_policy = None
         self._publication_verification = None
         self._publication_runtime_stopped = False
-        if isolated_publication_enabled(self.flow.git_clone_config):
+        if isolated_publication_enabled(self._effective_git_clone_config()):
             self._isolated_publication_policy = await prepare_isolated_publication(
                 self.db, self.flow, execution_context
             )
@@ -2549,8 +2597,9 @@ class FlowExecutionOrchestrator:
         self._verify_product_provenance_record()
 
         # Isolated mode never resolves the existing broad tracker token.
-        if self.flow.git_clone_config and self._isolated_publication_policy is None:
-            repositories = self.flow.git_clone_config.get("repositories", [])
+        effective_git_config = self._effective_git_clone_config()
+        if effective_git_config and self._isolated_publication_policy is None:
+            repositories = effective_git_config.get("repositories", [])
             if repositories:
                 logger.info(
                     f"Preparing git credentials for {len(repositories)} configured repositories"
@@ -2585,7 +2634,10 @@ class FlowExecutionOrchestrator:
             # stored key only and therefore finds nothing for a GitHub App
             # tracker. Resolve it here, where minting an installation token is
             # possible, and hand it over with the rest of the credentials.
-            await self._attach_trigger_tracker_credentials(execution_context)
+            # A bound execution skips this: the triggering tracker is the
+            # issue tracker, and its token must never reach the code host.
+            if binding is None:
+                await self._attach_trigger_tracker_credentials(execution_context)
 
         # Add AI model details if available
         if self.ai_model:
@@ -6397,6 +6449,71 @@ class FlowExecutionOrchestrator:
             park.get("compute_seconds"),
         )
 
+    async def _write_pull_request_back_to_jira(
+        self, result: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Comment and link the opened pull request on the triggering Jira issue.
+
+        Runs only when the trigger was a Jira issue event and the execution
+        recorded a pull request URL. Never raises.
+
+        Args:
+            result: Terminal result, when the caller has it.
+
+        Returns:
+            True when the comment was posted, so the generic "PR opened"
+            notification does not comment the same URL a second time.
+        """
+        try:
+            from preloop.services.flow_execution_notifications import (
+                extract_opened_pr_url,
+            )
+            from preloop.services.jira_pr_writeback import (
+                jira_issue_key,
+                write_pull_request_to_jira,
+            )
+
+            snapshot = getattr(self.execution_log, "trigger_event_details", None)
+            issue_key = jira_issue_key(snapshot) or jira_issue_key(
+                self.trigger_event_data
+            )
+            if not issue_key:
+                return False
+            payload = (
+                result
+                if isinstance(result, dict)
+                else getattr(self.execution_log, "result", None)
+            )
+            payload = payload if isinstance(payload, dict) else {}
+            opened = self._opened_pr or {}
+            pr_url = extract_opened_pr_url(payload) or opened.get("url")
+            if not pr_url:
+                return False
+            branch = payload.get("pr_source_branch") or opened.get("branch")
+            client = await self._get_tracker_client_for_status()
+            outcome = await write_pull_request_to_jira(
+                jira_client=client,
+                issue_key=issue_key,
+                pr_url=pr_url,
+                branch=branch,
+                execution_id=str(self.execution_log.id),
+            )
+            logger.info(
+                "Jira write-back for %s: comment=%s remote_link=%s skipped=%s",
+                issue_key,
+                outcome.comment_posted,
+                outcome.remote_link_written,
+                outcome.skipped_reason,
+            )
+            return outcome.comment_posted
+        except Exception:
+            logger.warning(
+                "Jira pull request write-back failed for execution %s",
+                getattr(self.execution_log, "id", "unknown"),
+                exc_info=True,
+            )
+            return False
+
     async def _notify_terminal(
         self,
         status: str,
@@ -6465,6 +6582,9 @@ class FlowExecutionOrchestrator:
                     "Could not resume the parent of execution %s; the sweep will retry",
                     self.execution_log.id,
                 )
+            # A Jira-triggered run that opened a pull request writes it back
+            # onto the issue whatever flow.notifications says (issue #957).
+            jira_comment_posted = await self._write_pull_request_back_to_jira(result)
             notifications = getattr(self.flow, "notifications", None)
             if not notifications:
                 return
@@ -6489,6 +6609,8 @@ class FlowExecutionOrchestrator:
                 trigger_event_details=trigger_details,
                 result=result_payload if isinstance(result_payload, dict) else None,
                 tracker_client=tracker_client,
+                # The Jira write-back already commented the PR URL.
+                skip_success_comment=jira_comment_posted,
             )
         except Exception:
             logger.warning(
@@ -6937,8 +7059,9 @@ class FlowExecutionOrchestrator:
             )
         git_config: dict[str, Any] = {}
         flow = getattr(self, "flow", None)
-        if flow is not None and isinstance(flow.git_clone_config, dict):
-            git_config = dict(flow.git_clone_config)
+        effective_config = self._effective_git_clone_config()
+        if flow is not None and isinstance(effective_config, dict):
+            git_config = dict(effective_config)
         policy = getattr(self, "_isolated_publication_policy", None)
         clone_shas: dict[str, str] = {}
         requested_pins: dict[str, str] = {}

@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bedrock inference profile ARN is priced from
   `meta_data.provider_runtime.base_model` when set.
 
+- A Jira project can be bound to a GitHub or GitLab repository
+  (`git_clone_config.repository_bindings` on a flow, or
+  `settings.repository_bindings` on the Jira project). A Jira-triggered flow
+  with git clone enabled clones that repository with the code host's
+  credential and writes the opened pull request back to the issue as a
+  comment and a remote link. See
+  `docs/guide/flows/jira-repository-binding.md`.
+
+- Jira `jira:issue_updated` deliveries now also start flows subscribed to
+  Issue Labeled, Issue Unlabeled and Issue Status Changed, derived from the
+  changelog. `trigger_config.status_to` matches the new status. Flows
+  subscribed to Issue Updated keep firing on every edit, including label
+  and status edits, and their `labels` condition still reads the issue's
+  labels.
+
 - The flow form edits Review instructions for the Pull Request Reviewer, and
   for any prompt that references `flow.review_instructions`. The flow page
   shows the text when it is set. The reviewer prompt still keeps the first
