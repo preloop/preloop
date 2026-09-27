@@ -1,7 +1,7 @@
 from typing import Any, List, Optional, Union
 from uuid import UUID
 
-from sqlalchemy import cast, String
+from sqlalchemy import String, cast, or_
 from sqlalchemy.orm import Query, Session, joinedload
 
 from .. import models, schemas
@@ -60,12 +60,33 @@ class CRUDFlow(CRUDBase[models.Flow]):
         skip: int = 0,
         limit: int = 100,
         account_id: Optional[str] = None,
+        include_shared: bool = False,
         **filters: Any,
     ) -> List[models.Flow]:
-        """List flows with ``ai_model`` joined so ``ai_model_name`` is not N+1."""
+        """List flows with ``ai_model`` joined so ``ai_model_name`` is not N+1.
+
+        ``include_shared`` adds flows another account shares with
+        ``account_id`` (account hook H3); only the flows list asks for them.
+        """
         query = self._query_with_ai_model(db)
         if account_id and hasattr(self.model, "account_id"):
-            query = query.filter(self.model.account_id == account_id)
+            shared_ids: list[Any] = []
+            if include_shared:
+                from preloop.plugins.account_hooks import (
+                    VISIBLE_FLOW,
+                    extra_visible_ids,
+                )
+
+                shared_ids = extra_visible_ids(db, account_id, VISIBLE_FLOW)
+            if shared_ids:
+                query = query.filter(
+                    or_(
+                        self.model.account_id == account_id,
+                        self.model.id.in_(shared_ids),
+                    )
+                )
+            else:
+                query = query.filter(self.model.account_id == account_id)
 
         for key, value in filters.items():
             if hasattr(self.model, key):

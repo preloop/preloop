@@ -464,7 +464,10 @@ class ModelGatewayBudgetService:
         self, ai_model: AIModel, payload: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Return account pricing override for preflight cost estimates."""
-        from preloop.services.pricing_overrides import resolve_pricing_override
+        from preloop.services.pricing_overrides import (
+            pricing_account_id,
+            resolve_pricing_override,
+        )
 
         raw_model = payload.get("model")
         requested_alias = None
@@ -477,7 +480,7 @@ class ModelGatewayBudgetService:
 
         return resolve_pricing_override(
             self.db,
-            account_id=self.auth_context.account_id,
+            account_id=pricing_account_id(self.auth_context.account_id, ai_model),
             ai_model=ai_model,
             requested_alias=requested_alias,
         )

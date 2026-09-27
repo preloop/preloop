@@ -356,6 +356,37 @@ class CRUDSessionEmbeddingSetting(CRUDBase[SessionEmbeddingSetting]):
             db.refresh(setting)
         return setting
 
+    def set_daily_cap(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        daily_cap_usd: Optional[float],
+        commit: bool = False,
+    ) -> SessionEmbeddingSetting:
+        """Set this account's own daily cap, or clear it with ``None``.
+
+        A cleared cap falls back to the deployment default. The degraded
+        marker is left alone: raising the cap does not by itself mean the
+        worker has caught up, and the next run clears it when it does.
+
+        Raises:
+            SessionEmbeddingConfigError: The cap is negative.
+        """
+        if daily_cap_usd is not None and float(daily_cap_usd) < 0:
+            raise SessionEmbeddingConfigError(
+                "invalid_daily_cap", "the daily cap cannot be negative"
+            )
+        setting = self.get_or_create(db, account_id=account_id)
+        setting.daily_cap_usd = (
+            float(daily_cap_usd) if daily_cap_usd is not None else None
+        )
+        db.flush()
+        if commit:
+            db.commit()
+            db.refresh(setting)
+        return setting
+
     def mark_degraded(
         self,
         db: Session,

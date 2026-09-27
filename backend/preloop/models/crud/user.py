@@ -382,6 +382,9 @@ class CRUDUser(CRUDBase[models.User]):
     def bump_auth_generation(self, db: Session, user_id: Any) -> int:
         """Atomically increment the user's JWT generation and return it.
 
+        When a revoke fan-out is registered (account hook H2), the rows it
+        names are bumped in the same transaction, so their sessions end too.
+
         Args:
             db: Database session.
             user_id: User whose outstanding JWT sessions should be revoked.
@@ -402,8 +405,30 @@ class CRUDUser(CRUDBase[models.User]):
         row = result.first()
         if row is None:
             raise ValueError(f"User {user_id} not found")
+        self._bump_fanned_out_generations(db, user_id)
         db.commit()
         return int(row[0])
+
+    def _bump_fanned_out_generations(self, db: Session, user_id: Any) -> None:
+        """Bump the rows a registered revoke fan-out (H2) names, same transaction.
+
+        Without a registered fan-out this does nothing and issues no query.
+        """
+        from preloop.plugins.account_hooks import get_revoke_fanout
+
+        fanout = get_revoke_fanout()
+        if fanout is None:
+            return
+        others = {str(other) for other in fanout(db, user_id) or ()}
+        others.discard(str(user_id))
+        if not others:
+            return
+        db.execute(
+            update(models.User)
+            .where(models.User.id.in_([uuid.UUID(other) for other in others]))
+            .values(auth_generation=models.User.auth_generation + 1)
+            .execution_options(synchronize_session=False)
+        )
 
 
 # Create instance

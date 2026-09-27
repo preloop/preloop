@@ -1,4 +1,5 @@
 import { initSentry } from './sentry-init';
+import { debugLog } from './utils/debug';
 
 const getEnvironment = () => {
   const hostname = window.location.hostname;
@@ -87,7 +88,7 @@ function trackCurrentPage() {
     // Remember the previous SPA route so web-analytics conversion events
     // can attribute which page led to the conversion (prev_path prop).
     recordPathChange(currentPath);
-    console.debug('Tracked page view:', currentPath);
+    debugLog('Tracked page view:', currentPath);
   }
 }
 
@@ -107,6 +108,6 @@ window.addEventListener('popstate', () => {
 // Log connection state changes (for debugging)
 if (env === 'development') {
   unifiedWebSocketManager.onStateChange((state) => {
-    console.log(`WebSocket state: ${state}`);
+    debugLog(`WebSocket state: ${state}`);
   });
 }

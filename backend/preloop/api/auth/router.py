@@ -97,6 +97,11 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User as UserModel
 from preloop.models.models.api_key import ApiKey
 from pydantic import BaseModel
+from preloop.plugins.account_hooks import (
+    get_login_row_selector,
+    select_email_rows,
+    select_login_row,
+)
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_MANAGED_AGENTS,
@@ -703,12 +708,17 @@ async def register(
 
 
 def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
-    """The exact user row a verification or reset token was issued for.
+    """The user row a verification or reset link acts on.
 
     The token names the row by id, never by address: one address can hold a
     row in several accounts. It also carries the address it was mailed to,
     and a row whose address has since changed does not honour it, so an old
     link cannot verify or reset whatever address the row holds now.
+
+    A login row selector (account hook H1) may move the link to another row,
+    but only to one that holds the same address: the link proves possession
+    of that address and nothing else, so it can never verify or reset a row
+    whose address it did not prove.
 
     Args:
         session: Database session.
@@ -716,10 +726,11 @@ def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
         token_type: "email_verification" or "password_reset".
 
     Returns:
-        The user row the token names.
+        The user row the token names, or the row the selector chose.
 
     Raises:
-        TokenError: If the token is invalid or no longer matches its row.
+        TokenError: If the token is invalid, no longer matches its row, or
+            the selected row holds a different address.
         HTTPException: 404 if the row no longer exists.
     """
     claims = verify_user_token(token, token_type)
@@ -733,7 +744,13 @@ def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
         raise TokenError(
             "This link is no longer valid. Request a new one and use that instead."
         )
-    return user
+    purpose = "verify_email" if token_type == "email_verification" else "reset_password"
+    selected = select_login_row(session, user, purpose=purpose)
+    if selected is not user and (selected.email or "").lower() != claims.email.lower():
+        raise TokenError(
+            "This link is no longer valid. Request a new one and use that instead."
+        )
+    return selected
 
 
 @router.post("/verify-email", status_code=status.HTTP_200_OK)
@@ -848,7 +865,13 @@ def resend_verification(
     # One address can hold a row in several accounts. Each unverified row
     # gets its own link, bound to that row, so following one never verifies
     # another.
-    for user in crud_user.list_by_email(db, email=email):
+    rows = select_email_rows(
+        db,
+        email,
+        crud_user.list_by_email(db, email=email),
+        purpose="resend_verification",
+    )
+    for user in rows:
         if user.email_verified:
             continue
         background_tasks.add_task(
@@ -904,7 +927,13 @@ async def forgot_password(
     Returns:
         The same neutral message whether or not the address is registered.
     """
-    for user in crud_user.list_by_email(db, email=reset_data.email):
+    rows = select_email_rows(
+        db,
+        reset_data.email,
+        crud_user.list_by_email(db, email=reset_data.email),
+        purpose="forgot_password",
+    )
+    for user in rows:
         token = create_password_reset_token(user.email, user_id=user.id)
         background_tasks.add_task(
             send_password_reset_email,
@@ -959,6 +988,19 @@ async def reset_password(
         )
 
 
+async def _landing_row(user: UserModel, db: Session) -> UserModel:
+    """The row a password sign-in lands on (the checked row unless H1 says).
+
+    Without a registered login row selector this returns ``user`` without
+    leaving the event loop or touching the database.
+    """
+    if get_login_row_selector() is None:
+        return user
+    from preloop.api.loop_safety import run_db_off_loop
+
+    return await run_db_off_loop(lambda: select_login_row(db, user, purpose="login"))
+
+
 @router.post("/token", response_model=Token)
 async def login_form(
     request: Request,
@@ -989,6 +1031,7 @@ async def login_form(
             headers={"WWW-Authenticate": "Bearer"},
         )
     enforce_verified_email(user)
+    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1045,6 +1088,7 @@ async def login_json(
             headers={"WWW-Authenticate": "Bearer"},
         )
     enforce_verified_email(user)
+    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)

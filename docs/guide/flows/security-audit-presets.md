@@ -962,6 +962,22 @@ that property as evidence that a git-range match through the package
 suppress a finding on its own. A VEX statement does. The `sbom` job fails when
 `python -m preloop.cra measure` reports `passed: false`.
 
+The same stamp fills a declared `licenses` entry when a component has none
+and a local source names exactly one SPDX license. Python `METADATA` uses
+`License-Expression`, then a `License` value that is itself an SPDX expression
+or a well-known license text, then a single mapped `Classifier: License ::`
+entry, then a `License-File` whose text is one well-known license. npm uses
+`package.json` `license`, or a one-element `licenses` array
+when `license` is absent. Go modules use a `LICENSE` file in the module cache
+when the text is one SPDX identifier or one well-known license header, and
+the Go standard library is `BSD-3-Clause`. `preloop:license_source` names
+that derivation (`pypi_license_expression`, `pypi_license`, `pypi_classifier`,
+`pypi_license_file`, `npm_license`, `npm_licenses`, `go_module_license`, or
+`go_stdlib`). A source
+that names more than one license, or none that this stamp recognizes, is left
+blank. The quality table the SBOM job prints shows declared license coverage
+before and after the stamp (`lic0`, `lic1`).
+
 OpenVEX documents live in `security/vex/`. The release workflow copies
 every `security/vex/*.openvex.json` into the SBOM artifact and the GitHub
 release, next to the CycloneDX files. `preloop-cli.openvex.json` covers
@@ -1250,6 +1266,12 @@ ENISA single reporting platform and none is planned here: the filing decision
 and the filing itself stay with the manufacturer, who signs it. What the
 platform does is tell you, in one place and in one sentence, that a clock is
 running and when it stops.
+
+The operational side (who files, the fill-in templates for the three reports,
+the decision points, and a rehearsal checklist) lives in the
+[Article 14 reporting runbooks](../../security/article-14-runbooks.md). This
+section documents the machine-readable `reporting` block those runbooks read
+from.
 
 ### The block
 

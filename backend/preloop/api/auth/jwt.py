@@ -16,10 +16,13 @@ from jwt import PyJWTError
 from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
+from preloop.api.auth.key_scopes import enforce_api_key_route_scope
+
 # Configuration
 from preloop.config import settings
 from preloop.models.crud import (
     crud_api_key,
+    crud_flow_execution,
     crud_managed_agent,
     crud_runtime_session,
     crud_user,
@@ -129,6 +132,35 @@ def _managed_agent_for_api_key(
     )
 
 
+def _reject_finished_flow_execution_key(session: Any, api_key: Any) -> None:
+    """Reject a flow execution key once its execution has finished.
+
+    The orchestrator revokes these keys when the run ends. This check keeps
+    the binding server-side for the case where that revocation was missed
+    (worker crash, failed commit): the key dies with its execution rather
+    than with its two hour expiry. Parked executions keep their key, since
+    they resume. An execution that cannot be found is left to the callers'
+    own provenance checks.
+    """
+    context_data = (
+        api_key.context_data if isinstance(api_key.context_data, dict) else {}
+    )
+    execution_id = context_data.get("flow_execution_id")
+    if not execution_id:
+        return
+    execution_status = crud_flow_execution.get_status(
+        session, execution_id=execution_id, account_id=api_key.account_id
+    )
+    if execution_status is None:
+        return
+    if str(execution_status).upper() in crud_flow_execution.TERMINAL_EXECUTION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Flow execution has ended",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def _authenticate_with_api_key(
     session: Any,
     api_key: Any,
@@ -218,6 +250,9 @@ def _authenticate_with_api_key(
             detail="Managed agent is not active",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    if not allow_stale_runtime_session and not allow_ended_runtime_session:
+        _reject_finished_flow_execution_key(session, api_key)
 
     user = crud_user.get(session, id=api_key.user_id)
     if not user:
@@ -684,6 +719,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
@@ -796,6 +832,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
@@ -843,6 +880,8 @@ def get_current_active_user(
 def get_current_active_user_optional(
     token: str = Depends(oauth2_scheme_optional),
     db: Session = Depends(get_db_session),
+    # See get_current_user: FastAPI injects the concrete Request type.
+    request: Request = None,  # type: ignore[assignment]
 ) -> Optional[User]:
     """
     Get the current active user if a valid token is provided, otherwise return None.
@@ -852,8 +891,9 @@ def get_current_active_user_optional(
         return None
     try:
         # We must call get_current_user with the token parameter, not as a dependency,
-        # to bypass the strict oauth2_scheme it depends on.
-        user = get_current_user(token=token, db=db)
+        # to bypass the strict oauth2_scheme it depends on. The request is passed
+        # so API key scopes are checked against the actual route.
+        user = get_current_user(token=token, db=db, request=request)
         if user and user.is_active:
             return user
         return None
