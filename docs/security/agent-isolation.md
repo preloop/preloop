@@ -207,6 +207,11 @@ The limits worth knowing:
   `approval_policy = "never"`, which `codex exec` already defaults to, so
   the run does not wait for a person. Any other value, including the
   preset default `exec`, keeps `--yolo`.
+- **A silent model stream is bounded separately.**
+  `agent_config.stream_idle_timeout_seconds` (30..3600, default 600, capped
+  at half the flow's timeout budget) is how long a custom-provider stream
+  may send nothing before Codex reconnects. A run that times out on one is
+  classified `model_stream_idle`, not `timeout`.
 
 Reducing that blast radius is a backend change, not a chart change: enforce
 the scopes on the key, and give the runtime principal its own role instead
