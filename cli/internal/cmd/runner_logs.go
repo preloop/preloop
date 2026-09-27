@@ -115,6 +115,28 @@ func (b *runnerLogBuffer) appendLineLocked(line string) {
 	b.pendingBytes += len(line)
 }
 
+// note appends a runner-authored status line (for example checkout
+// progress) to the execution log. It bypasses the native stream parsers, so
+// a runner line can never be mistaken for CLI output such as a Copilot
+// startup error or a Cursor result event.
+func (b *runnerLogBuffer) note(line string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if len(line) > runnerLogLineLimit {
+		line = line[:runnerLogLineLimit] + " [line truncated]"
+	}
+	if b.pendingBytes+len(line) > runnerLogQueueLimit || len(b.pending) >= 8192 {
+		b.overflow = true
+		return
+	}
+	b.pending = append(b.pending, line)
+	b.pendingBytes += len(line)
+}
+
 func (b *runnerLogBuffer) finish() {
 	b.mu.Lock()
 	defer b.mu.Unlock()

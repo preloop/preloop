@@ -188,6 +188,15 @@ class UsageIngestRecord(BaseModel):
         ),
     )
     timestamp: datetime
+    flow_execution_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Flow execution a host-exec runner started this session for. The "
+            "runner exports it to the CLI and the usage hook forwards it. It "
+            "is honoured only for executions of this account whose flow runs "
+            "on a host profile; otherwise the record is stored unlinked."
+        ),
+    )
     event_type: IngestEventType = Field(
         default="usage",
         description=(
