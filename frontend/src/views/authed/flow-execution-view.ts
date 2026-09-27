@@ -101,6 +101,8 @@ interface FlowExecutionUpdate {
 interface FlowExecution {
   id: string;
   flow_id: string;
+  /** Set on the detail row, so the title paints before the flow loads. */
+  flow_name?: string | null;
   status: string;
   start_time: string;
   end_time?: string;
@@ -308,6 +310,16 @@ function providerErrorMessage(detail?: string | null): string {
   }
   return liftLogfmtErrorField(firstErrorLine(text));
 }
+
+/** Log rows the page asks for before it has painted anything else. */
+const INITIAL_LOGS_TAIL = 500;
+
+/**
+ * Model calls the page reads up front. Most runs make fewer, so for them the
+ * first read is the whole list; a longer run shows its newest calls and the
+ * timeline offers the rest.
+ */
+export const INITIAL_GATEWAY_EVENTS_TAIL = 500;
 
 /**
  * The gateway-events endpoint returns every log row of the execution; only
@@ -543,6 +555,22 @@ export class FlowExecutionView extends LitElement {
       }
       .panel-empty {
         padding: 32px 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+      }
+      .panel-loading {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 16px 0;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-body);
+      }
+      .timeline-truncated {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
         color: var(--console-meta-color);
         font-size: var(--console-text-body);
       }
@@ -856,6 +884,23 @@ export class FlowExecutionView extends LitElement {
 
   @state()
   private isLoadingGatewayEvents = false;
+
+  /**
+   * The events on the page are the newest calls of a run that made more.
+   * Their sum is then a floor, not the run's usage.
+   */
+  @state()
+  private gatewayEventsTruncated = false;
+
+  /** The last read asked for the short first page, so more can be fetched. */
+  private gatewayEventsBounded = false;
+
+  /**
+   * The first page of logs is in flight. The page itself is already painted
+   * from the detail row; only the logs panel and the timeline wait.
+   */
+  @state()
+  private isLoadingLogs = false;
 
   @state()
   private toolCalls = 0;
@@ -1561,31 +1606,62 @@ export class FlowExecutionView extends LitElement {
    */
   gatewayEventsFullLoaded = false;
 
-  async loadGatewayEvents(metadataOnly: boolean = false) {
-    if (!this.executionId) return;
+  /**
+   * Read the execution's gateway events.
+   *
+   * @param metadataOnly Drop the large payloads; the transcript needs them.
+   * @param bounded Ask only for the newest `INITIAL_GATEWAY_EVENTS_TAIL`
+   *   model calls. This is the page's first read: without it the endpoint
+   *   returns every log row of the run, agent log lines included. Unbounded
+   *   is the older read, kept for the transcript and "load earlier calls".
+   */
+  async loadGatewayEvents(
+    metadataOnly: boolean = false,
+    bounded: boolean = false
+  ) {
+    const executionId = this.executionId;
+    const generation = this.executionGeneration;
+    if (!executionId) return;
+    // A response for an execution the page has left must not land on the
+    // one it is showing now.
+    const current = () =>
+      this.isConnected &&
+      this.executionId === executionId &&
+      this.executionGeneration === generation;
     this.isLoadingGatewayEvents = true;
     // A retry starts clean, so the banner belongs to this attempt.
     this.gatewayEventsError = null;
     try {
+      // Every metadata read feeds only model-call consumers (timeline cards,
+      // the strip, the model list, the error line), so it asks for model
+      // calls alone. The transcript's full read stays as it always was.
+      const modelCallsOnly = metadataOnly;
+      const tail = bounded ? INITIAL_GATEWAY_EVENTS_TAIL : undefined;
       const response = await getFlowExecutionGatewayEvents(
-        this.executionId,
-        undefined,
-        metadataOnly
+        executionId,
+        tail,
+        metadataOnly,
+        modelCallsOnly
       );
+      if (!current()) return;
       this.gatewayEvents = response.logs || [];
       this.gatewayEventsSource = response.source;
       this.gatewayEventsLoaded = true;
       this.gatewayEventsFullLoaded = !metadataOnly;
+      this.gatewayEventsBounded = bounded;
+      this.gatewayEventsTruncated = !!response.has_more;
       this.applyGatewayMetricsFromEvents();
     } catch (error) {
+      if (!current()) return;
       console.error('Failed to fetch gateway events:', error);
       this.gatewayEventsError =
         error instanceof Error
           ? error.message
           : 'Failed to load execution gateway events';
     } finally {
-      this.isLoadingGatewayEvents = false;
+      if (current()) this.isLoadingGatewayEvents = false;
     }
+    if (!current()) return;
 
     // A switch to the transcript while this fetch was in flight was dropped by
     // `handleTabShow`, which leaves the transcript reading the metadata-only
@@ -1622,6 +1698,20 @@ export class FlowExecutionView extends LitElement {
     }
   }
 
+  /**
+   * Load the execution page.
+   *
+   * The detail row alone is enough to paint the header, status, metadata and
+   * the strip's figures, so the page renders as soon as it lands. Logs, the
+   * flow, the metrics and the gateway events then load side by side; each
+   * fills its own section when it arrives and a failure in one leaves the
+   * others alone.
+   *
+   * Resolves once the logs have settled: `updated()` appends the summary line
+   * to them and subscribes to the live stream only after that, so a late
+   * logs response cannot overwrite either. The flow, metrics and gateway
+   * reads keep going in the background.
+   */
   async fetchExecution() {
     const executionId = this.executionId;
     const generation = this.executionGeneration;
@@ -1631,95 +1721,22 @@ export class FlowExecutionView extends LitElement {
       this.executionGeneration === generation;
     if (!executionId) return;
 
+    this.isLoading = true;
+    this.isLoadingGatewayEvents = true;
+    this.isLoadingLogs = true;
+    this.loadingError = null;
+    this.gatewayEventsError = null;
+    this.gatewayEvents = [];
+    this.gatewayEventsSource = null;
+    this.gatewayEventsLoaded = false;
+    this.gatewayEventsFullLoaded = false;
+    this.gatewayEventsTruncated = false;
+    this.gatewayEventsBounded = false;
+    this.liveToolActivityEvents = [];
+
+    let execution: FlowExecution;
     try {
-      this.isLoading = true;
-      this.isLoadingGatewayEvents = true;
-      this.loadingError = null;
-      this.gatewayEventsError = null;
-      this.gatewayEvents = [];
-      this.gatewayEventsSource = null;
-      this.gatewayEventsLoaded = false;
-      this.gatewayEventsFullLoaded = false;
-      this.liveToolActivityEvents = [];
-
-      // Fetch execution details
-      const execution = await getFlowExecution(executionId);
-      if (!current()) return;
-      this.execution = execution;
-      this.hydrateMetricsFromExecution();
-      void this.loadEvidenceStatus(executionId);
-
-      // Fetch logs
-      const INITIAL_FETCH_LIMIT = 500;
-      this.logsSkip = 0;
-
-      const logsResult = await getFlowExecutionLogs(executionId, {
-        tail: INITIAL_FETCH_LIMIT,
-      }).catch((error) => {
-        console.error('Failed to fetch logs:', error);
-        if (
-          this.execution &&
-          this.execution.execution_logs &&
-          Array.isArray(this.execution.execution_logs)
-        ) {
-          return {
-            logs: this.execution.execution_logs,
-            source: 'fallback',
-            has_more: false,
-          };
-        }
-        return { logs: [], source: 'none', has_more: false };
-      });
-
-      if (!current()) return;
-      if (logsResult && Array.isArray(logsResult.logs)) {
-        this.logs = logsResult.logs;
-        this.hasMoreLogs = !!logsResult.has_more;
-      }
-      this.hydrateToolActivityLogs();
-
-      // The timeline is the default tab and merges gateway requests, so the
-      // events are part of the first paint rather than a tab-open fetch.
-      // A deep link straight to the transcript needs the full payloads.
-      this.isLoadingGatewayEvents = false;
-      void this.loadGatewayEvents(this.activeTab !== 'transcript');
-
-      // Fetch flow details
-      if (this.execution && this.execution.flow_id) {
-        try {
-          const flow = await getFlow(this.execution.flow_id);
-          if (!current()) return;
-          this.flow = flow;
-        } catch (error) {
-          console.error('Failed to fetch flow details:', error);
-          // Don't fail the whole page if flow fetch fails
-        }
-      }
-
-      // Fetch execution metrics (for completed executions)
-      if (this.execution) {
-        try {
-          const metrics = await getFlowExecutionMetrics(executionId);
-          if (!current()) return;
-          this.toolCalls = Math.max(this.toolCalls, metrics.tool_calls);
-          this.budgetUsed = Math.max(this.budgetUsed, metrics.estimated_cost);
-          this.totalTokens = Math.max(
-            this.totalTokens,
-            metrics.token_usage.total_tokens
-          );
-          this.tokenUsage = this.pickRicherUsage(
-            this.tokenUsage,
-            metrics.token_usage as GatewayTokenUsage
-          );
-          this.hasPricing = this.hasPricing || metrics.has_pricing;
-        } catch (error) {
-          console.error('Failed to fetch execution metrics:', error);
-          // Don't fail the whole page if metrics fetch fails
-        }
-      }
-
-      if (!current()) return;
-      this.isLoading = false;
+      execution = await getFlowExecution(executionId);
     } catch (error) {
       if (!current()) return;
       console.error('Failed to fetch execution:', error);
@@ -1729,6 +1746,93 @@ export class FlowExecutionView extends LitElement {
           : 'Failed to load execution details';
       this.isLoading = false;
       this.isLoadingGatewayEvents = false;
+      this.isLoadingLogs = false;
+      return;
+    }
+    if (!current()) return;
+    this.execution = execution;
+    this.hydrateMetricsFromExecution();
+    // First paint: everything below fills in its own section.
+    this.isLoading = false;
+    void this.loadEvidenceStatus(executionId);
+
+    // The timeline is the default tab and merges model calls, so their first
+    // read starts with the page rather than on tab open. A deep link straight
+    // to the transcript needs the full payloads, so it asks for those.
+    void this.loadGatewayEvents(
+      this.activeTab !== 'transcript',
+      this.activeTab !== 'transcript'
+    );
+    void this.loadFlowForExecution(execution, current);
+    void this.loadMetricsForExecution(executionId, current);
+    await this.loadInitialLogs(executionId, current);
+  }
+
+  private async loadInitialLogs(executionId: string, current: () => boolean) {
+    this.logsSkip = 0;
+    const logsResult = await getFlowExecutionLogs(executionId, {
+      tail: INITIAL_LOGS_TAIL,
+    }).catch((error) => {
+      console.error('Failed to fetch logs:', error);
+      if (
+        this.execution &&
+        this.execution.execution_logs &&
+        Array.isArray(this.execution.execution_logs)
+      ) {
+        return {
+          logs: this.execution.execution_logs,
+          source: 'fallback',
+          has_more: false,
+        };
+      }
+      return { logs: [], source: 'none', has_more: false };
+    });
+
+    if (!current()) return;
+    if (logsResult && Array.isArray(logsResult.logs)) {
+      this.logs = logsResult.logs;
+      this.hasMoreLogs = !!logsResult.has_more;
+    }
+    this.hydrateToolActivityLogs();
+    this.isLoadingLogs = false;
+  }
+
+  private async loadFlowForExecution(
+    execution: FlowExecution,
+    current: () => boolean
+  ) {
+    if (!execution.flow_id) return;
+    try {
+      const flow = await getFlow(execution.flow_id);
+      if (!current()) return;
+      this.flow = flow;
+    } catch (error) {
+      // The title falls back to the detail row's flow name.
+      console.error('Failed to fetch flow details:', error);
+    }
+  }
+
+  private async loadMetricsForExecution(
+    executionId: string,
+    current: () => boolean
+  ) {
+    try {
+      const metrics = await getFlowExecutionMetrics(executionId);
+      if (!current()) return;
+      this.toolCalls = Math.max(this.toolCalls, metrics.tool_calls);
+      this.budgetUsed = Math.max(this.budgetUsed, metrics.estimated_cost);
+      this.totalTokens = Math.max(
+        this.totalTokens,
+        metrics.token_usage.total_tokens
+      );
+      this.tokenUsage = this.pickRicherUsage(
+        this.tokenUsage,
+        metrics.token_usage as GatewayTokenUsage
+      );
+      this.hasPricing = this.hasPricing || metrics.has_pricing;
+    } catch (error) {
+      // The strip keeps the figures the detail row hydrated.
+      console.error('Failed to fetch execution metrics:', error);
     }
   }
 
@@ -1898,6 +2002,14 @@ export class FlowExecutionView extends LitElement {
       summary.estimatedCost > 0 ||
       summary.hasPricing
     ) {
+      if (this.gatewayEventsTruncated) {
+        // The newest calls only: a floor under the run's usage, never its
+        // total. The detail row and /metrics count every call.
+        this.totalTokens = Math.max(this.totalTokens, summary.totalTokens);
+        this.budgetUsed = Math.max(this.budgetUsed, summary.estimatedCost);
+        this.hasPricing = this.hasPricing || summary.hasPricing;
+        return;
+      }
       this.totalTokens = summary.totalTokens;
       this.budgetUsed = summary.estimatedCost;
       this.hasPricing = summary.hasPricing;
@@ -1921,16 +2033,24 @@ export class FlowExecutionView extends LitElement {
           : 0;
     this.toolCalls = executionToolCalls;
 
-    if (!this.hasGatewayUsageEvents()) {
+    // Only a complete set of events outranks the row. A truncated set is the
+    // newest calls, so the row's totals, which count every call, still apply
+    // and may only raise what the events already show.
+    const truncated = this.gatewayEventsTruncated;
+    if (truncated || !this.hasGatewayUsageEvents()) {
       if (typeof this.execution.total_tokens === 'number') {
-        this.totalTokens = this.execution.total_tokens;
+        this.totalTokens = truncated
+          ? Math.max(this.totalTokens, this.execution.total_tokens)
+          : this.execution.total_tokens;
       }
       this.tokenUsage = this.pickRicherUsage(
         this.tokenUsage,
         this.execution.token_usage ?? null
       );
       if (typeof this.execution.estimated_cost === 'number') {
-        this.budgetUsed = this.execution.estimated_cost;
+        this.budgetUsed = truncated
+          ? Math.max(this.budgetUsed, this.execution.estimated_cost)
+          : this.execution.estimated_cost;
         // Only a non-zero stored cost proves the execution was priced. A 0
         // alongside spent tokens means "we could not price this", not "this
         // was free", and must fall through to the token display.
@@ -2335,7 +2455,7 @@ export class FlowExecutionView extends LitElement {
       return;
     }
     if (name === 'timeline' && !this.gatewayEventsLoaded) {
-      this.loadGatewayEvents(true);
+      this.loadGatewayEvents(true, true);
     }
   }
 
@@ -2656,6 +2776,11 @@ export class FlowExecutionView extends LitElement {
 
   private renderTimelinePanel(running: boolean) {
     const rows = this.getTimelineRows();
+    // The first reads only. Status rows from the detail row can already be
+    // showing, so this is a line under them, not a replacement for them.
+    const timelineLoading =
+      this.isLoadingLogs ||
+      (this.isLoadingGatewayEvents && !this.gatewayEventsLoaded);
     return html`
       <div class="timeline-panel">
         <div class="timeline-toolbar">
@@ -2688,11 +2813,50 @@ export class FlowExecutionView extends LitElement {
           @scroll=${this.handleTimelineScroll}
         >
           ${
-            rows.length === 0
+            this.gatewayEventsTruncated
+              ? html`<div
+                  class="load-previous timeline-truncated"
+                  data-testid="timeline-truncated"
+                >
+                  <span>
+                    Showing the latest
+                    ${this.gatewayEvents.filter(isModelGatewayCall).length}
+                    model
+                    calls${
+                      this.gatewayEventsBounded
+                        ? '.'
+                        : ', the most one read returns. The summary totals still cover the whole run.'
+                    }
+                  </span>
+                  ${
+                    this.gatewayEventsBounded
+                      ? html`<sl-button
+                          size="small"
+                          variant="default"
+                          data-testid="load-earlier-calls"
+                          ?loading=${this.isLoadingGatewayEvents}
+                          @click=${() => void this.loadGatewayEvents(true)}
+                        >
+                          Load earlier model calls
+                        </sl-button>`
+                      : ''
+                  }
+                </div>`
+              : ''
+          }
+          ${
+            rows.length === 0 && !timelineLoading
               ? html`<div class="panel-empty">
                   Nothing recorded for this run yet.
                 </div>`
               : rows.map((row) => this.renderTimelineRow(row))
+          }
+          ${
+            timelineLoading
+              ? html`<div class="panel-loading" data-testid="timeline-loading">
+                  <sl-spinner></sl-spinner> Loading activity...
+                </div>`
+              : ''
           }
         </div>
         ${
@@ -2914,7 +3078,9 @@ ${execution.model_output_summary}</pre>
                     ${
                       query
                         ? `No log line matches "${query}".`
-                        : 'Waiting for logs...'
+                        : this.isLoadingLogs
+                          ? 'Loading logs...'
+                          : 'Waiting for logs...'
                     }
                   </p>
                 </div>`
@@ -3356,7 +3522,7 @@ ${execution.resolved_input_prompt}</pre>
 
     return html`
       <view-header
-        headerText=${this.flow?.name || 'Flow execution'}
+        headerText=${this.flow?.name || execution.flow_name || 'Flow execution'}
         width="wide"
       >
         <div slot="top" class="back-row">
@@ -3699,7 +3865,7 @@ ${log.payload.content}</pre>
     if (!this.executionId) return;
 
     const confirmed = await confirmRetryExecution({
-      flow_name: this.flow?.name,
+      flow_name: this.flow?.name ?? this.execution?.flow_name ?? undefined,
       agent_type: this.flow?.agent_type,
       model_name: this.flow?.ai_model_name,
     });

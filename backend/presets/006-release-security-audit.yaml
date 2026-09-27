@@ -325,6 +325,13 @@ prompt_template: |
       git ls-remote <vcs_url> '<tag>^{}' (read-only, no clone), then
       POST {"commit": "<40 hex sha>"} to OSV /v1/query so OSV
       evaluates its GIT ranges against that commit.
+      A component property preloop:types_only set to true means the
+      SBOM stamp confirmed the package ships no runtime files (an
+      @types/* package, or a package name ending in -types). The
+      audit may use that property as evidence that a git-range match
+      through the package vcs_url does not describe code in the
+      component. The property does not itself suppress a finding; a
+      VEX statement still does.
       UPSTREAM RESOLUTION (registry enrichment). Most vendored
       Arduino/PlatformIO components carry neither a vcs_url nor a
       resolvable tag. Before declaring such a component blind for
