@@ -206,11 +206,14 @@ class StreamStall:
         Returns:
             Operator-facing message. Carries STALL_MESSAGE_MARKER.
         """
-        wait = (
-            f"{self.stream_idle_timeout_seconds} seconds"
-            if self.stream_idle_timeout_seconds
-            else "the stream idle timeout"
-        )
+        if self.stream_idle_timeout_seconds:
+            silence = (
+                "The model provider sent nothing for "
+                f"{self.stream_idle_timeout_seconds} seconds at a time"
+            )
+        else:
+            # The run's log predates the line that records the bound.
+            silence = "The model provider stayed silent past the stream idle timeout"
         if self.idle_reconnects == 0:
             # Only the terminal line was seen (no retry lines in the log).
             reconnects = "Codex gave up on the call after the stream sent nothing"
@@ -223,8 +226,7 @@ class StreamStall:
                 reconnects += ", then gave up on the call"
         return (
             f"Execution timed out after {seconds} seconds ({budget_label}) "
-            f"{STALL_MESSAGE_MARKER}. The model provider sent nothing for "
-            f"{wait} at a time. {reconnects}. Lower "
+            f"{STALL_MESSAGE_MARKER}. {silence}. {reconnects}. Lower "
             f"agent_config.{STREAM_IDLE_TIMEOUT_CONFIG_KEY} to give up on a "
             "silent stream sooner, or use a different model or provider. "
             "Raising timeout_seconds only helps if the provider answers."

@@ -118,6 +118,8 @@ class TestDetectStreamStall:
         message = stall.timeout_message(900, "this flow's timeout budget")
         assert "0 times" not in message
         assert "gave up" in message
+        assert "for the stream idle timeout at a time" not in message
+        assert "stayed silent past the stream idle timeout." in message
 
     def test_websocket_idle_is_a_stall(self):
         stall = detect_stream_stall(
