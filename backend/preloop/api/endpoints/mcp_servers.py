@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, filter_viewable
 from preloop.api.auth import get_current_active_user
 from preloop.models.crud import crud_mcp_server
 from preloop.models.db.session import get_db_session
@@ -200,6 +201,7 @@ def list_mcp_servers(
         servers = crud_mcp_server.get_multi_by_account(
             db, account_id=str(current_user.account_id)
         )
+        servers = filter_viewable(db, current_user, VISIBLE_MCP_SERVER, servers)
         logger.info(f"Found {len(servers)} MCP servers")
 
         return [MCPServerResponse.model_validate(server) for server in servers]

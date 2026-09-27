@@ -20,6 +20,7 @@ from fastapi import (
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
+from preloop.plugins.account_hooks import VISIBLE_MANAGED_AGENT, filter_viewable
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
 from preloop.api.loop_safety import run_db_off_loop
@@ -1342,7 +1343,12 @@ def list_account_managed_agents(
         items=_enrich_managed_agent_summaries(
             db,
             account_id=str(account.id),
-            summaries=[dict(item) for item in result["items"]],
+            summaries=filter_viewable(
+                db,
+                current_user,
+                VISIBLE_MANAGED_AGENT,
+                [dict(item) for item in result["items"]],
+            ),
         ),
     )
 

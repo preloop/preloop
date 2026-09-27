@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
+from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
 from preloop.agents.runner_launch import (
     prepare_runner_delivery,
 )
@@ -191,7 +192,13 @@ def list_runners(
     rows = crud_flow_runner.list_for_account(
         db, account_id=current_user.account_id, skip=skip, limit=limit
     )
-    return [_to_response(row, db) for row in rows]
+    rows = filter_viewable(db, current_user, VISIBLE_RUNNER, rows)
+    # A runner shared from another account (account hook H3) never names
+    # the user who registered it.
+    return [
+        _to_response(row, db if row.account_id == current_user.account_id else None)
+        for row in rows
+    ]
 
 
 @router.get("/runners/fleet-summary", response_model=schemas.RunnerFleetSummary)
