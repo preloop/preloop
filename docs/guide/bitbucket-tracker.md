@@ -7,6 +7,10 @@ a verdict. Issues are not synced: keep them in Jira.
 
 Bitbucket Data Center is not supported.
 
+For the end-to-end setup where a Jira ticket becomes a Bitbucket pull request
+(tracker, Jira repository binding, presets, review policy, first ticket), see
+the [Bitbucket and Jira quickstart](bitbucket-jira-quickstart.md).
+
 ## What Preloop does and does not do
 
 Preloop can:
@@ -18,6 +22,9 @@ Preloop can:
 - approve or withdraw an approval, and request changes or remove the request;
 - open pull request tasks on review comments, when the token may (a 403 is
   logged and skipped, the review still goes through);
+- create a pull request from a flow and update its description on later
+  rounds;
+- post a commit build status for a reviewer verdict, when the flow enables it;
 - register one webhook per repository and verify every delivery.
 
 Preloop never merges or declines a pull request. The client refuses those
@@ -214,12 +221,35 @@ accept a Bitbucket pull request URL
   the thread. Pass the thread's top comment as `thread_id` when you resolve
   from a reply.
 
+`create_pull_request` opens a pull request from `source_branch` to
+`target_branch`. `reviewers` takes Bitbucket account IDs, user UUIDs or
+nicknames; unresolvable entries are reported as ignored, never fail the
+creation. `extra_options.close_source_branch` (or `remove_source_branch`,
+the GitLab spelling) sets the close-source-branch flag. Draft, labels,
+assignees and milestone do not exist on Bitbucket pull requests and are
+reported as ignored.
+
 Deleting comments is available in the tracker client but not exposed as an
 MCP tool.
+
+## Commit build statuses
+
+When a flow enables commit statuses for reviewer verdicts (the same option
+that produces GitHub check runs), the reviewer posts a build status on the
+pull request's head commit
+(`POST /repositories/{workspace}/{repo}/commit/{sha}/statuses/build`):
+`SUCCESSFUL` for approve, `FAILED` for request changes, `INPROGRESS` while
+the review runs. The status key is `preloop`, so a later run updates the same
+status instead of stacking new ones. The status carries the pull request's
+source branch as `refname`, which is what makes Bitbucket show it on the pull
+request and not only on the commit. A Bitbucket merge check can then require
+the status before merge.
 
 ## Not supported yet
 
 - Bitbucket Data Center.
-- Creating pull requests from flows (`create_pull_request` returns 501).
-- Commit build statuses.
-- OAuth token refresh.
+- OAuth token refresh: an expiring OAuth access token is not renewed, the
+  tracker must be reconnected when it expires.
+- Isolated publication. Bitbucket tokens cannot be downscoped to one
+  repository the way a GitHub App lease can, so multi-repository flows that
+  publish to Bitbucket use legacy publication mode.

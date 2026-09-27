@@ -21,17 +21,26 @@ the verdict or the gate the agent submitted.
 
 Three rules keep this from laundering a release:
 
-- a correction may only make the result more severe. An agent who already
-  failed minimum elements keeps that claim. ``counts_by_severity`` is always
-  derived from the findings, in either direction, because finding severity
-  is not edited and the gate reads the findings, not the aggregate.
-  Rewriting ``fail`` into ``pass`` stays a hard failure. Coercing a numeric
-  string does not move a verdict or a gate;
-- verdict labels still move only toward a more severe label. Coverage,
+- a correction to a measurement may only make the result more severe. An
+  agent who already failed minimum elements keeps that claim.
+  ``counts_by_severity`` is always derived from the findings, in either
+  direction, because finding severity is not edited and the gate reads the
+  findings, not the aggregate. Coercing a numeric string does not move a
+  verdict or a gate;
+- the SBOM verdict label (004, and ``sbom_audit`` inside a release audit)
+  still moves only toward a more severe label. The overall release-audit
+  verdict is recomputed from the document's facts
+  (:mod:`preloop.cra.verdict`) in both directions, but a downward
+  correction moves one step at most, and a ``fail`` is never moved when
+  the gate, SBOM validity or minimum elements did not pass. Coverage,
   license flags, the gate and finding severity stay as submitted;
 - every correction is recorded on the result under ``verdict_corrected``,
   with the submitted value and the reason. A minimum-elements correction
   keeps the agent's claim on that record.
+
+``vuln_scan.closed_by_vex`` and ``limitations`` on a release audit are
+platform facts derived from the findings and the checks. An agent-written
+value that disagrees is replaced and recorded the same way.
 """
 
 from __future__ import annotations
@@ -44,11 +53,18 @@ from typing import Any, Mapping, Optional, Sequence
 from preloop.cra.sbom_measure import MEASURED_FIELD
 from preloop.cra.schemas import (
     AUDIT_VERDICTS,
+    CLOSED_BY_VEX_FIELD,
+    LIMITATIONS_FIELD,
     GATE_CVSS_MAX,
     GATE_CVSS_MIN,
     SCHEMA_RELEASEAUDIT_V1,
     SCHEMA_SBOMAUDIT_V1,
     SCHEMA_VULNSCAN_V1,
+)
+from preloop.cra.verdict import (
+    PASS_DEFINITION,
+    limitation_names,
+    release_verdict_basis,
 )
 
 #: Least severe first. A correction may only move to the right.
@@ -126,30 +142,15 @@ def sbom_verdict_floor(body: Mapping[str, Any]) -> tuple[Optional[str], str]:
 def release_verdict_floor(obj: Mapping[str, Any]) -> tuple[Optional[str], str]:
     """Least severe overall verdict a release audit body supports, and why.
 
-    Mirrors ``_reconcile_release_verdict``.
+    A thin view over :func:`preloop.cra.verdict.release_verdict_basis`:
+    ``(None, "")`` means the facts support ``pass``.
     """
     if not isinstance(obj, Mapping):
         return None, ""
-    sbom = obj.get("sbom_audit") if isinstance(obj.get("sbom_audit"), Mapping) else {}
-    vuln = obj.get("vuln_scan") if isinstance(obj.get("vuln_scan"), Mapping) else {}
-    gate = vuln.get("gate") if isinstance(vuln.get("gate"), Mapping) else {}
-    if sbom.get("verdict") == "fail":
-        return "fail", "sbom_audit.verdict is fail"
-    if gate.get("passed") is False:
-        return "fail", "vuln_scan.gate.passed is false"
-
-    applied = gate.get("waivers_applied")
-    if isinstance(applied, list) and applied:
-        return "pass_with_findings", "waivers were applied"
-    findings = vuln.get("findings")
-    if isinstance(findings, list) and findings:
-        return "pass_with_findings", "vuln_scan.findings is not empty"
-    checks = obj.get("checks")
-    if isinstance(checks, list) and any(
-        isinstance(item, Mapping) and item.get("skipped") is True for item in checks
-    ):
-        return "pass_with_findings", "a check was skipped"
-    return None, ""
+    basis = release_verdict_basis(obj)
+    if basis.verdict == "pass":
+        return None, ""
+    return basis.verdict, basis.reasons[0]
 
 
 def _escalation(
@@ -179,12 +180,58 @@ def _escalation(
     )
 
 
+def _release_recompute(obj: Mapping[str, Any]) -> Optional[VerdictCorrection]:
+    """Recompute the overall release verdict from the document's facts.
+
+    Both directions are corrections, within two bounds: a ``fail`` is never
+    moved when the gate, SBOM validity or minimum elements did not pass
+    (:func:`preloop.cra.verdict.fail_locked`), and a downward correction
+    moves one step (``fail`` to ``pass_with_findings``, or
+    ``pass_with_findings`` to ``pass``). An upward correction goes straight
+    to what the facts require, as it always has.
+    """
+    submitted = obj.get("verdict")
+    if not isinstance(submitted, str) or submitted not in AUDIT_VERDICTS:
+        # "error" and unknown labels are not repairable.
+        return None
+    basis = release_verdict_basis(obj)
+    derived = basis.verdict
+    if derived == submitted:
+        return None
+    if VERDICT_SEVERITY[derived] > VERDICT_SEVERITY[submitted]:
+        return VerdictCorrection(
+            path="result.verdict",
+            submitted=submitted,
+            corrected=derived,
+            reason="; ".join(basis.reasons),
+        )
+    if submitted == "fail" and basis.fail_locked:
+        return None
+    step_down = {"fail": "pass_with_findings", "pass_with_findings": "pass"}
+    # One step down; ``derived`` is below ``submitted``, so never past it.
+    target = step_down[submitted]
+    if target == "pass":
+        reason = f"{PASS_DEFINITION} Recomputed: {basis.summary()}"
+    else:
+        reason = (
+            "the gate, SBOM validity and minimum elements passed; "
+            f"recomputed: {basis.summary()}"
+        )
+    return VerdictCorrection(
+        path="result.verdict",
+        submitted=submitted,
+        corrected=target,
+        reason=reason,
+    )
+
+
 def verdict_corrections(payload: Any) -> tuple[Any, list[VerdictCorrection]]:
     """Return a copy with derivable verdict labels corrected, and the record.
 
     The payload is returned unchanged (and the list empty) when nothing is
-    derivable, when the result is not a schema with a derivable verdict, or
-    when the only disagreement would soften the verdict.
+    derivable or the result is not a schema with a derivable verdict. SBOM
+    verdicts only escalate; the overall release verdict is recomputed in
+    both directions within the bounds of :func:`_release_recompute`.
     """
     if not isinstance(payload, Mapping):
         return payload, []
@@ -211,8 +258,7 @@ def verdict_corrections(payload: Any) -> tuple[Any, list[VerdictCorrection]]:
                 corrections.append(found)
         # After the nested correction, because a corrected sbom_audit fail
         # raises the floor for the overall verdict too.
-        floor, reason = release_verdict_floor(corrected)
-        found = _escalation(corrected, floor, reason, path="result")
+        found = _release_recompute(corrected)
         if found:
             corrected["verdict"] = found.corrected
             corrections.append(found)
@@ -244,15 +290,32 @@ SEVERITY_COUNT_KEYS: tuple[str, ...] = (
 )
 
 
+#: Failure prefixes for platform-derived facts. The persist boundary
+#: re-derives these, so they do not count as an unrelated contract failure.
+DERIVED_FACT_FAILURE_PREFIXES: tuple[str, ...] = (
+    f"result.vuln_scan.{CLOSED_BY_VEX_FIELD}",
+    f"result.{LIMITATIONS_FIELD}",
+    f"result.drift.{CLOSED_BY_VEX_FIELD}",
+    f"result.drift.{LIMITATIONS_FIELD}",
+)
+
+
 def failures_are_only_counts(failures: Sequence[str]) -> bool:
     """True when every failure is a ``counts_by_severity`` disagreement.
 
     A second, unrelated failure means the run still fails closed. Counts are
-    repaired only when they are the whole of the contract failure.
+    repaired only when they are the whole of the contract failure. A
+    disagreement on a platform-derived fact (``closed_by_vex``,
+    ``limitations``) is not unrelated: persist re-derives it anyway.
     """
     if not failures:
         return False
-    return all("counts_by_severity" in item for item in failures)
+    if not any("counts_by_severity" in item for item in failures):
+        return False
+    return all(
+        "counts_by_severity" in item or item.startswith(DERIVED_FACT_FAILURE_PREFIXES)
+        for item in failures
+    )
 
 
 def _record(body: dict[str, Any], corrections: list[VerdictCorrection]) -> None:
@@ -395,6 +458,106 @@ def apply_derived_severity_counts(
         return payload, []
     _record(corrected, corrections)
     return corrected, corrections
+
+
+def _tally_correction(
+    path: str, submitted: Any, derived: Any, reason: str
+) -> VerdictCorrection:
+    return VerdictCorrection(
+        path=path,
+        submitted=repr(submitted),
+        corrected=repr(derived),
+        reason=reason,
+    )
+
+
+def _stamp_drift(
+    drift: dict[str, Any], closed: int, names: list[str]
+) -> list[VerdictCorrection]:
+    """Write the current tallies into ``drift``, keeping the agent's baseline.
+
+    ``previous`` is what the baseline result recorded (``None`` when it
+    predates these fields); only the agent can read the baseline, so only
+    ``current`` is stamped. A disagreeing ``current`` is recorded.
+    """
+    corrections: list[VerdictCorrection] = []
+    for key, current in ((CLOSED_BY_VEX_FIELD, closed), (LIMITATIONS_FIELD, names)):
+        block = drift.get(key)
+        submitted = block.get("current") if isinstance(block, dict) else None
+        if isinstance(block, dict) and "current" in block and submitted != current:
+            corrections.append(
+                _tally_correction(
+                    f"result.drift.{key}.current",
+                    submitted,
+                    current,
+                    "derived from this run's findings and checks",
+                )
+            )
+        previous = block.get("previous") if isinstance(block, dict) else None
+        drift[key] = {"previous": previous, "current": current}
+    return corrections
+
+
+def apply_derived_verdict_facts(
+    payload: Any,
+) -> tuple[Any, list[VerdictCorrection], bool]:
+    """Stamp ``closed_by_vex``, ``limitations`` and their drift on a release audit.
+
+    Both are derived from the document (the findings and their VEX status,
+    and the checks) and never taken from the agent. An agent value that
+    disagrees is replaced and recorded as a correction; an absent one is
+    simply stamped.
+
+    Returns:
+        The payload (a copy only when something was stamped), the
+        corrections, and whether anything was stamped.
+    """
+    if not isinstance(payload, Mapping):
+        return payload, [], False
+    if payload.get("schema") != SCHEMA_RELEASEAUDIT_V1:
+        return payload, [], False
+    if not isinstance(payload.get("vuln_scan"), Mapping):
+        return payload, [], False
+    corrected = copy.deepcopy(dict(payload))
+    vuln = corrected["vuln_scan"]
+    basis = release_verdict_basis(corrected)
+    corrections: list[VerdictCorrection] = []
+
+    if CLOSED_BY_VEX_FIELD in vuln and vuln[CLOSED_BY_VEX_FIELD] != basis.closed_by_vex:
+        corrections.append(
+            _tally_correction(
+                f"result.vuln_scan.{CLOSED_BY_VEX_FIELD}",
+                vuln[CLOSED_BY_VEX_FIELD],
+                basis.closed_by_vex,
+                "derived from the findings list and each finding's VEX status",
+            )
+        )
+    vuln[CLOSED_BY_VEX_FIELD] = basis.closed_by_vex
+
+    if (
+        LIMITATIONS_FIELD in corrected
+        and corrected[LIMITATIONS_FIELD] != basis.limitations
+    ):
+        corrections.append(
+            _tally_correction(
+                f"result.{LIMITATIONS_FIELD}",
+                corrected[LIMITATIONS_FIELD],
+                basis.limitations,
+                "derived from the skipped checks that name a missing input",
+            )
+        )
+    corrected[LIMITATIONS_FIELD] = copy.deepcopy(basis.limitations)
+
+    drift = corrected.get("drift")
+    if isinstance(drift, dict):
+        corrections.extend(
+            _stamp_drift(
+                drift, basis.closed_by_vex, limitation_names(basis.limitations)
+            )
+        )
+
+    _record(corrected, corrections)
+    return corrected, corrections, corrected != dict(payload)
 
 
 #: EPSS is a probability. CVSS uses the gate's own 0 to 10 range.

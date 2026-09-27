@@ -1607,6 +1607,55 @@ describe('FlowExecutionView', () => {
       );
     });
 
+    it('says why the server stopped a run on its own', async () => {
+      const element = await load('exec-1');
+      const reason =
+        'Stopped because pull request example-org/widgets#12 was merged';
+      (element as any).execution = {
+        ...(element as any).execution,
+        status: 'STOPPED',
+        stop_reason: reason,
+        stop_source: 'pr_merged',
+        // What the orchestrator writes once the container is gone.
+        error_message: 'Execution stopped by user request after 42 seconds',
+      };
+      await element.updateComplete;
+
+      const line = element.shadowRoot!.querySelector(
+        '[data-testid="stop-line"]'
+      )!;
+      expect(line.textContent!.trim()).to.equal(reason);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="error-line"]') === null
+      ).to.equal(true, 'a stopped run shows no error line');
+
+      const output = element.shadowRoot!.querySelector(
+        'sl-tab-panel[name="output"]'
+      )!;
+      const section = output.querySelector('[data-testid="stop-reason"]')!;
+      expect(section.textContent).to.contain(reason);
+      expect(output.textContent).to.not.contain('by user request');
+    });
+
+    it('shows no stop reason on a run an operator stopped', async () => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        status: 'STOPPED',
+        stop_reason: null,
+        error_message: 'Manually stopped by user',
+      };
+      await element.updateComplete;
+
+      expect(element.shadowRoot!.querySelector('[data-testid="stop-line"]')).to
+        .not.exist;
+      const output = element.shadowRoot!.querySelector(
+        'sl-tab-panel[name="output"]'
+      )!;
+      expect(output.querySelector('[data-testid="stop-reason"]')).to.not.exist;
+      expect(output.textContent).to.contain('Manually stopped by user');
+    });
+
     it('explains an OOMKilled container in the failure summary', async () => {
       const element = await load('exec-1');
       (element as any).execution = {

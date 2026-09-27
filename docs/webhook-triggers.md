@@ -16,6 +16,14 @@ authorized model or harness overrides, including when nested under the
 webhook `payload`. Presence of `_resume` in the body is also not a trust
 signal.
 
+`webhook_secret` lives in the flow's `webhook_config` and is generated when
+the flow is created or switched to a webhook trigger. A tracker-triggered
+flow can carry `webhook_config` without a secret, for example only
+`supersede_on_update` (see
+[Pull Request Reviewer](guide/flows/pull-request-review.md#stale-reviews-stop-on-their-own)).
+An update that sends `webhook_config` without the secret keeps the stored
+one.
+
 ## Prompt placeholders
 
 Webhook fields are unbounded. A Dependabot pull-request body can be tens of

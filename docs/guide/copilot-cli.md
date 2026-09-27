@@ -174,13 +174,22 @@ Tool permissions are local to the profile:
 - `force_writes`, `--allow-all`, `--yolo`, `--model`, `--agent`, prompt,
   resume and MCP flags cannot be set in profile `argv`.
 
-The runner removes `COPILOT_PROVIDER_*`, `COPILOT_OFFLINE` and
-`COPILOT_ALLOW_ALL` from the Copilot environment so a host profile always
-uses the seat, never a BYOK endpoint. It also installs the Preloop usage
-hooks in `~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks`) before
-each run, leaving other hook files untouched. An unchanged hooks file is
-not rewritten, and a changed one is replaced atomically, so concurrent runs
+The Copilot environment is built from an allowlist: a per-OS system
+baseline, `COPILOT_*`, `GH_*` and `GITHUB_TOKEN` (so the seat login is
+preserved), proxy and TLS variables, and any names the profile lists in
+`pass_env`. `COPILOT_PROVIDER_*`, `COPILOT_OFFLINE` and `COPILOT_ALLOW_ALL`
+are removed on top of that, so a host profile always uses the seat, never a
+BYOK endpoint, and the operator's unrelated environment never reaches the
+run. The runner also installs the Preloop usage hooks in
+`~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks`) before each run,
+leaving other hook files untouched; hook entries use the `bash` command form
+on POSIX and `powershell` on Windows. An unchanged hooks file is not
+rewritten, and a changed one is replaced atomically, so concurrent runs
 never read a partial file.
+
+Host profiles run on Linux, macOS and Windows runners; see the
+[Windows quickstart](runners/quickstart-windows.md) for npm `.cmd` shim
+handling and command-line limits.
 
 Named errors:
 

@@ -24,6 +24,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the whole sequence fits in 5 seconds. On by default when stdin is not a TTY, so a cancelled
   CI job no longer leaves its run going; off in a terminal. See
   `docs/guide/flows/ci-trigger.md` (#1032).
+- Merging or closing a pull request (GitHub, GitLab or Bitbucket) stops
+  every execution still working on it: queued, running, parked, and runs a
+  comment on the request resumed. The stop goes through the same code as
+  the console's Stop button, runs whether or not a flow subscribes to the
+  merge, and is a no-op when nothing is bound. Flows that trigger on
+  `pull_request_merged`/`pull_request_closed` (or the merge request
+  equivalents) are left alone and still start. The execution records why
+  in `stop_reason` and `stop_source` (`pr_merged`, `pr_closed`), the
+  console shows the reason on the execution page, and each stop is logged
+  as a `flow_execution_stopped_for_pull_request` event (#1032).
+- `webhook_config.supersede_on_update` (default off): when a pull or merge
+  request gets a new head, the flow's run on the older head is stopped
+  (`stop_source` `pr_superseded`) before the run for the new head starts.
+  The Pull Request Reviewer preset sets it. Existing flows cloned from the
+  preset keep their current behaviour until the flag is set on them (#1032).
+- The MCP firewall derives a `browser_step` activity from each proxied
+  Playwright MCP (`@playwright/mcp`) `browser_*` tool call on a runtime
+  session, with no adapter on the agent side. The step joins the
+  `tool_call` row through the correlation id, the image returned by
+  `browser_take_screenshot` becomes the step's screenshot artifact under
+  the API's size, type and budget rules, and typed text, pressed keys and
+  selected values are never copied. What the agent receives does not
+  change. `MCP_PLAYWRIGHT_DERIVE_BROWSER_STEPS=false` turns it off. (#885)
+- Persistent runners can be deleted and have their token rotated.
+  `DELETE /api/v1/runners/{runner_id}` refuses with 409 while the runner holds
+  an execution; `?force=true` halts those executions and deletes it anyway.
+  `POST /api/v1/runners/{runner_id}/token` returns a new token once and the
+  old one is rejected at once. Both disconnect the live runner. The CLI adds
+  `preloop runner rotate-token` and `preloop runner disable --delete
+  [--force]`, and the Runners console page has Rotate token and Delete
+  actions.
+
+- Schema for account hierarchies (#986): accounts carry a parent, root,
+  materialized path and depth (every existing account becomes a root, depth
+  is capped at 1 for now); a `person` table links the `user` rows (one per
+  account membership) of one human; plus account access grants, resource
+  shares with a materialized recipient table, resource tags, tag key policies
+  and access rules. Tables and columns only, no endpoints yet. Existing users
+  are backfilled onto persons: rows with the same verified email share one
+  (at most one row per account), every other row gets its own. Upgrade note:
+  two revisions touch every `user` row. `20260928_person_backfill` links rows
+  with row locks only, so reads and new sign-ups continue, but an update to an
+  existing `user` row (a login records `last_login`) waits until it commits.
+  `20260928_person_constraints` then holds an exclusive lock on `user` across
+  the NOT NULL scan, two foreign key and two check validations and two index
+  builds, and every query on `user` waits while it runs. Measured on one
+  million `user` rows (local Postgres 16): the backfill took 40 to 57 s, the
+  locked revision 2 to 3 s. Both grow with the row count. On a large `user`
+  table, or where those stalls are not acceptable, drain the API first (see
+  "When to drain the API first" in `docs/operations/schema-migrations.md`).
 - **Revoke one CLI login.** Each `preloop auth login` records a
   `cli_session` row and its JWTs carry the row id (`sid`); the refresh
   token also carries a `jti` that rotates with the row, so a refresh token
@@ -47,6 +97,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/openai/v1` URL is reduced to the resource root), and a deployment or a
   Bedrock inference profile ARN is priced from
   `meta_data.provider_runtime.base_model` when set.
+- The Codex permission hook now pulls Preloop's rotated ChatGPT login back
+  into the local `auth.json` (atomic write) or the macOS Keychain, so a laptop
+  and Preloop sharing one Codex OAuth grant stop revoking each other. A
+  token-free `GET /api/v1/ai-models/{model_id}/credentials/marker` reports
+  when Preloop's copy is newer; the export response gains `last_refresh`.
+  When both copies changed, the later `last_refresh` wins. `preloop agents
+  sync-credentials "Codex CLI"` reconciles in both directions and prints which
+  direction ran. A pull is refused unless the local login and Preloop's copy
+  name the same ChatGPT account. A single holder stays the recommendation for
+  headless hosts.
 
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
   a login row selector, a revoke fan-out for "sign out everywhere", a
@@ -93,6 +153,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Copilot surface, whether MCP tool calls are governed, whether model
   calls are metered, whether hooks record a session, and whether spend
   is gateway usage or the premium-request import.
+- Private runners on Windows and macOS run host execution profiles (Cursor,
+  Copilot CLI) end to end. The runner finds `cursor-agent` and `copilot`
+  through per-OS locations (`%APPDATA%\npm`, `%USERPROFILE%\.copilot`,
+  Homebrew and npm global paths), unwraps npm `.cmd` shims to `node.exe` so
+  prompts never pass through `cmd.exe`, enforces Windows command-line limits
+  with named errors, and kills the whole process tree on halt (`taskkill
+  /T`). `preloop runner enable` installs a logon scheduled task on Windows
+  and a launchd agent on macOS, both running as the user with output in
+  `~/.preloop/runner.log`; `install`/`uninstall` are accepted aliases. Host
+  jobs now start from an allowlisted environment (system baseline, the
+  harness's own variables, plus profile `pass_env` names) instead of the
+  operator's full environment, `workspace_root` is optional (defaulting to
+  `~/.preloop/host-workspaces`), and Copilot hook entries use `powershell`
+  on Windows. See `docs/guide/runners/quickstart-windows.md` and
+  `quickstart-macos.md`.
 
 - Semantic search settings on the Sessions page: a card to opt the account in
   to embedding its session content, name the model and endpoint, choose
@@ -189,6 +264,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `webhook_config.webhook_secret` is optional in the flow API, so a flow
+  triggered by tracker events can carry `webhook_config` for
+  `supersede_on_update` alone. An update that sends `webhook_config`
+  without the secret keeps the stored one, and creating a webhook flow keeps
+  the other `webhook_config` keys next to the generated secret. The console
+  treats a flow as a webhook flow only when it has a secret (#1032).
+- The flow execution stop command lives in
+  `preloop.services.flow_execution_stop`, shared by the endpoint and the
+  pull request stops. Stopping an execution that already ended now answers
+  `{"status": "not_running", "execution_status": ...}` and leaves the row
+  as it was; it used to overwrite a finished run with STOPPED. A second stop
+  of a stopped execution still answers `{"status": "stopped"}` (#1032).
+- Release security audit verdicts: pass means: minimum elements passed, gate
+  passed, no open (non-VEX-closed) findings, no failed cross-checks, no
+  gap/partial register items. A finding closed by a valid VEX statement
+  (`not_affected` with a recognised justification, or `fixed`, plus a
+  statement id) stays in the findings ledger and the evidence pack, is counted
+  in `vuln_scan.closed_by_vex`, and no longer holds a clean audit at
+  `pass_with_findings`. A cross-check skipped because its input was not
+  delivered names that input in `missing_input` and is listed in
+  `limitations[]` instead of holding the verdict; a check that ran and failed
+  still holds it. `gap` and `partial` register items hold it, `declared` items
+  do not. The platform derives `closed_by_vex` and `limitations` at persist,
+  stamps them on `drift`, and recomputes the overall verdict with a recorded
+  correction in either direction: down by one step at most, and never away
+  from `fail` when the gate, SBOM validity or minimum elements failed.
+
 - API keys whose scopes are all `mcp:*` (flow execution, runtime session and
   managed agent credentials) are limited to MCP and the runtime routes that
   check their own credentials. Other REST routes answer 403 with
@@ -235,6 +337,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- A Jira-triggered flow bound to a code-host repository now clones that
+  repository on Copilot and Cursor host execution profiles too, with the
+  code-host tracker's credential only. Before, the host checkout ignored the
+  binding and failed the lease with "no repository URL". A binding that
+  cannot be applied fails the lease with a launch error that names it.
+
+- `POST` and `PUT /api/v1/ai-models` check `credential_payload` against
+  `credential_type` when it is written. A Codex subscription payload needs
+  `access`, `refresh`, `account_id` and `expires` (integer epoch
+  milliseconds); a Claude Code payload needs `access`, with optional
+  `refresh` and `expires`. A payload that breaks this now gets 422 listing
+  the missing or invalid keys, and nothing is stored. Before, it got 200, the
+  model showed as active, and the first completion failed with "credentials
+  are incomplete". `access_token`, `refresh_token` and `expires_at` get a
+  hint naming the expected key. The CLI converts an expiry given in seconds
+  to milliseconds before pushing (#1026).
 
 - Bedrock models saved with the `aws` provider alias no longer send the stored
   AWS credential JSON as an API key; they unpack it like `bedrock` models.

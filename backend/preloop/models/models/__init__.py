@@ -83,6 +83,12 @@ from .notification_preferences import NotificationPreferences
 from .registration_token import RegistrationToken
 from .team import Team, TeamMembership
 from .user import User, UserSource
+from .person import Person
+from .account_access_grant import AccountAccessGrant, account_access_grant_target
+from .access_rule import AccessRule
+from .resource_share import ResourceShare, ResourceShareRecipient
+from .resource_tag import ResourceTag, TagKeyPolicy
+from . import hierarchy  # noqa: F401  (registers the before_flush defaults)
 from .permission import Permission, Role, RolePermission, UserRole, TeamRole
 from .user_invitation import UserInvitation, UserInvitationStatus
 from .event import Event
@@ -227,6 +233,14 @@ __all__ = [
     "Team",
     "TeamMembership",
     "User",
+    "Person",
+    "AccountAccessGrant",
+    "account_access_grant_target",
+    "AccessRule",
+    "ResourceShare",
+    "ResourceShareRecipient",
+    "ResourceTag",
+    "TagKeyPolicy",
     "UserSource",
     "Permission",
     "Role",

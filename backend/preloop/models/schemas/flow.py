@@ -1156,8 +1156,21 @@ class FlowNotifications(BaseModel):
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
 
-    webhook_secret: str = Field(
-        description="Secure token for authenticating webhook requests (auto-generated)"
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description=(
+            "Secure token for authenticating webhook requests (auto-generated "
+            "for webhook triggers; unset on flows triggered by tracker events)"
+        ),
+    )
+    supersede_on_update: bool = Field(
+        default=False,
+        description=(
+            "When a pull or merge request gets a new head, stop this flow's "
+            "executions still working on an older head of the same request "
+            "before starting the new one. Off by default; the Pull Request "
+            "Reviewer preset turns it on."
+        ),
     )
     dedupe_path: Optional[str] = Field(
         default=None,

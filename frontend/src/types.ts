@@ -54,7 +54,14 @@ export function defaultFlowNotifications(): FlowNotifications {
 }
 
 export interface FlowWebhookConfig {
-  webhook_secret: string;
+  /** Set on webhook-triggered flows only; tracker flows have none. */
+  webhook_secret?: string | null;
+  dedupe_path?: string | null;
+  /**
+   * Stop this flow's run on an older pull request head when a new head
+   * arrives (#1032). Off unless the flow opts in.
+   */
+  supersede_on_update?: boolean;
 }
 
 /** Server-computed schedule state; read-only for the console. */

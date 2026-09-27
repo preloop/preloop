@@ -782,7 +782,9 @@ export class PreloopFlowForm extends LitElement {
       this.triggerType = 'schedule';
     } else if (source) {
       this.triggerType = 'tracker';
-    } else if (this.flow?.webhook_config) {
+    } else if (this.flow?.webhook_config?.webhook_secret) {
+      // A tracker flow can carry webhook_config for its other settings
+      // (supersede_on_update); only a secret makes it a webhook flow.
       this.triggerType = 'webhook';
     }
 
@@ -1657,14 +1659,27 @@ export class PreloopFlowForm extends LitElement {
         /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,37}[A-Za-z0-9])?(?:\[bot\])?$/.test(
           id
         );
+      // Bitbucket reviewer identities: a user UUID (braces optional) or an
+      // Atlassian account ID such as 712020:<uuid>. Legacy 24-hex account IDs
+      // pass the username rule. Resource identifiers (ari:cloud:...) are
+      // rejected: Bitbucket never reports them as an actor's account_id, so
+      // a trusted-reviewer entry in that form could never match.
+      const bitbucketActor = (id: unknown) =>
+        typeof id === 'string' &&
+        (/^\{?[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}?$/.test(
+          id
+        ) ||
+          /^[0-9]+:[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(
+            id
+          ));
       const valid =
         key === 'trusted_reviewer_ids'
-          ? (id: unknown) => numeric(id) || login(id)
+          ? (id: unknown) => numeric(id) || login(id) || bitbucketActor(id)
           : numeric;
       if (!Array.isArray(ids) || ids.some((id) => !valid(id))) {
         throw new Error(
           key === 'trusted_reviewer_ids'
-            ? 'Follow-up: enter reviewer usernames or app slugs such as preloop, or numeric actor IDs.'
+            ? 'Follow-up: enter reviewer usernames or app slugs such as preloop, numeric actor IDs, or Bitbucket account IDs / user UUIDs.'
             : 'Follow-up: enter comma-separated numeric provider actor IDs, not usernames.'
         );
       }
@@ -1712,7 +1727,7 @@ export class PreloopFlowForm extends LitElement {
                     [
                       'trusted_reviewer_ids',
                       'Trusted reviewers',
-                      'Usernames or app slugs, for example preloop. preloop matches reviews posted by the preloop[bot] GitHub App. A staging app is preloop-staging. Numeric actor IDs still work. Unlisted bots are ignored.',
+                      'Usernames or app slugs, for example preloop. On GitHub, preloop matches reviews posted by the preloop[bot] App; a staging app is preloop-staging. On Bitbucket, use the reviewer username, account ID or user UUID (approvals and change requests count as reviews). Numeric actor IDs still work. Unlisted bots are ignored.',
                     ],
                     [
                       'implementer_actor_ids',
@@ -2809,6 +2824,16 @@ export class PreloopFlowForm extends LitElement {
     `;
   }
 
+  /**
+   * The host's own name for a change request, used in filter copy.
+   *
+   * GitLab calls it a merge request; GitHub and Bitbucket call it a pull
+   * request. Unknown hosts fall back to the neutral "pull request".
+   */
+  private changeRequestNoun(trackerType?: string): string {
+    return trackerType === 'gitlab' ? 'merge request' : 'pull request';
+  }
+
   private renderEventFilters() {
     const tracker = this.trackers.find(
       (t: any) => t.id === this.flow.trigger_event_source
@@ -2913,9 +2938,14 @@ export class PreloopFlowForm extends LitElement {
                       ? html`
                           <sl-input
                             label="${
-                              tracker.tracker_type === 'gitlab'
-                                ? 'Reviewer (username)'
-                                : 'Requested reviewer (username)'
+                              tracker.tracker_type === 'github'
+                                ? 'Requested reviewer (username)'
+                                : 'Reviewer (username)'
+                            }"
+                            help-text="${
+                              tracker.tracker_type === 'bitbucket'
+                                ? 'Bitbucket username (nickname) of a reviewer added to the pull request. Approve and request changes are reviewer actions on the pull request, not separate reviews.'
+                                : 'Matches if any reviewer matches'
                             }"
                             placeholder="e.g. jane_smith"
                             .value=${this.flow.trigger_config?.reviewer || ''}
@@ -2930,7 +2960,6 @@ export class PreloopFlowForm extends LitElement {
                               }
                               this.requestUpdate();
                             }}
-                            help-text="Filter by reviewer (matches if any reviewer matches)"
                           ></sl-input>
                         `
                       : nothing
@@ -3067,13 +3096,9 @@ export class PreloopFlowForm extends LitElement {
                               this.requestUpdate();
                             }}
                           >
-                            Only when
-                            ${
-                              tracker.tracker_type === 'gitlab'
-                                ? 'Merge Request'
-                                : 'Pull Request'
-                            }
-                            is merged
+                            Only when the
+                            ${this.changeRequestNoun(tracker.tracker_type)} is
+                            merged
                           </sl-checkbox>
 
                           <sl-checkbox
@@ -3203,7 +3228,43 @@ export class PreloopFlowForm extends LitElement {
                                       >
                                     </sl-select>
                                   `
-                                : nothing
+                                : tracker.tracker_type === 'bitbucket'
+                                  ? html`
+                                      <sl-select
+                                        label="Pull request state"
+                                        .value=${this.flow.trigger_config?.state || ''}
+                                        @sl-change=${(e: any) => {
+                                          if (!this.flow.trigger_config)
+                                            this.flow.trigger_config = {};
+                                          const value = e.target.value;
+                                          if (value) {
+                                            this.flow.trigger_config.state =
+                                              value;
+                                          } else {
+                                            delete this.flow.trigger_config
+                                              .state;
+                                          }
+                                          this.requestUpdate();
+                                        }}
+                                        clearable
+                                        help-text="Filter by Bitbucket pull request state (declined and superseded are the closed states)"
+                                      >
+                                        <sl-option value=""
+                                          >Any state</sl-option
+                                        >
+                                        <sl-option value="open">Open</sl-option>
+                                        <sl-option value="merged"
+                                          >Merged</sl-option
+                                        >
+                                        <sl-option value="declined"
+                                          >Declined</sl-option
+                                        >
+                                        <sl-option value="superseded"
+                                          >Superseded</sl-option
+                                        >
+                                      </sl-select>
+                                    `
+                                  : nothing
                           }
                         `
                       : nothing

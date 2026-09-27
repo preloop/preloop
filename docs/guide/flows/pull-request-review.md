@@ -152,6 +152,21 @@ re-checked; the rest keep their checkbox untouched.
 
 `issue_coverage` is `[]` when the PR references no issue.
 
+## Stale reviews stop on their own
+
+When a pull request (GitHub, Bitbucket) or merge request (GitLab) is merged
+or closed, Preloop stops every execution still bound to it, in any flow of
+the account, unless that flow itself triggers on the merge or close. The
+execution shows the reason, for example "Stopped because pull request
+example/repo#12 was merged". Nothing happens if no run is bound.
+
+With `webhook_config.supersede_on_update: true`, a new head commit also
+stops the older run of the same flow on the same pull request before the
+new head is reviewed. The preset sets it; flows created from the preset
+before this change keep the old behaviour (the new head waits for the older
+run) until the flag is set on them. It applies only when the flow triggers
+on `pull_request_updated` (`merge_request_updated` on GitLab).
+
 ## Repository review policy
 
 Agent instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`,

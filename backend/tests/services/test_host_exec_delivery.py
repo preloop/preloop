@@ -240,3 +240,61 @@ async def test_delivery_fails_when_execution_is_gone(monkeypatch):
     )
     delivered = await prepare_runner_delivery(MagicMock(), _host_job(uuid4()))
     assert delivered["launch_error"] == "Host execution no longer exists"
+
+
+def _bound_context(credentials):
+    context = _pr_context(
+        repositories=[
+            {
+                "repository_url": "https://github.com/acme/api.git",
+                "tracker_id": "github-tracker",
+                "clone_path": "/workspace",
+                "branch": "develop",
+            }
+        ]
+    )
+    context["trigger_event_data"] = {"source": "jira", "tracker_id": TRACKER_ID}
+    context["repository_binding"] = {
+        "tracker_id": "github-tracker",
+        "repository": "acme/api",
+    }
+    context["git_credentials_map"] = credentials
+    return context
+
+
+def test_bound_checkout_uses_only_the_code_host_credential():
+    jira = {"token": "jira-token", "tracker_type": "jira"}
+    host = {"token": "ghs_host_token", "tracker_type": "github"}
+    plan = build_host_exec_checkout(
+        _bound_context({TRACKER_ID: jira, "github-tracker": host})
+    )
+    repo = plan["repositories"][0]
+    assert repo["url"] == "https://github.com/acme/api.git"
+    assert repo["token"] == "ghs_host_token"
+
+    plan = build_host_exec_checkout(_bound_context({TRACKER_ID: jira}))
+    assert "jira-token" not in str(plan)
+
+
+@pytest.mark.asyncio
+async def test_delivery_maps_repository_binding_errors_to_launch_error(monkeypatch):
+    from preloop.services.repository_binding import RepositoryBindingError
+
+    _, execution, _, _ = _patch_rows(monkeypatch, clone={"enabled": True})
+    monkeypatch.setattr(
+        "preloop.services.flow_orchestrator.FlowExecutionOrchestrator."
+        "_get_flow_details",
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        "preloop.services.flow_orchestrator.FlowExecutionOrchestrator."
+        "prepare_host_exec_checkout_context",
+        AsyncMock(side_effect=RepositoryBindingError("two bindings, none default")),
+    )
+    job = _host_job(execution.id)
+    with pytest.raises(HostExecDeliveryError, match="two bindings, none default"):
+        await hydrate_host_exec_job(MagicMock(), job)
+
+    delivered = await prepare_runner_delivery(MagicMock(), job)
+    assert "Repository binding cannot be applied" in delivered["launch_error"]
+    assert "two bindings, none default" in delivered["launch_error"]

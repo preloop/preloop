@@ -2,7 +2,8 @@
 
 A Jira project tracks issues but has no git repository. A flow triggered by a
 Jira issue event can still clone, push and open a pull request once the Jira
-project is bound to a repository on a code host (GitHub or GitLab today). A
+project is bound to a repository on a code host (GitHub, GitLab or Bitbucket
+Cloud). A
 new code host becomes bindable by registering it in `TRACKER_CLASSES` and
 setting `hosts_repositories` on its client; issue-only triggers are gated on
 `hosts_issues`, so registering a code host does not treat it as Jira-like.
@@ -40,7 +41,8 @@ no form for it in the console yet. Each entry:
 
 Only when all of these hold: git clone is enabled, the flow lists no
 `repositories` of its own, the trigger came from an issue-only tracker (Jira),
-and a binding exists. GitHub and GitLab triggered flows are unchanged.
+and a binding exists. GitHub, GitLab and Bitbucket triggered flows are
+unchanged.
 
 The execution fails with a clear message, before any token is minted, when
 the binding names a tracker of another account, a deleted or inactive
@@ -95,8 +97,8 @@ field in the flow form) matches the new status name exactly.
 
 ## Known limits
 
-- Isolated publication binds GitHub repositories only, so a GitLab binding
-  runs in the default publication mode.
+- Isolated publication binds GitHub repositories only, so a GitLab or
+  Bitbucket binding runs in the default publication mode.
 - The issue lifecycle merge audit is GitHub-only and expects the issue and
   the pull request in the same project, so it does not follow a bound Jira
   pull request yet.
