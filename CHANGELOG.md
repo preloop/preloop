@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The flow form edits Review instructions for the Pull Request Reviewer, and
+  for any prompt that references `flow.review_instructions`. The flow page
+  shows the text when it is set. The reviewer prompt still keeps the first
+  16 KiB.
+- A Copilot coverage matrix (`docs/guide/copilot.md`) states, for each
+  Copilot surface, whether MCP tool calls are governed, whether model
+  calls are metered, whether hooks record a session, and whether spend
+  is gateway usage or the premium-request import.
 - Private runners on Windows and macOS run host execution profiles (Cursor,
   Copilot CLI) end to end. The runner finds `cursor-agent` and `copilot`
   through per-OS locations (`%APPDATA%\npm`, `%USERPROFILE%\.copilot`,
@@ -139,6 +147,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- Model prices stay current between releases. Every API, gateway and worker
+  process now fetches the upstream litellm price map on startup and every
+  `MODEL_PRICE_MAP_TTL_SECONDS` (six hours by default) and merges new and
+  changed prices over the vendored snapshot, so a model released after the
+  snapshot is priced on its first request instead of waiting for a miss.
+  Operator-reviewed prices and the snapshot's first-party Moonshot and z.ai
+  rows are never overwritten. Each fetch logs one line (INFO on success with
+  the entry count and body sha256, WARNING on failure) and each
+  negative-cache entry logs one WARNING, and `/health` reports the last fetch
+  under `model_price_map`. A request denied because its model has no price
+  now also starts a price lookup; before, the denial never triggered one and
+  every retry was denied the same way. `model_price_live_lookup_enabled`
+  switches all of it off for air-gapped deployments (#801).
 
 - A flow execution dispatched in process (no execution worker) whose run
   raises before the runner records an outcome is marked `FAILED` with the
