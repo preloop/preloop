@@ -51,6 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `aiosmtplib` is no longer a core dependency (nothing imported it).
+  `maxminddb` and `user-agents` moved from the core dependency list to a new
+  `ee` extra, since only the Enterprise Edition growth plugin uses them. The
+  hash-pinned locks no longer carry these packages or `ua-parser`. Builds
+  that need them install `".[ee]"`.
+
+- The console's browser error reporting reads its Sentry DSN from
+  `VITE_SENTRY_DSN` at build time and is off when the variable is unset. The
+  repository no longer contains a DSN. The frontend Docker image accepts it
+  as a build argument.
+
 - At persist, a `minimum_elements.passed: true` claim is replaced when the
   delivered SBOM bytes are missing elements, and the agent's claim is kept
   on `verdict_corrected`. The verdict floor then moves the label to `fail`.
@@ -65,6 +76,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- A flow execution dispatched in process (no execution worker) whose run
+  raises before the runner records an outcome is marked `FAILED` with the
+  error and a failure category, instead of staying `PENDING` with the
+  exception never retrieved. The dispatch task is kept referenced until it
+  finishes.
+
+- NATS admin alert tasks are kept referenced until they finish, and a failed
+  alert is logged instead of dropped.
+
+- The improve-compliance modal no longer logs full API responses to the
+  browser console.
 
 - A workspace checkpoint that exceeds the storage cap logs
   `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
