@@ -57,6 +57,8 @@ jobs:
       requirements: ${{ steps.out.outputs.requirements }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
         if: github.event_name == 'pull_request'
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -93,6 +95,7 @@ jobs:
             helm:
               - 'helm/**'
               - 'scripts/helm-render-check.sh'
+              - 'backend/tests/helm/**'
             workflow:
               - '.github/workflows/ci.yml'
             # Anything that can change what a hash-pinned lock resolves to.
@@ -299,6 +302,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: ./.github/actions/setup-ci-python
@@ -343,6 +348,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: ./.github/actions/setup-ci-python
@@ -382,10 +389,30 @@ jobs:
     if: needs.changes.outputs.helm == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # helm is preinstalled on ubuntu-latest runners
       - name: Helm render checks (chart lint + CNPG backup wiring)
         run: sh scripts/helm-render-check.sh
+
+      # The chart guard tests skip when the helm binary is missing, and the
+      # backend shards may run in containers without helm. This runner has
+      # helm, so the security-relevant guards always execute somewhere.
+      - name: Set up Python
+        uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          pip install --require-hashes -r .github/requirements/app-dev.txt
+          pip install --no-deps -e .
+
+      - name: Helm chart guard tests
+        env:
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+        run: python -m pytest backend/tests/helm -q
 
   # Eight shards, each with its own Postgres. GitLab splits this suite into
   # dozens of per-file jobs; that is a poor fit here because each GitHub
@@ -447,6 +474,7 @@ jobs:
       # between runs, so say it out loud.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           clean: true
 
       - name: Set up Python
@@ -506,6 +534,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           clean: true
 
       - name: Set up Python
@@ -573,6 +602,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           clean: true
 
       - name: Set up Node.js
@@ -665,6 +695,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           clean: true
 
       - name: Set up Python
@@ -784,6 +815,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -822,6 +855,8 @@ jobs:
         working-directory: environments/egress-proxy
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -850,6 +885,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -919,6 +956,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -952,6 +991,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0

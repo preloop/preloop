@@ -17,6 +17,7 @@ import '../../components/json-tree.ts';
 import '../../components/list-toolbar.ts';
 import '../../components/preloop-session-observer.ts';
 import '../../components/token-figures.ts';
+import '../../components/session-embedding-settings.ts';
 import {
   getAccountRuntimeSessionDetail,
   getAccountRuntimeSessions,
@@ -249,6 +250,22 @@ export class RuntimeSessionsView extends LitElement {
         font-size: var(--sl-font-size-x-small);
         text-align: left;
         cursor: pointer;
+      }
+
+      .embedding-settings-toggle {
+        display: block;
+        margin: 0 0 var(--sl-spacing-small) auto;
+        padding: 0;
+        border: none;
+        background: transparent;
+        color: var(--sl-color-primary-600);
+        font-size: var(--sl-font-size-x-small);
+        cursor: pointer;
+      }
+
+      .embedding-settings {
+        display: block;
+        margin-bottom: var(--sl-spacing-medium);
       }
 
       .titles-upsell-hint:hover {
@@ -959,6 +976,12 @@ export class RuntimeSessionsView extends LitElement {
   }
 
   @state() private isPremium = true;
+  /**
+   * Whether the semantic search opt in card is open. Closed by default, and
+   * the card reads its setting only once opened, so a page load does not pay
+   * for the corpus progress count nobody asked to see.
+   */
+  @state() private embeddingSettingsOpen = false;
 
   /** Open the shell upgrade modal for AI session titles (passive list hint). */
   private openTitlesUpgrade(): void {
@@ -1581,6 +1604,54 @@ export class RuntimeSessionsView extends LitElement {
     );
   }
 
+  /** Whether the answer was keyword-only because the account never opted in. */
+  private semanticNotEnabled(): boolean {
+    return (
+      this.searchResults?.degraded?.reasons?.includes('semantic_not_enabled') ??
+      false
+    );
+  }
+
+  private toggleEmbeddingSettings(): void {
+    this.embeddingSettingsOpen = !this.embeddingSettingsOpen;
+  }
+
+  /**
+   * A saved opt in changes what the current search can do, so ask again
+   * rather than leave a stale "not opted in" notice on screen.
+   */
+  private handleEmbeddingChanged(): void {
+    if (this.searchQuery.trim()) {
+      void this.loadSearchResults();
+    }
+  }
+
+  private renderEmbeddingSettings() {
+    return html`
+      <button
+        type="button"
+        class="embedding-settings-toggle"
+        data-testid="embedding-settings-toggle"
+        aria-expanded=${this.embeddingSettingsOpen ? 'true' : 'false'}
+        @click=${this.toggleEmbeddingSettings}
+      >
+        ${
+          this.embeddingSettingsOpen
+            ? 'Hide semantic search settings'
+            : 'Semantic search settings'
+        }
+      </button>
+      ${
+        this.embeddingSettingsOpen
+          ? html`<session-embedding-settings
+              class="embedding-settings"
+              @session-embedding-changed=${this.handleEmbeddingChanged}
+            ></session-embedding-settings>`
+          : nothing
+      }
+    `;
+  }
+
   private renderSearchNotices() {
     const coverage = this.partialCoverageThrough();
     const floor = this.coverageFloorFrom();
@@ -1635,6 +1706,19 @@ export class RuntimeSessionsView extends LitElement {
                 <sl-alert variant="warning" open data-testid="degraded-notice">
                   <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
                   ${degraded}
+                  ${
+                    this.semanticNotEnabled() && !this.embeddingSettingsOpen
+                      ? html`<sl-button
+                          size="small"
+                          variant="text"
+                          data-testid="open-embedding-settings"
+                          @click=${() => {
+                            this.embeddingSettingsOpen = true;
+                          }}
+                          >Turn on semantic search</sl-button
+                        >`
+                      : nothing
+                  }
                 </sl-alert>
               `
             : ''
@@ -2412,6 +2496,7 @@ export class RuntimeSessionsView extends LitElement {
               </div>
               <span slot="count">${this.sessionCountLabel}</span>
             </list-toolbar>
+            ${this.renderEmbeddingSettings()}
             ${
               this.isPremium
                 ? nothing

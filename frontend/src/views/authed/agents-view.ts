@@ -83,6 +83,7 @@ import {
   type ListViewMode,
   type NarrowViewportSubscription,
 } from '../../utils/view-mode';
+import { debugLog } from '../../utils/debug';
 
 const AVAILABLE_AGENT_KINDS = [
   { value: 'openclaw', label: 'OpenClaw' },
@@ -2267,7 +2268,7 @@ export class AgentsView extends LitElement {
   private extractPreviewFromRequest(
     request: any
   ): { text: string; source: string } | null {
-    console.log(
+    debugLog(
       '[Canvas] extractPreviewFromRequest parsing API JSON Payload',
       request
     );
@@ -2281,7 +2282,7 @@ export class AgentsView extends LitElement {
           (part: any) => part.type === 'tool_use' || part.type === 'tool_call'
         );
         if (toolUsePart) {
-          console.log(
+          debugLog(
             '[Canvas] extractPreviewFromRequest found tool use:',
             toolUsePart.name
           );
@@ -2314,7 +2315,7 @@ export class AgentsView extends LitElement {
     }
 
     if (text) {
-      console.log(
+      debugLog(
         '[Canvas] extractPreviewFromRequest resolving bubble display:',
         text.substring(0, 50) + '...'
       );
@@ -2454,7 +2455,7 @@ export class AgentsView extends LitElement {
     const payload = message?.payload ?? {};
     const type = message?.type;
 
-    console.log(`[Canvas/Dashboard] Raw Event received: ${type}`, message);
+    debugLog(`[Canvas/Dashboard] Raw Event received: ${type}`, message);
 
     let agentId = payload.managed_agent_id || payload.flow_id;
     const sessionId =
@@ -2476,7 +2477,7 @@ export class AgentsView extends LitElement {
     }
 
     if (!agentId) {
-      console.log(
+      debugLog(
         '[Canvas] Cannot resolve agentId for event. managed: ',
         payload.managed_agent_id,
         ' session: ',

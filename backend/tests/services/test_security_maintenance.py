@@ -1770,11 +1770,25 @@ class TestRebuildCheckoutAndSweep:
             _same_session,
         ):
             with TestClient(app) as client:
-                blocked = client.post(
-                    f"/api/v1/approval-requests/{item.approval_request_id}/approve",
-                    headers={"Authorization": f"Bearer {secret}"},
-                    json={"approved": True, "comment": "managed key must not ship"},
+
+                def _approve():
+                    return client.post(
+                        f"/api/v1/approval-requests/{item.approval_request_id}/approve",
+                        headers={"Authorization": f"Bearer {secret}"},
+                        json={"approved": True, "comment": "managed key must not ship"},
+                    )
+
+                # The implementation run has finished, so its key no longer
+                # authenticates at all.
+                assert _approve().status_code == 401
+                # While the run is live the key authenticates, and the console
+                # route still refuses it.
+                execution = db_session.get(
+                    models.FlowExecution, item.implementation_execution_id
                 )
+                execution.status = "RUNNING"
+                db_session.flush()
+                blocked = _approve()
         assert blocked.status_code == 403
         db_session.refresh(item)
         assert item.state in {"tests_passed", "approval_pending"}
