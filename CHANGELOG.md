@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`preloop flow trigger --stop-on-interrupt`.** When `--wait` is
+  interrupted by SIGINT or SIGTERM, the CLI stops the execution on the
+  server (one stop request), prints the execution id and final status, and
+  exits 130 or 143. A run that already finished is reported, not stopped,
+  and the whole sequence fits in 5 seconds. On by default when stdin is not a TTY, so a cancelled
+  CI job no longer leaves its run going; off in a terminal. See
+  `docs/guide/flows/ci-trigger.md` (#1032).
 - Merging or closing a pull request (GitHub, GitLab or Bitbucket) stops
   every execution still working on it: queued, running, parked, and runs a
   comment on the request resumed. The stop goes through the same code as
