@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Copilot coverage matrix (`docs/guide/copilot.md`) states, for each
+  Copilot surface, whether MCP tool calls are governed, whether model
+  calls are metered, whether hooks record a session, and whether spend
+  is gateway usage or the premium-request import.
+
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
   the first event to PR opened, PR opened to approved, and approved to merged
