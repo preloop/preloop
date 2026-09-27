@@ -292,6 +292,10 @@ def update_runner_concurrency(
 
 
 @router.delete("/runners/{runner_id}", response_model=schemas.RunnerDeleteResponse)
+# Same tier as register and the concurrency edit, deliberately, including
+# force=true. Halting another member's execution is already an execute_flows
+# action: POST /flows/executions/{id}/command with "stop" is account scoped,
+# not owner scoped. Force delete stops those same executions and is audited.
 @require_permission("execute_flows")
 async def delete_runner(
     runner_id: UUID,

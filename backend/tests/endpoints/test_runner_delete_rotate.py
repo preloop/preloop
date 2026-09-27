@@ -1,5 +1,6 @@
 """Deleting a persistent runner and rotating its token (#841)."""
 
+import importlib.util
 from datetime import datetime, timezone
 from typing import Any, Dict, Tuple
 from unittest.mock import AsyncMock, MagicMock
@@ -314,3 +315,37 @@ def test_delete_and_rotate_close_the_live_socket(
     assert frames[-1]["type"] == "error"
     live.close.assert_awaited_once_with(code=1008)
     assert runner_id not in runners._live
+
+
+def test_delete_and_rotate_need_the_same_permission_as_the_other_runner_writes(
+    monkeypatch,
+):
+    """Delete (force included) and rotate sit at the register tier.
+
+    The installed build has no RBAC plugin, so ``require_permission`` is a
+    no-op here. A private copy of the module is loaded under a recording
+    plugin to read which permission each handler asks for.
+    """
+    import preloop.utils.permissions as perms
+
+    seen: Dict[str, str] = {}
+
+    def _recording_plugin(permission_name):
+        def decorator(func):
+            seen[func.__name__] = permission_name
+            return func
+
+        return decorator
+
+    monkeypatch.setattr(perms, "_plugin_require_permission", _recording_plugin)
+    spec = importlib.util.spec_from_file_location(
+        "runners_permission_probe", runners.__file__
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert seen["register_runner"] == "execute_flows"
+    assert seen["update_runner_concurrency"] == "execute_flows"
+    assert seen["delete_runner"] == seen["register_runner"]
+    assert seen["rotate_runner_token"] == seen["register_runner"]
+    assert seen["get_runner"] == "view_flows"
