@@ -87,7 +87,9 @@ preloop flow trigger <flow-id-or-name> --runner local --wait
 
 When stdin is not a TTY (CI), `flow trigger` waits by default, streams
 execution logs to stdout, and exits non-zero on FAILED / STOPPED /
-TIMEOUT. If no runner in the chosen private pool has a free slot, the job queues
+TIMEOUT. If the CI job is cancelled, the CLI stops the execution
+before exiting (see [cancelled CI jobs](../flows/ci-trigger.md#cancelled-ci-jobs-stop-the-execution)).
+If no runner in the chosen private pool has a free slot, the job queues
 for 15 minutes and then fails. Hosted compute is used only when no
 private runner is online, or when the flow or account default is
 `server`.

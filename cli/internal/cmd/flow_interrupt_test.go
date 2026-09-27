@@ -31,11 +31,36 @@ type fakeFlowAPI struct {
 	finalStatus string
 	onStatus    func(reads int)
 	statusReads int
+	// stopDelay and statusDelayAfterStop hold the reply to simulate a slow
+	// server; the handler sleeps outside the lock.
+	stopDelay            time.Duration
+	statusDelayAfterStop time.Duration
+}
+
+func (f *fakeFlowAPI) stops() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCalls
 }
 
 func (f *fakeFlowAPI) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		var delay time.Duration
+		switch {
+		case r.URL.Path == "/api/v1/flows/executions/exec-9/command":
+			// Counted on arrival: a client that gives up on a slow reply
+			// has still sent its one stop.
+			f.stopCalls++
+			delay = f.stopDelay
+		case r.URL.Path == "/api/v1/flows/executions/exec-9" && f.stopCalls > 0:
+			delay = f.statusDelayAfterStop
+		}
+		if delay > 0 {
+			f.mu.Unlock()
+			time.Sleep(delay)
+			f.mu.Lock()
+		}
 		defer f.mu.Unlock()
 		switch {
 		case r.URL.Path == "/api/v1/flows":
@@ -50,7 +75,6 @@ func (f *fakeFlowAPI) handler(t *testing.T) http.HandlerFunc {
 			}
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			f.stopCalls++
 			f.stopBodies = append(f.stopBodies, body)
 			if f.stopStatus != 0 {
 				w.WriteHeader(f.stopStatus)
@@ -304,8 +328,9 @@ func TestWaitForExecutionUntilSignalDuringBackoff(t *testing.T) {
 	var out bytes.Buffer
 	client := newTestFlowClient(FlagURL)
 	err := waitForExecutionUntil(client, "exec-9", time.Minute, &out, signals)
-	if fake.stopCalls != 1 || fake.statusReads != 2 {
-		t.Fatalf("stops=%d status reads=%d, want 1 and 2", fake.stopCalls, fake.statusReads)
+	// One poll, the liveness check on the signal, the final status read.
+	if fake.stopCalls != 1 || fake.statusReads != 3 {
+		t.Fatalf("stops=%d status reads=%d, want 1 and 3", fake.stopCalls, fake.statusReads)
 	}
 	if ProcessExitCode(err) != 130 {
 		t.Fatalf("err = %v", err)
@@ -314,4 +339,72 @@ func TestWaitForExecutionUntilSignalDuringBackoff(t *testing.T) {
 
 func newTestFlowClient(url string) *api.Client {
 	return api.NewClientWithToken(url, "tok")
+}
+
+func TestFlowTriggerInterruptAfterRunFinishedSendsNoStop(t *testing.T) {
+	fake := &fakeFlowAPI{}
+	signals, _ := setupInterruptTrigger(t, fake, false)
+	fake.onStatus = func(reads int) {
+		if reads == 1 {
+			// The poll saw RUNNING; the run succeeds before the signal is
+			// handled. A stop now would overwrite SUCCEEDED on servers that
+			// do not answer not_running.
+			signals <- os.Interrupt
+			fake.finalStatus = "SUCCEEDED"
+		}
+	}
+
+	var out bytes.Buffer
+	flowTriggerCmd.SetOut(&out)
+	err := runFlowTrigger(flowTriggerCmd, []string{"PR Review"})
+
+	if fake.stopCalls != 0 {
+		t.Fatalf("stop calls = %d, want 0 for a finished run", fake.stopCalls)
+	}
+	if ProcessExitCode(err) != 130 {
+		t.Fatalf("err = %v, want exit 130", err)
+	}
+	if !strings.Contains(out.String(), "execution exec-9 had already finished (final status SUCCEEDED)") {
+		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestFlowTriggerInterruptHandlingSharesOneDeadline(t *testing.T) {
+	cases := map[string]*fakeFlowAPI{
+		"slow stop":       {stopDelay: 2 * time.Second},
+		"slow final read": {statusDelayAfterStop: 2 * time.Second},
+	}
+	for name, fake := range cases {
+		t.Run(name, func(t *testing.T) {
+			signals, _ := setupInterruptTrigger(t, fake, false)
+			old := [4]time.Duration{flowStopTimeout, flowStopCheckTimeout, flowStopStatusReserve, flowStopMinRequest}
+			flowStopTimeout, flowStopCheckTimeout = 600*time.Millisecond, 100*time.Millisecond
+			flowStopStatusReserve, flowStopMinRequest = 100*time.Millisecond, 20*time.Millisecond
+			t.Cleanup(func() {
+				flowStopTimeout, flowStopCheckTimeout = old[0], old[1]
+				flowStopStatusReserve, flowStopMinRequest = old[2], old[3]
+			})
+			fake.onStatus = func(reads int) {
+				if reads == 1 {
+					signals <- os.Interrupt
+				}
+			}
+
+			var out bytes.Buffer
+			flowTriggerCmd.SetOut(&out)
+			started := time.Now()
+			err := runFlowTrigger(flowTriggerCmd, []string{"PR Review"})
+			elapsed := time.Since(started)
+
+			if elapsed > 1500*time.Millisecond {
+				t.Fatalf("interrupt handling took %s, want it bounded by the 600ms deadline", elapsed)
+			}
+			if n := fake.stops(); n != 1 {
+				t.Fatalf("stop calls = %d, want exactly 1", n)
+			}
+			if ProcessExitCode(err) != 130 {
+				t.Fatalf("err = %v, want exit 130", err)
+			}
+		})
+	}
 }

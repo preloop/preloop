@@ -25,11 +25,17 @@ const (
 	flowLogMaxPages        = 100
 	flowListPageSize       = 1000
 	flowListMaxPages       = 10
-	// flowStopTimeout bounds the stop request sent on interrupt. CI runners
-	// escalate a cancelled job to SIGKILL within seconds (GitHub Actions
-	// sends SIGINT, then SIGTERM after 7.5s, then SIGKILL), so the stop has
-	// to finish well inside that window.
-	flowStopTimeout = 5 * time.Second
+)
+
+// Interrupt handling budget. CI runners escalate a cancelled job to SIGKILL
+// within seconds (GitHub Actions sends SIGINT, then SIGTERM after 7.5s, then
+// SIGKILL 2.5s later), so everything the CLI does after the signal, from the
+// liveness check to the final status line, has to fit in one deadline.
+var (
+	flowStopTimeout       = 5 * time.Second
+	flowStopCheckTimeout  = time.Second
+	flowStopStatusReserve = time.Second
+	flowStopMinRequest    = 200 * time.Millisecond
 )
 
 var uuidPattern = regexp.MustCompile(
@@ -394,22 +400,50 @@ func sleepOrInterrupt(d time.Duration, interrupts <-chan os.Signal) os.Signal {
 	}
 }
 
-// stopInterruptedExecution sends exactly one stop for executionID, reports
-// the final status, and returns an error carrying the conventional exit code
-// for the signal (130 for SIGINT, 143 for SIGTERM). Further signals that
-// arrive while the stop is in flight are ignored so a runner's SIGINT then
-// SIGTERM escalation does not cut the stop short.
+// stopInterruptedExecution stops executionID at most once, reports the final
+// status, and returns an error carrying the conventional exit code for the
+// signal (130 for SIGINT, 143 for SIGTERM).
+//
+// The last poll can be seconds old when the signal lands, so the execution is
+// read once more first: a run that finished in the meantime is reported, not
+// stopped (servers before #1034 overwrite a finished run with STOPPED). Further
+// signals that arrive meanwhile are ignored so a runner's SIGINT then SIGTERM
+// escalation does not cut the stop short. The whole sequence shares one
+// deadline, flowStopTimeout from the signal.
 func stopInterruptedExecution(client *api.Client, executionID string, sig os.Signal, out io.Writer) error {
 	code := 130
 	if sig == syscall.SIGTERM {
 		code = 143
 	}
-	fmt.Fprintf(out, "Received %s, stopping execution %s\n", sig, executionID)
+	deadline := time.Now().Add(flowStopTimeout)
+	budget := func(reserve time.Duration) time.Duration {
+		if d := time.Until(deadline) - reserve; d > flowStopMinRequest {
+			return d
+		}
+		return flowStopMinRequest
+	}
+	interrupted := func(final string) error {
+		return &processExitError{
+			code: code,
+			err:  fmt.Errorf("interrupted by %s; execution %s final status %s", sig, executionID, final),
+		}
+	}
+	executionPath := "/api/v1/flows/executions/" + executionID
 
-	client.SetTimeout(flowStopTimeout)
+	client.SetTimeout(min(flowStopCheckTimeout, budget(flowStopStatusReserve)))
+	var current flowExecutionStatus
+	if err := client.Get(executionPath, &current); err == nil {
+		status := strings.ToUpper(strings.TrimSpace(current.Status))
+		if status == "SUCCEEDED" || terminalFailureStatuses[status] {
+			fmt.Fprintf(out, "Received %s; execution %s had already finished (final status %s)\n", sig, executionID, status)
+			return interrupted(status)
+		}
+	}
+
+	fmt.Fprintf(out, "Received %s, stopping execution %s\n", sig, executionID)
+	client.SetTimeout(budget(flowStopStatusReserve))
 	var stopped flowStopResult
-	path := "/api/v1/flows/executions/" + executionID + "/command"
-	if err := client.Post(path, map[string]any{"command": "stop"}, &stopped); err != nil {
+	if err := client.Post(executionPath+"/command", map[string]any{"command": "stop"}, &stopped); err != nil {
 		return &processExitError{
 			code: code,
 			err: fmt.Errorf(
@@ -421,8 +455,9 @@ func stopInterruptedExecution(client *api.Client, executionID string, sig os.Sig
 
 	final := strings.ToUpper(strings.TrimSpace(stopped.ExecutionStatus))
 	if final == "" {
+		client.SetTimeout(budget(0))
 		var exec flowExecutionStatus
-		if err := client.Get("/api/v1/flows/executions/"+executionID, &exec); err == nil {
+		if err := client.Get(executionPath, &exec); err == nil {
 			final = strings.ToUpper(strings.TrimSpace(exec.Status))
 		}
 	}
@@ -434,8 +469,5 @@ func stopInterruptedExecution(client *api.Client, executionID string, sig os.Sig
 	} else {
 		fmt.Fprintf(out, "Stopped execution %s (final status %s)\n", executionID, final)
 	}
-	return &processExitError{
-		code: code,
-		err:  fmt.Errorf("interrupted by %s; execution %s final status %s", sig, executionID, final),
-	}
+	return interrupted(final)
 }

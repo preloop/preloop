@@ -38,7 +38,8 @@ that directory to `$GITHUB_PATH` in the install step.
 When the job is cancelled (a newer push, a closed pull request, or the
 cancel button), the runner sends the CLI SIGINT or SIGTERM. In CI the CLI
 then stops the execution on the server, prints its id and final status, and
-exits 130 (SIGINT) or 143 (SIGTERM). This is `--stop-on-interrupt`, on by
+exits 130 (SIGINT) or 143 (SIGTERM). A run that finished just before the
+signal is reported, not stopped. This is `--stop-on-interrupt`, on by
 default when stdin is not a TTY. In a terminal it is off, so Ctrl-C only
 ends the CLI and the run continues; pass `--stop-on-interrupt` to stop it.
 
