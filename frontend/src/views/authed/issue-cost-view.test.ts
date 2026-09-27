@@ -230,6 +230,43 @@ describe('IssueCostView', () => {
     expect(url).to.contain('start_date=');
   });
 
+  it('keeps the unassigned panel hidden when hidden before the runs load', async () => {
+    const el = await fixture<IssueCostView>(
+      html`<issue-cost-view></issue-cost-view>`
+    );
+    await waitUntil(() => el.report !== null, 'report loaded');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const plainFetch = fetchStub.wrappedMethod.bind(window);
+    fetchStub.callsFake(async (input) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes('/cost/by-issue/unassigned/executions')) {
+        await gate;
+        return new Response(JSON.stringify(unassignedExecutions), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return plainFetch(input);
+    });
+
+    const pending = el.toggleUnassigned();
+    expect(el.unassignedRuns).to.equal('loading');
+    await el.toggleUnassigned();
+    expect(el.unassignedRuns).to.equal(null);
+    release();
+    await pending;
+    await el.updateComplete;
+
+    expect(el.unassignedRuns).to.equal(null);
+    expect(el.shadowRoot!.querySelector('tr[data-execution="exec-9"]')).to.equal(
+      null
+    );
+  });
+
   it('exports with the current filter', async () => {
     const el = await fixture<IssueCostView>(
       html`<issue-cost-view></issue-cost-view>`

@@ -1491,6 +1491,55 @@ def test_scheduled_rebuild_refreshes_estimates_from_synced_issues(
     assert world.rollup().estimate_points == Decimal("13.00")
 
 
+def test_scheduled_rebuild_reads_each_tracker_config_once_per_pass(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_estimates(world, {"points_label_prefix": "sp:"})
+    for number in (12, 13):
+        world.run(
+            world.triage, world.issue_details(number), start=T0, record=False
+        )
+    world.run(world.review, world.issue_details(12), start=T0, record=False)
+
+    reads: list[uuid.UUID] = []
+    original = crud_issue_cost.tracker_estimate_settings
+
+    def counting(db: Any, *, tracker_id: uuid.UUID) -> Any:
+        reads.append(tracker_id)
+        return original(db, tracker_id=tracker_id)
+
+    monkeypatch.setattr(crud_issue_cost, "tracker_estimate_settings", counting)
+    summary = rollup_service.scheduled_rebuild(
+        world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+    )
+
+    assert summary.recorded >= 3 and summary.estimates_checked >= 2
+    # One tracker, one read for the whole pass.
+    assert reads == [world.tracker.id]
+    # The cache lives only for the pass.
+    assert rollup_service._TRACKER_SETTINGS_CACHE not in world.db.info
+    rollup_service.observe_estimate(world.db, rollup=world.rollup(12))
+    assert len(reads) == 2
+
+
+def test_scheduled_rebuild_counts_a_failed_account_apart_from_a_locked_one(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, record=False)
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("rebuild failed")
+
+    monkeypatch.setattr(rollup_service, "rebuild", boom)
+    summary = rollup_service.scheduled_rebuild(
+        world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+    )
+
+    assert summary.accounts_failed >= 1
+    assert summary.accounts_skipped == 0
+    assert summary.as_dict()["accounts_failed"] == summary.accounts_failed
+
+
 def test_scheduled_rebuild_sweeper_pass_uses_the_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

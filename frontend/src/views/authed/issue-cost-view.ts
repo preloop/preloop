@@ -112,6 +112,8 @@ export class IssueCostView extends AuthedElement {
   @state() exporting: 'csv' | 'json' | null = null;
   @state() unassignedRuns: IssueCostExecution[] | 'loading' | 'error' | null =
     null;
+  /** Bumped on each unassigned toggle and reload; stale responses drop. */
+  private unassignedRequest = 0;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -207,6 +209,7 @@ export class IssueCostView extends AuthedElement {
     try {
       this.report = await getIssueCosts(this.filter());
       this.expanded = {};
+      this.unassignedRequest++;
       this.unassignedRuns = null;
     } catch (error) {
       this.error =
@@ -234,18 +237,21 @@ export class IssueCostView extends AuthedElement {
   }
 
   async toggleUnassigned(): Promise<void> {
+    // Any hide, reload or newer request supersedes a fetch in flight, so a
+    // panel the user closed stays closed when the old response lands.
+    const request = ++this.unassignedRequest;
     if (this.unassignedRuns) {
       this.unassignedRuns = null;
       return;
     }
     this.unassignedRuns = 'loading';
+    let runs: IssueCostExecution[] | 'error';
     try {
-      this.unassignedRuns = await getUnassignedIssueCostExecutions(
-        this.filter()
-      );
+      runs = await getUnassignedIssueCostExecutions(this.filter());
     } catch {
-      this.unassignedRuns = 'error';
+      runs = 'error';
     }
+    if (request === this.unassignedRequest) this.unassignedRuns = runs;
   }
 
   async download(format: 'csv' | 'json'): Promise<void> {

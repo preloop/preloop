@@ -856,6 +856,29 @@ def _rollup_for(
     return rollup
 
 
+# ``Session.info`` key of the per-pass tracker estimate settings cache.
+_TRACKER_SETTINGS_CACHE = "issue_cost_tracker_estimate_settings"
+
+
+def _tracker_estimate_settings(
+    db: Session, *, tracker_id: uuid.UUID
+) -> tuple[str, dict[str, Any]]:
+    """Tracker type and estimate configuration, cached for a scheduled pass.
+
+    ``scheduled_rebuild`` puts a dict on ``db.info`` for the length of one
+    pass, so each tracker's configuration is read once per pass instead of
+    once per execution and issue row. Outside a pass every call reads it.
+    """
+    cache = db.info.get(_TRACKER_SETTINGS_CACHE)
+    if not isinstance(cache, dict):
+        return crud_issue_cost.tracker_estimate_settings(db, tracker_id=tracker_id)
+    if tracker_id not in cache:
+        cache[tracker_id] = crud_issue_cost.tracker_estimate_settings(
+            db, tracker_id=tracker_id
+        )
+    return cache[tracker_id]
+
+
 def observe_estimate(
     db: Session,
     *,
@@ -877,7 +900,7 @@ def observe_estimate(
     Returns:
         True when the stored estimate changed.
     """
-    tracker_type, raw_config = crud_issue_cost.tracker_estimate_settings(
+    tracker_type, raw_config = _tracker_estimate_settings(
         db, tracker_id=rollup.tracker_id
     )
     config = estimate_config(raw_config)
@@ -1428,7 +1451,10 @@ class ScheduledRebuildSummary:
     """Counts of one scheduled rebuild pass, logged as one line."""
 
     accounts: int = 0
+    # Another replica held the account's lock; benign.
     accounts_skipped: int = 0
+    # The account's rebuild raised and was rolled back.
+    accounts_failed: int = 0
     examined: int = 0
     recorded: int = 0
     failed: int = 0
@@ -1441,6 +1467,7 @@ class ScheduledRebuildSummary:
         return {
             "accounts": self.accounts,
             "accounts_skipped": self.accounts_skipped,
+            "accounts_failed": self.accounts_failed,
             "examined": self.examined,
             "recorded": self.recorded,
             "failed": self.failed,
@@ -1485,6 +1512,30 @@ def scheduled_rebuild(
     Returns:
         The pass summary.
     """
+    db.info[_TRACKER_SETTINGS_CACHE] = {}
+    try:
+        return _scheduled_rebuild(
+            db,
+            lookback=lookback,
+            per_account_limit=per_account_limit,
+            max_accounts=max_accounts,
+            estimate_limit=estimate_limit,
+            now=now,
+        )
+    finally:
+        db.info.pop(_TRACKER_SETTINGS_CACHE, None)
+
+
+def _scheduled_rebuild(
+    db: Session,
+    *,
+    lookback: timedelta,
+    per_account_limit: int,
+    max_accounts: int,
+    estimate_limit: int,
+    now: Optional[datetime],
+) -> ScheduledRebuildSummary:
+    """The body of ``scheduled_rebuild``, run with the settings cache set."""
     summary = ScheduledRebuildSummary()
     end = now or datetime.now(UTC)
     start = end - lookback
@@ -1519,7 +1570,7 @@ def scheduled_rebuild(
                 exc_info=True,
             )
             db.rollback()
-            summary.accounts_skipped += 1
+            summary.accounts_failed += 1
             continue
         summary.accounts += 1
         summary.examined += examined
@@ -1544,7 +1595,12 @@ def scheduled_rebuild(
                 exc_info=True,
             )
     db.commit()
-    if summary.recorded or summary.failed or summary.estimates_changed:
+    if (
+        summary.recorded
+        or summary.failed
+        or summary.accounts_failed
+        or summary.estimates_changed
+    ):
         logger.info("Issue cost scheduled rebuild: %s", summary.as_dict())
     return summary
 
