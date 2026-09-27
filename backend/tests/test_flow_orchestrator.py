@@ -3493,6 +3493,111 @@ class TestPerFlowTimeoutBudget:
             "timeout_source": "flow",
         }
 
+    _IDLE_WARN = (
+        "2026-09-27T03:34:41.594867Z  WARN codex_core::responses_retry: stream "
+        "disconnected - retrying sampling request (1/5 in 187ms)... retries=1 "
+        "max_retries=5 sampling_error=stream disconnected before completion: "
+        "idle timeout waiting for SSE"
+    )
+
+    async def _time_out(self, orchestrator, executor, lines):
+        for line in lines:
+            orchestrator.execution_logger.log_agent_output(line)
+        with patch(
+            "preloop.services.flow_orchestrator.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            return await orchestrator._monitor_agent_execution("session-1", executor)
+
+    @pytest.mark.asyncio
+    async def test_timeout_on_a_silent_stream_names_the_stall(
+        self, mock_nats_client, event_data
+    ):
+        """#872: a run that spent its budget on a stream that sent nothing
+        says so, instead of reading like a run that needed more time."""
+        executor = _confirmation_executor(monitor_status=AgentStatus.RUNNING)
+        orchestrator = self._orchestrator(mock_nats_client, event_data, 900)
+
+        result = await self._time_out(
+            orchestrator,
+            executor,
+            [
+                "PRELOOP_STREAM_IDLE_TIMEOUT_SECONDS=450",
+                "PRELOOP_AGENT_EXEC_START",
+                "user",
+                "Review this diff.",
+                self._IDLE_WARN,
+                "ERROR: Reconnecting... 1/5",
+            ],
+        )
+
+        assert result["status"] == "FAILED"
+        assert result["failure_category"] == "model_stream_idle"
+        assert result["error_message"].startswith(
+            "Execution timed out after 900 seconds (this flow's timeout budget) "
+            "while waiting on a silent model stream."
+        )
+        assert "450 seconds" in result["error_message"]
+        assert result["result"]["stream_stall"] == {
+            "reason": "model_stream_idle",
+            "idle_reconnects": 1,
+            "retries_exhausted": False,
+            "stream_idle_timeout_seconds": 450,
+            "last_signal": self._IDLE_WARN,
+        }
+        executor.stop.assert_awaited_once_with("session-1")
+        stalled = _milestones(orchestrator, "agent_stream_stalled")
+        assert stalled[0]["details"]["reason"] == "model_stream_idle"
+        assert (
+            orchestrator._terminal_failure_category("FAILED", result)
+            == "model_stream_idle"
+        )
+
+    @pytest.mark.asyncio
+    async def test_stall_keeps_the_agent_result_artifact(
+        self, mock_nats_client, event_data
+    ):
+        executor = _confirmation_executor(
+            monitor_status=AgentStatus.RUNNING,
+            artifact={"status": "running", "note": "half done"},
+        )
+        orchestrator = self._orchestrator(mock_nats_client, event_data, 900)
+        orchestrator._capture_result_artifact = AsyncMock(
+            return_value={"status": "running", "note": "half done"}
+        )
+
+        result = await self._time_out(orchestrator, executor, [self._IDLE_WARN])
+
+        assert result["result"]["note"] == "half done"
+        assert result["result"]["stream_stall"]["idle_reconnects"] == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_after_the_stream_recovered_stays_a_timeout(
+        self, mock_nats_client, event_data
+    ):
+        executor = _confirmation_executor(monitor_status=AgentStatus.RUNNING)
+        orchestrator = self._orchestrator(mock_nats_client, event_data, 900)
+
+        result = await self._time_out(
+            orchestrator,
+            executor,
+            [self._IDLE_WARN, "ERROR: Reconnecting... 1/5", "codex", "Reading."],
+        )
+
+        assert "failure_category" not in result
+        assert "silent model stream" not in result["error_message"]
+        assert "this flow's timeout budget" in result["error_message"]
+        assert not _milestones(orchestrator, "agent_stream_stalled")
+        assert orchestrator._terminal_failure_category("FAILED", result) == "timeout"
+
+    def test_budget_labels_match_the_timeout_messages(self):
+        for budget in (
+            TimeoutBudget(seconds=900, source="flow"),
+            TimeoutBudget(seconds=900, source="default"),
+            TimeoutBudget(seconds=600, source="flow", consumed_seconds=300),
+        ):
+            assert budget.label() in budget.timeout_message()
+
     def test_timeout_messages_stay_in_the_timeout_category(self):
         """The failure-category classifier keys off this sentence."""
         from preloop.services.flow_failure_category import derive_failure_category

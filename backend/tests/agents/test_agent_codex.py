@@ -511,6 +511,14 @@ class TestCodexStreamIdleBound:
         assert "stream_idle_timeout_ms" not in script
         assert "PRELOOP_STREAM_IDLE_TIMEOUT_SECONDS" not in script
 
+    def test_retry_reason_is_logged_before_codex_runs(self):
+        """Without it, 'Reconnecting... n/m' does not say the stream idled."""
+        script = self._script({}, 1800)
+
+        export = 'export RUST_LOG="${RUST_LOG:-error},codex_core::responses_retry=warn"'
+        assert export in script
+        assert script.index(export) < script.index("| codex exec $CODEX_RESUME_ARGS")
+
     def test_script_is_valid_bash(self, tmp_path):
         import shutil
         import subprocess

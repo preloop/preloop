@@ -54,9 +54,14 @@ from preloop.agents.verification import (
 )
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+    FAILURE_CATEGORY_MODEL_STREAM_IDLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
     derive_failure_category,
+)
+from preloop.services.stream_stall import (
+    STREAM_STALL_RESULT_KEY,
+    detect_stream_stall,
 )
 from preloop.services.no_progress_guard import (
     NO_COMMITS_MARKER,
@@ -524,6 +529,14 @@ class TimeoutBudget:
     #: parked, so a 2 hour flow gets 2 hours of agent time however many days
     #: the approval took.
     consumed_seconds: int = 0
+
+    def label(self) -> str:
+        """Which budget this is, for a sentence about it expiring."""
+        if self.consumed_seconds:
+            return "the remainder of this flow's timeout budget"
+        if self.source == "flow":
+            return "this flow's timeout budget"
+        return "the default timeout budget"
 
     def timeout_message(self) -> str:
         """Operator-facing failure message naming the budget that expired."""
@@ -5382,6 +5395,36 @@ class FlowExecutionOrchestrator:
             )
         return self._budget_after_park(TimeoutBudget(seconds=clamped, source="flow"))
 
+    def _name_stream_stall(
+        self, timeout_result: Dict[str, Any], budget: TimeoutBudget
+    ) -> None:
+        """Say so when a timed-out run was waiting on a silent model stream.
+
+        Without this, a run that spent its budget on a stream that sent
+        nothing reads exactly like a run that needed more time (issue #872).
+        When the log shows the stall was still on at the deadline, the
+        message names it, ``failure_category`` is ``model_stream_idle``, and
+        ``result.stream_stall`` carries the evidence. Otherwise the result is
+        left as the plain timeout it is.
+
+        Args:
+            timeout_result: The monitor's timeout result, updated in place.
+            budget: The budget that expired.
+        """
+        stall = detect_stream_stall(self.execution_logger.get_agent_output_lines())
+        if stall is None:
+            return
+        evidence = stall.as_result()
+        timeout_result["error_message"] = stall.timeout_message(
+            budget.seconds, budget.label()
+        )
+        timeout_result["failure_category"] = FAILURE_CATEGORY_MODEL_STREAM_IDLE
+        result = timeout_result.get("result")
+        result = dict(result) if isinstance(result, dict) else {}
+        result[STREAM_STALL_RESULT_KEY] = evidence
+        timeout_result["result"] = result
+        self.execution_logger.log_milestone("agent_stream_stalled", evidence)
+
     def _chain_consumed_seconds(self) -> int:
         """Agent wall clock already spent by the park chain this run continues."""
         from preloop.services.approval_park import consumed_seconds_from_details
@@ -6087,17 +6130,19 @@ class FlowExecutionOrchestrator:
             )
             await agent_executor.stop(session_reference)
 
-            return {
+            # A timed-out eval run may still have written result.json; the
+            # stopped container is kept, so the artifact is reachable.
+            timeout_result = {
                 "status": "FAILED",
                 "error_message": timeout_budget.timeout_message(),
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                # A timed-out eval run may still have written result.json;
-                # the stopped container is kept, so the artifact is reachable.
                 "result": await self._capture_result_artifact(
                     agent_executor, session_reference
                 ),
             }
+            self._name_stream_stall(timeout_result, timeout_budget)
+            return timeout_result
 
         except Exception as e:
             error_message = _exception_message(e)

@@ -1,14 +1,172 @@
-"""The stream idle bound and the stall reason on a timed-out run (#872)."""
+"""The stream idle bound and the stall reason on a timed-out run (#872).
+
+The log lines below were captured from the pinned Codex CLI (0.153.4) with
+``RUST_LOG=error,codex_core::responses_retry=warn``, against a local server
+that accepts ``POST /v1/responses`` and never sends a byte
+(``stream_idle_timeout_ms = 2000``, ``stream_max_retries = 2``).
+"""
 
 import pytest
 
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_MODEL_STREAM_IDLE,
+    derive_failure_category,
+)
 from preloop.services.stream_stall import (
+    STALL_MESSAGE_MARKER,
     STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
     STREAM_IDLE_TIMEOUT_MAX_SECONDS,
     STREAM_IDLE_TIMEOUT_MIN_SECONDS,
+    detect_stream_stall,
     resolve_stream_idle_timeout_seconds,
     validate_stream_idle_timeout,
 )
+
+HEADER = [
+    "PRELOOP_STREAM_IDLE_TIMEOUT_SECONDS=450",
+    "PRELOOP_AGENT_EXEC_START",
+    "Reading prompt from stdin...",
+    "OpenAI Codex v0.153.4",
+    "user",
+    "Review this diff. Reply with REVIEW_JSON: then FLOW_EXECUTION_SUCCESS.",
+    "",
+    "warning: Model metadata for `deepseek/deepseek-v4-flash` not found. "
+    "Defaulting to fallback metadata; this can degrade performance and cause "
+    "issues.",
+]
+WARN_1 = (
+    "2026-09-27T03:34:41.594867Z  WARN codex_core::responses_retry: stream "
+    "disconnected - retrying sampling request (1/2 in 187ms)... "
+    "turn_id=01a0e0ed-dab7-72e0-a837-1ac22d4e8b99 retries=1 max_retries=2 "
+    "sampling_error=stream disconnected before completion: idle timeout "
+    "waiting for SSE"
+)
+WARN_2 = WARN_1.replace("(1/2 in 187ms)", "(2/2 in 364ms)").replace(
+    "retries=1", "retries=2"
+)
+RECONNECT_1 = "ERROR: Reconnecting... 1/2"
+RECONNECT_2 = "ERROR: Reconnecting... 2/2"
+GAVE_UP = "ERROR: stream disconnected before completion: idle timeout waiting for SSE"
+
+
+class TestDetectStreamStall:
+    def test_run_killed_during_a_reconnect_is_a_stall(self):
+        """The #872 shape: one idle timeout, a reconnect, then the budget."""
+        stall = detect_stream_stall(HEADER + [WARN_1, RECONNECT_1])
+
+        assert stall is not None
+        assert stall.idle_reconnects == 1
+        assert stall.retries_exhausted is False
+        assert stall.stream_idle_timeout_seconds == 450
+        assert "idle timeout waiting for SSE" in stall.last_signal
+
+    def test_every_retry_spent_on_idle_streams(self):
+        stall = detect_stream_stall(
+            HEADER + [WARN_1, RECONNECT_1, WARN_2, RECONNECT_2, GAVE_UP, GAVE_UP]
+        )
+
+        assert stall is not None
+        assert stall.idle_reconnects == 2
+        assert stall.retries_exhausted is True
+
+    def test_recovered_stream_is_not_a_stall(self):
+        """A run that stalled, recovered and then ran long just timed out."""
+        lines = HEADER + [
+            WARN_1,
+            RECONNECT_1,
+            "codex",
+            "Looking at the diff now.",
+            "tokens used",
+            "1532",
+        ]
+
+        assert detect_stream_stall(lines) is None
+
+    def test_stall_after_recovery_is_counted_from_the_last_activity(self):
+        lines = HEADER + [
+            WARN_1,
+            RECONNECT_1,
+            "codex",
+            "partial answer",
+            WARN_2,
+            RECONNECT_2,
+        ]
+
+        stall = detect_stream_stall(lines)
+
+        assert stall is not None
+        assert stall.idle_reconnects == 1
+
+    def test_reconnect_without_a_reason_is_not_called_idle(self):
+        """Codex prints the same line for 5xx and resets."""
+        assert detect_stream_stall(HEADER + [RECONNECT_1]) is None
+
+    def test_quiet_log_is_not_a_stall(self):
+        assert detect_stream_stall(HEADER) is None
+        assert detect_stream_stall([]) is None
+
+    def test_terminal_line_alone_is_enough(self):
+        """Older scripts did not set RUST_LOG; only the final line names it."""
+        stall = detect_stream_stall([RECONNECT_1, RECONNECT_2, GAVE_UP])
+
+        assert stall is not None
+        assert stall.idle_reconnects == 0
+        assert stall.retries_exhausted is True
+        assert stall.stream_idle_timeout_seconds is None
+        message = stall.timeout_message(900, "this flow's timeout budget")
+        assert "0 times" not in message
+        assert "gave up" in message
+
+    def test_websocket_idle_is_a_stall(self):
+        stall = detect_stream_stall(["idle timeout waiting for websocket"])
+
+        assert stall is not None
+
+    def test_ansi_and_padding_are_ignored(self):
+        assert detect_stream_stall(["\x1b[31m" + WARN_1 + "\x1b[0m"]) is not None
+        stall = detect_stream_stall(
+            ["\x1b[31m" + WARN_1 + "\x1b[0m", "  \x1b[1mcodex\x1b[0m  "]
+        )
+
+        assert stall is None
+
+    def test_result_shape(self):
+        stall = detect_stream_stall(HEADER + [WARN_1])
+
+        assert stall.as_result() == {
+            "reason": "model_stream_idle",
+            "idle_reconnects": 1,
+            "retries_exhausted": False,
+            "stream_idle_timeout_seconds": 450,
+            "last_signal": WARN_1,
+        }
+
+
+class TestStallMessage:
+    def test_message_names_the_stall_and_the_knob(self):
+        stall = detect_stream_stall(HEADER + [WARN_1, RECONNECT_1])
+
+        message = stall.timeout_message(900, "this flow's timeout budget")
+
+        assert message.startswith(
+            "Execution timed out after 900 seconds (this flow's timeout budget) "
+            + STALL_MESSAGE_MARKER
+        )
+        assert "450 seconds" in message
+        assert "reconnected once" in message
+        assert "agent_config.stream_idle_timeout_seconds" in message
+        assert "\u2014" not in message
+
+    def test_message_is_classified_as_a_stream_stall(self):
+        stall = detect_stream_stall(HEADER + [WARN_1, WARN_2, GAVE_UP])
+
+        message = stall.timeout_message(1800, "the default timeout budget")
+
+        assert (
+            derive_failure_category(status="FAILED", error_message=message)
+            == FAILURE_CATEGORY_MODEL_STREAM_IDLE
+        )
+
 
 class TestResolveStreamIdleTimeout:
     def test_default_is_the_previous_wait(self):

@@ -331,3 +331,53 @@ class TestRobustness:
             )
             == "model_transient"
         )
+
+
+class TestModelStreamIdle:
+    """A timeout on a silent model stream is named, not lumped in (#872)."""
+
+    STALL = (
+        "Execution timed out after 900 seconds (this flow's timeout budget) "
+        "while waiting on a silent model stream. The model provider sent "
+        "nothing for 450 seconds at a time. Codex reconnected once after the "
+        "stream sent nothing."
+    )
+
+    def test_in_the_vocabulary_and_fits_the_column(self):
+        assert "model_stream_idle" in FAILURE_CATEGORIES
+        assert len("model_stream_idle") <= FAILURE_CATEGORY_MAX_LENGTH
+
+    def test_stall_sentence_wins_over_the_plain_timeout(self):
+        assert (
+            derive_failure_category(status="FAILED", error_message=self.STALL)
+            == "model_stream_idle"
+        )
+
+    def test_stall_sentence_wins_over_a_transient_verdict(self):
+        """The log also says 'stream disconnected'; the stall is the cause."""
+        assert (
+            derive_failure_category(
+                status="FAILED",
+                error_message=self.STALL,
+                failure_analysis={"error_class": "network", "transient": True},
+            )
+            == "model_stream_idle"
+        )
+
+    def test_plain_timeout_is_still_a_timeout(self):
+        message = (
+            "Execution timed out after 900 seconds (this flow's timeout "
+            "budget). Raise timeout_seconds on the flow if the work "
+            "genuinely needs longer."
+        )
+        assert (
+            derive_failure_category(status="FAILED", error_message=message) == "timeout"
+        )
+
+    def test_codex_idle_text_alone_does_not_claim_a_timeout(self):
+        """Codex giving up on its own is a non-timeout failure."""
+        message = "stream disconnected before completion: idle timeout waiting for SSE"
+        assert (
+            derive_failure_category(status="FAILED", error_message=message)
+            == "model_transient"
+        )

@@ -695,6 +695,11 @@ echo "Provider: {model_provider}"
 {mcp_status_line}
 echo "=========================="
 {idle_bound_line}
+# Name the reason on each reconnect. Without this target at warn, Codex's
+# "Reconnecting... n/m" lines do not say why, and the idle reason is only
+# printed after every retry is spent. The orchestrator reads it to say a
+# timed-out run was waiting on a silent stream (issue #872).
+export RUST_LOG="${{RUST_LOG:-error}},codex_core::responses_retry=warn"
 
 # Resume the prior CLI session when a correlated restart restored one;
 # expands to nothing on a cold start.
