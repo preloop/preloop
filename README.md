@@ -71,7 +71,7 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **MCP Firewall** | Govern every tool call. Allow, deny, require approval, require justification. YAML + CEL. | MintMCP, Lunar.dev MCPX, TrueFoundry |
 | **AI Model Gateway** | OpenAI-, Anthropic- and Gemini-compatible. Budgets, allowed-model lists, token accounting, attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Flows** | Start an agent when a tracker, webhook, or CI job fires, with the same firewall, approvals, and cost. `preloop flow trigger`. | Custom CI glue, AgentCore Runtime |
-| **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including usage you import when the model never hits the gateway. | FinOps dashboards, vendor billing exports |
+| **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including usage you import when the model never hits the gateway, such as [GitHub Copilot seats and premium-request spend](docs/guide/copilot-usage-import.md). | FinOps dashboards, vendor billing exports |
 | **Human Approvals** | Mobile, watch, Slack, Mattermost, email, webhook, or `preloop approvals`. Native `Bash`/`Edit`. Agents can `ask_user`. | Custom Slack bots, Peta Desk |
 | **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes. | AgentOps, Langfuse, LangSmith |
 | **Evidence packs** | Apache flow presets write `result.json` plus an evidence directory for CRA / AI Act-style work. Not a certification. | Custom GRC folders |

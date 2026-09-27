@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Cost page has a Copilot tab that imports GitHub Copilot seats, daily
+  premium-request spend per developer and model, and per-user usage metrics
+  from GitHub once a day. The operator enters the seat price. The figures are
+  marked "Not metered by the gateway" and never count toward gateway usage,
+  budgets or quota. See `docs/guide/copilot-usage-import.md`.
+
 - The execution page Report tab reads one evidence-pack member at a time
   (`GET /api/v1/flows/executions/{id}/evidence/members`) and shows the report,
   findings and register. A verdict or findings summary on the run appears in
