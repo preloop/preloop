@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now takes `enabled`, `daily_cap_usd`, `provider`, `model_identifier` and
   `base_url` alongside `scope`, and its read carries the deployment default
   cap, the kill switch state and corpus progress.
+- The environment image (`environments/preloop/Dockerfile`) installs the
+  distro Perl toolchain: `perl`, `cpanminus`, `perlver`
+  (`Perl::MinimumVersion`), `perlcritic`, and `prove`. The default hosted
+  reviewer sandbox remains `ghcr.io/openai/codex-universal` and still does
+  not include Perl. A private runner installs the linter with
+  `cpanm Perl::MinimumVersion`.
 
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
@@ -134,6 +140,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
 ### Changed
+
+- API keys whose scopes are all `mcp:*` (flow execution, runtime session and
+  managed agent credentials) are limited to MCP and the runtime routes that
+  check their own credentials. Other REST routes answer 403 with
+  `detail.code` `api_key_scope_denied`, and console WebSockets refuse them. A
+  flow execution key also stops authenticating on REST, MCP and the model
+  gateway once its execution has finished (the browser-step flush and the
+  agent control and note pull routes keep accepting it until revocation or
+  expiry). `API_KEY_SCOPE_ENFORCEMENT=audit` logs
+  instead of refusing, and `off` turns the check off. Personal API keys are
+  unchanged.
 
 - `aiosmtplib` is no longer a core dependency (nothing imported it).
   `maxminddb` and `user-agents` moved from the core dependency list to a new
