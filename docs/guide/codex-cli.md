@@ -46,3 +46,24 @@ Keychain entry Codex prefers) with a stamp in the local enrollment state, and
 pushes the local bundle when it is newer. A failed push is logged and does
 not change the permission decision. When the hook is not installed, run
 `preloop agents sync-credentials "Codex CLI"`.
+
+To push a Codex login through the API yourself, send `PUT /api/v1/ai-models/{id}`
+with `credential_type: "oauth_openai_codex"` and a `credential_payload` in
+Preloop's shape, not the key names from `auth.json`:
+
+```json
+{
+  "access": "<access token>",
+  "refresh": "<refresh token>",
+  "account_id": "<ChatGPT account id>",
+  "expires": 1893456000000
+}
+```
+
+`access`, `refresh`, and `account_id` must be non-empty strings. `expires` is
+the access-token expiry as an integer in epoch milliseconds. The server checks
+the payload when you write it and answers 422 with the missing or invalid keys,
+without storing anything. `access_token`, `refresh_token`, and `expires_at` are
+rejected with a hint that names the expected key, and an `expires` in epoch
+seconds or microseconds is rejected too. This is the same shape
+`POST /api/v1/ai-models/{id}/credentials/export` returns.

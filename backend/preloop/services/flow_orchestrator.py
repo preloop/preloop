@@ -1111,6 +1111,9 @@ class FlowExecutionOrchestrator:
                 context=self._status_context,
                 description=description,
                 target_url=target_url,
+                # Bitbucket attaches a build status to a pull request only
+                # when refname names its source branch.
+                refname=self._extract_pr_branch_from_trigger(),
             )
 
             logger.info(
@@ -2130,19 +2133,39 @@ class FlowExecutionOrchestrator:
         return None
 
     def _resolve_repository_url_from_trigger(self) -> Optional[str]:
-        """Extract repository URL from trigger event data."""
-        try:
-            # GitHub structure
-            if "repository" in self.trigger_event_data:
-                repo = self.trigger_event_data["repository"]
-                if isinstance(repo, dict):
-                    return repo.get("clone_url") or repo.get("html_url")
+        """Extract repository URL from trigger event data.
 
-            # GitLab structure
-            if "project" in self.trigger_event_data:
-                project = self.trigger_event_data["project"]
+        Trigger events nest the provider payload under ``payload`` (see
+        ``FlowTriggerService.process_event``), so the repository is looked up
+        there first. The top level is still checked for callers that pass a
+        bare provider payload.
+        """
+        try:
+            payload = self.trigger_event_data.get("payload")
+            candidates = [payload, self.trigger_event_data]
+            for data in candidates:
+                if not isinstance(data, dict):
+                    continue
+
+                # GitHub and Bitbucket structure
+                repo = data.get("repository")
+                if isinstance(repo, dict):
+                    url = repo.get("clone_url") or repo.get("git_http_url")
+                    if not url:
+                        # Bitbucket webhooks carry only the HTML link.
+                        html = repo.get("html_url") or (
+                            (repo.get("links") or {}).get("html") or {}
+                        ).get("href")
+                        url = html
+                    if url:
+                        return url
+
+                # GitLab structure
+                project = data.get("project")
                 if isinstance(project, dict):
-                    return project.get("http_url_to_repo") or project.get("web_url")
+                    url = project.get("http_url_to_repo") or project.get("web_url")
+                    if url:
+                        return url
 
             return None
         except Exception as e:
@@ -2197,6 +2220,20 @@ class FlowExecutionOrchestrator:
             username = resolve_tracker_git_username(tracker)
             if username:
                 credentials["username"] = username
+            if str(tracker.tracker_type or "").lower() == "bitbucket":
+                # The container's post-execution REST calls send Bearer and
+                # retry HTTP Basic <email>:<token> on a 401, exactly like the
+                # tracker client. Only a personal API token has that fallback;
+                # access and OAuth tokens are Bearer-only. The email is not a
+                # secret.
+                details = tracker.connection_details or {}
+                email = details.get("email")
+                auth_type = str(
+                    details.get("auth_type") or tracker.auth_type or "api_token"
+                ).lower()
+                token_kind = str(details.get("token_kind") or "api_token").lower()
+                if email and auth_type == "api_token" and token_kind == "api_token":
+                    credentials["email"] = str(email)
             return credentials
 
         except Exception as e:
@@ -2290,7 +2327,11 @@ class FlowExecutionOrchestrator:
                 return None
 
             host_kind = tracker_host_kind(repo_url)
-            if host_kind is None and tracker_type not in {"github", "gitlab"}:
+            if host_kind is None and tracker_type not in {
+                "github",
+                "gitlab",
+                "bitbucket",
+            }:
                 logger.warning(
                     "Could not determine tracker type for %s; "
                     "using the generic credential username",
@@ -4569,30 +4610,19 @@ class FlowExecutionOrchestrator:
 
     @staticmethod
     def _tracker_kind(client: Any) -> Optional[str]:
-        from preloop.sync.trackers.github import GitHubTracker
-        from preloop.sync.trackers.gitlab import GitLabTracker
-
-        if isinstance(client, GitLabTracker):
-            return "gitlab"
-        if isinstance(client, GitHubTracker):
-            return "github"
-        return None
+        """The git host kind of a tracker client, or None for issue trackers."""
+        kind = str(getattr(client, "tracker_type", "") or "").lower()
+        return kind if kind in {"github", "gitlab", "bitbucket"} else None
 
     async def _lookup_published_pr(
         self, client: Any, branch: str
     ) -> Optional[Dict[str, str]]:
         """The open PR/MR whose head is ``branch`` on ``client``'s repo."""
         kind = self._tracker_kind(client)
-        if kind == "gitlab":
-            listing = await client.list_merge_requests(
-                state="open", limit=5, page=1, source_branch=branch
-            )
-        elif kind == "github":
-            listing = await client.list_pull_requests(
-                state="open", limit=5, page=1, head_branch=branch
-            )
-        else:
+        lookup = getattr(client, "list_open_pull_requests_by_source_branch", None)
+        if kind is None or lookup is None:
             return None
+        listing = await lookup(branch)
         for item in (listing or {}).get("items") or []:
             if not isinstance(item, dict):
                 continue

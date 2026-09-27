@@ -228,7 +228,7 @@ def test_agent_receives_read_credential_without_db_fallback_or_post_push() -> No
     ):
         assert executor._resolve_repository_token(
             {"tracker_id": "tracker"}, context
-        ) == ("read-lease", "github")
+        ) == ("read-lease", "github", None)
         context["git_credentials_map"]["tracker"]["permission"] = "write"
         with pytest.raises(ValueError, match="read-only"):
             executor._resolve_repository_token({"tracker_id": "tracker"}, context)

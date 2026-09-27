@@ -944,7 +944,7 @@ class TestExtractBranchFromTrigger:
         with patch.object(
             container_executor,
             "_get_token_from_project",
-            return_value=(None, None),
+            return_value=(None, None, None),
         ):
             command = container_executor._prepare_git_clone_command(context)
 
@@ -1394,7 +1394,9 @@ class TestGitCloneCredentialsNotInUrl:
         context = self._context()
         context["git_credentials_map"] = {}
         with patch.object(
-            container_executor, "_get_token_from_project", return_value=(None, None)
+            container_executor,
+            "_get_token_from_project",
+            return_value=(None, None, None),
         ):
             command = container_executor._prepare_git_clone_command(context)
 
@@ -1676,7 +1678,9 @@ class TestPushCredentialsWithoutRepositoryTracker:
     def test_push_token_reaches_the_container_environment(self, container_executor):
         context = self._context()
         with patch.object(
-            container_executor, "_get_token_from_project", return_value=(None, None)
+            container_executor,
+            "_get_token_from_project",
+            return_value=(None, None, None),
         ):
             commands = container_executor._prepare_git_post_execution_commands(context)
 
@@ -1688,7 +1692,9 @@ class TestPushCredentialsWithoutRepositoryTracker:
     def test_clone_installs_the_credential_helper(self, container_executor):
         context = self._context()
         with patch.object(
-            container_executor, "_get_token_from_project", return_value=(None, None)
+            container_executor,
+            "_get_token_from_project",
+            return_value=(None, None, None),
         ):
             command = container_executor._prepare_git_clone_command(context)
 
@@ -1703,7 +1709,9 @@ class TestPushCredentialsWithoutRepositoryTracker:
         """The pre-fix behaviour, kept as the contrast case."""
         context = self._context(with_trigger_tracker=False)
         with patch.object(
-            container_executor, "_get_token_from_project", return_value=(None, None)
+            container_executor,
+            "_get_token_from_project",
+            return_value=(None, None, None),
         ):
             commands = container_executor._prepare_git_post_execution_commands(context)
 
@@ -1733,7 +1741,7 @@ class TestPushCredentialsWithoutRepositoryTracker:
         with patch.object(
             container_executor,
             "_get_token_from_project",
-            return_value=("github_pat_from_project", "github"),
+            return_value=("github_pat_from_project", "github", None),
         ):
             container_executor._prepare_git_post_execution_commands(context)
 

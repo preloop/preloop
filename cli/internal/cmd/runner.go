@@ -59,15 +59,17 @@ var runnerFgCmd = &cobra.Command{
 }
 
 var runnerEnableCmd = &cobra.Command{
-	Use:   "enable",
-	Short: "Install a system service for preloop runner fg",
-	RunE:  runRunnerEnable,
+	Use:     "enable",
+	Aliases: []string{"install"},
+	Short:   "Install a system service for preloop runner fg",
+	RunE:    runRunnerEnable,
 }
 
 var runnerDisableCmd = &cobra.Command{
-	Use:   "disable",
-	Short: "Remove the runner system service",
-	RunE:  runRunnerDisable,
+	Use:     "disable",
+	Aliases: []string{"uninstall"},
+	Short:   "Remove the runner system service",
+	RunE:    runRunnerDisable,
 }
 
 var runnerStartCmd = &cobra.Command{
@@ -1265,7 +1267,15 @@ func runRunnerDisable(cmd *cobra.Command, args []string) error {
 	case "linux":
 		return os.Remove(systemdUserUnitPath())
 	case "windows":
-		return exec.Command("schtasks", "/Delete", "/TN", "PreloopRunner", "/F").Run()
+		if err := exec.Command("schtasks", "/Delete", "/TN", "PreloopRunner", "/F").Run(); err != nil {
+			return err
+		}
+		if scriptPath, pathErr := windowsRunnerTaskScriptPath(); pathErr == nil {
+			if err := os.Remove(scriptPath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
 	default:
 		return fmt.Errorf("service install is not implemented on %s", runtime.GOOS)
 	}
@@ -1320,12 +1330,40 @@ func systemdUserUnitPath() string {
 	return filepath.Join(home, ".config", "systemd", "user", "preloop-runner.service")
 }
 
-func writeLaunchdPlist(bin string, out io.Writer) error {
-	path := launchdPlistPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+// runnerServiceLogPath is where the managed macOS and Windows services write
+// runner output. systemd captures output in the journal, so Linux has no file.
+func runnerServiceLogPath() (string, error) {
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
 	}
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "runner.log"), nil
+}
+
+// xmlEscape escapes a value for embedding in the launchd property list.
+func xmlEscape(value string) string {
+	return strings.NewReplacer(
+		"&", "&amp;", "<", "&lt;", ">", "&gt;",
+	).Replace(value)
+}
+
+// launchdPlistBody renders the LaunchAgent. The agent runs in the user's
+// login session so the operator's local agent CLI logins stay visible.
+// launchd starts agents with a minimal PATH, so the common Homebrew and
+// local-bin locations are appended for the runner's child processes.
+func launchdPlistBody(bin, logPath, home string) string {
+	// The plist targets macOS, so the PATH is joined with "/" regardless of
+	// the OS this code compiles on (the unit test runs everywhere).
+	path := strings.Join([]string{
+		strings.TrimRight(home, "/") + "/.local/bin",
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin", "/bin", "/usr/sbin", "/sbin",
+	}, ":")
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -1334,14 +1372,34 @@ func writeLaunchdPlist(bin string, out io.Writer) error {
   <array><string>%s</string><string>runner</string><string>fg</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>%s</string>
+  </dict>
 </dict>
 </plist>
-`, bin)
+`, xmlEscape(bin), xmlEscape(logPath), xmlEscape(logPath), xmlEscape(path))
+}
+
+func writeLaunchdPlist(bin string, out io.Writer) error {
+	path := launchdPlistPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	logPath, err := runnerServiceLogPath()
+	if err != nil {
+		return err
+	}
+	home, _ := os.UserHomeDir()
+	body := launchdPlistBody(bin, logPath, home)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return err
 	}
 	_ = exec.Command("launchctl", "load", path).Run()
-	fmt.Fprintf(out, "Installed %s\n", path)
+	fmt.Fprintf(out, "Installed %s (logs: %s)\n", path, logPath)
 	return nil
 }
 
@@ -1371,20 +1429,62 @@ WantedBy=default.target
 	return nil
 }
 
+// windowsRunnerTaskScriptPath is the PowerShell launcher the scheduled task
+// runs. A script file sidesteps schtasks /TR quoting limits and captures the
+// runner's output to a log file, which a headless task otherwise discards.
+func windowsRunnerTaskScriptPath() (string, error) {
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "runner-task.ps1"), nil
+}
+
+// windowsRunnerTaskScript renders the launcher. Paths are single-quoted for
+// PowerShell (embedded single quotes doubled), and *>> appends every output
+// stream to the log.
+func windowsRunnerTaskScript(bin, logPath string) string {
+	quote := func(s string) string {
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	}
+	return "& " + quote(bin) + " runner fg *>> " + quote(logPath) + "\n"
+}
+
+// writeWindowsScheduledTask registers a logon task for the current user.
+// Running as the user (not SYSTEM) keeps the operator's agent CLI logins
+// visible to host execution profiles.
 func writeWindowsScheduledTask(bin string, out io.Writer) error {
+	scriptPath, err := windowsRunnerTaskScriptPath()
+	if err != nil {
+		return err
+	}
+	logPath, err := runnerServiceLogPath()
+	if err != nil {
+		return err
+	}
+	script := windowsRunnerTaskScript(bin, logPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		return err
+	}
 	cmd := exec.Command(
 		"schtasks",
 		"/Create",
 		"/TN", "PreloopRunner",
-		"/TR", fmt.Sprintf(`"%s" runner fg`, bin),
+		"/TR", fmt.Sprintf(
+			`powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s"`,
+			scriptPath,
+		),
 		"/SC", "ONLOGON",
 		"/RL", "LIMITED",
 		"/F",
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("schtasks: %w (%s)", err, strings.TrimSpace(string(out)))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf(
+			"schtasks: %w (%s); creating a logon task may require an elevated prompt",
+			err, strings.TrimSpace(string(output)),
+		)
 	}
-	fmt.Fprintln(out, "Installed scheduled task PreloopRunner")
+	fmt.Fprintf(out, "Installed scheduled task PreloopRunner (logs: %s)\n", logPath)
 	return nil
 }
 

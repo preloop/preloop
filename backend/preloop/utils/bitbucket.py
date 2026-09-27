@@ -318,6 +318,82 @@ def repository_full_name(payload: Mapping[str, Any]) -> Optional[str]:
     return _dig(payload, "repository", "full_name") or None
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$",
+)
+
+
+def looks_like_uuid(value: Any) -> bool:
+    """Return True when ``value`` is a bare or braced Bitbucket UUID."""
+    return bool(_UUID_RE.match(normalize_uuid(str(value or ""))))
+
+
+def repository_identity(repository: Any) -> Optional[str]:
+    """Return a stable ``workspace/repo`` identity for a repository object.
+
+    Bitbucket repository objects carry no numeric id, so feedback threads and
+    PR bindings key on ``<workspace slug>/<repository UUID>``. The UUID part
+    survives a repository rename; both parts are accepted by the REST API
+    (a UUID is sent back in braces, see :func:`repository_api_path`).
+
+    Args:
+        repository: A ``repository`` object from a webhook payload, the REST
+            API, or a manual-run trigger payload.
+
+    Returns:
+        ``"workspace/uuid"``, or ``full_name`` when the UUID is missing, or
+        None when the object identifies no repository.
+    """
+    if not isinstance(repository, Mapping):
+        return None
+    full_name = str(repository.get("full_name") or "")
+    uuid = normalize_uuid(repository.get("uuid"))
+    if full_name and "/" in full_name and uuid:
+        return f"{full_name.split('/', 1)[0]}/{uuid}"
+    if full_name:
+        return full_name
+    return uuid or None
+
+
+def repository_api_path(identity: str) -> str:
+    """Return the ``repositories/...`` API path for a repository identity.
+
+    Args:
+        identity: ``workspace/repo`` where either part may be a slug or a
+            bare UUID (see :func:`repository_identity`).
+
+    Returns:
+        ``repositories/<workspace>/<repo>`` with UUID parts wrapped in the
+        braces Bitbucket expects and both parts percent-encoded.
+    """
+    from urllib.parse import quote
+
+    parts = []
+    for part in identity.split("/", 1):
+        if looks_like_uuid(part):
+            part = "{" + normalize_uuid(part) + "}"
+        parts.append(quote(part, safe=""))
+    return "repositories/" + "/".join(parts)
+
+
+# Preloop commit status states -> Bitbucket build status states.
+COMMIT_STATUS_STATES: Dict[str, str] = {
+    "pending": "INPROGRESS",
+    "success": "SUCCESSFUL",
+    "failure": "FAILED",
+    "error": "FAILED",
+}
+
+# Bitbucket build status states -> the shared check classification outcomes
+# (see ``preloop.services.flow_feedback_provider.classify_checks``).
+BUILD_STATUS_OUTCOMES: Dict[str, str] = {
+    "SUCCESSFUL": "success",
+    "FAILED": "failure",
+    "INPROGRESS": "in_progress",
+    "STOPPED": "cancelled",
+}
+
+
 def build_object_attributes(pr: Mapping[str, Any]) -> Dict[str, Any]:
     """Map a Bitbucket pull request object onto the shared trigger shape.
 

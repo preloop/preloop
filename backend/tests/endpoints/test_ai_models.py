@@ -867,3 +867,158 @@ def test_ai_models_credential_health_and_secret_redaction(mock_account, mocker):
     for payload in list_json + [detail_err_json, detail_act_json]:
         present = forbidden_keys.intersection(payload.keys())
         assert not present, f"Forbidden keys appeared in response: {present}"
+
+
+_CODEX_EXPORT_SHAPE = {
+    "access": "codex-access",
+    "refresh": "codex-refresh",
+    "account_id": "chatgpt-account",
+    "expires": 1893456000000,
+}
+_CODEX_AUTH_JSON_SHAPE = {
+    "access_token": "codex-access",
+    "refresh_token": "codex-refresh",
+    "id_token": "codex-id",
+    "account_id": "chatgpt-account",
+}
+
+
+def _credential_payload_client(mock_account, mocker: MockerFixture):
+    """Build a TestClient with the model CRUD and secret service mocked.
+
+    Returns the client, the mocked endpoint CRUD, the mocked secret service
+    the real CRUD would write through, and an existing model for PUT.
+    """
+    from fastapi.testclient import TestClient
+
+    from preloop.api.app import create_app
+    from preloop.api.auth import get_current_active_user
+    from preloop.models.db.session import get_db_session
+
+    existing = AIModelRead(
+        id=uuid.uuid4(),
+        name="Codex",
+        provider_name="openai-codex",
+        model_identifier="gpt-5.5",
+        account_id=str(mock_account.account_id),
+        credentials_secret_id=uuid.uuid4(),
+        credential_type="oauth_openai_codex",
+        credentials_status="active",
+        has_api_key=True,
+    )
+    mock_crud = mocker.patch("preloop.api.endpoints.ai_models.crud_ai_model")
+    mock_crud.get.return_value = mocker.MagicMock(
+        id=existing.id, account_id=mock_account.account_id
+    )
+    mock_crud.create_with_account.return_value = existing
+    mock_crud.update.return_value = existing
+    secret_service = mocker.MagicMock()
+    mocker.patch(
+        "preloop.models.crud.ai_model.get_secret_service",
+        return_value=secret_service,
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: mocker.MagicMock()
+    app.dependency_overrides[get_current_active_user] = lambda: mock_account
+    return TestClient(app), mock_crud, secret_service, existing
+
+
+def _create_body(payload: dict) -> dict:
+    return {
+        "name": "Codex",
+        "provider_name": "openai-codex",
+        "model_identifier": "gpt-5.5",
+        "credential_type": "oauth_openai_codex",
+        "credential_payload": payload,
+    }
+
+
+def _assert_payload_422(response, *fragments: str) -> None:
+    assert response.status_code == 422, response.text
+    messages = " ".join(item["msg"] for item in response.json()["detail"])
+    assert "invalid credential_payload for oauth_openai_codex" in messages
+    for fragment in fragments:
+        assert fragment in messages
+
+
+def test_post_ai_model_rejects_auth_json_key_names_without_storing(
+    mock_account, mocker: MockerFixture
+):
+    """POST with Codex's own auth.json names is a 422 and writes nothing."""
+    client, crud, secrets, _ = _credential_payload_client(mock_account, mocker)
+
+    response = client.post(
+        "/api/v1/ai-models", json=_create_body(_CODEX_AUTH_JSON_SHAPE)
+    )
+
+    _assert_payload_422(
+        response,
+        "missing keys: access, refresh, expires",
+        "unexpected key 'access_token': use 'access'",
+        "unexpected key 'refresh_token': use 'refresh'",
+    )
+    crud.create_with_account.assert_not_called()
+    secrets.create_local_secret_reference.assert_not_called()
+
+
+def test_put_ai_model_rejects_incomplete_payload_without_touching_secret(
+    mock_account, mocker: MockerFixture
+):
+    """The reproduced case: PUT used to answer 200 and mark the model active."""
+    client, crud, secrets, existing = _credential_payload_client(mock_account, mocker)
+
+    response = client.put(
+        f"/api/v1/ai-models/{existing.id}",
+        json={
+            "credential_type": "oauth_openai_codex",
+            "credential_payload": _CODEX_AUTH_JSON_SHAPE,
+        },
+    )
+
+    _assert_payload_422(response, "missing keys: access, refresh, expires")
+    crud.update.assert_not_called()
+    secrets.create_local_secret_reference.assert_not_called()
+
+
+def test_put_ai_model_rejects_expires_in_seconds(mock_account, mocker: MockerFixture):
+    client, crud, _, existing = _credential_payload_client(mock_account, mocker)
+
+    response = client.put(
+        f"/api/v1/ai-models/{existing.id}",
+        json={
+            "credential_type": "oauth_openai_codex",
+            "credential_payload": dict(_CODEX_EXPORT_SHAPE, expires=1893456000),
+        },
+    )
+
+    _assert_payload_422(response, "expires looks like epoch seconds")
+    crud.update.assert_not_called()
+
+
+def test_post_ai_model_accepts_export_shape(mock_account, mocker: MockerFixture):
+    client, crud, _, _ = _credential_payload_client(mock_account, mocker)
+
+    response = client.post(
+        "/api/v1/ai-models", json=_create_body(dict(_CODEX_EXPORT_SHAPE))
+    )
+
+    assert response.status_code == 201, response.text
+    _, kwargs = crud.create_with_account.call_args
+    assert kwargs["obj_in"]["credential_payload"] == _CODEX_EXPORT_SHAPE
+
+
+def test_put_ai_model_accepts_export_shape(mock_account, mocker: MockerFixture):
+    client, crud, _, existing = _credential_payload_client(mock_account, mocker)
+
+    response = client.put(
+        f"/api/v1/ai-models/{existing.id}",
+        json={
+            "credential_type": "oauth_openai_codex",
+            "credential_payload": dict(_CODEX_EXPORT_SHAPE),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    _, kwargs = crud.update.call_args
+    assert kwargs["obj_in"]["credential_payload"] == _CODEX_EXPORT_SHAPE
