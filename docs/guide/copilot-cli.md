@@ -101,7 +101,8 @@ shows "Not gateway metered" for these runs.
          "timeout_seconds": 1800,
          "model_map": {"team-default": "claude-sonnet-4.6"},
          "allow_tools": ["shell(git:*)"],
-         "deny_tools": ["shell(git push)"]
+         "deny_tools": ["shell(git push)"],
+         "allow_checkout": true
        }
      ]
    }
@@ -119,6 +120,46 @@ and adds one `--allow-tool` / `--deny-tool` per profile rule. Success
 requires exit zero and exactly one Copilot `result` event with `exitCode`
 0. The result records the Copilot session id, the model Copilot reported
 and the premium request count.
+
+### Review and implementation flows
+
+A host profile can run a PR Reviewer or an implementation flow end to end:
+
+- **Checkout.** When the flow enables git clone, the control plane sends
+  the runner a checkout plan with each lease: repository URL, branch, the
+  pinned commit (for a pull request, its head commit plus the refs that
+  reach it, such as `pull/5/head`), the relative path and a read
+  credential from the flow's tracker. The runner clones only when the
+  profile sets `"allow_checkout": true`; otherwise the run fails with
+  `host_checkout_not_allowed` before anything is written. Repositories land
+  in the per-run directory (`workspace` for a trigger project,
+  `workspace-1`, `workspace-2` or `workspace/<path>` for configured
+  repositories), and the prompt starts with a short note listing them. The
+  credential is passed to `git` as a request header scoped to that
+  repository URL for the clone and fetch only. It is never written to the
+  remote URL, the git config or `pending_job`, and it is only sent over
+  https (plain http is accepted only for a loopback tracker). Clone
+  `setup_commands` are
+  refused, and so is `create_pull_request`: a host run can review and
+  comment, but it does not push branches or open pull requests.
+- **MCP tools.** When the flow allows MCP tools or servers, the runner adds
+  a `preloop-flow` MCP server to this run only
+  (`--additional-mcp-config`, written to a `0600` file in the run
+  directory and removed afterwards). Its token is scoped to the execution,
+  lists only the flow's tools and is revoked when the run completes.
+  Unless the profile sets `allow_all_tools`, the runner also passes
+  `--allow-tool=preloop-flow`, so the flow's tools run without a prompt;
+  profile `deny_tools` rules still apply. The PR Reviewer reads the diff
+  and posts its review through these tools. The runner user's own
+  `~/.copilot/mcp-config.json` servers stay available.
+- **Sessions and usage.** The runner exports `PRELOOP_FLOW_EXECUTION_ID`
+  and `PRELOOP_FLOW_ID` to Copilot. The Preloop usage hook forwards the
+  execution id, so the Copilot session and its hook events are linked to
+  the execution. Events a hook pushed without it are linked when the run
+  completes, by Copilot session id. The premium requests from the `result`
+  event are stored as one subscription row. The execution page shows
+  "N premium requests, not metered by the gateway" and lists the linked
+  Copilot sessions. No gateway usage row is written for the run.
 
 Tool permissions are local to the profile:
 
@@ -149,12 +190,13 @@ Named errors:
 | `copilot_not_logged_in` | The runner user has no Copilot login. |
 | `copilot_model_unavailable` | The seat does not offer the mapped model. The error lists the profile's `model_map` aliases; Copilot CLI has no non-interactive way to list the seat's models. |
 | `copilot_approval_hook_missing` | `allow_all_tools` is set but the approval hook is not installed. |
+| `host_checkout_not_allowed` | The flow clones repositories but the profile does not set `allow_checkout`. |
+| `host_checkout_failed` | `git` could not clone or check out the planned commit. The error carries git's last line; the credential is never logged. |
+| `git_not_installed` | The flow clones repositories and `git` is not on the runner's `PATH`. |
 | `copilot_hooks_unavailable` | Preloop could not install or read its own hooks file under `~/.copilot/hooks` (or `$COPILOT_HOME/hooks`). The run fails before Copilot starts. |
 
-Like Cursor host profiles, this path does not clone repositories, open
-pull requests, run custom commands or resume sessions, and flow MCP tool
-settings do not apply: Copilot uses the runner user's own
-`~/.copilot/mcp-config.json`. See
+Like Cursor host profiles, this path does not open pull requests, run
+custom commands or clone setup commands, or resume sessions. See
 [host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
 for the shared rules.
 
@@ -165,4 +207,5 @@ one seat across automated flows for several people.
 
 ## Related
 
+- [Copilot coverage](copilot.md): what each surface governs and meters
 - [`preloop cursor`](cursor-cli.md): Cursor Agent launcher pattern

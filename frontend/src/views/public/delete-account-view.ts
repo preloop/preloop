@@ -204,7 +204,7 @@ export class DeleteAccountView extends LitElement {
             ${
               this._orgName
                 ? html`<sl-input
-                    label="Organization"
+                    label="Account"
                     readonly
                     .value=${this._orgName}
                   ></sl-input>`

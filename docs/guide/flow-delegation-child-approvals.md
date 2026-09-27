@@ -1,4 +1,10 @@
+---
+status: non-normative
+---
+
 # Where an approval raised inside a child execution goes
+
+> **Status: findings / design note. Not shipped behaviour.** This page records observations or a proposed design. Nothing here is a product capability unless a linked release note says so.
 
 A child execution that asks a human must not park a subtree forever. This page
 records what happens today, decides the three open questions, and states what
