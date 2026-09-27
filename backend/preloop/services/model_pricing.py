@@ -626,6 +626,17 @@ def _iter_litellm_model_candidates(ai_model: models.AIModel) -> Iterable[str]:
     endpoint_prefix = _endpoint_prefix(getattr(ai_model, "api_endpoint", None))
 
     candidates = []
+    # A deployment name (Azure) or an application inference profile ARN
+    # (Bedrock) is chosen by the operator and never appears in a price map.
+    # ``provider_runtime.base_model`` names the catalog model behind it, so
+    # it is tried first, in the provider's namespace before the bare name.
+    runtime = meta_data.get("provider_runtime")
+    base_model = runtime.get("base_model") if isinstance(runtime, dict) else None
+    if isinstance(base_model, str) and base_model.strip():
+        base = _strip_synthetic_prefix(base_model.strip())
+        if "/" not in base:
+            candidates.append(f"{_pricing_provider_prefix(provider)}/{base}")
+        candidates.append(base)
     gateway_alias = gateway_config.get("model_alias")
     if isinstance(gateway_alias, str) and gateway_alias.strip():
         candidates.append(gateway_alias.strip())

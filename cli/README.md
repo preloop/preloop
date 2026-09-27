@@ -105,8 +105,10 @@ preloop login --loopback             # Force local loopback OAuth
 preloop signup                       # Open the sign-up page, then authenticate the CLI
 preloop auth login                   # Same as preloop login
 preloop auth signup                  # Same as preloop signup
-preloop auth logout                  # Clear local credentials
+preloop auth logout                  # Revoke this login on the server, then clear local credentials
 preloop auth logout --all            # Revoke every session, then clear local credentials
+preloop auth sessions list           # List active CLI logins (this one is marked)
+preloop auth sessions revoke <id>    # Revoke one CLI login
 preloop auth status                  # Show authentication status
 preloop auth token                   # Print token for scripting
 ```
@@ -115,10 +117,21 @@ The login flow resolves the API URL in this order: `--url`, `PRELOOP_URL`, confi
 
 ### Signing out and revoking a login
 
-`preloop auth logout` only deletes the tokens stored on this machine. Other
-CLI hosts and the console stay signed in. To revoke every JWT session for
-the signed-in user (this host, other hosts, and the console), run
-`preloop auth logout --all`. That calls `POST /auth/sessions/revoke-all`,
+`preloop auth logout` posts the stored refresh token to `POST /oauth/revoke`,
+which revokes this login's server-side session (its access and refresh
+token both stop working), then deletes the tokens stored on this machine.
+Other CLI hosts and the console stay signed in. A login made before
+per-login sessions existed cannot be revoked on its own; logout says so and
+points at `--all`. If the server cannot be reached, the local file is still
+cleared and logout warns that this login stays valid.
+
+`preloop auth sessions list` shows every active CLI login of your user with
+its host name (sent as `device_name` at login), client and last use.
+`preloop auth sessions revoke <id>` revokes one of them, for example a
+laptop you no longer have.
+
+To revoke every JWT session for the signed-in user (this host, other hosts,
+and the console), run `preloop auth logout --all`. That calls `POST /auth/sessions/revoke-all`,
 which increments the user's `auth_generation` so every outstanding access
 and refresh token fails the next time it is used. API keys and runner
 tokens are not affected.
@@ -362,9 +375,12 @@ needs the `view_runtime_sessions` permission.
 preloop models sync                     # Pull newly released provider models into the catalog
 preloop models sync --provider anthropic
 preloop models sync --dry-run           # Report what would be added without writing
+preloop models smoke azure/chat-prod    # Send one tiny chat completion through the gateway
 ```
 
 `preloop models sync` calls `POST /api/v1/ai-models/sync` so newly released provider models enter the account catalog from credentials already stored on existing models. Then run `preloop agents refresh` to push those models into onboarded agent configs.
+
+`preloop models smoke <model-alias>` sends one small chat completion to `/openai/v1/chat/completions` and prints the HTTP status, latency, prompt/completion/total tokens and the usage row id the Cost page counts (from the `X-Preloop-Usage-Id` response header). It exits non-zero on an error status. Flags: `--prompt`, `--max-tokens`, `--timeout`, `--json`. Provider setup guides: [Amazon Bedrock](../docs/guide/providers/bedrock.md), [Azure OpenAI](../docs/guide/providers/azure-openai.md).
 
 ### Flows
 

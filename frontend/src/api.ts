@@ -3443,6 +3443,40 @@ export async function changePassword(passwords: {
   }
 }
 
+/** One CLI login (`preloop auth login`) of the signed-in user. */
+export interface CliSession {
+  id: string;
+  created_at: string;
+  last_seen_at: string | null;
+  user_agent: string | null;
+  hostname: string | null;
+  /** True for the session the request's own token belongs to. */
+  current: boolean;
+}
+
+/** List the signed-in user's active CLI logins. */
+export async function listCliSessions(): Promise<CliSession[]> {
+  const response = await fetchWithAuth('/api/v1/auth/sessions/cli');
+  if (!response.ok) {
+    throw new Error('Failed to load CLI sessions');
+  }
+  return response.json();
+}
+
+/** Revoke one CLI login; its access and refresh tokens stop working. */
+export async function revokeCliSession(sessionId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/auth/sessions/cli/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to revoke CLI session')
+    );
+  }
+}
+
 // API Keys
 export async function getApiKeys(): Promise<ApiKey[]> {
   const response = await fetchWithAuth('/api/v1/auth/api-keys');

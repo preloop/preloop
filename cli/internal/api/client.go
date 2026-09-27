@@ -224,6 +224,43 @@ func (c *Client) PostWithHeaders(
 	return c.doWithHeaders(http.MethodPost, path, body, headers, result)
 }
 
+// RawResponse is an HTTP response returned without status interpretation.
+type RawResponse struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+// PostRaw performs a JSON POST and returns the status, headers and body as
+// received, without turning a non-2xx status into an error. Callers that
+// report on the response itself (e.g. `preloop models smoke`, which prints
+// the gateway's status and its X-Preloop-Usage-Id header) need all three.
+// An expired login session is refreshed and retried once, as in Post.
+// The returned error covers only transport and encoding failures.
+func (c *Client) PostRaw(path string, body interface{}) (*RawResponse, error) {
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	statusCode, responseBody, header, err := c.executeRequest(
+		http.MethodPost, path, bodyBytes, "application/json", nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusUnauthorized && c.refreshEnabled {
+		if refreshErr := c.RefreshAccessToken(); refreshErr == nil {
+			statusCode, responseBody, header, err = c.executeRequest(
+				http.MethodPost, path, bodyBytes, "application/json", nil,
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return &RawResponse{StatusCode: statusCode, Header: header, Body: responseBody}, nil
+}
+
 // PostMultipart performs a multipart/form-data POST request with one file.
 func (c *Client) PostMultipart(path string, fields map[string]string, fileFieldName, fileName string, fileContent []byte, result interface{}) error {
 	var body bytes.Buffer
@@ -452,6 +489,9 @@ func (c *Client) RefreshAccessToken() error {
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", c.refreshToken)
+	if host := version.DeviceName(); host != "" {
+		form.Set("device_name", host)
+	}
 
 	statusCode, responseBody, _, err := c.executeRequest(
 		http.MethodPost,

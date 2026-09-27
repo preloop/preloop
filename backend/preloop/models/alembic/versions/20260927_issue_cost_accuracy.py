@@ -1,7 +1,7 @@
 """Add PR-opened source and tracker estimates to the issue cost rollup.
 
 Revision ID: 20260927_issue_cost_accuracy
-Revises: 20260927_policy_notice_hit
+Revises: 20260928_cli_session
 Create Date: 2026-09-27
 
 Additive only. ``opened_at_source`` records whether a pull request's opened
@@ -18,7 +18,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20260927_issue_cost_accuracy"
-down_revision = "20260927_policy_notice_hit"
+down_revision = "20260928_cli_session"
 branch_labels = None
 depends_on = None
 
