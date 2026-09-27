@@ -6,7 +6,7 @@ text on the flow. The Pull Request Reviewer injects it as
 only source. Existing rows stay null.
 
 Revision ID: 20260927_review_instructions
-Revises: 20260924_usage_principal_ts
+Revises: 20260927_exec_log_type_ts
 """
 
 from typing import Sequence, Union
@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260927_review_instructions"
-down_revision: Union[str, None] = "20260924_usage_principal_ts"
+down_revision: Union[str, None] = "20260927_exec_log_type_ts"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

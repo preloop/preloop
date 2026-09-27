@@ -293,6 +293,8 @@ export interface FlowGatewayEventsResponse {
     total: number;
     has_more: boolean;
   } | null;
+  /** Execution reads only: rows older than the requested `tail` exist. */
+  has_more?: boolean;
 }
 
 /**

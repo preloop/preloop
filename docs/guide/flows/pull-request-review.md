@@ -198,16 +198,24 @@ compatibility:
       - "fc"
 ```
 
-`paths` defaults to every file. `extensions` defaults from the language.
-Perl's default is `.pl`, `.pm`, and `.t`. `allowed` is syntax the minimum
+`paths` defaults to every file. `**/` matches zero or more directories,
+so `src/**/*.pl` covers `src/x.pl` and `**/*.pl` covers a file at the
+repository root. `*` does not cross `/`. `extensions` defaults from the
+language. Perl's default is `.pl`, `.pm`, and `.t`. `allowed` is syntax the minimum
 already includes, and must not be flagged. `forbidden` is a violation even
 when a linter is silent. Other languages use the same keys and name their
 own `version_linter`. There is no default command except Perl's.
 
-A `version_linter` value is a program plus plain arguments. The reviewer
-appends each matching path as one argument. Shell operators are not run.
-If the pull request edits the policy file, the reviewer uses the target
-branch copy and does not execute a command the pull request introduced.
+A `version_linter` value is a program name (a basename, not a path) plus
+plain arguments. The reviewer appends each matching path as one argument.
+Shell operators and `:` are not run, so a URL cannot be an argument. A
+basename that already exists in the sandbox can still run: the command is
+taken from the policy already on the target branch, and that author can
+already change CI. If the pull request edits the policy file, the reviewer
+uses the target branch copy and does not execute a command the pull request
+introduced. A policy file the pull request itself adds has no force on that
+review. The reviewer says the policy is newly proposed and applies it only
+after it merges.
 
 ### Version linters
 

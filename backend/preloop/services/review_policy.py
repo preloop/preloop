@@ -44,10 +44,14 @@ _RULE_KEYS = frozenset(
     }
 )
 
-# A version linter command is a program plus arguments. Shell syntax is
-# rejected so a pull request cannot smuggle a pipeline into the sandbox
-# by editing the policy file.
-_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_./:@+=,-]+$")
+# A version linter is a basename plus arguments. The program must not be
+# a path. ``:`` is rejected in every token so a URL cannot be an argument.
+# Shell syntax is rejected so a pull request cannot smuggle a pipeline.
+# A basename that already exists in the sandbox can still run. That is
+# accepted because the command is taken from the target-branch policy,
+# and that author can already change CI.
+_SAFE_PROGRAM = re.compile(r"^[A-Za-z0-9_.+-]+$")
+_SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_./@+=,-]+$")
 
 _VERSION_SEGMENT = re.compile(r"^(\d+)")
 
@@ -177,13 +181,14 @@ def matching_rules(
 
 
 def is_safe_version_linter(command: str) -> bool:
-    """Return True when ``command`` is a program plus plain arguments.
+    """Return True when ``command`` is a basename plus plain arguments.
 
     Args:
         command: The ``version_linter`` string from the policy.
 
     Returns:
-        True when every token is a safe argv element. Shell operators,
+        True when the program is a basename and every token is a safe
+        argv element. Paths as the program, ``:`` (URLs), shell operators,
         quotes, and whitespace other than single spaces are rejected.
     """
 
@@ -191,6 +196,8 @@ def is_safe_version_linter(command: str) -> bool:
         return False
     tokens = command.split(" ")
     if any(token == "" for token in tokens):
+        return False
+    if _SAFE_PROGRAM.fullmatch(tokens[0]) is None:
         return False
     return all(_SAFE_TOKEN.fullmatch(token) for token in tokens)
 
@@ -362,10 +369,17 @@ def _suffix(path: str) -> str:
 
 
 def _glob_match(path: str, pattern: str) -> bool:
+    """Match one repository path against a policy glob.
+
+    ``*`` does not cross ``/``. ``**/`` matches zero or more directories,
+    so ``src/**/*.pl`` matches ``src/x.pl`` and ``**/*.pl`` matches a file
+    at the repository root. ``**`` and ``**/*`` match every path.
+    """
+
     if pattern in {"**", "**/*"}:
         return True
     escaped = re.escape(pattern)
-    escaped = escaped.replace(r"\*\*", "\x00")
+    escaped = escaped.replace(r"\*\*/", "(?:.*/)?")
+    escaped = escaped.replace(r"\*\*", ".*")
     escaped = escaped.replace(r"\*", "[^/]*")
-    escaped = escaped.replace("\x00", ".*")
     return re.fullmatch(escaped, path) is not None
