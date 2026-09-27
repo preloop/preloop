@@ -13,17 +13,22 @@ to read ``passed: true``. The platform now measures the delivered bytes
 not rewriting a measurement: the agent's field was a claim, and the
 measurement of the bytes is the authority. ``counts_by_severity`` is
 arithmetic over the findings the agent already submitted, so a mismatched
-aggregate is rewritten from that list. Findings themselves are never edited.
+aggregate is rewritten from that list. Finding severity is not edited. A
+finding ``epss`` or ``cvss`` that arrived as a string is coerced to a
+number when that string is a finite value in range, and the reported
+string is kept on the correction record. That coercion does not change
+the verdict or the gate the agent submitted.
 
 Three rules keep this from laundering a release:
 
 - a correction may only make the result more severe. An agent who already
   failed minimum elements keeps that claim. ``counts_by_severity`` is always
-  derived from the findings, in either direction, because the findings are
-  never edited and the gate reads the findings, not the aggregate. Rewriting
-  ``fail`` into ``pass`` stays a hard failure;
+  derived from the findings, in either direction, because finding severity
+  is not edited and the gate reads the findings, not the aggregate.
+  Rewriting ``fail`` into ``pass`` stays a hard failure. Coercing a numeric
+  string does not move a verdict or a gate;
 - verdict labels still move only toward a more severe label. Coverage,
-  license flags, the gate and the findings stay as submitted;
+  license flags, the gate and finding severity stay as submitted;
 - every correction is recorded on the result under ``verdict_corrected``,
   with the submitted value and the reason. A minimum-elements correction
   keeps the agent's claim on that record.
@@ -32,12 +37,15 @@ Three rules keep this from laundering a release:
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
 from preloop.cra.sbom_measure import MEASURED_FIELD
 from preloop.cra.schemas import (
     AUDIT_VERDICTS,
+    GATE_CVSS_MAX,
+    GATE_CVSS_MIN,
     SCHEMA_RELEASEAUDIT_V1,
     SCHEMA_SBOMAUDIT_V1,
     SCHEMA_VULNSCAN_V1,
@@ -385,5 +393,130 @@ def apply_derived_severity_counts(
             parent["counts_by_severity"] = derived
     if not corrections:
         return payload, []
+    _record(corrected, corrections)
+    return corrected, corrections
+
+
+#: EPSS is a probability. CVSS uses the gate's own 0 to 10 range.
+EPSS_MIN = 0.0
+EPSS_MAX = 1.0
+
+_SCORE_BOUNDS: tuple[tuple[str, float, float], ...] = (
+    ("cvss", GATE_CVSS_MIN, GATE_CVSS_MAX),
+    ("epss", EPSS_MIN, EPSS_MAX),
+)
+
+
+def _parse_finite_string(value: Any) -> Optional[float]:
+    """Return a finite float when ``value`` is a numeric string, else None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _stored_score(number: float) -> int | float:
+    """JSON number for a coerced score. Whole values stay integers."""
+    if number.is_integer():
+        return int(number)
+    return number
+
+
+def _score_blocks_coercion(value: Any, *, low: float, high: float) -> bool:
+    """True when a score is neither a number, null, nor an in-range string."""
+    if value is None or _is_number(value):
+        return False
+    parsed = _parse_finite_string(value)
+    if parsed is None:
+        return True
+    return parsed < low or parsed > high
+
+
+def _finding_score_parents(
+    payload: Mapping[str, Any],
+) -> list[tuple[str, Mapping[str, Any]]]:
+    schema = payload.get("schema")
+    if schema == SCHEMA_VULNSCAN_V1:
+        return [("result", payload)]
+    if schema == SCHEMA_RELEASEAUDIT_V1:
+        vuln = payload.get("vuln_scan")
+        if isinstance(vuln, Mapping):
+            return [("result.vuln_scan", vuln)]
+    return []
+
+
+def apply_coerced_finding_scores(
+    payload: Any,
+) -> tuple[Any, list[VerdictCorrection]]:
+    """Coerce in-range numeric strings on finding ``epss`` and ``cvss``.
+
+    A string that parses as a finite number in range (EPSS 0 to 1, CVSS 0
+    to 10) is stored as that number. Each coercion is recorded with the
+    reported string and the stored number. Strings that do not parse, and
+    any other non-numeric score, are left untouched and no coercion from
+    the document is applied: one bad value keeps the contract failure.
+
+    The verdict and the gate are not edited. Finding severity is not edited.
+
+    Args:
+        payload: A CRA result object, typically a release audit or vuln scan.
+
+    Returns:
+        The payload (a copy only when a coercion was applied) and the
+        corrections, which may be empty.
+    """
+    if not isinstance(payload, Mapping):
+        return payload, []
+    parents = _finding_score_parents(payload)
+    if not parents:
+        return payload, []
+
+    planned: list[tuple[str, int, str, str, int | float]] = []
+    for path, parent in parents:
+        findings = parent.get("findings")
+        if not isinstance(findings, list):
+            return payload, []
+        for index, item in enumerate(findings):
+            if not isinstance(item, Mapping):
+                continue
+            for field, low, high in _SCORE_BOUNDS:
+                value = item.get(field)
+                if _score_blocks_coercion(value, low=low, high=high):
+                    return payload, []
+                if not isinstance(value, str):
+                    continue
+                parsed = _parse_finite_string(value)
+                if parsed is None or parsed < low or parsed > high:
+                    return payload, []
+                planned.append((path, index, field, value, _stored_score(parsed)))
+
+    if not planned:
+        return payload, []
+
+    corrected = copy.deepcopy(dict(payload))
+    corrected_parents = {path: body for path, body in _finding_score_parents(corrected)}
+    corrections: list[VerdictCorrection] = []
+    for path, index, field, submitted, stored in planned:
+        body = corrected_parents[path]
+        findings = body.get("findings")
+        if not isinstance(findings, list) or not isinstance(findings[index], dict):
+            return payload, []
+        findings[index][field] = stored
+        corrections.append(
+            VerdictCorrection(
+                path=f"{path}.findings[{index}].{field}",
+                submitted=submitted,
+                corrected=str(stored),
+                reason="coerced numeric string to a number",
+            )
+        )
     _record(corrected, corrections)
     return corrected, corrections

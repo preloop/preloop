@@ -124,6 +124,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A vulnerability finding whose `epss` or `cvss` is a numeric string is
+  coerced to a number when the string is finite and in range (EPSS 0 to 1,
+  CVSS 0 to 10), recorded on `verdict_corrected`, and re-validated. A
+  string that does not parse stays a contract failure naming the finding
+  index and the value. The verdict and the gate the agent submitted are
+  not relaxed.
+
 - A flow execution dispatched in process (no execution worker) whose run
   raises before the runner records an outcome is marked `FAILED` with the
   error and a failure category, instead of staying `PENDING` with the
