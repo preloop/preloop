@@ -3002,6 +3002,24 @@ export class PreloopFlowForm extends LitElement {
                             }}
                             help-text="Filter by Jira issue type"
                           ></sl-input>
+
+                          <sl-input
+                            label="Moved to status"
+                            placeholder="e.g. Ready for Dev"
+                            .value=${this.flow.trigger_config?.status_to || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.status_to = value;
+                              } else {
+                                delete this.flow.trigger_config.status_to;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Jira status name the issue moved to. Use with the Issue Status Changed event."
+                          ></sl-input>
                         `
                       : nothing
                   }
