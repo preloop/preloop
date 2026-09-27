@@ -514,18 +514,12 @@ async function performFetchWithAuth(
     }
 
     if (isUpstreamGatewayError) {
-      console.log(
-        'Gateway upstream returned 401, returning error directly without refreshing token'
-      );
       return response;
     }
-
-    console.log('Access token expired, attempting to refresh...');
 
     // If another tab or process already refreshed the token, use the new one directly
     const currentToken = localStorage.getItem('accessToken');
     if (currentToken && currentToken !== accessToken) {
-      console.log('Token was already refreshed, retrying request');
       headers.set('Authorization', `Bearer ${currentToken}`);
       options.headers = headers;
       return fetch(url, options);
@@ -4854,7 +4848,6 @@ export async function getProjectDuplicateStats(options: {
   params.append('status', status);
   params.append('similarity_threshold', similarity_threshold.toString());
   const url = `/api/v1/project-duplicate-stats?${params.toString()}`;
-  console.log(url);
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch project duplicate stats');
@@ -4866,8 +4859,6 @@ export async function dismissDuplicatePair(
   issue1Id: string,
   issue2Id: string
 ): Promise<{ success: boolean }> {
-  console.log(`Dismissing duplicate pair: ${issue1Id} and ${issue2Id}`);
-
   // Simulate network delay
   await new Promise((resolve) => setTimeout(resolve, 500));
 

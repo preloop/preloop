@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/qr-code/qr-code.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import { debugLog } from '../../utils/debug';
 
 interface NotificationPreferences {
   id: string;
@@ -393,14 +394,12 @@ export class NotificationPreferencesView extends AuthedElement {
 
     // Connect to WebSocket for real-time device registration updates
     try {
-      console.debug(
-        '[NotificationPrefs] Setting up device_registered subscription'
-      );
+      debugLog('[NotificationPrefs] Setting up device_registered subscription');
 
       this.unsubscribe = unifiedWebSocketManager.subscribe(
         'device_registered',
         (message: any) => {
-          console.debug(
+          debugLog(
             '[NotificationPrefs] Received device_registered event:',
             message
           );
@@ -419,7 +418,7 @@ export class NotificationPreferencesView extends AuthedElement {
             Number.isFinite(registeredAt) &&
             registeredAt < replayCutoff
           ) {
-            console.debug(
+            debugLog(
               '[NotificationPrefs] Ignoring device_registered event from before page open'
             );
             return;
@@ -427,7 +426,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
           // Close QR dialog if open
           if (initiatedHere) {
-            console.debug('[NotificationPrefs] Closing QR dialog');
+            debugLog('[NotificationPrefs] Closing QR dialog');
             this.handleCloseQRDialog();
           }
 
@@ -451,11 +450,11 @@ export class NotificationPreferencesView extends AuthedElement {
       // Track connection state changes
       this.unsubscribeStateChange = unifiedWebSocketManager.onStateChange(
         (state) => {
-          console.debug('[NotificationPrefs] WebSocket state:', state);
+          debugLog('[NotificationPrefs] WebSocket state:', state);
         }
       );
 
-      console.debug('[NotificationPrefs] Subscription setup complete');
+      debugLog('[NotificationPrefs] Subscription setup complete');
     } catch (error) {
       console.error('Failed to setup WebSocket subscription:', error);
     }

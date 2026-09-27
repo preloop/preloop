@@ -452,6 +452,534 @@ class SupplierDerivationTest(unittest.TestCase):
         self.assertIsNone(_property(shebang))
         self.assertIsNone(_property(executable))
 
+    def test_pypi_license_expression_alias_and_classifier(self) -> None:
+        root = self._tmp()
+        self._write_metadata(
+            root,
+            "expr",
+            "License-Expression: MIT OR Apache-2.0\n",
+        )
+        self._write_metadata(root, "alias", "License: Apache 2.0\n")
+        self._write_metadata(
+            root,
+            "classified",
+            "Classifier: License :: OSI Approved :: MIT License\n",
+        )
+        self._write_metadata(
+            root,
+            "header",
+            "License: MIT\n"
+            "Classifier: License :: OSI Approved :: Apache Software License\n",
+        )
+        index = sbom_metadata.MetadataIndex([root], [])
+        expression, expression_source = sbom_metadata.derive_license(
+            _component("expr", "pkg:pypi/expr@1.2.3"), index
+        )
+        self.assertEqual(expression_source, "pypi_license_expression")
+        self.assertEqual(expression, {"expression": "MIT OR Apache-2.0"})
+
+        alias, alias_source = sbom_metadata.derive_license(
+            _component("alias", "pkg:pypi/alias@1.2.3"), index
+        )
+        self.assertEqual(alias_source, "pypi_license")
+        self.assertEqual(alias, {"license": {"id": "Apache-2.0"}})
+
+        classified, classified_source = sbom_metadata.derive_license(
+            _component("classified", "pkg:pypi/classified@1.2.3"), index
+        )
+        self.assertEqual(classified_source, "pypi_classifier")
+        self.assertEqual(classified, {"license": {"id": "MIT"}})
+
+        header, header_source = sbom_metadata.derive_license(
+            _component("header", "pkg:pypi/header@1.2.3"), index
+        )
+        self.assertEqual(header_source, "pypi_license")
+        self.assertEqual(header, {"license": {"id": "MIT"}})
+
+    def test_pypi_ambiguous_classifiers_stay_unlicensed(self) -> None:
+        root = self._tmp()
+        self._write_metadata(
+            root,
+            "both",
+            "Classifier: License :: OSI Approved :: MIT License\n"
+            "Classifier: License :: OSI Approved :: Apache Software License\n",
+        )
+        self._write_metadata(
+            root,
+            "bsd",
+            "License: BSD\nClassifier: License :: OSI Approved :: BSD License\n",
+        )
+        self._write_metadata(
+            root,
+            "bad-expression",
+            "License-Expression: NotAReal-1.0\n"
+            "Classifier: License :: OSI Approved :: MIT License\n",
+        )
+        index = sbom_metadata.MetadataIndex([root], [])
+        for name in ("both", "bsd", "bad-expression"):
+            component = _component(name, f"pkg:pypi/{name}@1.2.3")
+            self.assertIsNone(sbom_metadata.derive_license(component, index), name)
+            sbom_metadata.fill_component_licenses({"components": [component]}, index)
+            self.assertNotIn("licenses", component, name)
+            self.assertIsNone(sbom_metadata.license_source(component), name)
+
+    def test_pypi_license_file_when_headers_do_not_name_one(self) -> None:
+        root = self._tmp()
+        apache = "Apache License\nVersion 2.0, January 2004\n"
+        mit = (
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software.\n"
+        )
+        self._write_metadata(root, "filed", "License-File: LICENSE\n")
+        filed = root / "filed-1.2.3.dist-info" / "licenses"
+        filed.mkdir()
+        (filed / "LICENSE").write_text(apache, encoding="utf-8")
+
+        self._write_metadata(
+            root,
+            "noted",
+            "License-File: LICENSE\nLicense-File: NOTICE\n",
+        )
+        noted = root / "noted-1.2.3.dist-info" / "licenses"
+        noted.mkdir()
+        (noted / "LICENSE").write_text(apache, encoding="utf-8")
+        (noted / "NOTICE").write_text("Copyright notice only.\n", encoding="utf-8")
+
+        self._write_metadata(
+            root,
+            "split",
+            "License-File: LICENSE\nLicense-File: LICENSE-MIT\n",
+        )
+        split = root / "split-1.2.3.dist-info" / "licenses"
+        split.mkdir()
+        (split / "LICENSE").write_text(apache, encoding="utf-8")
+        (split / "LICENSE-MIT").write_text(mit, encoding="utf-8")
+
+        self._write_metadata(
+            root,
+            "blocked",
+            "License-Expression: NotAReal-1.0\nLicense-File: LICENSE\n",
+        )
+        blocked = root / "blocked-1.2.3.dist-info" / "licenses"
+        blocked.mkdir()
+        (blocked / "LICENSE").write_text(apache, encoding="utf-8")
+
+        self._write_metadata(root, "escape", "License-File: ../../SECRET\n")
+        (root / "SECRET").write_text(apache, encoding="utf-8")
+
+        self._write_metadata(
+            root,
+            "both-files",
+            "Classifier: License :: OSI Approved :: MIT License\n"
+            "Classifier: License :: OSI Approved :: Apache Software License\n"
+            "License-File: LICENSE\n",
+        )
+        both = root / "both-files-1.2.3.dist-info" / "licenses"
+        both.mkdir()
+        (both / "LICENSE").write_text(apache, encoding="utf-8")
+
+        index = sbom_metadata.MetadataIndex([root], [])
+        chosen, source = sbom_metadata.derive_license(
+            _component("filed", "pkg:pypi/filed@1.2.3"), index
+        )
+        self.assertEqual(source, "pypi_license_file")
+        self.assertEqual(chosen, {"license": {"id": "Apache-2.0"}})
+
+        noted_choice, noted_source = sbom_metadata.derive_license(
+            _component("noted", "pkg:pypi/noted@1.2.3"), index
+        )
+        self.assertEqual(noted_source, "pypi_license_file")
+        self.assertEqual(noted_choice, {"license": {"id": "Apache-2.0"}})
+
+        for name in ("split", "blocked", "escape", "both-files"):
+            component = _component(name, f"pkg:pypi/{name}@1.2.3")
+            self.assertIsNone(sbom_metadata.derive_license(component, index), name)
+            sbom_metadata.fill_component_licenses({"components": [component]}, index)
+            self.assertNotIn("licenses", component, name)
+            self.assertIsNone(sbom_metadata.license_source(component), name)
+
+    def test_npm_license_and_ambiguous_array(self) -> None:
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(modules / "single", "single", license="MIT")
+        self._write_npm(
+            modules / "either",
+            "either",
+            license="MIT OR Apache-2.0",
+        )
+        self._write_npm(modules / "old", "old")
+        manifest = modules / "old" / "package.json"
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+        body["licenses"] = [{"type": "ISC"}]
+        manifest.write_text(json.dumps(body), encoding="utf-8")
+        self._write_npm(modules / "split", "split")
+        split = modules / "split" / "package.json"
+        split_body = json.loads(split.read_text(encoding="utf-8"))
+        split_body["licenses"] = [{"type": "MIT"}, {"type": "Apache-2.0"}]
+        split.write_text(json.dumps(split_body), encoding="utf-8")
+        self._write_npm(modules / "closed", "closed", license="UNLICENSED")
+        index = sbom_metadata.MetadataIndex([], [modules])
+
+        single, single_source = sbom_metadata.derive_license(
+            _component("single", "pkg:npm/single@1.2.3"), index
+        )
+        self.assertEqual(single_source, "npm_license")
+        self.assertEqual(single, {"license": {"id": "MIT"}})
+
+        either, either_source = sbom_metadata.derive_license(
+            _component("either", "pkg:npm/either@1.2.3"), index
+        )
+        self.assertEqual(either_source, "npm_license")
+        self.assertEqual(either, {"expression": "MIT OR Apache-2.0"})
+
+        old, old_source = sbom_metadata.derive_license(
+            _component("old", "pkg:npm/old@1.2.3"), index
+        )
+        self.assertEqual(old_source, "npm_licenses")
+        self.assertEqual(old, {"license": {"id": "ISC"}})
+
+        for name in ("split", "closed"):
+            component = _component(name, f"pkg:npm/{name}@1.2.3")
+            self.assertIsNone(sbom_metadata.derive_license(component, index), name)
+            sbom_metadata.fill_component_licenses({"components": [component]}, index)
+            self.assertNotIn("licenses", component, name)
+
+    def test_go_module_license_file_stdlib_and_ambiguous(self) -> None:
+        root = self._tmp()
+        cache = root / "modcache"
+        self._write_go_license(
+            cache,
+            "github.com/acme/widget@v1.2.3",
+            "LICENSE",
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software.\n",
+        )
+        self._write_go_license(
+            cache,
+            "github.com/!acme/!widget@v1.2.3",
+            "LICENSE",
+            "SPDX-License-Identifier: Apache-2.0\n",
+        )
+        self._write_go_license(
+            cache,
+            "github.com/acme/custom@v1.2.3",
+            "LICENSE",
+            "This software is provided under a private agreement.\n",
+        )
+        dual = cache / "github.com/acme/dual@v1.2.3"
+        dual.mkdir(parents=True)
+        (dual / "LICENSE").write_text(
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software.\n",
+            encoding="utf-8",
+        )
+        (dual / "LICENSE-APACHE").write_text(
+            "Apache License\nVersion 2.0, January 2004\n",
+            encoding="utf-8",
+        )
+        index = sbom_metadata.MetadataIndex([], [], cache)
+
+        widget, widget_source = sbom_metadata.derive_license(
+            _component("widget", "pkg:golang/github.com/acme/widget@v1.2.3"),
+            index,
+        )
+        self.assertEqual(widget_source, "go_module_license")
+        self.assertEqual(widget, {"license": {"id": "MIT"}})
+
+        nested, nested_source = sbom_metadata.derive_license(
+            _component(
+                "cmd",
+                "pkg:golang/github.com/acme/widget/cmd@v1.2.3",
+            ),
+            index,
+        )
+        self.assertEqual(nested_source, "go_module_license")
+        self.assertEqual(nested, {"license": {"id": "MIT"}})
+
+        cased, cased_source = sbom_metadata.derive_license(
+            _component("Widget", "pkg:golang/github.com/Acme/Widget@v1.2.3"),
+            index,
+        )
+        self.assertEqual(cased_source, "go_module_license")
+        self.assertEqual(cased, {"license": {"id": "Apache-2.0"}})
+
+        stdlib, stdlib_source = sbom_metadata.derive_license(
+            _component("std", "pkg:golang/std@go1.22.0"), index
+        )
+        self.assertEqual(stdlib_source, "go_stdlib")
+        self.assertEqual(stdlib, {"license": {"id": "BSD-3-Clause"}})
+
+        for name, purl in (
+            ("custom", "pkg:golang/github.com/acme/custom@v1.2.3"),
+            ("dual", "pkg:golang/github.com/acme/dual@v1.2.3"),
+        ):
+            component = _component(name, purl)
+            self.assertIsNone(sbom_metadata.derive_license(component, index), name)
+            sbom_metadata.fill_component_licenses({"components": [component]}, index)
+            self.assertNotIn("licenses", component, name)
+            self.assertIsNone(sbom_metadata.license_source(component), name)
+
+    def test_header_rules_do_not_collapse_lookalike_text(self) -> None:
+        bsd_preamble = (
+            "Redistribution and use in source and binary forms, with or "
+            "without modification, are permitted provided that the following "
+            "conditions are met:\n"
+        )
+        source_clause = (
+            "1. Redistributions of source code must retain the above "
+            "copyright notice, this list of conditions and the following "
+            "disclaimer.\n"
+        )
+        binary_clause = (
+            "2. Redistributions in binary form must reproduce the above "
+            "copyright notice, this list of conditions and the following "
+            "disclaimer in the documentation and/or other materials provided "
+            "with the distribution.\n"
+        )
+        one_clause = sbom_metadata.detect_license_text(bsd_preamble + source_clause)
+        self.assertEqual(one_clause, {"license": {"id": "BSD-1-Clause"}})
+        two_clause = sbom_metadata.detect_license_text(
+            bsd_preamble + source_clause + binary_clause
+        )
+        self.assertEqual(two_clause, {"license": {"id": "BSD-2-Clause"}})
+        three_clause = sbom_metadata.detect_license_text(
+            bsd_preamble
+            + source_clause
+            + binary_clause
+            + "Neither the name of the copyright holder nor the names of "
+            "its contributors may be used to endorse or promote products.\n"
+        )
+        self.assertEqual(three_clause, {"license": {"id": "BSD-3-Clause"}})
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                "Redistribution and use in source and binary forms, with or "
+                "without modification, are permitted.\n"
+            )
+        )
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                bsd_preamble
+                + source_clause
+                + binary_clause
+                + "The views and conclusions contained in the software and "
+                "documentation are those of the authors.\n"
+            )
+        )
+        mit = (
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software and associated documentation "
+            "files.\n"
+        )
+        self.assertEqual(
+            sbom_metadata.detect_license_text(mit), {"license": {"id": "MIT"}}
+        )
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                mit + "You agree to the following additional conditions.\n"
+            )
+        )
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                mit + "The software may not be used for surveillance.\n"
+            )
+        )
+
+    def test_header_matching_ignores_line_wrap(self) -> None:
+        wrapped_mit = (
+            "Permission is hereby granted, free of charge, to any person\n"
+            "obtaining a copy of this software.\n"
+        )
+        self.assertEqual(
+            sbom_metadata.detect_license_text(wrapped_mit),
+            {"license": {"id": "MIT"}},
+        )
+        wrapped_ban = (
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software.\n"
+            "The software may not\nbe used for harm.\n"
+        )
+        self.assertIsNone(sbom_metadata.detect_license_text(wrapped_ban))
+        wrapped_isc = (
+            "Permission to use, copy, modify, and/or distribute this "
+            "software for any\npurpose with or without fee is hereby "
+            "granted, provided that the above copyright notice and this "
+            "permission notice appear in all copies.\n"
+        )
+        self.assertEqual(
+            sbom_metadata.detect_license_text(wrapped_isc),
+            {"license": {"id": "ISC"}},
+        )
+
+    def test_golang_without_module_cache_stays_unlicensed(self) -> None:
+        index = sbom_metadata.MetadataIndex([], [])
+        component = _component("widget", "pkg:golang/github.com/acme/widget@v1.2.3")
+        self.assertIsNone(sbom_metadata.derive_license(component, index))
+        sbom_metadata.fill_component_licenses({"components": [component]}, index)
+        self.assertNotIn("licenses", component)
+        self.assertIsNone(sbom_metadata.license_source(component))
+
+        stdlib, source = sbom_metadata.derive_license(
+            _component("std", "pkg:golang/std@go1.22.0"), index
+        )
+        self.assertEqual(source, "go_stdlib")
+        self.assertEqual(stdlib, {"license": {"id": "BSD-3-Clause"}})
+
+    def test_main_reads_go_mod_cache_flag(self) -> None:
+        import contextlib
+        import io
+
+        root = self._tmp()
+        cache = root / "modcache"
+        self._write_go_license(
+            cache,
+            "github.com/acme/widget@v1.2.3",
+            "LICENSE",
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software.\n",
+        )
+        pyproject = root / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "example"\nauthors = [{name = "Example"}]\n',
+            encoding="utf-8",
+        )
+        document = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {},
+            "components": [
+                _component("widget", "pkg:golang/github.com/acme/widget@v1.2.3")
+            ],
+        }
+        sbom = root / "example.cdx.json"
+        sbom.write_text(json.dumps(document), encoding="utf-8")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = sbom_metadata.main(
+                [
+                    "--pyproject",
+                    str(pyproject),
+                    "--go-mod-cache",
+                    str(cache),
+                    str(sbom),
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "licence coverage 0.0% -> 100.0% (0/1 -> 1/1)",
+            stdout.getvalue(),
+        )
+        stamped = json.loads(sbom.read_text(encoding="utf-8"))
+        widget = stamped["components"][0]
+        self.assertEqual(widget["licenses"], [{"license": {"id": "MIT"}}])
+        self.assertEqual(sbom_metadata.license_source(widget), "go_module_license")
+
+    def test_existing_declared_license_is_kept(self) -> None:
+        root = self._tmp()
+        self._write_metadata(root, "widget", "License-Expression: Apache-2.0\n")
+        index = sbom_metadata.MetadataIndex([root], [])
+        component = _component("widget", "pkg:pypi/widget@1.2.3")
+        component["licenses"] = [{"license": {"id": "MIT"}}]
+        component["evidence"] = {"licenses": [{"license": {"id": "ISC"}}]}
+        sbom_metadata.fill_component_licenses({"components": [component]}, index)
+        self.assertEqual(component["licenses"], [{"license": {"id": "MIT"}}])
+        self.assertIsNone(sbom_metadata.license_source(component))
+
+    def test_evidence_alone_does_not_count_as_declared(self) -> None:
+        root = self._tmp()
+        self._write_metadata(root, "widget", "License-Expression: Apache-2.0\n")
+        index = sbom_metadata.MetadataIndex([root], [])
+        component = _component("widget", "pkg:pypi/widget@1.2.3")
+        component["evidence"] = {"licenses": [{"license": {"id": "MIT"}}]}
+        document = {"components": [component]}
+        before_count, before_pct = sbom_metadata.declared_licence_stats(document)
+        self.assertEqual((before_count, before_pct), (0, "0.0%"))
+        sbom_metadata.fill_component_licenses(document, index)
+        self.assertEqual(component["licenses"], [{"license": {"id": "Apache-2.0"}}])
+        self.assertEqual(
+            sbom_metadata.license_source(component), "pypi_license_expression"
+        )
+        after_count, after_pct = sbom_metadata.declared_licence_stats(document)
+        self.assertEqual((after_count, after_pct), (1, "100.0%"))
+        self._assert_cyclonedx_1_6(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "version": 1,
+                "metadata": {
+                    "component": {
+                        "type": "application",
+                        "name": "example",
+                        "bom-ref": "example",
+                    }
+                },
+                "components": [
+                    component,
+                    {
+                        **_component("either", "pkg:npm/either@1.2.3"),
+                        "licenses": [{"expression": "MIT OR Apache-2.0"}],
+                    },
+                ],
+                "dependencies": [
+                    {"ref": "example", "dependsOn": []},
+                    {"ref": component["bom-ref"], "dependsOn": []},
+                    {"ref": "pkg:npm/either@1.2.3", "dependsOn": []},
+                ],
+            }
+        )
+
+    def test_main_prints_licence_coverage(self) -> None:
+        import contextlib
+        import io
+
+        root = self._tmp()
+        self._write_metadata(root, "widget", "License-Expression: MIT\n")
+        pyproject = root / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "example"\nauthors = [{name = "Example"}]\n',
+            encoding="utf-8",
+        )
+        document = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {},
+            "components": [
+                _component("widget", "pkg:pypi/widget@1.2.3"),
+                {
+                    **_component("kept", "pkg:npm/kept@1.2.3"),
+                    "licenses": [{"license": {"id": "ISC"}}],
+                },
+            ],
+        }
+        sbom = root / "example.cdx.json"
+        sbom.write_text(json.dumps(document), encoding="utf-8")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = sbom_metadata.main(
+                ["--pyproject", str(pyproject), "--python-root", str(root), str(sbom)]
+            )
+        self.assertEqual(code, 0)
+        text = stdout.getvalue()
+        self.assertIn("lic0", text)
+        self.assertIn("lic1", text)
+        self.assertIn(
+            "licence coverage 50.0% -> 100.0% (1/2 -> 2/2)",
+            text,
+        )
+        stamped = json.loads(sbom.read_text(encoding="utf-8"))
+        widget = stamped["components"][0]
+        self.assertEqual(widget["licenses"], [{"license": {"id": "MIT"}}])
+        self.assertEqual(
+            sbom_metadata.license_source(widget), "pypi_license_expression"
+        )
+
+    def test_classifier_map_uses_spdx_ids(self) -> None:
+        unknown = [
+            spdx_id
+            for spdx_id in sbom_metadata.CLASSIFIER_TO_SPDX.values()
+            if spdx_id not in sbom_metadata.SPDX_LICENSE_IDS
+        ]
+        self.assertEqual(unknown, [])
+
     def _tmp(self) -> Path:
         from tempfile import TemporaryDirectory
 
@@ -467,6 +995,21 @@ class SupplierDerivationTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_metadata(self, root: Path, name: str, extra: str) -> None:
+        dist = root / f"{name}-1.2.3.dist-info"
+        dist.mkdir(parents=True)
+        (dist / "METADATA").write_text(
+            f"Name: {name}\nVersion: 1.2.3\n{extra}",
+            encoding="utf-8",
+        )
+
+    def _write_go_license(
+        self, cache: Path, module_dir: str, filename: str, text: str
+    ) -> None:
+        directory = cache / module_dir
+        directory.mkdir(parents=True)
+        (directory / filename).write_text(text, encoding="utf-8")
+
     def _write_npm(
         self,
         directory: Path,
@@ -474,6 +1017,7 @@ class SupplierDerivationTest(unittest.TestCase):
         *,
         author: str | dict | None = None,
         maintainers: list[str] | None = None,
+        license: str | None = None,
     ) -> None:
         directory.mkdir(parents=True)
         body: dict = {"name": name, "version": "1.2.3"}
@@ -481,6 +1025,8 @@ class SupplierDerivationTest(unittest.TestCase):
             body["author"] = author
         if maintainers is not None:
             body["maintainers"] = maintainers
+        if license is not None:
+            body["license"] = license
         (directory / "package.json").write_text(json.dumps(body), encoding="utf-8")
 
     def _assert_cyclonedx_1_6(self, document: dict) -> None:

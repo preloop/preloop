@@ -1,0 +1,60 @@
+# zizmor configuration: triaged ignores with reasons.
+#
+# Run by .github/workflows/zizmor.yml over every workflow, and locally with
+# `zizmor .github/workflows`. The gate fails on ANY finding, so every entry
+# below is a deliberate, reviewed acceptance with its reason next to it.
+# Everything zizmor found that is a real hardening gap has been fixed
+# instead: persist-credentials: false on all checkouts, no template
+# expansion inside run: blocks, and no dependency caches in jobs that
+# publish artifacts (release.yml, publish-runtime-plugins.yml).
+#
+# Known residual gap, accepted: these acceptances are file-scoped per rule
+# (zizmor's line-scoped form goes stale on every unrelated edit to the
+# file), so a NEW finding of an accepted rule inside an accepted file rides
+# along silently. Mitigations: acceptances are limited to rules whose whole
+# class was triaged (nothing partial), fixes stay the preferred response,
+# and the weekly scheduled run re-audits with current zizmor rules. Review
+# this list whenever one of the named workflows changes materially.
+
+rules:
+  # ci.yml builds nothing that ships: its jobs produce test results,
+  # coverage, and lint verdicts. Published artifacts come from release.yml
+  # and publish-runtime-plugins.yml, where caching IS disabled. Disabling
+  # caches for every test shard would add minutes to each of ~15 jobs per
+  # push for no supply-chain gain.
+  cache-poisoning:
+    ignore:
+      - ci.yml
+
+  # Cosmetic: the '$/' self-repository syntax is newer GitHub sugar for
+  # './'; both resolve to this repository at the workflow's own ref. No
+  # security difference, and './' is the form the repo has used all along.
+  self-repository:
+    ignore:
+      - ci.yml
+
+  # Trusted Publishing (OIDC) for PyPI and npm requires configuration on
+  # the registry side (publisher registration per package), which cannot be
+  # done from this repository. Until that lands, the token-based publishes
+  # stay; the tokens are repository secrets scoped to publishing.
+  use-trusted-publishing:
+    ignore:
+      - release.yml
+      - publish-runtime-plugins.yml
+
+  # softprops/action-gh-release is SHA-pinned and carries the multi-file
+  # upload, notes-file and prerelease wiring in one step. Rewriting it as a
+  # `gh release` script is a behavioural change to the release path with no
+  # hardening gain over the pin.
+  superfluous-actions:
+    ignore:
+      - release.yml
+
+  # The backend test container is python:<version>-bookworm, assembled in
+  # the pick-runner job from repo-controlled literals (the version comes
+  # from this workflow's env, not from an input). It is a tag, not a
+  # digest; pinning by digest is tracked as a follow-up because the tag
+  # tracks the Python patch series on purpose.
+  unpinned-images:
+    ignore:
+      - ci.yml

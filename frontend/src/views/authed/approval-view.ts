@@ -60,6 +60,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
+import { debugLog } from '../../utils/debug';
 
 /** One workflow-history entry as returned by the history API. */
 export interface ApprovalTimelineEntry {
@@ -647,7 +648,7 @@ export class ApprovalView extends AuthedElement {
 
     // Track connection state
     unifiedWebSocketManager.onStateChange((state) => {
-      console.log(`Approval view WebSocket state: ${state}`);
+      debugLog(`Approval view WebSocket state: ${state}`);
     });
   }
 
@@ -657,7 +658,7 @@ export class ApprovalView extends AuthedElement {
       message.approval_request_id === this.requestId &&
       this.approvalRequest
     ) {
-      console.log('Received approval update:', message);
+      debugLog('Received approval update:', message);
 
       // Update the status
       this.approvalRequest = {

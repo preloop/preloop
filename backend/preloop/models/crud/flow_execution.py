@@ -181,6 +181,34 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.first()
 
+    def get_status(
+        self, db: Session, *, execution_id: Any, account_id: Any
+    ) -> Optional[str]:
+        """Return an execution's status without loading the row.
+
+        Used on the credential path for every call made with a flow token,
+        so it selects the one column. Ids that are not UUIDs have no row.
+
+        Args:
+            db: Database session.
+            execution_id: Flow execution id (str or UUID).
+            account_id: Account that must own the execution's flow.
+
+        Returns:
+            The status string, or None when no such execution exists.
+        """
+        try:
+            parsed = uuid.UUID(str(execution_id))
+        except (ValueError, AttributeError, TypeError):
+            return None
+        row = (
+            db.query(FlowExecution.status)
+            .join(Flow, Flow.id == FlowExecution.flow_id)
+            .filter(FlowExecution.id == parsed, Flow.account_id == account_id)
+            .first()
+        )
+        return None if row is None else row[0]
+
     def purge_workspace_snapshots(self, db: Session, *, cutoff: Any) -> int:
         """Release terminal and orphaned snapshots; recent active runs retain state."""
         from preloop.models import models

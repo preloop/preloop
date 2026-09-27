@@ -25,6 +25,14 @@ repos:
 
 -   repo: local
     hooks:
+      - id: forbid-junk-files
+        name: Forbid backup and editor junk files
+        entry: 'Backup/editor junk files (*.bak, *.orig, *.swp) must not be committed. Delete the file or rename it if it is real source:'
+        language: fail
+        files: '\.(bak|orig|swp)$'
+
+-   repo: local
+    hooks:
       - id: frontend-format
         name: Format frontend TypeScript
         entry: bash -c 'cd frontend && npm run format'

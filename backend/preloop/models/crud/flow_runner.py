@@ -34,6 +34,16 @@ class RunnerHasLeasesError(Exception):
         super().__init__(f"Runner holds {len(self.execution_ids)} active execution(s)")
 
 
+def _runner_visibility_clause(db: Session, account_id: Any) -> Any:
+    """Own runners, or own plus shared ones when account hook H3 names some."""
+    from preloop.plugins.account_hooks import VISIBLE_RUNNER, extra_visible_ids
+
+    shared_ids = extra_visible_ids(db, account_id, VISIBLE_RUNNER)
+    if not shared_ids:
+        return FlowRunner.account_id == account_id
+    return or_(FlowRunner.account_id == account_id, FlowRunner.id.in_(shared_ids))
+
+
 class CRUDFlowRunner(CRUDBase[FlowRunner]):
     """CRUD helpers for FlowRunner."""
 
@@ -398,9 +408,10 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         skip: int = 0,
         limit: int = 100,
     ) -> List[FlowRunner]:
+        """Runners of the account, plus runners shared with it (hook H3)."""
         return (
             db.query(FlowRunner)
-            .filter(FlowRunner.account_id == account_id)
+            .filter(_runner_visibility_clause(db, account_id))
             .order_by(FlowRunner.last_heartbeat.desc().nullslast())
             .offset(skip)
             .limit(limit)
@@ -421,7 +432,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         list fills the emptiest machine before doubling up on a busy one.
         """
         pool = (pool or "").strip()
-        query = db.query(FlowRunner).filter(FlowRunner.account_id == account_id)
+        query = db.query(FlowRunner).filter(_runner_visibility_clause(db, account_id))
         if online_only:
             cutoff = datetime.now(timezone.utc) - ONLINE_HEARTBEAT_TTL
             query = query.filter(
