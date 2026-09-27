@@ -1947,3 +1947,24 @@ func TestManagedRuntimeRequiresVerifiedControlForCompletion(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexProbeResponseID(t *testing.T) {
+	cases := []struct {
+		name     string
+		response map[string]interface{}
+		want     string
+	}{
+		{"nil response (request failed)", nil, ""},
+		{"no id field", map[string]interface{}{"status": "completed"}, ""},
+		{"non-string id", map[string]interface{}{"id": 42}, ""},
+		{"blank id", map[string]interface{}{"id": "  "}, ""},
+		{"responses api id", map[string]interface{}{"id": " resp_example123 "}, "resp_example123"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := codexProbeResponseID(tc.response); got != tc.want {
+				t.Fatalf("codexProbeResponseID(%#v) = %q, want %q", tc.response, got, tc.want)
+			}
+		})
+	}
+}

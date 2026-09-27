@@ -1516,6 +1516,14 @@ func buildCodexLiveValidationPayload(modelAlias, prompt string) map[string]inter
 	}
 }
 
+// codexProbeResponseID returns the Responses API id of the live validation
+// probe, or "" when the gateway answered without one (or not at all). The id
+// lets an operator find the probe in gateway and provider logs.
+func codexProbeResponseID(response map[string]interface{}) string {
+	id, _ := response["id"].(string)
+	return strings.TrimSpace(id)
+}
+
 func runCodexLiveValidation(
 	client *api.Client,
 	agent AgentConfig,
@@ -1602,7 +1610,6 @@ func runCodexLiveValidation(
 		requestPayload,
 		&gatewayResponse,
 	)
-	_ = gatewayResponse
 
 	apiKeyID := managedAPIKeyIDForToken(detail.Credentials, token)
 	var searchHit *gatewayUsageSearchItem
@@ -1631,6 +1638,9 @@ func runCodexLiveValidation(
 	})
 	if passed {
 		result["live_validation_status"] = "passed"
+	}
+	if responseID := codexProbeResponseID(gatewayResponse); responseID != "" {
+		result["live_validation_response_id"] = responseID
 	}
 	// Intentionally omit api key ids from the result map so they cannot
 	// flow into validation status logging (go/clear-text-logging).
