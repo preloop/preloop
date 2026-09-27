@@ -26,6 +26,7 @@ from preloop.cra.schemas import (
     is_cra_schema_id,
 )
 from preloop.cra.repair import (
+    apply_coerced_finding_scores,
     apply_derived_severity_counts,
     apply_derived_verdict_facts,
     apply_measured_minimum_elements,
@@ -337,6 +338,13 @@ def apply_cra_persist_boundary(
 
     candidate = _candidate_with_measurement(payload, trigger_payload)
     candidate, element_corrections = apply_measured_minimum_elements(candidate)
+    score_corrections: list[Any] = []
+    # A quoted score is formatting. Coerce it only when every non-numeric
+    # epss/cvss value is a finite number in range, then re-validate. A
+    # string that does not parse is left in place so that failure, which
+    # names the finding index and the value, is what the operator sees.
+    if not validation.ok:
+        candidate, score_corrections = apply_coerced_finding_scores(candidate)
     count_corrections: list[Any] = []
     # Counts are repaired only when they are the whole failure. Any other
     # contract failure still fails closed, and is what the operator sees.
@@ -357,6 +365,7 @@ def apply_cra_persist_boundary(
     corrections = [
         *element_corrections,
         *count_corrections,
+        *score_corrections,
         *fact_corrections,
         *verdict_list,
     ]

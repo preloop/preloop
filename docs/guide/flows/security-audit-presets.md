@@ -986,7 +986,7 @@ and that recomputation can also move it toward less severe:
 Three limits make this safe to rely on:
 
 - **Only the label moves.** `coverage`,
-  `license_flags`, the findings and the gate stay as the agent wrote
+  `license_flags`, finding severity and the gate stay as the agent wrote
   them. `minimum_elements` is replaced only when the platform measured
   the delivered bytes and the agent's `passed: true` contradicts that
   measurement (see below). `counts_by_severity` is replaced only when
@@ -1009,7 +1009,11 @@ the contract is also wrong, the run fails closed exactly as before, with
 the raw document under `result.raw`. Presets are not told about this:
 the contract still requires the agent to write the correct verdict, and
 the repair exists so one enum does not cost a complete, digest-verified
-audit.
+audit. A finding `epss` or `cvss` written as a string is coerced to a
+number when that string is a finite value in range (epss from 0 to 1,
+cvss from 0 to 10), recorded on `verdict_corrected` as the reported
+string and the stored number, and re-validated; a string that does not
+parse stays a contract failure that names the finding index and the value.
 
 ## What our own SBOMs carry
 
@@ -1067,7 +1071,8 @@ as before.
 `counts_by_severity` is arithmetic over the findings list the agent
 submitted. When that aggregate is the only contract failure, the platform
 recomputes it, records each key as reported versus derived on
-`verdict_corrected`, and re-validates in full. Findings are not edited.
+`verdict_corrected`, and re-validates in full. Finding severity is not
+edited.
 A count mismatch together with any other failure still fails closed, and
 the other failure is what is reported. An agent's evidence-pack prose that
 repeats the wrong number is left as the agent wrote it.

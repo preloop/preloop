@@ -1260,6 +1260,8 @@ prompt_template: |
     severity-derived number, or an EPSS value to make the gate
     arithmetic look complete: a fabricated score is a worse defect than
     a missing one.
+  - Write cvss and epss as JSON numbers or null, never as strings:
+    cvss in the range 0 to 10, epss in the range 0 to 1.
   - "scope" records the unit of audit. With no project_path in the
     payload, write null: the whole repository was audited and nothing
     else about the run changes. With one, write the block with covers

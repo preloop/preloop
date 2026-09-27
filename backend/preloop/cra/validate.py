@@ -892,10 +892,10 @@ def _check_finding(item: Any, *, path: str, allow_waived: bool) -> list[str]:
         failures.append(f"{path}.severity must be a known severity, got {severity!r}")
     cvss = item.get("cvss")
     if cvss is not None and not _is_number(cvss):
-        failures.append(f"{path}.cvss must be a number or null")
+        failures.append(f"{path}.cvss must be a number or null, got {cvss!r}")
     epss = item.get("epss")
     if epss is not None and not _is_number(epss):
-        failures.append(f"{path}.epss must be a number or null")
+        failures.append(f"{path}.epss must be a number or null, got {epss!r}")
     if not _is_bool(item.get("kev")):
         failures.append(
             f"{path}.kev must be a boolean, not {type(item.get('kev')).__name__}"
