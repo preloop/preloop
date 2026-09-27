@@ -47,6 +47,7 @@ import '../../components/time-range-select.ts';
 import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
 import '../../components/tool-cost-flags-panel.ts';
+import '../../components/copilot-usage-panel.ts';
 import '../../components/token-figures.ts';
 import { sumTokenUsage } from '../../components/token-figures';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -955,6 +956,7 @@ export class CostView extends AuthedElement {
       users: ['sessions'],
       tools: ['tools'],
       imported: ['imported'],
+      copilot: [],
       reconciliation: [],
     };
     if (!(tab in sections)) return;
@@ -2185,6 +2187,12 @@ export class CostView extends AuthedElement {
           <sl-tab slot="nav" panel="users" ?active=${this.activeTab === 'users'}
             >Users</sl-tab
           >
+          <sl-tab
+            slot="nav"
+            panel="copilot"
+            ?active=${this.activeTab === 'copilot'}
+            >Copilot</sl-tab
+          >
           ${
             this.reconciliationEnabled
               ? html`<sl-tab slot="nav" panel="reconciliation"
@@ -2203,6 +2211,9 @@ export class CostView extends AuthedElement {
           >
           <sl-tab-panel name="users"
             >${this.renderTab('users', () => this.renderUsersTab())}</sl-tab-panel
+          >
+          <sl-tab-panel name="copilot"
+            >${this.renderTab('copilot', () => this.renderCopilotTab())}</sl-tab-panel
           >
           ${
             this.reconciliationEnabled
@@ -2273,6 +2284,17 @@ export class CostView extends AuthedElement {
         </div>
       </div>
     `;
+  }
+
+  // Imported GitHub Copilot spend. Rendered in its own tab and never merged
+  // into the gateway totals above (it is not metered by the gateway).
+  private renderCopilotTab() {
+    return html`<div class="tab-panel-body">
+      <copilot-usage-panel
+        .startDate=${this.currentPeriod?.startDate}
+        .endDate=${this.currentPeriod?.endDate}
+      ></copilot-usage-panel>
+    </div>`;
   }
 
   private renderReconciliationTab() {
@@ -3484,7 +3506,7 @@ export class CostView extends AuthedElement {
       <div class="page">
         <view-header
           headerText="Cost"
-          description="Understand gateway spend by agent, tool, session and user."
+          description="Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend."
         ></view-header>
 
         <div class="toolbar">

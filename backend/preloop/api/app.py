@@ -807,6 +807,7 @@ def _register_control_plane_routes(
         budget,
         approval_requests,
         comments,
+        copilot_usage,
         cost,
         event_webhooks,
         issue_costs,
@@ -1055,6 +1056,12 @@ def _register_control_plane_routes(
     )
     app.include_router(
         issue_costs.router,
+        prefix="/api/v1",
+        tags=["Cost Analytics"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        copilot_usage.router,
         prefix="/api/v1",
         tags=["Cost Analytics"],
         dependencies=[Depends(get_current_active_user)],

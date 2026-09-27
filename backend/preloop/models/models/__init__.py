@@ -62,6 +62,7 @@ from .managed_agent_credential import ManagedAgentCredential
 from .managed_agent_enrollment import ManagedAgentEnrollment
 from .model_price_override import ModelPriceOverride
 from .provider_billing import ProviderBillingConnection, ProviderBillingSnapshot
+from .copilot_import import CopilotImportConnection
 from .tool_configuration import ToolConfiguration, ApprovalWorkflow
 from .mcp_server import MCPServer
 from .mcp_tool import MCPTool
@@ -204,6 +205,7 @@ __all__ = [
     "ModelPriceOverride",
     "ProviderBillingConnection",
     "ProviderBillingSnapshot",
+    "CopilotImportConnection",
     "ToolConfiguration",
     "ApprovalWorkflow",
     "MCPServer",

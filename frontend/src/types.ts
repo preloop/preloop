@@ -1534,6 +1534,78 @@ export interface CostReconciliationResponse {
   total_drift_pct: number | null;
 }
 
+// GitHub Copilot usage import (Cost page, Copilot tab). Every figure is
+// imported from GitHub and is never gateway usage.
+export interface CopilotConnection {
+  id: string;
+  organization: string;
+  enterprise: string | null;
+  has_enterprise_token: boolean;
+  seat_price_monthly: number | null;
+  currency: string;
+  is_active: boolean;
+  last_synced_at: string | null;
+  last_synced_day: string | null;
+  last_error: string | null;
+  per_user_billing_status: string | null;
+  per_user_billing_reason: string | null;
+  metrics_status: string | null;
+  metrics_reason: string | null;
+  // Non-fatal problem from the last successful import.
+  last_warning: string | null;
+}
+
+export interface CopilotConnectionUpsert {
+  organization: string;
+  enterprise?: string | null;
+  token?: string | null;
+  enterprise_token?: string | null;
+  clear_enterprise_token?: boolean;
+  seat_price_monthly: number | null;
+  is_active?: boolean;
+}
+
+export interface CopilotSeat {
+  login: string;
+  last_activity_at: string | null;
+  last_activity_editor: string | null;
+}
+
+export interface CopilotUsageSummary {
+  metered_by_gateway: false;
+  marker: string;
+  period_start: string;
+  period_end: string;
+  connection: CopilotConnection | null;
+  seats: {
+    total_seats: number | null;
+    plan_type: string | null;
+    as_of: string | null;
+    seat_price_monthly: number | null;
+    currency: string;
+    // Null when no seat price was entered: render no dollar line, not $0.
+    monthly_seat_estimate: number | null;
+    assigned: CopilotSeat[];
+  };
+  premium_requests: {
+    total_net_amount: number | null;
+    currency: string;
+    per_user_status: 'available' | 'unavailable' | 'no_data' | string;
+    per_user_unavailable_reason: string | null;
+    org_aggregate_net_amount: number | null;
+    // Spend on per-developer days that no current seat holder explains.
+    unattributed_net_amount: number | null;
+    aggregate_days: number;
+    by_developer: { login: string; net_amount: number; net_quantity: number }[];
+    by_model: { model: string; net_amount: number; net_quantity: number }[];
+  };
+  model_mix: {
+    login: string;
+    basis: 'net_amount' | 'requests';
+    models: { model: string; value: number; share: number }[];
+  }[];
+}
+
 export interface RepriceResponse {
   provider_lookup?: Record<string, number> | null;
   job_id?: string | null;

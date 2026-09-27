@@ -727,16 +727,49 @@ describe('CostView', () => {
       ?.querySelector('view-header')
       ?.getAttribute('description');
     expect(description).to.equal(
-      'Understand gateway spend by agent, tool, session and user.'
+      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend.'
     );
 
     const tabs = Array.from(
       element.shadowRoot?.querySelectorAll('sl-tab[slot="nav"]') || []
     ).map((tab) => tab.textContent?.trim());
-    expect(tabs).to.deep.equal(['Agents', 'Tools', 'Sessions', 'Users']);
+    expect(tabs).to.deep.equal([
+      'Agents',
+      'Tools',
+      'Sessions',
+      'Users',
+      'Copilot',
+    ]);
     for (const promised of ['model', 'flow', 'API key']) {
       expect(description).to.not.contain(promised);
     }
+  });
+
+  it('renders imported Copilot spend in its own tab for the page window', async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element['handleTabShow'](
+      new CustomEvent('sl-tab-show', { detail: { name: 'copilot' } })
+    );
+    await element.updateComplete;
+
+    const panel = element.shadowRoot!.querySelector('copilot-usage-panel') as
+      (HTMLElement & { startDate?: string; endDate?: string }) | null;
+    expect(panel).to.not.equal(null);
+    const period = (
+      element as unknown as {
+        currentPeriod: { startDate: string; endDate: string };
+      }
+    ).currentPeriod;
+    expect(panel!.startDate).to.equal(period.startDate);
+    expect(panel!.endDate).to.equal(period.endDate);
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/api/v1/cost/copilot'))
+    );
   });
 
   describe('imported usage section', () => {
@@ -1002,7 +1035,7 @@ describe('CostView', () => {
 
     const description = header?.shadowRoot?.querySelector('.description');
     expect(description?.textContent).to.contain(
-      'Understand gateway spend by agent, tool, session and user.'
+      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend.'
     );
   });
 

@@ -735,6 +735,14 @@ class Settings(BaseSettings):
             "plugin and at least one provider connection are configured."
         ),
     )
+    copilot_usage_sync_enabled: bool = Field(
+        True,
+        description=(
+            "Schedule the daily GitHub Copilot usage import (seats, "
+            "premium-request spend, usage metrics). The task no-ops unless an "
+            "account has configured a Copilot connection on the Cost page."
+        ),
+    )
     provider_billing_drift_alert_pct: float = Field(
         10.0,
         description=(

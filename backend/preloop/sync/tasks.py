@@ -26,6 +26,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "cleanup_tracker_webhooks",
     "reprice_gateway_usage_task",
     "ingest_provider_billing",
+    "ingest_copilot_usage",
     "send_optimization_digest",
     "reconcile_stripe_subscriptions",
     "sync_model_catalog",
@@ -403,6 +404,46 @@ def ingest_provider_billing(account_id: str | None = None) -> object | None:
         return None
     finally:
         db.close()
+
+
+async def ingest_copilot_usage(account_id: str | None = None) -> object | None:
+    """Import GitHub Copilot seats, premium-request spend and usage metrics.
+
+    Runs daily for every active Copilot connection (or one account when
+    ``account_id`` is given, as the Cost page's "Sync now" does). Imported
+    rows are never gateway usage. Failures are recorded on the connection and
+    shown on the Cost page, so this only logs unexpected errors. The GitHub
+    calls and database work run on a worker thread so a slow GitHub response
+    never blocks the task loop.
+
+    Args:
+        account_id: Restrict the import to one account.
+
+    Returns:
+        Per-account sync summaries, or None on an unexpected failure.
+    """
+    from preloop.config import settings
+    from preloop.services.copilot_usage_import import (
+        ingest_copilot_usage as run_copilot_import,
+    )
+
+    if account_id is None and not settings.copilot_usage_sync_enabled:
+        # A scheduled run queued before the setting was turned off. A manual
+        # "Sync now" (with an account id) still runs.
+        return None
+
+    def run() -> object:
+        db = next(get_db_session())
+        try:
+            return run_copilot_import(db, account_id=account_id)
+        finally:
+            db.close()
+
+    try:
+        return await run_db_off_loop(run)
+    except Exception as e:
+        logger.error("Copilot usage import failed: %s", e, exc_info=True)
+        return None
 
 
 async def sync_model_catalog(account_id: str | None = None) -> dict[str, int] | None:
