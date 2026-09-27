@@ -214,3 +214,79 @@ async def test_jira_write_back_failure_is_swallowed() -> None:
         new=AsyncMock(side_effect=RuntimeError("jira down")),
     ):
         assert await orch._write_pull_request_back_to_jira() is False
+
+
+async def _prepare_host_checkout(orch, *, applied, attach, credentials):
+    with (
+        patch.object(orch, "_get_tracker_credentials_by_id", credentials),
+        patch.object(orch, "_attach_trigger_tracker_credentials", attach),
+        patch(
+            "preloop.services.repository_binding.resolve_repository_binding",
+            **(
+                {"side_effect": applied}
+                if isinstance(applied, Exception)
+                else {"return_value": applied}
+            ),
+        ) as resolve,
+    ):
+        context = await orch.prepare_host_exec_checkout_context()
+    return context, resolve
+
+
+async def test_host_checkout_clones_the_bound_repository() -> None:
+    stored = {"enabled": True}
+    orch = _orchestrator(stored)
+    attach = AsyncMock()
+    credentials = AsyncMock(return_value={"token": "host-token", "type": "github"})
+
+    context, resolve = await _prepare_host_checkout(
+        orch, applied=_applied(stored), attach=attach, credentials=credentials
+    )
+
+    assert resolve.call_args.kwargs["trigger_tracker_id"] == JIRA_TRACKER
+    assert context["git_clone_config"]["repositories"][0]["tracker_id"] == (
+        HOST_TRACKER
+    )
+    assert context["repository_binding"]["repository"] == "acme/api"
+    # Only the code-host tracker's credential; the Jira token never leaves.
+    credentials.assert_awaited_once_with(HOST_TRACKER)
+    assert list(context["git_credentials_map"]) == [HOST_TRACKER]
+    attach.assert_not_awaited()
+    assert orch.flow.git_clone_config is stored
+    assert stored == {"enabled": True}
+
+
+async def test_host_checkout_without_binding_keeps_the_trigger_path() -> None:
+    orch = _orchestrator({"enabled": True})
+    attach = AsyncMock()
+    context, _ = await _prepare_host_checkout(
+        orch, applied=None, attach=attach, credentials=AsyncMock(return_value=None)
+    )
+    assert "repository_binding" not in context
+    assert context["git_clone_config"] == {"enabled": True}
+    attach.assert_awaited_once()
+
+
+async def test_host_checkout_binding_error_propagates() -> None:
+    orch = _orchestrator({"enabled": True})
+    credentials = AsyncMock()
+    with pytest.raises(RepositoryBindingError, match="none as default"):
+        await _prepare_host_checkout(
+            orch,
+            applied=RepositoryBindingError("x marks none as default"),
+            attach=AsyncMock(),
+            credentials=credentials,
+        )
+    credentials.assert_not_awaited()
+
+
+async def test_host_checkout_skips_binding_when_clone_is_disabled() -> None:
+    orch = _orchestrator({"enabled": False})
+    context, resolve = await _prepare_host_checkout(
+        orch,
+        applied=AssertionError("must not resolve"),
+        attach=AsyncMock(),
+        credentials=AsyncMock(),
+    )
+    assert context is None
+    resolve.assert_not_called()

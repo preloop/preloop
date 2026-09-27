@@ -2434,12 +2434,21 @@ class FlowExecutionOrchestrator:
         only what the checkout resolvers read, so the delivery path can turn
         it into a validated, per-repository checkout plan.
 
+        A repository binding applies here exactly as on container runs: a
+        Jira-triggered flow clones the bound code-host repository with that
+        tracker's credential only.
+
         Returns:
             The checkout context, or None when the flow does not clone.
+
+        Raises:
+            RepositoryBindingError: A binding exists but cannot be applied.
         """
-        clone = self.flow.git_clone_config
-        if not isinstance(clone, dict) or not clone.get("enabled"):
+        stored = self.flow.git_clone_config
+        if not isinstance(stored, dict) or not stored.get("enabled"):
             return None
+        self._apply_repository_binding()
+        clone = self._effective_git_clone_config()
         context: Dict[str, Any] = {
             "flow_id": str(self.flow_id),
             "flow_name": self.flow.name,
@@ -2449,6 +2458,11 @@ class FlowExecutionOrchestrator:
             "trigger_event_data": self.trigger_event_data,
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
+        binding = getattr(self, "_repository_binding", None)
+        if binding is not None:
+            # Read by the shared clone resolvers: the git credential must come
+            # from the bound code-host tracker only, never the issue tracker.
+            context["repository_binding"] = binding.summary()
         await self._attach_git_credentials(context)
         return context
 

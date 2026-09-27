@@ -161,6 +161,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Jira-triggered flow bound to a code-host repository now clones that
+  repository on Copilot and Cursor host execution profiles too, with the
+  code-host tracker's credential only. Before, the host checkout ignored the
+  binding and failed the lease with "no repository URL". A binding that
+  cannot be applied fails the lease with a launch error that names it.
+
 - Managed agent config files (`writeJSONDocument`) are written atomically, so
   a concurrent reader never sees a partial file; a symlinked config keeps its
   link. The host execution cleanup test no longer races its fake CLI's pid
