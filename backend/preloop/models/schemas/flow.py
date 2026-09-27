@@ -1232,6 +1232,17 @@ class FlowBase(BaseModel):
     webhook_config: Optional[WebhookConfig] = None
     schedule_config: Optional[ScheduleConfig] = None
     prompt_template: Optional[str] = None
+    review_instructions: Optional[str] = Field(
+        default=None,
+        max_length=32768,
+        description=(
+            "Blocking review rules for the Pull Request Reviewer. Same "
+            "content as .preloop/review-policy.md, for a repository that "
+            "cannot commit that file. Injected as "
+            "{{flow.review_instructions}}. Empty means the repository file "
+            "is the only source."
+        ),
+    )
     ai_model_id: Optional[UUID] = None
     agent_type: Optional[str] = "openhands"
     agent_config: Optional[Dict[str, Any]] = None
@@ -1304,6 +1315,21 @@ class FlowBase(BaseModel):
             "notifications."
         ),
     )
+
+    @field_validator("review_instructions")
+    @classmethod
+    def normalize_review_instructions(cls, value: Optional[str]) -> Optional[str]:
+        """Store blank instructions as NULL and reject an oversized paste."""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("review_instructions must be a string")
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) > 32768:
+            raise ValueError("review_instructions must be at most 32768 characters")
+        return text
 
     @field_validator("agent_config")
     @classmethod

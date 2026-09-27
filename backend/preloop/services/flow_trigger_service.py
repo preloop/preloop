@@ -1,9 +1,10 @@
 import asyncio
 from datetime import datetime, timezone
+import functools
 import logging
 import threading
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Connection
@@ -18,7 +19,15 @@ from preloop.services.model_routing import (
     load_source_execution_for_flow,
     prepare_execution_routing,
 )
-from preloop.models.schemas.flow_execution import FlowExecutionCreate
+from preloop.models.schemas.flow_execution import (
+    FlowExecutionCreate,
+    FlowExecutionUpdate,
+)
+from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_RUNNER_ERROR,
+    FAILURE_CATEGORY_UNKNOWN,
+    derive_failure_category,
+)
 from preloop.services.flow_ci_feedback import (
     GITHUB_CI_EVENT_TYPES,
     bind_ci_failure_resume_or_skip,
@@ -169,6 +178,208 @@ def _event_label_names(payload: Dict[str, Any]) -> List[str]:
     _add(added)
     _add(removed)
     return names
+
+
+#: Local-dispatch tasks started by ``_start_flow_execution`` when no execution
+#: worker is enabled. The event loop keeps only weak references to tasks, so an
+#: unreferenced one can be garbage-collected mid-run; holding it here until it
+#: finishes also guarantees its done-callback runs and sees the outcome.
+_LOCAL_RUN_TASKS: Set["asyncio.Task[None]"] = set()
+
+#: Worker-thread writes that record a crashed local dispatch as FAILED, held
+#: until they finish for the same reason as ``_LOCAL_RUN_TASKS``.
+_LOCAL_RUN_FAILURE_WRITES: Set["asyncio.Task[bool]"] = set()
+
+#: Statuses a crashed local dispatch may overwrite with FAILED. Terminal rows
+#: already say how the run ended, and parked or resuming rows belong to the
+#: park/resume handshake, so neither is touched.
+_LOCAL_RUN_FAILABLE_STATUSES = frozenset(
+    {"PENDING", "INITIALIZING", "STARTING", "RUNNING"}
+)
+
+
+def _record_local_run_failure(
+    session_factory: Callable[[], Session],
+    execution_id: uuid.UUID,
+    exc: BaseException,
+) -> bool:
+    """Mark a locally dispatched execution FAILED after its task raised.
+
+    The row is only updated while it is still in a pre-terminal status and no
+    agent runtime was recorded for it. A row with an agent session reference
+    has a live container that execution recovery can still adopt, so it is
+    left for recovery instead of being failed underneath the container.
+
+    Args:
+        session_factory: Zero-argument callable returning a fresh Session. The
+            callback runs after the dispatching request finished, so it cannot
+            reuse that request's session.
+        execution_id: The execution the failed task was running.
+        exc: The exception the task raised.
+
+    Returns:
+        True when the execution was marked FAILED, False when it was left
+        unchanged (missing, already finished, parked, has a runtime, or the
+        update itself failed).
+    """
+    db = session_factory()
+    try:
+        execution = crud_flow_execution.get(db, id=execution_id)
+        if execution is None:
+            return False
+        if execution.status not in _LOCAL_RUN_FAILABLE_STATUSES:
+            return False
+        if execution.agent_session_reference:
+            return False
+        message = f"Local flow dispatch failed: {type(exc).__name__}: {exc}"
+        category = derive_failure_category(
+            status="FAILED", error_message=message, exception=exc
+        )
+        if category in (None, FAILURE_CATEGORY_UNKNOWN):
+            # The run never reached an agent: the in-process dispatcher lost
+            # it, which is a runner failure rather than an agent one.
+            category = FAILURE_CATEGORY_RUNNER_ERROR
+        crud_flow_execution.update(
+            db,
+            db_obj=execution,
+            obj_in=FlowExecutionUpdate(
+                status="FAILED",
+                error_message=message,
+                failure_category=category,
+                end_time=datetime.now(timezone.utc),
+            ),
+        )
+        db.commit()
+        return True
+    except Exception:
+        logger.exception(
+            "Could not record the local dispatch failure of execution %s",
+            execution_id,
+        )
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001 - best-effort rollback
+            pass
+        return False
+    finally:
+        db.close()
+
+
+def _supervise_local_run(
+    task: "asyncio.Task[None]",
+    *,
+    execution_id: uuid.UUID,
+    session_factory: Callable[[], Session],
+) -> None:
+    """Done-callback for a local-dispatch task: log and fail on an exception.
+
+    Without it, an exception raised by the in-process run is never retrieved:
+    nothing is logged and the execution stays PENDING until the next process
+    restart runs execution recovery. The error is logged here; the FAILED
+    write is handed to a worker thread so it never blocks the event loop.
+
+    Args:
+        task: The finished local-dispatch task.
+        execution_id: The execution the task was running.
+        session_factory: Zero-argument callable returning a fresh Session.
+    """
+    _LOCAL_RUN_TASKS.discard(task)
+    if task.cancelled():
+        # Cancellation is a shutdown, not a failure: the row stays active and
+        # execution recovery re-dispatches it when the process comes back.
+        logger.warning(
+            "Local flow run for execution %s was cancelled; leaving it for "
+            "execution recovery",
+            execution_id,
+        )
+        return
+    exc = task.exception()
+    if exc is None:
+        return
+    logger.error(
+        "Local flow run for execution %s failed: %s",
+        execution_id,
+        exc,
+        exc_info=exc,
+    )
+    # This callback runs on the event-loop thread. The status write is
+    # synchronous SQLAlchemy work that can block on a slow or exhausted pool
+    # (plausibly the very reason the run failed), so it runs in a worker
+    # thread instead of stalling every other request on the loop.
+    write = asyncio.to_thread(
+        _record_local_run_failure_and_log, session_factory, execution_id, exc
+    )
+    try:
+        write_task = task.get_loop().create_task(write)
+    except RuntimeError:
+        # The loop is closing: nothing scheduled now would run. The row stays
+        # active and execution recovery picks it up on the next start.
+        write.close()
+        logger.warning(
+            "Could not schedule the failure write for execution %s; leaving "
+            "it for execution recovery",
+            execution_id,
+        )
+        return
+    _LOCAL_RUN_FAILURE_WRITES.add(write_task)
+    write_task.add_done_callback(
+        functools.partial(_log_failure_write_outcome, execution_id=execution_id)
+    )
+
+
+def _record_local_run_failure_and_log(
+    session_factory: Callable[[], Session],
+    execution_id: uuid.UUID,
+    exc: BaseException,
+) -> bool:
+    """Record a crashed local dispatch and log when the row was marked.
+
+    Runs in a worker thread (see ``_supervise_local_run``).
+
+    Args:
+        session_factory: Zero-argument callable returning a fresh Session.
+        execution_id: The execution the failed task was running.
+        exc: The exception the task raised.
+
+    Returns:
+        True when the execution was marked FAILED.
+    """
+    marked = _record_local_run_failure(session_factory, execution_id, exc)
+    if marked:
+        logger.info(
+            "Execution %s marked FAILED after its local dispatch raised",
+            execution_id,
+        )
+    return marked
+
+
+def _log_failure_write_outcome(
+    write_task: "asyncio.Task[bool]", *, execution_id: uuid.UUID
+) -> None:
+    """Done-callback for the failure write: release it and log a crash.
+
+    ``_record_local_run_failure`` already logs its own database errors, so
+    this only reports a write that was cancelled or failed outside it.
+
+    Args:
+        write_task: The finished failure-write task.
+        execution_id: The execution whose failure was being recorded.
+    """
+    _LOCAL_RUN_FAILURE_WRITES.discard(write_task)
+    if write_task.cancelled():
+        logger.warning(
+            "Failure write for execution %s was cancelled; leaving it for "
+            "execution recovery",
+            execution_id,
+        )
+        return
+    write_exc = write_task.exception()
+    if write_exc is not None:
+        logger.error(
+            "Could not record the local dispatch failure of execution %s",
+            execution_id,
+            exc_info=write_exc,
+        )
 
 
 def _triage_timestamp(value: Any) -> Optional[datetime]:
@@ -1141,7 +1352,15 @@ class FlowTriggerService:
         if flow_execution_worker_enabled():
             await dispatch_execute(execution_id)
         else:
-            asyncio.create_task(_local_run())
+            local_task = asyncio.create_task(_local_run())
+            _LOCAL_RUN_TASKS.add(local_task)
+            local_task.add_done_callback(
+                functools.partial(
+                    _supervise_local_run,
+                    execution_id=execution_id,
+                    session_factory=self._create_orchestrator_session,
+                )
+            )
 
         return execution
 

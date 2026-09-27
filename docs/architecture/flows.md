@@ -34,6 +34,7 @@ Flow `prompt_template` strings are resolved before the agent starts. Besides `{{
 *   `{{execution.url}}` — console URL `{PRELOOP_URL}/console/flows/executions/{id}`.
 *   `{{execution.resume_from}}` — prior execution id when this run was started from a human comment on a PR this flow opened. Empty otherwise.
 *   `{{execution.ci_failure}}` — when this run was started because GitHub CI failed on a PR this flow opened: provider, job name, and check URL. Empty otherwise.
+*   `{{flow.review_instructions}}`: blocking review rules stored on the flow. Empty when unset. The Pull Request Reviewer reads this the same way it reads `.preloop/review-policy.md`, and truncates it at 16 KiB.
 
 Any placeholder may take a `|truncate(N)` filter, for example
 `{{trigger_event.payload.object_attributes.description|truncate(16384)}}`.
