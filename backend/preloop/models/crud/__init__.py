@@ -51,6 +51,7 @@ from .flow_execution import CRUDFlowExecution
 from .flow_execution_log import CRUDFlowExecutionLog
 from .flow_runner import CRUDFlowRunner, crud_flow_runner
 from .issue import CRUDIssue
+from .issue_cost import crud_issue_cost
 from .issue_lifecycle import crud_issue_lifecycle
 from .security_maintenance import crud_security_maintenance
 from .organization import CRUDOrganization  # Removed create_organization import
@@ -103,7 +104,7 @@ from .plan import (
     subscription,
     monthly_usage,
 )
-from .user import CRUDUser, crud_user
+from .user import AmbiguousEmailError, CRUDUser, crud_user
 from .permission import (
     CRUDPermission,
     CRUDRole,
@@ -238,6 +239,7 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
 __all__ = [
     "crud_flow_feedback",
+    "crud_issue_cost",
     "crud_issue_lifecycle",
     "crud_security_maintenance",
     "CRUDBase",
@@ -348,6 +350,7 @@ __all__ = [
     "plan",
     "subscription",
     "monthly_usage",
+    "AmbiguousEmailError",
     "crud_user",
     "crud_permission",
     "crud_role",

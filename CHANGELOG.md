@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
+  agent cost, tokens and run counts up to each tracker issue across flows, with
+  the first event to PR opened, PR opened to approved, and approved to merged
+  times in hours. Filters by period, project and flow; per-project and per-flow
+  summaries are sums of the issue rows; runs that cannot be tied to exactly one
+  issue are shown as unassigned. CSV and JSON export under
+  `/api/v1/cost/by-issue/export`, and `/api/v1/cost/by-issue/rebuild` backfills
+  earlier runs. Per-flow cost charts are unchanged.
+
 - Spend outlier alerts on the Attention page: a developer whose UTC-day spend
   is a multiple of their 28-day median, whose spend is mostly one top-tier
   model two days running, or a session over a cost threshold. Each alert fires

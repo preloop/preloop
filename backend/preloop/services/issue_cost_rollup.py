@@ -1,0 +1,1555 @@
+"""Roll up cost and cycle time per tracker issue (#958).
+
+Executions that touch one tracker issue (triage, implementation, review,
+repair turns, completion audits) are grouped into one ``issue_cost_rollup``
+row per issue. Each finished execution leaves exactly one
+``issue_cost_execution`` fact, keyed on its id, so recording it again (a
+replay, a retry of the hook, a backfill) overwrites instead of adding. Pull
+request timestamps live in ``issue_cost_pull_request`` rows, keyed on the
+canonical PR URL, so approval and merge webhooks can land before or after
+the executions that reference the PR.
+
+Attribution order for one execution (first match wins):
+
+1. A lifecycle binding (``IssueLifecycle.execution_id`` or the lifecycle
+   envelope on the trigger) names the issue directly.
+2. A repair turn (``_resume``), a delegated child or a retry inherits the
+   issue of the execution it continues.
+3. The trigger subject is an issue (issue opened, labeled, commented).
+4. The trigger subject is a pull request that is already linked to one
+   issue (the implementation that opened it claimed it).
+5. The pull request text has exactly one closing reference ("Fixes #12").
+
+Anything else, and any pull request two issues both claim, is left on the
+pull request only and reported in the unassigned bucket. Cost is the sum of
+``flow_execution.estimated_cost``; nothing else is added.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import json
+import logging
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
+
+from sqlalchemy.orm import Session
+
+from preloop.models import models
+from preloop.models.crud import crud_flow_execution, crud_issue_cost
+from preloop.schemas.issue_cost import (
+    IssueCostExecutionRow,
+    IssueCostReport,
+    IssueCostRow,
+    IssueCostSummary,
+    IssueCostUnassigned,
+)
+from preloop.services.flow_pr_binding import normalize_pr_url
+from preloop.services.issue_references import KIND_CLOSES, extract_issue_references
+
+logger = logging.getLogger(__name__)
+
+#: How many hops of resume, delegation and retry lineage are followed.
+MAX_LINEAGE_DEPTH = 8
+
+#: Row cap for one report; the response says when it was reached.
+MAX_REPORT_ROWS = 5000
+
+#: Row cap for one rebuild call.
+MAX_REBUILD_EXECUTIONS = 2000
+
+# Column widths of issue_cost_rollup.issue_key and the pull request keys.
+MAX_ISSUE_KEY_LENGTH = 512
+MAX_PR_KEY_LENGTH = 1000
+
+LINK_LIFECYCLE = "lifecycle"
+LINK_RESUME = "resume"
+LINK_DELEGATED = "delegated"
+LINK_RETRY = "retry"
+LINK_TRIGGER_ISSUE = "trigger_issue"
+LINK_PULL_REQUEST = "pull_request"
+LINK_CLOSING_REFERENCE = "closing_reference"
+LINK_AMBIGUOUS = "ambiguous"
+LINK_UNASSIGNED = "unassigned"
+
+APPROVAL_EVENT_TYPES = frozenset({"pull_request_approved", "merge_request_approved"})
+MERGE_EVENT_TYPES = frozenset({"pull_request_merged", "merge_request_merged"})
+REVIEW_EVENT_TYPE = "pull_request_review"
+
+CSV_COLUMNS: tuple[str, ...] = (
+    "tracker",
+    "issue_key",
+    "title",
+    "project",
+    "estimated_cost",
+    "total_tokens",
+    "run_count",
+    "failed_run_count",
+    "first_event_at",
+    "pr_opened_at",
+    "approved_at",
+    "merged_at",
+    "first_event_to_pr_opened_hours",
+    "pr_opened_to_approved_hours",
+    "approved_to_merged_hours",
+    "issue_url",
+    "pr_url",
+)
+
+UNASSIGNED_ISSUE_KEY = "(unassigned)"
+
+
+# --- parsing ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TriggerSubject:
+    """What a trigger payload is about.
+
+    Attributes:
+        kind: ``issue`` or ``pull_request``.
+        issue_key: Canonical issue key for an issue subject.
+        title: Issue or pull request title.
+        url: Issue URL, or the canonical pull request URL.
+        pr_body: Pull request description, for closing references.
+        pr_branch: Pull request source branch.
+        pr_number: Pull request number (used to drop self references).
+        repo_path: Repository path (``org/repo``), when known.
+        host: Web host of the repository, when known.
+        platform: ``github``, ``gitlab`` or ``jira``.
+    """
+
+    kind: str
+    issue_key: Optional[str] = None
+    title: Optional[str] = None
+    url: Optional[str] = None
+    pr_body: Optional[str] = None
+    pr_branch: Optional[str] = None
+    pr_number: Optional[Any] = None
+    repo_path: Optional[str] = None
+    host: Optional[str] = None
+    platform: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class IssueTarget:
+    """A tracker issue an execution or pull request is attributed to."""
+
+    tracker_id: uuid.UUID
+    issue_key: str
+    issue_id: Optional[uuid.UUID] = None
+    project_id: Optional[uuid.UUID] = None
+    title: Optional[str] = None
+    issue_url: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class Attribution:
+    """The outcome of attributing one execution."""
+
+    link: str
+    target: Optional[IssueTarget] = None
+    pr_key: Optional[str] = None
+
+
+def _pr_key(url: Optional[str]) -> str:
+    """Canonical pull request URL, or "" when it cannot be stored."""
+    key = normalize_pr_url(url)
+    return key if len(key) <= MAX_PR_KEY_LENGTH else ""
+
+
+def canonical_issue_key(key: Optional[str]) -> Optional[str]:
+    """Canonical form of a tracker issue key.
+
+    Repository paths are case-insensitive on both forges, Jira keys are
+    upper case. ``Org/Repo#12`` and ``org/repo#12`` must be one issue.
+
+    Args:
+        key: ``path#number`` or a Jira key.
+
+    Returns:
+        The canonical key, or None for an empty, malformed or oversized key.
+    """
+    if not key or not isinstance(key, str):
+        return None
+    key = key.strip()
+    if "#" in key:
+        path, _, number = key.rpartition("#")
+        path = path.strip().strip("/")
+        number = number.strip()
+        if not path or not number.isdigit():
+            return None
+        canonical = f"{path.lower()}#{number}"
+    else:
+        canonical = key.upper()
+    if not canonical or len(canonical) > MAX_ISSUE_KEY_LENGTH:
+        return None
+    return canonical
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _str(value: Any) -> Optional[str]:
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _host(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    return (urlparse(url).hostname or "").lower() or None
+
+
+def parse_trigger_subject(details: Any) -> Optional[TriggerSubject]:
+    """Find the issue or pull request a trigger payload is about.
+
+    Args:
+        details: ``FlowExecution.trigger_event_details`` or a webhook
+            ``event_data`` dict (``source``, ``type``, ``payload``).
+
+    Returns:
+        The subject, or None when the payload names neither.
+    """
+    details = _dict(details)
+    payload = _dict(details.get("payload"))
+    if not payload:
+        return None
+    source = (_str(details.get("source")) or "").lower()
+
+    if _dict(payload.get("project")).get("path_with_namespace") or source == "gitlab":
+        subject = _parse_gitlab(payload)
+        if subject is not None:
+            return subject
+    if _dict(payload.get("repository")).get("full_name") or source == "github":
+        subject = _parse_github(payload)
+        if subject is not None:
+            return subject
+    return _parse_jira(payload)
+
+
+def _parse_github(payload: dict[str, Any]) -> Optional[TriggerSubject]:
+    repo_path = _str(_dict(payload.get("repository")).get("full_name"))
+    pull = _dict(payload.get("pull_request"))
+    issue = _dict(payload.get("issue"))
+    if pull:
+        url = _pr_key(_str(pull.get("html_url")))
+        if not url:
+            return None
+        return TriggerSubject(
+            kind="pull_request",
+            title=_str(pull.get("title")),
+            url=url,
+            pr_body=_str(pull.get("body")),
+            pr_branch=_str(_dict(pull.get("head")).get("ref")),
+            pr_number=pull.get("number"),
+            repo_path=repo_path,
+            host=_host(url),
+            platform="github",
+        )
+    if issue:
+        if issue.get("pull_request"):
+            url = _pr_key(
+                _str(_dict(issue.get("pull_request")).get("html_url"))
+                or _str(issue.get("html_url"))
+            )
+            if not url:
+                return None
+            return TriggerSubject(
+                kind="pull_request",
+                title=_str(issue.get("title")),
+                url=url,
+                pr_body=_str(issue.get("body")),
+                pr_number=issue.get("number"),
+                repo_path=repo_path,
+                host=_host(url),
+                platform="github",
+            )
+        number = _str(issue.get("number"))
+        key = canonical_issue_key(f"{repo_path}#{number}") if repo_path else None
+        if not key:
+            return None
+        return TriggerSubject(
+            kind="issue",
+            issue_key=key,
+            title=_str(issue.get("title")),
+            url=_str(issue.get("html_url")),
+            repo_path=repo_path,
+            platform="github",
+        )
+    return None
+
+
+def _gitlab_pr(
+    request: dict[str, Any], repo_path: Optional[str]
+) -> Optional[TriggerSubject]:
+    # Webhook notes carry both an API ``url`` and a browser ``web_url``; only
+    # the browser form matches the stored publication URL.
+    url = _pr_key(_str(request.get("web_url"))) or _pr_key(_str(request.get("url")))
+    if not url:
+        return None
+    return TriggerSubject(
+        kind="pull_request",
+        title=_str(request.get("title")),
+        url=url,
+        pr_body=_str(request.get("description")),
+        pr_branch=_str(request.get("source_branch")),
+        pr_number=request.get("iid"),
+        repo_path=repo_path,
+        host=_host(url),
+        platform="gitlab",
+    )
+
+
+def _gitlab_issue(
+    issue: dict[str, Any], repo_path: Optional[str]
+) -> Optional[TriggerSubject]:
+    iid = _str(issue.get("iid"))
+    key = canonical_issue_key(f"{repo_path}#{iid}") if repo_path and iid else None
+    if not key:
+        return None
+    return TriggerSubject(
+        kind="issue",
+        issue_key=key,
+        title=_str(issue.get("title")),
+        url=_str(issue.get("web_url")) or _str(issue.get("url")),
+        repo_path=repo_path,
+        platform="gitlab",
+    )
+
+
+def _parse_gitlab(payload: dict[str, Any]) -> Optional[TriggerSubject]:
+    repo_path = _str(_dict(payload.get("project")).get("path_with_namespace"))
+    kind = (_str(payload.get("object_kind")) or "").lower()
+    attributes = _dict(payload.get("object_attributes"))
+    if kind == "merge_request":
+        return _gitlab_pr(attributes, repo_path)
+    if kind in {"issue", "work_item"}:
+        return _gitlab_issue(attributes, repo_path)
+    if kind == "note":
+        if _dict(payload.get("merge_request")):
+            return _gitlab_pr(_dict(payload.get("merge_request")), repo_path)
+        if _dict(payload.get("issue")):
+            return _gitlab_issue(_dict(payload.get("issue")), repo_path)
+    return None
+
+
+def _parse_jira(payload: dict[str, Any]) -> Optional[TriggerSubject]:
+    issue = _dict(payload.get("issue"))
+    key = _str(issue.get("key"))
+    if not key or "#" in key:
+        return None
+    canonical = canonical_issue_key(key)
+    if not canonical:
+        return None
+    return TriggerSubject(
+        kind="issue",
+        issue_key=canonical,
+        title=_str(_dict(issue.get("fields")).get("summary")),
+        platform="jira",
+    )
+
+
+def closing_issue_keys(subject: TriggerSubject) -> list[str]:
+    """Distinct canonical keys a pull request says it closes.
+
+    Only closing keywords count ("Fixes #12", "Closes ORG-7"). A bare
+    mention or a branch name is too weak to charge an issue for the work.
+
+    Args:
+        subject: A pull request subject.
+
+    Returns:
+        Canonical keys in order of first appearance.
+    """
+    if subject.kind != "pull_request":
+        return []
+    references = extract_issue_references(
+        description=subject.pr_body,
+        title=subject.title,
+        branch=subject.pr_branch,
+        repo_path=subject.repo_path,
+        host=subject.host,
+        platform=subject.platform,
+        self_number=subject.pr_number,
+        limit=20,
+    )
+    keys: list[str] = []
+    for reference in references:
+        if reference.kind != KIND_CLOSES:
+            continue
+        key = canonical_issue_key(reference.key)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def published_pr_keys(execution: Any) -> list[str]:
+    """Canonical URLs of the pull requests an execution published.
+
+    Reads ``result.pr_url`` (bound mid-run by the runner) and the trusted
+    isolated publication (one URL, or one per repository).
+
+    Args:
+        execution: A flow execution.
+
+    Returns:
+        Distinct canonical pull request URLs.
+    """
+    result = _dict(getattr(execution, "result", None))
+    candidates: list[Any] = [result.get("pr_url")]
+    publication = _dict(result.get("trusted_publication"))
+    candidates.append(publication.get("url"))
+    candidates.append(publication.get("pr_url"))
+    for repository in publication.get("repositories") or []:
+        repository = _dict(repository)
+        candidates.append(repository.get("url"))
+        candidates.append(repository.get("pr_url"))
+    keys: list[str] = []
+    for candidate in candidates:
+        key = _pr_key(_str(candidate))
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def parse_event_time(value: Any, *, now: datetime) -> datetime:
+    """Timestamp a webhook reports for itself, else its arrival time.
+
+    Forges put the review or merge time in the payload. A value that does
+    not parse, or that lies in the future, falls back to ``now``.
+
+    Args:
+        value: ISO 8601 string from the payload, or None.
+        now: Arrival time (timezone aware).
+
+    Returns:
+        A timezone-aware timestamp.
+    """
+    text = _str(value)
+    if text:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            if parsed <= now + timedelta(minutes=5):
+                return parsed
+    return now
+
+
+def interval_hours(
+    earlier: Optional[datetime], later: Optional[datetime]
+) -> Optional[float]:
+    """Hours between two milestones, blank when either is missing.
+
+    A negative interval means the milestones were recorded out of order
+    (for example an approval that predates the recorded publication); it
+    is reported blank rather than as a misleading zero or negative.
+
+    Args:
+        earlier: Start milestone.
+        later: End milestone.
+
+    Returns:
+        Hours rounded to two decimals, or None.
+    """
+    if earlier is None or later is None:
+        return None
+    seconds = (_aware(later) - _aware(earlier)).total_seconds()
+    if seconds < 0:
+        return None
+    return round(seconds / 3600.0, 2)
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _optional_aware(value: Optional[datetime]) -> Optional[datetime]:
+    return None if value is None else _aware(value)
+
+
+def _uuid(value: Any) -> Optional[uuid.UUID]:
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+# --- attribution -------------------------------------------------------------
+
+
+def _target_from_issue(issue: models.Issue) -> Optional[IssueTarget]:
+    key = canonical_issue_key(issue.key)
+    if not key:
+        return None
+    return IssueTarget(
+        tracker_id=issue.tracker_id,
+        issue_key=key,
+        issue_id=issue.id,
+        project_id=issue.project_id,
+        title=issue.title,
+        issue_url=issue.external_url,
+    )
+
+
+def _target_from_rollup(rollup: models.IssueCostRollup) -> IssueTarget:
+    return IssueTarget(
+        tracker_id=rollup.tracker_id,
+        issue_key=rollup.issue_key,
+        issue_id=rollup.issue_id,
+        project_id=rollup.project_id,
+        title=rollup.title,
+        issue_url=rollup.issue_url,
+    )
+
+
+def _resolve_key(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    key: str,
+    tracker_id: Optional[uuid.UUID],
+    title: Optional[str] = None,
+    url: Optional[str] = None,
+) -> Optional[IssueTarget]:
+    """Map a canonical key to an issue of the account.
+
+    A synced issue row wins (it carries project, title and URL). Without
+    one, the trigger's own tracker is used; a key that matches synced
+    issues in two trackers is not guessed.
+    """
+    if tracker_id is not None:
+        issues = crud_issue_cost.find_issues_by_key(
+            db, account_id=account_id, issue_key=key, tracker_id=tracker_id
+        )
+        if len(issues) == 1:
+            return _target_from_issue(issues[0])
+        return IssueTarget(
+            tracker_id=tracker_id, issue_key=key, title=title, issue_url=url
+        )
+    issues = crud_issue_cost.find_issues_by_key(
+        db, account_id=account_id, issue_key=key
+    )
+    if len(issues) == 1:
+        return _target_from_issue(issues[0])
+    return None
+
+
+def _trigger_tracker(
+    db: Session, *, account_id: uuid.UUID, details: dict[str, Any]
+) -> Optional[uuid.UUID]:
+    tracker_id = _uuid(details.get("tracker_id"))
+    if tracker_id is None:
+        return None
+    if not crud_issue_cost.tracker_belongs_to_account(
+        db, account_id=account_id, tracker_id=tracker_id
+    ):
+        return None
+    return tracker_id
+
+
+def _lifecycle_target(
+    db: Session, *, account_id: uuid.UUID, execution: models.FlowExecution
+) -> Optional[IssueTarget]:
+    issue = crud_issue_cost.lifecycle_issue_for_execution(
+        db, account_id=account_id, execution_id=execution.id
+    )
+    if issue is None:
+        details = _dict(execution.trigger_event_details)
+        envelope = _dict(_dict(details.get("payload")).get("lifecycle")) or _dict(
+            details.get("lifecycle_refinement")
+        )
+        issue_id = _uuid(envelope.get("issue_id"))
+        if issue_id is not None:
+            candidate = db.get(models.Issue, issue_id)
+            if candidate is not None and crud_issue_cost.tracker_belongs_to_account(
+                db, account_id=account_id, tracker_id=candidate.tracker_id
+            ):
+                issue = candidate
+    return _target_from_issue(issue) if issue is not None else None
+
+
+def _pull_request_attribution(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    subject: TriggerSubject,
+    tracker_id: Optional[uuid.UUID],
+) -> Attribution:
+    pr_key = subject.url
+    if pr_key:
+        pull = crud_issue_cost.get_pull_request(
+            db, account_id=account_id, pr_key=pr_key
+        )
+        if pull is not None and pull.ambiguous:
+            return Attribution(link=LINK_AMBIGUOUS, pr_key=pr_key)
+        if pull is not None and pull.rollup_id is not None:
+            rollup = db.get(models.IssueCostRollup, pull.rollup_id)
+            if rollup is not None:
+                return Attribution(
+                    link=LINK_PULL_REQUEST,
+                    target=_target_from_rollup(rollup),
+                    pr_key=pr_key,
+                )
+    keys = closing_issue_keys(subject)
+    if len(keys) > 1:
+        return Attribution(link=LINK_AMBIGUOUS, pr_key=pr_key)
+    if len(keys) == 1:
+        target = _resolve_key(
+            db, account_id=account_id, key=keys[0], tracker_id=tracker_id
+        )
+        if target is not None:
+            return Attribution(
+                link=LINK_CLOSING_REFERENCE, target=target, pr_key=pr_key
+            )
+    return Attribution(link=LINK_UNASSIGNED, pr_key=pr_key)
+
+
+def resolve_execution(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    execution: models.FlowExecution,
+    depth: int = 0,
+    visited: Optional[set[uuid.UUID]] = None,
+) -> Attribution:
+    """Decide which tracker issue an execution worked on.
+
+    Args:
+        db: Database session.
+        account_id: The execution's account.
+        execution: The execution to attribute.
+        depth: Lineage hops already followed.
+        visited: Executions already examined in this call. An ancestor
+            reached through several pointers is resolved once; a repeat
+            visit is a dead end (it either is on the current path or
+            already failed to yield an issue).
+
+    Returns:
+        The attribution; ``target`` is None when the execution stays on
+        its pull request only.
+    """
+    if visited is None:
+        visited = set()
+    visited.add(execution.id)
+    details = _dict(execution.trigger_event_details)
+    own_prs = published_pr_keys(execution)
+    own_pr = own_prs[0] if own_prs else None
+
+    target = _lifecycle_target(db, account_id=account_id, execution=execution)
+    if target is not None:
+        return Attribution(link=LINK_LIFECYCLE, target=target, pr_key=own_pr)
+
+    resume = _dict(details.get("_resume"))
+    lineage: list[tuple[str, Any, Optional[str]]] = [
+        (
+            LINK_RESUME,
+            resume.get("execution_id") or resume.get("resume_root"),
+            _pr_key(_str(resume.get("pr_url"))) or None,
+        ),
+        (LINK_DELEGATED, execution.parent_execution_id, None),
+        (LINK_RETRY, execution.retry_of_execution_id, None),
+    ]
+    if depth < MAX_LINEAGE_DEPTH:
+        for link, prior_id, pr_key in lineage:
+            if not prior_id or str(prior_id) == str(execution.id):
+                continue
+            inherited = _inherit(
+                db,
+                account_id=account_id,
+                prior_id=prior_id,
+                depth=depth,
+                visited=visited,
+            )
+            if inherited is not None:
+                return Attribution(
+                    link=link,
+                    target=inherited.target,
+                    pr_key=pr_key or own_pr or inherited.pr_key,
+                )
+
+    subject = parse_trigger_subject(details)
+    tracker_id = _trigger_tracker(db, account_id=account_id, details=details)
+    if subject is not None and subject.kind == "issue" and subject.issue_key:
+        target = _resolve_key(
+            db,
+            account_id=account_id,
+            key=subject.issue_key,
+            tracker_id=tracker_id,
+            title=subject.title,
+            url=subject.url,
+        )
+        if target is not None:
+            return Attribution(link=LINK_TRIGGER_ISSUE, target=target, pr_key=own_pr)
+    if subject is not None and subject.kind == "pull_request":
+        return _pull_request_attribution(
+            db, account_id=account_id, subject=subject, tracker_id=tracker_id
+        )
+    return Attribution(link=LINK_UNASSIGNED, pr_key=own_pr)
+
+
+def _inherit(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    prior_id: Any,
+    depth: int,
+    visited: set[uuid.UUID],
+) -> Optional[Attribution]:
+    prior_uuid = _uuid(prior_id)
+    if prior_uuid is None or prior_uuid in visited:
+        return None
+    prior = crud_issue_cost.get_execution(
+        db, account_id=account_id, execution_id=prior_uuid
+    )
+    if prior is None:
+        visited.add(prior_uuid)
+        return None
+    fact = crud_issue_cost.get_fact(db, execution_id=prior.id)
+    if fact is not None and fact.rollup_id is not None:
+        rollup = db.get(models.IssueCostRollup, fact.rollup_id)
+        if rollup is not None:
+            return Attribution(
+                link=fact.link, target=_target_from_rollup(rollup), pr_key=fact.pr_key
+            )
+    attribution = resolve_execution(
+        db,
+        account_id=account_id,
+        execution=prior,
+        depth=depth + 1,
+        visited=visited,
+    )
+    return attribution if attribution.target is not None else None
+
+
+# --- writes --------------------------------------------------------------------
+
+
+def _rollup_for(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    target: IssueTarget,
+    fallback_project_id: Optional[uuid.UUID] = None,
+) -> models.IssueCostRollup:
+    rollup = crud_issue_cost.get_or_create_rollup(
+        db,
+        account_id=account_id,
+        tracker_id=target.tracker_id,
+        issue_key=target.issue_key,
+    )
+    crud_issue_cost.describe_rollup(
+        db,
+        rollup=rollup,
+        issue_id=target.issue_id,
+        project_id=target.project_id or fallback_project_id,
+        title=target.title,
+        issue_url=target.issue_url,
+    )
+    return rollup
+
+
+def _trigger_project(
+    db: Session, *, account_id: uuid.UUID, execution: models.FlowExecution
+) -> Optional[uuid.UUID]:
+    """The project the trigger resolved, when it is the account's own."""
+    project_id = _uuid(_dict(execution.trigger_event_details).get("project_id"))
+    if project_id is None:
+        return None
+    if not crud_issue_cost.project_belongs_to_account(
+        db, account_id=account_id, project_id=project_id
+    ):
+        return None
+    return project_id
+
+
+def _claim_pull_request(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    pull: models.IssueCostPullRequest,
+    rollup_id: uuid.UUID,
+) -> set[uuid.UUID]:
+    """Link a pull request to an issue; a second, different claim voids both.
+
+    Returns:
+        Rollup ids whose pull request timestamps or facts changed.
+    """
+    if pull.ambiguous or pull.rollup_id == rollup_id:
+        return set()
+    if pull.rollup_id is None:
+        pull.rollup_id = rollup_id
+        db.flush()
+        return {rollup_id}
+    previous = pull.rollup_id
+    pull.rollup_id = None
+    pull.ambiguous = True
+    db.flush()
+    logger.info(
+        "Pull request is claimed by two issues; leaving it unassigned (rollups %s, %s)",
+        previous,
+        rollup_id,
+    )
+    touched = crud_issue_cost.unassign_pull_request_facts(
+        db, account_id=account_id, pr_key=pull.pr_key
+    )
+    return touched | {previous, rollup_id}
+
+
+def _recompute(db: Session, rollup_ids: Iterable[Optional[uuid.UUID]]) -> None:
+    for rollup_id in sorted({r for r in rollup_ids if r is not None}, key=str):
+        crud_issue_cost.recompute_rollup(db, rollup_id=rollup_id)
+
+
+def record_execution_finished(
+    db: Session, execution: models.FlowExecution
+) -> Optional[models.IssueCostExecution]:
+    """Record or refresh the fact of one finished execution.
+
+    Idempotent on the execution id: calling it again with the same state
+    changes nothing, and with new state (a repriced cost, a later status)
+    replaces the fact instead of adding a second one.
+
+    Args:
+        db: Database session. The caller commits.
+        execution: A terminal flow execution.
+
+    Returns:
+        The fact, or None when the execution is not terminal or has no flow.
+    """
+    if (
+        str(execution.status or "").upper()
+        not in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+    ):
+        return None
+    flow = crud_issue_cost.get_flow(db, flow_id=execution.flow_id)
+    if flow is None or flow.account_id is None:
+        return None
+    account_id = flow.account_id
+    previous = crud_issue_cost.get_fact(db, execution_id=execution.id)
+    attribution = resolve_execution(db, account_id=account_id, execution=execution)
+
+    trigger_project = _trigger_project(db, account_id=account_id, execution=execution)
+    rollup: Optional[models.IssueCostRollup] = None
+    if attribution.target is not None:
+        rollup = _rollup_for(
+            db,
+            account_id=account_id,
+            target=attribution.target,
+            fallback_project_id=trigger_project,
+        )
+
+    touched: set[Optional[uuid.UUID]] = {previous.rollup_id if previous else None}
+    end_time = _optional_aware(execution.end_time)
+    published = published_pr_keys(execution)
+    claims = list(published)
+    if attribution.link == LINK_CLOSING_REFERENCE and attribution.pr_key:
+        claims.append(attribution.pr_key)
+    for pr_key in claims:
+        pull = crud_issue_cost.get_or_create_pull_request(
+            db, account_id=account_id, pr_key=pr_key
+        )
+        if pull.opened_at is None and pr_key in published:
+            # The runner normally records the publication time mid-run
+            # (record_publication). A publication that reached this row
+            # only through the final result falls back to the run's end.
+            pull.opened_at = end_time or datetime.now(UTC)
+            db.flush()
+            touched.add(pull.rollup_id)
+        if rollup is not None:
+            touched |= _claim_pull_request(
+                db, account_id=account_id, pull=pull, rollup_id=rollup.id
+            )
+
+    link = attribution.link
+    rollup_id = rollup.id if rollup is not None else None
+    if attribution.pr_key and link in {LINK_PULL_REQUEST, LINK_CLOSING_REFERENCE}:
+        pull = crud_issue_cost.get_pull_request(
+            db, account_id=account_id, pr_key=attribution.pr_key
+        )
+        if pull is not None and pull.ambiguous:
+            link, rollup_id = LINK_AMBIGUOUS, None
+
+    project_id = (rollup.project_id if rollup is not None else None) or trigger_project
+    fact = crud_issue_cost.upsert_fact(
+        db,
+        values={
+            "account_id": account_id,
+            "execution_id": execution.id,
+            "flow_id": execution.flow_id,
+            "rollup_id": rollup_id,
+            "project_id": project_id,
+            "pr_key": attribution.pr_key,
+            "link": link,
+            "status": str(execution.status or "").upper()[:32],
+            "total_tokens": int(execution.total_tokens or 0),
+            "estimated_cost": execution.estimated_cost,
+            "start_time": _aware(execution.start_time or datetime.now(UTC)),
+            "end_time": end_time,
+        },
+    )
+    touched.add(rollup_id)
+    _recompute(db, touched)
+    return fact
+
+
+def record_publication(
+    db: Session,
+    execution: models.FlowExecution,
+    pr_url: str,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[models.IssueCostPullRequest]:
+    """Stamp the moment an execution opened a pull request.
+
+    The first recorded time wins, so a repeated handoff marker or a replay
+    never moves "PR opened" later.
+
+    Args:
+        db: Database session. The caller commits.
+        execution: The publishing execution.
+        pr_url: The pull request URL the runner reported.
+        now: Publication time, for tests.
+
+    Returns:
+        The pull request row, or None when the URL is not a PR URL.
+    """
+    pr_key = _pr_key(pr_url)
+    if not pr_key:
+        return None
+    flow = crud_issue_cost.get_flow(db, flow_id=execution.flow_id)
+    if flow is None or flow.account_id is None:
+        return None
+    account_id = flow.account_id
+    pull = crud_issue_cost.get_or_create_pull_request(
+        db, account_id=account_id, pr_key=pr_key
+    )
+    touched: set[Optional[uuid.UUID]] = set()
+    if pull.opened_at is None:
+        pull.opened_at = now or datetime.now(UTC)
+        db.flush()
+        touched.add(pull.rollup_id)
+    attribution = resolve_execution(db, account_id=account_id, execution=execution)
+    if attribution.target is not None:
+        rollup = _rollup_for(db, account_id=account_id, target=attribution.target)
+        touched |= _claim_pull_request(
+            db, account_id=account_id, pull=pull, rollup_id=rollup.id
+        )
+    _recompute(db, touched)
+    return pull
+
+
+def record_pull_request_event(
+    db: Session, event_data: dict[str, Any], *, now: Optional[datetime] = None
+) -> Optional[models.IssueCostPullRequest]:
+    """Record an approval or merge webhook on its pull request.
+
+    Approval is GitHub ``pull_request_review`` with review state approved
+    (webhooks send lower case ``approved``; the API spelling ``APPROVE`` is
+    accepted too), GitLab ``merge_request_approved``, or a
+    ``pull_request_approved`` type if a normalizer ever emits one. Merge is
+    ``pull_request_merged`` or ``merge_request_merged``. The earliest
+    timestamp wins, so a redelivered webhook never moves a milestone.
+
+    Args:
+        db: Database session. The caller commits.
+        event_data: Normalized webhook event (``type``, ``payload``,
+            ``account_id``, ``tracker_id``, ``source``).
+        now: Arrival time, for tests.
+
+    Returns:
+        The pull request row, or None for any other event.
+    """
+    event_type = _str(event_data.get("type")) or ""
+    payload = _dict(event_data.get("payload"))
+    review = _dict(payload.get("review"))
+    approved = event_type in APPROVAL_EVENT_TYPES or (
+        event_type == REVIEW_EVENT_TYPE
+        and (_str(review.get("state")) or "").lower() in {"approved", "approve"}
+    )
+    merged = event_type in MERGE_EVENT_TYPES
+    if not approved and not merged:
+        return None
+    account_id = _uuid(event_data.get("account_id"))
+    subject = parse_trigger_subject(event_data)
+    if account_id is None or subject is None or subject.kind != "pull_request":
+        return None
+    if not subject.url:
+        return None
+    arrival = now or datetime.now(UTC)
+    pull = crud_issue_cost.get_or_create_pull_request(
+        db, account_id=account_id, pr_key=subject.url
+    )
+    attributes = _dict(payload.get("object_attributes"))
+    if approved:
+        stamp = parse_event_time(review.get("submitted_at"), now=arrival)
+        if pull.approved_at is None or stamp < _aware(pull.approved_at):
+            pull.approved_at = stamp
+    if merged:
+        stamp = parse_event_time(
+            _dict(payload.get("pull_request")).get("merged_at")
+            or attributes.get("merged_at"),
+            now=arrival,
+        )
+        if pull.merged_at is None or stamp < _aware(pull.merged_at):
+            pull.merged_at = stamp
+    db.flush()
+    touched: set[Optional[uuid.UUID]] = {pull.rollup_id}
+    if pull.rollup_id is None and not pull.ambiguous:
+        # A pull request nobody claimed yet may still name one issue it
+        # closes. Only link it to an issue that already has a rollup: a
+        # webhook alone never creates an issue row.
+        keys = closing_issue_keys(subject)
+        if len(keys) == 1:
+            tracker_id = _trigger_tracker(db, account_id=account_id, details=event_data)
+            target = _resolve_key(
+                db, account_id=account_id, key=keys[0], tracker_id=tracker_id
+            )
+            if target is not None:
+                rollup = crud_issue_cost.find_rollup(
+                    db,
+                    account_id=account_id,
+                    tracker_id=target.tracker_id,
+                    issue_key=target.issue_key,
+                )
+                if rollup is not None:
+                    touched |= _claim_pull_request(
+                        db, account_id=account_id, pull=pull, rollup_id=rollup.id
+                    )
+    _recompute(db, touched)
+    return pull
+
+
+def refresh_execution_cost(
+    db: Session, *, execution_id: uuid.UUID, estimated_cost: Any
+) -> None:
+    """Carry a repriced execution cost into its fact and issue row.
+
+    Args:
+        db: Database session. The caller commits.
+        execution_id: The repriced execution.
+        estimated_cost: Its new ``estimated_cost`` (None for unknown).
+    """
+    rollup_id = crud_issue_cost.update_fact_cost(
+        db, execution_id=execution_id, estimated_cost=estimated_cost
+    )
+    _recompute(db, [rollup_id])
+
+
+# --- best-effort hooks -----------------------------------------------------
+
+
+def _savepoint(db: Session, label: str, operation: Any) -> None:
+    """Run a rollup write in a savepoint; never fail the caller."""
+    try:
+        with db.begin_nested():
+            operation()
+    except Exception:
+        logger.warning(
+            "Issue cost rollup %s failed; rebuild recovers it", label, exc_info=True
+        )
+
+
+def record_execution_finished_safely(db: Session, execution_id: Any) -> None:
+    """Terminal-status hook for the orchestrator; commits its own write.
+
+    Args:
+        db: The orchestrator's session (the terminal status is committed).
+        execution_id: The finished execution.
+    """
+    execution_uuid = _uuid(execution_id)
+    if execution_uuid is None:
+        return
+
+    def operation() -> None:
+        execution = db.get(models.FlowExecution, execution_uuid)
+        if execution is not None:
+            db.refresh(execution)
+            record_execution_finished(db, execution)
+
+    _savepoint(db, "execution finish", operation)
+    try:
+        db.commit()
+    except Exception:
+        logger.warning("Could not commit the issue cost rollup", exc_info=True)
+        db.rollback()
+
+
+def record_publication_safely(db: Session, execution_id: Any, pr_url: str) -> None:
+    """Publication hook for ``record_opened_pr``; commits its own write."""
+    execution_uuid = _uuid(execution_id)
+    if execution_uuid is None:
+        return
+
+    def operation() -> None:
+        execution = db.get(models.FlowExecution, execution_uuid)
+        if execution is not None:
+            record_publication(db, execution, pr_url)
+
+    _savepoint(db, "publication", operation)
+    try:
+        db.commit()
+    except Exception:
+        logger.warning("Could not commit the issue cost rollup", exc_info=True)
+        db.rollback()
+
+
+def record_pull_request_event_safely(db: Session, event_data: dict[str, Any]) -> None:
+    """Webhook hook for approval and merge events; commits its own write."""
+    event_type = _str(_dict(event_data).get("type")) or ""
+    if event_type not in APPROVAL_EVENT_TYPES | MERGE_EVENT_TYPES | {REVIEW_EVENT_TYPE}:
+        return
+    _savepoint(db, "webhook", lambda: record_pull_request_event(db, event_data))
+    try:
+        db.commit()
+    except Exception:
+        logger.warning("Could not commit the issue cost rollup", exc_info=True)
+        db.rollback()
+
+
+def refresh_execution_cost_safely(
+    db: Session, *, execution_id: Any, estimated_cost: Any
+) -> None:
+    """Repricing hook; flushes inside the caller's transaction only."""
+    execution_uuid = _uuid(execution_id)
+    if execution_uuid is None:
+        return
+    _savepoint(
+        db,
+        "reprice",
+        lambda: refresh_execution_cost(
+            db, execution_id=execution_uuid, estimated_cost=estimated_cost
+        ),
+    )
+
+
+def rebuild(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    start: datetime,
+    end: datetime,
+    limit: int = MAX_REBUILD_EXECUTIONS,
+) -> tuple[int, int, int]:
+    """Record finished executions of a period that have no fact yet.
+
+    Covers history from before this table existed and runs that ended on
+    a path that does not pass the orchestrator's terminal hook.
+
+    Args:
+        db: Database session. The caller commits.
+        account_id: Account to rebuild.
+        start: Inclusive lower bound on execution start.
+        end: Exclusive upper bound on execution start.
+        limit: Maximum executions recorded in one call.
+
+    Returns:
+        ``(examined, recorded, failed)``; ``examined == limit`` means more
+        remain. Each execution is recorded in its own savepoint, so one that
+        fails is counted and skipped instead of aborting the window.
+    """
+    executions = crud_issue_cost.terminal_executions_without_fact(
+        db,
+        account_id=account_id,
+        start=_aware(start).astimezone(UTC),
+        end=_aware(end).astimezone(UTC),
+        terminal_statuses=crud_flow_execution.TERMINAL_EXECUTION_STATUSES,
+        limit=limit,
+    )
+    recorded = 0
+    failed = 0
+    for execution in executions:
+        execution_id = execution.id
+        try:
+            with db.begin_nested():
+                if record_execution_finished(db, execution) is not None:
+                    recorded += 1
+        except Exception:
+            failed += 1
+            logger.warning(
+                "Issue cost rebuild skipped execution %s",
+                execution_id,
+                exc_info=True,
+            )
+    return len(executions), recorded, failed
+
+
+# --- report --------------------------------------------------------------------
+
+
+@dataclass
+class _Totals:
+    tokens: int = 0
+    cost: Decimal = Decimal("0")
+    runs: int = 0
+    failed: int = 0
+    issues: set[uuid.UUID] = field(default_factory=set)
+
+    def add(
+        self, rollup_id: uuid.UUID, tokens: int, cost: Decimal, runs: int, failed: int
+    ) -> None:
+        self.tokens += tokens
+        self.cost += cost
+        self.runs += runs
+        self.failed += failed
+        self.issues.add(rollup_id)
+
+
+def _money(value: Optional[Decimal]) -> float:
+    return float(round(value or Decimal("0"), 4))
+
+
+def build_report(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
+    project_id: Optional[uuid.UUID] = None,
+    flow_id: Optional[uuid.UUID] = None,
+    include_execution_ids: bool = False,
+    limit: int = MAX_REPORT_ROWS,
+) -> IssueCostReport:
+    """Issue rows, summaries and the unassigned bucket for one filter.
+
+    An issue is in the period when its first event is. Its totals are
+    lifetime totals, restricted to one flow when a flow filter is set, so
+    the per-flow and per-project summaries are exact sums of the rows.
+
+    Args:
+        db: Database session.
+        account_id: Account to report on.
+        start: Inclusive lower bound on the first event.
+        end: Exclusive upper bound on the first event.
+        project_id: Only this project.
+        flow_id: Only work of this flow.
+        include_execution_ids: Attach contributing execution ids and the
+            unassigned executions (JSON export). The unassigned totals are
+            always computed.
+        limit: Maximum issue rows.
+
+    Returns:
+        The report.
+    """
+    start = _optional_aware(start)
+    end = _optional_aware(end)
+    rollups = crud_issue_cost.list_rollups(
+        db,
+        account_id=account_id,
+        start=start,
+        end=end,
+        project_id=project_id,
+        flow_id=flow_id,
+        limit=limit + 1,
+    )
+    truncated = len(rollups) > limit
+    rollups = rollups[:limit]
+    rollup_ids = [rollup.id for rollup in rollups]
+
+    per_issue: dict[uuid.UUID, _Totals] = {rid: _Totals() for rid in rollup_ids}
+    per_flow: dict[uuid.UUID, _Totals] = {}
+    for (
+        rid,
+        fid,
+        tokens,
+        cost,
+        runs,
+        failed,
+    ) in crud_issue_cost.fact_totals_by_rollup_and_flow(db, rollup_ids=rollup_ids):
+        if flow_id is not None and fid != flow_id:
+            continue
+        per_issue[rid].add(rid, tokens, cost, runs, failed)
+        per_flow.setdefault(fid, _Totals()).add(rid, tokens, cost, runs, failed)
+
+    execution_ids: dict[uuid.UUID, list[uuid.UUID]] = {}
+    if include_execution_ids:
+        for fact, _name in crud_issue_cost.list_facts(
+            db,
+            account_id=account_id,
+            rollup_ids=rollup_ids,
+            flow_id=flow_id,
+            limit=limit * 50,
+        ):
+            if fact.rollup_id is not None:
+                execution_ids.setdefault(fact.rollup_id, []).append(fact.execution_id)
+
+    unassigned_filter: dict[str, Any] = {
+        "account_id": account_id,
+        "start": start,
+        "end": end,
+        "project_id": project_id,
+        "flow_id": flow_id,
+    }
+    # Totals come from an uncapped aggregate. The execution list is only
+    # needed by the JSON export, so a plain report does not load it.
+    unassigned_facts = (
+        crud_issue_cost.list_facts(
+            db, unassigned=True, limit=limit, **unassigned_filter
+        )
+        if include_execution_ids
+        else []
+    )
+    (
+        unassigned_tokens,
+        unassigned_cost,
+        unassigned_runs,
+        unassigned_failed,
+    ) = crud_issue_cost.unassigned_totals(db, **unassigned_filter)
+
+    trackers, projects, flows = crud_issue_cost.names(
+        db,
+        tracker_ids=[rollup.tracker_id for rollup in rollups],
+        project_ids=[rollup.project_id for rollup in rollups if rollup.project_id],
+        flow_ids=list(per_flow),
+    )
+
+    rows: list[IssueCostRow] = []
+    per_project: dict[Optional[uuid.UUID], _Totals] = {}
+    for rollup in rollups:
+        totals = per_issue[rollup.id]
+        per_project.setdefault(rollup.project_id, _Totals()).add(
+            rollup.id, totals.tokens, totals.cost, totals.runs, totals.failed
+        )
+        tracker_name, tracker_type = trackers.get(rollup.tracker_id, ("", ""))
+        rows.append(
+            IssueCostRow(
+                id=rollup.id,
+                tracker_id=rollup.tracker_id,
+                tracker_name=tracker_name,
+                tracker_type=tracker_type,
+                issue_key=rollup.issue_key,
+                issue_id=rollup.issue_id,
+                title=rollup.title,
+                issue_url=rollup.issue_url,
+                pr_url=rollup.pr_url,
+                project_id=rollup.project_id,
+                project_name=projects.get(rollup.project_id)
+                if rollup.project_id
+                else None,
+                estimated_cost=_money(totals.cost),
+                total_tokens=totals.tokens,
+                run_count=totals.runs,
+                failed_run_count=totals.failed,
+                first_event_at=_optional_aware(rollup.first_event_at),
+                pr_opened_at=_optional_aware(rollup.pr_opened_at),
+                approved_at=_optional_aware(rollup.approved_at),
+                merged_at=_optional_aware(rollup.merged_at),
+                first_event_to_pr_opened_hours=interval_hours(
+                    rollup.first_event_at, rollup.pr_opened_at
+                ),
+                pr_opened_to_approved_hours=interval_hours(
+                    rollup.pr_opened_at, rollup.approved_at
+                ),
+                approved_to_merged_hours=interval_hours(
+                    rollup.approved_at, rollup.merged_at
+                ),
+                execution_ids=execution_ids.get(rollup.id, [])
+                if include_execution_ids
+                else None,
+            )
+        )
+
+    def summary(
+        key: Optional[uuid.UUID], name: str, totals: _Totals
+    ) -> IssueCostSummary:
+        return IssueCostSummary(
+            id=key,
+            name=name,
+            issue_count=len(totals.issues),
+            estimated_cost=_money(totals.cost),
+            total_tokens=totals.tokens,
+            run_count=totals.runs,
+            failed_run_count=totals.failed,
+        )
+
+    by_project = sorted(
+        (
+            summary(pid, projects.get(pid, "") if pid else "", totals)
+            for pid, totals in per_project.items()
+        ),
+        key=lambda item: (-item.estimated_cost, item.name),
+    )
+    by_flow = sorted(
+        (summary(fid, flows.get(fid, ""), totals) for fid, totals in per_flow.items()),
+        key=lambda item: (-item.estimated_cost, item.name),
+    )
+
+    unassigned = IssueCostUnassigned(
+        estimated_cost=_money(unassigned_cost),
+        total_tokens=unassigned_tokens,
+        run_count=unassigned_runs,
+        failed_run_count=unassigned_failed,
+        executions=[_execution_row(fact, name) for fact, name in unassigned_facts],
+    )
+    return IssueCostReport(
+        start=start,
+        end=end,
+        project_id=project_id,
+        flow_id=flow_id,
+        issues=rows,
+        by_project=by_project,
+        by_flow=by_flow,
+        unassigned=unassigned,
+        truncated=truncated or len(unassigned_facts) >= limit,
+    )
+
+
+def _execution_row(
+    fact: models.IssueCostExecution, flow_name: str
+) -> IssueCostExecutionRow:
+    return IssueCostExecutionRow(
+        execution_id=fact.execution_id,
+        flow_id=fact.flow_id,
+        flow_name=flow_name,
+        status=fact.status,
+        link=fact.link,
+        pr_url=fact.pr_key,
+        estimated_cost=None
+        if fact.estimated_cost is None
+        else _money(Decimal(fact.estimated_cost)),
+        total_tokens=int(fact.total_tokens or 0),
+        start_time=_aware(fact.start_time),
+        end_time=_optional_aware(fact.end_time),
+    )
+
+
+def list_issue_executions(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    rollup_id: uuid.UUID,
+    flow_id: Optional[uuid.UUID] = None,
+) -> Optional[list[IssueCostExecutionRow]]:
+    """Contributing executions of one issue, oldest first.
+
+    Args:
+        db: Database session.
+        account_id: Owning account.
+        rollup_id: The issue row.
+        flow_id: Only executions of this flow.
+
+    Returns:
+        The executions, or None when the issue row is not the account's.
+    """
+    rollup = crud_issue_cost.get_rollup(db, account_id=account_id, rollup_id=rollup_id)
+    if rollup is None:
+        return None
+    return [
+        _execution_row(fact, name)
+        for fact, name in crud_issue_cost.list_facts(
+            db, account_id=account_id, rollup_ids=[rollup.id], flow_id=flow_id
+        )
+    ]
+
+
+# --- export --------------------------------------------------------------------
+
+
+def _csv_cell(value: Any) -> str:
+    """Render one CSV cell and neutralize spreadsheet formula injection."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        text = _aware(value).isoformat()
+    else:
+        text = str(value)
+    if text and text[0] in "=+-@\t\r":
+        return "'" + text
+    return text
+
+
+def report_to_csv(report: IssueCostReport) -> str:
+    """Flat issue-grain CSV of a report, plus one unassigned row.
+
+    Args:
+        report: The report to export.
+
+    Returns:
+        CSV text with a header row.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(CSV_COLUMNS)
+    for row in report.issues:
+        writer.writerow(
+            [
+                _csv_cell(value)
+                for value in (
+                    row.tracker_name or row.tracker_type,
+                    row.issue_key,
+                    row.title,
+                    row.project_name,
+                    row.estimated_cost,
+                    row.total_tokens,
+                    row.run_count,
+                    row.failed_run_count,
+                    row.first_event_at,
+                    row.pr_opened_at,
+                    row.approved_at,
+                    row.merged_at,
+                    row.first_event_to_pr_opened_hours,
+                    row.pr_opened_to_approved_hours,
+                    row.approved_to_merged_hours,
+                    row.issue_url,
+                    row.pr_url,
+                )
+            ]
+        )
+    if report.unassigned.run_count:
+        bucket = report.unassigned
+        writer.writerow(
+            [
+                _csv_cell(value)
+                for value in (
+                    "",
+                    UNASSIGNED_ISSUE_KEY,
+                    "",
+                    "",
+                    bucket.estimated_cost,
+                    bucket.total_tokens,
+                    bucket.run_count,
+                    bucket.failed_run_count,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            ]
+        )
+    return buffer.getvalue()
+
+
+def report_to_json(report: IssueCostReport) -> str:
+    """JSON export of a report, with contributing execution ids.
+
+    Args:
+        report: The report, built with ``include_execution_ids=True``.
+
+    Returns:
+        JSON text.
+    """
+    document = report.model_dump(mode="json")
+    unassigned = document.get("unassigned") or {}
+    unassigned["execution_ids"] = [
+        item["execution_id"] for item in unassigned.get("executions") or []
+    ]
+    return json.dumps(document, indent=2, sort_keys=False)

@@ -1808,9 +1808,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
   }
 
   getGitTrackers() {
-    // Return only GitHub and GitLab trackers
-    return this.trackers.filter(
-      (t) => t.tracker_type === 'github' || t.tracker_type === 'gitlab'
+    // Return only trackers backed by git hosting (GitHub, GitLab, Bitbucket)
+    return this.trackers.filter((t) =>
+      ['github', 'gitlab', 'bitbucket'].includes(t.tracker_type)
     );
   }
 

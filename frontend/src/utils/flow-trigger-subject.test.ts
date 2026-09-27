@@ -1,6 +1,7 @@
 import { expect } from '@open-wc/testing';
 
 import {
+  BITBUCKET_TRACKER_EVENTS,
   GITHUB_TRACKER_EVENTS,
   GITLAB_TRACKER_EVENTS,
   JIRA_TRACKER_EVENTS,
@@ -28,6 +29,7 @@ describe('flow-trigger-subject', () => {
       ...GITHUB_TRACKER_EVENTS,
       ...GITLAB_TRACKER_EVENTS,
       ...JIRA_TRACKER_EVENTS,
+      ...BITBUCKET_TRACKER_EVENTS,
     ].map((option) => option.value);
     for (const value of allEvents) {
       expect(isIssueSubjectEventType(value), value).to.equal(

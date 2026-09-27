@@ -39,6 +39,7 @@ import type {
 } from '../../types';
 import {
   describeTrackerScope,
+  groupProjectsByGroup,
   groupProjectsByOrganization,
 } from '../../utils/tracker-scope';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
@@ -62,6 +63,12 @@ interface TrackerDetail {
   is_valid: boolean;
   validation_message?: string;
   url?: string;
+  auth_type?: string;
+  connection_details?: Record<string, any> | null;
+  /** When the stored token expires, if recorded (Bitbucket). */
+  token_expires_at?: string | null;
+  /** 'expired', 'expiring' (within 14 days), 'ok', or null when unknown. */
+  token_expiry_status?: 'expired' | 'expiring' | 'ok' | null;
   scope_rules?: Array<{
     scope_type: string;
     rule_type: string;
@@ -437,6 +444,13 @@ export class TrackerDetailView extends LitElement {
         gap: var(--sl-spacing-small);
         flex: 1;
         min-width: min(100%, 360px);
+      }
+
+      .project-subgroup {
+        font-size: var(--console-text-meta, var(--sl-font-size-small));
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--console-meta-color);
+        padding: var(--sl-spacing-x-small) 0;
       }
 
       .no-analytics,
@@ -899,7 +913,93 @@ export class TrackerDetailView extends LitElement {
   }
 
   private _prHost(): string {
+    if (this._isBitbucket()) return 'Bitbucket';
     return this._isGitlab() ? 'GitLab' : 'GitHub';
+  }
+
+  private _isBitbucket(): boolean {
+    return (this._tracker?.tracker_type || '')
+      .toLowerCase()
+      .includes('bitbucket');
+  }
+
+  /** Warning chip when the recorded token expiry is near or past. */
+  private _renderTokenExpiry(tracker: TrackerDetail) {
+    const status = tracker.token_expiry_status;
+    if (status !== 'expired' && status !== 'expiring') {
+      return nothing;
+    }
+    const when = tracker.token_expires_at ?? '';
+    return html`<sl-badge
+      class="chip token-expiry"
+      variant=${status === 'expired' ? 'danger' : 'warning'}
+      pill
+      title=${when ? `Token expiry: ${when}` : ''}
+      >${status === 'expired' ? 'Token expired' : `Token expires ${when}`}</sl-badge
+    >`;
+  }
+
+  private _renderProjectRow(project: Project) {
+    return html`
+      <div class="project-row">
+        <div class="project-info">
+          <sl-icon
+            name="folder"
+            style="color: var(--sl-color-primary-500); flex-shrink: 0;"
+          ></sl-icon>
+          <div class="project-text">
+            <div class="project-name">${project.name}</div>
+            ${
+              project.description
+                ? html`<div class="project-description">
+                    ${project.description}
+                  </div>`
+                : ''
+            }
+          </div>
+        </div>
+        <div class="project-actions">
+          ${
+            this._isBitbucket()
+              ? ''
+              : html`<sl-button
+                  size="small"
+                  variant="text"
+                  @click=${() => this._showIssuesForProject(project.id)}
+                >
+                  Issues
+                </sl-button>`
+          }
+          ${
+            this._supportsPullRequests()
+              ? html`<sl-button
+                  size="small"
+                  variant="text"
+                  @click=${() => this._showPullRequestsForProject(project.id)}
+                >
+                  ${this._prTabLabel()}
+                </sl-button>`
+              : ''
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  /** Projects of one organization, sub-grouped by `group` when present. */
+  private _renderProjectList(projects: Project[]) {
+    const groups = groupProjectsByGroup(projects);
+    if (groups.length <= 1 && !groups[0]?.name) {
+      return projects.map((project) => this._renderProjectRow(project));
+    }
+    return groups.map(
+      (group) => html`
+        <div class="project-subgroup" data-group=${group.name || 'other'}>
+          ${group.name || 'No project'}
+        </div>
+        ${group.projects.map((project) => this._renderProjectRow(project))}
+      `
+    );
   }
 
   private async _loadPullRequests(reset = true) {
@@ -1056,6 +1156,7 @@ export class TrackerDetailView extends LitElement {
     if (type.includes('jira')) return 'git';
     if (type.includes('github')) return 'github';
     if (type.includes('gitlab')) return 'gitlab';
+    if (type.includes('bitbucket')) return 'bucket';
     return 'box-seam';
   }
 
@@ -1473,49 +1574,7 @@ export class TrackerDetailView extends LitElement {
               >
             </div>
             <div class="projects-list">
-              ${group.projects.map(
-                (project) => html`
-                  <div class="project-row">
-                    <div class="project-info">
-                      <sl-icon
-                        name="folder"
-                        style="color: var(--sl-color-primary-500); flex-shrink: 0;"
-                      ></sl-icon>
-                      <div class="project-text">
-                        <div class="project-name">${project.name}</div>
-                        ${
-                          project.description
-                            ? html`<div class="project-description">
-                                ${project.description}
-                              </div>`
-                            : ''
-                        }
-                      </div>
-                    </div>
-                    <div class="project-actions">
-                      <sl-button
-                        size="small"
-                        variant="text"
-                        @click=${() => this._showIssuesForProject(project.id)}
-                      >
-                        Issues
-                      </sl-button>
-                      ${
-                        this._supportsPullRequests()
-                          ? html`<sl-button
-                              size="small"
-                              variant="text"
-                              @click=${() =>
-                                this._showPullRequestsForProject(project.id)}
-                            >
-                              ${this._prTabLabel()}
-                            </sl-button>`
-                          : ''
-                      }
-                    </div>
-                  </div>
-                `
-              )}
+              ${this._renderProjectList(group.projects)}
             </div>
           </div>
         `
@@ -1634,6 +1693,7 @@ export class TrackerDetailView extends LitElement {
               pill
               >${tracker.is_valid ? 'Connected' : 'Not validated'}</sl-badge
             >
+            ${this._renderTokenExpiry(tracker)}
           </div>
 
           <div class="tracker-meta">
