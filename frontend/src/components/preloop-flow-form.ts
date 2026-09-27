@@ -2718,6 +2718,16 @@ export class PreloopFlowForm extends LitElement {
     `;
   }
 
+  /**
+   * The host's own name for a change request, used in filter copy.
+   *
+   * GitLab calls it a merge request; GitHub and Bitbucket call it a pull
+   * request. Unknown hosts fall back to the neutral "pull request".
+   */
+  private changeRequestNoun(trackerType?: string): string {
+    return trackerType === 'gitlab' ? 'merge request' : 'pull request';
+  }
+
   private renderEventFilters() {
     const tracker = this.trackers.find(
       (t: any) => t.id === this.flow.trigger_event_source
@@ -2822,10 +2832,14 @@ export class PreloopFlowForm extends LitElement {
                       ? html`
                           <sl-input
                             label="${
-                              tracker.tracker_type === 'gitlab' ||
+                              tracker.tracker_type === 'github'
+                                ? 'Requested reviewer (username)'
+                                : 'Reviewer (username)'
+                            }"
+                            help-text="${
                               tracker.tracker_type === 'bitbucket'
-                                ? 'Reviewer (username)'
-                                : 'Requested reviewer (username)'
+                                ? 'Bitbucket username (nickname) of a reviewer added to the pull request. Approve and request changes are reviewer actions on the pull request, not separate reviews.'
+                                : 'Matches if any reviewer matches'
                             }"
                             placeholder="e.g. jane_smith"
                             .value=${this.flow.trigger_config?.reviewer || ''}
@@ -2840,7 +2854,6 @@ export class PreloopFlowForm extends LitElement {
                               }
                               this.requestUpdate();
                             }}
-                            help-text="Filter by reviewer (matches if any reviewer matches)"
                           ></sl-input>
                         `
                       : nothing
@@ -2959,13 +2972,9 @@ export class PreloopFlowForm extends LitElement {
                               this.requestUpdate();
                             }}
                           >
-                            Only when
-                            ${
-                              tracker.tracker_type === 'gitlab'
-                                ? 'Merge Request'
-                                : 'Pull Request'
-                            }
-                            is merged
+                            Only when the
+                            ${this.changeRequestNoun(tracker.tracker_type)} is
+                            merged
                           </sl-checkbox>
 
                           <sl-checkbox
@@ -3095,7 +3104,43 @@ export class PreloopFlowForm extends LitElement {
                                       >
                                     </sl-select>
                                   `
-                                : nothing
+                                : tracker.tracker_type === 'bitbucket'
+                                  ? html`
+                                      <sl-select
+                                        label="Pull request state"
+                                        .value=${this.flow.trigger_config?.state || ''}
+                                        @sl-change=${(e: any) => {
+                                          if (!this.flow.trigger_config)
+                                            this.flow.trigger_config = {};
+                                          const value = e.target.value;
+                                          if (value) {
+                                            this.flow.trigger_config.state =
+                                              value;
+                                          } else {
+                                            delete this.flow.trigger_config
+                                              .state;
+                                          }
+                                          this.requestUpdate();
+                                        }}
+                                        clearable
+                                        help-text="Filter by Bitbucket pull request state (declined and superseded are the closed states)"
+                                      >
+                                        <sl-option value=""
+                                          >Any state</sl-option
+                                        >
+                                        <sl-option value="open">Open</sl-option>
+                                        <sl-option value="merged"
+                                          >Merged</sl-option
+                                        >
+                                        <sl-option value="declined"
+                                          >Declined</sl-option
+                                        >
+                                        <sl-option value="superseded"
+                                          >Superseded</sl-option
+                                        >
+                                      </sl-select>
+                                    `
+                                  : nothing
                           }
                         `
                       : nothing

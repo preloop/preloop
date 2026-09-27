@@ -7,6 +7,10 @@ a verdict. Issues are not synced: keep them in Jira.
 
 Bitbucket Data Center is not supported.
 
+For the end-to-end setup where a Jira ticket becomes a Bitbucket pull request
+(tracker, Jira repository binding, presets, review policy, first ticket), see
+the [Bitbucket and Jira quickstart](bitbucket-jira-quickstart.md).
+
 ## What Preloop does and does not do
 
 Preloop can:
