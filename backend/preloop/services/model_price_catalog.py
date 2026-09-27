@@ -559,7 +559,8 @@ _LITELLM_MODEL_INFO_CACHES = (
     "_cached_get_model_info",
     "_cached_get_model_info_helper",
 )
-_merged_generation = 0
+# Generation of the remote map last merged, so an unchanged map is not re-merged.
+_merge_state: Dict[str, int] = {"generation": 0}
 
 
 def _flatten_tiered_prices(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -698,16 +699,15 @@ def refresh_price_map_once() -> float:
     a second download), merges it over the snapshot, and respects the
     failure backoff. Never raises.
     """
-    global _merged_generation
     price_map = _fetch_remote_price_map()
     generation = _remote_cache.snapshot()["generation"]
-    if price_map is not None and generation != _merged_generation:
+    if price_map is not None and generation != _merge_state["generation"]:
         try:
             registered = merge_upstream_prices(price_map)
         except Exception:  # noqa: BLE001 - keep serving the snapshot
             logger.exception("Merging the upstream model price map failed")
         else:
-            _merged_generation = generation
+            _merge_state["generation"] = generation
             _record_fetch(registered_count=registered)
             logger.info(
                 "Model price map merged: source=litellm registered=%s", registered
@@ -1174,7 +1174,6 @@ def _reprice_usage_row(api_usage_id: str) -> None:
 
 def reset_lookup_state_for_tests() -> None:
     """Clear all live-lookup caches (test isolation only)."""
-    global _merged_generation
     _remote_cache.reset()
     _openrouter_cache.reset()
     with _lookup_lock:
@@ -1184,7 +1183,7 @@ def reset_lookup_state_for_tests() -> None:
         for key in _price_map_status:
             if key != "source":
                 _price_map_status[key] = None
-        _merged_generation = 0
+        _merge_state["generation"] = 0
 
 
 def _module_state_for_tests() -> dict[str, Any]:
