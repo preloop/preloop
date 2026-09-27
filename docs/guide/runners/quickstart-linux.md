@@ -342,20 +342,71 @@ environment and filesystem permissions. Use a dedicated OS user or VM when
 stronger host isolation is needed. Halt, cancellation and deadline expiry clean
 up the process group. The tighter profile/flow timeout applies.
 
-Cursor's local configuration, MCP servers and hooks apply. Flow
-`allowed_mcp_tools` and server settings are not injected or enforced as a
-sandbox on this path. The enforced controls are profile selection, explicit
-model mapping, working-directory creation, deadline, cancellation and terminal
-result validation. This slice does not add Agent Control, flow governance,
-native session continuation or usage ingestion. Runs use the operator's Cursor
-plan; no unlimited usage or inferred billing is promised.
+Cursor's local configuration, MCP servers and hooks apply. When the flow
+allows MCP tools or servers, the runner also adds a `preloop-flow` MCP
+server for that run only: a `.cursor/mcp.json` in the run directory (mode
+`0600`, removed afterwards) plus `--approve-mcps`. Copilot profiles get the
+same server through `--additional-mcp-config`. The server's token is scoped
+to the execution, exposes only the flow's allowed tools and is revoked when
+the run completes. The enforced controls are profile selection, explicit
+model mapping, working-directory creation, deadline, cancellation, the
+flow's MCP tool list and terminal result validation. This slice does not
+add Agent Control or native session continuation. Runs use the operator's
+Cursor plan or Copilot seat; no unlimited usage or inferred billing is
+promised.
 
-Success requires exit zero and a successful Cursor stream-json result; exit
-zero alone fails. Remote repository clone/setup, custom commands, workspace
-seeds, native CLI session resume and isolated PR publication are rejected.
-Isolated publication mode is rejected before execution.
-The workspace starts empty. Use the Docker harness for repository
-implementation flows that need the managed checkout/test/publication pipeline.
+The runner exports `PRELOOP_FLOW_EXECUTION_ID` and `PRELOOP_FLOW_ID` to the
+CLI. The Preloop usage hook forwards the execution id with each record, so
+hook-observed sessions and events are linked to the flow execution (only
+for host-profile executions of the same account). Records pushed without it
+are linked at completion by the CLI session id.
+
+Success requires exit zero and a successful structured result; exit zero
+alone fails. Custom commands, clone `setup_commands`, workspace seeds,
+native CLI session resume, pull request creation and isolated publication
+are rejected before execution.
+
+#### Repository checkout (`allow_checkout`)
+
+A flow with git clone enabled gets a checkout plan with each lease: for
+every repository the URL, branch, pinned commit (for a pull request, its
+head commit and the refs that reach it), a path relative to the run
+directory and a read credential from the flow's tracker. The plan is built
+at delivery and never stored in `pending_job`. The runner clones only when
+the profile opts in:
+
+```json
+{"name": "copilot-review", "executable": "copilot", "allow_checkout": true}
+```
+
+Without `allow_checkout` the run fails with `host_checkout_not_allowed`.
+With it, the runner:
+
+- runs `git clone` into the run directory (`workspace` for a trigger
+  project, `workspace-1`, `workspace-2` or `workspace/<path>` for configured
+  repositories; absolute and `..` paths are refused), then checks out the
+  pinned commit, fetching the listed refs when the commit is not on the
+  cloned branch;
+- passes the credential as an HTTP header scoped to that repository URL,
+  with redirects, terminal prompts, askpass and non-HTTP transports off,
+  and inherited `GIT_*` overrides removed. The token never appears in the
+  remote URL, `.git/config`, argv or the log. A plan that pairs a
+  credential with a plain `http` URL is refused unless the host is
+  loopback;
+- sets the flow's git user name and email in each clone and starts the
+  prompt with a short note listing the checkout paths;
+- stops the clone on halt or cancellation, and gives the checkout at most
+  15 minutes (or the profile timeout, when shorter) on top of the CLI
+  run's own deadline. Errors are reported as `host_checkout_failed` or
+  `git_not_installed`.
+
+A checked-out repository is untrusted input. The CLI runs as the runner
+user in that directory, so repository instructions and tool configuration
+reach it. Enable `allow_checkout` only on a profile whose runner user and
+tool rules suit the repositories the flow clones, and use a dedicated OS
+user or VM when stronger isolation is needed. Host runs do not push
+branches or open pull requests; use the Docker harness for flows that
+publish.
 
 ### Copilot CLI profiles
 
@@ -367,7 +418,9 @@ optional `copilot_model` to a `model_map` alias. Copilot profiles take
 completion must carry exactly one Copilot `result` event with exit code 0.
 The rest of this section applies unchanged. See
 [Copilot CLI](../copilot-cli.md#run-copilot-cli-from-flows-private-runner-host-profile)
-for the profile format and named errors.
+for the profile format and named errors, and
+[Copilot coverage](../copilot.md) for what this path does and does not
+meter.
 
 ## Trusted runner options
 

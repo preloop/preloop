@@ -20,6 +20,7 @@ describe('flow-trigger-subject', () => {
       'issue_reopened',
       'issue_labeled',
       'issue_unlabeled',
+      'issue_status_changed',
       'issue_deleted',
       'comment_created',
       'comment_updated',

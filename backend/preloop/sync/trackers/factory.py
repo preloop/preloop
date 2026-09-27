@@ -1,7 +1,7 @@
 """Factory for creating tracker clients."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Type
 
 from .base import BaseTracker
 from .bitbucket import BitbucketTracker
@@ -10,6 +10,58 @@ from .gitlab import GitLabTracker
 from .jira import JiraTracker
 
 logger = logging.getLogger(__name__)
+
+# Tracker type to client class. create_tracker_client builds instances; this
+# map answers class-level questions (hosts_repositories, hosts_issues) without
+# credentials or network access. A new provider registers here once.
+TRACKER_CLASSES: Dict[str, Type[BaseTracker]] = {
+    "github": GitHubTracker,
+    "gitlab": GitLabTracker,
+    "jira": JiraTracker,
+    "bitbucket": BitbucketTracker,
+}
+
+
+def tracker_class_for_type(tracker_type: Optional[str]) -> Optional[Type[BaseTracker]]:
+    """Return the client class for ``tracker_type``, or None if unsupported.
+
+    Args:
+        tracker_type: Tracker type string, case-insensitive.
+
+    Returns:
+        The ``BaseTracker`` subclass implementing that provider.
+    """
+    return TRACKER_CLASSES.get((tracker_type or "").lower())
+
+
+def tracker_hosts_repositories(tracker_type: Optional[str]) -> bool:
+    """Whether trackers of ``tracker_type`` host git repositories.
+
+    Args:
+        tracker_type: Tracker type string, case-insensitive.
+
+    Returns:
+        True for code hosts that declare ``hosts_repositories``, False for
+        issue-only trackers, providers not yet wired for clone, or unknown
+        types.
+    """
+    tracker_class = tracker_class_for_type(tracker_type)
+    return bool(tracker_class and tracker_class.hosts_repositories)
+
+
+def tracker_hosts_issues(tracker_type: Optional[str]) -> bool:
+    """Whether trackers of ``tracker_type`` are issue-only triggers.
+
+    Args:
+        tracker_type: Tracker type string, case-insensitive.
+
+    Returns:
+        True for issue trackers (Jira) that may need a repository binding.
+        Independent of ``hosts_repositories`` so a registered code host that
+        has not set that flag is not treated as issue-only.
+    """
+    tracker_class = tracker_class_for_type(tracker_type)
+    return bool(tracker_class and tracker_class.hosts_issues)
 
 
 async def create_tracker_client(

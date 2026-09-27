@@ -5,6 +5,7 @@ import {
   getTrackerEventOptions,
   GITHUB_TRACKER_EVENTS,
   GITLAB_TRACKER_EVENTS,
+  JIRA_TRACKER_EVENTS,
 } from './tracker-event-types';
 
 describe('getTrackerEventOptions', () => {
@@ -23,6 +24,18 @@ describe('getTrackerEventOptions', () => {
     expect(events.some((event) => event.value === 'check_run')).to.be.true;
     expect(events.some((event) => event.value === 'check_suite')).to.be.true;
     expect(events.some((event) => event.value === 'workflow_run')).to.be.true;
+  });
+
+  it('offers the Jira changelog-derived label and status events', () => {
+    const events = getTrackerEventOptions('jira');
+    expect(events).to.deep.equal(JIRA_TRACKER_EVENTS);
+    const values = events.map((event) => event.value);
+    expect(values).to.include('issue_labeled');
+    expect(values).to.include('issue_unlabeled');
+    expect(values).to.include('issue_status_changed');
+    expect(
+      events.find((event) => event.value === 'issue_status_changed')?.name
+    ).to.equal('Issue Status Changed');
   });
 
   it('offers the Bitbucket pull request review events', () => {

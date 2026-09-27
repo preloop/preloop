@@ -442,3 +442,59 @@ describe('FlowView production logging', () => {
     expect(source).to.not.match(/console\.debug\s*\(/);
   });
 });
+
+describe('FlowView review instructions', () => {
+  async function renderDetail(overrides: Record<string, unknown> = {}) {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flowId = 'flow-1';
+    element.flow = {
+      id: 'flow-1',
+      name: 'Pull Request Reviewer',
+      agent_type: 'codex',
+      is_enabled: true,
+      trigger_event_source: 'webhook',
+      ...overrides,
+    };
+    element.recentExecutions = [];
+    document.body.appendChild(element);
+    await element.updateComplete;
+    return element;
+  }
+
+  it('shows review instructions read-only when they are set', async () => {
+    const element = await renderDetail({
+      review_instructions: 'Keep the declared runtime.',
+    });
+    try {
+      const card = element.shadowRoot.querySelector(
+        '[data-review-instructions]'
+      );
+      expect(card).to.exist;
+      expect(card.textContent).to.include('Review instructions');
+      expect(card.textContent).to.include('Keep the declared runtime.');
+      expect(card.querySelector('sl-textarea')).to.equal(null);
+    } finally {
+      element.remove();
+    }
+  });
+
+  it('hides review instructions when they are unset or blank', async () => {
+    const unset = await renderDetail();
+    const blank = await renderDetail({ review_instructions: '   ' });
+    try {
+      expect(
+        unset.shadowRoot.querySelector('[data-review-instructions]')
+      ).to.equal(null);
+      expect(
+        blank.shadowRoot.querySelector('[data-review-instructions]')
+      ).to.equal(null);
+    } finally {
+      unset.remove();
+      blank.remove();
+    }
+  });
+});
