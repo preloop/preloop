@@ -75,6 +75,12 @@ from .provider_billing import (
     CRUDProviderBillingConnection,
     CRUDProviderBillingSnapshot,
 )
+from .copilot_import import (
+    CRUDCopilotImportConnection,
+    CRUDCopilotUsage,
+    crud_copilot_import_connection,
+    crud_copilot_usage,
+)
 from .tool_configuration import CRUDToolConfiguration
 from .mcp_server import CRUDMCPServer
 from .mcp_tool import CRUDMCPTool
@@ -322,6 +328,10 @@ __all__ = [
     "crud_model_price_override",
     "crud_provider_billing_connection",
     "crud_provider_billing_snapshot",
+    "CRUDCopilotImportConnection",
+    "CRUDCopilotUsage",
+    "crud_copilot_import_connection",
+    "crud_copilot_usage",
     "crud_tool_configuration",
     "crud_mcp_server",
     "crud_mcp_tool",

@@ -139,6 +139,28 @@ async def run_scheduler_async(
         )
         logger.info("Scheduled daily provider billing ingestion.")
 
+    # Daily GitHub Copilot usage import. The task pulls the newest report day
+    # GitHub has finished (two full UTC days after it closes) and no-ops when
+    # no account has a Copilot connection.
+    if getattr(settings, "copilot_usage_sync_enabled", True):
+
+        async def _publish_copilot_usage_import() -> None:
+            try:
+                await event_bus_service.publish_task("ingest_copilot_usage")
+            except Exception:
+                logger.exception("Failed to publish Copilot usage import task")
+
+        scheduler.add_job(
+            _publish_copilot_usage_import,
+            trigger=IntervalTrigger(hours=24),
+            id="copilot_usage_import_job",
+            name="Import GitHub Copilot Usage",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=10),
+        )
+        logger.info("Scheduled daily GitHub Copilot usage import.")
+
     # Scheduled model-catalog sync (the automatic 'preloop models sync').
     # Default OFF: self-hosted catalogs must never change on upgrade without
     # an explicit opt-in (MODEL_CATALOG_SYNC_SCHEDULED_ENABLED=true). The

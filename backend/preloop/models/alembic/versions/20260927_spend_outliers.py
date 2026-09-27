@@ -1,7 +1,7 @@
 """Add spend outlier settings and findings (#960).
 
 Revision ID: 20260927_spend_outliers
-Revises: 20260927_review_instructions
+Revises: 20260927_copilot_import
 Create Date: 2026-09-27
 
 ``spend_outlier_settings`` holds one account's thresholds for the three spend
@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 # revision identifiers, used by Alembic.
 revision = "20260927_spend_outliers"
-down_revision = "20260927_review_instructions"
+down_revision = "20260927_copilot_import"
 branch_labels = None
 depends_on = None
 

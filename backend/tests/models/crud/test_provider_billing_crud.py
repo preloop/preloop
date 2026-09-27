@@ -10,7 +10,10 @@ from preloop.models.crud import (
     crud_provider_billing_snapshot,
 )
 from preloop.models.crud.provider_billing import snapshot_dedup_key
-from preloop.models.models.provider_billing import ProviderBillingConnection
+from preloop.models.models.provider_billing import (
+    ProviderBillingConnection,
+    ProviderBillingSnapshot,
+)
 from preloop.models.models.secret_reference import SecretReference
 
 
@@ -274,3 +277,98 @@ def test_aggregate_actuals_filters_provider_and_window(
     )
     assert {row["provider"] for row in day1_only} == {"anthropic", "openai"}
     assert sum(row["cost_amount"] for row in day1_only) == 10.0
+
+
+def _key(**overrides) -> str:
+    fields = {
+        "provider": "copilot",
+        "granularity": "1d",
+        "bucket_start": datetime(2026, 7, 1, tzinfo=UTC),
+        "model": "model-a",
+        "line_item": "premium_request",
+        "provider_api_key_id": None,
+        "project_or_workspace_id": "example-org",
+        "service_tier": None,
+        **overrides,
+    }
+    return snapshot_dedup_key(**fields)
+
+
+def test_snapshot_dedup_key_without_user_is_unchanged() -> None:
+    """Rows written before user_login existed keep their dedup key."""
+    import hashlib
+
+    legacy = hashlib.sha256(
+        "copilot|1d|2026-07-01T00:00:00+00:00|model-a|premium_request||"
+        "example-org|".encode("utf-8")
+    ).hexdigest()
+    assert _key() == legacy
+    assert _key(user_login=None) == legacy
+    assert _key(user_login="") == legacy
+
+
+def test_snapshot_dedup_key_separates_users_case_insensitively() -> None:
+    alice = _key(user_login="alice")
+    assert alice != _key()
+    assert alice != _key(user_login="bob")
+    assert alice == _key(user_login="Alice")
+
+
+def test_upsert_stores_one_row_per_user(db_session, create_account) -> None:
+    account = create_account()
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    base = {
+        "provider": "copilot",
+        "bucket_start": start,
+        "bucket_end": start + timedelta(days=1),
+        "model": "model-a",
+        "line_item": "premium_request",
+        "usage_source": "imported",
+        "cost_basis": "reconciled",
+        "cost_amount": 1.0,
+        "fetched_at": datetime.now(UTC),
+    }
+    written = crud_provider_billing_snapshot.upsert_snapshots(
+        db_session,
+        account_id=account.id,
+        rows=[{**base, "user_login": "alice"}, {**base, "user_login": "bob"}],
+    )
+    assert written == 2
+    rows = (
+        db_session.query(ProviderBillingSnapshot)
+        .filter(ProviderBillingSnapshot.account_id == account.id)
+        .all()
+    )
+    assert {row.user_login for row in rows} == {"alice", "bob"}
+    assert {row.usage_source for row in rows} == {"imported"}
+    assert {row.cost_basis for row in rows} == {"reconciled"}
+
+
+def test_aggregate_actuals_excludes_imported_rows(db_session, create_account) -> None:
+    """Imported Copilot spend never feeds gateway reconciliation drift."""
+    account = create_account()
+    day = datetime(2026, 7, 1, tzinfo=UTC)
+    common = {
+        "bucket_start": day,
+        "bucket_end": day + timedelta(days=1),
+        "fetched_at": datetime.now(UTC),
+    }
+    crud_provider_billing_snapshot.upsert_snapshots(
+        db_session,
+        account_id=account.id,
+        rows=[
+            {**common, "provider": "openai", "cost_amount": 1.0},
+            {
+                **common,
+                "provider": "copilot",
+                "cost_amount": 5.0,
+                "user_login": "alice",
+                "usage_source": "imported",
+                "cost_basis": "reconciled",
+            },
+        ],
+    )
+    aggregates = crud_provider_billing_snapshot.aggregate_actuals_by_provider_day(
+        db_session, account_id=account.id, start=day, end=day + timedelta(days=1)
+    )
+    assert [row["provider"] for row in aggregates] == ["openai"]

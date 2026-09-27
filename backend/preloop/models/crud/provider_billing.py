@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,10 @@ from ..models.provider_billing import (
     ProviderBillingSnapshot,
 )
 from .base import CRUDBase
+
+#: ``usage_source`` marker for snapshot rows imported from a provider the
+#: gateway never metered.
+IMPORTED_USAGE_SOURCE = "imported"
 
 
 def snapshot_dedup_key(
@@ -28,25 +32,31 @@ def snapshot_dedup_key(
     provider_api_key_id: Optional[str],
     project_or_workspace_id: Optional[str],
     service_tier: Optional[str],
+    user_login: Optional[str] = None,
 ) -> str:
     """Deterministic identity for one provider billing bucket.
 
     Hashes metadata fields (including an opaque provider key id), not a
     user password or recoverable secret.
+
+    ``user_login`` is appended only when set, so rows without a user (every
+    reconciliation row written before the column existed, and organization
+    aggregates) keep the key they always had. Logins are case-insensitive on
+    the provider side and are lowercased before hashing.
     """
-    parts = "|".join(
-        str(part or "")
-        for part in (
-            provider,
-            granularity,
-            bucket_start.isoformat(),
-            model,
-            line_item,
-            provider_api_key_id,
-            project_or_workspace_id,
-            service_tier,
-        )
-    )
+    fields: List[Optional[str]] = [
+        provider,
+        granularity,
+        bucket_start.isoformat(),
+        model,
+        line_item,
+        provider_api_key_id,
+        project_or_workspace_id,
+        service_tier,
+    ]
+    if user_login:
+        fields.append(f"user={user_login.lower()}")
+    parts = "|".join(str(part or "") for part in fields)
     # codeql[py/weak-sensitive-data-hashing] Billing bucket dedup key, not password hashing
     return hashlib.sha256(parts.encode("utf-8")).hexdigest()
 
@@ -121,12 +131,20 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
         *,
         account_id: Union[uuid.UUID, str],
         rows: List[Dict[str, Any]],
+        commit: bool = True,
     ) -> int:
         """Idempotently insert/update snapshot rows in one batched statement.
 
         Each row dict must contain the snapshot columns except ``account_id``
         and ``dedup_key`` (computed here). Duplicate ``dedup_key`` values
         within ``rows`` are collapsed last-wins before the upsert.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            rows: Snapshot column values, one dict per bucket.
+            commit: When False, execute without committing so a caller can
+                pair the upsert with other writes in one transaction.
 
         Returns:
             Number of logical rows written.
@@ -145,6 +163,7 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
                 provider_api_key_id=row.get("provider_api_key_id"),
                 project_or_workspace_id=row.get("project_or_workspace_id"),
                 service_tier=row.get("service_tier"),
+                user_login=row.get("user_login"),
             )
             values_by_dedup[dedup_key] = {
                 "id": uuid.uuid4(),
@@ -163,6 +182,9 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
                         "provider_api_key_id",
                         "project_or_workspace_id",
                         "service_tier",
+                        "user_login",
+                        "usage_source",
+                        "cost_basis",
                         "cost_amount",
                         "uncached_input_tokens",
                         "cached_input_tokens",
@@ -187,12 +209,15 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
                 "output_tokens": statement.excluded.output_tokens,
                 "bucket_end": statement.excluded.bucket_end,
                 "raw": statement.excluded.raw,
+                "usage_source": statement.excluded.usage_source,
+                "cost_basis": statement.excluded.cost_basis,
                 "fetched_at": statement.excluded.fetched_at,
                 "updated_at": func.now(),
             },
         )
         db.execute(statement)
-        db.commit()
+        if commit:
+            db.commit()
         return len(values_list)
 
     def aggregate_actuals_by_provider_day(
@@ -204,7 +229,13 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
         end: datetime,
         provider: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Aggregate provider-reported cost/tokens per provider and day."""
+        """Aggregate provider-reported cost/tokens per provider and day.
+
+        Rows marked ``usage_source='imported'`` (for example the GitHub
+        Copilot import) are excluded: they describe traffic the gateway never
+        metered, so they have no estimate to reconcile against and must not
+        raise drift against gateway spend.
+        """
         query = db.query(
             ProviderBillingSnapshot.provider.label("provider"),
             func.date_trunc("day", ProviderBillingSnapshot.bucket_start).label("day"),
@@ -227,6 +258,10 @@ class CRUDProviderBillingSnapshot(CRUDBase[ProviderBillingSnapshot]):
             ProviderBillingSnapshot.account_id == account_id,
             ProviderBillingSnapshot.bucket_start >= start,
             ProviderBillingSnapshot.bucket_start < end,
+            or_(
+                ProviderBillingSnapshot.usage_source.is_(None),
+                ProviderBillingSnapshot.usage_source != IMPORTED_USAGE_SOURCE,
+            ),
         )
         if provider:
             query = query.filter(ProviderBillingSnapshot.provider == provider)
