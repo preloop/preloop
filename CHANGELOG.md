@@ -17,6 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Revoke one CLI login.** Each `preloop auth login` records a
+  `cli_session` row and its JWTs carry the row id (`sid`); the refresh
+  token also carries a `jti` that rotates with the row, so a refresh token
+  that was already used is rejected. `POST /oauth/revoke` with a CLI access
+  or refresh token now revokes that login (both tokens stop working) and
+  returns `revoked` truthfully. `preloop auth logout` calls it before
+  clearing local credentials. `GET /api/v1/auth/sessions/cli` and
+  `DELETE /api/v1/auth/sessions/cli/{id}` (CLI: `preloop auth sessions
+  list` and `revoke <id>`) list and revoke logins. `POST /auth/refresh` no
+  longer accepts a CLI session refresh token. CLI tokens from before this
+  change move onto a session the next time they refresh (#839).
+- Provider onboarding guides for Amazon Bedrock and Azure OpenAI
+  (`docs/guide/providers/`): console steps, credential fields, minimum IAM
+  policy or Azure role, a first gateway request, Cost page pricing, and common
+  errors. `preloop models smoke <model-alias>` sends one small chat completion
+  through the gateway and prints status, latency, tokens and the usage row id.
+  Non-streaming gateway responses now carry an `X-Preloop-Usage-Id` header.
+- Azure OpenAI is selectable in **Add model** with a deployment name, an
+  **API version** and a **Base model (for pricing)**. The gateway now sends the
+  resource root and api-version to Azure (a pasted deployment URL or
+  `/openai/v1` URL is reduced to the resource root), and a deployment or a
+  Bedrock inference profile ARN is priced from
+  `meta_data.provider_runtime.base_model` when set.
+
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
   a login row selector, a revoke fan-out for "sign out everywhere", a
   visibility provider for models, MCP servers, managed agents, flows and
@@ -210,6 +234,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code-host tracker's credential only. Before, the host checkout ignored the
   binding and failed the lease with "no repository URL". A binding that
   cannot be applied fails the lease with a launch error that names it.
+
+- Bedrock models saved with the `aws` provider alias no longer send the stored
+  AWS credential JSON as an API key; they unpack it like `bedrock` models.
 
 - The flow page no longer writes websocket payloads or the enable and
   disable result to the browser console. Enabling or disabling a flow
