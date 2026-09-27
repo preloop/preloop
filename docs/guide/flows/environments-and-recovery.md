@@ -94,8 +94,8 @@ test suites from a checkout with no network and no install step.
 - `preloop-frontend-deps` copies the image's `frontend/node_modules`
   into the checkout when `frontend/package-lock.json` is byte-identical to
   the one the image was built from, then `cd frontend && npm test` (or
-  `npx web-test-runner <file>`) runs offline against the frontend's own
-  pinned headless Chromium. On a different lock it exits 65; run
+  `npx --no-install web-test-runner <file>`) runs offline against the
+  frontend's own pinned headless Chromium. On a different lock it exits 65; run
   `npm --prefix frontend ci`, which needs registry access.
 - A pull request that changes `app-dev.txt` makes `preloop-pytest` warn
   that the baked venv may lack a new dependency. Rebuild the image to pick

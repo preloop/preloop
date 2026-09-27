@@ -52,14 +52,19 @@ as_db_owner() {
 }
 
 if [[ -z ${DATABASE_URL:-} ]]; then
-  pgbin=$(find /usr/lib/postgresql -maxdepth 2 -name bin -type d | sort -V | tail -n 1)
+  pgroot=${PRELOOP_TEST_PGROOT:-/usr/lib/postgresql}
+  pgbin=$(find "$pgroot" -maxdepth 2 -name bin -type d 2>/dev/null | sort -V | tail -n 1 || true)
   if [[ -z $pgbin ]]; then
     echo 'preloop-pytest: no PostgreSQL here and DATABASE_URL is unset' >&2
     exit 69
   fi
   data=${PRELOOP_TEST_PGDATA:-/tmp/preloop-test-pg}
   port=${PRELOOP_TEST_PGPORT:-55432}
+  # Migration state lives next to the cluster it describes (initdb needs
+  # an empty data dir), and a fresh cluster always gets migrated.
+  marker="${data}.schema"
   if [[ ! -s $data/PG_VERSION ]]; then
+    rm -f "$marker"
     mkdir -p "$data"
     [[ $(id -u) -ne 0 ]] || chown postgres:postgres "$data"
     as_db_owner "$pgbin/initdb" -D "$data" -U postgres --auth=trust \
@@ -75,14 +80,13 @@ if [[ -z ${DATABASE_URL:-} ]]; then
   # Re-run migrations only when the checkout's migration tree changes.
   schema=$(find backend/preloop/models/alembic -type f -name '*.py' -print0 \
     | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
-  marker="/tmp/preloop-test-pg.schema"
   if [[ ! -f $marker || $(cat "$marker") != "$schema" ]]; then
     as_db_owner "$pgbin/psql" -q -h 127.0.0.1 -p "$port" -U postgres -d postgres \
       -c 'DROP DATABASE IF EXISTS preloop_test' -c 'CREATE DATABASE preloop_test'
     as_db_owner "$pgbin/psql" -q -h 127.0.0.1 -p "$port" -U postgres -d preloop_test \
       -c 'CREATE EXTENSION IF NOT EXISTS vector'
-    clean_env python scripts/init_db.py --force >/tmp/preloop-test-pg.init.log 2>&1 \
-      || { tail -n 40 /tmp/preloop-test-pg.init.log >&2; exit 70; }
+    clean_env python scripts/init_db.py --force >"${data}.init.log" 2>&1 \
+      || { tail -n 40 "${data}.init.log" >&2; exit 70; }
     printf '%s' "$schema" >"$marker"
   fi
 fi

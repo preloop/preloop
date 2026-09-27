@@ -276,9 +276,10 @@ the reviewer runs the backend test files the diff touches with
 `preloop-pytest -q -m "not integration" <files>`: the backend lock is
 preinstalled and the runner starts its own disposable database, with no
 network. For frontend test files it runs `preloop-frontend-deps`, then
-`cd frontend && npx web-test-runner <files>`. It never runs the whole
-suite (CI shards it) and keeps runs under about 5 minutes. A failing test
-on the reviewed head is a finding. The default `codex-universal` image has
+`cd frontend && npx --no-install web-test-runner <files>` (`--no-install`
+so a missing tree fails instead of fetching a package). It never runs the
+whole suite (CI shards it) and keeps runs under about 5 minutes. A failing
+test on the reviewed head is a finding. The default `codex-universal` image has
 neither runner, so there the reviewer only uses a test command whose
 dependencies are already installed.
 

@@ -41,6 +41,18 @@ PRELOOP_API_TOKEN=smoke-secret OPENAI_API_KEY=smoke-secret \
   backend/tests/services/test_model_gateway_account_binding.py \
   backend/tests/test_zz_venv_smoke_env.py
 
+# Wiping the throwaway cluster must bring a migrated one back.
+pgdata=${PRELOOP_TEST_PGDATA:-/tmp/preloop-test-pg}
+pgbin=$(find /usr/lib/postgresql -maxdepth 2 -name bin -type d | sort -V | tail -n 1)
+if [[ $(id -u) -eq 0 ]]; then
+  runuser -u postgres -- "$pgbin/pg_ctl" -D "$pgdata" -m fast -w stop >/dev/null
+else
+  "$pgbin/pg_ctl" -D "$pgdata" -m fast -w stop >/dev/null
+fi
+rm -rf "$pgdata"
+preloop-pytest -q -p no:cacheprovider backend/tests/test_zz_venv_smoke_env.py \
+  backend/tests/services/test_model_gateway_account_binding.py::test_key_authenticated_context_carries_the_keys_account
+
 preloop-frontend-deps
 (cd frontend && npx --no-install web-test-runner src/utils/agent-kinds.test.ts)
 echo 'python-venv-smoke: backend and frontend tests passed offline'

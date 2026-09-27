@@ -408,8 +408,8 @@ prompt_template: |
     a dependency this PR adds may be missing: an ImportError for it is not
     a finding.
   - When `preloop-frontend-deps` is on PATH, run it once, then
-    `cd frontend && npx web-test-runner <test files>`. Exit 65 means the
-    PR changed the frontend lock: skip the frontend run.
+    `cd frontend && npx --no-install web-test-runner <test files>`.
+    Exit 65 means the PR changed the frontend lock: skip the frontend run.
   - Otherwise use the repository's documented test command only if its
     dependencies are already installed.
   Never run the whole suite (CI shards it); keep test runs under about 5

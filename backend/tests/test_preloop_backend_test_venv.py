@@ -67,6 +67,47 @@ def test_runner_keeps_agent_tokens_away_from_checkout_code() -> None:
         assert token not in text.split("KEEP_ENV=(", 1)[1].split(")", 1)[0]
 
 
+def test_runner_reports_missing_postgres_instead_of_a_find_error(
+    tmp_path: Path,
+) -> None:
+    """Outside the image (no PostgreSQL, no DATABASE_URL) it exits 69."""
+    env = {key: value for key, value in os.environ.items() if key != "DATABASE_URL"}
+    env["PRELOOP_TEST_PGROOT"] = str(tmp_path / "no-postgresql")
+    result = subprocess.run(
+        ["bash", str(RUNNER), "--version"],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 69, result.stderr
+    assert "no PostgreSQL here and DATABASE_URL is unset" in result.stderr
+    assert "find:" not in result.stderr
+
+
+def test_runner_keys_migration_state_to_its_own_cluster() -> None:
+    """A wiped or second cluster never reuses another cluster's marker."""
+    text = RUNNER.read_text()
+    assert 'marker="${data}.schema"' in text
+    assert '"${data}.init.log"' in text
+    assert "/tmp/preloop-test-pg.schema" not in text
+    fresh = text.split("if [[ ! -s $data/PG_VERSION ]]; then", 1)[1]
+    assert fresh.split("mkdir", 1)[0].strip() == 'rm -f "$marker"'
+    smoke = SMOKE.read_text()
+    assert 'rm -rf "$pgdata"' in smoke
+
+
+def test_reviewer_prompt_never_lets_npx_fetch_a_runner() -> None:
+    """A bare `npx web-test-runner` falls back to the registry."""
+    preset = (
+        REPO / "backend" / "presets" / "002-pull-request-reviewer.yaml"
+    ).read_text()
+    assert "npx --no-install web-test-runner" in preset
+    assert "npx web-test-runner" not in preset
+    assert 'preloop-pytest -q -m "not integration"' in preset
+
+
 def test_backend_profile_example_uses_the_baked_venv() -> None:
     """The backend profile needs no network: no venv, no pip install."""
     from preloop.services.flow_environment import EnvironmentProfile
