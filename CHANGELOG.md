@@ -188,6 +188,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Saving a tracker from the console persists connection details such as a
+  Jira username. The update accepts `connection_details` and the legacy
+  `config` key. When both are sent, `connection_details` wins.
+- Tracker registration no longer rewrites an HTTP error raised while reading
+  the request, including a 401 from the connection test, as "Invalid request
+  format".
+- API usage counts `create_issue` only for `POST /api/v1/issues`. Other POSTs
+  whose path contains `/issues` are not counted as issue creation.
+- Notify-only response evaluation reads the account id from the gateway auth
+  context, the same place as the rest of the gateway.
 - Managed agent config files (`writeJSONDocument`) are written atomically, so
   a concurrent reader never sees a partial file; a symlinked config keeps its
   link. The host execution cleanup test no longer races its fake CLI's pid

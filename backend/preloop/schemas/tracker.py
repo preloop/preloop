@@ -1,15 +1,25 @@
 """Tracker schemas for request and response validation."""
 
+import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, ConfigDict, computed_field
+from pydantic import (
+    BaseModel,
+    Field,
+    HttpUrl,
+    ConfigDict,
+    computed_field,
+    model_validator,
+)
 
 from preloop.models.crud.tracker import UNKNOWN_PROJECTS_META_KEY
 from preloop.models.models.tracker import TrackerType
 from preloop.utils.bitbucket import token_expiry_status as classify_token_expiry
 from .tracker_scope_rule import TrackerScopeRuleCreate, TrackerScopeRuleResponse
+
+logger = logging.getLogger(__name__)
 
 
 class TrackerBase(BaseModel):
@@ -102,8 +112,15 @@ class TrackerUpdate(BaseModel):
     )
     is_active: Optional[bool] = Field(None, description="New active status")
     connection_details: Optional[Dict[str, Any]] = Field(
-        None, description="Updated connection details"
+        None,
+        description=(
+            "Updated connection details. The legacy key 'config' is still "
+            "accepted. A null connection_details is treated as absent and "
+            "falls back to config. When both are objects, connection_details "
+            "wins."
+        ),
     )
+
     meta_data: Optional[Dict[str, Any]] = Field(None, description="Updated metadata")
     scope_rules: Optional[List[TrackerScopeRuleCreate]] = Field(
         None, description="Updated list of scope rules for the tracker"
@@ -117,6 +134,43 @@ class TrackerUpdate(BaseModel):
         None,
         description="Updated Secret for Jira webhook validation (handle with care)",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_config(cls, data: Any) -> Any:
+        """Copy a legacy ``config`` object onto ``connection_details``.
+
+        The console used to send ``config``. Updates persist
+        ``connection_details``. Both keys are accepted during the
+        deprecation window. A null ``connection_details`` is absent and
+        falls back to ``config``, matching registration. When both values
+        are objects, ``connection_details`` wins. A non-object ``config``
+        is ignored so it cannot wipe stored details.
+
+        Args:
+            data: The raw update payload.
+
+        Returns:
+            The payload, with ``connection_details`` filled from ``config``
+            when the new key was omitted.
+        """
+        if not isinstance(data, dict):
+            return data
+        # Null matches registration: the key is absent, so config can fill it.
+        if data.get("connection_details") is None and "connection_details" in data:
+            data = {
+                key: value for key, value in data.items() if key != "connection_details"
+            }
+        if data.get("connection_details") is not None:
+            return data
+        if not isinstance(data.get("config"), dict):
+            return data
+        logger.info(
+            "Tracker update used deprecated 'config'; send 'connection_details'"
+        )
+        merged = dict(data)
+        merged["connection_details"] = data["config"]
+        return merged
 
 
 class TrackerResponse(TrackerBase):
