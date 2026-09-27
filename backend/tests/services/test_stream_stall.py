@@ -124,8 +124,10 @@ class TestDetectStreamStall:
     def test_websocket_idle_is_a_stall(self):
         stall = detect_stream_stall(
             [
-                "ERROR: stream disconnected before completion: idle timeout "
-                "waiting for websocket"
+                (
+                    "ERROR: stream disconnected before completion: idle "
+                    "timeout waiting for websocket"
+                )
             ]
         )
 
@@ -140,14 +142,20 @@ class TestDetectStreamStall:
         quoted = [
             "exec",
             "gh pr diff 1015",
-            '+GAVE_UP = "ERROR: stream disconnected before completion: idle '
-            'timeout waiting for SSE"',
-            '+    "sampling_error=stream disconnected before completion: idle '
-            'timeout "',
+            (
+                '+GAVE_UP = "ERROR: stream disconnected before completion: '
+                'idle timeout waiting for SSE"'
+            ),
+            (
+                '+    "sampling_error=stream disconnected before completion: '
+                'idle timeout "'
+            ),
             f"+WARN_1 = ({WARN_1!r})",
             "old.log:12: " + GAVE_UP,
-            "The provider hit an idle timeout waiting for SSE earlier, so I "
-            "retried the sampling request by hand.",
+            (
+                "The provider hit an idle timeout waiting for SSE earlier, so "
+                "I retried the sampling request by hand."
+            ),
             "  " + "idle timeout waiting for websocket",
         ]
 
