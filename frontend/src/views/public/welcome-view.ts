@@ -295,7 +295,7 @@ export class WelcomeView extends LitElement {
                 : html`
                     <div class="form-group">
                       <sl-input
-                        label="Organization Name"
+                        label="Account name"
                         value=${this._orgName}
                         @sl-change=${(e: any) => (this._orgName = e.target.value)}
                         required
