@@ -177,6 +177,15 @@ _tool_outcome_var: ContextVar[Optional[str]] = ContextVar(
     "_tool_outcome_var", default=None
 )
 
+# The raw MCP content list an upstream server returned for a proxied call,
+# captured by the wrapper before output filters and stringification. The
+# outer call_tool finally reads it once to derive a browser_step from a
+# Playwright MCP call (and its screenshot image) and then clears it. The
+# value handed back to the agent is not affected.
+_proxied_raw_result_var: ContextVar[Optional[Any]] = ContextVar(
+    "_proxied_raw_result_var", default=None
+)
+
 
 def _wrapper_tool_error(text: str, *, status: str) -> ToolResult:
     """Return a tool error and stamp the outcome for the outer call_tool finally.
@@ -500,6 +509,7 @@ _WRAPPER_NAMESPACE_KEYS = (
     "Context",
     "_rule_workflow_id_var",
     "_correlation_id_var",
+    "_proxied_raw_result_var",
     "_wrapper_tool_error",
 )
 
@@ -1192,6 +1202,10 @@ async def {internal_name}({params_str}):
             logger.info(
                 f"Tool {{tool_name}} executed successfully on external server"
             )
+            # Keep the raw content list for the outer call_tool finally
+            # (browser_step derivation). Filters and the string conversion
+            # below only shape what the agent receives.
+            _proxied_raw_result_var.set(result)
 
             # Apply operator-configured output filters BEFORE the result
             # reaches the agent, stripping unused fields to save context tokens.
@@ -1264,6 +1278,7 @@ async def {internal_name}({params_str}):
             "Context": Context,
             "_rule_workflow_id_var": _rule_workflow_id_var,
             "_correlation_id_var": _correlation_id_var,
+            "_proxied_raw_result_var": _proxied_raw_result_var,
             "_wrapper_tool_error": _wrapper_tool_error,
         }
         if namespace_values.keys() != set(_WRAPPER_NAMESPACE_KEYS):
@@ -1740,12 +1755,14 @@ async def {internal_name}({params_str}):
                 _is_proxy_translation_var.reset(translation_token)
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
             wrapper_outcome = _tool_outcome_var.get(None)
+            proxied_raw_result = _proxied_raw_result_var.get(None)
 
             # Clean up context vars after execution
             _rule_workflow_id_var.set(None)
             _rule_context_var.set(None)
             _correlation_id_var.set(None)
             _tool_outcome_var.set(None)
+            _proxied_raw_result_var.set(None)
 
             # ── Audit: log tool execution ───────────────────────────────
             try:
@@ -1815,6 +1832,26 @@ async def {internal_name}({params_str}):
                     logger.debug(
                         f"Failed to persist runtime session activity: {activity_err}"
                     )
+
+                # ── Browser step derived from a Playwright MCP call ──────
+                # Observation only: the step records the call the firewall
+                # forwarded. A failure here is logged and never changes the
+                # result the agent receives.
+                if client_tool_name in self._proxied_tool_servers:
+                    try:
+                        self._persist_playwright_browser_step(
+                            user_context,
+                            client_tool_name=client_tool_name,
+                            arguments=arguments,
+                            status=activity_status,
+                            correlation_id=correlation_id,
+                            raw_result=proxied_raw_result,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to derive browser step from tool '%s'",
+                            client_tool_name,
+                        )
 
             try:
                 from preloop.services.otel_export import emit_tool_call
@@ -2014,6 +2051,158 @@ async def {internal_name}({params_str}):
                         execution_id=user_context.flow_execution_id,
                     )
                 )
+        finally:
+            db.close()
+
+    def _persist_playwright_browser_step(
+        self,
+        user_context: UserContext,
+        *,
+        client_tool_name: str,
+        arguments: Optional[dict[str, Any]],
+        status: str,
+        correlation_id: Optional[str],
+        raw_result: Any,
+    ) -> None:
+        """Write one ``browser_step`` for a proxied Playwright MCP tool call.
+
+        Runs after the ``tool_call`` row for the same call. The step reuses
+        the call's correlation id as ``source_step_id``, so the two rows join
+        and a repeated derivation is a no-op. For ``browser_take_screenshot``
+        the first image in the upstream result becomes the step's screenshot
+        artifact, validated and bounded the same way as an image posted to
+        the browser-steps API. Nothing here changes what the agent receives.
+
+        Skipped when the call has no runtime session, when
+        ``mcp_playwright_derive_browser_steps`` is off, when the tool is not a
+        mapped Playwright tool, or when the call was refused before it
+        reached the browser.
+
+        Args:
+            user_context: Caller identity; supplies account and session.
+            client_tool_name: Tool name as the agent called it.
+            arguments: Client-facing arguments of the call.
+            status: ``tool_call`` activity status of the call.
+            correlation_id: Correlation id shared with the ``tool_call`` row.
+            raw_result: Raw MCP content list from upstream, or ``None``.
+        """
+        from preloop.config import settings
+        from preloop.services.playwright_steps import is_playwright_tool
+
+        if not getattr(user_context, "runtime_session_id", None):
+            return
+        if not settings.mcp_playwright_derive_browser_steps:
+            return
+        if not is_playwright_tool(client_tool_name) or not correlation_id:
+            return
+
+        import base64
+
+        from pydantic import ValidationError
+
+        from preloop.models.crud import crud_runtime_session_activity
+        from preloop.schemas.browser_step import (
+            ERROR_STORAGE_BUDGET_EXHAUSTED,
+            BrowserScreenshotIn,
+        )
+        from preloop.services.browser_steps import (
+            attach_screenshot,
+            decode_screenshot,
+            enforce_session_screenshot_bound,
+        )
+        from preloop.services.playwright_steps import derive_step, extract_screenshot
+        from preloop.services.session_search_index import index_browser_step
+
+        account_id = uuid.UUID(str(user_context.account_id))
+        runtime_session_id = uuid.UUID(str(user_context.runtime_session_id))
+
+        db = next(get_db())
+        try:
+            step_index = crud_runtime_session_activity.next_browser_step_index(
+                db, runtime_session_id=runtime_session_id
+            )
+            step = derive_step(
+                tool_name=client_tool_name,
+                arguments=arguments,
+                status=status,
+                correlation_id=correlation_id,
+                step_index=step_index,
+            )
+            if step is None:
+                return
+            row, created = crud_runtime_session_activity.log_browser_step(
+                db,
+                account_id=account_id,
+                runtime_session_id=runtime_session_id,
+                api_key_id=user_context.api_key_id,
+                step=step,
+                commit=False,
+            )
+            if not created:
+                return
+
+            image: Optional[bytes] = None
+            content_type: Optional[str] = None
+            if step.action == "screenshot":
+                extracted = extract_screenshot(raw_result)
+                if extracted is not None:
+                    media_type, data = extracted
+                    try:
+                        screenshot_in = BrowserScreenshotIn(
+                            content_type=media_type,  # type: ignore[arg-type]
+                            data_base64=base64.b64encode(data).decode("ascii"),
+                        )
+                    except ValidationError:
+                        logger.info(
+                            "Skipping Playwright screenshot with media type %r",
+                            media_type,
+                        )
+                    else:
+                        image, error = decode_screenshot(screenshot_in)
+                        if error is not None:
+                            logger.info(
+                                "Skipping Playwright screenshot for step %s: %s",
+                                correlation_id,
+                                error,
+                            )
+                            image = None
+                        else:
+                            content_type = media_type
+            if image is not None and content_type is not None:
+                # A full account budget drops the image and keeps the step.
+                try:
+                    with db.begin_nested():
+                        attach_screenshot(
+                            db,
+                            account_id=account_id,
+                            runtime_session_id=runtime_session_id,
+                            activity=row,
+                            content_type=content_type,
+                            data=image,
+                            source=step.source,
+                            source_ref=step.source_step_id,
+                        )
+                except ValueError as exc:
+                    if str(exc) != ERROR_STORAGE_BUDGET_EXHAUSTED:
+                        raise
+                    logger.info(
+                        "Playwright screenshot for step %s not stored: %s",
+                        correlation_id,
+                        ERROR_STORAGE_BUDGET_EXHAUSTED,
+                    )
+                else:
+                    enforce_session_screenshot_bound(
+                        db,
+                        account_id=account_id,
+                        runtime_session_id=runtime_session_id,
+                    )
+
+            index_browser_step(db, activity=row, commit=False)
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
         finally:
             db.close()
 
@@ -2257,5 +2446,6 @@ _CONTEXT_VAR_EXPORTS = (
     _approved_answer_var,
     _approved_id_var,
     _is_proxy_translation_var,
+    _proxied_raw_result_var,
 )
 assert _CONTEXT_VAR_EXPORTS, "contextvar exports must be defined"

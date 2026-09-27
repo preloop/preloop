@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MCP firewall derives a `browser_step` activity from each proxied
+  Playwright MCP (`@playwright/mcp`) `browser_*` tool call on a runtime
+  session, with no adapter on the agent side. The step joins the
+  `tool_call` row through the correlation id, the image returned by
+  `browser_take_screenshot` becomes the step's screenshot artifact under
+  the API's size, type and budget rules, and typed text, pressed keys and
+  selected values are never copied. What the agent receives does not
+  change. `MCP_PLAYWRIGHT_DERIVE_BROWSER_STEPS=false` turns it off. (#885)
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
   a login row selector, a revoke fan-out for "sign out everywhere", a
   visibility provider for models, MCP servers, managed agents, flows and
