@@ -15,6 +15,7 @@ from string import ascii_letters, digits
 from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID, uuid4, uuid5
 
+import anyio
 from anyio import from_thread
 from fastapi import (
     APIRouter,
@@ -86,6 +87,10 @@ RUNNER_LOG_BROADCAST_TIMEOUT = 1.0
 #: revoked. The CLI treats any error frame as fatal and exits.
 RUNNER_DELETED_ERROR = "Runner was deleted"
 RUNNER_TOKEN_ROTATED_ERROR = "Runner token was rotated"
+#: How long a delete or rotate waits for the goodbye frames to a live
+#: runner. A half-open socket can stall a send for minutes; past this the
+#: socket is already out of ``_live`` and ends on its next frame anyway.
+RUNNER_EVICT_TIMEOUT_SECONDS = 5.0
 
 
 def _valid_publication_helper_image(value: object) -> bool:
@@ -154,6 +159,28 @@ async def _evict_live_runner(
     return True
 
 
+async def _evict_live_runner_bounded(
+    runner_key: str,
+    error: str,
+    halted_execution_ids: Optional[List[str]] = None,
+) -> None:
+    """``_evict_live_runner`` with a deadline, applied on the event loop.
+
+    The worker thread waiting in ``from_thread.run`` holds a threadpool
+    token until this returns, so a send to a half-open socket must not be
+    allowed to hold it for the kernel's retransmit budget. The socket leaves
+    ``_live`` before the first await, so a timeout only skips the goodbye
+    frames.
+    """
+    with anyio.move_on_after(RUNNER_EVICT_TIMEOUT_SECONDS) as scope:
+        await _evict_live_runner(runner_key, error, halted_execution_ids)
+    if scope.cancelled_caught:
+        logger.info(
+            "runner %s: goodbye frames timed out; the socket ends on its next frame",
+            runner_key,
+        )
+
+
 def _evict_live_runner_from_worker(
     runner_key: str,
     error: str,
@@ -167,7 +194,9 @@ def _evict_live_runner_from_worker(
     next frame, like one on another replica.
     """
     try:
-        from_thread.run(_evict_live_runner, runner_key, error, halted_execution_ids)
+        from_thread.run(
+            _evict_live_runner_bounded, runner_key, error, halted_execution_ids
+        )
     except RuntimeError:
         logger.warning(
             "Could not close the live socket for runner %s from this thread; "

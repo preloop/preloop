@@ -1,11 +1,13 @@
 """Deleting a persistent runner and rotating its token (#841)."""
 
 import importlib.util
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Tuple
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import anyio
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -315,6 +317,42 @@ def test_delete_and_rotate_close_the_live_socket(
     assert frames[-1]["type"] == "error"
     live.close.assert_awaited_once_with(code=1008)
     assert runner_id not in runners._live
+
+
+@pytest.mark.parametrize("action", ["delete", "rotate"])
+def test_a_stalled_live_socket_does_not_hold_the_request(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    """A half-open socket whose send never completes cannot pin the worker."""
+
+    async def _never_sends(_frame: Any) -> None:
+        await anyio.sleep_forever()
+
+    monkeypatch.setattr(runners, "RUNNER_EVICT_TIMEOUT_SECONDS", 0.2)
+    with _client(db_session, test_user) as client:
+        runner_id, _ = _register(client)
+        live = MagicMock()
+        live.send_json = AsyncMock(side_effect=_never_sends)
+        live.close = AsyncMock()
+        monkeypatch.setitem(runners._live, runner_id, live)
+
+        started = time.monotonic()
+        if action == "delete":
+            response = client.delete(f"/api/v1/runners/{runner_id}")
+        else:
+            response = client.post(f"/api/v1/runners/{runner_id}/token")
+        elapsed = time.monotonic() - started
+
+    assert response.status_code == 200, response.text
+    assert elapsed < 5
+    live.send_json.assert_awaited()
+    # Out of the live map before the stalled send, so the socket ends on its
+    # next frame even though it never got the goodbye.
+    assert runner_id not in runners._live
+    assert live in runners._evicted
 
 
 def test_delete_and_rotate_need_the_same_permission_as_the_other_runner_writes(
