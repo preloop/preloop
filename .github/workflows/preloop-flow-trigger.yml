@@ -177,7 +177,6 @@ jobs:
           set -euo pipefail
           mkdir -p "$INSTALL_DIR"
           sh scripts/install-cli.sh
-          echo "$INSTALL_DIR" >> "$GITHUB_PATH"
           os="$(uname -s | tr '[:upper:]' '[:lower:]')"
           arch="$(uname -m)"
           case "$arch" in
@@ -266,7 +265,7 @@ jobs:
             }' "$pr_json" > "$payload"
           jq '{type, pr: .payload.pull_request | {number, html_url, head, base}}' "$payload"
           # Keep the CLI output so the cleanup step can find the execution id.
-          preloop flow trigger "$PRELOOP_FLOW" --payload - --timeout 40m \
+          "${RUNNER_TEMP}/preloop-bin/preloop" flow trigger "$PRELOOP_FLOW" --payload - --timeout 40m \
             < "$payload" 2>&1 | tee "${RUNNER_TEMP}/preloop-trigger.log"
 
       # A cancelled job (superseded by a newer push) or a CLI wait timeout

@@ -58,3 +58,13 @@ rules:
   unpinned-images:
     ignore:
       - ci.yml
+
+  # Fork pull requests do not receive repository secrets on pull_request, so
+  # a collaborator's fork cannot run the prod reviewer without
+  # pull_request_target. The job checks out the default branch only, with
+  # persist-credentials false, and skips fork authors who are not OWNER,
+  # MEMBER, or COLLABORATOR. The installer and the CLI therefore come from
+  # this repository, not from the pull request.
+  dangerous-triggers:
+    ignore:
+      - preloop-flow-trigger.yml

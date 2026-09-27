@@ -555,7 +555,15 @@ describe('console-header bell approvals', () => {
     // The refresh on focus answers with the row still pending, either from a
     // read replica behind the decision or from a response prepared before it.
     window.dispatchEvent(new Event('focus'));
-    await waitUntil(() => approvalReads >= 2, 'refresh never ran');
+    // approvalReads increments when the request starts, before the list is
+    // applied. Wait until that load has finished or the assertion races it.
+    await waitUntil(
+      () =>
+        approvalReads >= 2 &&
+        !(el as unknown as { loadingPendingApprovals: boolean })
+          .loadingPendingApprovals,
+      'refresh never settled'
+    );
     await el.updateComplete;
 
     expect(names(el), 'resolved row came back').to.deep.equal([]);
@@ -611,7 +619,15 @@ describe('console-header bell approvals', () => {
 
     approvals = [];
     window.dispatchEvent(new Event('focus'));
-    await waitUntil(() => approvalReads >= 2, 'refresh never ran');
+    // approvalReads increments when the request starts, before the held id
+    // is dropped. Wait until that load has finished or the size check races it.
+    await waitUntil(
+      () =>
+        approvalReads >= 2 &&
+        !(el as unknown as { loadingPendingApprovals: boolean })
+          .loadingPendingApprovals,
+      'refresh never settled'
+    );
     await el.updateComplete;
 
     // A tab left open for a day must not accumulate one entry per approval.
