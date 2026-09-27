@@ -29,6 +29,7 @@ describe('AttentionView', () => {
   let usageByModel: any[];
   let agentDeletes: string[];
   let dismissalWrites: { url: string; method: string; body: any }[];
+  let policyNoticesResponse: any[] = [];
   let spendOutliersResponse: any[];
 
   const json = (data: unknown) =>
@@ -139,6 +140,9 @@ describe('AttentionView', () => {
         if (url.startsWith('/api/v1/approval-requests')) {
           return json(approvalsResponse);
         }
+        if (url.startsWith('/api/v1/policies/notices/summary')) {
+          return json({ days: 7, rules: policyNoticesResponse });
+        }
         if (url.startsWith('/api/v1/attention/spend-outliers/settings')) {
           return json({
             daily_multiple: 3,
@@ -215,6 +219,7 @@ describe('AttentionView', () => {
   });
 
   afterEach(() => {
+    policyNoticesResponse = [];
     invalidateApiCaches();
     fetchStub.restore();
     connectStub.restore();
@@ -597,6 +602,37 @@ describe('AttentionView', () => {
     expect(flowsChip.textContent!.trim()).to.equal('1 flow');
   });
 
+  it('shows a policy notice card with the redacted excerpt', async () => {
+    policyNoticesResponse = [
+      {
+        rule_id: 'notify-codename',
+        rule_description: 'Mentions of the codename',
+        target: 'model.request',
+        count: 2,
+        last_hit_id: 'hit-2',
+        last_hit_at: new Date(Date.now() - 60_000).toISOString(),
+        last_excerpt: 'the project-x plan uses [REDACTED]',
+        last_username: 'alex',
+        last_user_id: 'user-1',
+      },
+    ];
+    const el = await mount();
+
+    const section = el.shadowRoot!.querySelector('#policy-notices')!;
+    expect(section, 'policy notices section').to.exist;
+    const rows = section.querySelectorAll('.attention-row');
+    expect(rows).to.have.length(1);
+    expect(rows[0].textContent).to.contain('Mentions of the codename');
+    const evidence = section.querySelector('.row-evidence')!;
+    expect(
+      evidence.querySelector('.policy-notice-excerpt')!.textContent!.trim()
+    ).to.equal('the project-x plan uses [REDACTED]');
+    expect(evidence.textContent).to.contain('by alex');
+    expect(evidence.querySelector('sl-button')!.getAttribute('href')).to.equal(
+      '/console/policies'
+    );
+  });
+
   it('shows a chip per kind, muted when the kind is empty', async () => {
     const el = await mount();
     const chips = Array.from(el.shadowRoot!.querySelectorAll('.chip')).map(
@@ -610,6 +646,7 @@ describe('AttentionView', () => {
       '1 budget',
       '0 spend outliers',
       '0 pricing',
+      '0 policy notices',
     ]);
     const agentsChip = el.shadowRoot!.querySelectorAll('.chip')[1];
     expect(agentsChip.classList.contains('empty')).to.be.true;

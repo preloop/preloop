@@ -12061,6 +12061,41 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/policies/notices/summary:
+    get:
+      tags:
+      - Policies
+      summary: Summarize notify rule hits by rule
+      description: Return notify rule hits of the last ``days`` days, one row per
+        rule.
+      operationId: get_policy_notice_summary_api_v1_policies_notices_summary_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 90
+          minimum: 1
+          description: Window length in days
+          default: 7
+          title: Days
+        description: Window length in days
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyNoticeSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/security-screen/score:
     post:
       tags:
@@ -18039,6 +18074,7 @@ components:
       - require_approval
       - deny
       - allow
+      - notify
       title: ConditionAction
       description: Actions to take when a condition matches.
     ConditionTestRequest:
@@ -25228,6 +25264,81 @@ components:
       - policy_name
       title: PolicyImportResult
       description: Result of importing a policy.
+    PolicyNoticeRuleSummaryResponse:
+      properties:
+        rule_id:
+          type: string
+          title: Rule Id
+          description: Model I/O rule id
+        rule_description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rule Description
+          description: Rule description
+        target:
+          type: string
+          title: Target
+          description: model.request or model.response
+        count:
+          type: integer
+          title: Count
+          description: Hits in the window
+        last_hit_id:
+          type: string
+          format: uuid
+          title: Last Hit Id
+          description: Newest hit id (card fingerprint)
+        last_hit_at:
+          type: string
+          format: date-time
+          title: Last Hit At
+          description: Newest hit time (UTC)
+        last_excerpt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Excerpt
+          description: Newest redacted excerpt (at most 280 characters)
+        last_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Last User Id
+          description: Newest hit's user
+        last_username:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Username
+          description: Newest hit's username
+      type: object
+      required:
+      - rule_id
+      - target
+      - count
+      - last_hit_id
+      - last_hit_at
+      title: PolicyNoticeRuleSummaryResponse
+      description: Hits of one notify rule inside the window.
+    PolicyNoticeSummaryResponse:
+      properties:
+        days:
+          type: integer
+          title: Days
+          description: Window length in days
+        rules:
+          items:
+            $ref: '#/components/schemas/PolicyNoticeRuleSummaryResponse'
+          type: array
+          title: Rules
+      type: object
+      required:
+      - days
+      - rules
+      title: PolicyNoticeSummaryResponse
+      description: Notify rule hits grouped by rule, newest first.
     PolicyValidationError:
       properties:
         path:

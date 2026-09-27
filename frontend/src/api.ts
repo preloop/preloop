@@ -1247,6 +1247,39 @@ export async function getAttentionDismissals(): Promise<
   return (body?.items || []) as AttentionDismissal[];
 }
 
+/** One notify rule's hits over the summary window (#959). */
+export interface PolicyNoticeRuleSummary {
+  rule_id: string;
+  rule_description?: string | null;
+  target: 'model.request' | 'model.response' | string;
+  count: number;
+  /** Newest hit id; a new hit changes it and brings a dismissed card back. */
+  last_hit_id: string;
+  last_hit_at: string;
+  /** Secret-redacted, at most 280 characters; null when redaction failed. */
+  last_excerpt?: string | null;
+  last_user_id?: string | null;
+  last_username?: string | null;
+}
+
+export interface PolicyNoticeSummary {
+  days: number;
+  rules: PolicyNoticeRuleSummary[];
+}
+
+/** Notify rule hits grouped by rule, for the Attention page. */
+export async function getPolicyNoticeSummary(
+  days = 7
+): Promise<PolicyNoticeSummary> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/notices/summary?days=${encodeURIComponent(String(days))}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch policy notices');
+  }
+  return (await response.json()) as PolicyNoticeSummary;
+}
+
 export async function dismissAttentionItem(
   itemId: string,
   body: {
@@ -5089,7 +5122,8 @@ export async function deleteAccessRule(ruleId: string): Promise<void> {
 
 export interface ModelIOCondition {
   expression: string;
-  action: 'allow' | 'deny' | 'require_approval';
+  /** `notify` is model I/O only: record and tell policy owners, never block. */
+  action: 'allow' | 'deny' | 'require_approval' | 'notify';
   condition_type?: 'simple' | 'cel';
   description?: string | null;
 }

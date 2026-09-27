@@ -1,8 +1,9 @@
 # Model content policies
 
 Model I/O rules extend the existing policy engine so instance policies can
-inspect model prompts and completions. Actions are the same as tools:
-`allow`, `deny`, and `require_approval`.
+inspect model prompts and completions. Actions are the same as tools
+(`allow`, `deny`, and `require_approval`) plus `notify`, which is only
+available on model I/O rules (see [Notify-only rules](#notify-only-rules)).
 
 This is policy on Preloop-governed traffic. It is not a standalone
 guardrail product.
@@ -38,8 +39,9 @@ auto-applies.
 The guided Add rule form includes:
 
 - target (`model.request` or `model.response`)
-- action (`allow`, `deny`, `require_approval`)
-- the existing approval-workflow picker
+- action (`allow`, `deny`, `require_approval`, `notify`; tool rules do not
+  offer `notify`)
+- the existing approval-workflow picker (not needed for `notify`)
 - a condition field
 - detector toggles for PII, injection, and moderation
 
@@ -82,7 +84,8 @@ references their attributes (`pii.`, `injection.`, `moderation.`).
 
 Each rule has `detector_timeout_ms` (default 500) and
 `on_detector_timeout` (default `deny`, fail closed). Set
-`on_detector_timeout: allow` to skip that rule on timeout.
+`on_detector_timeout: allow` to skip that rule on timeout. A rule whose conditions are all `notify` never blocks on
+timeout: the rule is skipped.
 
 Application logs never include full prompts. Audit and approval tickets
 store the rule id, detector summary, and a SHA-256 of the scanned text.
@@ -105,6 +108,13 @@ when any `model.response` rule is enabled. Issue #313 allowed either
 buffer-until-assembled or a rolling window; this implementation keeps
 buffering for correctness of deny.
 
+When every enabled `model.response` rule is notify-only, the stream is
+not buffered. Events reach the client as they arrive and the rules are
+evaluated once the stream ends (or the client disconnects). If any
+enabled response rule can deny or require approval, the stream is
+buffered as above and notify conditions are evaluated on the same
+assembled text.
+
 ## Deny errors
 
 Denied requests return HTTP 403 with:
@@ -125,6 +135,70 @@ run the hold on the application event loop. Callers with no loop fail
 closed instead of creating a temporary loop. A required approval pauses
 a background optimization worker for the approval window (default 5
 minutes, configurable up to 30 days).
+
+## Notify-only rules
+
+A condition with `action: notify` lets the call through exactly like
+`allow`: no approval, no buffering, no error to the client. It records
+that the rule matched and tells the policy owners.
+
+Evaluation order:
+
+- A matching notify condition records one hit for its rule and
+  evaluation continues with the next rule. A rule records at most one
+  hit per evaluation, even when several of its notify conditions match.
+- `deny`, `require_approval` and `allow` still use first match wins. A
+  notify rule listed before the terminal match still records its hit
+  (so a denied call can also produce a notice). Rules after the terminal
+  match are not evaluated.
+- A notify condition whose expression fails to evaluate is skipped.
+- When only notify rules matched, the decision is `notify`, which
+  proceeds like `allow`.
+
+Each hit is stored in the `policy_notice_hit` table with the account,
+user (when known), target, rule id and description, time, the SHA-256
+of the scanned text, and an excerpt of at most 280 characters around the
+match. The excerpt goes through the same secret redaction as the
+gateway logs. If redaction fails, only the hash and rule id are kept.
+The full text is never stored. When the EE audit plugin is installed,
+each hit also writes an audit row with action `notify`.
+
+Policy owners are told about a hit through:
+
+- email, for owners whose notification preferences leave email on
+- mobile push, for owners with `enable_mobile_push` on
+- the rule's approval workflow (or the account default) when that
+  workflow is of type Slack, Mattermost or webhook
+
+Owners are active users who are the account's primary user, a
+superuser, or hold the `manage_policies` permission. The message names the rule, includes the
+redacted excerpt, and has no approve or deny link. Messages are
+debounced to one per rule, per user, per hour. Hits are still recorded
+every time.
+
+Where hits show up:
+
+- Attention: one "Policy notice" card per rule with hits in the last 7
+  days. Dismissing it hides it until the rule matches again.
+- Optimization digest: a "Policy notices" section with each rule's hit
+  count over 7 days, the last user and the last excerpt. The digest is
+  sent by the EE optimization plugin; without it, nothing is sent.
+- `GET /api/v1/policies/notices/summary?days=7` (requires
+  `view_policies`).
+
+Example:
+
+```yaml
+model_io:
+  - id: notify-codename
+    description: Mentions of the internal codename
+    target: model.request
+    conditions:
+      - expression: "request.text.contains('project-x')"
+        action: notify
+```
+
+`notify` is rejected on tool rules.
 
 ## YAML example
 

@@ -227,6 +227,27 @@ def _authenticate_with_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if str(api_key.account_id) != str(user.account_id):
+        # A key is bound to one account for life. When its owner resolves to
+        # a different account, fail closed exactly like an unknown key so the
+        # client learns nothing about either account.
+        logger.warning(
+            "API key rejected: key account does not match its user's account",
+            extra={
+                "event": "api_key_account_mismatch",
+                "api_key_id": str(api_key.id),
+                "api_key_prefix": getattr(api_key, "key_prefix", None),
+                "user_id": str(user.id),
+                "key_account_id": str(api_key.account_id),
+                "user_account_id": str(user.account_id),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

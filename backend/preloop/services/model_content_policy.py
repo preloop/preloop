@@ -50,7 +50,12 @@ from preloop.services.model_content_detectors import (
     detect_pii,
 )
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.services.policy.schema import ModelIORule
+from preloop.services.policy.schema import ConditionAction, ModelIORule
+from preloop.services.policy_notices import (
+    PolicyNotice,
+    build_excerpt,
+    schedule_policy_notice,
+)
 from preloop.services.policy_evaluator import (
     PolicyDecision,
     _log_policy_decision_async,
@@ -127,6 +132,9 @@ class ModelIODecision:
     detector_summary: Dict[str, Any] = field(default_factory=dict)
     text_sha256: Optional[str] = None
     expression: Optional[str] = None
+    #: Notify rules that matched in this evaluation (#959). They never
+    #: change ``action``; a later deny or require_approval still applies.
+    notices: List[PolicyNotice] = field(default_factory=list)
 
     def to_policy_decision(self) -> PolicyDecision:
         """Adapt to the historical PolicyDecision 3-tuple."""
@@ -515,6 +523,73 @@ def _build_bindings(
     return bindings
 
 
+NOTIFY_ACTION = ConditionAction.NOTIFY.value
+
+
+def _condition_action(condition: Any) -> str:
+    action = condition.action
+    return str(getattr(action, "value", action))
+
+
+def is_notify_only(rule: ModelIORule) -> bool:
+    """True when every condition of ``rule`` uses the ``notify`` action.
+
+    Such a rule can never block a call: detector timeouts and evaluation
+    errors skip it instead of failing closed, and a response stream it
+    watches is not buffered.
+    """
+    return bool(rule.conditions) and all(
+        _condition_action(condition) == NOTIFY_ACTION for condition in rule.conditions
+    )
+
+
+def _uuid_or_none(value: Any) -> Optional[UUID]:
+    if value is None:
+        return None
+    try:
+        return value if isinstance(value, UUID) else UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_notice(
+    *,
+    rule: ModelIORule,
+    condition: Any,
+    target: str,
+    text: str,
+    digest: str,
+    account_id: Optional[Any],
+    user_id: Optional[Any],
+) -> Optional[PolicyNotice]:
+    account_uuid = _uuid_or_none(account_id)
+    if account_uuid is None:
+        return None
+    return PolicyNotice(
+        account_id=account_uuid,
+        user_id=_uuid_or_none(user_id),
+        target=target,
+        rule_id=rule.id,
+        rule_description=condition.description or rule.description,
+        text_sha256=digest,
+        excerpt=build_excerpt(text, condition.expression),
+        approval_workflow=rule.approval_workflow,
+    )
+
+
+def _emit_notices(
+    notices: Sequence[PolicyNotice],
+    rules_by_id: Dict[str, ModelIORule],
+) -> None:
+    """Audit and record every notify hit. Never raises."""
+    for notice in notices:
+        try:
+            _audit_notice(notice, rules_by_id.get(notice.rule_id))
+        except Exception:  # noqa: BLE001 - notify must never fail the call
+            logger.warning("Policy notice audit failed", exc_info=True)
+        schedule_policy_notice(notice)
+
+
 def evaluate_model_io(
     *,
     rules: Sequence[ModelIORule],
@@ -529,6 +604,14 @@ def evaluate_model_io(
 
     First matching enabled rule condition wins. No matching rule: allow.
     Detector timeout follows ``on_detector_timeout`` (default deny).
+
+    ``notify`` is the exception to first match wins (#959): a matching
+    notify condition records a hit for its rule and evaluation moves on to
+    the next rule, so a later deny or require_approval still applies. Each
+    rule records at most one hit per evaluation. When only notify rules
+    matched the returned action is ``notify``, which proceeds like allow.
+    A notify-only rule whose detectors time out or whose condition fails to
+    evaluate is skipped rather than denying.
     """
     digest = _text_privacy(text)
     if not rules:
@@ -545,9 +628,20 @@ def evaluate_model_io(
             text_sha256=digest,
         )
 
+    notices: List[PolicyNotice] = []
+    rules_by_id = {rule.id: rule for rule in matching}
+
+    def finish(decision: ModelIODecision) -> ModelIODecision:
+        decision.notices = notices
+        _emit_notices(notices, rules_by_id)
+        return decision
+
     for rule in matching:
+        notify_only = is_notify_only(rule)
         summary = _run_detectors_with_timeout(rule, text)
         if summary.timed_out:
+            if notify_only:
+                continue
             fail_mode = _timeout_fail_mode(rule)
             if fail_mode == "deny":
                 decision = ModelIODecision(
@@ -558,7 +652,7 @@ def evaluate_model_io(
                     text_sha256=digest,
                 )
                 _audit_decision(account_id, user_id, target, decision, rule)
-                return decision
+                return finish(decision)
             continue
 
         bindings = _build_bindings(
@@ -569,6 +663,7 @@ def evaluate_model_io(
             summary=summary,
         )
         for condition in rule.conditions:
+            action = _condition_action(condition)
             condition_type = condition.condition_type
             if hasattr(condition_type, "value"):
                 condition_type = condition_type.value
@@ -580,6 +675,9 @@ def evaluate_model_io(
                 )
             except Exception as exc:
                 logger.error("Model I/O condition error rule_id=%s: %s", rule.id, exc)
+                if action == NOTIFY_ACTION:
+                    # A broken notify condition must not block the call.
+                    continue
                 decision = ModelIODecision(
                     action="deny",
                     rule_id=rule.id,
@@ -588,14 +686,26 @@ def evaluate_model_io(
                     text_sha256=digest,
                 )
                 _audit_decision(account_id, user_id, target, decision, rule)
-                return decision
+                return finish(decision)
             if not matches:
                 continue
-            action = condition.action
-            if hasattr(action, "value"):
-                action = action.value
+            if action == NOTIFY_ACTION:
+                notice = _build_notice(
+                    rule=rule,
+                    condition=condition,
+                    target=target,
+                    text=text,
+                    digest=digest,
+                    account_id=account_id,
+                    user_id=user_id,
+                )
+                if notice is not None:
+                    notices.append(notice)
+                # First matching condition of this rule is used; move on
+                # to the next rule.
+                break
             decision = ModelIODecision(
-                action=str(action),
+                action=action,
                 rule_id=rule.id,
                 rule_description=condition.description
                 or rule.description
@@ -606,8 +716,18 @@ def evaluate_model_io(
                 expression=condition.expression,
             )
             _audit_decision(account_id, user_id, target, decision, rule)
-            return decision
+            return finish(decision)
 
+    if notices:
+        return finish(
+            ModelIODecision(
+                action=NOTIFY_ACTION,
+                rule_id=notices[0].rule_id,
+                rule_description=notices[0].rule_description
+                or f"Notify rule matched: {notices[0].rule_id}",
+                text_sha256=digest,
+            )
+        )
     return ModelIODecision(
         action="allow",
         rule_description="No rules matched (default allow)",
@@ -650,6 +770,30 @@ def _audit_decision(
             "text_sha256": decision.text_sha256,
         },
         user_id=user_uuid,
+        extra_details=extra,
+    )
+
+
+def _audit_notice(notice: PolicyNotice, rule: Optional[ModelIORule]) -> None:
+    """One audit row per notify hit: action ``notify``, rule id and hash.
+
+    Written separately from :func:`_audit_decision`, whose ``allow`` early
+    return would otherwise drop it. Never includes text or the excerpt.
+    """
+    extra = {
+        "rule_id": notice.rule_id,
+        "text_sha256": notice.text_sha256,
+        "notify": True,
+    }
+    _log_policy_decision_async(
+        account_id=notice.account_id,
+        tool_name=notice.target,
+        action=NOTIFY_ACTION,
+        rule_description=notice.rule_description
+        or (rule.description if rule is not None else None),
+        condition_matched=notice.rule_id,
+        tool_args={"text_sha256": notice.text_sha256},
+        user_id=notice.user_id,
         extra_details=extra,
     )
 
@@ -822,13 +966,14 @@ def _apply_decision(
     provider: str,
     before_provider: bool,  # noqa: ARG001 - reserved for audit context
 ) -> None:
-    if decision.action == "allow":
+    if decision.action in ("allow", NOTIFY_ACTION):
+        # notify proceeds exactly like allow: no hold, no approval request.
         return
     if decision.action == "require_approval":
         approved = _await_model_io_hold(
             hold_for_model_io_approval(
                 db=gateway.db,
-                account_id=gateway.auth_context.user.account_id,
+                account_id=gateway.auth_context.account_id,
                 target=target,
                 decision=decision,
                 release_after_lookup=getattr(gateway, "release_db_for_wait", None),
@@ -848,7 +993,7 @@ def _load_gateway_policy_rules(
     """Finish the policy read before waits, and fail closed on database errors."""
     try:
         try:
-            return load_model_io_rules(gateway.db, gateway.auth_context.user.account_id)
+            return load_model_io_rules(gateway.db, gateway.auth_context.account_id)
         finally:
             release = getattr(gateway, "release_db_for_wait", None)
             if release is not None:
@@ -872,7 +1017,7 @@ def enforce_request_policy(
     provider: str,
 ) -> None:
     """Evaluate model.request rules before the provider call."""
-    account_id = gateway.auth_context.user.account_id
+    account_id = gateway.auth_context.account_id
     rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.request" for rule in rules):
         return
@@ -904,7 +1049,7 @@ def enforce_response_policy(
     provider: str,
 ) -> None:
     """Evaluate model.response rules before bytes reach the client."""
-    account_id = gateway.auth_context.user.account_id
+    account_id = gateway.auth_context.account_id
     rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
         return
@@ -1014,6 +1159,87 @@ def _extract_stream_fragment(
     return "".join(parts), is_snapshot
 
 
+class _StreamTextAssembler:
+    """Collect final and reasoning text from SSE events as they pass."""
+
+    def __init__(self) -> None:
+        self.delta_parts: List[str] = []
+        self.snapshot_text: Optional[str] = None
+        self.reasoning_parts: List[str] = []
+        self.reasoning_snapshot: Optional[str] = None
+
+    def add(self, event: str) -> None:
+        event_payloads = _stream_event_payloads(event)
+        reasoning, reasoning_is_snapshot = _extract_stream_reasoning(event_payloads)
+        if reasoning_is_snapshot:
+            self.reasoning_snapshot = reasoning
+        elif reasoning:
+            self.reasoning_parts.append(reasoning)
+        fragment, is_snapshot = _extract_stream_fragment(event, payloads=event_payloads)
+        if is_snapshot:
+            self.snapshot_text = fragment
+        elif fragment:
+            self.delta_parts.append(fragment)
+
+    @staticmethod
+    def _assemble(parts: List[str], snapshot: Optional[str]) -> str:
+        deltas = "".join(parts)
+        if snapshot is None or snapshot == deltas:
+            return deltas
+        # Both representations are kept. A sanitized/shortened completion
+        # snapshot must not erase sensitive text present in earlier deltas.
+        return "\n".join(part for part in (deltas, snapshot) if part)
+
+    def text(self) -> str:
+        return "\n".join(
+            filter(
+                None,
+                (
+                    self._assemble(self.delta_parts, self.snapshot_text),
+                    self._assemble(self.reasoning_parts, self.reasoning_snapshot),
+                ),
+            )
+        )
+
+
+def _notify_only_stream(
+    events: Iterator[str],
+    *,
+    gateway: Any,
+    rules: Sequence[ModelIORule],
+    ai_model: Any,
+) -> Iterator[str]:
+    """Pass events straight through, then evaluate notify rules on the text.
+
+    Used when every enabled ``model.response`` rule is notify-only. The
+    evaluation runs once, when the stream ends or is closed early, and its
+    outcome cannot change what the client receives.
+    """
+    assembler = _StreamTextAssembler()
+    try:
+        for event in events:
+            try:
+                assembler.add(event)
+            except Exception:  # noqa: BLE001 - parsing must not break the stream
+                logger.debug("Notify stream parse failed", exc_info=True)
+            yield event
+    finally:
+        try:
+            text = assembler.text()
+            if text:
+                evaluate_model_io(
+                    rules=rules,
+                    target="model.response",
+                    text=text,
+                    ai_model=ai_model,
+                    session_id=_session_id_from_gateway(gateway),
+                    account_id=gateway.auth_context.user.account_id,
+                    user_id=getattr(gateway.auth_context.user, "id", None),
+                )
+        except Exception:  # noqa: BLE001 - notify must never fail the call
+            logger.warning("Notify-only response evaluation failed", exc_info=True)
+
+
 def wrap_stream_for_response_policy(
     events: Iterator[str],
     *,
@@ -1038,51 +1264,29 @@ def wrap_stream_for_response_policy(
     # rules are visible before the first output. Release this lookup before
     # pulling the provider stream, even when the rule list is empty.
     rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
-    if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
+    response_rules = [
+        rule for rule in rules if rule.enabled and str(rule.target) == "model.response"
+    ]
+    if not response_rules:
         yield from events
+        return
+    if all(is_notify_only(rule) for rule in response_rules):
+        # Nothing here can block, so nothing is held back (#959).
+        yield from _notify_only_stream(
+            events, gateway=gateway, rules=response_rules, ai_model=ai_model
+        )
         return
 
     buffered: List[str] = []
-    delta_parts: List[str] = []
-    snapshot_text: Optional[str] = None
-    reasoning_parts: List[str] = []
-    reasoning_snapshot: Optional[str] = None
+    assembler = _StreamTextAssembler()
     try:
         for event in events:
             buffered.append(event)
-            event_payloads = _stream_event_payloads(event)
-            reasoning, reasoning_is_snapshot = _extract_stream_reasoning(event_payloads)
-            if reasoning_is_snapshot:
-                reasoning_snapshot = reasoning
-            elif reasoning:
-                reasoning_parts.append(reasoning)
-            fragment, is_snapshot = _extract_stream_fragment(
-                event, payloads=event_payloads
-            )
-            if is_snapshot:
-                snapshot_text = fragment
-            elif fragment:
-                delta_parts.append(fragment)
+            assembler.add(event)
     except ModelGatewayAPIError:
         raise
 
-    def assemble(parts: List[str], snapshot: Optional[str]) -> str:
-        deltas = "".join(parts)
-        if snapshot is None or snapshot == deltas:
-            return deltas
-        # Both representations are replayed. A sanitized/shortened completion
-        # snapshot must not erase sensitive text present in earlier deltas.
-        return "\n".join(part for part in (deltas, snapshot) if part)
-
-    assembled = "\n".join(
-        filter(
-            None,
-            (
-                assemble(delta_parts, snapshot_text),
-                assemble(reasoning_parts, reasoning_snapshot),
-            ),
-        )
-    )
+    assembled = assembler.text()
     try:
         enforce_response_policy(
             gateway,
