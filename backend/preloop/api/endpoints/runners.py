@@ -17,7 +17,6 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
 from preloop.agents.runner_launch import (
     prepare_runner_delivery,
 )
@@ -34,6 +33,7 @@ from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.db.session import release_transaction
 
+from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
 from preloop.services.runner_service import (
     derive_execution_runner,

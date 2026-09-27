@@ -92,14 +92,14 @@ from preloop.models.crud import (
     crud_user_role,
 )
 from preloop.models.db.session import get_db_session
+from preloop.models.models.user import User as UserModel
+from preloop.models.models.api_key import ApiKey
+from pydantic import BaseModel
 from preloop.plugins.account_hooks import (
     get_login_row_selector,
     select_email_rows,
     select_login_row,
 )
-from preloop.models.models.user import User as UserModel
-from preloop.models.models.api_key import ApiKey
-from pydantic import BaseModel
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_MANAGED_AGENTS,

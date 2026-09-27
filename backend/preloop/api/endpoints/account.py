@@ -20,7 +20,6 @@ from fastapi import (
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
-from preloop.plugins.account_hooks import VISIBLE_MANAGED_AGENT, filter_viewable
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
 from preloop.api.loop_safety import run_db_off_loop
@@ -42,6 +41,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.attention_dismissal import AttentionDismissal
 from preloop.models.models.user import User as UserModel
+from preloop.plugins.account_hooks import VISIBLE_MANAGED_AGENT, filter_viewable
 from preloop.schemas.attention import (
     AttentionDismissalListResponse,
     AttentionDismissalResponse,

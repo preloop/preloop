@@ -13,7 +13,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
-from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, filter_viewable
 from preloop.api.auth import get_current_active_user
 from preloop.models.crud import crud_mcp_server
 from preloop.models.db.session import get_db_session
@@ -25,6 +24,7 @@ from preloop.models.schemas.mcp_server import (
     MCPServerUpdate,
 )
 from preloop.models.schemas.mcp_tool import MCPToolResponse
+from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, filter_viewable
 from preloop.services.mcp_tool_discovery import (
     get_cached_tools_for_server,
     scan_mcp_server_tools,
