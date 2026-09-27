@@ -13,6 +13,8 @@ Report vulnerabilities privately to [security@preloop.ai](mailto:security@preloo
 
 We will acknowledge receipt as soon as possible and work with you on validation, impact, and disclosure timing.
 
+For maintainers: the operational runbooks for CRA Article 14 reporting (early warning within 24 hours, notification within 72 hours, final report, with fill-in templates and a rehearsal checklist) are in [docs/security/article-14-runbooks.md](./docs/security/article-14-runbooks.md).
+
 ## Support Period
 
 > **PROPOSED WORDING, DATES NOT YET CONFIRMED.** Everything in this section is
