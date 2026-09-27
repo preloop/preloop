@@ -16,9 +16,11 @@ import {
   getFlowExecutionMetrics,
   getFlowExecutionLogs,
   getFlowExecutionGatewayEvents,
+  getFlowExecutionHostSessions,
   getFlowExecutionGatewayEvent,
   retryFlowExecution,
 } from '../../api';
+import type { HostExecSessionsResponse } from '../../api';
 import type { FlowGatewayEvent, GatewayTokenUsage } from '../../types';
 import {
   formatLocalTime,
@@ -447,6 +449,19 @@ export class FlowExecutionView extends LitElement {
         border-top: 1px solid var(--console-hairline);
         border-bottom: 1px solid var(--console-hairline);
         margin-bottom: 16px;
+      }
+      .host-sessions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 20px;
+        margin: -8px 0 16px;
+      }
+      .host-session {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
       }
       .strip-item {
         display: flex;
@@ -947,6 +962,10 @@ export class FlowExecutionView extends LitElement {
   /** Which tab is showing; seeded from `?tab=` or the remembered choice. */
   @state()
   private activeTab: ExecutionTab = 'timeline';
+
+  /** Hook sessions and seat usage of a Copilot or Cursor host run. */
+  @state()
+  private hostSessions: HostExecSessionsResponse | null = null;
 
   /** Same receipt the Records card reads, so the Report tab cannot disagree. */
   @state()
@@ -1806,9 +1825,23 @@ export class FlowExecutionView extends LitElement {
       const flow = await getFlow(execution.flow_id);
       if (!current()) return;
       this.flow = flow;
+      if (flow.agent_type === 'copilot' || flow.agent_type === 'cursor') {
+        void this.loadHostSessions(execution.id, current);
+      }
     } catch (error) {
       // The title falls back to the detail row's flow name.
       console.error('Failed to fetch flow details:', error);
+    }
+  }
+
+  private async loadHostSessions(executionId: string, current: () => boolean) {
+    try {
+      const sessions = await getFlowExecutionHostSessions(executionId);
+      if (!current()) return;
+      this.hostSessions = sessions;
+    } catch (error) {
+      // The strip still reads the premium count from the result.
+      console.error('Failed to fetch host execution sessions:', error);
     }
   }
 
@@ -3177,6 +3210,44 @@ ${execution.resolved_input_prompt}</pre>
    * model, what it cost and where to find the session. Values are the
    * loudest thing in the row; the labels stay in the meta register.
    */
+  /**
+   * CLI sessions the runner's usage hook linked to this host run. Hidden for
+   * container runs and for host runs whose hook reported nothing.
+   */
+  private renderHostSessions() {
+    const sessions = this.hostSessions?.sessions ?? [];
+    if (sessions.length === 0) {
+      return '';
+    }
+    return html`<div class="host-sessions" data-testid="host-sessions">
+      <span class="strip-label">Host CLI sessions</span>
+      ${sessions.map((session) => {
+        const id = session.conversation_id || 'unnamed session';
+        const types = Object.entries(session.event_types)
+          .map(([type, count]) => `${type} ${count}`)
+          .join(', ');
+        return html`<div
+          class="host-session"
+          data-testid="host-session"
+          title=${types}
+        >
+          <a
+            class="strip-link"
+            href="/console/runtime-sessions?query=${encodeURIComponent(id)}"
+            >${shortenIdentifier(id)}</a
+          >
+          <span class="strip-note"
+            >${session.source || ''} · ${session.event_count.toLocaleString()}
+            hook
+            event${session.event_count === 1 ? '' : 's'}${
+              session.models.length ? ` · ${session.models.join(', ')}` : ''
+            }</span
+          >
+        </div>`;
+      })}
+    </div>`;
+  }
+
   private renderSummaryStrip(execution: FlowExecution) {
     const toolEntries = this.getToolActivityEntries();
     const failedTools = toolEntries.filter(
@@ -3198,7 +3269,10 @@ ${execution.resolved_input_prompt}</pre>
           pill
           data-testid="strip-not-metered"
           title=${hostMetering.title}
-          >Not gateway metered</sl-badge
+          >${hostExecCostLabel(
+            execution.result,
+            this.hostSessions?.premium_requests
+          )}</sl-badge
         >`
       : this.hasPricing
         ? formatEstimatedCost(this.budgetUsed)
@@ -3570,7 +3644,7 @@ ${execution.resolved_input_prompt}</pre>
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          ${this.renderSummaryStrip(execution)}
+          ${this.renderSummaryStrip(execution)} ${this.renderHostSessions()}
           <execution-records-card
             execution-id=${execution.id}
           ></execution-records-card>
@@ -3913,6 +3987,29 @@ ${log.payload.content}</pre>
   getStatusVariant(status: string) {
     return executionStatusVariant(status);
   }
+}
+
+/**
+ * Visible cost cell for a host-exec run: the seat usage the CLI reported,
+ * or a plain "not metered" note when it reported none.
+ */
+export function hostExecCostLabel(
+  result: Record<string, unknown> | null | undefined,
+  fallbackPremium?: number | null
+): string {
+  const reported = result?.premium_requests;
+  const premium =
+    typeof reported === 'number' && Number.isFinite(reported) && reported >= 0
+      ? reported
+      : typeof fallbackPremium === 'number' &&
+          Number.isFinite(fallbackPremium) &&
+          fallbackPremium >= 0
+        ? fallbackPremium
+        : null;
+  if (premium === null) {
+    return 'Not gateway metered';
+  }
+  return `${premium} premium request${premium === 1 ? '' : 's'}, not metered by the gateway`;
 }
 
 /**

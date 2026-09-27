@@ -2035,17 +2035,43 @@ export class PreloopFlowForm extends LitElement {
         .value=${this.copilotModelValue()}
         @sl-input=${this.handleCopilotModelInput}
       ></sl-input>
-      ${
-        this.flow.git_clone_config?.enabled
-          ? html`<sl-alert variant="warning" open>
-              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-              Host execution cannot clone a repository or open a pull request.
-              This flow clones a repository, so a Copilot runner will refuse the
-              run.
-            </sl-alert>`
-          : nothing
-      }
+      ${this.renderHostExecCloneNotice('Copilot')}
     `;
+  }
+
+  /**
+   * Explain what a host profile does with this flow's checkout settings.
+   *
+   * A host runner clones the flow's repositories only when its local
+   * profile sets allow_checkout. It never opens a pull request, so a flow
+   * that publishes one is refused.
+   */
+  private renderHostExecCloneNotice(label: string) {
+    const clone = this.flow.git_clone_config;
+    if (!clone?.enabled) {
+      return nothing;
+    }
+    if (clone.create_pull_request) {
+      return html`<sl-alert
+        variant="warning"
+        open
+        data-host-exec-clone-notice="refused"
+      >
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        Host execution cannot open a pull request. This flow publishes one, so a
+        ${label} runner will refuse the run.
+      </sl-alert>`;
+    }
+    return html`<sl-alert
+      variant="primary"
+      open
+      data-host-exec-clone-notice="checkout"
+    >
+      <sl-icon slot="icon" name="info-circle"></sl-icon>
+      The ${label} runner clones this flow's repositories into the execution
+      directory only when its host profile sets <code>allow_checkout</code>.
+      Without it the run fails with <code>host_checkout_not_allowed</code>.
+    </sl-alert>`;
   }
 
   private renderHostExecProfileField() {
@@ -3504,19 +3530,7 @@ export class PreloopFlowForm extends LitElement {
                     .value=${this.cursorModelValue()}
                     @sl-input=${this.handleCursorModelInput}
                   ></sl-input>
-                  ${
-                    this.flow.git_clone_config?.enabled
-                      ? html`<sl-alert variant="warning" open>
-                          <sl-icon
-                            slot="icon"
-                            name="exclamation-triangle"
-                          ></sl-icon>
-                          Host execution cannot clone a repository or open a
-                          pull request. This flow clones a repository, so a
-                          Cursor runner will refuse the run.
-                        </sl-alert>`
-                      : nothing
-                  }
+                  ${this.renderHostExecCloneNotice('Cursor')}
                 `
               : this.flow.agent_type === 'copilot'
                 ? this.renderCopilotHostExecFields()
@@ -3580,8 +3594,18 @@ export class PreloopFlowForm extends LitElement {
           <div slot="header" class="card-header-title">
             <sl-icon name="tools"></sl-icon> Allowed MCP tools
           </div>
-          ${this.flow.agent_type === 'cursor' ? html`<p>Cursor profiles use local MCP configuration. These flow tool settings do not apply.</p>` : nothing}
-          ${this.flow.agent_type === 'copilot' ? html`<p>Copilot profiles use the runner user's local Copilot MCP configuration. These flow tool settings do not apply.</p>` : nothing}
+          ${
+            this.flow.agent_type === 'cursor' ||
+            this.flow.agent_type === 'copilot'
+              ? html`<p data-host-exec-mcp-note>
+                  The runner adds these tools to the
+                  ${this.flow.agent_type === 'cursor' ? 'Cursor' : 'Copilot'}
+                  CLI as the <code>preloop-flow</code> MCP server, with a token
+                  scoped to this execution. The runner user's own MCP servers
+                  stay available.
+                </p>`
+              : nothing
+          }
 
           <div
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
