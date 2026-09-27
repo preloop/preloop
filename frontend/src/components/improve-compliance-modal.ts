@@ -123,26 +123,17 @@ export class ImproveComplianceModal extends LitElement {
     this._isSubmitting = true;
     this._suggestionError = null;
 
-    console.log('[Modal] Handling submit for issue:', this.issue.id);
-    console.log('[Modal] With data:', {
-      title: this._suggestedTitle,
-      description: this._suggestedDescription,
-    });
-
     try {
-      const response = await updateIssueContent(
+      await updateIssueContent(
         this.issue.id,
         this._suggestedTitle,
         this._suggestedDescription,
         ''
       );
 
-      console.log('[Modal] API call successful, response:', response);
-
       const summary = `Issue ${this.issue.key} was successfully updated.`;
       const detail = { issueId: this.issue.id, summary };
 
-      console.log('[Modal] Dispatching on-submit event with detail:', detail);
       this.dispatchEvent(
         new CustomEvent('on-submit', {
           bubbles: true,
