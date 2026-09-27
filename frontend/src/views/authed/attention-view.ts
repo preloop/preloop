@@ -105,9 +105,9 @@ export class AttentionView extends AuthedElement {
   @state() private gatewayFailures: GatewayUsageSearchResultItem[] = [];
   @state() private budgetPolicies: BudgetPolicy[] = [];
   @state() private priceOverrides: AttentionPriceOverride[] = [];
+  @state() private policyNotices: AttentionPolicyNotice[] = [];
   @state() private spendOutliers: SpendOutlierFinding[] = [];
   @state() private showSpendSettings = false;
-  @state() private policyNotices: AttentionPolicyNotice[] = [];
 
   @state() private usageSummary: AccountGatewayUsageSummaryResponse | null =
     null;
@@ -669,8 +669,8 @@ export class AttentionView extends AuthedElement {
     this.budgetPolicies = inputs.budgetPolicies || [];
     this.usageSummary = inputs.usageSummary || null;
     this.priceOverrides = inputs.priceOverrides || [];
-    this.spendOutliers = inputs.spendOutliers || [];
     this.policyNotices = inputs.policyNotices || [];
+    this.spendOutliers = inputs.spendOutliers || [];
     this.dismissals = (inputs.dismissals || []) as AttentionDismissal[];
     this.dismissalsSupported = inputs.dismissalsSupported;
     this.permissions = profile?.permissions ?? null;
@@ -693,8 +693,8 @@ export class AttentionView extends AuthedElement {
       budgetPolicies: this.budgetPolicies,
       usageSummary: this.usageSummary,
       priceOverrides: this.priceOverrides,
-      spendOutliers: this.spendOutliers,
       policyNotices: this.policyNotices,
+      spendOutliers: this.spendOutliers,
       dismissals: this.dismissals,
     });
   }
@@ -705,8 +705,8 @@ export class AttentionView extends AuthedElement {
 
   /**
    * `approval` -> `approvals`, `pricing` -> `pricing`,
-   * `spend` -> `spend-outliers`, `policy` -> `policy-notices` (an id cannot
-   * hold a space).
+   * `spend` -> `spend-outliers` (an id cannot hold a space).
+   * "Policy notices" has a space, which is not valid in an id selector.
    */
   private sectionId(kind: AttentionKind): string {
     return ATTENTION_KIND_META[kind].plural.toLowerCase().replace(/\s+/g, '-');
@@ -1395,6 +1395,53 @@ export class AttentionView extends AuthedElement {
     `;
   }
 
+  private renderPolicyEvidence(item: AttentionItem) {
+    const notice = item.evidence?.policyNotice;
+    if (!notice) {
+      return nothing;
+    }
+    return html`
+      <table class="evidence-table">
+        <tbody>
+          <tr>
+            <th style="width: 40%">Rule</th>
+            <td><code>${notice.ruleId}</code></td>
+          </tr>
+          <tr>
+            <th>Matches in the last 7 days</th>
+            <td>${notice.count}</td>
+          </tr>
+          <tr>
+            <th>Last match</th>
+            <td
+              title=${notice.lastAt ? formatLocalDateTime(notice.lastAt) : nothing}
+            >
+              ${notice.lastAt ? formatRelativeTime(notice.lastAt) : 'unknown'}
+              ${notice.lastUsername ? html`by ${notice.lastUsername}` : nothing}
+            </td>
+          </tr>
+          <tr>
+            <th>Latest excerpt (secrets redacted)</th>
+            <td>
+              ${
+                notice.lastExcerpt
+                  ? html`<code class="policy-notice-excerpt"
+                      >${notice.lastExcerpt}</code
+                    >`
+                  : 'Not available'
+              }
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="evidence-actions">
+        <sl-button size="small" href=${POLICY_NOTICE_HREF}
+          >Review rule</sl-button
+        >
+      </div>
+    `;
+  }
+
   /** Settings writes need `manage_budgets`, as on the server. */
   private get canEditSpendSettings(): boolean {
     return hasPermission(this.permissions, 'manage_budgets');
@@ -1478,53 +1525,6 @@ export class AttentionView extends AuthedElement {
     `;
   }
 
-  private renderPolicyEvidence(item: AttentionItem) {
-    const notice = item.evidence?.policyNotice;
-    if (!notice) {
-      return nothing;
-    }
-    return html`
-      <table class="evidence-table">
-        <tbody>
-          <tr>
-            <th style="width: 40%">Rule</th>
-            <td><code>${notice.ruleId}</code></td>
-          </tr>
-          <tr>
-            <th>Matches in the last 7 days</th>
-            <td>${notice.count}</td>
-          </tr>
-          <tr>
-            <th>Last match</th>
-            <td
-              title=${notice.lastAt ? formatLocalDateTime(notice.lastAt) : nothing}
-            >
-              ${notice.lastAt ? formatRelativeTime(notice.lastAt) : 'unknown'}
-              ${notice.lastUsername ? html`by ${notice.lastUsername}` : nothing}
-            </td>
-          </tr>
-          <tr>
-            <th>Latest excerpt (secrets redacted)</th>
-            <td>
-              ${
-                notice.lastExcerpt
-                  ? html`<code class="policy-notice-excerpt"
-                      >${notice.lastExcerpt}</code
-                    >`
-                  : 'Not available'
-              }
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="evidence-actions">
-        <sl-button size="small" href=${POLICY_NOTICE_HREF}
-          >Review rule</sl-button
-        >
-      </div>
-    `;
-  }
-
   private renderEvidence(item: AttentionItem) {
     switch (item.kind) {
       case 'flow':
@@ -1537,10 +1537,10 @@ export class AttentionView extends AuthedElement {
         return this.renderPricingEvidence(item);
       case 'budget':
         return this.renderBudgetEvidence(item);
-      case 'spend':
-        return this.renderSpendEvidence(item);
       case 'policy':
         return this.renderPolicyEvidence(item);
+      case 'spend':
+        return this.renderSpendEvidence(item);
       default:
         return nothing;
     }
@@ -1557,8 +1557,8 @@ export class AttentionView extends AuthedElement {
       evidence.zeroPricedModels?.length ||
       evidence.catalogMissing ||
       evidence.budget ||
-      evidence.spendOutlier ||
-      evidence.policyNotice
+      evidence.policyNotice ||
+      evidence.spendOutlier
     );
   }
 
@@ -1787,7 +1787,7 @@ export class AttentionView extends AuthedElement {
         }
         <div slot="description">
           Everything waiting on you or degraded right now: approvals, agents,
-          flows, models, budgets, and spend outliers.
+          flows, models, budgets, spend outliers, and policy notices.
           ${
             this.lastUpdatedAt
               ? html`<span class="updated-at"
