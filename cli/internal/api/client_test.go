@@ -319,6 +319,9 @@ func TestClientRefreshesExpiredAccessTokenFromStoredConfig(t *testing.T) {
 			if r.Form.Get("refresh_token") != "refresh-token" {
 				t.Fatalf("expected stored refresh token, got %q", r.Form.Get("refresh_token"))
 			}
+			if got := r.Form.Get("device_name"); got != version.DeviceName() {
+				t.Fatalf("expected device_name %q, got %q", version.DeviceName(), got)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"access_token":  "refreshed-token",
