@@ -784,6 +784,32 @@ class SupplierDerivationTest(unittest.TestCase):
             )
         )
 
+    def test_header_matching_ignores_line_wrap(self) -> None:
+        wrapped_mit = (
+            "Permission is hereby granted, free of charge, to any person\n"
+            "obtaining a copy of this software.\n"
+        )
+        self.assertEqual(
+            sbom_metadata.detect_license_text(wrapped_mit),
+            {"license": {"id": "MIT"}},
+        )
+        wrapped_ban = (
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software.\n"
+            "The software may not\nbe used for harm.\n"
+        )
+        self.assertIsNone(sbom_metadata.detect_license_text(wrapped_ban))
+        wrapped_isc = (
+            "Permission to use, copy, modify, and/or distribute this "
+            "software for any\npurpose with or without fee is hereby "
+            "granted, provided that the above copyright notice and this "
+            "permission notice appear in all copies.\n"
+        )
+        self.assertEqual(
+            sbom_metadata.detect_license_text(wrapped_isc),
+            {"license": {"id": "ISC"}},
+        )
+
     def test_golang_without_module_cache_stays_unlicensed(self) -> None:
         index = sbom_metadata.MetadataIndex([], [])
         component = _component("widget", "pkg:golang/github.com/acme/widget@v1.2.3")

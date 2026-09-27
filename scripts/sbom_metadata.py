@@ -1212,7 +1212,7 @@ def detect_license_text(text: str) -> dict[str, Any] | None:
         if any(choice != first for choice in choices):
             return None
         return first
-    folded = text.casefold()
+    folded = " ".join(text.casefold().split())
     if "dual licen" in folded or "two different licen" in folded:
         return None
     matched: set[str] = set()
