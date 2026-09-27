@@ -1233,7 +1233,7 @@ def _notify_only_stream(
                     text=text,
                     ai_model=ai_model,
                     session_id=_session_id_from_gateway(gateway),
-                    account_id=gateway.auth_context.user.account_id,
+                    account_id=gateway.auth_context.account_id,
                     user_id=getattr(gateway.auth_context.user, "id", None),
                 )
         except Exception:  # noqa: BLE001 - notify must never fail the call
