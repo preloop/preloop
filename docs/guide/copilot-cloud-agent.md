@@ -4,7 +4,8 @@ Repository admins can give the Copilot cloud agent on GitHub.com access
 to Preloop tools by pasting an MCP config into the repository's Copilot
 MCP settings. There is no local config for `preloop agents discover` to
 rewrite. This page covers that GitHub.com path only. It does not cover
-inline completions or IDE Copilot chat.
+inline completions or IDE Copilot chat. Every Copilot surface, including
+this one, is in [Copilot coverage](copilot.md).
 
 Configure MCP servers under **Settings → Copilot → MCP servers**. Official
 steps:

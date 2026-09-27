@@ -395,7 +395,9 @@ optional `copilot_model` to a `model_map` alias. Copilot profiles take
 completion must carry exactly one Copilot `result` event with exit code 0.
 The rest of this section applies unchanged. See
 [Copilot CLI](../copilot-cli.md#run-copilot-cli-from-flows-private-runner-host-profile)
-for the profile format and named errors.
+for the profile format and named errors, and
+[Copilot coverage](../copilot.md) for what this path does and does not
+meter.
 
 ## Trusted runner options
 
