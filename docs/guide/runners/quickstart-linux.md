@@ -390,7 +390,9 @@ With it, the runner:
 - passes the credential as an HTTP header scoped to that repository URL,
   with redirects, terminal prompts, askpass and non-HTTP transports off,
   and inherited `GIT_*` overrides removed. The token never appears in the
-  remote URL, `.git/config`, argv or the log;
+  remote URL, `.git/config`, argv or the log. A plan that pairs a
+  credential with a plain `http` URL is refused unless the host is
+  loopback;
 - sets the flow's git user name and email in each clone and starts the
   prompt with a short note listing the checkout paths;
 - stops the clone on halt or cancellation, and gives the checkout at most

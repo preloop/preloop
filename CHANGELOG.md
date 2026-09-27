@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Copilot and Cursor host execution profiles can run review and
   implementation flows. A profile that sets `allow_checkout` clones the
   flow's repositories into the run directory at the pinned commit, with a
-  per-repository read credential that is never stored in the lease or the
-  clone. Flows with MCP tools get a per-run `preloop-flow` MCP server whose
+  per-repository read credential that is sent only over https (or to a
+  loopback tracker) and never stored in the lease or the clone. Flows with MCP tools get a per-run `preloop-flow` MCP server whose
   token is scoped to the execution and revoked at completion, so a PR
   Reviewer can read the diff and post its review. The usage hook links the
   CLI session and its events to the flow execution, Copilot premium

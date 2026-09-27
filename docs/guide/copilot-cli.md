@@ -134,7 +134,9 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   repositories), and the prompt starts with a short note listing them. The
   credential is passed to `git` as a request header scoped to that
   repository URL for the clone and fetch only. It is never written to the
-  remote URL, the git config or `pending_job`. Clone `setup_commands` are
+  remote URL, the git config or `pending_job`, and it is only sent over
+  https (plain http is accepted only for a loopback tracker). Clone
+  `setup_commands` are
   refused, and so is `create_pull_request`: a host run can review and
   comment, but it does not push branches or open pull requests.
 - **MCP tools.** When the flow allows MCP tools or servers, the runner adds

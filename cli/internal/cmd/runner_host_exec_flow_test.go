@@ -146,21 +146,23 @@ func TestHostExecCheckoutHonoursCancellation(t *testing.T) {
 func TestHostExecCheckoutRejectsUnsafePlans(t *testing.T) {
 	good := map[string]any{"url": "https://git.example.com/org/repo", "path": "workspace"}
 	cases := map[string]map[string]any{
-		"ssh transport":     {"url": "ssh://git.example.com/org/repo"},
-		"file transport":    {"url": "file:///etc"},
-		"ext transport":     {"url": "ext::sh -c touch% /tmp/x"},
-		"userinfo":          {"url": "https://user:secret@git.example.com/org/repo"},
-		"absolute path":     {"path": "/workspace"},
-		"parent path":       {"path": "../outside"},
-		"dot dir":           {"path": ".cursor"},
-		"nested dot dir":    {"path": "workspace/.github"},
-		"option branch":     {"branch": "--upload-pack=touch"},
-		"option fetch ref":  {"fetch_refs": []any{"--upload-pack=touch"}},
-		"range branch":      {"branch": "main..evil"},
-		"non hex commit":    {"commit": "HEAD~1"},
-		"newline token":     {"token": "abc\ndef"},
-		"option username":   {"token": "abc", "username": "a:b"},
-		"windows separator": {"path": "a\\b"},
+		"ssh transport":      {"url": "ssh://git.example.com/org/repo"},
+		"file transport":     {"url": "file:///etc"},
+		"ext transport":      {"url": "ext::sh -c touch% /tmp/x"},
+		"userinfo":           {"url": "https://user:secret@git.example.com/org/repo"},
+		"absolute path":      {"path": "/workspace"},
+		"parent path":        {"path": "../outside"},
+		"dot dir":            {"path": ".cursor"},
+		"nested dot dir":     {"path": "workspace/.github"},
+		"option branch":      {"branch": "--upload-pack=touch"},
+		"option fetch ref":   {"fetch_refs": []any{"--upload-pack=touch"}},
+		"range branch":       {"branch": "main..evil"},
+		"non hex commit":     {"commit": "HEAD~1"},
+		"newline token":      {"token": "abc\ndef"},
+		"option username":    {"token": "abc", "username": "a:b"},
+		"windows separator":  {"path": "a\\b"},
+		"token over http":    {"url": "http://git.example.com/org/repo", "token": "abc"},
+		"token over http ip": {"url": "http://10.0.0.5/org/repo", "token": "abc"},
 	}
 	for name, override := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -180,6 +182,21 @@ func TestHostExecCheckoutRejectsUnsafePlans(t *testing.T) {
 	dup := map[string]any{"host_exec_checkout": map[string]any{"repositories": []any{good, good}}}
 	if _, err := jobHostExecCheckout(dup); err == nil {
 		t.Fatal("accepted duplicate checkout paths")
+	}
+	for _, allowed := range []string{
+		"http://git.example.com/org/repo", // public http without a credential
+		"http://127.0.0.1:8080/org/repo",  // local tracker with a credential
+		"http://localhost/org/repo",
+		"http://[::1]/org/repo",
+	} {
+		repo := map[string]any{"url": allowed, "path": "workspace"}
+		if !strings.Contains(allowed, "example.com") {
+			repo["token"] = "abc"
+		}
+		job := map[string]any{"host_exec_checkout": map[string]any{"repositories": []any{repo}}}
+		if _, err := jobHostExecCheckout(job); err != nil {
+			t.Fatalf("%s rejected: %v", allowed, err)
+		}
 	}
 	plan, err := jobHostExecCheckout(map[string]any{"host_exec_checkout": map[string]any{"repositories": []any{good}}})
 	if err != nil || plan == nil || plan.Repositories[0].Path != "workspace" {

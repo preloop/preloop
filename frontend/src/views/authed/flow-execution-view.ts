@@ -1752,6 +1752,11 @@ export class FlowExecutionView extends LitElement {
     this.gatewayEventsTruncated = false;
     this.gatewayEventsBounded = false;
     this.liveToolActivityEvents = [];
+    // Sessions belong to one execution; a refresh of the same one keeps
+    // them so the panel does not flicker, a new execution starts empty.
+    if (this.hostSessions?.execution_id !== executionId) {
+      this.hostSessions = null;
+    }
 
     let execution: FlowExecution;
     try {
@@ -1832,6 +1837,14 @@ export class FlowExecutionView extends LitElement {
       // The title falls back to the detail row's flow name.
       console.error('Failed to fetch flow details:', error);
     }
+  }
+
+  /** Host sessions for the execution on screen, never a previous one. */
+  private currentHostSessions(): HostExecSessionsResponse | null {
+    const sessions = this.hostSessions;
+    return sessions && sessions.execution_id === this.executionId
+      ? sessions
+      : null;
   }
 
   private async loadHostSessions(executionId: string, current: () => boolean) {
@@ -3215,7 +3228,7 @@ ${execution.resolved_input_prompt}</pre>
    * container runs and for host runs whose hook reported nothing.
    */
   private renderHostSessions() {
-    const sessions = this.hostSessions?.sessions ?? [];
+    const sessions = this.currentHostSessions()?.sessions ?? [];
     if (sessions.length === 0) {
       return '';
     }
@@ -3271,7 +3284,7 @@ ${execution.resolved_input_prompt}</pre>
           title=${hostMetering.title}
           >${hostExecCostLabel(
             execution.result,
-            this.hostSessions?.premium_requests
+            this.currentHostSessions()?.premium_requests
           )}</sl-badge
         >`
       : this.hasPricing

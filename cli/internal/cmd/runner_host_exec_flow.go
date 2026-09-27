@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -140,6 +141,15 @@ func validHostExecGitText(value string) bool {
 	return strings.TrimSpace(value) != ""
 }
 
+// hostExecLoopbackHost reports whether host names the local machine.
+func hostExecLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func validateHostExecCheckoutRepo(repo *hostExecCheckoutRepo) error {
 	parsed, err := url.Parse(repo.URL)
 	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
@@ -150,6 +160,12 @@ func validateHostExecCheckoutRepo(repo *hostExecCheckoutRepo) error {
 	}
 	if strings.ContainsAny(repo.URL, " \t\r\n") {
 		return fmt.Errorf("url must not contain whitespace")
+	}
+	if repo.Token != "" && parsed.Scheme != "https" && !hostExecLoopbackHost(parsed.Hostname()) {
+		// The credential travels as a Basic auth header; plain http would
+		// hand it to anyone on the path. Loopback stays allowed for local
+		// trackers and tests.
+		return fmt.Errorf("url must use https when the repository has a credential")
 	}
 	if repo.Branch != "" && (!hostExecGitRefRe.MatchString(repo.Branch) || strings.Contains(repo.Branch, "..")) {
 		return fmt.Errorf("branch is invalid")
