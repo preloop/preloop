@@ -39,9 +39,11 @@ class BudgetPolicy(Base):
     )
 
     # 'account', 'flow', 'api_key', 'managed_agent'. The account hierarchy
-    # adds 'subaccount' (subject_id is the subaccount) and 'subaccounts_total'
-    # (subject_id NULL, all subaccounts together). Both are stored under the
-    # parent's account_id; see access_values.BUDGET_SUBJECT_*.
+    # reserves 'subaccount' (subject_id is the subaccount) and
+    # 'subaccounts_total' (subject_id NULL, all subaccounts together), both
+    # stored under the parent's account_id; see access_values.BUDGET_SUBJECT_*.
+    # Those two are not accepted by
+    # crud.budget_configuration.validate_budget_subject yet.
     subject_type = Column(String, nullable=False, index=True)
     subject_id = Column(
         UUID(as_uuid=True), nullable=True, index=True

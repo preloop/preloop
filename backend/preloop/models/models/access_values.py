@@ -40,8 +40,10 @@ RULE_ACTIONS = (
 RULE_SCOPES = ("self", "subaccounts", "self_and_subaccounts")
 
 # Budget policies need no table: ``budget_policies.subject_type`` is a free
-# string. The hierarchy adds these two values, stored under the parent
-# account's ``account_id``.
+# string. The hierarchy reserves these two values, stored under the parent
+# account's ``account_id``. Nothing writes them yet:
+# ``crud.budget_configuration.validate_budget_subject`` still rejects both, and
+# accepting them there belongs to the hierarchy budgets change.
 BUDGET_SUBJECT_SUBACCOUNT = "subaccount"
 BUDGET_SUBJECT_SUBACCOUNTS_TOTAL = "subaccounts_total"
 
