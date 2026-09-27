@@ -1785,6 +1785,8 @@ export interface Project {
   url?: string;
   organization_id: string;
   tracker_id?: string;
+  /** Grouping inside the organization, e.g. the Bitbucket project. */
+  group?: string | null;
 }
 
 export interface Organization {

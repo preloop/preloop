@@ -147,7 +147,14 @@ class TestTheChoiceSurvivesVerification:
         # string. Only the row can carry the answer across this.
         verify = client.post(
             "/api/v1/auth/verify-email",
-            json={"token": create_email_verification_token(payload["email"])},
+            json={
+                "token": create_email_verification_token(
+                    payload["email"],
+                    user_id=crud_user.get_by_email(
+                        db_session, email=payload["email"]
+                    ).id,
+                )
+            },
         )
         assert verify.status_code == 200, verify.text
         token = verify.json()["access_token"]
@@ -171,7 +178,14 @@ class TestTheChoiceSurvivesVerification:
 
         verify = client.post(
             "/api/v1/auth/verify-email",
-            json={"token": create_email_verification_token(payload["email"])},
+            json={
+                "token": create_email_verification_token(
+                    payload["email"],
+                    user_id=crud_user.get_by_email(
+                        db_session, email=payload["email"]
+                    ).id,
+                )
+            },
         )
         assert verify.status_code == 200, verify.text
 

@@ -116,3 +116,26 @@ export function groupProjectsByOrganization(
     a.organization.name.localeCompare(b.organization.name)
   );
 }
+
+/**
+ * Split an organization's projects by their `group` (for Bitbucket, the
+ * project a repository belongs to). Groups keep first-seen order; projects
+ * without a group come last under an empty name. Returns a single unnamed
+ * group when nothing is grouped, so callers can render a flat list.
+ */
+export function groupProjectsByGroup<T extends { group?: string | null }>(
+  projects: T[]
+): Array<{ name: string; projects: T[] }> {
+  const groups = new Map<string, T[]>();
+  for (const project of projects) {
+    const name = project.group ? String(project.group) : '';
+    const existing = groups.get(name) || [];
+    existing.push(project);
+    groups.set(name, existing);
+  }
+  const named = [...groups.entries()]
+    .filter(([name]) => name)
+    .map(([name, items]) => ({ name, projects: items }));
+  const ungrouped = groups.get('');
+  return ungrouped ? [...named, { name: '', projects: ungrouped }] : named;
+}

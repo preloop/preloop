@@ -115,44 +115,61 @@ def require_permission(permission_name: str):
 def user_holds_permission(db, current_user, permission_name: str) -> bool:
     """Whether one of a user's roles grants ``permission_name``.
 
-    Generalised from the kill switch's own copy of this walk, which stays
-    where it is because its tests patch that module's plugin symbols.
+    This is the single resolver for "which roles does this user hold in
+    their account". ``preloop.api.auth.permissions.has_permission`` (the
+    fallback used when no RBAC plugin overlay is installed) delegates here,
+    so both checks always agree. The kill switch keeps its own copy because
+    its tests patch that module's plugin symbols.
 
-    Data driven on the seeded role/permission matrix, with the ``owner``
-    system role treated as all-powerful (the implicit-owner convention the
-    RBAC layer already follows). Team roles count, so a permission granted
-    through a team is not silently ignored.
+    A role is held when it is assigned to the user directly, or to a team in
+    the user's account that the user belongs to. Roles scoped to another
+    account never count. Data driven on the seeded role/permission matrix,
+    with the ``owner`` system role treated as all-powerful (the
+    implicit-owner convention the RBAC layer already follows). A custom role
+    that merely happens to be named ``owner`` gets no special treatment.
+
+    Resolved in one SQL round trip because the fallback runs on every
+    decorated request.
     """
-    from preloop.models.crud import (
-        crud_role,
-        crud_team,
-        crud_team_role,
-        crud_user_role,
-    )
+    from sqlalchemy import and_, or_, select, true, union
 
-    roles = crud_user_role.get_user_roles(db, user_id=current_user.id)
-    offset = 0
-    while True:
-        teams = crud_team.get_user_teams(
-            db, user_id=current_user.id, skip=offset, limit=100
+    from preloop.models.models.permission import (
+        Permission,
+        Role,
+        RolePermission,
+        TeamRole,
+        UserRole,
+    )
+    from preloop.models.models.team import Team, TeamMembership
+
+    user_id = current_user.id
+    account_id = current_user.account_id
+
+    direct_role_ids = select(UserRole.role_id).where(UserRole.user_id == user_id)
+    team_role_ids = (
+        select(TeamRole.role_id)
+        .join(TeamMembership, TeamMembership.team_id == TeamRole.team_id)
+        .join(Team, Team.id == TeamRole.team_id)
+        .where(TeamMembership.user_id == user_id, Team.account_id == account_id)
+    )
+    role_grants_permission = (
+        select(RolePermission.id)
+        .join(Permission, Permission.id == RolePermission.permission_id)
+        .where(
+            RolePermission.role_id == Role.id,
+            Permission.name == permission_name,
         )
-        for team in teams:
-            if team.account_id == current_user.account_id:
-                roles.extend(crud_team_role.get_team_roles(db, team_id=team.id))
-        if len(teams) < 100:
-            break
-        offset += len(teams)
-    for role in roles:
-        if role.account_id is not None and role.account_id != current_user.account_id:
-            continue
-        if role.name == "owner" and role.is_system_role:
-            return True
-        if any(
-            permission.name == permission_name
-            for permission in crud_role.get_permissions(db, role_id=role.id)
-        ):
-            return True
-    return False
+        .exists()
+    )
+    held_role = select(Role.id).where(
+        Role.id.in_(union(direct_role_ids, team_role_ids)),
+        or_(Role.account_id.is_(None), Role.account_id == account_id),
+        or_(
+            and_(Role.name == "owner", Role.is_system_role == true()),
+            role_grants_permission,
+        ),
+    )
+    return bool(db.scalar(select(held_role.exists())))
 
 
 def ensure_permission_in_oss(db, current_user, permission_name: str) -> None:

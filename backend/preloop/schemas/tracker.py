@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, HttpUrl, ConfigDict, computed_field
 
 from preloop.models.crud.tracker import UNKNOWN_PROJECTS_META_KEY
 from preloop.models.models.tracker import TrackerType
+from preloop.utils.bitbucket import token_expiry_status as classify_token_expiry
 from .tracker_scope_rule import TrackerScopeRuleCreate, TrackerScopeRuleResponse
 
 
@@ -170,6 +171,24 @@ class TrackerResponse(TrackerBase):
             if isinstance(entry, dict) and entry.get("degraded")
         )
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def token_expires_at(self) -> Optional[str]:
+        """When the stored token expires, if the user recorded it.
+
+        Bitbucket API tokens and repository access tokens carry an expiry
+        date chosen at creation. The API does not report it, so the tracker
+        form stores it in ``connection_details["token_expires_at"]``.
+        """
+        value = (self.connection_details or {}).get("token_expires_at")
+        return str(value) if value else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def token_expiry_status(self) -> Optional[str]:
+        """``expired``, ``expiring`` (within 14 days), ``ok`` or None."""
+        return classify_token_expiry(self.token_expires_at)
+
 
 class TrackerTestRequest(BaseModel):
     """Model for testing tracker connection and listing projects."""
@@ -186,6 +205,14 @@ class TrackerTestRequest(BaseModel):
     organization_identifier: Optional[str] = Field(
         None, description="Identifier for the organization to fetch projects from"
     )
+    auth_type: Optional[str] = Field(
+        None,
+        description=(
+            "Authentication mode for trackers that support several "
+            "(Bitbucket: 'api_token' or 'oauth_token'). Ignored when "
+            "tracker_id is set: the stored mode is used."
+        ),
+    )
 
 
 class ProjectIdentifier(BaseModel):
@@ -193,6 +220,13 @@ class ProjectIdentifier(BaseModel):
     name: str
     identifier: str
     type: str = "project"
+    group: Optional[str] = Field(
+        None,
+        description=(
+            "Grouping label inside the organization, for example the "
+            "Bitbucket project a repository belongs to."
+        ),
+    )
 
 
 class OrganizationGroup(BaseModel):
