@@ -105,6 +105,12 @@ first, then alias collisions, joined with ` | ` and truncated to 256 characters.
 Streaming responses send their headers before the body generator resolves the
 model, so that branch does not carry the header.
 
+`X-Preloop-Usage-Id` is the id of the `ApiUsage` row a non-streaming
+`/openai/v1` request wrote, so a client can find the exact row the Cost page
+counts. It is absent when no row was written and on streaming responses,
+whose usage is recorded after the headers are sent. `preloop models smoke`
+prints it.
+
 Checks estimate cost before dispatch; they do not reserve spend atomically.
 Concurrent calls can pass against the same remaining balance and exceed a limit
 when usage is recorded. These controls do not promise an exact concurrent ceiling.

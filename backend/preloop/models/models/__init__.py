@@ -119,6 +119,7 @@ from .session_search_document import SessionSearchDocument
 from .tool_cost_flag import ToolCostFlag
 from .tool_output_filter import ToolOutputFilter
 from .oauth_mcp_client import OAuthMCPClient
+from .cli_session import CliSession
 from .oauth_mcp_token import (
     OAuthMCPAuthorizationCode,
     OAuthMCPAccessToken,
@@ -282,6 +283,7 @@ __all__ = [
     "BudgetSpendActivity",
     "BudgetPeriod",
     "OAuthMCPClient",
+    "CliSession",
     "OAuthMCPAuthorizationCode",
     "OAuthMCPAccessToken",
     "OAuthMCPRefreshToken",

@@ -1,7 +1,7 @@
 """Place every account in a tree: parent, root, materialized path, depth.
 
 Revision ID: 20260928_account_hierarchy
-Revises: 20260927_policy_notice_hit
+Revises: 20260928_cli_session
 Create Date: 2026-09-28
 
 First of six revisions for the account hierarchy (#986). Every existing
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20260928_account_hierarchy"
-down_revision = "20260927_policy_notice_hit"
+down_revision = "20260928_cli_session"
 branch_labels = None
 depends_on = None
 
