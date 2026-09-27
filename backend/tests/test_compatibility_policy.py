@@ -82,6 +82,13 @@ def test_readme_and_releasing_link_the_policy() -> None:
 
 
 def test_changelog_template_has_a_deprecations_place() -> None:
-    """git-cliff has a Deprecated group so a deprecation is not filed as Changed."""
+    """git-cliff files a subject that starts with deprecate under Deprecated.
+
+    An unanchored match would also capture a commit that only mentions
+    deprecation in passing, which would dilute the changelog section the
+    release checklist asks for.
+    """
     text = _read(CLIFF)
-    assert 'group = "Deprecated"' in text
+    assert '{ message = "(?i)^deprecat", group = "Deprecated" }' in text
+    releasing = _read(RELEASING).lower()
+    assert "subject that starts with `deprecate`" in releasing
