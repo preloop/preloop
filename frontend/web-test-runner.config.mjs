@@ -33,7 +33,12 @@ export default {
       // `process.env.NODE_ENV` (table-core's debug logging) threw
       // "process is not defined" in the browser. Substituting the same value
       // the build uses keeps the two environments on one code path.
-      define: { 'process.env.NODE_ENV': '"production"' },
+      define: {
+        'process.env.NODE_ENV': '"production"',
+        // Production builds constant-fold this to false. Tests load the
+        // same modules, so the dev-only logger must not throw or print.
+        'import.meta.env.DEV': 'false',
+      },
     }),
   ],
   browsers: [playwrightLauncher({

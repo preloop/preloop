@@ -185,7 +185,10 @@ from preloop.services.openai_responses_passthrough import (
     should_use_responses_passthrough,
 )
 from preloop.services.tls_verify import ssl_verify_setting
-from preloop.services.pricing_overrides import resolve_pricing_override
+from preloop.services.pricing_overrides import (
+    pricing_account_id,
+    resolve_pricing_override,
+)
 from preloop.services.model_runtime_resolver import (
     is_agent_managed_model,
     resolve_ai_model_runtime,
@@ -8890,7 +8893,7 @@ class OpenAIGatewayService:
         """Resolve account-scoped pricing metadata for a gateway usage row."""
         return resolve_pricing_override(
             self.db,
-            account_id=self.auth_context.account_id,
+            account_id=pricing_account_id(self.auth_context.account_id, ai_model),
             ai_model=ai_model,
             requested_alias=model_alias,
         )

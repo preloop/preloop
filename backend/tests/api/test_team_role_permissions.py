@@ -1,8 +1,9 @@
-"""Both permission checks resolve roles the same way (issue #983).
+"""Permission checks resolve roles the same way (issues #983 and #993).
 
-``has_permission`` (the OSS fallback in ``preloop.api.auth.permissions``) and
-``user_holds_permission`` (``preloop.utils.permissions``) must agree on which
-roles a user holds in their account, including roles granted through a team.
+``has_permission`` and ``get_user_permissions`` (the OSS fallback in
+``preloop.api.auth.permissions``) and ``user_holds_permission``
+(``preloop.utils.permissions``) must agree on which roles a user holds in
+their account, including roles granted through a team.
 """
 
 import uuid
@@ -11,7 +12,7 @@ import pytest
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.permissions import has_permission
+from preloop.api.auth.permissions import get_user_permissions, has_permission
 from preloop.models.crud import (
     crud_account,
     crud_permission,
@@ -192,3 +193,95 @@ def test_has_permission_resolves_in_one_query(db_session, roleless_user):
 
     assert granted is False
     assert len(statements) == 1, statements
+
+
+def test_get_user_permissions_returns_team_only_grant(db_session, roleless_user):
+    """A permission that exists only through a team is part of the listing."""
+    role = _make_role(
+        db_session, roleless_user.account_id, name="responder", permission=PERMISSION
+    )
+    team = _make_team_with_role(db_session, roleless_user.account_id, role)
+    crud_team.add_member(db_session, team_id=team.id, user_id=roleless_user.id)
+
+    assert crud_user_role.get_by_user(db_session, user_id=roleless_user.id) == []
+    names = set(get_user_permissions(roleless_user, db_session))
+    assert PERMISSION in names
+    assert "manage_billing" not in names
+
+
+def test_get_user_permissions_direct_custom_role_does_not_raise(
+    db_session, roleless_user
+):
+    """A direct custom role is read through role_permissions, not role.permissions."""
+    role = _make_role(
+        db_session, roleless_user.account_id, name="direct", permission=PERMISSION
+    )
+    crud_user_role.assign_role(db_session, user_id=roleless_user.id, role_id=role.id)
+
+    assert set(get_user_permissions(roleless_user, db_session)) == {PERMISSION}
+
+
+def test_get_user_permissions_unions_direct_and_team_roles(db_session, roleless_user):
+    direct = _make_role(
+        db_session, roleless_user.account_id, name="direct", permission=PERMISSION
+    )
+    billing = _make_role(
+        db_session,
+        roleless_user.account_id,
+        name="billing",
+        permission="manage_billing",
+    )
+    crud_user_role.assign_role(db_session, user_id=roleless_user.id, role_id=direct.id)
+    team = _make_team_with_role(db_session, roleless_user.account_id, billing)
+    crud_team.add_member(db_session, team_id=team.id, user_id=roleless_user.id)
+
+    assert set(get_user_permissions(roleless_user, db_session)) == {
+        PERMISSION,
+        "manage_billing",
+    }
+
+
+def test_get_user_permissions_ignores_team_in_another_account(
+    db_session, roleless_user
+):
+    other = _make_account(db_session)
+    role = _make_role(db_session, other.id, name="responder", permission=PERMISSION)
+    team = _make_team_with_role(db_session, other.id, role)
+    crud_team.add_member(db_session, team_id=team.id, user_id=roleless_user.id)
+
+    assert get_user_permissions(roleless_user, db_session) == []
+
+
+def test_get_user_permissions_inactive_user_is_empty(db_session):
+    account = _make_account(db_session)
+    user = _make_user(db_session, account.id, is_active=False)
+    role = _make_role(db_session, account.id, name="direct", permission=PERMISSION)
+    crud_user_role.assign_role(db_session, user_id=user.id, role_id=role.id)
+
+    assert get_user_permissions(user, db_session) == []
+
+
+def test_get_user_permissions_system_owner_via_team_lists_permissions(
+    db_session, roleless_user
+):
+    owner = crud_role.get_by_name(db_session, name="owner")
+    assert owner is not None and owner.is_system_role
+    team = _make_team_with_role(db_session, roleless_user.account_id, owner)
+    crud_team.add_member(db_session, team_id=team.id, user_id=roleless_user.id)
+
+    names = set(get_user_permissions(roleless_user, db_session))
+    assert "manage_billing" in names
+    assert "close_account" in names
+
+
+def test_get_user_permissions_custom_role_named_owner_is_not_all_powerful(
+    db_session, roleless_user
+):
+    fake_owner = _make_role(
+        db_session, roleless_user.account_id, name="owner", permission=None
+    )
+    crud_user_role.assign_role(
+        db_session, user_id=roleless_user.id, role_id=fake_owner.id
+    )
+
+    assert get_user_permissions(roleless_user, db_session) == []

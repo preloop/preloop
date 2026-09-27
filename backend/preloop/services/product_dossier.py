@@ -24,6 +24,7 @@ CONTROL_PLANE_RESULT_KEYS = (
     "dossier_manifest",
     "trusted_publication",
     "_private_publication",
+    "stream_stall",
 )
 _SENSITIVE_KEYS = frozenset(
     {

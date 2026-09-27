@@ -420,12 +420,14 @@ environment:
   # Database settings
   databaseUrl: ""
   # JWT settings
-  # No usable default on purpose. The chart used to ship a concrete UUID here,
-  # which meant every install that did not override it signed JWTs with a key
-  # published on GitHub. README.md has documented the default as
-  # change-this-in-production all along; values.yaml now matches. Set a real
-  # one: --set environment.jwtSecret="$(openssl rand -hex 32)"
-  jwtSecret: "change-this-in-production"
+  # No default on purpose: the chart fails closed. The chart used to ship a
+  # concrete UUID here (every install that did not override it signed JWTs
+  # with a key published on GitHub), then the documented placeholder
+  # change-this-in-production, which installs kept just as silently.
+  # templates/secret.yaml now refuses to render while this is empty or a
+  # published placeholder, unless existingSecret provides the key instead.
+  # Set a real one: --set environment.jwtSecret="$(openssl rand -hex 32)"
+  jwtSecret: ""
   jwtAlgorithm: "HS256"
   # Access token lifetime. 1440 (24h) matches the documented session design:
   # 24h access token + 7 day rotating refresh token capped at 30 days.

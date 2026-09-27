@@ -2,6 +2,7 @@
 
 from typing import Any, Optional, Sequence
 from datetime import datetime, timedelta
+import logging
 import uuid
 
 from sqlalchemy import and_, or_, select
@@ -12,6 +13,8 @@ from preloop.models import models
 
 from .base import CRUDBase
 from ..models.budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
+
+logger = logging.getLogger(__name__)
 
 ACCOUNT_LEVEL_SUBJECT_TYPES = frozenset({"account", "global"})
 
@@ -492,14 +495,65 @@ def record_spend_for_request(
     if model_alias:
         model_aliases.append(model_alias)
 
+    scoped: list[tuple[Any, str, Optional[uuid.UUID]]] = [
+        (account_id, s_type, s_id) for s_type, s_id in subjects
+    ]
+    # Buckets of other accounts that this spend also counts toward, such as
+    # an ancestor's (account hook H5). They go into the same batch, so the
+    # caller's single commit or rollback covers them too.
+    from preloop.plugins.account_hooks import get_budget_extension
+
+    extension = get_budget_extension()
+    if extension is not None:
+        seen_extra: set[tuple[str, str, Optional[uuid.UUID]]] = set()
+        for extra_scope in (
+            extension.extra_spend_scopes(
+                db,
+                account_id=account_id,
+                subject_scopes=list(subjects),
+                model_alias=model_alias,
+            )
+            or []
+        ):
+            # A malformed scope is a bug in the extension, not in the
+            # request: it is skipped, so the request still records its own
+            # spend, and logged, because the skipped bucket is under-counted.
+            extra_id: Optional[uuid.UUID] = None
+            if extra_scope.subject_id is not None:
+                try:
+                    extra_id = uuid.UUID(str(extra_scope.subject_id))
+                except ValueError:
+                    logger.warning(
+                        "Ignoring extra spend scope with malformed subject id %r",
+                        extra_scope.subject_id,
+                    )
+                    continue
+            extra_key = (
+                str(extra_scope.account_id),
+                normalize_budget_subject_type(extra_scope.subject_type),
+                extra_id,
+            )
+            if extra_key[0] == str(account_id) or extra_key in seen_extra:
+                continue
+            seen_extra.add(extra_key)
+            try:
+                extra_account = uuid.UUID(extra_key[0])
+            except ValueError:
+                logger.warning(
+                    "Ignoring extra spend scope with malformed account id %r",
+                    extra_scope.account_id,
+                )
+                continue
+            scoped.append((extra_account, extra_key[1], extra_id))
+
     rows: list[dict[str, Any]] = []
-    for s_type, s_id in subjects:
+    for row_account_id, s_type, s_id in scoped:
         for m_alias in model_aliases:
             for p in periods:
                 rows.append(
                     {
                         "id": uuid.uuid4(),
-                        "account_id": account_id,
+                        "account_id": row_account_id,
                         "subject_type": s_type,
                         "subject_id": s_id,
                         "model_alias": m_alias or "",

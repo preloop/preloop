@@ -5,6 +5,8 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
+from preloop.plugins.account_hooks import billing_account_id
+
 from ..models.plan import Plan, Subscription, MonthlyUsage
 from .base import CRUDBase
 from .entitlement import (
@@ -47,7 +49,12 @@ class CRUDSubscription(CRUDBase[Subscription]):
     def get_latest_for_account(
         self, db: Session, *, account_id: str
     ) -> Optional[Subscription]:
-        """Get the latest subscription for an account."""
+        """Get the latest subscription for an account.
+
+        Reads the billing account's rows when account hook H7 names one
+        (for example the parent that pays for this account).
+        """
+        account_id = billing_account_id(db, account_id)
         return (
             db.query(Subscription)
             .filter(Subscription.account_id == account_id)
@@ -74,7 +81,11 @@ class CRUDSubscription(CRUDBase[Subscription]):
         refusing its purchase would leave it on Free with no way off. With
         the rule applied, the row that no longer grants the retired plan's
         terms also stops blocking the sale.
+
+        Account hook H7 may name another account whose subscription applies
+        (for example a paying parent); its rows are read instead.
         """
+        account_id = billing_account_id(db, account_id)
         return (
             db.query(Subscription)
             .filter(
