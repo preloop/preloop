@@ -68,6 +68,7 @@ class GitHubTracker(BaseTracker):
     """
 
     tracker_type: str = "github"
+    hosts_repositories: bool = True
     API_BASE_URL = "https://api.github.com"
 
     def __init__(

@@ -5,6 +5,7 @@ import './flow-execution-view';
 import type { FlowExecutionView } from './flow-execution-view';
 import {
   containerTerminationNotice,
+  hostExecCostLabel,
   liftLogfmtErrorField,
 } from './flow-execution-view';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -797,6 +798,11 @@ describe('FlowExecutionView', () => {
   });
 
   describe('host execution metering', () => {
+    // Booleans, not the node: a failing chai comparison against a live
+    // element makes the runner serialize it and time out.
+    const hasHostSessionsPanel = (element: FlowExecutionView) =>
+      element.shadowRoot!.querySelector('[data-testid="host-sessions"]') !==
+      null;
     const withResult = async (result: Record<string, unknown>) => {
       const element = await load('exec-1');
       (element as any).execution = {
@@ -815,12 +821,149 @@ describe('FlowExecutionView', () => {
         gateway_metered: false,
         premium_requests: 2,
       });
-      expect(stripValue(element, 'strip-cost')).to.equal('Not gateway metered');
+      expect(stripValue(element, 'strip-cost')).to.equal(
+        '2 premium requests, not metered by the gateway'
+      );
       const badge = element.shadowRoot!.querySelector(
         '[data-testid="strip-not-metered"]'
       )!;
       expect(badge.getAttribute('title')).to.contain('GitHub Copilot seat');
       expect(badge.getAttribute('title')).to.contain('2 premium requests');
+    });
+
+    it('says not metered when Copilot reported no premium count', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'copilot_cli',
+        gateway_metered: false,
+      });
+      expect(stripValue(element, 'strip-cost')).to.equal('Not gateway metered');
+      expect(hostExecCostLabel({ premium_requests: 1 })).to.equal(
+        '1 premium request, not metered by the gateway'
+      );
+      expect(hostExecCostLabel({ premium_requests: -1 }, 4)).to.equal(
+        '4 premium requests, not metered by the gateway'
+      );
+    });
+
+    it('lists hook sessions linked to a host run', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'copilot_cli',
+        gateway_metered: false,
+      });
+      (element as any).hostSessions = {
+        execution_id: 'exec-1',
+        event_count: 3,
+        premium_requests: 5,
+        gateway_metered: false,
+        sessions: [
+          {
+            conversation_id: '0f8fad5b-d9cb-469f-a165-70867728950e',
+            source: 'copilot_cli',
+            runtime_session_id: null,
+            event_count: 3,
+            event_types: { session_start: 1, usage: 2 },
+            first_event_at: null,
+            last_event_at: null,
+            models: ['claude-sonnet-4.5'],
+          },
+        ],
+      };
+      element.requestUpdate();
+      await element.updateComplete;
+      expect(stripValue(element, 'strip-cost')).to.equal(
+        '5 premium requests, not metered by the gateway'
+      );
+      const panel = stripValue(element, 'host-sessions');
+      expect(panel).to.contain('Host CLI sessions');
+      expect(panel).to.contain('3 hook events');
+      expect(panel).to.contain('claude-sonnet-4.5');
+    });
+
+    it('drops the previous host sessions when the view moves to another execution', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'copilot_cli',
+        gateway_metered: false,
+      });
+      (element as any).hostSessions = {
+        execution_id: 'exec-1',
+        event_count: 1,
+        premium_requests: 7,
+        gateway_metered: false,
+        sessions: [
+          {
+            conversation_id: '0f8fad5b-d9cb-469f-a165-70867728950e',
+            source: 'copilot_cli',
+            runtime_session_id: null,
+            event_count: 1,
+            event_types: { usage: 1 },
+            first_event_at: null,
+            last_event_at: null,
+            models: [],
+          },
+        ],
+      };
+      element.requestUpdate();
+      await element.updateComplete;
+      expect(hasHostSessionsPanel(element)).to.equal(true);
+
+      element.executionId = 'exec-running';
+      await element.updateComplete;
+      await waitUntil(
+        () =>
+          (element as any).execution?.id === 'exec-running' &&
+          !(element as any).isLoading,
+        'Execution view did not move to exec-running'
+      );
+      await element.updateComplete;
+
+      expect((element as any).hostSessions === null).to.equal(true);
+      expect(hasHostSessionsPanel(element)).to.equal(false);
+      expect(pageText(element)).to.not.contain('7 premium requests');
+    });
+
+    it('never renders host sessions that belong to another execution', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'cursor_cli',
+        gateway_metered: false,
+      });
+      (element as any).hostSessions = {
+        execution_id: 'exec-other',
+        event_count: 1,
+        premium_requests: 3,
+        gateway_metered: false,
+        sessions: [
+          {
+            conversation_id: 'c2',
+            source: 'cursor',
+            runtime_session_id: null,
+            event_count: 1,
+            event_types: { usage: 1 },
+            first_event_at: null,
+            last_event_at: null,
+            models: [],
+          },
+        ],
+      };
+      element.requestUpdate();
+      await element.updateComplete;
+      expect(hasHostSessionsPanel(element)).to.equal(false);
+      expect(stripValue(element, 'strip-cost')).to.equal('Not gateway metered');
+    });
+
+    it('fetches host sessions only for Copilot and Cursor flows', async () => {
+      const element = await load('exec-1');
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/host-sessions'))
+      ).to.equal(false);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="host-sessions"]')
+      ).to.equal(null);
     });
 
     it('ignores the marker on container results', async () => {

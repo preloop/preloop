@@ -272,7 +272,12 @@ describe('AccountView', () => {
     );
     await element.updateComplete;
 
-    expect(element.shadowRoot?.textContent).to.contain('Organization Details');
+    // The account copy says "Account", not "Organization" (issue #988).
+    expect(element.shadowRoot?.textContent).to.not.contain('Organization');
+    const nameInput = element.shadowRoot?.querySelector(
+      'sl-input[label="Account name"]'
+    );
+    expect(nameInput, 'account name input').to.exist;
     expect((element as any).organizationName).to.equal('Acme Corp');
     // No billing/subscription section in the open-source edition.
     expect(element.shadowRoot?.textContent).to.not.contain('Manage in Stripe');

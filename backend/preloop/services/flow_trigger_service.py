@@ -867,6 +867,9 @@ class FlowTriggerService:
             repo_identifier = repo.get("full_name") or repo.get("name")
             repo_external_id = normalize_bitbucket_uuid(repo.get("uuid")) or None
 
+        elif source == "jira":
+            return self._extract_jira_project_id(payload, tracker_id)
+
         if not repo_identifier:
             return None
 
@@ -904,6 +907,47 @@ class FlowTriggerService:
         logger.debug(
             f"Could not match repo '{repo_identifier}' (external_id={repo_external_id}) "
             f"to any of {len(projects)} projects for tracker {tracker_id}"
+        )
+        return None
+
+    def _extract_jira_project_id(
+        self, payload: Dict[str, Any], tracker_id: str
+    ) -> Optional[str]:
+        """Resolve the synced Jira project an issue webhook belongs to.
+
+        Jira sync stores the project key as the slug (older rows used it as
+        the identifier). Only the key and the numeric project id are
+        compared: matching a Jira key against project display names could
+        pick an unrelated project.
+
+        Args:
+            payload: Jira webhook payload.
+            tracker_id: Jira tracker the webhook arrived on.
+
+        Returns:
+            Internal project UUID as a string, or None.
+        """
+        from preloop.models.crud import crud_project
+
+        issue = payload.get("issue") if isinstance(payload, dict) else None
+        fields = issue.get("fields") if isinstance(issue, dict) else None
+        project = fields.get("project") if isinstance(fields, dict) else None
+        if not isinstance(project, dict):
+            return None
+        key = str(project.get("key") or "").strip()
+        external_id = str(project.get("id") or "").strip()
+        if not key and not external_id:
+            return None
+        found = crud_project.get_for_tracker_by_key(
+            self.db, tracker_id=tracker_id, key=key, external_id=external_id
+        )
+        if found is not None:
+            return str(found.id)
+        logger.debug(
+            "Could not match Jira project %s (id=%s) for tracker %s",
+            key,
+            external_id,
+            tracker_id,
         )
         return None
 
@@ -1743,6 +1787,70 @@ class FlowTriggerService:
         expiry = _triage_timestamp(expires_at)
         return expiry is not None and expiry > datetime.now(timezone.utc)
 
+    def _add_secondary_event_flows(
+        self,
+        event_data: Dict[str, Any],
+        matching_flows: List[Flow],
+        *,
+        query_source: Any,
+        project_id: Optional[str],
+        account_id: Any,
+    ) -> Tuple[List[Flow], Dict[Any, str]]:
+        """Append flows subscribed to a secondary type of this delivery.
+
+        See ``secondary_event_types``: one Jira edit can add a label, change
+        the status and remove a label, and it is still an issue update.
+        Flows subscribed to any of those types are considered. Each flow
+        appears once, under the first type it matched (primary first).
+
+        A secondary type the loop guard would drop is not expanded: a label
+        edit by the bot passes the guard as ``issue_labeled``, but the same
+        edit must not start ``issue_updated`` or status flows.
+
+        Args:
+            event_data: The event being processed.
+            matching_flows: Flows matched on the primary event type.
+            query_source: Tracker id or source used for the primary lookup.
+            project_id: Project used for the primary lookup.
+            account_id: Account scope.
+
+        Returns:
+            The primary flows followed by any additional ones, and the event
+            type each secondary flow matched on (keyed by flow id).
+        """
+        from preloop.sync.event_normalizer import secondary_event_types
+
+        extra_types = secondary_event_types(
+            event_data.get("source"),
+            event_data.get("type"),
+            event_data.get("payload"),
+        )
+        flows = list(matching_flows)
+        matched_types: Dict[Any, str] = {}
+        if not extra_types:
+            return flows, matched_types
+        seen = {flow.id for flow in flows}
+        for extra_type in extra_types:
+            if self._is_preloop_triggered_event({**event_data, "type": extra_type}):
+                logger.info(
+                    "Not expanding %s delivery to %s: sent by the Preloop bot",
+                    event_data.get("type"),
+                    extra_type,
+                )
+                continue
+            for flow in crud_flow.get_by_trigger(
+                self.db,
+                event_source=query_source,
+                event_type=extra_type,
+                project_id=project_id,
+                account_id=account_id,
+            ):
+                if flow.id not in seen:
+                    seen.add(flow.id)
+                    flows.append(flow)
+                    matched_types[flow.id] = extra_type
+        return flows, matched_types
+
     async def process_event(self, event_data: Dict[str, Any]):
         """
         Process an incoming event and trigger any matching flows.
@@ -1807,6 +1915,13 @@ class FlowTriggerService:
                 project_id=project_id,
                 account_id=account_id,
             )
+            matching_flows, secondary_types = self._add_secondary_event_flows(
+                event_data,
+                matching_flows,
+                query_source=query_source,
+                project_id=project_id,
+                account_id=account_id,
+            )
 
             if not matching_flows:
                 logger.warning(
@@ -1830,7 +1945,14 @@ class FlowTriggerService:
             # Filter flows by trigger_config and enabled status
             flows_to_trigger = []
             for flow in matching_flows:
-                if feedback_policy(flow) and event_type in FEEDBACK_TYPES:
+                # A flow found through a secondary type (Jira) is filtered as
+                # that type, so a "labels" condition on an issue_updated flow
+                # reads the issue's labels, not the delta.
+                flow_event = event_data
+                if flow.id in secondary_types:
+                    flow_event = {**event_data, "type": secondary_types[flow.id]}
+                flow_event_type = flow_event.get("type")
+                if feedback_policy(flow) and flow_event_type in FEEDBACK_TYPES:
                     # This flow's durable subscription owns follow-up routing.
                     # Independent reviewer and ordinary event flows still run.
                     continue
@@ -1851,7 +1973,7 @@ class FlowTriggerService:
                 if skip_triage_flow_for_event(
                     self.db,
                     flow,
-                    event_data,
+                    flow_event,
                     event_touches_content=triage_content_change,
                 ):
                     logger.info(
@@ -1862,7 +1984,7 @@ class FlowTriggerService:
                     )
                     continue
 
-                if not self._matches_trigger_config(flow, event_data):
+                if not self._matches_trigger_config(flow, flow_event):
                     logger.info(
                         f"Skipping flow '{flow.name}' ({flow.id}) - trigger_config does not match. "
                         f"Config: {flow.trigger_config}"

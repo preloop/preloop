@@ -3949,7 +3949,19 @@ export function flowWriteErrorMessage(
   return fallback;
 }
 
-export async function createFlow(flow: any): Promise<any> {
+/**
+ * Flow write fields copied from the OpenAPI `FlowCreate` and `FlowUpdate`
+ * schemas (`review_instructions`, maxLength 32768).
+ *
+ * Null clears a saved policy. The reviewer prompt keeps the first 16,384
+ * characters and drops the rest.
+ */
+export interface FlowWrite {
+  review_instructions?: string | null;
+  [key: string]: unknown;
+}
+
+export async function createFlow(flow: FlowWrite): Promise<any> {
   const response = await fetchWithAuth('/api/v1/flows', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -3962,7 +3974,10 @@ export async function createFlow(flow: any): Promise<any> {
   return response.json();
 }
 
-export async function updateFlow(flowId: string, flow: any): Promise<any> {
+export async function updateFlow(
+  flowId: string,
+  flow: FlowWrite
+): Promise<any> {
   const response = await fetchWithAuth(`/api/v1/flows/${flowId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -4308,6 +4323,39 @@ export async function getFlowExecutionLogs(
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch execution logs');
+  }
+  return response.json();
+}
+
+/** One CLI session the runner's usage hook observed during a host run. */
+export interface HostExecSession {
+  conversation_id: string | null;
+  source: string | null;
+  runtime_session_id: string | null;
+  event_count: number;
+  event_types: Record<string, number>;
+  first_event_at: string | null;
+  last_event_at: string | null;
+  models: string[];
+}
+
+/** Hook sessions and seat usage linked to a host-exec flow execution. */
+export interface HostExecSessionsResponse {
+  execution_id: string;
+  sessions: HostExecSession[];
+  event_count: number;
+  premium_requests: number | null;
+  gateway_metered: boolean;
+}
+
+export async function getFlowExecutionHostSessions(
+  executionId: string
+): Promise<HostExecSessionsResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/flows/executions/${executionId}/host-sessions`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch host execution sessions');
   }
   return response.json();
 }

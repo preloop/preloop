@@ -33,6 +33,11 @@ BrowserStepStatus = Literal["success", "failed", "unknown"]
 MAX_BROWSER_STEP_EXTRA_BYTES = 4096
 ERROR_EXTRA_TOO_LARGE = "extra_too_large"
 ERROR_EXTRA_NOT_JSON = "extra_not_json"
+ERROR_SCREENSHOT_TOO_LARGE = "screenshot_too_large"
+ERROR_SCREENSHOT_INVALID = "screenshot_invalid"
+ERROR_STORAGE_BUDGET_EXHAUSTED = "storage_budget_exhausted"
+
+BrowserScreenshotContentType = Literal["image/png", "image/jpeg", "image/webp"]
 
 
 def browser_step_extra_error(extra: dict[str, Any]) -> str | None:
@@ -55,6 +60,17 @@ def browser_step_extra_error(extra: dict[str, Any]) -> str | None:
     return None
 
 
+class BrowserScreenshotIn(BaseModel):
+    """An image the agent captured for one step, base64 encoded.
+
+    The bytes are decoded and checked in the ingest service so a bad image
+    rejects only its own row, not the whole batch.
+    """
+
+    content_type: BrowserScreenshotContentType
+    data_base64: str
+
+
 class BrowserStepIn(BaseModel):
     """One browser action observed by an agent."""
 
@@ -68,6 +84,7 @@ class BrowserStepIn(BaseModel):
     status: BrowserStepStatus = "success"
     occurred_at: datetime | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+    screenshot: BrowserScreenshotIn | None = None
 
 
 class BrowserStepBatchIn(BaseModel):
