@@ -27,6 +27,7 @@ describe('failure-category', () => {
       'agent_no_progress',
       'tool_error',
       'agent_error',
+      'model_stream_idle',
       'timeout',
       'cancelled',
       'unknown',
