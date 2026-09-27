@@ -33,7 +33,11 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.crud.billing import billing
-from preloop.models.crud.budget import crud_budget_policy, crud_budget_spend
+from preloop.models.crud.budget import (
+    crud_budget_policy,
+    crud_budget_spend,
+    record_spend_for_request,
+)
 from preloop.models.crud.plan import (
     plan as crud_plan,
     subscription as crud_subscription,
@@ -741,6 +745,49 @@ def test_h5_extra_spend_lands_in_the_same_statement_and_transaction(
         str(test_user.account_id): pytest.approx(0.25),
         str(parent.id): pytest.approx(0.25),
     }
+
+
+def test_h5_malformed_extra_scopes_are_skipped_and_logged(
+    db_session: Session, test_user: models.User, caplog: pytest.LogCaptureFixture
+) -> None:
+    parent = _account(db_session, "Parent")
+
+    class Malformed(BudgetExtension):
+        def extra_spend_scopes(self, db, *, account_id, subject_scopes, model_alias):
+            return [
+                SpendScope(account_id="not-a-uuid", subject_type="account"),
+                SpendScope(
+                    account_id=parent.id, subject_type="user", subject_id="bad-id"
+                ),
+                SpendScope(account_id=parent.id, subject_type="account"),
+            ]
+
+    account_hooks.register_budget_extension(Malformed())
+    with caplog.at_level("WARNING", logger="preloop.models.crud.budget"):
+        record_spend_for_request(
+            db_session,
+            account_id=test_user.account_id,
+            subject_type=None,
+            subject_id=None,
+            model_alias=None,
+            estimated_cost=0.5,
+            timestamp=datetime.now(UTC),
+        )
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("malformed account id 'not-a-uuid'" in m for m in messages)
+    assert any("malformed subject id 'bad-id'" in m for m in messages)
+    # The well-formed scope and the account's own bucket are still recorded.
+    recorded = {
+        str(row.account_id)
+        for row in db_session.query(models.BudgetSpendActivity).filter(
+            models.BudgetSpendActivity.period == models.BudgetPeriod.all_time,
+            models.BudgetSpendActivity.account_id.in_(
+                [test_user.account_id, parent.id]
+            ),
+        )
+    }
+    assert recorded == {str(test_user.account_id), str(parent.id)}
 
 
 # ---------------------------------------------------------------------------
