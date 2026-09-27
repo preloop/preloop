@@ -100,3 +100,7 @@ field in the flow form) matches the new status name exactly.
 - The issue lifecycle merge audit is GitHub-only and expects the issue and
   the pull request in the same project, so it does not follow a bound Jira
   pull request yet.
+- Jira events are never treated as bot events: the loop guard reads the
+  sender on GitHub, GitLab and Bitbucket only. A label or status change that
+  a flow makes on a Jira issue therefore starts every flow subscribed to it.
+  Avoid a flow whose own edit matches its trigger.
