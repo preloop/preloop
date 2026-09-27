@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -31,6 +32,7 @@ const (
 	// OAuth paths
 	authorizePath = "/oauth/authorize"
 	tokenPath     = "/oauth/token"
+	revokePath    = "/oauth/revoke"
 	userInfoPath  = "/api/v1/users/me"
 
 	cliOAuthClientID       = "cli"
@@ -125,9 +127,34 @@ var authLogoutCmd = &cobra.Command{
 	Short: "Log out of Preloop",
 	Long: `Log out of your Preloop account and remove stored credentials.
 
-By default this only clears this machine. Use --all to also revoke every
-other CLI and console session for this user.`,
+By default this revokes this machine's login on the server and clears it
+locally; other logins stay signed in. Use --all to revoke every CLI and
+console session for this user.`,
 	RunE: runAuthLogout,
+}
+
+// authSessionsCmd groups the per-login CLI session commands.
+var authSessionsCmd = &cobra.Command{
+	Use:   "sessions",
+	Short: "List or revoke CLI logins",
+	Long: `List or revoke the CLI logins of your Preloop account.
+
+Each 'preloop auth login' creates one session. Revoking a session stops its
+access and refresh tokens on their next use; other sessions are unaffected.`,
+}
+
+var authSessionsListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List active CLI logins",
+	Args:  cobra.NoArgs,
+	RunE:  runAuthSessionsList,
+}
+
+var authSessionsRevokeCmd = &cobra.Command{
+	Use:   "revoke <session-id>",
+	Short: "Revoke one CLI login",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runAuthSessionsRevoke,
 }
 
 // authStatusCmd represents the auth status command.
@@ -178,6 +205,9 @@ func init() {
 	authCmd.AddCommand(authLogoutCmd)
 	authCmd.AddCommand(authStatusCmd)
 	authCmd.AddCommand(authTokenCmd)
+	authCmd.AddCommand(authSessionsCmd)
+	authSessionsCmd.AddCommand(authSessionsListCmd)
+	authSessionsCmd.AddCommand(authSessionsRevokeCmd)
 
 	configureLoginFlags(authLoginCmd)
 	configureLoginFlags(authSignupCmd)
@@ -558,7 +588,8 @@ func defaultStdinIsTerminal() bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-// runAuthLogout clears stored credentials.
+// runAuthLogout revokes this login on the server and clears stored
+// credentials.
 func runAuthLogout(cmd *cobra.Command, args []string) error {
 	if !config.IsAuthenticated() {
 		fmt.Println("Not currently logged in")
@@ -572,6 +603,8 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 				err,
 			)
 		}
+	} else {
+		reportThisLoginRevocation(revokeThisLogin())
 	}
 
 	if err := config.Clear(); err != nil {
@@ -580,7 +613,7 @@ func runAuthLogout(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Successfully logged out")
 	if !logoutAll {
-		fmt.Println("Local credentials cleared. Other sessions stay signed in; use `preloop auth logout --all` to sign out everywhere.")
+		fmt.Println("Other sessions stay signed in; use `preloop auth logout --all` to sign out everywhere.")
 	}
 	return nil
 }
@@ -592,6 +625,144 @@ func revokeAllSessions() error {
 	}
 	var result map[string]int
 	return client.Post("/api/v1/auth/sessions/revoke-all", map[string]any{}, &result)
+}
+
+// errLoginNotRevocable means the server has no per-login session for the
+// stored token (a login from before sessions existed, or an older server).
+var errLoginNotRevocable = errors.New("login is not revocable on its own")
+
+// errNoOAuthLogin means the stored credential is not an OAuth login (for
+// example an API key saved with --token), so there is nothing to revoke.
+var errNoOAuthLogin = errors.New("no OAuth login stored")
+
+// revokeThisLogin posts the stored refresh token to /oauth/revoke, which
+// revokes this login's server-side session (access and refresh token).
+func revokeThisLogin() error {
+	cfg, err := config.Resolve(FlagToken, FlagURL)
+	if err != nil {
+		return err
+	}
+	if cfg.RefreshToken == "" {
+		return errNoOAuthLogin
+	}
+
+	form := url.Values{}
+	form.Set("token", cfg.RefreshToken)
+	form.Set("token_type_hint", "refresh_token")
+	req, err := http.NewRequest(
+		http.MethodPost,
+		strings.TrimRight(cfg.APIURL, "/")+revokePath,
+		strings.NewReader(form.Encode()),
+	)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	version.SetClientIdentityHeaders(req.Header)
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	var oauthErr struct {
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&oauthErr)
+	if oauthErr.Error == "unsupported_token_type" {
+		return errLoginNotRevocable
+	}
+	return fmt.Errorf("revoke request failed with status %d", resp.StatusCode)
+}
+
+func reportThisLoginRevocation(err error) {
+	switch {
+	case err == nil:
+		fmt.Println("Revoked this login on the server")
+	case errors.Is(err, errNoOAuthLogin):
+		// An API key saved with --token is managed under API keys.
+	case errors.Is(err, errLoginNotRevocable):
+		fmt.Println("This login predates per-login sessions and cannot be revoked on its own; run `preloop auth logout --all` to revoke it")
+	default:
+		fmt.Printf(
+			"Could not revoke this login on the server; it stays valid until you run `preloop auth logout --all` (%v)\n",
+			err,
+		)
+	}
+}
+
+// cliSession mirrors one entry of GET /api/v1/auth/sessions/cli.
+type cliSession struct {
+	ID         string   `json:"id"`
+	CreatedAt  api.Time `json:"created_at"`
+	LastSeenAt api.Time `json:"last_seen_at"`
+	UserAgent  string   `json:"user_agent"`
+	Hostname   string   `json:"hostname"`
+	Current    bool     `json:"current"`
+}
+
+func runAuthSessionsList(cmd *cobra.Command, args []string) error {
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return err
+	}
+	var sessions []cliSession
+	if err := client.Get("/api/v1/auth/sessions/cli", &sessions); err != nil {
+		return fmt.Errorf("failed to list CLI sessions: %w", err)
+	}
+	if len(sessions) == 0 {
+		fmt.Println("No active CLI sessions")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tHOST\tLAST SEEN\tCREATED\tCLIENT") //nolint:errcheck
+	for _, s := range sessions {
+		id := s.ID
+		if s.Current {
+			id += " (this login)"
+		}
+		lastSeen := "-"
+		if !s.LastSeenAt.IsZero() {
+			lastSeen = s.LastSeenAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf( //nolint:errcheck
+			w, "%s\t%s\t%s\t%s\t%s\n",
+			id,
+			valueOrDash(s.Hostname),
+			lastSeen,
+			s.CreatedAt.Format(time.RFC3339),
+			valueOrDash(s.UserAgent),
+		)
+	}
+	return w.Flush()
+}
+
+func runAuthSessionsRevoke(cmd *cobra.Command, args []string) error {
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return err
+	}
+	sessionID := strings.TrimSpace(args[0])
+	if err := client.Delete("/api/v1/auth/sessions/cli/"+url.PathEscape(sessionID), nil); err != nil {
+		if api.IsStatus(err, http.StatusNotFound) {
+			return fmt.Errorf("no active CLI session %s", sessionID)
+		}
+		return fmt.Errorf("failed to revoke CLI session: %w", err)
+	}
+	fmt.Printf("Revoked CLI session %s\n", sessionID)
+	return nil
+}
+
+func valueOrDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 // runAuthStatus shows the current authentication status.
@@ -785,6 +956,9 @@ func exchangeCodeForTokens(baseURL, code, redirectURI string) (*TokenResponse, e
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
 	data.Set("redirect_uri", redirectURI)
+	if host := version.DeviceName(); host != "" {
+		data.Set("device_name", host)
+	}
 
 	tokenReq, err := http.NewRequest(
 		http.MethodPost, tokenURL, strings.NewReader(data.Encode()),

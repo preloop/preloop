@@ -4,6 +4,9 @@ A flow can choose a model and harness per execution from the issue's current lab
 
 For Alibaba-hosted chat models, see [Alibaba Cloud Model Studio](../alibaba-model-studio.md)
 for regional endpoints, live discovery, agent controls, and cost reporting.
+For [Amazon Bedrock](../providers/bedrock.md) and
+[Azure OpenAI](../providers/azure-openai.md), see the provider guides for
+credentials, a first request, and how the Cost page prices them.
 
 ## Configure rules
 
