@@ -51,8 +51,9 @@ pointed at the Preloop model gateway.
 Sets COPILOT_PROVIDER_TYPE, COPILOT_PROVIDER_BASE_URL, COPILOT_PROVIDER_API_KEY,
 and COPILOT_MODEL before exec. OpenAI-family aliases use {PRELOOP_URL}/openai/v1;
 Anthropic-family aliases use {PRELOOP_URL}/anthropic. The API key is a Preloop
-bearer credential (managed-agent durable key when enrolled, otherwise the
-current login token) — never a raw upstream provider key.
+bearer credential, never a raw upstream provider key: an explicit --token or
+PRELOOP_TOKEN, else the enrolled Copilot CLI managed-agent key, else the
+saved login token.
 
   preloop copilot
   preloop copilot --model openai/gpt-5
@@ -69,7 +70,8 @@ Missing copilot on PATH, missing credential, or missing model alias exits with
 a named error and does not launch Copilot.
 
 copilot flags after 'copilot' are passed through. Global Preloop flags
-(--token, --url) belong before 'copilot'.`,
+(--token, --url) belong before 'copilot'; Preloop consumes them there and
+does not forward them to copilot.`,
 	Args:               cobra.ArbitraryArgs,
 	DisableFlagParsing: true,
 	SilenceErrors:      true,
@@ -88,6 +90,11 @@ var resolveCopilotCredential = defaultResolveCopilotCredential
 var resolveCopilotBaseURL = defaultResolveCopilotBaseURL
 
 func runCopilotLauncher(cmd *cobra.Command, args []string) error {
+	args, err := applyLeadingRootFlags(cmd, args)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), err)
+		return err
+	}
 	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
 		return cmd.Help()
 	}
