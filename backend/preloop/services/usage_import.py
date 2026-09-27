@@ -27,12 +27,15 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import (
     crud_api_usage,
+    crud_flow,
+    crud_flow_execution,
     crud_managed_agent,
     crud_runtime_session,
 )
@@ -514,6 +517,29 @@ def sync_runtime_session_for_record(
     return session
 
 
+def link_session_to_flow_execution(
+    session: Optional[RuntimeSession], link: Optional["HostFlowLink"]
+) -> None:
+    """Nest a hook-observed session under its flow execution's session.
+
+    Lineage stays write-once: a session that already has a parent (for
+    example a subagent under its parent conversation) keeps it.
+
+    Args:
+        session: Hook session from :func:`sync_runtime_session_for_record`.
+        link: Verified flow execution link, if any.
+    """
+    if (
+        session is None
+        or link is None
+        or link.runtime_session_id is None
+        or session.parent_session_id is not None
+        or session.id == link.runtime_session_id
+    ):
+        return
+    session.parent_session_id = link.runtime_session_id
+
+
 def add_transcript_activities(
     db: Session,
     *,
@@ -599,10 +625,74 @@ def push_record_content_hash(record: UsageIngestRecord) -> str:
     ``conflict`` in the response. First write still wins — the marker is a
     heuristic for the shipper's operator, never a rejection.
     """
-    canonical = json.dumps(
-        record.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
+    payload = record.model_dump(mode="json")
+    if payload.get("flow_execution_id") is None:
+        # Hashes stored before the field existed must still match replays.
+        payload.pop("flow_execution_id", None)
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class HostFlowLink:
+    """Verified flow execution a pushed hook record belongs to."""
+
+    flow_execution_id: UUID
+    flow_id: UUID
+    runtime_session_id: Optional[UUID]
+
+
+def resolve_host_flow_link(
+    db: Session, *, account_id: str, flow_execution_id: Optional[UUID]
+) -> Optional[HostFlowLink]:
+    """Verify a record's flow execution before linking usage to it.
+
+    The id comes from the runner environment through the usage hook, so it
+    is a hint, not an authority: it links only to an execution of the same
+    account whose effective agent runs on a host-exec profile. Anything
+    else is ignored and the record is stored unlinked, as before.
+
+    Args:
+        db: Database session.
+        account_id: Account the ingest request authenticated as.
+        flow_execution_id: Execution id carried by the record.
+
+    Returns:
+        The verified link, or None.
+    """
+    from preloop.models.models.flow_execution import (
+        resolve_execution_agent_selection,
+    )
+    from preloop.services.host_exec import is_host_exec_agent_type
+
+    if flow_execution_id is None:
+        return None
+    execution = crud_flow_execution.get(
+        db, id=flow_execution_id, account_id=str(account_id)
+    )
+    if execution is None or execution.flow_id is None:
+        return None
+    flow = crud_flow.get(db, id=execution.flow_id, account_id=account_id)
+    if flow is None:
+        return None
+    agent_type, _ = resolve_execution_agent_selection(
+        execution.trigger_event_details,
+        flow_agent_type=flow.agent_type,
+        flow_ai_model_id=flow.ai_model_id,
+    )
+    if not is_host_exec_agent_type(agent_type):
+        return None
+    session = crud_runtime_session.get_by_source(
+        db,
+        account_id=account_id,
+        session_source_type="flow_execution",
+        session_source_id=str(execution.id),
+    )
+    return HostFlowLink(
+        flow_execution_id=execution.id,
+        flow_id=execution.flow_id,
+        runtime_session_id=getattr(session, "id", None),
+    )
 
 
 def ingest_push_records(
@@ -655,10 +745,20 @@ def ingest_push_records(
     )
     ingest_endpoint = f"/usage/ingest/{source}"
     results: List[UsageIngestRecordResult] = []
+    flow_links: Dict[UUID, Optional[HostFlowLink]] = {}
     for record, fingerprint in zip(records, fingerprints, strict=True):
         content_hash = push_record_content_hash(record)
         existing = existing_by_fp.get(fingerprint)
         if existing is None:
+            link: Optional[HostFlowLink] = None
+            if record.flow_execution_id is not None:
+                if record.flow_execution_id not in flow_links:
+                    flow_links[record.flow_execution_id] = resolve_host_flow_link(
+                        db,
+                        account_id=account_id,
+                        flow_execution_id=record.flow_execution_id,
+                    )
+                link = flow_links[record.flow_execution_id]
             timestamp = record.timestamp
             if timestamp.tzinfo is not None:
                 timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
@@ -683,6 +783,7 @@ def ingest_push_records(
                         record=record,
                         timestamp=timestamp,
                     )
+                    link_session_to_flow_execution(session, link)
                 runtime_session_id = session.id if session is not None else None
             except SQLAlchemyError:
                 # The cost ledger row is the record of truth; a session
@@ -727,6 +828,8 @@ def ingest_push_records(
                 runtime_principal_id=agent.session_source_id,
                 runtime_principal_name=agent.display_name,
                 runtime_session_id=runtime_session_id,
+                flow_id=link.flow_id if link else None,
+                flow_execution_id=link.flow_execution_id if link else None,
                 import_fingerprint=fingerprint,
                 meta_data=meta,
                 endpoint=ingest_endpoint,
