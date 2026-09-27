@@ -37,9 +37,16 @@ def test_missing_credentials_fail_when_signing_is_required() -> None:
     """The required-but-unconfigured branch exits nonzero, failing release."""
     step = _signpath_check_step()
     script = step["run"]
-    required_branch = script.split('[ "$REQUIRED" = "true" ]', 1)
-    assert len(required_branch) == 2, "no REQUIRED branch in signpath-check"
+    required_branch = script.split('[ "$required" = "true" ]', 1)
+    assert len(required_branch) == 2, "no required branch in signpath-check"
     assert "exit 1" in required_branch[1].split("else", 1)[0]
+
+
+def test_signing_required_value_is_case_normalized() -> None:
+    """TRUE/True/1 count as required; the check lowercases before matching."""
+    script = _signpath_check_step()["run"]
+    assert "tr '[:upper:]' '[:lower:]'" in script
+    assert '[ "$required" = "1" ]' in script
 
 
 def test_optional_mode_still_publishes_unsigned() -> None:

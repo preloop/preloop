@@ -12,21 +12,29 @@ and path only. No secret value, full or partial, appears here. History is not
 rewritten (that would break every downstream clone), so these entries are
 permanent.
 
-The register below covers all 11 classified findings from the release audit's
-independent history scan. The count matches the audit's freeze floor: no row
-has been dropped, and any new finding must be added here as well as to
-`.gitleaksignore`.
+The register below covers all 11 classified findings (commit and path pairs)
+from the release audit's independent history scan, matching the audit's
+freeze floor: no row has been dropped. It also covers the two scanner
+false-positive fingerprints that exist only in `.gitleaksignore`, so every
+entry in that file has a disposition row here. One commit-and-path row below
+can stand for several `.gitleaksignore` fingerprints (a fingerprint is per
+line and per rule); the fingerprints named in each section keep the two
+files reconcilable. Any new finding must be added to both files in the same
+change.
 
 ## Assume compromised: reported privately, rotation not recorded here
 
-These four are high-entropy credential shapes committed while the repository
-was private and published when it went public. They were reported privately
-through the process in [SECURITY.md](../../SECURITY.md) when the first
-gitleaks history scan surfaced them (scanning added 2026-09-08, #508) rather
-than in a public issue. **This repository contains no record that they were
-rotated.** The honest status is therefore: treat as compromised until the
-credential owner confirms rotation; do not mark this class closed on the
-basis of this page.
+Three credentials over five ignore-file fingerprints: a payment-provider
+access token, and two API keys pasted into a docs example (the same two keys
+appear in two consecutive commits of the same day, hence four fingerprints
+for one incident). All are high-entropy credential shapes committed while
+the repository was private and published when it went public. They were
+reported privately through the process in [SECURITY.md](../../SECURITY.md)
+when the first gitleaks history scan surfaced them (scanning added
+2026-09-08, #508) rather than in a public issue. **This repository contains
+no record that they were rotated.** The honest status is therefore: treat as
+compromised until the credential owner confirms rotation; do not mark this
+class closed on the basis of this page.
 
 | Commit | Path | Shape |
 | --- | --- | --- |
@@ -83,6 +91,19 @@ runtime (tracker tokens, database and SMTP credentials). Operators of
 deployments that predate these fixes rotate on their side;
 [docs/operations/database-credentials.md](../operations/database-credentials.md)
 is the rotation guide for the second one.
+
+## Scanner false positives: baselined so the history scan stays green
+
+These two fingerprints exist only in `.gitleaksignore` (they are not among
+the audit's 11 classified findings) and involve no credential at all:
+
+| Commit | Path | Disposition |
+| --- | --- | --- |
+| `480bd991973f8a921d902b0dd3a401e6e11d3724` | `backend/preloop/services/record_signing.py` | a signing-key dataclass field annotated with a cryptography class name; a type name, not key material |
+| `b8970d2a6f8d0354a26b271e65a052876861da2f` | `.gitleaksignore` | an earlier wording of the ignore file itself named the same field and tripped the same rule |
+
+Nothing was live, nothing rotates. They stay baselined because the history
+scan walks every fetched commit and would otherwise fail every PR.
 
 ## Keeping this page true
 

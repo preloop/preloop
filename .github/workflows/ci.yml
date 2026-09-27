@@ -95,6 +95,7 @@ jobs:
             helm:
               - 'helm/**'
               - 'scripts/helm-render-check.sh'
+              - 'backend/tests/helm/**'
             workflow:
               - '.github/workflows/ci.yml'
             # Anything that can change what a hash-pinned lock resolves to.
@@ -394,6 +395,24 @@ jobs:
       # helm is preinstalled on ubuntu-latest runners
       - name: Helm render checks (chart lint + CNPG backup wiring)
         run: sh scripts/helm-render-check.sh
+
+      # The chart guard tests skip when the helm binary is missing, and the
+      # backend shards may run in containers without helm. This runner has
+      # helm, so the security-relevant guards always execute somewhere.
+      - name: Set up Python
+        uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          pip install --require-hashes -r .github/requirements/app-dev.txt
+          pip install --no-deps -e .
+
+      - name: Helm chart guard tests
+        env:
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+        run: python -m pytest backend/tests/helm -q
 
   # Eight shards, each with its own Postgres. GitLab splits this suite into
   # dozens of per-file jobs; that is a poor fit here because each GitHub

@@ -81,6 +81,12 @@ def test_postgres_password_default_is_env_interpolated() -> None:
             assert url == DATABASE_URL_DEFAULT, name
 
 
+def test_postgres_port_binds_to_loopback_only() -> None:
+    """A database with a default dev password must not listen on 0.0.0.0."""
+    services = _compose_services()
+    assert services["postgres"]["ports"] == ["127.0.0.1:5432:5432"]
+
+
 def test_compose_secret_key_fallback_triggers_the_startup_warning() -> None:
     """The compose fallback is a known placeholder, so startup warns on it."""
     fallback = SECRET_KEY_DEFAULT.split(":-", 1)[1].rstrip("}")

@@ -16,6 +16,7 @@ from typing import List
 
 import pytest
 
+from preloop.config import is_placeholder_jwt_secret
 from tests.helm.chart_helpers import (
     helm_template,
     helm_template_all,
@@ -63,18 +64,35 @@ def test_empty_jwt_secret_refuses_to_install() -> None:
     assert "openssl rand -hex 32" in stderr
 
 
-@pytest.mark.parametrize(
-    "placeholder",
-    [
-        "change-this-in-production",
-        "CHANGE-THIS-IN-PRODUCTION",
-        "change_this_in_production",
-        "changeme",
-        "development_secret_key_do_not_use_in_production",
-    ],
-)
+# Every shape the backend's is_placeholder_jwt_secret() recognises, in the
+# spellings the chart is likely to meet. The chart guard mirrors the backend
+# list; the parity assertion inside the test keeps them from drifting.
+PLACEHOLDER_SHAPES = [
+    "change-this-in-production",
+    "CHANGE-THIS-IN-PRODUCTION",
+    "change_this_in_production",
+    "ChangeThis",
+    "changeme",
+    "CHANGE_ME",
+    "REPLACE_ME",
+    "replace-this",
+    "replace-this-in-production",
+    "your-jwt-secret",
+    "your_secret_here",
+    "development_secret_key_do_not_use_in_production",
+    "DO-NOT-USE-IN-PRODUCTION-key",
+]
+
+
+@pytest.mark.parametrize("placeholder", PLACEHOLDER_SHAPES)
 def test_placeholder_jwt_secret_refuses_to_install(placeholder: str) -> None:
-    """Published placeholder signing keys are rejected regardless of case."""
+    """Chart and backend agree: every known placeholder shape is rejected.
+
+    The parity assertion comes first: a shape the backend does not recognise
+    does not belong in this list, and a shape the chart lets through while
+    the backend flags it is the drift this test exists to catch.
+    """
+    assert is_placeholder_jwt_secret(placeholder) is True
     stderr = _render_expecting_failure([f"environment.jwtSecret={placeholder}"])
     assert "placeholder" in stderr
 

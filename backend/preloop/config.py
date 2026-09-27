@@ -80,11 +80,13 @@ def _log_insecure_placeholder_jwt_banner() -> None:
 def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> None:
     """Reject placeholder JWT secrets in production; warn loudly otherwise.
 
-    Helm ``jwtSecret`` stays optional so ``helm template`` and existing
-    upgrades still render. ENVIRONMENT=production already fails closed when
-    SECRET_KEY is missing; the same gate rejects these public placeholders.
-    Development, test, and unset ENVIRONMENT (the chart default) log a
-    CRITICAL banner instead of refusing to start.
+    The Helm chart fails closed on the same placeholder list at install time
+    (templates/secret.yaml mirrors it); this startup gate is the backstop
+    for non-Helm deployments and for installs that predate the chart guard.
+    ENVIRONMENT=production already fails closed when SECRET_KEY is missing;
+    the same gate rejects these public placeholders. Development, test, and
+    unset ENVIRONMENT (the chart default) log a CRITICAL banner instead of
+    refusing to start.
 
     Args:
         secret: Configured JWT signing key.

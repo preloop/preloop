@@ -426,11 +426,14 @@ jobs:
           POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
           REQUIRED: ${{ vars.SIGNPATH_SIGNING_REQUIRED }}
         run: |
+          # Case-insensitive truthiness: TRUE/True/1 must not silently keep
+          # the fail-open path this switch exists to close.
+          required=$(printf '%s' "$REQUIRED" | tr '[:upper:]' '[:lower:]')
           if [ -n "$TOKEN" ] && [ -n "$ORG_ID" ] && [ -n "$PROJECT" ] && [ -n "$POLICY" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
             echo "::notice::SignPath signing enabled — Windows CLI will be Authenticode-signed"
-          elif [ "$REQUIRED" = "true" ]; then
-            echo "::error::SIGNPATH_SIGNING_REQUIRED is true but the SignPath secrets/vars are not configured. Refusing to release unsigned Windows binaries. See docs/windows-code-signing.md"
+          elif [ "$required" = "true" ] || [ "$required" = "1" ]; then
+            echo "::error::SIGNPATH_SIGNING_REQUIRED is set but the SignPath secrets/vars are not configured. Refusing to release unsigned Windows binaries. See docs/windows-code-signing.md"
             exit 1
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
