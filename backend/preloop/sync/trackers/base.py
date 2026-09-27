@@ -30,6 +30,17 @@ class BaseTracker(ABC):
     # Subclasses should override this
     tracker_type: str = "unknown"
 
+    # True when the provider hosts git repositories that a flow can clone,
+    # push to and open pull requests on. Issue-only trackers (Jira) leave it
+    # False; a repository binding may only name a tracker that sets it.
+    hosts_repositories: bool = False
+
+    # True when the provider tracks issues and has no repository of its own.
+    # A flow triggered from such a tracker may apply a repository binding.
+    # Independent of hosts_repositories: a code host can leave both False
+    # until its clone path is wired, without being treated as issue-only.
+    hosts_issues: bool = False
+
     def __init__(
         self, tracker_id: str, api_key: str, connection_details: Dict[str, Any]
     ):

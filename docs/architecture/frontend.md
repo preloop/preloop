@@ -71,6 +71,19 @@ Agent detail likewise serializes reads and coalesces live events into one
 follow-up. The session observer owns session interaction loading; the parent
 uses the session list already returned by the agent endpoint.
 
+### Capability-gated account views (`src/capabilities.ts`, `src/components/capability-extension.ts`)
+
+Views served by an extension plugin (account switcher, subaccounts, access
+grants, sharing, tags, usage by subaccount, access rules) are gated on the
+`multi_account`, `account_hierarchy` and `abac_rules` keys of `/features`.
+Their routes are added to the router only after `/features` reports the
+capability (`CAPABILITY_ROUTES` in `lazy-routes.ts`), and pieces of existing
+pages mount through `<capability-extension name=...>`, which downloads nothing
+without the capability. The client for their endpoints is
+`src/hierarchy-api.ts`: a 404 on a collection is "capability off" and hides the
+view without a toast, and a 404 on one item is "not found". The endpoint
+contract is in `docs/guide/accounts-and-profiles.md`.
+
 ### Tracker Detail Page (`src/views/authed/tracker-detail-view.ts`)
 
 The Tracker Detail page is the entry point for issue analytics. Clicking a tracker card in the Trackers list navigates to `/console/trackers/:trackerId`, which shows:

@@ -851,6 +851,16 @@ class Settings(BaseSettings):
             "Larger payloads are rejected before they are encrypted or stored."
         ),
     )
+    runtime_session_screenshots_per_session_max: int = Field(
+        500,
+        ge=1,
+        description=(
+            "Maximum available screenshots per runtime session. Past it, the "
+            "oldest screenshots (by browser step time) lose their image bytes "
+            "and keep their metadata, marked evicted. Screenshots under legal "
+            "hold are not evicted."
+        ),
+    )
     runtime_session_recording_max_bytes: int = Field(
         512 * 1024**2,
         ge=1,

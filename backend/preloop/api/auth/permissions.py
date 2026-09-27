@@ -6,13 +6,12 @@ across all protected API endpoints.
 
 import functools
 import logging
-from typing import Callable, List
+from typing import Callable
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from preloop.models.models.user import User
-from preloop.models.crud import crud_user_role, crud_role
 
 logger = logging.getLogger(__name__)
 
@@ -47,42 +46,6 @@ def has_permission(user: User, permission_name: str, db: Session) -> bool:
         return False
 
     return user_holds_permission(db, user, permission_name)
-
-
-def get_user_permissions(user: User, db: Session) -> List[str]:
-    """Get all permissions for a user.
-
-    Args:
-        user: The user to get permissions for.
-        db: Database session.
-
-    Returns:
-        List of permission names the user has.
-    """
-    if not user.is_active:
-        return []
-
-    permissions = set()
-    user_roles = crud_user_role.get_by_user(db, user_id=user.id)
-
-    for user_role in user_roles:
-        role = crud_role.get(db, id=user_role.role_id)
-        if not role:
-            continue
-
-        # Owner role has all permissions
-        if role.name == "owner":
-            # Get all permissions from the database
-            from preloop.models.models.permission import Permission
-
-            all_perms = db.query(Permission).all()
-            return [p.name for p in all_perms]
-
-        # Add this role's permissions
-        for role_perm in role.permissions:
-            permissions.add(role_perm.permission.name)
-
-    return list(permissions)
 
 
 def require_permission(permission_name: str):
