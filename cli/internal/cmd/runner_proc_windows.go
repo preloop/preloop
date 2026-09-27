@@ -3,7 +3,9 @@
 package cmd
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 )
@@ -28,10 +30,21 @@ func killRunnerJobProcess(cmd *exec.Cmd) {
 		return
 	}
 	taskkill := exec.Command(
-		"taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid),
+		windowsTaskkillPath(), "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid),
 	)
 	taskkill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := taskkill.Run(); err != nil {
 		_ = cmd.Process.Kill()
 	}
+}
+
+// windowsTaskkillPath names taskkill.exe under the system directory, so a
+// taskkill earlier on the runner's PATH (for example in a user-writable npm
+// or tool directory) is never the program that halts a job.
+func windowsTaskkillPath() string {
+	root := os.Getenv("SystemRoot")
+	if root == "" {
+		root = `C:\Windows`
+	}
+	return filepath.Join(root, "System32", "taskkill.exe")
 }

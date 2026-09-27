@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -214,5 +215,33 @@ func TestKillRunnerJobProcessKillsTreeOnWindows(t *testing.T) {
 			t.Fatalf("descendant %d still alive after tree kill", childPid)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestWindowsEscapedArgMatchesSyscall pins the portable escaper used for the
+// command-line limit to the standard library's own Windows implementation.
+func TestWindowsEscapedArgMatchesSyscall(t *testing.T) {
+	for _, arg := range []string{
+		"", "plain", "has space", "tab\there", `say "hi"`, `a\"b`, `trail\`,
+		`trail\ x\`, `C:\Program Files\x\`, `"`, `\\"\\`, "caf\u00e9 ok",
+	} {
+		var b strings.Builder
+		writeWindowsEscapedArg(&b, arg)
+		if got, want := b.String(), syscall.EscapeArg(arg); got != want {
+			t.Errorf("escape(%q) = %q, syscall.EscapeArg = %q", arg, got, want)
+		}
+	}
+}
+
+// TestWindowsTaskkillPathIsSystemDirectory checks the halt path never
+// resolves taskkill through PATH.
+func TestWindowsTaskkillPathIsSystemDirectory(t *testing.T) {
+	path := windowsTaskkillPath()
+	if !filepath.IsAbs(path) ||
+		!strings.EqualFold(filepath.Base(filepath.Dir(path)), "System32") {
+		t.Fatalf("taskkill path = %q", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("taskkill not found at %q: %v", path, err)
 	}
 }

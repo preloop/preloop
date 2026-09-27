@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"unicode/utf16"
 )
 
 // Platform-dependent pieces of host execution profiles: locating the local
@@ -19,7 +20,7 @@ import (
 
 const (
 	// hostExecWindowsMaxCommandLine stays under the 32767 UTF-16 character
-	// CreateProcess limit with margin for quoting and expansion.
+	// CreateProcess limit, measured on the escaped command line.
 	hostExecWindowsMaxCommandLine = 30000
 	// hostExecBatchMaxCommandLine stays under the 8191 character cmd.exe
 	// limit that applies when the target is a .bat/.cmd script.
@@ -206,10 +207,7 @@ func hostExecCommandLineError(goos, bin string, args []string) error {
 	if goos != "windows" {
 		return nil
 	}
-	length := len(bin) + 2
-	for _, arg := range args {
-		length += len(arg) + 3
-	}
+	length := windowsCommandLineLength(append([]string{bin}, args...))
 	limit := hostExecWindowsMaxCommandLine
 	if isWindowsBatchName(bin) {
 		limit = hostExecBatchMaxCommandLine
@@ -229,6 +227,74 @@ func hostExecCommandLineError(goos, bin string, args []string) error {
 		)
 	}
 	return nil
+}
+
+// windowsCommandLineLength returns the length, in UTF-16 code units, of the
+// command line os/exec builds from argv on Windows: arguments joined by
+// spaces, each escaped with the CommandLineToArgvW rules (quoted when it
+// contains whitespace, a backslash run before a quote doubled, and so on).
+// Counting the escaped UTF-16 form, not raw UTF-8 bytes, keeps a prompt full
+// of quotes from slipping past the limit and a non-ASCII prompt that fits
+// from being rejected.
+func windowsCommandLineLength(argv []string) int {
+	var b strings.Builder
+	for i, arg := range argv {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		writeWindowsEscapedArg(&b, arg)
+	}
+	length := 0
+	for _, r := range b.String() {
+		length += utf16.RuneLen(r)
+	}
+	return length
+}
+
+// writeWindowsEscapedArg mirrors syscall.EscapeArg, which only exists in the
+// Windows build of the standard library.
+func writeWindowsEscapedArg(b *strings.Builder, arg string) {
+	if arg == "" {
+		b.WriteString(`""`)
+		return
+	}
+	needsBackslash := strings.ContainsAny(arg, `"\`)
+	hasSpace := strings.ContainsAny(arg, " \t")
+	if !needsBackslash && !hasSpace {
+		b.WriteString(arg)
+		return
+	}
+	if !needsBackslash {
+		b.WriteByte('"')
+		b.WriteString(arg)
+		b.WriteByte('"')
+		return
+	}
+	if hasSpace {
+		b.WriteByte('"')
+	}
+	slashes := 0
+	for i := 0; i < len(arg); i++ {
+		c := arg[i]
+		switch c {
+		case '\\':
+			slashes++
+		case '"':
+			for ; slashes > 0; slashes-- {
+				b.WriteByte('\\')
+			}
+			b.WriteByte('\\')
+		default:
+			slashes = 0
+		}
+		b.WriteByte(c)
+	}
+	if hasSpace {
+		for ; slashes > 0; slashes-- {
+			b.WriteByte('\\')
+		}
+		b.WriteByte('"')
+	}
 }
 
 // hostExecEnvNameRe bounds pass_env entries to portable variable names.

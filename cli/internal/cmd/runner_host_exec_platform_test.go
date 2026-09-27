@@ -212,6 +212,38 @@ func TestHostExecCommandLineError(t *testing.T) {
 	}
 }
 
+// TestHostExecCommandLineLengthCountsEscapedUTF16 checks the limit is
+// measured on the command line Windows actually receives: quotes expand
+// under escaping, while non-ASCII text counts UTF-16 units, not UTF-8 bytes.
+func TestHostExecCommandLineLengthCountsEscapedUTF16(t *testing.T) {
+	cases := map[string]int{
+		"":           2,
+		"plain":      5,
+		"has space":  11,
+		`say "hi"`:   12,
+		`a\"b`:       6,
+		`trail\ x\`:  12,
+		"caf\u00e9":  4,
+		"\U0001F600": 2,
+	}
+	for arg, want := range cases {
+		if got := windowsCommandLineLength([]string{arg}); got != want {
+			t.Errorf("windowsCommandLineLength(%q) = %d, want %d", arg, got, want)
+		}
+	}
+	quotes := strings.Repeat(`"`, hostExecWindowsMaxCommandLine/2+1)
+	err := hostExecCommandLineError("windows", `C:\bin\agent.exe`, []string{quotes})
+	if err == nil || !strings.Contains(err.Error(), "host_exec_command_too_long") {
+		t.Fatalf("quote-heavy prompt that doubles under escaping: err = %v", err)
+	}
+	wide := strings.Repeat("\u00e9", hostExecWindowsMaxCommandLine/2)
+	if err := hostExecCommandLineError(
+		"windows", `C:\bin\agent.exe`, []string{wide},
+	); err != nil {
+		t.Fatalf("non-ASCII prompt within the UTF-16 limit rejected: %v", err)
+	}
+}
+
 func TestHostExecChildEnvAllowlist(t *testing.T) {
 	profile := hostExecProfile{PassEnv: []string{"PRELOOP_HOST_EXEC_PROBE"}}
 	environ := []string{
