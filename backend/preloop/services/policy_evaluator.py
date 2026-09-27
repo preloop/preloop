@@ -690,6 +690,71 @@ def _evaluate_loaded_access_rules(
     return PolicyDecision("allow", None, "No rules matched (default allow)")
 
 
+def _account_authorizer_denial(
+    db: Any,
+    *,
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    account_id: Any,
+    tool_configuration_id: Optional[Any],
+    user_id: Optional[Any],
+    execution_id: Optional[Any],
+    subject_context: Optional[Dict[str, Any]],
+    correlation_id: Optional[str] = None,
+) -> Optional[PolicyDecision]:
+    """Ask the account authorizer (hook H4) about a tool call.
+
+    Returns a deny decision when the authorizer denies ``tool:call``, else
+    None so the existing rule evaluation decides. Deny wins: an allow here
+    never overrides a tool rule. With no authorizer registered this returns
+    None without doing anything.
+    """
+    from preloop.plugins.account_hooks import (
+        ACTION_TOOL_CALL,
+        AuthorizationContext,
+        authorize,
+        get_authorizer,
+    )
+
+    if get_authorizer() is None:
+        return None
+    ctx = AuthorizationContext(
+        account_id=account_id,
+        db=db,
+        principal=subject_context or {},
+        attributes={
+            "tool_name": tool_name,
+            "tool_configuration_id": (
+                str(tool_configuration_id) if tool_configuration_id else None
+            ),
+            "user_id": str(user_id) if user_id else None,
+            "execution_id": str(execution_id) if execution_id else None,
+        },
+    )
+    decision = authorize(ctx, ACTION_TOOL_CALL, {"tool_name": tool_name})
+    if decision.allowed:
+        return None
+    reason = decision.reason or "Denied by account access rule"
+    _log_policy_decision_async(
+        account_id=account_id,
+        tool_name=tool_name,
+        action="deny",
+        rule_description=reason,
+        tool_args=tool_args,
+        user_id=user_id,
+        execution_id=execution_id,
+        correlation_id=correlation_id,
+        extra_details={"access_rule_ids": list(decision.rule_ids)},
+    )
+    return PolicyDecision(
+        "deny",
+        None,
+        reason,
+        {"source": "access_rule", "rule_ids": list(decision.rule_ids)},
+        source="access_rule",
+    )
+
+
 def evaluate_policy(
     db: Session,
     tool_name: str,
@@ -731,6 +796,19 @@ def evaluate_policy(
           decisions, else None. Persisted on the approval request so the
           approver can see WHICH rule fired and what its expression was.
     """
+    denial = _account_authorizer_denial(
+        db,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        account_id=account_id,
+        tool_configuration_id=tool_configuration_id,
+        user_id=user_id,
+        execution_id=execution_id,
+        subject_context=subject_context,
+    )
+    if denial is not None:
+        return denial
+
     account = crud_account.get(db, id=account_id)
     account_meta = (account.meta_data or {}) if account else {}
 
@@ -1284,6 +1362,20 @@ async def evaluate_policy_async(
 
     See evaluate_policy for full documentation.
     """
+    denial = _account_authorizer_denial(
+        db,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        account_id=account_id,
+        tool_configuration_id=tool_configuration_id,
+        user_id=user_id,
+        execution_id=execution_id,
+        subject_context=subject_context,
+        correlation_id=correlation_id,
+    )
+    if denial is not None:
+        return denial
+
     account_meta_data = await get_meta_data_async(db, account_id=str(account_id))
 
     if not is_tool_enabled_for_subject(
