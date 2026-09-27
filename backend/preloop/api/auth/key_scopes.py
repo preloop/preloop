@@ -60,6 +60,37 @@ def _route_allowed(path: Optional[str]) -> bool:
     return any(path.startswith(prefix) for prefix in MCP_ONLY_KEY_ALLOWED_PATH_PREFIXES)
 
 
+def _mode_denies(api_key: Any, where: str) -> bool:
+    """Apply the enforcement mode to an MCP-only key on a surface it may not use.
+
+    This is the one place that reads ``api_key_scope_enforcement``, so the
+    REST dependency and the console channels cannot drift apart.
+
+    Args:
+        api_key: The authenticated API key, or None for JWT sessions.
+        where: Surface description for the log line (method and path, or a
+            channel name).
+
+    Returns:
+        True when the caller must refuse the key.
+    """
+    mode = getattr(settings, "api_key_scope_enforcement", "enforce")
+    if mode == "off" or not is_mcp_only_api_key(api_key):
+        return False
+    if mode == "audit":
+        logger.warning(
+            "MCP-scoped API key %s (%s) used on %s; allowed by audit mode",
+            getattr(api_key, "id", None),
+            getattr(api_key, "name", None),
+            where,
+        )
+        return False
+    logger.info(
+        "Denied MCP-scoped API key %s on %s", getattr(api_key, "id", None), where
+    )
+    return True
+
+
 def enforce_api_key_route_scope(api_key: Any, request: Optional[Request]) -> None:
     """Deny an MCP-only key on a REST route its scopes do not cover.
 
@@ -74,28 +105,17 @@ def enforce_api_key_route_scope(api_key: Any, request: Optional[Request]) -> Non
     Raises:
         HTTPException: 403 with ``detail.code`` ``api_key_scope_denied``.
     """
-    mode = getattr(settings, "api_key_scope_enforcement", "enforce")
-    if mode == "off" or not is_mcp_only_api_key(api_key):
+    if not is_mcp_only_api_key(api_key):
+        # Checked before touching the request, so other keys pay nothing.
         return
     path = request.url.path if request is not None else None
     if _route_allowed(path):
         return
-    method = request.method if request is not None else None
-    if mode == "audit":
-        logger.warning(
-            "MCP-scoped API key %s (%s) used on %s %s; allowed by audit mode",
-            getattr(api_key, "id", None),
-            getattr(api_key, "name", None),
-            method or "-",
-            path or "(no request)",
-        )
-        return
-    logger.info(
-        "Denied MCP-scoped API key %s on %s %s",
-        getattr(api_key, "id", None),
-        method or "-",
-        path or "(no request)",
+    where = (
+        f"{request.method} {path}" if request is not None else "a call without request"
     )
+    if not _mode_denies(api_key, where):
+        return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail={
@@ -122,18 +142,4 @@ def api_key_allowed_on_channel(api_key: Any, channel: str) -> bool:
     Returns:
         False when the key must be refused.
     """
-    mode = getattr(settings, "api_key_scope_enforcement", "enforce")
-    if mode == "off" or not is_mcp_only_api_key(api_key):
-        return True
-    if mode == "audit":
-        logger.warning(
-            "MCP-scoped API key %s (%s) used on %s; allowed by audit mode",
-            getattr(api_key, "id", None),
-            getattr(api_key, "name", None),
-            channel,
-        )
-        return True
-    logger.info(
-        "Denied MCP-scoped API key %s on %s", getattr(api_key, "id", None), channel
-    )
-    return False
+    return not _mode_denies(api_key, channel)
