@@ -206,8 +206,8 @@ The limits worth knowing:
   Parked executions keep their key. Two surfaces skip this check by design
   and accept the key until revocation or expiry: the browser-step flush
   (adapters finish flushing after the run ends) and the runtime routes that
-  also serve durable managed-agent credentials (agent control WebSocket,
-  permission check, operator note pull).
+  also serve durable managed-agent credentials (agent control WebSocket and
+  operator note pull).
 - **The tool allow list is checked on every call.** `allowed_mcp_tools`
   limits both the tools the MCP layer lists and the tools it will run for
   the key (`backend/preloop/services/dynamic_fastmcp.py`).

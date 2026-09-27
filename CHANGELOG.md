@@ -85,8 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `detail.code` `api_key_scope_denied`, and console WebSockets refuse them. A
   flow execution key also stops authenticating on REST, MCP and the model
   gateway once its execution has finished (the browser-step flush and the
-  agent control, permission check and note pull routes keep accepting it
-  until revocation or expiry). `API_KEY_SCOPE_ENFORCEMENT=audit` logs
+  agent control and note pull routes keep accepting it until revocation or
+  expiry). `API_KEY_SCOPE_ENFORCEMENT=audit` logs
   instead of refusing, and `off` turns the check off. Personal API keys are
   unchanged.
 
