@@ -191,7 +191,10 @@ preloop copilot --model anthropic/claude-sonnet-4-5 --provider anthropic
 variables pointed at the Preloop gateway. A missing binary, credential, or
 model alias exits without launching Copilot. `--token` and `PRELOOP_TOKEN`
 override the enrolled agent credential. See
-[docs/guide/copilot-cli.md](../docs/guide/copilot-cli.md).
+[docs/guide/copilot-cli.md](../docs/guide/copilot-cli.md). What Preloop
+governs and meters on each Copilot surface (VS Code Chat, this launcher,
+private-runner flows, the cloud agent, inline completions) is in
+[docs/guide/copilot.md](../docs/guide/copilot.md).
 
 ### Usage
 
@@ -513,12 +516,16 @@ All commands accept these flags:
 
 - `--token <token>` - Override the access token for this invocation
 - `--url <url>` - Override the API base URL for this invocation
+- `--profile <name>` - Use a named profile from the config file
+- `--account <slug>` - Act in one of the profile's stored accounts
 - `--verbose` / `-v` - Enable verbose output
 
 ### Environment Variables
 
 - `PRELOOP_TOKEN` - Override the access token
 - `PRELOOP_URL` - Override the API base URL
+- `PRELOOP_PROFILE` - Profile to use when `--profile` is not given
+- `PRELOOP_ACCOUNT` - Account to use when `--account` is not given
 
 ### Resolution Priority
 
@@ -526,6 +533,10 @@ Authentication and URL resolution use these rules:
 
 1. Token: `--token`, then `PRELOOP_TOKEN`, then the config file.
 2. API URL: `--url`, then `PRELOOP_URL`, then the config file, then `https://preloop.ai`.
+
+Profiles, per-account sessions, `preloop accounts` and the commands gated on
+server capabilities (`subaccounts`, `share`, `tags`, `access`) are described in
+[docs/guide/accounts-and-profiles.md](../docs/guide/accounts-and-profiles.md).
 
 ## Development
 

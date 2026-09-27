@@ -21,6 +21,7 @@ split_commits = false
 tag_pattern = "v[0-9]*"
 
 commit_parsers = [
+  { message = "(?i)^deprecat", group = "Deprecated" },
   { message = "^feat", group = "Added" },
   { message = "^fix", group = "Fixed" },
   { message = "^docs", group = "Documentation" },

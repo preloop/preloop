@@ -371,10 +371,12 @@ class TestJiraTrackerNewMethods(IsolatedAsyncioTestCase):
         self.assertEqual(result.id, "1001")
         self.assertEqual(result.author.name, "Test User")
 
-        # Verify API call
+        # Verify API call: the ADF body is only accepted by REST v3.
         self.tracker._make_request.assert_called_once_with(
-            "POST", "issue/TEST-123/comment", json_data=ANY
+            "POST", "issue/TEST-123/comment", json_data=ANY, api_version="3"
         )
+        body = self.tracker._make_request.call_args.kwargs["json_data"]["body"]
+        self.assertEqual(body["type"], "doc")
 
     async def test_add_relation_success(self):
         """Test successful issue relation creation."""
