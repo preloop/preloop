@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -72,6 +73,13 @@ func runCopilotHostJob(t *testing.T, job map[string]any) (leasedJobOutcome, *run
 func TestNormalizeCopilotHostExecProfile(t *testing.T) {
 	root := t.TempDir()
 	base := hostExecProfile{Name: "copilot-seat", Executable: "copilot", WorkspaceRoot: root}
+	if runtime.GOOS == "windows" {
+		// Windows rejects every native profile before harness checks.
+		if _, err := normalizeHostExecProfile(base); err == nil || !strings.Contains(err.Error(), "Unix process-group ownership") {
+			t.Fatalf("windows copilot profile: err = %v", err)
+		}
+		return
+	}
 	if _, err := normalizeHostExecProfile(base); err != nil {
 		t.Fatalf("plain copilot profile rejected: %v", err)
 	}
@@ -104,6 +112,13 @@ func TestCopilotHostExecAdvertisesCopilotCapability(t *testing.T) {
 		ModelMap:      map[string]string{"claude-sonnet-4.6": "claude-sonnet-4.6"},
 	}})
 	ads := hostExecAdvertisements()
+	if runtime.GOOS == "windows" {
+		// Native profiles are Unix-only, so Windows advertises none.
+		if len(ads) != 0 {
+			t.Fatalf("windows ads = %#v", ads)
+		}
+		return
+	}
 	if len(ads) != 1 {
 		t.Fatalf("ads = %#v", ads)
 	}
