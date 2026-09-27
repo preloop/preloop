@@ -41,6 +41,17 @@ npm run build
 
 The output files will be placed in the `dist/` directory.
 
+Browser error reporting is off unless the build is given a Sentry DSN. Set
+`VITE_SENTRY_DSN` when building (or pass `--build-arg VITE_SENTRY_DSN=...` to
+the frontend Docker image) to enable it:
+
+```bash
+VITE_SENTRY_DSN="https://<key>@<sentry-host>/<project>" npm run build
+```
+
+The hosted Cloud build sets this variable in its own build pipeline; the
+repository carries no DSN.
+
 ### Running Tests
 
 To run the test suite using Web Test Runner, use the following command:
