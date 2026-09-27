@@ -24,6 +24,7 @@ import type {
   AttentionInputs,
   AttentionPriceOverride,
 } from './attention';
+import { loadPolicyNotices } from './attention-policy';
 import { parseUTCDate } from './date';
 import {
   getSpendOutliers,
@@ -130,6 +131,8 @@ export async function loadAttentionInputs(
     now.getTime() - ATTENTION_QUERY.usageWindowDays * DAY_MS
   ).toISOString();
   const prefetched = options.prefetched || {};
+  // Started alongside the others; never rejects (see loadPolicyNotices).
+  const policyNotices = loadPolicyNotices();
 
   const [
     approvals,
@@ -247,6 +250,7 @@ export async function loadAttentionInputs(
       spendOutliers.status === 'fulfilled' && Array.isArray(spendOutliers.value)
         ? (spendOutliers.value as SpendOutlierFinding[])
         : [],
+    policyNotices: await policyNotices,
     dismissals: dismissalList,
     dismissalsSupported:
       dismissals.status === 'fulfilled' &&

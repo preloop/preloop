@@ -137,3 +137,66 @@ async def sync_shim_endpoint_async(
     db.add(approval_workflow)
     await db.flush()
     return endpoint
+
+
+def sync_shim_endpoint(db: Any, approval_workflow: Any) -> Optional[WebhookEndpoint]:
+    """Sync twin of :func:`sync_shim_endpoint_async` for worker threads.
+
+    Used by policy notices (#959), which are delivered from the DB thread
+    pool with a plain ``Session``. Same rules: create, update or deactivate
+    the workflow's shim endpoint and return it when a URL is configured.
+
+    Args:
+        db: Sync session.
+        approval_workflow: The ``ApprovalWorkflow`` carrying the config.
+
+    Returns:
+        The active shim endpoint, or None when no URL is configured.
+    """
+    workflow_id = getattr(approval_workflow, "id", None)
+    account_id = getattr(approval_workflow, "account_id", None)
+    if workflow_id is None or account_id is None:
+        return None
+
+    endpoint = (
+        db.execute(
+            select(WebhookEndpoint).where(
+                WebhookEndpoint.source == SOURCE_APPROVAL_WORKFLOW,
+                WebhookEndpoint.approval_workflow_id == workflow_id,
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    url = config_webhook_url(approval_workflow)
+    if not url:
+        if endpoint is not None and endpoint.active:
+            endpoint.active = False
+            db.add(endpoint)
+            db.flush()
+        return None
+
+    secret = _ensure_secret(approval_workflow)
+    if endpoint is None:
+        endpoint = WebhookEndpoint(
+            account_id=account_id,
+            source=SOURCE_APPROVAL_WORKFLOW,
+            approval_workflow_id=workflow_id,
+            event_types=[],
+            url=url,
+            secret_encrypted=encrypt_value(secret),
+            secret_hint=secret_hint(secret),
+            description=SHIM_DESCRIPTION,
+        )
+        db.add(endpoint)
+        db.add(approval_workflow)
+        db.flush()
+        return endpoint
+
+    if endpoint.url != url or not endpoint.active:
+        _apply(endpoint, url=url, secret=secret)
+        db.add(endpoint)
+    db.add(approval_workflow)
+    db.flush()
+    return endpoint
