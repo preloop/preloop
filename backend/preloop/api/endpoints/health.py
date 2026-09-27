@@ -84,6 +84,26 @@ def _usage_queue_health() -> Dict[str, Any]:
         return {"status": f"error: {type(exc).__name__}"}
 
 
+def _price_map_health() -> Dict[str, Any]:
+    """Summarize the upstream model price map refresh for the payload.
+
+    Last fetch time, outcome and entry count, so an operator can tell from
+    readiness alone whether this process is pricing from a fresh upstream
+    map or only from the vendored snapshot (issue #801). Informational: a
+    failed fetch never fails readiness, the snapshot still prices requests.
+
+    Returns:
+        The catalog's fetch status, or an error marker. Never raises.
+    """
+    try:
+        from preloop.services.model_price_catalog import price_map_status
+
+        return price_map_status()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Price map health snapshot failed", exc_info=True)
+        return {"status": f"error: {type(exc).__name__}"}
+
+
 @router.get("/health")
 def health_check() -> Dict[str, Any]:
     """Health check endpoint with database and MCP server status.
@@ -99,6 +119,8 @@ def health_check() -> Dict[str, Any]:
         - database: Database connection status
         - db_pool: Per-engine connection pool usage and saturation
         - api_usage_queue: Usage-logging queue depth and drop counters
+        - model_price_map: Last upstream price map fetch (time, outcome,
+          entry count)
         - mcp_server: MCP server availability
         - upstream_connections: Number of active upstream MCP connections
         - timestamp: Current timestamp
@@ -127,6 +149,7 @@ def health_check() -> Dict[str, Any]:
     # traffic on fewer pods. So this is visible, not fatal.
     health_status["db_pool"] = _pool_health()
     health_status["api_usage_queue"] = _usage_queue_health()
+    health_status["model_price_map"] = _price_map_health()
 
     # Dedicated gateway pods do not run MCP. Importing those modules on the
     # readiness probe would undo the create_app import split.
