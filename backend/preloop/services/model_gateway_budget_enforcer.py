@@ -209,7 +209,7 @@ class ModelGatewayBudgetEnforcer:
             )
 
         now = datetime.now(timezone.utc)
-        account_id = auth_context.user.account_id
+        account_id = auth_context.account_id
 
         model_alias = resolve_ai_model_runtime(
             ai_model
