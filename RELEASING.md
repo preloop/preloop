@@ -34,6 +34,7 @@ It can also optionally:
 ### Repo and docs
 
 - [ ] `CHANGELOG.md` is accurate and grouped under the target version heading.
+- [ ] Any deprecation or removal in this release follows [docs/compatibility.md](docs/compatibility.md) and is in the changelog. Deprecation commits use a subject that starts with `deprecate` (any case), for example `deprecate the legacy flag`. `cliff.toml` groups only those subjects under Deprecated. A commit that mentions deprecation later in the message stays in its own group.
 - [ ] `README.md` install steps, feature matrix, and edition boundaries still match the OSS release.
 - [ ] `ARCHITECTURE.md` still reflects the shipped product.
 - [ ] Contributor-facing repo files are in place: `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue templates.
