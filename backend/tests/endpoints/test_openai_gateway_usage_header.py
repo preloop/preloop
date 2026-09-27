@@ -15,13 +15,30 @@ from preloop.models.db.session import get_db_session
 USAGE_ID = "00000000-0000-4000-8000-000000000001"
 
 
+def _fake_db_session() -> MagicMock:
+    """Stand in for the database session dependency."""
+    return MagicMock()
+
+
+def _fake_auth_context() -> MagicMock:
+    """Stand in for the gateway bearer-auth dependency."""
+    return MagicMock()
+
+
+def _no_budget_enforcer() -> None:
+    """Disable budget enforcement for these header-only tests."""
+    return None
+
+
 @pytest.fixture
 def client() -> Iterator[TestClient]:
+    # Named zero-argument overrides: FastAPI would read MagicMock's own
+    # constructor parameters as request inputs if the class were passed.
     app = FastAPI()
     app.include_router(openai_gateway.router, prefix="/openai/v1")
-    app.dependency_overrides[get_db_session] = lambda: MagicMock()
-    app.dependency_overrides[get_model_gateway_auth_context] = lambda: MagicMock()
-    app.dependency_overrides[get_budget_enforcer] = lambda: None
+    app.dependency_overrides[get_db_session] = _fake_db_session
+    app.dependency_overrides[get_model_gateway_auth_context] = _fake_auth_context
+    app.dependency_overrides[get_budget_enforcer] = _no_budget_enforcer
     with TestClient(app) as test_client:
         yield test_client
 
