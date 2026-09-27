@@ -824,6 +824,23 @@ ${this.flow.prompt_template}</pre>
                 `
               : ''
           }
+          ${
+            typeof this.flow.review_instructions === 'string' &&
+            this.flow.review_instructions.trim()
+              ? html`
+                  <sl-card data-review-instructions>
+                    <div slot="header">
+                      <sl-icon name="shield-check"></sl-icon>
+                      Review instructions
+                    </div>
+                    <pre
+                      style="white-space: pre-wrap; word-wrap: break-word; font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); background: var(--sl-color-neutral-50); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); margin: 0; max-height: 300px; overflow-y: auto;"
+                    >
+${this.flow.review_instructions}</pre>
+                  </sl-card>
+                `
+              : ''
+          }
           ${this.renderScheduleCard()}
           ${
             this.flow.trigger_event_source === 'webhook' &&
