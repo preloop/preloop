@@ -490,7 +490,9 @@ describe('FlowExecutionView', () => {
     await waitUntil(
       () =>
         (element as any).execution?.id === executionId &&
-        !(element as any).isLoading,
+        !(element as any).isLoading &&
+        // The page paints before its logs land; these tests read them.
+        !(element as any).isLoadingLogs,
       `Execution view did not finish loading ${executionId}`
     );
     await element.updateComplete;

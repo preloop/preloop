@@ -950,12 +950,20 @@ derived component records `preloop:supplier_source`
 (`package_metadata_author`, `package_metadata_maintainer`, `npm_scope`,
 `module_path`, `manual_override`, or `unresolved`). `manual_override` is a
 checked-in name for a distribution whose files name no person and no
-repository. The `sbom` job fails when
+repository. An npm component whose name is `@types/*` or ends in `-types`,
+and whose installed directory contains no runtime file, also gets
+`preloop:types_only` set to `true`. The release security audit may use
+that property as evidence that a git-range match through the package
+`vcs_url` does not describe code in the component. The property does not
+suppress a finding on its own. A VEX statement does. The `sbom` job fails when
 `python -m preloop.cra measure` reports `passed: false`.
 
-OpenVEX for the CLI lives in `security/vex/preloop-cli.openvex.json` and is
-copied into the SBOM artifact and the GitHub release next to the CycloneDX
-files.
+OpenVEX documents live in `security/vex/`. The release workflow copies
+every `security/vex/*.openvex.json` into the SBOM artifact and the GitHub
+release, next to the CycloneDX files. `preloop-cli.openvex.json` covers
+the CLI `golang.org/x/crypto` statements. `preloop-frontend.openvex.json`
+covers `undici-types` (declarations only) and `lodash.camelcase` (present
+in the test-runner install tree, absent from the shipped bundle).
 
 ## What the platform measures itself
 

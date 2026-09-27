@@ -145,6 +145,15 @@ from preloop.services.account_realtime import (
 
 logger = logging.getLogger(__name__)
 
+# Log lines the post-execution block prints once it has started publishing.
+# ``PRELOOP_EVIDENCE committed`` is deliberately absent: the evidence upload
+# runs from an EXIT trap, so it also prints on a pre-push transient failure.
+_PUBLICATION_SIDE_EFFECT_PATTERNS = (
+    ("commits being pushed", re.compile(r"Found \d+ commits on \S+, pushing")),
+    ("a pull request create response", re.compile(r"\b(?:PR|MR) create HTTP 2\d\d\b")),
+    ("the pull request marker", re.compile(re.escape(PR_OPENED_MARKER) + r"\s+\{")),
+)
+
 # Statuses after which no agent of this execution can still be running, so its
 # runtime credentials can be retired. Anything else means the agent may still
 # be live (an interrupted run is resumed by a peer worker), and its gateway
@@ -585,6 +594,11 @@ class FlowExecutionOrchestrator:
         # True after this orchestrator has already persisted ``_opened_pr``.
         # Live log frames bind immediately; terminal rescan must not bind twice.
         self._opened_pr_bound = False
+        # True when ``_opened_pr`` came from the tracker lookup by head
+        # branch rather than from the wrapper's marker line.
+        self._opened_pr_by_lookup = False
+        # Set by the retry boundary: this run's fresh branch is on the remote.
+        self._remote_branch_published = False
         # Native CLI agent session (opencode/codex) reported by the container
         # via the PRELOOP_AGENT_SESSION marker, persisted on the execution so
         # a correlated PR-comment resume can invoke the CLI resume flag.
@@ -4305,6 +4319,252 @@ class FlowExecutionOrchestrator:
         )
         self._opened_pr_bound = True
 
+    def _publication_context(self) -> Dict[str, Any]:
+        ctx = getattr(self, "_execution_context", None)
+        return ctx if isinstance(ctx, dict) else {}
+
+    def _publication_target_branch(self) -> Optional[str]:
+        """The branch the post-execution block pushes, when this run has one."""
+        branch = self._publication_context().get("_git_target_branch")
+        if isinstance(branch, str) and branch.strip():
+            return branch.strip()
+        return None
+
+    def _publication_is_resume(self) -> bool:
+        """A resume pushes onto a PR branch that existed before this run."""
+        ctx = self._publication_context()
+        source = ctx.get("_git_source_branch")
+        target = ctx.get("_git_target_branch")
+        if source and target and source == target:
+            return True
+        trigger = ctx.get("trigger_event_data")
+        return isinstance(trigger, dict) and bool(trigger.get("_resume"))
+
+    def _publication_lookup_enabled(self) -> bool:
+        """Whether this run's post-execution block creates a PR/MR."""
+        if getattr(self, "_isolated_publication_policy", None) is not None:
+            # Only the trusted publisher can bind an isolated execution.
+            return False
+        if self.execution_log is None or self._publication_target_branch() is None:
+            return False
+        git_config = self._publication_context().get("git_clone_config")
+        if not isinstance(git_config, dict):
+            git_config = getattr(self.flow, "git_clone_config", None) or {}
+        return isinstance(git_config, dict) and bool(
+            git_config.get("create_pull_request")
+        )
+
+    async def _publication_tracker_clients(self) -> List[Any]:
+        """Tracker clients for the repositories the post-exec block pushes to.
+
+        Repositories that name a ``project_id`` resolve their own client.
+        Otherwise the trigger project is the push target, as in the
+        container's clone fallback (``_resolve_git_clone_repositories``).
+        """
+        from preloop.api.common import get_tracker_client
+        from preloop.models.crud import crud_project
+
+        git_config = self._publication_context().get("git_clone_config")
+        if not isinstance(git_config, dict):
+            git_config = {}
+        project_ids = []
+        for repo in git_config.get("repositories") or []:
+            if isinstance(repo, dict) and repo.get("project_id"):
+                if repo["project_id"] not in project_ids:
+                    project_ids.append(repo["project_id"])
+        if not project_ids:
+            trigger_project_id = self._publication_context().get("trigger_project_id")
+            if trigger_project_id:
+                project_ids.append(trigger_project_id)
+        if not project_ids:
+            return []
+        clients: List[Any] = []
+        users = crud_user.get_by_account(
+            self.db, account_id=self.flow.account_id, limit=1
+        )
+        if not users:
+            return []
+        for project_id in project_ids:
+            try:
+                project = crud_project.get(self.db, id=project_id)
+                if not project or not getattr(project, "organization_id", None):
+                    continue
+                client = await get_tracker_client(
+                    organization_id=project.organization_id,
+                    project_id=project.id,
+                    db=self.db,
+                    current_user=users[0],
+                )
+            except Exception as error:
+                logger.warning(
+                    "PR lookup: no tracker client for project %s: %s",
+                    project_id,
+                    _exception_message(error),
+                )
+                continue
+            if client is not None:
+                clients.append(client)
+        return clients
+
+    @staticmethod
+    def _tracker_kind(client: Any) -> Optional[str]:
+        from preloop.sync.trackers.github import GitHubTracker
+        from preloop.sync.trackers.gitlab import GitLabTracker
+
+        if isinstance(client, GitLabTracker):
+            return "gitlab"
+        if isinstance(client, GitHubTracker):
+            return "github"
+        return None
+
+    async def _lookup_published_pr(
+        self, client: Any, branch: str
+    ) -> Optional[Dict[str, str]]:
+        """The open PR/MR whose head is ``branch`` on ``client``'s repo."""
+        kind = self._tracker_kind(client)
+        if kind == "gitlab":
+            listing = await client.list_merge_requests(
+                state="open", limit=5, page=1, source_branch=branch
+            )
+        elif kind == "github":
+            listing = await client.list_pull_requests(
+                state="open", limit=5, page=1, head_branch=branch
+            )
+        else:
+            return None
+        for item in (listing or {}).get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            # The provider filter is authoritative; this guards a tracker
+            # that ignored it and returned unrelated PRs.
+            if item.get("source_branch") != branch or not item.get("url"):
+                continue
+            return {"url": str(item["url"]), "branch": branch, "provider": kind}
+        return None
+
+    def _execution_already_bound(self) -> bool:
+        """True when another path (MCP create_pull_request) bound a PR."""
+        try:
+            self.db.refresh(self.execution_log)
+        except Exception:
+            logger.debug("Could not refresh execution before PR lookup", exc_info=True)
+        result = getattr(self.execution_log, "result", None)
+        return isinstance(result, dict) and bool(result.get("pr_url"))
+
+    async def _bind_published_pr_by_branch(self) -> Optional[Dict[str, str]]:
+        """Bind the PR/MR the post-execution block opened, found by branch.
+
+        The ``PRELOOP_PR_OPENED`` log line is the fast path. The PR itself is
+        created by deterministic code, so when the line is missing (the
+        script died after the create call, the stream dropped a frame) the
+        tracker is the source of truth: look the PR up by head branch and
+        bind it through ``record_opened_pr`` like the marker would.
+        """
+        if self._opened_pr is not None:
+            return self._opened_pr
+        if not self._publication_lookup_enabled():
+            return None
+        if self._execution_already_bound():
+            return None
+        branch = self._publication_target_branch()
+        try:
+            clients = await self._publication_tracker_clients()
+        except Exception as error:
+            logger.warning("PR lookup by branch skipped: %s", _exception_message(error))
+            return None
+        for client in clients:
+            try:
+                found = await self._lookup_published_pr(client, branch)
+            except Exception as error:
+                logger.warning(
+                    "PR lookup by branch %s failed: %s",
+                    branch,
+                    _exception_message(error),
+                )
+                continue
+            if found is None:
+                continue
+            self._opened_pr = found
+            self._opened_pr_by_lookup = True
+            record_opened_pr(
+                self.db,
+                self.execution_log.id,
+                found["url"],
+                source_branch=found["branch"],
+            )
+            self._opened_pr_bound = True
+            logger.info("Bound the published pull request by head branch lookup")
+            self.execution_logger.log_milestone(
+                "pull_request_opened",
+                {
+                    "pr_url": found["url"],
+                    "branch": found["branch"],
+                    "provider": found["provider"],
+                    "source": "branch_lookup",
+                },
+            )
+            return found
+        return None
+
+    async def _probe_remote_branch_published(self) -> None:
+        """Record whether this run's fresh target branch now exists remotely.
+
+        Only meaningful for a new branch: a resume pushes onto a PR branch
+        that already existed, so its presence proves nothing about this run.
+        """
+        self._remote_branch_published = False
+        if self._publication_is_resume() or not self._publication_lookup_enabled():
+            return
+        branch = self._publication_target_branch()
+        try:
+            clients = await self._publication_tracker_clients()
+        except Exception:
+            return
+        for client in clients:
+            if self._tracker_kind(client) is None:
+                continue
+            try:
+                if await client.branch_exists(branch):
+                    self._remote_branch_published = True
+                    return
+            except Exception as error:
+                logger.warning(
+                    "Remote branch probe for %s failed: %s",
+                    branch,
+                    _exception_message(error),
+                )
+
+    def _publication_side_effect_evidence(
+        self, agent_result: Dict[str, Any]
+    ) -> Optional[str]:
+        """Why this failed attempt already published, or ``None``.
+
+        The post-exec block can fail after it pushed and opened a PR (the
+        2026-09-25 ``unbound variable`` abort one line after
+        ``PR create HTTP 201``). A non-zero exit then does not mean "no side
+        effects", and relaunching from a fresh clone would redo the work
+        against a branch and PR that already exist.
+        """
+        opened = self._opened_pr
+        if opened is not None and not (
+            getattr(self, "_opened_pr_by_lookup", False)
+            and self._publication_is_resume()
+        ):
+            return f"a pull request is bound ({opened.get('url')})"
+        if getattr(self, "_remote_branch_published", False):
+            return (
+                f"branch {self._publication_target_branch()} now exists on the remote"
+            )
+        lines = [
+            str(line) for line in self.execution_logger.get_agent_output_lines()[-400:]
+        ]
+        lines.extend(str(agent_result.get("error_message") or "").splitlines())
+        for line in lines:
+            for label, pattern in _PUBLICATION_SIDE_EFFECT_PATTERNS:
+                if pattern.search(line):
+                    return f"the log shows {label}"
+        return None
+
     async def _start_queued_followup(self) -> None:
         """Start the single follow-up resume queued while this run was going.
 
@@ -6324,9 +6584,12 @@ class FlowExecutionOrchestrator:
 
         The safety boundary is the container's post-execution block (git push,
         pull-request/merge-request creation), which the agent entrypoints run
-        only when the agent process exited ``0``. A non-zero exit therefore
-        means no external side effect was produced by the container and the
-        attempt can be repeated safely. Anything else — an exit code of 0, an
+        only when the agent process exited ``0``. A non-zero exit usually
+        means no external side effect was produced by the container, but not
+        when the block itself failed after pushing (it exits non-zero too), so
+        publication evidence is checked as well: a bound PR, the fresh branch
+        on the remote, or the block's push / PR-create lines in the tail (see
+        :meth:`_publication_side_effect_evidence`). Anything else — an exit code of 0, an
         unknown exit code, or side effects already recorded on the timeline —
         is treated as unsafe, because re-running it risks a duplicate comment,
         push or pull request. A wrong retry is worse than no retry.
@@ -6347,6 +6610,13 @@ class FlowExecutionOrchestrator:
 
         if self.execution_logger.get_actions_taken():
             return "the agent already recorded actions; retrying could repeat them"
+
+        published = self._publication_side_effect_evidence(agent_result)
+        if published:
+            return (
+                "the post-execution publication block already ran "
+                f"({published}); relaunching would redo pushed work"
+            )
 
         if not self._failure_is_transient(agent_result):
             return "the failure is not a transient upstream failure"
@@ -6476,6 +6746,12 @@ class FlowExecutionOrchestrator:
                     )
                 break
 
+            if agent_result.get("status") == "FAILED":
+                # Side-effect evidence for the retry boundary: the PR bound
+                # by branch lookup, or the fresh branch now on the remote.
+                await self._bind_published_pr_by_branch()
+                if self._opened_pr is None:
+                    await self._probe_remote_branch_published()
             reason = self._retry_decision(agent_result)
             if reason is not None:
                 logger.info(
@@ -7226,6 +7502,10 @@ class FlowExecutionOrchestrator:
             # reaches Python; bind it here, before the refresh below, so the
             # merged result keeps pr_url for comment-driven resume.
             self._bind_opened_pr(output_summary)
+            # Marker missing: the tracker is the source of truth for the PR
+            # the deterministic post-exec block opened, whatever the status.
+            if self._opened_pr is None:
+                await self._bind_published_pr_by_branch()
             # Same channel pattern for the native CLI session id: rescued
             # from the output summary when the live stream missed it.
             self._bind_cli_session(output_summary)
