@@ -296,6 +296,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Jira-triggered flow bound to a code-host repository now clones that
+  repository on Copilot and Cursor host execution profiles too, with the
+  code-host tracker's credential only. Before, the host checkout ignored the
+  binding and failed the lease with "no repository URL". A binding that
+  cannot be applied fails the lease with a launch error that names it.
+
 - `POST` and `PUT /api/v1/ai-models` check `credential_payload` against
   `credential_type` when it is written. A Codex subscription payload needs
   `access`, `refresh`, `account_id` and `expires` (integer epoch
