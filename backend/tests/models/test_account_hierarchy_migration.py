@@ -18,6 +18,7 @@ from alembic.operations import Operations
 from sqlalchemy import inspect, text
 
 from preloop.models import models
+from preloop.models.models.person import normalize_email
 
 VERSIONS = (
     Path(__file__).resolve().parents[2] / "preloop" / "models" / "alembic" / "versions"
@@ -86,6 +87,8 @@ def _seed(db_session) -> dict[str, uuid.UUID]:
     newer = user(globex, "alice-globex", " Alice@Example.COM", True, now)
     squatter = user(globex, "alice-squat", "alice@example.com", False, None)
     solo = user(acme, "bob", "bob@example.com", False, None)
+    # Imported rows (CSV, LDAP, tracker sync) can carry tabs and newlines.
+    tabbed = user(acme, "carol", "\tCarol@Example.com\n", True, now)
     db_session.flush()
 
     team = models.Team(account_id=acme.id, name="platform")
@@ -112,6 +115,7 @@ def _seed(db_session) -> dict[str, uuid.UUID]:
         "newer": newer.id,
         "squatter": squatter.id,
         "solo": solo.id,
+        "tabbed": tabbed.id,
     }
 
 
@@ -190,6 +194,15 @@ def _assert_backfilled(connection, seeded) -> None:
     assert provisional["email_verified_at"] is None
     assert provisional["primary_user_id"] == seeded["squatter"]
 
+    tabbed = connection.execute(
+        text(
+            "SELECT p.email_normalized FROM person p"
+            ' JOIN "user" u ON u.person_id = p.id WHERE u.id = :id'
+        ),
+        {"id": seeded["tabbed"]},
+    ).scalar()
+    assert tabbed == "carol@example.com" == normalize_email("\tCarol@Example.com\n")
+
     orphans = connection.execute(
         text(
             "SELECT count(*) FROM person p WHERE NOT EXISTS"
@@ -205,6 +218,7 @@ def key_name(key: str) -> str:
         "newer": "alice-globex",
         "squatter": "alice-squat",
         "solo": "bob",
+        "tabbed": "carol",
     }[key]
 
 

@@ -544,3 +544,34 @@ def test_rule_and_tag_resource_types_are_a_closed_set(db_session):
     # NULL on a rule still means every resource type.
     db_session.add_all([rule(None), rule("ai_model")])
     db_session.flush()
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        " Alice@Example.COM ",
+        "\talice@example.com\n",
+        "alice@example.com\r\f\v",
+        " alice@example.com",
+    ],
+)
+def test_normalize_email_matches_the_backfill_expression(db_session, email):
+    """The hook and the backfill must store the same email_normalized."""
+    import importlib.util
+    from pathlib import Path
+
+    from preloop.models.models.person import normalize_email
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "preloop/models/alembic/versions/20260928_person_backfill.py"
+    )
+    spec = importlib.util.spec_from_file_location("person_backfill", path)
+    assert spec is not None and spec.loader is not None
+    backfill = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backfill)
+
+    in_sql = db_session.execute(
+        text("SELECT " + backfill.normalized_email(":email")), {"email": email}
+    ).scalar()
+    assert normalize_email(email) == in_sql

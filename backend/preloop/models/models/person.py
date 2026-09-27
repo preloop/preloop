@@ -27,13 +27,21 @@ if TYPE_CHECKING:
     from .user import User
 
 
+# The characters Postgres writes as E' \t\n\r\f\x0b'.
+EMAIL_TRIM_CHARS = " \t\n\r\f\v"
+
+
 def normalize_email(email: Optional[str]) -> str:
     """Return the form of an address that ``person.email_normalized`` stores.
 
-    Lowercase with surrounding whitespace removed, the same expression the
-    backfill migration applies in SQL (``lower(btrim(email))``).
+    Lowercase, with surrounding ASCII whitespace (space, tab, newline, carriage
+    return, form feed, vertical tab) removed. The backfill revision applies
+    the same trim set in SQL (``lower(btrim(email, E' \\t\\n\\r\\f\\x0b'))``).
+    Other whitespace, such as a no-break space, is kept by both. ``lower()``
+    agrees with Postgres on ASCII; outside ASCII it depends on the database
+    collation.
     """
-    return (email or "").strip().lower()
+    return (email or "").strip(EMAIL_TRIM_CHARS).lower()
 
 
 class Person(Base):

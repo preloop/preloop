@@ -48,7 +48,7 @@ _USER_CONSTRAINTS = (
 
 _LINK_STRAGGLERS = """
 WITH stragglers AS (
-    SELECT id, lower(btrim(email)) AS email_normalized,
+    SELECT id, lower(btrim(email, E' \\t\\n\\r\\f\\x0b')) AS email_normalized,
            gen_random_uuid() AS person_id
     FROM "user"
     WHERE person_id IS NULL

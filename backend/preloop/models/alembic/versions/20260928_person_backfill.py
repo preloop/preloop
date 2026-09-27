@@ -20,6 +20,10 @@ by ``20260928_person_constraints``.
   never merged here, so an address pre-registered without verification
   cannot capture somebody else's memberships.
 
+The normalized email is ``normalized_email()`` below, the same trim set and
+lowercasing as ``preloop.models.models.person.normalize_email``. It is spelled
+out here because a revision must not change when that module does.
+
 The revision only links rows. It changes no credential and sends nothing:
 passwords, passkeys and OAuth links stay on every row. Idempotent: rows that
 already have a person are left alone.
@@ -39,8 +43,8 @@ assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 
 def normalized_email(column: str) -> str:
-    """SQL for the normalized form of ``column``: trimmed, lowercased."""
-    return f"lower(btrim({column}))"
+    """SQL for the normalized form of ``column``: trimmed ASCII space, lowercased."""
+    return f"lower(btrim({column}, E' \\t\\n\\r\\f\\x0b'))"
 
 
 # Most recent login first; rows that never logged in last; then newest row.
