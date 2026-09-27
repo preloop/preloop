@@ -304,11 +304,14 @@ def test_flow_token_for_live_execution_is_accepted(
     assert get_user_from_token_if_valid_sync(token, db_session) is not None
 
 
+@pytest.mark.parametrize("mode", ["enforce", "audit", "off"])
 def test_unified_websocket_rejects_mcp_only_keys(
     db_session: Session,
     test_user: models.User,
     enforcement_mode,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    mode: str,
 ) -> None:
     """The console event stream is account data, not an MCP surface."""
     import asyncio
@@ -321,8 +324,38 @@ def test_unified_websocket_rejects_mcp_only_keys(
     monkeypatch.setattr(websockets, "run_db_async", run_inline)
     flow_token = _flow_token(db_session, test_user)
     personal = _personal_key(db_session, test_user)
-    assert asyncio.run(websockets._resolve_token_user(flow_token)) is None
+    enforcement_mode(mode)
+    with caplog.at_level(logging.WARNING, logger=KEY_SCOPES_LOGGER):
+        flow_user = asyncio.run(websockets._resolve_token_user(flow_token))
+    assert (flow_user is None) is (mode == "enforce")
+    audit_logged = "allowed by audit mode" in caplog.text
+    assert audit_logged is (mode == "audit")
     assert asyncio.run(websockets._resolve_token_user(personal)) is not None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, "enforce"),
+        ("audit", "audit"),
+        (" OFF ", "off"),
+        ("enforced", "enforce"),
+        ("disabled", "enforce"),
+    ],
+)
+def test_enforcement_setting_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, raw, expected: str
+) -> None:
+    """A typo in the flag must not switch enforcement off."""
+    from preloop.config import Settings
+
+    # Keep the production secret check out of the way; it is tested elsewhere.
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    if raw is None:
+        monkeypatch.delenv("API_KEY_SCOPE_ENFORCEMENT", raising=False)
+    else:
+        monkeypatch.setenv("API_KEY_SCOPE_ENFORCEMENT", raw)
+    assert Settings.from_env().api_key_scope_enforcement == expected
 
 
 @pytest.mark.parametrize(
