@@ -165,6 +165,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a concurrent reader never sees a partial file; a symlinked config keeps its
   link. The host execution cleanup test no longer races its fake CLI's pid
   file.
+- A vulnerability finding whose `epss` or `cvss` is a numeric string is
+  coerced to a number when the string is finite and in range (EPSS 0 to 1,
+  CVSS 0 to 10), recorded on `verdict_corrected`, and re-validated. A
+  string that does not parse stays a contract failure naming the finding
+  index and the value. The verdict and the gate the agent submitted are
+  not relaxed.
 
 - Model prices stay current between releases. Every API, gateway and worker
   process now fetches the upstream litellm price map on startup and every
