@@ -14,6 +14,7 @@ from sqlalchemy import and_, case, func, or_, text
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.plugins.account_hooks import billing_account_id
 from .api_usage import exclude_replay_usage_condition
 from .entitlement import (
     ENTITLED_STATUSES,
@@ -116,7 +117,11 @@ class CRUDBilling:
         name. A row whose plan row is missing entirely is treated the same
         way, so it falls back to the default plan instead of resolving terms
         nobody can read.
+
+        Account hook H7 may name another account whose subscription applies
+        (for example a paying parent); its rows are read instead.
         """
+        account_id = billing_account_id(db, account_id)
         return (
             db.query(models.Subscription)
             .filter(

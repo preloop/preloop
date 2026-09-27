@@ -66,7 +66,7 @@ export class IconSelector extends LitElement {
   }
 
   uploadIcon() {
-    // TODO: Implement file upload
+    // Choosing an uploaded file is not available. The control says so.
     alert('File upload not yet implemented');
   }
 }

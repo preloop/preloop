@@ -6,7 +6,7 @@ across all protected API endpoints.
 
 import functools
 import logging
-from typing import Callable
+from typing import Callable, List
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -46,6 +46,38 @@ def has_permission(user: User, permission_name: str, db: Session) -> bool:
         return False
 
     return user_holds_permission(db, user, permission_name)
+
+
+def get_user_permissions(user: User, db: Session) -> List[str]:
+    """Get all permissions for a user.
+
+    Permissions are aggregated from every role the user holds in their
+    account: roles assigned directly and roles granted through team
+    membership. Role resolution is shared with
+    :func:`preloop.utils.permissions.user_permission_names`, so this list
+    agrees with :func:`has_permission`.
+
+    Args:
+        user: The user to get permissions for.
+        db: Database session.
+
+    Returns:
+        Permission names the user has. Empty when the user is inactive.
+        Order is not significant. The system owner role expands to every
+        permission name.
+
+    Note:
+        Users holding the system "owner" role have all permissions.
+        Inactive users have no permissions.
+    """
+    # Imported here, not at module level: preloop.utils.permissions imports
+    # the RBAC plugin at import time, and the plugin may import this module.
+    from preloop.utils.permissions import user_permission_names
+
+    if not user.is_active:
+        return []
+
+    return user_permission_names(db, user)
 
 
 def require_permission(permission_name: str):

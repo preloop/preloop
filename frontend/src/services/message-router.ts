@@ -5,6 +5,8 @@
  * automatically routes incoming messages to interested subscribers.
  */
 
+import { debugLog } from '../utils/debug';
+
 export interface Subscription {
   topic: string;
   filter?: (message: any) => boolean;
@@ -59,13 +61,13 @@ export class MessageRouter {
 
     // Debug logging for device registration and approval events
     if (topic === 'device_registered' || topic === 'approvals') {
-      console.log(`[MessageRouter] Routing ${message.type} to topic=${topic}`);
+      debugLog(`[MessageRouter] Routing ${message.type} to topic=${topic}`);
     }
 
     // Notify topic-specific subscribers
     const topicSubscribers = this.subscriptions.get(topic) || new Set();
     if (topic === 'device_registered' || topic === 'approvals') {
-      console.log(
+      debugLog(
         `[MessageRouter] ${topicSubscribers.size} subscriber(s) for topic ${topic}`
       );
     }
