@@ -150,8 +150,8 @@ completion, injection rejection). Windows specifics:
   use `taskkill /T /F`, so the agent CLI and every descendant (node, tools,
   spawned shells) are terminated, matching the Unix process-group kill.
   The runner pins the job's PID with a process handle first and skips
-  taskkill once the job has exited, so a recycled PID never points it at
-  an unrelated process.
+  taskkill once the runner has reaped the job, so a recycled PID never
+  points it at an unrelated process.
 - **Copilot hooks run under PowerShell.** The Preloop usage hooks written to
   `%USERPROFILE%\.copilot\hooks\preloop.json` (or `%COPILOT_HOME%\hooks`)
   use the `powershell` command form on Windows; no bash is required

@@ -258,9 +258,26 @@ func TestKillRunnerJobProcessSkipsTaskkillAfterWait(t *testing.T) {
 	}
 	t.Cleanup(func() { runWindowsTaskkill = original })
 
+	// Hold a handle on the child so its PID stays allocated after Wait.
+	// That makes OpenProcess in killRunnerJobProcess succeed, exactly as it
+	// would on a recycled PID, so only the waited-process guard can stop
+	// taskkill here.
 	exited := exec.Command("cmd.exe", "/c", "exit 0")
-	if err := exited.Run(); err != nil {
+	if err := exited.Start(); err != nil {
 		t.Fatal(err)
+	}
+	hold, err := syscall.OpenProcess(syscall.SYNCHRONIZE, false, uint32(exited.Process.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(hold)
+	if err := exited.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if pin, err := syscall.OpenProcess(syscall.SYNCHRONIZE, false, uint32(exited.Process.Pid)); err != nil {
+		t.Fatalf("PID not reopenable after Wait, guard path not exercised: %v", err)
+	} else {
+		_ = syscall.CloseHandle(pin)
 	}
 	if runnerJobProcessUnwaited(exited.Process.Signal(syscall.Signal(0))) {
 		t.Fatal("a waited process must not probe as unwaited")
