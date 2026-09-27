@@ -16299,6 +16299,70 @@ components:
       type: object
       title: AvatarResponse
       description: Response after avatar upload or deletion.
+    Backport:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether merged pull requests are backported by the control
+            plane instead of running an agent
+          default: false
+        source_branch:
+          type: string
+          title: Source Branch
+          description: Release branch whose merged pull requests are backported. A
+            merge into any other branch does not start the flow
+        target_branches:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          minItems: 1
+          title: Target Branches
+          description: Branches the change is cherry-picked onto, in order, for example
+            the next release branch and then the default branch
+        reviewers:
+          items:
+            type: string
+          type: array
+          maxItems: 15
+          title: Reviewers
+          description: Usernames asked to review every backport pull request. A failed
+            review request is recorded and the pull request stays open
+        comment_on_original:
+          type: boolean
+          title: Comment On Original
+          description: Post one summary comment with the status of every target on
+            the original pull request
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - source_branch
+      - target_branches
+      title: Backport
+      description: 'Cherry-pick a merged pull request onto later release branches.
+
+
+        Issue #961. When a pull request merges into ``source_branch``, the control
+
+        plane cherry-picks its merge commit onto a new branch cut from each entry
+
+        of ``target_branches``, in order, and opens one pull request per target.
+
+        No agent runs and nothing is ever merged. A conflict is reported with the
+
+        conflicting files and left for a person.
+
+
+        This block is separate from ``GitCloneConfig.source_branch``, which names
+
+        the branch an agent checkout starts from, a different meaning.
+
+
+        ``extra=''forbid''``: a misspelled key here is a backport opened against the
+
+        wrong branch, or not at all.'
     BaselineAcceptRequest:
       properties:
         audit_execution_id:
@@ -20767,6 +20831,13 @@ components:
           - type: 'null'
           description: File the follow ups a human approved in this run as tracker
             issues, after the agent has exited and without giving it write tools
+        backport:
+          anyOf:
+          - $ref: '#/components/schemas/Backport'
+          - type: 'null'
+          description: Backport merged pull requests from a release branch onto later
+            branches. When enabled, the control plane runs the backport and no agent
+            runs
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
@@ -20886,6 +20957,13 @@ components:
           - type: 'null'
           description: File the follow ups a human approved in this run as tracker
             issues, after the agent has exited and without giving it write tools
+        backport:
+          anyOf:
+          - $ref: '#/components/schemas/Backport'
+          - type: 'null'
+          description: Backport merged pull requests from a release branch onto later
+            branches. When enabled, the control plane runs the backport and no agent
+            runs
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.

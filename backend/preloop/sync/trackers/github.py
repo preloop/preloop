@@ -2114,6 +2114,82 @@ class GitHubTracker(BaseTracker):
             "updated_at": pr_data.get("updated_at"),
         }
 
+    async def find_pull_requests_by_branch(
+        self, source_branch: str, target_branch: str
+    ) -> List[Dict[str, Any]]:
+        """Pull requests in any state from ``source_branch`` into ``target_branch``.
+
+        Only branches of the connected repository are matched (``head`` is
+        qualified with the owner), so a fork with the same branch name is
+        never mistaken for this repository's pull request.
+
+        Args:
+            source_branch: Head branch name.
+            target_branch: Base branch name.
+
+        Returns:
+            Normalized pull requests (see ``list_pull_requests``), newest
+            first. ``state`` is ``merged`` for a merged pull request.
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+
+        raw, _headers = await self._request_with_headers(
+            "GET",
+            f"/repos/{owner}/{repo}/pulls",
+            params={
+                "state": "all",
+                "head": f"{owner}:{source_branch}",
+                "base": target_branch,
+                "per_page": 20,
+                "sort": "created",
+                "direction": "desc",
+            },
+        )
+        if not isinstance(raw, list):
+            raise TrackerResponseError("GitHub pull request list was not an array")
+        matches: List[Dict[str, Any]] = []
+        for pr in raw:
+            item = self._normalize_listed_pull_request(pr)
+            if (
+                item["source_branch"] != source_branch
+                or item["target_branch"] != target_branch
+            ):
+                continue
+            if pr.get("merged_at"):
+                item["state"] = "merged"
+            matches.append(item)
+        return matches
+
+    async def request_pull_request_reviewers(
+        self, pr_number: int, reviewers: List[str]
+    ) -> None:
+        """Ask ``reviewers`` to review a pull request, keeping existing requests.
+
+        Unlike ``create_pull_request``, a failure is raised to the caller so
+        it can be recorded, instead of being logged and dropped.
+
+        Args:
+            pr_number: Pull request number.
+            reviewers: GitHub usernames.
+
+        Raises:
+            TrackerResponseError: GitHub refused the request.
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+        if not reviewers:
+            return
+        await self._request(
+            "POST",
+            f"/repos/{owner}/{repo}/pulls/{int(pr_number)}/requested_reviewers",
+            data={"reviewers": list(reviewers)},
+        )
+
     async def update_pull_request(
         self,
         pr_identifier: str,

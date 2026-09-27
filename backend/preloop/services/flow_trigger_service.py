@@ -1144,6 +1144,20 @@ class FlowTriggerService:
         Returns:
             True if the event matches the trigger config, False otherwise
         """
+        # A backport flow (issue #961) starts only for a merge into its
+        # configured source branch; a merge anywhere else never starts it.
+        from preloop.services.backport import backport_event_matches
+
+        if not backport_event_matches(
+            getattr(flow, "git_clone_config", None), event_data
+        ):
+            logger.info(
+                "Flow %s: backport flow skipped, the event is not a merge into "
+                "its source branch",
+                flow.id,
+            )
+            return False
+
         if not flow.trigger_config:
             # No additional conditions, event matches
             return True
