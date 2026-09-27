@@ -719,6 +719,134 @@ class SupplierDerivationTest(unittest.TestCase):
             self.assertNotIn("licenses", component, name)
             self.assertIsNone(sbom_metadata.license_source(component), name)
 
+    def test_header_rules_do_not_collapse_lookalike_text(self) -> None:
+        bsd_preamble = (
+            "Redistribution and use in source and binary forms, with or "
+            "without modification, are permitted provided that the following "
+            "conditions are met:\n"
+        )
+        source_clause = (
+            "1. Redistributions of source code must retain the above "
+            "copyright notice, this list of conditions and the following "
+            "disclaimer.\n"
+        )
+        binary_clause = (
+            "2. Redistributions in binary form must reproduce the above "
+            "copyright notice, this list of conditions and the following "
+            "disclaimer in the documentation and/or other materials provided "
+            "with the distribution.\n"
+        )
+        one_clause = sbom_metadata.detect_license_text(bsd_preamble + source_clause)
+        self.assertEqual(one_clause, {"license": {"id": "BSD-1-Clause"}})
+        two_clause = sbom_metadata.detect_license_text(
+            bsd_preamble + source_clause + binary_clause
+        )
+        self.assertEqual(two_clause, {"license": {"id": "BSD-2-Clause"}})
+        three_clause = sbom_metadata.detect_license_text(
+            bsd_preamble
+            + source_clause
+            + binary_clause
+            + "Neither the name of the copyright holder nor the names of "
+            "its contributors may be used to endorse or promote products.\n"
+        )
+        self.assertEqual(three_clause, {"license": {"id": "BSD-3-Clause"}})
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                "Redistribution and use in source and binary forms, with or "
+                "without modification, are permitted.\n"
+            )
+        )
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                bsd_preamble
+                + source_clause
+                + binary_clause
+                + "The views and conclusions contained in the software and "
+                "documentation are those of the authors.\n"
+            )
+        )
+        mit = (
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software and associated documentation "
+            "files.\n"
+        )
+        self.assertEqual(
+            sbom_metadata.detect_license_text(mit), {"license": {"id": "MIT"}}
+        )
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                mit + "You agree to the following additional conditions.\n"
+            )
+        )
+        self.assertIsNone(
+            sbom_metadata.detect_license_text(
+                mit + "The software may not be used for surveillance.\n"
+            )
+        )
+
+    def test_golang_without_module_cache_stays_unlicensed(self) -> None:
+        index = sbom_metadata.MetadataIndex([], [])
+        component = _component("widget", "pkg:golang/github.com/acme/widget@v1.2.3")
+        self.assertIsNone(sbom_metadata.derive_license(component, index))
+        sbom_metadata.fill_component_licenses({"components": [component]}, index)
+        self.assertNotIn("licenses", component)
+        self.assertIsNone(sbom_metadata.license_source(component))
+
+        stdlib, source = sbom_metadata.derive_license(
+            _component("std", "pkg:golang/std@go1.22.0"), index
+        )
+        self.assertEqual(source, "go_stdlib")
+        self.assertEqual(stdlib, {"license": {"id": "BSD-3-Clause"}})
+
+    def test_main_reads_go_mod_cache_flag(self) -> None:
+        import contextlib
+        import io
+
+        root = self._tmp()
+        cache = root / "modcache"
+        self._write_go_license(
+            cache,
+            "github.com/acme/widget@v1.2.3",
+            "LICENSE",
+            "Permission is hereby granted, free of charge, to any person "
+            "obtaining a copy of this software.\n",
+        )
+        pyproject = root / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "example"\nauthors = [{name = "Example"}]\n',
+            encoding="utf-8",
+        )
+        document = {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.6",
+            "metadata": {},
+            "components": [
+                _component("widget", "pkg:golang/github.com/acme/widget@v1.2.3")
+            ],
+        }
+        sbom = root / "example.cdx.json"
+        sbom.write_text(json.dumps(document), encoding="utf-8")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = sbom_metadata.main(
+                [
+                    "--pyproject",
+                    str(pyproject),
+                    "--go-mod-cache",
+                    str(cache),
+                    str(sbom),
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "licence coverage 0.0% -> 100.0% (0/1 -> 1/1)",
+            stdout.getvalue(),
+        )
+        stamped = json.loads(sbom.read_text(encoding="utf-8"))
+        widget = stamped["components"][0]
+        self.assertEqual(widget["licenses"], [{"license": {"id": "MIT"}}])
+        self.assertEqual(sbom_metadata.license_source(widget), "go_module_license")
+
     def test_existing_declared_license_is_kept(self) -> None:
         root = self._tmp()
         self._write_metadata(root, "widget", "License-Expression: Apache-2.0\n")

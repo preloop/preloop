@@ -233,7 +233,7 @@ _HEADER_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         (
             "Permission is hereby granted, free of charge, to any person obtaining a copy",
         ),
-        (),
+        ("you agree", "Contributor Agreement", "may not be used"),
     ),
     (
         "Apache-2.0",
@@ -251,9 +251,25 @@ _HEADER_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
         ("All advertising materials",),
     ),
     (
+        "BSD-1-Clause",
+        (
+            "Redistribution and use in source and binary forms",
+            "Redistributions of source code",
+        ),
+        (
+            "Redistributions in binary form",
+            "Neither the name",
+            "All advertising materials",
+        ),
+    ),
+    (
         "BSD-2-Clause",
-        ("Redistribution and use in source and binary forms",),
-        ("Neither the name", "All advertising materials"),
+        (
+            "Redistribution and use in source and binary forms",
+            "Redistributions of source code",
+            "Redistributions in binary form",
+        ),
+        ("Neither the name", "All advertising materials", "views and conclusions"),
     ),
     (
         "ISC",
@@ -1201,8 +1217,8 @@ def detect_license_text(text: str) -> dict[str, Any] | None:
         return None
     matched: set[str] = set()
     for spdx_id, required, forbidden in _HEADER_RULES:
-        if all(phrase in text for phrase in required) and not any(
-            phrase in text for phrase in forbidden
+        if all(phrase.casefold() in folded for phrase in required) and not any(
+            phrase.casefold() in folded for phrase in forbidden
         ):
             matched.add(spdx_id)
     if len(matched) != 1:
