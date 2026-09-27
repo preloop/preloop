@@ -122,7 +122,11 @@ class Plugin(ABC):
         return []
 
     async def on_startup(self):
-        """Called when application starts."""
+        """Called when application starts.
+
+        The place to register extension hooks, for example the account
+        hierarchy registries in :mod:`preloop.plugins.account_hooks`.
+        """
         return
 
     async def on_shutdown(self):
@@ -130,7 +134,12 @@ class Plugin(ABC):
         return
 
     async def on_gateway_startup(self) -> None:
-        """Initialize request governance without API-only workers or services."""
+        """Initialize request governance without API-only workers or services.
+
+        A gateway-only process does not run :meth:`on_startup`, so hooks the
+        gateway consults (for example the account hierarchy visibility,
+        authorizer, budget, halt and billing hooks) are registered here too.
+        """
         return
 
     async def on_gateway_shutdown(self) -> None:
