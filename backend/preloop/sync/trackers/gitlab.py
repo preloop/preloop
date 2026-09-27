@@ -1580,6 +1580,7 @@ class GitLabTracker(BaseTracker):
         state: str = "open",
         limit: int = 20,
         page: int = 1,
+        source_branch: Optional[str] = None,
     ) -> Dict[str, Any]:
         """List merge requests for the connected GitLab project.
 
@@ -1587,6 +1588,7 @@ class GitLabTracker(BaseTracker):
             state: Normalized state (open maps to GitLab opened).
             limit: Page size (per_page).
             page: 1-based page number.
+            source_branch: Only MRs from this source branch.
 
         Returns:
             Dict with normalized ``items`` and ``has_more``. ``has_more`` is
@@ -1597,6 +1599,9 @@ class GitLabTracker(BaseTracker):
         project_id = self._get_project_id()
         gitlab_state = "opened" if state == "open" else state
         project = await self._make_request(self.gl.projects.get, project_id)
+        filters: Dict[str, Any] = {}
+        if source_branch:
+            filters["source_branch"] = source_branch
         mrs = await self._make_request(
             project.mergerequests.list,
             state=gitlab_state,
@@ -1604,6 +1609,7 @@ class GitLabTracker(BaseTracker):
             sort="desc",
             per_page=limit,
             page=page,
+            **filters,
         )
         rows = list(mrs or [])
         has_more = False
@@ -1615,10 +1621,33 @@ class GitLabTracker(BaseTracker):
                 sort="desc",
                 per_page=1,
                 page=page + 1,
+                **filters,
             )
             has_more = bool(list(nxt or []))
         items = [self._normalize_listed_merge_request(mr) for mr in rows]
         return {"items": items, "has_more": has_more}
+
+    async def branch_exists(self, branch: str) -> bool:
+        """Whether ``branch`` exists on the connected project.
+
+        Raises on anything other than a clean found / not-found answer so a
+        caller can tell "absent" from "could not check".
+        """
+        project_id = self._get_project_id()
+        project = await self._make_request(self.gl.projects.get, project_id)
+
+        def _exists() -> bool:
+            # GitlabGetError is not a GitlabHttpError, so the request wrapper
+            # would drop its status code; resolve the 404 here.
+            try:
+                project.branches.get(branch)
+            except gitlab.exceptions.GitlabGetError as error:
+                if error.response_code == HTTP_STATUS_NOT_FOUND:
+                    return False
+                raise
+            return True
+
+        return await self._make_request_no_retry(_exists)
 
     def _normalize_listed_merge_request(self, mr: Any) -> Dict[str, Any]:
         """Map a python-gitlab MR object (or dict) to the shared PR list shape."""
