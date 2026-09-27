@@ -30,9 +30,11 @@ HEADER = [
     "user",
     "Review this diff. Reply with REVIEW_JSON: then FLOW_EXECUTION_SUCCESS.",
     "",
-    "warning: Model metadata for `deepseek/deepseek-v4-flash` not found. "
-    "Defaulting to fallback metadata; this can degrade performance and cause "
-    "issues.",
+    (
+        "warning: Model metadata for `deepseek/deepseek-v4-flash` not found. "
+        "Defaulting to fallback metadata; this can degrade performance and "
+        "cause issues."
+    ),
 ]
 WARN_1 = (
     "2026-09-27T03:34:41.594867Z  WARN codex_core::responses_retry: stream "
