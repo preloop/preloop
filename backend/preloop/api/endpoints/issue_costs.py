@@ -7,7 +7,7 @@ creation, and a rebuild is not one.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -34,8 +34,13 @@ router = APIRouter(prefix="/cost/by-issue", tags=["Cost Analytics"])
 REBUILD_MAX_WINDOW_DAYS = 92
 
 
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _validate_period(start: Optional[datetime], end: Optional[datetime]) -> None:
-    if start is not None and end is not None and end <= start:
+    # Naive bounds are read as UTC so a mixed pair compares instead of raising.
+    if start is not None and end is not None and _utc(end) <= _utc(start):
         raise HTTPException(status_code=422, detail="end_date must be after start_date")
 
 
@@ -133,11 +138,13 @@ def rebuild_issue_costs(
 ) -> IssueCostRebuildResponse:
     """Record finished executions of a window that have no issue fact yet.
 
-    Bounded per call; repeat until ``limit_reached`` is false.
+    Bounded per call; repeat until ``limit_reached`` is false. Executions
+    that fail to record are skipped, counted in ``failed`` and examined again
+    on the next call.
     """
     account = get_account_or_404(db, current_user)
     window = rebuild_in.end_date - rebuild_in.start_date
-    if window.days > REBUILD_MAX_WINDOW_DAYS:
+    if window > timedelta(days=REBUILD_MAX_WINDOW_DAYS):
         raise HTTPException(
             status_code=422,
             detail=(
@@ -145,7 +152,7 @@ def rebuild_issue_costs(
                 "rebuild into smaller ranges"
             ),
         )
-    examined, recorded = issue_cost_rollup.rebuild(
+    examined, recorded, failed = issue_cost_rollup.rebuild(
         db,
         account_id=account.id,
         start=rebuild_in.start_date,
@@ -154,5 +161,6 @@ def rebuild_issue_costs(
     db.commit()
     return IssueCostRebuildResponse(
         recorded=recorded,
+        failed=failed,
         limit_reached=examined >= issue_cost_rollup.MAX_REBUILD_EXECUTIONS,
     )

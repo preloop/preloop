@@ -351,6 +351,56 @@ def test_parse_trigger_subject_gitlab_and_jira() -> None:
     assert jira is not None and jira.issue_key == "OPS-17"
 
 
+def test_gitlab_note_prefers_browser_url_over_api_url() -> None:
+    web = "https://gitlab.example.com/group/app/-/merge_requests/5"
+    note = parse_trigger_subject(
+        {
+            "source": "gitlab",
+            "payload": {
+                "object_kind": "note",
+                "project": {"path_with_namespace": "group/app"},
+                "merge_request": {
+                    "iid": 5,
+                    "url": "https://gitlab.example.com/api/v4/projects/3/merge_requests/5",
+                    "web_url": web,
+                },
+                "issue": None,
+            },
+        }
+    )
+    assert note is not None and note.kind == "pull_request"
+    assert note.url == web
+
+    issue = parse_trigger_subject(
+        {
+            "source": "gitlab",
+            "payload": {
+                "object_kind": "note",
+                "project": {"path_with_namespace": "group/app"},
+                "issue": {
+                    "iid": 4,
+                    "url": "https://gitlab.example.com/api/v4/projects/3/issues/4",
+                    "web_url": "https://gitlab.example.com/group/app/-/issues/4",
+                },
+            },
+        }
+    )
+    assert issue is not None and issue.issue_key == "group/app#4"
+    assert issue.url == "https://gitlab.example.com/group/app/-/issues/4"
+
+
+def test_keys_longer_than_their_columns_are_rejected() -> None:
+    assert canonical_issue_key("a/" + "b" * 600 + "#1") is None
+    assert canonical_issue_key("X" * 513) is None
+    assert canonical_issue_key("X" * 512) == "X" * 512
+    long_mr = "https://gitlab.example.com/" + "g/" * 600 + "app/-/merge_requests/5"
+    short_mr = "https://gitlab.example.com/group/app/-/merge_requests/5"
+    run = type("Run", (), {"result": {"pr_url": long_mr}})()
+    assert published_pr_keys(run) == []
+    run.result = {"pr_url": short_mr}
+    assert published_pr_keys(run) == [short_mr]
+
+
 def test_closing_issue_keys_ignores_plain_mentions() -> None:
     subject = parse_trigger_subject(
         {
@@ -587,7 +637,32 @@ def test_unlinked_execution_lands_in_unassigned_bucket(world: World) -> None:
     assert report.issues[0].run_count == 3
     assert report.unassigned.run_count == 1
     assert report.unassigned.estimated_cost == pytest.approx(0.03)
-    assert [row.execution_id for row in report.unassigned.executions] == [scheduled.id]
+    assert report.unassigned.executions == []
+    detailed = world.report(include_execution_ids=True)
+    assert [row.execution_id for row in detailed.unassigned.executions] == [
+        scheduled.id
+    ]
+
+
+def test_unassigned_totals_are_not_capped_by_the_row_limit(world: World) -> None:
+    for offset in range(3):
+        world.run(
+            world.audit,
+            {"source": "schedule", "type": "schedule_tick", "payload": {}},
+            start=T0 + timedelta(minutes=offset),
+            tokens=100,
+            cost="0.0100",
+            status="FAILED" if offset == 0 else "SUCCEEDED",
+        )
+    report = world.report(limit=1)
+    assert report.unassigned.run_count == 3
+    assert report.unassigned.failed_run_count == 1
+    assert report.unassigned.total_tokens == 300
+    assert report.unassigned.estimated_cost == pytest.approx(0.03)
+    assert report.unassigned.executions == []
+    detailed = world.report(limit=1, include_execution_ids=True)
+    assert len(detailed.unassigned.executions) == 1
+    assert detailed.truncated is True
 
 
 def test_shared_pr_is_not_merged_into_either_issue(world: World) -> None:
@@ -752,20 +827,88 @@ def test_rebuild_records_history_once(world: World) -> None:
     world.run(
         world.review, world.pr_details(), start=T0 + timedelta(hours=1), record=False
     )
-    examined, recorded = rollup_service.rebuild(
+    examined, recorded, failed = rollup_service.rebuild(
         world.db,
         account_id=world.account.id,
         start=T0 - timedelta(days=1),
         end=T0 + timedelta(days=1),
     )
     world.db.commit()
-    assert (examined, recorded) == (2, 2)
+    assert (examined, recorded, failed) == (2, 2, 0)
     assert rollup_service.rebuild(
         world.db,
         account_id=world.account.id,
         start=T0 - timedelta(days=1),
         end=T0 + timedelta(days=1),
-    ) == (0, 0)
+    ) == (0, 0, 0)
+
+
+def test_rebuild_skips_a_failing_execution_and_keeps_the_rest(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broken = world.run(world.triage, world.issue_details(), start=T0, record=False)
+    healthy = world.run(
+        world.review, world.pr_details(), start=T0 + timedelta(hours=1), record=False
+    )
+    real = rollup_service.record_execution_finished
+
+    def flaky(db: Session, execution: models.FlowExecution) -> Any:
+        if execution.id == broken.id:
+            real(db, execution)
+            raise RuntimeError("simulated insert failure")
+        return real(db, execution)
+
+    monkeypatch.setattr(rollup_service, "record_execution_finished", flaky)
+    window = {"start": T0 - timedelta(days=1), "end": T0 + timedelta(days=1)}
+
+    result = rollup_service.rebuild(world.db, account_id=world.account.id, **window)
+    world.db.commit()
+
+    assert result == (2, 1, 1)
+    assert crud_issue_cost.get_fact(world.db, execution_id=broken.id) is None
+    assert world.fact(healthy).execution_id == healthy.id
+
+    monkeypatch.setattr(rollup_service, "record_execution_finished", real)
+    assert rollup_service.rebuild(world.db, account_id=world.account.id, **window) == (
+        1,
+        1,
+        0,
+    )
+
+
+def test_lineage_walk_resolves_each_ancestor_once(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tick = {"source": "schedule", "type": "schedule_tick", "payload": {}}
+    previous = world.run(world.audit, tick, start=T0, record=False)
+    chain = [previous]
+    for hop in range(1, 8):
+        current = world.run(
+            world.audit,
+            {**tick, "_resume": {"execution_id": str(previous.id)}},
+            start=T0 + timedelta(minutes=hop),
+            parent=previous,
+            record=False,
+        )
+        current.retry_of_execution_id = previous.id
+        world.db.commit()
+        chain.append(current)
+        previous = current
+
+    calls: list[Any] = []
+    real = crud_issue_cost.get_execution
+
+    def counting(db: Session, **kwargs: Any) -> Any:
+        calls.append(kwargs["execution_id"])
+        return real(db, **kwargs)
+
+    monkeypatch.setattr(crud_issue_cost, "get_execution", counting)
+    attribution = rollup_service.resolve_execution(
+        world.db, account_id=world.account.id, execution=chain[-1]
+    )
+
+    assert attribution.target is None
+    assert len(calls) == len(set(calls)) == len(chain) - 1
 
 
 def test_webhook_hook_never_raises(world: World) -> None:

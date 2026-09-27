@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class IssueCostExecutionRow(BaseModel):
@@ -111,6 +111,12 @@ class IssueCostRebuildRequest(BaseModel):
     start_date: datetime
     end_date: datetime
 
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def _utc_when_naive(cls, value: datetime) -> datetime:
+        # A naive and an aware bound cannot be compared; read naive as UTC.
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
     @model_validator(mode="after")
     def _ordered(self) -> "IssueCostRebuildRequest":
         if self.end_date <= self.start_date:
@@ -122,4 +128,7 @@ class IssueCostRebuildResponse(BaseModel):
     """How many executions a rebuild recorded."""
 
     recorded: int
+    failed: int = Field(
+        0, description="Executions skipped because recording them failed."
+    )
     limit_reached: bool

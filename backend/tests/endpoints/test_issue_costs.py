@@ -137,6 +137,8 @@ def test_list_returns_issue_rows_summaries_and_unassigned(
     assert body["by_project"][0]["estimated_cost"] == 0.5
     assert body["by_flow"][0]["id"] == str(seeded["flow"].id)
     assert body["unassigned"]["run_count"] == 1
+    # The plain report carries the unassigned totals, not the rows.
+    assert body["unassigned"]["executions"] == []
     assert body["truncated"] is False
 
 
@@ -159,6 +161,47 @@ def test_list_filters_and_validates_period(
         },
     )
     assert bad.status_code == 422
+
+
+def test_mixed_naive_and_aware_period_is_validated_not_500(
+    client, db_session: Session, test_user
+) -> None:
+    _seed(db_session, test_user.account_id)
+    reversed_mixed = client.get(
+        BASE,
+        params={
+            "start_date": "2026-09-02T00:00:00",
+            "end_date": "2026-09-01T00:00:00Z",
+        },
+    )
+    assert reversed_mixed.status_code == 422
+
+    ordered_mixed = client.get(
+        BASE,
+        params={
+            "start_date": "2026-08-31T00:00:00",
+            "end_date": "2026-09-02T00:00:00Z",
+        },
+    )
+    assert ordered_mixed.status_code == 200
+    assert len(ordered_mixed.json()["issues"]) == 1
+
+    rebuild = client.post(
+        f"{BASE}/rebuild",
+        json={
+            "start_date": "2026-09-02T00:00:00",
+            "end_date": "2026-09-01T00:00:00Z",
+        },
+    )
+    assert rebuild.status_code == 422
+    rebuild_ok = client.post(
+        f"{BASE}/rebuild",
+        json={
+            "start_date": "2026-08-31T00:00:00",
+            "end_date": "2026-09-02T00:00:00Z",
+        },
+    )
+    assert rebuild_ok.status_code == 200
 
 
 def test_executions_of_one_issue(client, db_session: Session, test_user) -> None:
@@ -239,7 +282,7 @@ def test_rebuild_records_unrecorded_history(
     response = client.post(f"{BASE}/rebuild", json=window)
 
     assert response.status_code == 200
-    assert response.json() == {"recorded": 3, "limit_reached": False}
+    assert response.json() == {"recorded": 3, "failed": 0, "limit_reached": False}
     assert client.get(BASE).json()["issues"][0]["run_count"] == 2
     again = client.post(f"{BASE}/rebuild", json=window)
     assert again.json()["recorded"] == 0
@@ -254,3 +297,22 @@ def test_rebuild_rejects_long_windows(client, test_user) -> None:
         },
     )
     assert response.status_code == 422
+
+
+def test_rebuild_window_limit_counts_partial_days(client, test_user) -> None:
+    just_over = client.post(
+        f"{BASE}/rebuild",
+        json={
+            "start_date": T0.isoformat(),
+            "end_date": (T0 + timedelta(days=92, hours=23)).isoformat(),
+        },
+    )
+    assert just_over.status_code == 422
+    exact = client.post(
+        f"{BASE}/rebuild",
+        json={
+            "start_date": T0.isoformat(),
+            "end_date": (T0 + timedelta(days=92)).isoformat(),
+        },
+    )
+    assert exact.status_code == 200

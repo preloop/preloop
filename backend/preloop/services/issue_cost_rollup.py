@@ -42,7 +42,6 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_flow_execution, crud_issue_cost
-from preloop.models.crud.issue_cost import FAILED_EXECUTION_STATUSES
 from preloop.schemas.issue_cost import (
     IssueCostExecutionRow,
     IssueCostReport,
@@ -63,6 +62,10 @@ MAX_REPORT_ROWS = 5000
 
 #: Row cap for one rebuild call.
 MAX_REBUILD_EXECUTIONS = 2000
+
+# Column widths of issue_cost_rollup.issue_key and the pull request keys.
+MAX_ISSUE_KEY_LENGTH = 512
+MAX_PR_KEY_LENGTH = 1000
 
 LINK_LIFECYCLE = "lifecycle"
 LINK_RESUME = "resume"
@@ -154,6 +157,12 @@ class Attribution:
     pr_key: Optional[str] = None
 
 
+def _pr_key(url: Optional[str]) -> str:
+    """Canonical pull request URL, or "" when it cannot be stored."""
+    key = normalize_pr_url(url)
+    return key if len(key) <= MAX_PR_KEY_LENGTH else ""
+
+
 def canonical_issue_key(key: Optional[str]) -> Optional[str]:
     """Canonical form of a tracker issue key.
 
@@ -164,7 +173,7 @@ def canonical_issue_key(key: Optional[str]) -> Optional[str]:
         key: ``path#number`` or a Jira key.
 
     Returns:
-        The canonical key, or None for an empty or malformed key.
+        The canonical key, or None for an empty, malformed or oversized key.
     """
     if not key or not isinstance(key, str):
         return None
@@ -175,8 +184,12 @@ def canonical_issue_key(key: Optional[str]) -> Optional[str]:
         number = number.strip()
         if not path or not number.isdigit():
             return None
-        return f"{path.lower()}#{number}"
-    return key.upper() or None
+        canonical = f"{path.lower()}#{number}"
+    else:
+        canonical = key.upper()
+    if not canonical or len(canonical) > MAX_ISSUE_KEY_LENGTH:
+        return None
+    return canonical
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -228,7 +241,7 @@ def _parse_github(payload: dict[str, Any]) -> Optional[TriggerSubject]:
     pull = _dict(payload.get("pull_request"))
     issue = _dict(payload.get("issue"))
     if pull:
-        url = normalize_pr_url(_str(pull.get("html_url")))
+        url = _pr_key(_str(pull.get("html_url")))
         if not url:
             return None
         return TriggerSubject(
@@ -244,7 +257,7 @@ def _parse_github(payload: dict[str, Any]) -> Optional[TriggerSubject]:
         )
     if issue:
         if issue.get("pull_request"):
-            url = normalize_pr_url(
+            url = _pr_key(
                 _str(_dict(issue.get("pull_request")).get("html_url"))
                 or _str(issue.get("html_url"))
             )
@@ -278,7 +291,9 @@ def _parse_github(payload: dict[str, Any]) -> Optional[TriggerSubject]:
 def _gitlab_pr(
     request: dict[str, Any], repo_path: Optional[str]
 ) -> Optional[TriggerSubject]:
-    url = normalize_pr_url(_str(request.get("url")))
+    # Webhook notes carry both an API ``url`` and a browser ``web_url``; only
+    # the browser form matches the stored publication URL.
+    url = _pr_key(_str(request.get("web_url"))) or _pr_key(_str(request.get("url")))
     if not url:
         return None
     return TriggerSubject(
@@ -305,7 +320,7 @@ def _gitlab_issue(
         kind="issue",
         issue_key=key,
         title=_str(issue.get("title")),
-        url=_str(issue.get("url")),
+        url=_str(issue.get("web_url")) or _str(issue.get("url")),
         repo_path=repo_path,
         platform="gitlab",
     )
@@ -400,7 +415,7 @@ def published_pr_keys(execution: Any) -> list[str]:
         candidates.append(repository.get("pr_url"))
     keys: list[str] = []
     for candidate in candidates:
-        key = normalize_pr_url(_str(candidate))
+        key = _pr_key(_str(candidate))
         if key and key not in keys:
             keys.append(key)
     return keys
@@ -610,6 +625,7 @@ def resolve_execution(
     account_id: uuid.UUID,
     execution: models.FlowExecution,
     depth: int = 0,
+    visited: Optional[set[uuid.UUID]] = None,
 ) -> Attribution:
     """Decide which tracker issue an execution worked on.
 
@@ -618,11 +634,18 @@ def resolve_execution(
         account_id: The execution's account.
         execution: The execution to attribute.
         depth: Lineage hops already followed.
+        visited: Executions already examined in this call. An ancestor
+            reached through several pointers is resolved once; a repeat
+            visit is a dead end (it either is on the current path or
+            already failed to yield an issue).
 
     Returns:
         The attribution; ``target`` is None when the execution stays on
         its pull request only.
     """
+    if visited is None:
+        visited = set()
+    visited.add(execution.id)
     details = _dict(execution.trigger_event_details)
     own_prs = published_pr_keys(execution)
     own_pr = own_prs[0] if own_prs else None
@@ -636,7 +659,7 @@ def resolve_execution(
         (
             LINK_RESUME,
             resume.get("execution_id") or resume.get("resume_root"),
-            normalize_pr_url(_str(resume.get("pr_url"))) or None,
+            _pr_key(_str(resume.get("pr_url"))) or None,
         ),
         (LINK_DELEGATED, execution.parent_execution_id, None),
         (LINK_RETRY, execution.retry_of_execution_id, None),
@@ -646,7 +669,11 @@ def resolve_execution(
             if not prior_id or str(prior_id) == str(execution.id):
                 continue
             inherited = _inherit(
-                db, account_id=account_id, prior_id=prior_id, depth=depth
+                db,
+                account_id=account_id,
+                prior_id=prior_id,
+                depth=depth,
+                visited=visited,
             )
             if inherited is not None:
                 return Attribution(
@@ -676,12 +703,21 @@ def resolve_execution(
 
 
 def _inherit(
-    db: Session, *, account_id: uuid.UUID, prior_id: Any, depth: int
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    prior_id: Any,
+    depth: int,
+    visited: set[uuid.UUID],
 ) -> Optional[Attribution]:
+    prior_uuid = _uuid(prior_id)
+    if prior_uuid is None or prior_uuid in visited:
+        return None
     prior = crud_issue_cost.get_execution(
-        db, account_id=account_id, execution_id=prior_id
+        db, account_id=account_id, execution_id=prior_uuid
     )
     if prior is None:
+        visited.add(prior_uuid)
         return None
     fact = crud_issue_cost.get_fact(db, execution_id=prior.id)
     if fact is not None and fact.rollup_id is not None:
@@ -691,7 +727,11 @@ def _inherit(
                 link=fact.link, target=_target_from_rollup(rollup), pr_key=fact.pr_key
             )
     attribution = resolve_execution(
-        db, account_id=account_id, execution=prior, depth=depth + 1
+        db,
+        account_id=account_id,
+        execution=prior,
+        depth=depth + 1,
+        visited=visited,
     )
     return attribution if attribution.target is not None else None
 
@@ -888,7 +928,7 @@ def record_publication(
     Returns:
         The pull request row, or None when the URL is not a PR URL.
     """
-    pr_key = normalize_pr_url(pr_url)
+    pr_key = _pr_key(pr_url)
     if not pr_key:
         return None
     flow = crud_issue_cost.get_flow(db, flow_id=execution.flow_id)
@@ -1104,7 +1144,7 @@ def rebuild(
     start: datetime,
     end: datetime,
     limit: int = MAX_REBUILD_EXECUTIONS,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Record finished executions of a period that have no fact yet.
 
     Covers history from before this table existed and runs that ended on
@@ -1118,7 +1158,9 @@ def rebuild(
         limit: Maximum executions recorded in one call.
 
     Returns:
-        ``(examined, recorded)``; ``examined == limit`` means more remain.
+        ``(examined, recorded, failed)``; ``examined == limit`` means more
+        remain. Each execution is recorded in its own savepoint, so one that
+        fails is counted and skipped instead of aborting the window.
     """
     executions = crud_issue_cost.terminal_executions_without_fact(
         db,
@@ -1129,10 +1171,21 @@ def rebuild(
         limit=limit,
     )
     recorded = 0
+    failed = 0
     for execution in executions:
-        if record_execution_finished(db, execution) is not None:
-            recorded += 1
-    return len(executions), recorded
+        execution_id = execution.id
+        try:
+            with db.begin_nested():
+                if record_execution_finished(db, execution) is not None:
+                    recorded += 1
+        except Exception:
+            failed += 1
+            logger.warning(
+                "Issue cost rebuild skipped execution %s",
+                execution_id,
+                exc_info=True,
+            )
+    return len(executions), recorded, failed
 
 
 # --- report --------------------------------------------------------------------
@@ -1184,7 +1237,9 @@ def build_report(
         end: Exclusive upper bound on the first event.
         project_id: Only this project.
         flow_id: Only work of this flow.
-        include_execution_ids: Attach contributing execution ids (JSON export).
+        include_execution_ids: Attach contributing execution ids and the
+            unassigned executions (JSON export). The unassigned totals are
+            always computed.
         limit: Maximum issue rows.
 
     Returns:
@@ -1232,16 +1287,28 @@ def build_report(
             if fact.rollup_id is not None:
                 execution_ids.setdefault(fact.rollup_id, []).append(fact.execution_id)
 
-    unassigned_facts = crud_issue_cost.list_facts(
-        db,
-        account_id=account_id,
-        unassigned=True,
-        start=start,
-        end=end,
-        project_id=project_id,
-        flow_id=flow_id,
-        limit=limit,
+    unassigned_filter: dict[str, Any] = {
+        "account_id": account_id,
+        "start": start,
+        "end": end,
+        "project_id": project_id,
+        "flow_id": flow_id,
+    }
+    # Totals come from an uncapped aggregate. The execution list is only
+    # needed by the JSON export, so a plain report does not load it.
+    unassigned_facts = (
+        crud_issue_cost.list_facts(
+            db, unassigned=True, limit=limit, **unassigned_filter
+        )
+        if include_execution_ids
+        else []
     )
+    (
+        unassigned_tokens,
+        unassigned_cost,
+        unassigned_runs,
+        unassigned_failed,
+    ) = crud_issue_cost.unassigned_totals(db, **unassigned_filter)
 
     trackers, projects, flows = crud_issue_cost.names(
         db,
@@ -1321,19 +1388,11 @@ def build_report(
         key=lambda item: (-item.estimated_cost, item.name),
     )
 
-    unassigned_cost = sum(
-        (Decimal(fact.estimated_cost or 0) for fact, _ in unassigned_facts),
-        Decimal("0"),
-    )
     unassigned = IssueCostUnassigned(
         estimated_cost=_money(unassigned_cost),
-        total_tokens=sum(int(fact.total_tokens or 0) for fact, _ in unassigned_facts),
-        run_count=len(unassigned_facts),
-        failed_run_count=sum(
-            1
-            for fact, _ in unassigned_facts
-            if fact.status in FAILED_EXECUTION_STATUSES
-        ),
+        total_tokens=unassigned_tokens,
+        run_count=unassigned_runs,
+        failed_run_count=unassigned_failed,
         executions=[_execution_row(fact, name) for fact, name in unassigned_facts],
     )
     return IssueCostReport(

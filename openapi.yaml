@@ -9247,7 +9247,11 @@ paths:
         yet.
 
 
-        Bounded per call; repeat until ``limit_reached`` is false.'
+        Bounded per call; repeat until ``limit_reached`` is false. Executions
+
+        that fail to record are skipped, counted in ``failed`` and examined again
+
+        on the next call.'
       operationId: rebuild_issue_costs_api_v1_cost_by_issue_rebuild_post
       requestBody:
         content:
@@ -21472,6 +21476,11 @@ components:
         recorded:
           type: integer
           title: Recorded
+        failed:
+          type: integer
+          title: Failed
+          description: Executions skipped because recording them failed.
+          default: 0
         limit_reached:
           type: boolean
           title: Limit Reached

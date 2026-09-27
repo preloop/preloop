@@ -512,6 +512,55 @@ class CRUDIssueCost:
             for row in rows
         ]
 
+    def unassigned_totals(
+        self,
+        db: Session,
+        *,
+        account_id: uuid.UUID,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        project_id: Optional[uuid.UUID] = None,
+        flow_id: Optional[uuid.UUID] = None,
+    ) -> tuple[int, Decimal, int, int]:
+        """Sums over the facts attributed to no issue, uncapped.
+
+        Uses the same filters as ``list_facts(unassigned=True)``.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            start: Inclusive lower bound on execution start.
+            end: Exclusive upper bound on execution start.
+            project_id: Only facts of this project.
+            flow_id: Only facts of this flow.
+
+        Returns:
+            ``(tokens, cost, runs, failed_runs)``.
+        """
+        fact = models.IssueCostExecution
+        query = (
+            select(
+                func.coalesce(func.sum(fact.total_tokens), 0),
+                func.coalesce(func.sum(fact.estimated_cost), 0),
+                func.count(fact.id),
+                func.count(fact.id).filter(
+                    fact.status.in_(tuple(FAILED_EXECUTION_STATUSES))
+                ),
+            )
+            .join(models.Flow, models.Flow.id == fact.flow_id)
+            .where(fact.account_id == account_id, fact.rollup_id.is_(None))
+        )
+        if start is not None:
+            query = query.where(fact.start_time >= start)
+        if end is not None:
+            query = query.where(fact.start_time < end)
+        if project_id is not None:
+            query = query.where(fact.project_id == project_id)
+        if flow_id is not None:
+            query = query.where(fact.flow_id == flow_id)
+        row = db.execute(query).one()
+        return int(row[0]), Decimal(row[1]), int(row[2]), int(row[3])
+
     def list_facts(
         self,
         db: Session,

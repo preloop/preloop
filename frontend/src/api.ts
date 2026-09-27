@@ -1356,6 +1356,7 @@ export interface IssueCostReport {
     total_tokens: number;
     run_count: number;
     failed_run_count: number;
+    /** Filled by the JSON export only; the report carries the totals. */
     executions: IssueCostExecution[];
   };
   truncated: boolean;
