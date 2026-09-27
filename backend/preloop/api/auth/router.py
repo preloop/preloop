@@ -706,12 +706,17 @@ async def register(
 
 
 def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
-    """The exact user row a verification or reset token was issued for.
+    """The user row a verification or reset link acts on.
 
     The token names the row by id, never by address: one address can hold a
     row in several accounts. It also carries the address it was mailed to,
     and a row whose address has since changed does not honour it, so an old
     link cannot verify or reset whatever address the row holds now.
+
+    A login row selector (account hook H1) may move the link to another row,
+    but only to one that holds the same address: the link proves possession
+    of that address and nothing else, so it can never verify or reset a row
+    whose address it did not prove.
 
     Args:
         session: Database session.
@@ -719,10 +724,11 @@ def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
         token_type: "email_verification" or "password_reset".
 
     Returns:
-        The user row the token names.
+        The user row the token names, or the row the selector chose.
 
     Raises:
-        TokenError: If the token is invalid or no longer matches its row.
+        TokenError: If the token is invalid, no longer matches its row, or
+            the selected row holds a different address.
         HTTPException: 404 if the row no longer exists.
     """
     claims = verify_user_token(token, token_type)
@@ -737,7 +743,12 @@ def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
             "This link is no longer valid. Request a new one and use that instead."
         )
     purpose = "verify_email" if token_type == "email_verification" else "reset_password"
-    return select_login_row(session, user, purpose=purpose)
+    selected = select_login_row(session, user, purpose=purpose)
+    if selected is not user and (selected.email or "").lower() != claims.email.lower():
+        raise TokenError(
+            "This link is no longer valid. Request a new one and use that instead."
+        )
+    return selected
 
 
 @router.post("/verify-email", status_code=status.HTTP_200_OK)

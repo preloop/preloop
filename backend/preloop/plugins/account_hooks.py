@@ -104,6 +104,9 @@ class LoginRowSelector:
 
         Returns:
             The row the session is minted for, or the change applies to.
+            For ``verify_email`` and ``reset_password`` it must hold the
+            same address as ``user``: the link only proves that address,
+            and any other row makes the link invalid.
         """
         return user
 

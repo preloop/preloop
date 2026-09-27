@@ -36,7 +36,10 @@ from preloop.plugins.account_hooks import (
 )
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.runner_service import hash_runner_token
-from preloop.utils.tokens import create_password_reset_token
+from preloop.utils.tokens import (
+    create_email_verification_token,
+    create_password_reset_token,
+)
 
 PASSWORD = "hierarchy-hooks-pass-1"
 
@@ -143,7 +146,7 @@ def test_h1_reset_link_acts_on_the_selected_row(
     db_session: Session, anon_client: TestClient
 ) -> None:
     named = _password_user(db_session)
-    landing = _password_user(db_session)
+    landing = _password_user(db_session, email=named.email)
     selector = _Selector(landing)
     account_hooks.register_login_row_selector(selector)
     token = create_password_reset_token(named.email, user_id=named.id)
@@ -162,6 +165,34 @@ def test_h1_reset_link_acts_on_the_selected_row(
     assert verify_password(
         PASSWORD, crud_user.get(db_session, id=named.id).hashed_password
     )
+
+
+@pytest.mark.parametrize("purpose", ["verify_email", "reset_password"])
+def test_h1_link_cannot_move_to_a_row_with_another_address(
+    db_session: Session, anon_client: TestClient, purpose: str
+) -> None:
+    """A link proves one address, so the selector cannot aim it elsewhere."""
+    named = _password_user(db_session)
+    elsewhere = _password_user(db_session)
+    elsewhere.email_verified = False
+    db_session.flush()
+    account_hooks.register_login_row_selector(_Selector(elsewhere))
+
+    if purpose == "verify_email":
+        token = create_email_verification_token(named.email, user_id=named.id)
+        response = anon_client.post("/api/v1/auth/verify-email", json={"token": token})
+    else:
+        token = create_password_reset_token(named.email, user_id=named.id)
+        response = anon_client.post(
+            "/api/v1/auth/reset-password",
+            json={"token": token, "new_password": "a-brand-new-pass-2"},
+        )
+
+    assert response.status_code == 400, response.text
+    db_session.expire_all()
+    untouched = crud_user.get(db_session, id=elsewhere.id)
+    assert untouched.email_verified is False
+    assert verify_password(PASSWORD, untouched.hashed_password)
 
 
 def test_h1_address_requests_mail_only_the_selected_rows(
