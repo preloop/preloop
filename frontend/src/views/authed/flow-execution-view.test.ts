@@ -2257,4 +2257,33 @@ describe('FlowExecutionView', () => {
       ).to.equal(5);
     });
   });
+
+  it('tells the operator when stopping a run fails', async () => {
+    const element = (await fixture(
+      html`<flow-execution-view></flow-execution-view>`
+    )) as FlowExecutionView;
+    (element as any).executionId = 'exec-pending';
+    (element as any).execution = {
+      id: 'exec-pending',
+      flow_id: 'flow-1',
+      status: 'RUNNING',
+    };
+    await element.updateComplete;
+    fetchStub.callsFake(
+      async () =>
+        new Response(JSON.stringify({ detail: 'no' }), { status: 500 })
+    );
+    try {
+      await (element as any).stopExecution();
+      const alert = document.body.querySelector('sl-alert');
+      expect(alert?.textContent).to.contain(
+        'Failed to send command to execution'
+      );
+      expect((element as any).execution.status).to.equal('RUNNING');
+    } finally {
+      document.body.querySelectorAll('sl-alert').forEach((node) => {
+        node.remove();
+      });
+    }
+  });
 });

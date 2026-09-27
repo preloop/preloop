@@ -8,6 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid_sync
+from preloop.api.auth.key_scopes import api_key_allowed_on_channel
 from preloop.services.db_executor import detach_user, run_db_async
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.models import User
@@ -26,6 +27,10 @@ async def _resolve_token_user(token: str) -> Optional[User]:
 
     def _lookup(db: Session) -> Optional[User]:
         user = get_user_from_token_if_valid_sync(token, db)
+        if user is not None and not api_key_allowed_on_channel(
+            getattr(user, "_auth_api_key", None), "console websocket"
+        ):
+            return None
         return detach_user(db, user)
 
     return await run_db_async(_lookup)

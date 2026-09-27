@@ -24,6 +24,7 @@ from preloop.models.schemas.mcp_server import (
     MCPServerUpdate,
 )
 from preloop.models.schemas.mcp_tool import MCPToolResponse
+from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, filter_viewable
 from preloop.services.mcp_tool_discovery import (
     get_cached_tools_for_server,
     scan_mcp_server_tools,
@@ -200,6 +201,7 @@ def list_mcp_servers(
         servers = crud_mcp_server.get_multi_by_account(
             db, account_id=str(current_user.account_id)
         )
+        servers = filter_viewable(db, current_user, VISIBLE_MCP_SERVER, servers)
         logger.info(f"Found {len(servers)} MCP servers")
 
         return [MCPServerResponse.model_validate(server) for server in servers]

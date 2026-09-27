@@ -21,6 +21,7 @@ from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.auth import get_current_active_user
 from preloop.models.models.user import User
+from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.schemas.host_exec_usage import HostExecSessionsResponse
 from preloop.services.host_exec_usage import summarize_host_exec_usage
@@ -291,12 +292,23 @@ def read_flows(
     current_user: User = Depends(get_current_active_user),
 ):
     """Retrieve flows for the account."""
-    flows = crud_flow.get_multi(
-        db, account_id=current_user.account_id, skip=skip, limit=limit
+    flows = filter_viewable(
+        db,
+        current_user,
+        VISIBLE_FLOW,
+        crud_flow.get_multi(
+            db,
+            account_id=current_user.account_id,
+            skip=skip,
+            limit=limit,
+            include_shared=True,
+        ),
     )
 
     if flows:
-        flow_ids = [f.id for f in flows]
+        # Execution stats cover own flows only: the runs of a flow another
+        # account shares here (account hook H3) belong to that account.
+        flow_ids = [f.id for f in flows if f.account_id == current_user.account_id]
         stats = crud_flow_execution.get_execution_stats_for_flows(
             db, flow_ids, start_date=stats_since
         )

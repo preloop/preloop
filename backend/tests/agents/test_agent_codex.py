@@ -448,6 +448,90 @@ class TestCodexAuthConfig:
         assert 'model = "google/gemini-2.5-pro"' in script
 
 
+class TestCodexStreamIdleBound:
+    """The stream idle wait is per flow and stays inside the budget (#872)."""
+
+    @staticmethod
+    def _script(agent_config=None, flow_timeout_seconds=None, provider="openrouter"):
+        context = {
+            "prompt": "review",
+            "execution_id": "exec-1",
+            "flow_name": "Manual PR Reviewer",
+            "model_provider": provider,
+            "model_identifier": "deepseek/deepseek-v4-flash",
+            "model_endpoint": "https://openrouter.ai/api/v1",
+            "agent_config": agent_config,
+        }
+        if flow_timeout_seconds is not None:
+            context["flow_timeout_seconds"] = flow_timeout_seconds
+        return CodexAgent({})._build_codex_script(context)
+
+    def test_unset_keeps_the_previous_wait(self):
+        script = self._script({"sandbox_type": "read-only"}, 3600)
+
+        assert "stream_idle_timeout_ms = 600000" in script
+        assert "PRELOOP_STREAM_IDLE_TIMEOUT_SECONDS=600" in script
+
+    def test_flow_setting_is_written_to_the_provider_block(self):
+        script = self._script({"stream_idle_timeout_seconds": 90}, 1800)
+
+        provider_block = script[script.index("[model_providers.openrouter]") :]
+        assert "stream_idle_timeout_ms = 90000" in provider_block
+        assert "stream_idle_timeout_ms = 600000" not in script
+        assert 'echo "PRELOOP_STREAM_IDLE_TIMEOUT_SECONDS=90"' in script
+
+    def test_wait_fits_twice_inside_the_flow_budget(self):
+        """A 600s wait on a 900s run is stopped before it can reconnect."""
+        script = self._script({}, 900)
+
+        assert "stream_idle_timeout_ms = 450000" in script
+
+    def test_gateway_provider_gets_the_same_bound(self):
+        script = CodexAgent({})._build_codex_script(
+            {
+                "prompt": "review",
+                "execution_id": "exec-1",
+                "flow_name": "Manual PR Reviewer",
+                "model_gateway_enabled": True,
+                "model_gateway_provider": "preloop",
+                "model_gateway_model_alias": "deepseek/deepseek-v4-flash",
+                "model_gateway_url": "https://review.preloop.ai/openai/v1",
+                "agent_config": {"stream_idle_timeout_seconds": 120},
+                "flow_timeout_seconds": 1800,
+            }
+        )
+
+        assert "stream_idle_timeout_ms = 120000" in script
+
+    def test_native_openai_keeps_codex_defaults(self):
+        script = self._script(
+            {"stream_idle_timeout_seconds": 90}, 1800, provider="openai"
+        )
+
+        assert "stream_idle_timeout_ms" not in script
+        assert "PRELOOP_STREAM_IDLE_TIMEOUT_SECONDS" not in script
+
+    def test_retry_reason_is_logged_before_codex_runs(self):
+        """Without it, 'Reconnecting... n/m' does not say the stream idled."""
+        script = self._script({}, 1800)
+
+        export = 'export RUST_LOG="${RUST_LOG:-error},codex_core::responses_retry=warn"'
+        assert export in script
+        assert script.index(export) < script.index("| codex exec $CODEX_RESUME_ARGS")
+
+    def test_script_is_valid_bash(self, tmp_path):
+        import shutil
+        import subprocess
+
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("bash not available")
+        path = tmp_path / "codex.sh"
+        path.write_text(self._script({"stream_idle_timeout_seconds": 90}, 900))
+
+        subprocess.run([bash, "-n", str(path)], check=True)
+
+
 class TestCodexPrepareEnvironment:
     """Test _prepare_environment method."""
 

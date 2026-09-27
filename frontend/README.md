@@ -60,6 +60,8 @@ To run the test suite using Web Test Runner, use the following command:
 npm run test
 ```
 
+`npm test` checks two source rules before the browser suite. `console.log` and `console.debug` are allowed only in `src/utils/debug.ts` (`debugLog`; a production build drops it). A `TODO` or `FIXME` must include an issue number on the same line, for example `#123`.
+
 Authenticated views extend `AuthedElement` in `src/api.ts` and call the API through `fetchWithAuth` (JWT in `localStorage`, refresh, redirect to `/login` on auth failure). Routes live in `src/components/lit-app.ts`; do not copy a route map into this file.
 
 In Web Test Runner tests, stub `window.fetch` (not ES-module exports). Use `waitUntil()` from `@open-wc/testing` for async DOM updates. Browser console errors during tests that assert error handling are expected.

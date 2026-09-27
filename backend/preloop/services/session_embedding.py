@@ -296,11 +296,21 @@ def build_provider(setting: SessionEmbeddingSetting) -> EmbeddingProvider:
     raise EmbeddingProviderError(f"unsupported provider {setting.provider!r}")
 
 
-def _daily_cap_for(setting: SessionEmbeddingSetting) -> float:
-    """The account's cap, falling back to the deployment default."""
-    if setting.daily_cap_usd is not None:
-        return max(0.0, float(setting.daily_cap_usd))
+def deployment_daily_cap_usd() -> float:
+    """The deployment default cap an account without its own falls back to.
+
+    One reading for the worker, the query path and the settings card, so the
+    console can never show a default the worker does not apply.
+    """
     return max(0.0, float(getattr(settings, "session_embedding_daily_cap_usd", 2.0)))
+
+
+def daily_cap_for(setting: Any) -> float:
+    """The account's cap, falling back to the deployment default."""
+    cap = getattr(setting, "daily_cap_usd", None)
+    if cap is not None:
+        return max(0.0, float(cap))
+    return deployment_daily_cap_usd()
 
 
 def _day_start(now: Optional[datetime] = None) -> datetime:
@@ -409,7 +419,7 @@ def run_account_batch(
     if pending == 0:
         return EmbeddingBatchResult(account_id=account, status=STATUS_IDLE)
 
-    cap = _daily_cap_for(setting)
+    cap = daily_cap_for(setting)
     spent = crud_api_usage.get_gateway_spend(
         db,
         account_id=account,

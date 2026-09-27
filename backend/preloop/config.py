@@ -4,6 +4,7 @@ import logging
 import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
@@ -403,6 +404,15 @@ class Settings(BaseSettings):
         description=(
             "Disable proprietary RBAC permission checks and plugin loading. "
             "Set via DISABLE_RBAC=true for OSS / unrestricted access."
+        ),
+    )
+    api_key_scope_enforcement: Literal["enforce", "audit", "off"] = Field(
+        "enforce",
+        description=(
+            "How API keys whose only scopes are MCP scopes (flow execution and "
+            "runtime session tokens) are treated on REST routes: 'enforce' "
+            "denies them with 403, 'audit' logs and allows, 'off' allows. "
+            "Set via API_KEY_SCOPE_ENFORCEMENT; unknown values mean 'enforce'."
         ),
     )
 
@@ -1604,6 +1614,12 @@ class Settings(BaseSettings):
             "t",
             "yes",
         )
+        api_key_scope_enforcement = (
+            os.getenv("API_KEY_SCOPE_ENFORCEMENT", "enforce").strip().lower()
+        )
+        if api_key_scope_enforcement not in ("enforce", "audit", "off"):
+            # Fail closed: a typo must not silently switch enforcement off.
+            api_key_scope_enforcement = "enforce"
         bootstrap_token = os.getenv("PRELOOP_BOOTSTRAP_TOKEN", "")
         require_email_verification = os.getenv(
             "REQUIRE_EMAIL_VERIFICATION", "false"
@@ -1749,6 +1765,7 @@ class Settings(BaseSettings):
                 email_verification_resend_window_seconds
             ),
             disable_rbac=disable_rbac,
+            api_key_scope_enforcement=api_key_scope_enforcement,
             database=database,
             security=security,
             server=server,

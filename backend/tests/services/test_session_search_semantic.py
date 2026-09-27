@@ -357,3 +357,23 @@ def test_the_workers_degraded_marker_is_translated_for_a_search(db_session, test
         )
         == DEGRADED_SEMANTIC_PROVIDER_ERROR
     )
+
+
+def test_the_deployment_cap_has_one_reading(monkeypatch):
+    """Worker, query path and settings card all use the same fallback."""
+    from preloop.services import session_embedding
+
+    monkeypatch.setattr(
+        session_embedding.settings, "session_embedding_daily_cap_usd", 3.5
+    )
+
+    assert session_embedding.deployment_daily_cap_usd() == 3.5
+
+    class _NoCap:
+        daily_cap_usd = None
+
+    class _OwnCap:
+        daily_cap_usd = 0.25
+
+    assert session_embedding.daily_cap_for(_NoCap()) == 3.5
+    assert session_embedding.daily_cap_for(_OwnCap()) == 0.25

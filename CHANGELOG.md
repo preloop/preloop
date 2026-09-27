@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
+  a login row selector, a revoke fan-out for "sign out everywhere", a
+  visibility provider for models, MCP servers, managed agents, flows and
+  runners owned by another account, one `authorize(ctx, action, resource)`
+  decision consulted by `require_permission`, gateway model access, tool
+  policy, runner dispatch and list endpoints, extra budget policies and spend
+  buckets, inherited kill switch scopes, a billing account resolver, and an
+  `account_ids` list on the gateway usage summaries. Every hook is a no-op
+  until a plugin registers it, and adds no query when unset.
 - Copilot and Cursor host execution profiles can run review and
   implementation flows. A profile that sets `allow_checkout` clones the
   flow's repositories into the run directory at the pinned commit, with a
@@ -53,6 +62,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Copilot surface, whether MCP tool calls are governed, whether model
   calls are metered, whether hooks record a session, and whether spend
   is gateway usage or the premium-request import.
+
+- Semantic search settings on the Sessions page: a card to opt the account in
+  to embedding its session content, name the model and endpoint, choose
+  `summaries_only` or `full` (with the storage cost of each), and set the
+  daily cap, with corpus progress and the last degraded reason shown. A viewer
+  sees it read-only; saving needs `manage_budgets`. The `semantic_not_enabled`
+  search notice links to it. `PUT /api/v1/runtime-sessions/settings/embedding`
+  now takes `enabled`, `daily_cap_usd`, `provider`, `model_identifier` and
+  `base_url` alongside `scope`, and its read carries the deployment default
+  cap, the kill switch state and corpus progress.
+- The environment image (`environments/preloop/Dockerfile`) installs the
+  distro Perl toolchain: `perl`, `cpanminus`, `perlver`
+  (`Perl::MinimumVersion`), `perlcritic`, and `prove`. The default hosted
+  reviewer sandbox remains `ghcr.io/openai/codex-universal` and still does
+  not include Perl. A private runner installs the linter with
+  `cpanm Perl::MinimumVersion`.
 
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
@@ -133,6 +158,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- API keys whose scopes are all `mcp:*` (flow execution, runtime session and
+  managed agent credentials) are limited to MCP and the runtime routes that
+  check their own credentials. Other REST routes answer 403 with
+  `detail.code` `api_key_scope_denied`, and console WebSockets refuse them. A
+  flow execution key also stops authenticating on REST, MCP and the model
+  gateway once its execution has finished (the browser-step flush and the
+  agent control and note pull routes keep accepting it until revocation or
+  expiry). `API_KEY_SCOPE_ENFORCEMENT=audit` logs
+  instead of refusing, and `off` turns the check off. Personal API keys are
+  unchanged.
+
 - `aiosmtplib` is no longer a core dependency (nothing imported it).
   `maxminddb` and `user-agents` moved from the core dependency list to a new
   `ee` extra, since only the Enterprise Edition growth plugin uses them. The
@@ -169,6 +205,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The flow page no longer writes websocket payloads or the enable and
+  disable result to the browser console. Enabling or disabling a flow
+  shows a toast, and a failed update shows the server reason in a toast.
+  Other `console.log` and `console.debug` calls in the
+  console go through a helper that a production build drops. The
+  frontend test run fails if a new call is added outside that helper.
+
+- Stopping a run and resolving a duplicate tell the operator when the
+  request fails. The six TODO comments in the console that named no
+  issue are gone. The frontend test run fails if a TODO or FIXME has
+  no issue number.
+
+- The API client does not log token-refresh progress, request URLs, or
+  tracker credentials. The same console check rejects `console.log` and
+  `console.debug` in that file.
+
+- Saving a tracker from the console persists connection details such as a
+  Jira username. The update accepts `connection_details` and the legacy
+  `config` key. When both are sent, `connection_details` wins.
+- Tracker registration no longer rewrites an HTTP error raised while reading
+  the request, including a 401 from the connection test, as "Invalid request
+  format".
+- API usage counts `create_issue` only for `POST /api/v1/issues`. Other POSTs
+  whose path contains `/issues` are not counted as issue creation.
+- Notify-only response evaluation reads the account id from the gateway auth
+  context, the same place as the rest of the gateway.
 - Managed agent config files (`writeJSONDocument`) are written atomically, so
   a concurrent reader never sees a partial file; a symlinked config keeps its
   link. The host execution cleanup test no longer races its fake CLI's pid

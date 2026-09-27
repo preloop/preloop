@@ -875,7 +875,25 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             )
             .outerjoin(User, self.model.owner_user_id == User.id)
         )
-        base_query = base_query.filter(self.model.account_id == account_id)
+        from preloop.plugins.account_hooks import (
+            VISIBLE_MANAGED_AGENT,
+            extra_visible_ids,
+        )
+
+        shared_ids = {
+            str(shared)
+            for shared in extra_visible_ids(db, account_id, VISIBLE_MANAGED_AGENT)
+        }
+        if shared_ids:
+            # Agents another account shares here (account hook H3).
+            base_query = base_query.filter(
+                or_(
+                    self.model.account_id == account_id,
+                    self.model.id.in_(list(shared_ids)),
+                )
+            )
+        else:
+            base_query = base_query.filter(self.model.account_id == account_id)
 
         if query:
             normalized_query = f"%{' '.join(query.strip().split())}%"
@@ -1008,6 +1026,11 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         items = []
         for row in rows:
             summary = self._row_to_summary(row)
+            if str(row.id) in shared_ids:
+                # The owner is a user of another account: never name them.
+                summary["owner_user_id"] = None
+                summary["owner_username"] = None
+                summary["owner_email"] = None
             aggregate = aggregates.get(
                 (row.session_source_type, row.session_source_id),
                 _empty_usage_aggregate(),
