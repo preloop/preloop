@@ -146,7 +146,7 @@ func TestRefreshClaudeKeepsCurrentPinWhenCandidateNotInLiveList(t *testing.T) {
 		t.Fatalf("no diff expected: added=%#v removed=%#v", outcome.added(), outcome.removed())
 	}
 	if len(outcome.Notes) == 0 ||
-		!strings.Contains(outcome.Notes[0], "kept: candidate") ||
+		!strings.Contains(outcome.Notes[0], "keeping anthropic/claude-opus-5") ||
 		!strings.Contains(outcome.Notes[0], "not in live list") {
 		t.Fatalf("expected a kept-because-not-in-live-list note, got %#v", outcome.Notes)
 	}
@@ -258,6 +258,89 @@ func TestRefreshClaudeReplacesDatedJunkWithVerifiedUndatedAlias(t *testing.T) {
 	}
 }
 
+func TestRefreshClaudeReplacesDeauthorizedPinWithLiveVerifiedOlderAlias(t *testing.T) {
+	// The current pin was removed from the account catalog. Of the aliases
+	// that remain, only the older one is on the live list, so the pin must
+	// land there instead of on the newer unverified catalog alias.
+	doc := claudeRefreshLiveDoc()
+	env := doc["env"].(map[string]interface{})
+	env["ANTHROPIC_CUSTOM_MODEL_OPTION"] = "anthropic/claude-opus-5-5-20260915"
+	env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = "anthropic/claude-opus-5-5-20260915"
+
+	models := []aiModelResponse{
+		refreshTestModel("m-old", "anthropic", "claude-opus-5", "anthropic/claude-opus-5"),
+		refreshTestModel("m-new", "anthropic", "claude-opus-5-5", "anthropic/claude-opus-5-5"),
+	}
+	live := claudeLiveModelList{
+		Attempted: true,
+		Obtained:  true,
+		IDs:       []string{"claude-opus-5"},
+	}
+
+	outcome, err := refreshClaudeManagedModelDocumentWithLive(
+		AgentConfig{Name: "Claude Code"}, doc, models, nil, live,
+	)
+	if err != nil {
+		t.Fatalf("unexpected refresh error: %v", err)
+	}
+	refreshedEnv := outcome.Doc["env"].(map[string]interface{})
+	if refreshedEnv["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "anthropic/claude-opus-5" {
+		t.Fatalf(
+			"de-authorized pin must move to the live-verified older alias, got %#v",
+			refreshedEnv["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+		)
+	}
+	if len(outcome.Notes) == 0 ||
+		!strings.Contains(outcome.Notes[0], "pin no longer authorized") ||
+		!strings.Contains(outcome.Notes[0], "anthropic/claude-opus-5") {
+		t.Fatalf("expected a de-authorized pin note, got %#v", outcome.Notes)
+	}
+}
+
+func TestResolveClaudeFamilyPinNotesDistinguishFirstPinFromReplacement(t *testing.T) {
+	opus, ok := claudeFamilyForAlias("claude-opus-5")
+	if !ok {
+		t.Fatal("expected claude-opus-5 to belong to the opus family")
+	}
+	authorized := []string{"anthropic/claude-opus-5"}
+	live := claudeLiveModelList{Attempted: true, Obtained: true, IDs: []string{"claude-opus-5"}}
+
+	alias, note := resolveClaudeFamilyPin(opus, "", authorized, live)
+	if alias != "anthropic/claude-opus-5" || note != "opus: pinned to anthropic/claude-opus-5" {
+		t.Fatalf("first pin = %q %q", alias, note)
+	}
+
+	alias, note = resolveClaudeFamilyPin(
+		opus, "anthropic/claude-opus-removed", authorized, live,
+	)
+	if alias != "anthropic/claude-opus-5" ||
+		note != "opus: pin no longer authorized; using anthropic/claude-opus-5" {
+		t.Fatalf("replacement pin = %q %q", alias, note)
+	}
+}
+
+func TestNewestLiveAuthorizedFamilyAliasPrefersLiveVerifiedOlderAlias(t *testing.T) {
+	opus, ok := claudeFamilyForAlias("claude-opus-5")
+	if !ok {
+		t.Fatal("expected claude-opus-5 to belong to the opus family")
+	}
+	live := claudeLiveModelList{
+		Attempted: true,
+		Obtained:  true,
+		IDs:       []string{"claude-opus-5"},
+	}
+	got := newestLiveAuthorizedFamilyAlias(opus, []string{
+		"anthropic/claude-opus-5",
+		"anthropic/claude-opus-5-5",
+	}, live)
+	if got != "anthropic/claude-opus-5" {
+		t.Fatalf("newestLiveAuthorizedFamilyAlias = %q, want the live-verified older alias", got)
+	}
+	if newestLiveAuthorizedFamilyAlias(opus, []string{"anthropic/claude-opus-5"}, claudeLiveModelList{}) != "" {
+		t.Fatal("an unobtained live list must not verify any alias")
+	}
+}
+
 func TestFetchClaudeLiveModelListUsesAnthropicEndpoint(t *testing.T) {
 	var gotToken string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -365,6 +448,10 @@ func TestExecuteAgentsRefreshClaudeKeepsPinOnJunkCatalogRow(t *testing.T) {
 	if err := os.WriteFile(cfgPath, initialJSON, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	secondPath := filepath.Join(cfgDir, "settings-second.json")
+	if err := os.WriteFile(secondPath, initialJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveLocalEnrollmentState(&localEnrollmentState{
 		AgentName:         "Claude Code",
 		DisplayName:       "Claude Code",
@@ -422,7 +509,9 @@ func TestExecuteAgentsRefreshClaudeKeepsPinOnJunkCatalogRow(t *testing.T) {
 	}))
 	defer server.Close()
 
+	liveHits := 0
 	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		liveHits++
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": []map[string]string{{"id": "claude-opus-5"}},
@@ -439,17 +528,24 @@ func TestExecuteAgentsRefreshClaudeKeepsPinOnJunkCatalogRow(t *testing.T) {
 	}()
 
 	client := api.NewClientWithToken(server.URL, "tok")
-	agent := AgentConfig{Name: "Claude Code", ConfigPath: cfgPath}
+	agents := []AgentConfig{
+		{Name: "Claude Code", ConfigPath: cfgPath},
+		{Name: "Claude Code", ConfigPath: secondPath},
+	}
 	var out strings.Builder
-	if err := executeAgentsRefresh(client, []AgentConfig{agent}, &out); err != nil {
+	if err := executeAgentsRefresh(client, agents, &out); err != nil {
 		t.Fatalf("executeAgentsRefresh: %v", err)
+	}
+	if liveHits != 1 {
+		t.Fatalf("live Anthropic list must be fetched once per refresh, got %d", liveHits)
 	}
 
 	rendered := out.String()
 	for _, want := range []string{
 		"Refreshing Claude Code",
-		"not in live list; keeping anthropic/claude-opus-5",
-		"Refresh complete: 0 refreshed, 1 already up to date, 0 skipped, 0 failed.",
+		"keeping anthropic/claude-opus-5",
+		"not in live list",
+		"Refresh complete: 0 refreshed, 2 already up to date, 0 skipped, 0 failed.",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("output missing %q:\n%s", want, rendered)

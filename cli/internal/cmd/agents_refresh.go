@@ -178,10 +178,20 @@ func executeAgentsRefresh(client *api.Client, targets []AgentConfig, w io.Writer
 		return fmt.Errorf("failed to list account AI models: %w", err)
 	}
 
+	// The live Anthropic list is account-wide, so one refresh run fetches it
+	// once and reuses it for every Claude Code agent.
+	live := claudeLiveModelList{}
+	for _, agent := range targets {
+		if isClaudeCodeAgent(agent) {
+			live = fetchClaudeLiveModelList()
+			break
+		}
+	}
+
 	refreshed, unchanged, skipped, failed := 0, 0, 0, 0
 	for _, agent := range targets {
 		fmt.Fprintf(w, "Refreshing %s (%s)\n", resolveAgentDisplayName(agent), agent.ConfigPath) //nolint:errcheck
-		outcome, err := refreshAgentManagedModels(client, agent, accountModels, w)
+		outcome, err := refreshAgentManagedModels(client, agent, accountModels, live, w)
 		if err != nil {
 			failed++
 			fmt.Fprintf(w, "  ✗ %v\n", err) //nolint:errcheck
@@ -247,6 +257,7 @@ func refreshAgentManagedModels(
 	client *api.Client,
 	agent AgentConfig,
 	accountModels []aiModelResponse,
+	live claudeLiveModelList,
 	output io.Writer,
 ) (managedModelRefreshOutcome, error) {
 	if output == nil {
@@ -283,13 +294,7 @@ func refreshAgentManagedModels(
 
 	// Verify candidate family pins against the provider's live model list
 	// before writing them: a catalog row that Anthropic 404s must not become
-	// the pin. The list is fetched only for Claude Code, and only when a
-	// local Anthropic credential is available.
-	live := claudeLiveModelList{}
-	if isClaudeCodeAgent(agent) {
-		live = fetchClaudeLiveModelList()
-	}
-
+	// the pin. executeAgentsRefresh fetches that list once per run.
 	outcome, err := refreshManagedModelDocument(agent, doc, accountModels, bindings, live)
 	if err != nil || outcome.SkipReason != "" || outcome.Doc == nil {
 		return outcome, err
@@ -599,6 +604,7 @@ func (l claudeLiveModelList) contains(alias string) bool {
 // It starts from the newest authorized alias in the family and only moves the
 // pin when the move is safe:
 //   - the candidate equals the current pin: keep it silently;
+//   - there is no current pin: write the candidate and say it was pinned;
 //   - the current pin is no longer authorized: switch (preferring a candidate
 //     that is in the live list when one was obtained);
 //   - the live list was obtained but lacks the candidate: keep the current
@@ -632,6 +638,9 @@ func resolveClaudeFamilyPin(
 				candidate = verified
 			}
 		}
+		if current == "" {
+			return candidate, fmt.Sprintf("%s: pinned to %s", family.selector, candidate)
+		}
 		return candidate, fmt.Sprintf(
 			"%s: pin no longer authorized; using %s", family.selector, candidate,
 		)
@@ -639,8 +648,8 @@ func resolveClaudeFamilyPin(
 	switch {
 	case live.Obtained && !live.contains(candidate):
 		return current, fmt.Sprintf(
-			"%s: kept: candidate %s not in live list; keeping %s",
-			family.selector, candidate, current,
+			"%s: keeping %s (candidate %s not in live list)",
+			family.selector, current, candidate,
 		)
 	case live.Attempted && !live.Obtained:
 		return current, fmt.Sprintf(
