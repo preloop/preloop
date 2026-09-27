@@ -92,7 +92,8 @@ def test_deleted_runner_is_rejected_on_the_websocket(
 ) -> None:
     with _client(db_session, test_user) as client:
         runner_id, token = _register(client)
-        assert _first_frame(client, runner_id, token)["type"] == "hello"
+        frame = _first_frame(client, runner_id, token)
+        assert frame["type"] == "hello"
 
         response = client.delete(f"/api/v1/runners/{runner_id}")
         assert response.status_code == 200, response.text
@@ -102,11 +103,13 @@ def test_deleted_runner_is_rejected_on_the_websocket(
             "halted_execution_ids": [],
         }
 
-        assert _first_frame(client, runner_id, token) == {
+        frame = _first_frame(client, runner_id, token)
+        assert frame == {
             "type": "error",
             "error": "unauthorized",
         }
-        assert client.get(f"/api/v1/runners/{runner_id}").status_code == 404
+        fetched = client.get(f"/api/v1/runners/{runner_id}")
+        assert fetched.status_code == 404
     assert crud_flow_runner.get_fresh(db_session, runner_id=UUID(runner_id)) is None
 
 
@@ -122,11 +125,14 @@ def test_rotating_the_token_rejects_the_old_one_and_accepts_the_new_one(
         assert new_token and new_token != old_token
         assert response.json()["id"] == runner_id
 
-        assert _first_frame(client, runner_id, old_token)["error"] == "unauthorized"
-        assert _first_frame(client, runner_id, new_token)["type"] == "hello"
+        frame = _first_frame(client, runner_id, old_token)
+        assert frame["error"] == "unauthorized"
+        frame = _first_frame(client, runner_id, new_token)
+        assert frame["type"] == "hello"
 
         # The token is returned once: reading the runner never shows it.
-        assert "token" not in client.get(f"/api/v1/runners/{runner_id}").json()
+        listed = client.get(f"/api/v1/runners/{runner_id}")
+        assert "token" not in listed.json()
 
 
 def test_a_socket_opened_with_the_old_token_is_closed_by_rotation(
@@ -180,7 +186,8 @@ def test_delete_refuses_a_runner_holding_a_lease_without_force(
         assert "force=true" in response.json()["detail"]
 
         # Nothing changed: the runner, its lease and its token all survive.
-        assert _first_frame(client, runner_id, token)["type"] == "hello"
+        frame = _first_frame(client, runner_id, token)
+        assert frame["type"] == "hello"
     assert crud_flow_runner.get_fresh(db_session, runner_id=UUID(runner_id))
     assert crud_flow_runner.get_assignment(
         db_session, runner_id=UUID(runner_id), execution_id=execution.id
@@ -201,7 +208,8 @@ def test_force_delete_halts_the_leases_and_deletes_the_runner(
         assert response.status_code == 200, response.text
         assert response.json()["halted_execution_ids"] == [str(execution.id)]
 
-        assert _first_frame(client, runner_id, token)["error"] == "unauthorized"
+        frame = _first_frame(client, runner_id, token)
+        assert frame["error"] == "unauthorized"
     assert crud_flow_runner.get_fresh(db_session, runner_id=UUID(runner_id)) is None
     stopped = crud_flow_execution.get(db_session, id=execution.id, refresh=True)
     assert stopped.status == "STOPPED"
@@ -274,8 +282,10 @@ def test_delete_and_rotate_do_not_reach_another_accounts_runner(
         },
     )
     with _client(db_session, test_user) as client:
-        assert client.delete(f"/api/v1/runners/{foreign.id}").status_code == 404
-        assert client.post(f"/api/v1/runners/{foreign.id}/token").status_code == 404
+        deleted = client.delete(f"/api/v1/runners/{foreign.id}")
+        rotated = client.post(f"/api/v1/runners/{foreign.id}/token")
+    assert deleted.status_code == 404
+    assert rotated.status_code == 404
     kept = crud_flow_runner.get_fresh(db_session, runner_id=foreign.id)
     assert kept is not None and kept.token_hash == "foreign-hash"
 
