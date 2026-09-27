@@ -1,0 +1,486 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://preloop.ai/vex/preloop-frontend-0.16.0-1",
+  "author": "Preloop <security@preloop.ai>",
+  "timestamp": "2026-09-27T00:00:00Z",
+  "last_updated": "2026-09-27T00:00:00Z",
+  "version": 1,
+  "tooling": "https://github.com/preloop/preloop/blob/main/scripts/generate_vex.py",
+  "statements": [
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-1525",
+        "name": "CVE-2026-1525",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-1526",
+        "name": "CVE-2026-1526",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-1527",
+        "name": "CVE-2026-1527",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-1528",
+        "name": "CVE-2026-1528",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-2229",
+        "name": "CVE-2026-2229",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-6733",
+        "name": "CVE-2026-6733",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-9678",
+        "name": "CVE-2026-9678",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-9679",
+        "name": "CVE-2026-9679",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-11525",
+        "name": "CVE-2026-11525",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-12151",
+        "name": "CVE-2026-12151",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-13697",
+        "name": "CVE-2026-13697",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-14643",
+        "name": "CVE-2026-14643",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-15157",
+        "name": "CVE-2026-15157",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-16728",
+        "name": "CVE-2026-16728",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-16729",
+        "name": "CVE-2026-16729",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-18149",
+        "name": "CVE-2026-18149",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-18540",
+        "name": "CVE-2026-18540",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-19534",
+        "name": "CVE-2026-19534",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-22036",
+        "name": "CVE-2026-22036",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-84890",
+        "name": "CVE-2026-84890",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-84933",
+        "name": "CVE-2026-84933",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-84947",
+        "name": "CVE-2026-84947",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-85008",
+        "name": "CVE-2026-85008",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2026-85014",
+        "name": "CVE-2026-85014",
+        "description": "undici runtime advisory matched through the undici-types repository URL"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/undici-types@7.16.0",
+          "identifiers": {
+            "purl": "pkg:npm/undici-types@7.16.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "undici-types ships only TypeScript declaration files (.d.ts) and contains no undici runtime. These advisories describe defects in the undici runtime. The package repository field points at the undici git repository, so a scanner that matches OSV git ranges through vcs_url attributes those runtime advisories to a declarations package that does not contain the vulnerable code."
+    },
+    {
+      "vulnerability": {
+        "@id": "https://nvd.nist.gov/vuln/detail/CVE-2018-3721",
+        "name": "CVE-2018-3721",
+        "description": "Prototype pollution in lodash before 4.17.5"
+      },
+      "timestamp": "2026-09-27T00:00:00Z",
+      "products": [
+        {
+          "@id": "pkg:npm/lodash.camelcase@4.3.0",
+          "identifiers": {
+            "purl": "pkg:npm/lodash.camelcase@4.3.0"
+          }
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "CVE-2018-3721 is prototype pollution fixed in lodash 4.17.5. lodash.camelcase 4.3.0 is a frozen per-method package that never received that fix. It is required only by command-line-args 5.2.1, a dependency of the dev-only packages @web/test-runner 1.0.0 and @web/dev-server 1.0.0. command-line-args 6.0.2, the latest release, still depends on lodash.camelcase, and those parents are already at their latest 1.0.0 release, which still requires command-line-args ^5.1.1. npm ls --omit=dev does not list the package, and the production frontend bundle does not contain it. The vulnerable code is not on the shipped execute path."
+    }
+  ]
+}
