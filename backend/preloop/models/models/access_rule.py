@@ -24,7 +24,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .access_values import RULE_ACTIONS, RULE_EFFECTS, RULE_SCOPES, in_list_check
+from .access_values import (
+    RULE_ACTIONS,
+    RULE_EFFECTS,
+    RULE_SCOPES,
+    SHARE_RESOURCE_TYPES,
+    in_list_check,
+)
 from .base import Base
 
 _ACTIONS_ARRAY = "ARRAY[" + ", ".join(f"'{a}'" for a in RULE_ACTIONS) + "]::text[]"
@@ -49,7 +55,9 @@ class AccessRule(Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     resource_type: Mapped[Optional[str]] = mapped_column(
-        String(32), nullable=True, comment="NULL matches every resource type"
+        String(32),
+        nullable=True,
+        comment="One of the shareable resource types; NULL matches every type",
     )
     resource_selector: Mapped[Dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
@@ -83,6 +91,11 @@ class AccessRule(Base):
         ),
         CheckConstraint(
             in_list_check("scope", RULE_SCOPES), name="ck_access_rule_scope"
+        ),
+        CheckConstraint(
+            "resource_type IS NULL OR "
+            + in_list_check("resource_type", SHARE_RESOURCE_TYPES),
+            name="ck_access_rule_resource_type",
         ),
         CheckConstraint(
             f"cardinality(actions) >= 1 AND actions <@ {_ACTIONS_ARRAY}",

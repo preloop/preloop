@@ -512,3 +512,35 @@ def test_a_revoked_share_cannot_gain_recipients(db_session):
     with pytest.raises(IntegrityError, match="revoked"):
         db_session.flush()
     savepoint.rollback()
+
+
+def test_rule_and_tag_resource_types_are_a_closed_set(db_session):
+    """A typo in a rule's or tag's resource type must fail, not match nothing."""
+    account = _account(db_session, "typos")
+
+    def rule(resource_type):
+        return models.AccessRule(
+            account_id=account.id,
+            name="no models",
+            effect="forbid",
+            actions=["model:invoke"],
+            resource_type=resource_type,
+        )
+
+    savepoint = db_session.begin_nested()
+    db_session.add(rule("models"))
+    with pytest.raises(IntegrityError, match="ck_access_rule_resource_type"):
+        db_session.flush()
+    savepoint.rollback()
+
+    tag = _tag(account, "env")
+    tag.resource_type = "models"
+    savepoint = db_session.begin_nested()
+    db_session.add(tag)
+    with pytest.raises(IntegrityError, match="ck_resource_tag_resource_type"):
+        db_session.flush()
+    savepoint.rollback()
+
+    # NULL on a rule still means every resource type.
+    db_session.add_all([rule(None), rule("ai_model")])
+    db_session.flush()

@@ -11,6 +11,9 @@ GRANT_SUBJECT_TYPES = ("user", "team")
 GRANT_ACCESS_LEVELS = ("read", "operate", "admin")
 GRANT_TARGET_MODES = ("all", "selected")
 
+# Also the closed set for ``resource_tag.resource_type`` and
+# ``access_rule.resource_type``: a tag or rule on any other type could never
+# match a share, so a typo there fails instead of silently matching nothing.
 SHARE_RESOURCE_TYPES = (
     "ai_model",
     "mcp_server",

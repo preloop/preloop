@@ -92,7 +92,7 @@ def _create_access_rule() -> None:
             "resource_type",
             sa.String(32),
             nullable=True,
-            comment="NULL matches every resource type",
+            comment="One of the shareable resource types; NULL matches every type",
         ),
         sa.Column(
             "resource_selector",
@@ -123,6 +123,10 @@ def _create_access_rule() -> None:
         sa.CheckConstraint(
             "scope IN ('self', 'subaccounts', 'self_and_subaccounts')",
             name="ck_access_rule_scope",
+        ),
+        sa.CheckConstraint(
+            "resource_type IS NULL OR " + _RESOURCE_TYPES,
+            name="ck_access_rule_resource_type",
         ),
         sa.CheckConstraint(_ACTIONS, name="ck_access_rule_actions"),
     )
@@ -243,6 +247,7 @@ def _create_resource_tag() -> None:
         sa.Column("value", sa.String(128), nullable=False),
         _user_fk("created_by"),
         sa.CheckConstraint(_TAG_KEY, name="ck_resource_tag_key"),
+        sa.CheckConstraint(_RESOURCE_TYPES, name="ck_resource_tag_resource_type"),
         sa.UniqueConstraint(
             "resource_type", "resource_id", "key", name="uq_resource_tag_key"
         ),
