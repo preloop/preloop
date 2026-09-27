@@ -162,4 +162,5 @@ one seat across automated flows for several people.
 
 ## Related
 
-- [`preloop cursor`](cursor-cli.md) — Cursor Agent launcher pattern
+- [Copilot coverage](copilot.md): what each surface governs and meters
+- [`preloop cursor`](cursor-cli.md): Cursor Agent launcher pattern
