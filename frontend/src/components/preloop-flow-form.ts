@@ -103,6 +103,20 @@ export function splitApprovalWindow(seconds: number | null | undefined): {
   return { amount: Math.round(total / 60), unit: 'minutes' };
 }
 
+type HostExecAgentType = 'cursor' | 'copilot';
+
+/** Agent config key holding each host CLI's per-flow model alias. */
+const HOST_EXEC_MODEL_KEYS: Record<HostExecAgentType, string> = {
+  cursor: 'cursor_model',
+  copilot: 'copilot_model',
+};
+
+/** Runner capability a host profile advertises for each host CLI. */
+const HOST_EXEC_HARNESSES: Record<HostExecAgentType, string> = {
+  cursor: 'cursor_cli',
+  copilot: 'copilot_cli',
+};
+
 const FEEDBACK_LIMITS = {
   max_turns: {
     label: 'Maximum repair turns',
@@ -1892,33 +1906,50 @@ export class PreloopFlowForm extends LitElement {
   private composedAgentConfig(): Record<string, unknown> {
     const base = this.buildAgentConfig();
     const profile = String(base.host_exec_profile || '').trim();
-    if ((this.flow.agent_type || '') === 'cursor') {
+    const hostType = this.hostExecAgentType();
+    if (hostType) {
       if (profile) {
         base.host_exec_profile = profile;
       } else {
         delete base.host_exec_profile;
       }
-      const cursorModel =
-        typeof base.cursor_model === 'string' ? base.cursor_model.trim() : '';
-      if (
-        cursorModel &&
-        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(cursorModel)
-      ) {
+      const key = HOST_EXEC_MODEL_KEYS[hostType];
+      const raw = base[key];
+      const model = typeof raw === 'string' ? raw.trim() : '';
+      if (model && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(model)) {
         throw new Error(
-          'Cursor model must be a Cursor model id such as grok-4.7-high, or blank for Auto.'
+          hostType === 'cursor'
+            ? 'Cursor model must be a Cursor model id such as grok-4.7-high, or blank for Auto.'
+            : 'Copilot model must be a model alias from the runner profile model_map, or blank for the Copilot default.'
         );
       }
-      if (cursorModel) {
-        base.cursor_model = cursorModel;
+      if (model) {
+        base[key] = model;
       } else {
-        delete base.cursor_model;
+        delete base[key];
+      }
+      // A model alias for the other host CLI never applies to this flow.
+      for (const other of Object.values(HOST_EXEC_MODEL_KEYS)) {
+        if (other !== key) {
+          delete base[other];
+        }
       }
     } else {
       delete base.host_exec_profile;
-      delete base.cursor_model;
+      for (const key of Object.values(HOST_EXEC_MODEL_KEYS)) {
+        delete base[key];
+      }
     }
     this.applyCustomImageOverride(base);
     return base;
+  }
+
+  /** The host CLI this flow runs as, or null for container harnesses. */
+  private hostExecAgentType(): HostExecAgentType | null {
+    const kind = (this.flow.agent_type || '') as HostExecAgentType;
+    return Object.prototype.hasOwnProperty.call(HOST_EXEC_MODEL_KEYS, kind)
+      ? kind
+      : null;
   }
 
   private hostExecProfileName(): string {
@@ -1926,13 +1957,16 @@ export class PreloopFlowForm extends LitElement {
     return typeof raw === 'string' ? raw.trim() : '';
   }
 
-  private advertisedHostExecProfiles(): string[] {
+  private advertisedHostExecProfiles(harness?: string): string[] {
     const names = new Set<string>();
     for (const runner of this.runners) {
       const advertised = runner.capabilities?.host_exec_profiles || [];
       for (const item of advertised) {
         const name = (item?.name || '').trim();
-        if (name) {
+        const caps: string[] = Array.isArray(item?.capabilities)
+          ? item.capabilities
+          : [];
+        if (name && (!harness || caps.includes(harness))) {
           names.add(name);
         }
       }
@@ -1956,6 +1990,22 @@ export class PreloopFlowForm extends LitElement {
     return typeof raw === 'string' ? raw : '';
   }
 
+  private handleCopilotModelInput(event: Event) {
+    const value = (event.target as HTMLInputElement).value;
+    this.flow = {
+      ...this.flow,
+      agent_config: {
+        ...(this.flow.agent_config || {}),
+        copilot_model: value,
+      },
+    };
+  }
+
+  private copilotModelValue(): string {
+    const raw = this.parseAgentConfig(this.flow.agent_config).copilot_model;
+    return typeof raw === 'string' ? raw : '';
+  }
+
   private handleHostExecProfileInput(event: Event) {
     const value = (event.target as HTMLInputElement).value;
     this.flow = {
@@ -1968,16 +2018,53 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
+  private renderCopilotHostExecFields() {
+    return html`
+      <p class="notifications-help">
+        Copilot runs as the copilot command on the private runner, using that
+        machine's GitHub Copilot login and seat. Model spend is billed to that
+        seat as premium requests and is not metered by the Preloop gateway.
+        Preloop's model catalog is not the seat's model list, so it is hidden
+        here.
+      </p>
+      <sl-input
+        label="Copilot model"
+        data-copilot-model
+        placeholder="Copilot default"
+        help-text="Optional model alias. The runner passes the mapped model as --model only when the profile model_map lists this alias. Blank uses the Copilot default."
+        .value=${this.copilotModelValue()}
+        @sl-input=${this.handleCopilotModelInput}
+      ></sl-input>
+      ${
+        this.flow.git_clone_config?.enabled
+          ? html`<sl-alert variant="warning" open>
+              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+              Host execution cannot clone a repository or open a pull request.
+              This flow clones a repository, so a Copilot runner will refuse the
+              run.
+            </sl-alert>`
+          : nothing
+      }
+    `;
+  }
+
   private renderHostExecProfileField() {
-    if ((this.flow.agent_type || '') !== 'cursor') {
+    const hostType = this.hostExecAgentType();
+    if (!hostType) {
       return nothing;
     }
-    const advertised = this.advertisedHostExecProfiles();
+    const advertised = this.advertisedHostExecProfiles(
+      HOST_EXEC_HARNESSES[hostType]
+    );
+    const login = hostType === 'cursor' ? 'Cursor' : 'GitHub Copilot';
     return html`
       <sl-input
         label="Host execution profile"
-        help-text="Named profile on a private runner. Runs as the runner user with its local Cursor login and filesystem access."
-        placeholder=${advertised[0] || 'cursor-ask'}
+        help-text="Named profile on a private runner. Runs as the runner user with its local ${login} login and filesystem access."
+        placeholder=${
+          advertised[0] ||
+          (hostType === 'cursor' ? 'cursor-ask' : 'copilot-review')
+        }
         .value=${this.hostExecProfileName()}
         @sl-input=${this.handleHostExecProfileInput}
       ></sl-input>
@@ -2057,8 +2144,7 @@ export class PreloopFlowForm extends LitElement {
   /** True when the flow launches on the runner host instead of in a container. */
   private isNativeHostExecFlow(): boolean {
     return (
-      (this.flow.agent_type || '') === 'cursor' &&
-      this.hostExecProfileName() !== ''
+      this.hostExecAgentType() !== null && this.hostExecProfileName() !== ''
     );
   }
 
@@ -2424,7 +2510,7 @@ export class PreloopFlowForm extends LitElement {
       this.triggerType = 'webhook';
     }
 
-    if (!this.flow.ai_model_id && this.flow.agent_type !== 'cursor') {
+    if (!this.flow.ai_model_id && !this.hostExecAgentType()) {
       let selectableModels = this.models.filter(
         (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
       );
@@ -3393,6 +3479,9 @@ export class PreloopFlowForm extends LitElement {
                     <sl-option value="cursor"
                       >Cursor CLI (private runner host profile)</sl-option
                     >
+                    <sl-option value="copilot"
+                      >Copilot CLI (private runner host profile)</sl-option
+                    >
                   </sl-select>
                 `
           }
@@ -3429,37 +3518,41 @@ export class PreloopFlowForm extends LitElement {
                       : nothing
                   }
                 `
-              : html`
-                  <div
-                    style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small); margin-bottom: var(--sl-spacing-medium);"
-                  >
-                    <sl-select
-                      label="AI model"
-                      placeholder="Select an AI model"
-                      .value=${this.flow.ai_model_id || ''}
-                      @sl-change=${(e: any) => {
-                        this.flow.ai_model_id = e.target.value;
-                      }}
-                      style="margin-bottom: 0;"
+              : this.flow.agent_type === 'copilot'
+                ? this.renderCopilotHostExecFields()
+                : html`
+                    <div
+                      style="display: flex; flex-direction: column; gap: var(--sl-spacing-2x-small); margin-bottom: var(--sl-spacing-medium);"
                     >
-                      ${selectableModels.map(
-                        (m) =>
-                          html`<sl-option .value=${m.id}>${m.name}</sl-option>`
-                      )}
-                    </sl-select>
-                    <sl-button
-                      size="small"
-                      variant="text"
-                      @click=${this.openAddAIModelDialog}
-                      style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
-                    >
-                      <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add AI
-                      model
-                    </sl-button>
-                  </div>
-                  ${this.renderModelRoutingEditor(selectableModels)}
-                  ${this.renderModelByLabelEditor(selectableModels)}
-                `
+                      <sl-select
+                        label="AI model"
+                        placeholder="Select an AI model"
+                        .value=${this.flow.ai_model_id || ''}
+                        @sl-change=${(e: any) => {
+                          this.flow.ai_model_id = e.target.value;
+                        }}
+                        style="margin-bottom: 0;"
+                      >
+                        ${selectableModels.map(
+                          (m) =>
+                            html`<sl-option .value=${m.id}
+                              >${m.name}</sl-option
+                            >`
+                        )}
+                      </sl-select>
+                      <sl-button
+                        size="small"
+                        variant="text"
+                        @click=${this.openAddAIModelDialog}
+                        style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
+                      >
+                        <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add AI
+                        model
+                      </sl-button>
+                    </div>
+                    ${this.renderModelRoutingEditor(selectableModels)}
+                    ${this.renderModelByLabelEditor(selectableModels)}
+                  `
           }
           ${this.renderRunnerPoolField()} ${this.renderHostExecProfileField()}
           ${this.renderCustomImageField()}
@@ -3488,6 +3581,7 @@ export class PreloopFlowForm extends LitElement {
             <sl-icon name="tools"></sl-icon> Allowed MCP tools
           </div>
           ${this.flow.agent_type === 'cursor' ? html`<p>Cursor profiles use local MCP configuration. These flow tool settings do not apply.</p>` : nothing}
+          ${this.flow.agent_type === 'copilot' ? html`<p>Copilot profiles use the runner user's local Copilot MCP configuration. These flow tool settings do not apply.</p>` : nothing}
 
           <div
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
