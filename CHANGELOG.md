@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and status edits, and their `labels` condition still reads the issue's
   labels.
 
+- The Cost page has a Copilot tab that imports GitHub Copilot seats, daily
+  premium-request spend per developer and model, and per-user usage metrics
+  from GitHub once a day. The operator enters the seat price. The figures are
+  marked "Not metered by the gateway" and never count toward gateway usage,
+  budgets or quota. See `docs/guide/copilot-usage-import.md`.
 - Flows can run GitHub Copilot CLI on a private runner as a host execution
   profile (agent type `copilot`, profile `"executable": "copilot"`). The run
   uses the runner user's Copilot login and seat, keeps the profile's

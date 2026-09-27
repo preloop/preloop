@@ -22,6 +22,10 @@ from preloop.models.schemas.verification import (
     ResolvedVerificationPolicy,
     VerificationPolicy,
 )
+from preloop.services.backport_branches import (
+    branch_component,
+    validate_branch_name,
+)
 from preloop.services.report_publication import (
     MAX_COMMIT_MESSAGE_LENGTH,
     MAX_PATH_LENGTH,
@@ -313,6 +317,116 @@ class FollowUpFiling(BaseModel):
         return cleaned
 
 
+MAX_BACKPORT_TARGETS = 10
+MAX_BACKPORT_REVIEWERS = 15
+
+
+class Backport(BaseModel):
+    """Cherry-pick a merged pull request onto later release branches.
+
+    Issue #961. When a pull request merges into ``source_branch``, the control
+    plane cherry-picks its merge commit onto a new branch cut from each entry
+    of ``target_branches``, in order, and opens one pull request per target.
+    No agent runs and nothing is ever merged. A conflict is reported with the
+    conflicting files and left for a person.
+
+    This block is separate from ``GitCloneConfig.source_branch``, which names
+    the branch an agent checkout starts from, a different meaning.
+
+    ``extra='forbid'``: a misspelled key here is a backport opened against the
+    wrong branch, or not at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Whether merged pull requests are backported by the control plane "
+            "instead of running an agent"
+        ),
+    )
+    source_branch: str = Field(
+        description=(
+            "Release branch whose merged pull requests are backported. A merge "
+            "into any other branch does not start the flow"
+        ),
+    )
+    target_branches: List[str] = Field(
+        min_length=1,
+        max_length=MAX_BACKPORT_TARGETS,
+        description=(
+            "Branches the change is cherry-picked onto, in order, for example "
+            "the next release branch and then the default branch"
+        ),
+    )
+    reviewers: List[str] = Field(
+        default_factory=list,
+        max_length=MAX_BACKPORT_REVIEWERS,
+        description=(
+            "Usernames asked to review every backport pull request. A failed "
+            "review request is recorded and the pull request stays open"
+        ),
+    )
+    comment_on_original: bool = Field(
+        default=True,
+        description=(
+            "Post one summary comment with the status of every target on the "
+            "original pull request"
+        ),
+    )
+
+    @field_validator("source_branch")
+    @classmethod
+    def validate_source_branch(cls, value: str) -> str:
+        """The source branch is a plain branch name."""
+        return validate_branch_name(value)
+
+    @field_validator("target_branches")
+    @classmethod
+    def validate_target_branches(cls, value: List[str]) -> List[str]:
+        """Targets are plain, unique, and map to distinct backport branches."""
+        cleaned: List[str] = []
+        components: Dict[str, str] = {}
+        for raw in value:
+            name = validate_branch_name(raw)
+            if name in cleaned:
+                raise ValueError(f"backport.target_branches lists '{name}' twice")
+            component = branch_component(name)
+            if component in components:
+                raise ValueError(
+                    f"backport.target_branches '{components[component]}' and "
+                    f"'{name}' would use the same backport branch name"
+                )
+            components[component] = name
+            cleaned.append(name)
+        return cleaned
+
+    @field_validator("reviewers")
+    @classmethod
+    def validate_reviewers(cls, value: List[str]) -> List[str]:
+        """Reviewer usernames are short, non-empty and deduplicated."""
+        cleaned: List[str] = []
+        for reviewer in value:
+            text = (reviewer or "").strip().lstrip("@")
+            if not text:
+                raise ValueError("backport.reviewers may not contain empty names")
+            if len(text) > 100 or any(ch.isspace() for ch in text):
+                raise ValueError(f"backport.reviewers entry '{text[:40]}' is invalid")
+            if text not in cleaned:
+                cleaned.append(text)
+        return cleaned
+
+    @model_validator(mode="after")
+    def validate_source_not_a_target(self) -> "Backport":
+        """Backporting a branch onto itself would reopen the original change."""
+        if self.source_branch in self.target_branches:
+            raise ValueError(
+                "backport.target_branches may not include backport.source_branch"
+            )
+        return self
+
+
 class GitCloneConfig(BaseModel):
     """Configuration for git clone operations before agent execution."""
 
@@ -410,6 +524,15 @@ class GitCloneConfig(BaseModel):
         ),
     )
 
+    backport: Optional[Backport] = Field(
+        default=None,
+        description=(
+            "Backport merged pull requests from a release branch onto later "
+            "branches. When enabled, the control plane runs the backport and "
+            "no agent runs"
+        ),
+    )
+
     @field_validator("repository_bindings")
     @classmethod
     def validate_bindings(
@@ -417,6 +540,28 @@ class GitCloneConfig(BaseModel):
     ) -> List[RepositoryBinding]:
         """At most one default, no duplicate repositories."""
         return validate_repository_bindings(value)
+
+    @model_validator(mode="after")
+    def validate_backport(self) -> "GitCloneConfig":
+        """A backport run publishes its own pull requests and nothing else.
+
+        The agent publication paths would open a second, unrelated pull
+        request from an agent checkout that never runs, so they are refused
+        next to an enabled backport block.
+        """
+        block = self.backport
+        if block is None or not block.enabled:
+            return self
+        if self.create_pull_request:
+            raise ValueError(
+                "backport cannot be combined with create_pull_request: the "
+                "backport opens one pull request per target branch itself"
+            )
+        if self.report_publication is not None and self.report_publication.enabled:
+            raise ValueError("backport cannot be combined with report_publication")
+        if self.follow_up_filing is not None and self.follow_up_filing.enabled:
+            raise ValueError("backport cannot be combined with follow_up_filing")
+        return self
 
     @model_validator(mode="after")
     def validate_report_publication(self) -> "GitCloneConfig":

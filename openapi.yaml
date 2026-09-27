@@ -9054,6 +9054,113 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/cost/copilot:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Get Copilot Usage
+      description: Return imported Copilot seats, premium-request spend and model
+        mix.
+      operationId: get_copilot_usage_api_v1_cost_copilot_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotUsageSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/copilot/connection:
+    put:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Upsert Copilot Connection
+      description: Create or update the Copilot connection and its operator seat price.
+      operationId: upsert_copilot_connection_api_v1_cost_copilot_connection_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CopilotConnectionUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotConnectionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Delete Copilot Connection
+      description: Remove the connection and its tokens; imported history is kept.
+      operationId: delete_copilot_connection_api_v1_cost_copilot_connection_delete
+      responses:
+        '204':
+          description: Successful Response
+      security:
+      - bearerAuth: []
+  /api/v1/cost/copilot/connection/sync:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Sync Copilot Connection
+      description: 'Queue an import for this account now (idempotent for the same
+        day).
+
+
+        A plain ``def`` handler runs on the threadpool, so the database lookup
+
+        never blocks the event loop; only the publish hops back onto the loop.'
+      operationId: sync_copilot_connection_api_v1_cost_copilot_connection_sync_post
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotSyncResponse'
+      security:
+      - bearerAuth: []
   /api/v1/usage/import:
     post:
       tags:
@@ -16315,6 +16422,70 @@ components:
       type: object
       title: AvatarResponse
       description: Response after avatar upload or deletion.
+    Backport:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: Whether merged pull requests are backported by the control
+            plane instead of running an agent
+          default: false
+        source_branch:
+          type: string
+          title: Source Branch
+          description: Release branch whose merged pull requests are backported. A
+            merge into any other branch does not start the flow
+        target_branches:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          minItems: 1
+          title: Target Branches
+          description: Branches the change is cherry-picked onto, in order, for example
+            the next release branch and then the default branch
+        reviewers:
+          items:
+            type: string
+          type: array
+          maxItems: 15
+          title: Reviewers
+          description: Usernames asked to review every backport pull request. A failed
+            review request is recorded and the pull request stays open
+        comment_on_original:
+          type: boolean
+          title: Comment On Original
+          description: Post one summary comment with the status of every target on
+            the original pull request
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - source_branch
+      - target_branches
+      title: Backport
+      description: 'Cherry-pick a merged pull request onto later release branches.
+
+
+        Issue #961. When a pull request merges into ``source_branch``, the control
+
+        plane cherry-picks its merge commit onto a new branch cut from each entry
+
+        of ``target_branches``, in order, and opens one pull request per target.
+
+        No agent runs and nothing is ever merged. A conflict is reported with the
+
+        conflicting files and left for a person.
+
+
+        This block is separate from ``GitCloneConfig.source_branch``, which names
+
+        the branch an agent checkout starts from, a different meaning.
+
+
+        ``extra=''forbid''``: a misspelled key here is a backport opened against the
+
+        wrong branch, or not at all.'
     BaselineAcceptRequest:
       properties:
         audit_execution_id:
@@ -17765,6 +17936,386 @@ components:
       - allowed_recovery_modes
       - warnings
       title: ContinuationPreview
+    CopilotConnectionResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        organization:
+          type: string
+          title: Organization
+        enterprise:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Enterprise
+        has_enterprise_token:
+          type: boolean
+          title: Has Enterprise Token
+          default: false
+        seat_price_monthly:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Seat Price Monthly
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        is_active:
+          type: boolean
+          title: Is Active
+          default: true
+        last_synced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Synced At
+        last_synced_day:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Synced Day
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        per_user_billing_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Per User Billing Status
+        per_user_billing_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Per User Billing Reason
+        metrics_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Metrics Status
+        metrics_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Metrics Reason
+        last_warning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Warning
+      type: object
+      required:
+      - id
+      - organization
+      title: CopilotConnectionResponse
+      description: Connection state without any token material.
+    CopilotConnectionUpsert:
+      properties:
+        organization:
+          type: string
+          maxLength: 100
+          pattern: ^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?$
+          title: Organization
+        enterprise:
+          anyOf:
+          - type: string
+            maxLength: 100
+            pattern: ^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?$
+          - type: 'null'
+          title: Enterprise
+        token:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Token
+          description: Organization token (organization owner or administrator). Required
+            when creating the connection.
+        enterprise_token:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 1
+          - type: 'null'
+          title: Enterprise Token
+          description: Optional enterprise billing reader token for the enterprise
+            premium-request route.
+        clear_enterprise_token:
+          type: boolean
+          title: Clear Enterprise Token
+          default: false
+        seat_price_monthly:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Seat Price Monthly
+          description: Operator-entered monthly price per seat; null clears it.
+        is_active:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Active
+          description: Pause (false) or resume (true) scheduled imports; omitted keeps
+            the current value (new connections start active).
+      type: object
+      required:
+      - organization
+      title: CopilotConnectionUpsert
+      description: 'Create or update the account''s Copilot import connection.
+
+
+        Tokens are write-only: omit a token to keep the stored one. The seat
+
+        price is replaced on every call, so sending ``null`` clears it.'
+    CopilotDeveloperSpend:
+      properties:
+        login:
+          type: string
+          title: Login
+        net_amount:
+          type: number
+          title: Net Amount
+        net_quantity:
+          type: number
+          title: Net Quantity
+      type: object
+      required:
+      - login
+      - net_amount
+      - net_quantity
+      title: CopilotDeveloperSpend
+      description: Premium-request spend for one developer.
+    CopilotModelMix:
+      properties:
+        login:
+          type: string
+          title: Login
+        basis:
+          type: string
+          enum:
+          - net_amount
+          - requests
+          title: Basis
+        models:
+          items:
+            $ref: '#/components/schemas/CopilotModelShare'
+          type: array
+          title: Models
+      type: object
+      required:
+      - login
+      - basis
+      - models
+      title: CopilotModelMix
+      description: Model mix for one developer.
+    CopilotModelShare:
+      properties:
+        model:
+          type: string
+          title: Model
+        value:
+          type: number
+          title: Value
+        share:
+          type: number
+          title: Share
+      type: object
+      required:
+      - model
+      - value
+      - share
+      title: CopilotModelShare
+      description: One model's share of a developer's usage.
+    CopilotModelSpend:
+      properties:
+        model:
+          type: string
+          title: Model
+        net_amount:
+          type: number
+          title: Net Amount
+        net_quantity:
+          type: number
+          title: Net Quantity
+      type: object
+      required:
+      - model
+      - net_amount
+      - net_quantity
+      title: CopilotModelSpend
+      description: Premium-request spend for one model.
+    CopilotPremiumRequests:
+      properties:
+        total_net_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Total Net Amount
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        per_user_status:
+          type: string
+          title: Per User Status
+          description: available, unavailable or no_data.
+        per_user_unavailable_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Per User Unavailable Reason
+        org_aggregate_net_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Org Aggregate Net Amount
+          description: Spend stored only as an organization total.
+        unattributed_net_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Unattributed Net Amount
+          description: Spend on per-user days that no current seat holder explains,
+            for example a developer whose seat was removed.
+        aggregate_days:
+          type: integer
+          title: Aggregate Days
+          default: 0
+        by_developer:
+          items:
+            $ref: '#/components/schemas/CopilotDeveloperSpend'
+          type: array
+          title: By Developer
+        by_model:
+          items:
+            $ref: '#/components/schemas/CopilotModelSpend'
+          type: array
+          title: By Model
+      type: object
+      required:
+      - per_user_status
+      title: CopilotPremiumRequests
+      description: Premium-request spend (usage, not the seat fee) for the window.
+    CopilotSeat:
+      properties:
+        login:
+          type: string
+          title: Login
+        last_activity_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Activity At
+        last_activity_editor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Activity Editor
+      type: object
+      required:
+      - login
+      title: CopilotSeat
+      description: One assigned seat and its last reported activity.
+    CopilotSeatSummary:
+      properties:
+        total_seats:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Total Seats
+        plan_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Type
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        seat_price_monthly:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Seat Price Monthly
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        monthly_seat_estimate:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Monthly Seat Estimate
+          description: seat_price_monthly x total_seats. Null when no seat price was
+            entered, never a zero.
+        assigned:
+          items:
+            $ref: '#/components/schemas/CopilotSeat'
+          type: array
+          title: Assigned
+      type: object
+      title: CopilotSeatSummary
+      description: Seat count and the operator-priced monthly seat estimate.
+    CopilotSyncResponse:
+      properties:
+        status:
+          type: string
+          const: queued
+          title: Status
+          default: queued
+      type: object
+      title: CopilotSyncResponse
+      description: Acknowledgement that a sync was queued.
+    CopilotUsageSummaryResponse:
+      properties:
+        metered_by_gateway:
+          type: boolean
+          const: false
+          title: Metered By Gateway
+          default: false
+        marker:
+          type: string
+          title: Marker
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        connection:
+          anyOf:
+          - $ref: '#/components/schemas/CopilotConnectionResponse'
+          - type: 'null'
+        seats:
+          $ref: '#/components/schemas/CopilotSeatSummary'
+        premium_requests:
+          $ref: '#/components/schemas/CopilotPremiumRequests'
+        model_mix:
+          items:
+            $ref: '#/components/schemas/CopilotModelMix'
+          type: array
+          title: Model Mix
+      type: object
+      required:
+      - marker
+      - period_start
+      - period_end
+      - seats
+      - premium_requests
+      title: CopilotUsageSummaryResponse
+      description: The Copilot section of the Cost page.
     CostAnalyticsSummaryResponse:
       properties:
         period_start:
@@ -20821,6 +21372,13 @@ components:
           - type: 'null'
           description: File the follow ups a human approved in this run as tracker
             issues, after the agent has exited and without giving it write tools
+        backport:
+          anyOf:
+          - $ref: '#/components/schemas/Backport'
+          - type: 'null'
+          description: Backport merged pull requests from a release branch onto later
+            branches. When enabled, the control plane runs the backport and no agent
+            runs
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
@@ -20948,6 +21506,13 @@ components:
           - type: 'null'
           description: File the follow ups a human approved in this run as tracker
             issues, after the agent has exited and without giving it write tools
+        backport:
+          anyOf:
+          - $ref: '#/components/schemas/Backport'
+          - type: 'null'
+          description: Backport merged pull requests from a release branch onto later
+            branches. When enabled, the control plane runs the backport and no agent
+            runs
       type: object
       title: GitCloneConfig
       description: Configuration for git clone operations before agent execution.
