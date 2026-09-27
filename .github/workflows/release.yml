@@ -411,6 +411,12 @@ jobs:
           path: unsigned-bundle/*
           if-no-files-found: error
 
+      # Signing is best-effort while credentials are absent, UNLESS the
+      # repository variable SIGNPATH_SIGNING_REQUIRED is 'true': then a
+      # release with missing SignPath secrets/vars fails instead of quietly
+      # publishing unsigned binaries. Set the variable when SignPath is
+      # approved and verified (docs/windows-code-signing.md) so signing can
+      # never silently regress afterwards.
       - name: Check SignPath configuration
         id: signpath-check
         env:
@@ -418,10 +424,14 @@ jobs:
           ORG_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          REQUIRED: ${{ vars.SIGNPATH_SIGNING_REQUIRED }}
         run: |
           if [ -n "$TOKEN" ] && [ -n "$ORG_ID" ] && [ -n "$PROJECT" ] && [ -n "$POLICY" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
             echo "::notice::SignPath signing enabled — Windows CLI will be Authenticode-signed"
+          elif [ "$REQUIRED" = "true" ]; then
+            echo "::error::SIGNPATH_SIGNING_REQUIRED is true but the SignPath secrets/vars are not configured. Refusing to release unsigned Windows binaries. See docs/windows-code-signing.md"
+            exit 1
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "::warning::SignPath secrets/vars missing — Windows CLI will be UNSIGNED. See docs/windows-code-signing.md"

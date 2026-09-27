@@ -7,8 +7,20 @@
 
 Preloop’s release workflow can Authenticode-sign Windows CLI binaries via
 [SignPath Foundation](https://signpath.org/) (free for open-source projects).
-Signing is **optional until credentials are configured**: releases still
-may publish unsigned binaries, but the required Defender validation must pass.
+
+Current state, precisely:
+
+- The CI wiring is complete; signing activates the moment the SignPath
+  secrets and variables (step 3 below) exist on the repository.
+- Until then releases publish **unsigned** Windows binaries, and the
+  required Defender validation must still pass before anything is released.
+- The repository variable `SIGNPATH_SIGNING_REQUIRED` controls whether that
+  fallback is allowed. While unset (or not `true`), a missing credential
+  produces a warning and an unsigned release. Once set to `true`, the
+  `Check SignPath configuration` step **fails the release** when the
+  SignPath secrets/vars are absent, so signing cannot silently regress.
+  Set it as part of step 4 below, after the first signed release is
+  verified; do not set it before SignPath approval, or every release fails.
 
 CI wiring lives in `.github/workflows/release.yml` (`sign-windows-cli` job)
 and `.signpath/artifact-configurations/windows-cli.xml`.
@@ -73,7 +85,7 @@ Optional:
 |------|------|---------|
 | **Secret** | `VIRUSTOTAL_API_KEY` | Upload Windows CLI binaries to VirusTotal on each tag release |
 
-### 4. Verify on the next tag
+### 4. Verify on the next tag, then make signing required
 
 1. Tag a release (`vX.Y.Z`) as usual
 2. Confirm the `Sign Windows CLI` job runs without skipping SignPath
@@ -84,8 +96,13 @@ Optional:
    # Status should be Valid after SignPath is enabled
    ```
 
+4. Set the repository **variable** `SIGNPATH_SIGNING_REQUIRED=true`. From
+   then on a release with missing SignPath credentials fails instead of
+   publishing unsigned binaries.
+
 Until step 3 is done, the workflow prints a warning and publishes **unsigned**
-binaries only after the Defender gate passes.
+binaries only after the Defender gate passes (and only while
+`SIGNPATH_SIGNING_REQUIRED` is not `true`).
 
 ## Priority checklist (P0 / P1 / P2)
 
