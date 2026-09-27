@@ -2,6 +2,7 @@
 
 import logging
 import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,31 @@ async def test_bearer_rejection_log_names_the_account_mismatch(
     ]
     assert any("account does not match" in message for message in messages)
     assert not any("managed agent missing" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_bearer_rejection_log_keeps_the_binding_reason_for_same_account_keys(
+    db_session, test_user, caplog
+):
+    """A same-account key with a dangling agent binding keeps its own reason."""
+    _api_key, token = crud_api_key.create_runtime_key(
+        db_session,
+        name="Dangling agent key",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={"managed_agent_id": str(uuid.uuid4())},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=model_gateway_auth.logger.name):
+        assert await authenticate_bearer_token(token, db_session) is None
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == model_gateway_auth.logger.name
+    ]
+    assert any("managed agent missing" in message for message in messages)
+    assert not any("does not match its owner" in message for message in messages)
 
 
 def test_usage_row_for_key_request_carries_the_keys_account(db_session, test_user):
