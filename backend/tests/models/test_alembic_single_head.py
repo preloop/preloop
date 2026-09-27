@@ -254,4 +254,12 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert issue_cost_rollup.down_revision == "20260927_spend_outliers"
     policy_notice_hit = script.get_revision("20260927_policy_notice_hit")
     assert policy_notice_hit.down_revision == "20260927_issue_cost_rollup"
-    assert script.get_heads() == ["20260927_policy_notice_hit"]
+    account_hierarchy = script.get_revision("20260928_account_hierarchy")
+    assert account_hierarchy.down_revision == "20260927_policy_notice_hit"
+    access_grants = script.get_revision("20260928_access_grants")
+    assert access_grants.down_revision == "20260928_account_hierarchy"
+    person_membership = script.get_revision("20260928_person_membership")
+    assert person_membership.down_revision == "20260928_access_grants"
+    share_tag_rule = script.get_revision("20260928_share_tag_rule")
+    assert share_tag_rule.down_revision == "20260928_person_membership"
+    assert script.get_heads() == ["20260928_share_tag_rule"]
