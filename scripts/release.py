@@ -204,7 +204,7 @@ def generate_changelog_with_ai(plan: ReleasePlan) -> None:
         f"Update CHANGELOG.md. Add a new section for version {plan.version} ({plan.release_date}) "
         f"under the ## [Unreleased] header. "
         f"Read the git commits since {prev_tag} to figure out what changed, "
-        f"and summarize them into bullet points under Added, Fixed, or Changed categories."
+        f"and summarize them into bullet points under Added, Fixed, Changed, or Deprecated categories."
     )
 
     print("Triggering AI to generate changelog updates...")
