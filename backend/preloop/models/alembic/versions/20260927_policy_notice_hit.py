@@ -1,7 +1,7 @@
 """Add policy_notice_hit for model I/O rules with the notify action.
 
 Revision ID: 20260927_policy_notice_hit
-Revises: 20260927_review_instructions
+Revises: 20260927_copilot_import
 Create Date: 2026-09-27
 
 One row per notify match (#959). The prompt or completion is never stored:
@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 # revision identifiers, used by Alembic.
 revision = "20260927_policy_notice_hit"
-down_revision = "20260927_review_instructions"
+down_revision = "20260927_copilot_import"
 branch_labels = None
 depends_on = None
 

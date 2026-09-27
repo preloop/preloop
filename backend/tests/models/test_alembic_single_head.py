@@ -246,6 +246,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert exec_log_type_ts.down_revision == "20260924_usage_principal_ts"
     review_instructions = script.get_revision("20260927_review_instructions")
     assert review_instructions.down_revision == "20260927_exec_log_type_ts"
+    copilot_import = script.get_revision("20260927_copilot_import")
+    assert copilot_import.down_revision == "20260927_review_instructions"
     policy_notice_hit = script.get_revision("20260927_policy_notice_hit")
-    assert policy_notice_hit.down_revision == "20260927_review_instructions"
+    assert policy_notice_hit.down_revision == "20260927_copilot_import"
     assert script.get_heads() == ["20260927_policy_notice_hit"]
