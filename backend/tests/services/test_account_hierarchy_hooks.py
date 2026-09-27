@@ -232,11 +232,9 @@ def test_h3_ai_model_resolution_orders_own_then_shared_then_system(
     provider = _Visible(**{VISIBLE_AI_MODEL: [foreign.id]})
     account_hooks.register_visibility_provider(provider)
 
-    assert crud_ai_model.get_for_account(
-        db_session, id=foreign.id, account_id=mine.id
-    ).id == (foreign.id)
+    # The id loader that decrypts stored credentials stays own-account only.
     assert (
-        crud_ai_model.get_for_account(db_session, id=hidden.id, account_id=mine.id)
+        crud_ai_model.get_for_account(db_session, id=foreign.id, account_id=mine.id)
         is None
     )
     listed = crud_ai_model.get_all_for_account(db_session, account_id=mine.id)

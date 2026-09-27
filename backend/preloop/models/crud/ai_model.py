@@ -426,27 +426,13 @@ class CRUDAIModel(CRUDBase[AIModel]):
         second query. Returns None when the id is missing or belongs to
         another account.
         """
-        own = (
-            db.query(self.model)
-            .options(joinedload(self.model.credentials_secret))
-            .filter(self.model.id == id, self.model.account_id == account_id)
-            .first()
-        )
-        if own is not None:
-            return own
-        # A model another account shares here (account hook H3). The row keeps
-        # its owner's credential secret; callers only use it server side.
-        from preloop.plugins.account_hooks import VISIBLE_AI_MODEL, extra_visible_ids
-
-        visible = {
-            str(extra) for extra in extra_visible_ids(db, account_id, VISIBLE_AI_MODEL)
-        }
-        if str(id) not in visible:
-            return None
+        # Deliberately own-account only, even when a model is shared here
+        # (account hook H3): callers decrypt the stored credential and some
+        # send it to a caller-chosen endpoint.
         return (
             db.query(self.model)
             .options(joinedload(self.model.credentials_secret))
-            .filter(self.model.id == id)
+            .filter(self.model.id == id, self.model.account_id == account_id)
             .first()
         )
 

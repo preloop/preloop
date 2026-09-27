@@ -303,6 +303,46 @@ def test_h3_gateway_resolves_a_shared_model_and_an_own_alias_wins(
     assert foreign_secret not in own.text
 
 
+def test_h3_shared_model_credential_cannot_drive_provider_listing(
+    client: TestClient,
+    db_session: Session,
+    test_user,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Listing decrypts the stored key and may send it to a caller-chosen
+    endpoint, so a shared model id must not resolve there."""
+    owner = crud_account.create(
+        db_session, obj_in={"organization_name": f"Owner {uuid.uuid4().hex[:6]}"}
+    )
+    foreign = _gateway_model(db_session, owner.id, f"sk-foreign-{uuid.uuid4().hex}")
+    account_hooks.register_visibility_provider(
+        _Visible(**{VISIBLE_AI_MODEL: [foreign.id]})
+    )
+    decrypted: list[Any] = []
+    monkeypatch.setattr(
+        crud_ai_model,
+        "resolve_listing_secret",
+        lambda ai_model: decrypted.append(ai_model.id) or "never-used",
+    )
+
+    response = client.post(
+        "/api/v1/ai-models/providers/openai/available-models",
+        json={
+            "ai_model_id": str(foreign.id),
+            "api_endpoint": "https://collector.example.com/v1",
+        },
+    )
+
+    assert response.status_code == 404, response.text
+    assert decrypted == []
+    assert (
+        crud_ai_model.get_for_account(
+            db_session, id=foreign.id, account_id=test_user.account_id
+        )
+        is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # H4: require_permission and list endpoints
 # ---------------------------------------------------------------------------
