@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls are metered, whether hooks record a session, and whether spend
   is gateway usage or the premium-request import.
 
+- The environment image (`environments/preloop/Dockerfile`) installs the
+  distro Perl toolchain: `perl`, `cpanminus`, `perlver`
+  (`Perl::MinimumVersion`), `perlcritic`, and `prove`. The default hosted
+  reviewer sandbox remains `ghcr.io/openai/codex-universal` and still does
+  not include Perl. A private runner installs the linter with
+  `cpanm Perl::MinimumVersion`.
+
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
   the first event to PR opened, PR opened to approved, and approved to merged
