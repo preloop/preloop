@@ -34,6 +34,7 @@ import {
   readAttentionSummary,
   type AttentionSummary,
 } from '../utils/attention-summary';
+import { debugLog } from '../utils/debug';
 
 interface UserDetails {
   username: string;
@@ -658,7 +659,7 @@ export class ConsoleHeader extends LitElement {
     this.unsubscribeFlow = unifiedWebSocketManager.subscribe(
       'flow_executions',
       (message) => {
-        console.log('Console header received flow update:', message);
+        debugLog('Console header received flow update:', message);
 
         // Handle new execution
         if (message.type === 'execution_started') {
@@ -741,7 +742,7 @@ export class ConsoleHeader extends LitElement {
     this.unsubscribeApprovals = unifiedWebSocketManager.subscribe(
       'approvals',
       (message) => {
-        console.log('Console header received approval update:', message);
+        debugLog('Console header received approval update:', message);
 
         // Handle new approval request
         if (message.type === 'approval_created') {
@@ -855,14 +856,14 @@ export class ConsoleHeader extends LitElement {
    */
   private async requestNotificationPermission(): Promise<void> {
     if (!('Notification' in window)) {
-      console.log('Desktop notifications not supported in this browser');
+      debugLog('Desktop notifications not supported in this browser');
       return;
     }
 
     if (Notification.permission === 'default') {
       try {
         const permission = await Notification.requestPermission();
-        console.log(`Notification permission: ${permission}`);
+        debugLog(`Notification permission: ${permission}`);
       } catch (error) {
         console.error('Failed to request notification permission:', error);
       }
@@ -874,12 +875,12 @@ export class ConsoleHeader extends LitElement {
    */
   private showExecutionNotification(execution: FlowExecution): void {
     if (!('Notification' in window)) {
-      console.log('[Notification] Browser does not support Notification API');
+      debugLog('[Notification] Browser does not support Notification API');
       return;
     }
 
     if (Notification.permission !== 'granted') {
-      console.log(
+      debugLog(
         `[Notification] Permission not granted (current: ${Notification.permission}), requesting...`
       );
       // Proactively request if still default
@@ -891,11 +892,11 @@ export class ConsoleHeader extends LitElement {
 
     // Prevent duplicate notifications for the same execution
     if (this.shownExecutionNotifications.has(execution.id)) {
-      console.log(`[Notification] Already shown for execution ${execution.id}`);
+      debugLog(`[Notification] Already shown for execution ${execution.id}`);
       return;
     }
     this.shownExecutionNotifications.add(execution.id);
-    console.log(
+    debugLog(
       `[Notification] Showing start notification for ${execution.flow_name || 'Flow'} (${execution.id})`
     );
 
@@ -927,13 +928,13 @@ export class ConsoleHeader extends LitElement {
     status: string
   ): void {
     if (!('Notification' in window) || Notification.permission !== 'granted') {
-      console.log(
+      debugLog(
         `[Notification] Cannot show finished notification (permission: ${'Notification' in window ? Notification.permission : 'unsupported'})`
       );
       return;
     }
 
-    console.log(
+    debugLog(
       `[Notification] Showing finished notification for ${execution.flow_name || 'Flow'} (${execution.id}) — status: ${status}`
     );
 
