@@ -818,6 +818,8 @@ def test_create_response_normalizes_and_calls_litellm(db_session, test_user):
     assert usage_row.total_tokens == 18
     assert usage_row.estimated_cost == 0.00025
     assert usage_row.runtime_session_id is not None
+    # The endpoint returns this as X-Preloop-Usage-Id for smoke checks.
+    assert service.last_usage_id == str(usage_row.id)
     assert usage_row.runtime_principal_type == "flow_execution"
     assert usage_row.runtime_principal_name == "Test Flow"
 
