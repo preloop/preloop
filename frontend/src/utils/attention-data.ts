@@ -25,6 +25,10 @@ import type {
   AttentionPriceOverride,
 } from './attention';
 import { parseUTCDate } from './date';
+import {
+  getSpendOutliers,
+  type SpendOutlierFinding,
+} from '../spend-outliers-api';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -137,6 +141,7 @@ export async function loadAttentionInputs(
     summary,
     dismissals,
     priceOverrides,
+    spendOutliers,
   ] = await Promise.allSettled([
     prefetched.approvals
       ? Promise.resolve(prefetched.approvals)
@@ -189,6 +194,9 @@ export async function loadAttentionInputs(
     // 402, which used to open the upgrade dialog on the first screen a new
     // Free account ever sees.
     getModelPriceOverrides({ activeOnly: true, passive: true }),
+    // Findings the server already evaluated (#960). A 403 for an operator
+    // without cost access drops the section like any other input.
+    getSpendOutliers(),
   ]);
 
   const dismissalList =
@@ -234,6 +242,10 @@ export async function loadAttentionInputs(
       priceOverrides.status === 'fulfilled' &&
       Array.isArray(priceOverrides.value)
         ? (priceOverrides.value as AttentionPriceOverride[])
+        : [],
+    spendOutliers:
+      spendOutliers.status === 'fulfilled' && Array.isArray(spendOutliers.value)
+        ? (spendOutliers.value as SpendOutlierFinding[])
         : [],
     dismissals: dismissalList,
     dismissalsSupported:

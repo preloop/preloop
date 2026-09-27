@@ -87,6 +87,54 @@ page is unchanged.
     summaries are sums of the rows. `/export` returns CSV (issue grain plus
     one unassigned row) or JSON (with execution ids).
 
+## Spend outlier alerts
+
+`preloop.services.spend_outliers` flags a developer or session whose spend
+departs from the usual pattern. It reads gateway `ApiUsage` rows
+(`action_type='model_gateway'`, replay validation excluded) grouped by user,
+UTC day and model. It does not add `flow_execution.estimated_cost`, because
+those calls are already usage rows.
+
+*   **Daily spend:** spend on UTC day D is at least `daily_multiple` (default
+    3) times the median of the days with spend among the previous 28. The rule
+    needs `min_history_days` (default 7) such days, and a zero median never
+    fires.
+*   **Model mix:** one model matching a `top_tier_model_prefixes` entry (case
+    insensitive, with or without a `provider/` prefix) is more than
+    `top_tier_share` (default 0.5) of the developer's spend on both D and D-1.
+*   **Session:** one runtime session costs more than
+    `session_cost_threshold_usd`. The rule is off while that is null.
+
+The daily rules run at 00:30 UTC for the day that just ended. The session rule
+runs every 15 minutes over sessions active in the last two hours. Settings
+live in `spend_outlier_settings`, one row per account, and are edited under
+`/api/v1/attention/spend-outliers/settings` (`manage_budgets` to write,
+`view_cost` to read).
+
+**Fires once.** Each finding is a row in `spend_outlier_finding`, unique on
+`(account_id, fingerprint)` and written with `ON CONFLICT DO NOTHING`, so a
+rerun, a retry or two workers racing record it once. The attention item id is
+stable per rule and developer (`spend:<rule>:<user_id>`, or
+`spend:session_cost:<session_id>`). The fingerprint names the UTC day
+(`<rule>|<user_id>|<YYYY-MM-DD>`, or `session_cost|<user_id>|<session_id>`).
+
+**Dismissal.** Cards use the existing attention dismissals. A dismissal hides
+the card while its fingerprint matches, so a developer who is still an outlier
+on the next day gets a new card. A snooze is the exception: for spend cards an
+unexpired snooze hides the card whatever the fingerprint, until the snooze
+ends. The dismissal endpoints stamp `dismissed_at` on the matching finding,
+and a restore clears it.
+
+**Digest.** `build_spend_outlier_digest_section(db, account_id, now)` returns
+the findings detected in the last seven days, one entry per fingerprint, each
+marked `dismissed` when a dismissal or an active snooze covers it. It is the
+section for the weekly digest service, which is resolved through the plugin
+registry and lives outside this repository.
+
+**Imported spend.** Spend that does not pass through the gateway enters
+through `register_imported_spend_source`. Cards and digest entries that
+include such dollars say they are not metered by the gateway.
+
 ## Reviewed price publication
 
 After an initial rollout and explicit configuration, each API, dedicated gateway,

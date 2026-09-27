@@ -92,6 +92,18 @@ describe('loadAttentionInputs', () => {
         if (url.startsWith('/api/v1/budget/policies')) {
           return json([{ id: 'policy-1' }]);
         }
+        if (url.startsWith('/api/v1/attention/spend-outliers')) {
+          return json({
+            items: [
+              {
+                id: 'finding-1',
+                item_id: 'spend:daily_spend:user-1',
+                fingerprint: 'daily_spend|user-1|2026-09-01',
+                rule: 'daily_spend',
+              },
+            ],
+          });
+        }
         if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
           return json({ total_requests: 3 });
         }
@@ -245,6 +257,22 @@ describe('loadAttentionInputs', () => {
     expect(
       inputs.priceOverrides?.map((override) => override.model_alias)
     ).to.eql(['ox-alpha']);
+  });
+
+  it('reads the open spend outliers the server evaluated', async () => {
+    const inputs = await loadAttentionInputs();
+
+    expect(inputs.spendOutliers?.map((finding) => finding.item_id)).to.eql([
+      'spend:daily_spend:user-1',
+    ]);
+  });
+
+  it('drops spend outliers for an operator without cost access', async () => {
+    failing = ['/api/v1/attention/spend-outliers'];
+    const inputs = await loadAttentionInputs();
+
+    expect(inputs.spendOutliers).to.eql([]);
+    expect(inputs.usageSummary?.total_requests).to.equal(3);
   });
 
   it('carries on without overrides when the account cannot read them', async () => {

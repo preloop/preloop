@@ -129,6 +129,12 @@ from .attention_dismissal import (
     CRUDAttentionDismissal,
     crud_attention_dismissal,
 )
+from .spend_outlier import (
+    CRUDSpendOutlierFinding,
+    CRUDSpendOutlierSettings,
+    crud_spend_outlier_finding,
+    crud_spend_outlier_settings,
+)
 from .oauth_app_installation import (
     CRUDOAuthAppInstallation,
     crud_oauth_app_installation,
@@ -366,6 +372,10 @@ __all__ = [
     "crud_account_milestone",
     "CRUDAttentionDismissal",
     "crud_attention_dismissal",
+    "CRUDSpendOutlierFinding",
+    "CRUDSpendOutlierSettings",
+    "crud_spend_outlier_finding",
+    "crud_spend_outlier_settings",
     "CRUDOAuthAppInstallation",
     "crud_oauth_app_installation",
     "CRUDOAuthToken",

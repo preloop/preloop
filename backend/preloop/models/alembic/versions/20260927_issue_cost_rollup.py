@@ -1,7 +1,7 @@
 """Per-tracker-issue cost and cycle-time rollup tables (#958).
 
 Revision ID: 20260927_issue_cost_rollup
-Revises: 20260927_copilot_import
+Revises: 20260927_spend_outliers
 """
 
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260927_issue_cost_rollup"
-down_revision: Union[str, None] = "20260927_copilot_import"
+down_revision: Union[str, None] = "20260927_spend_outliers"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
