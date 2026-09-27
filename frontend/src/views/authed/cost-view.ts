@@ -3497,6 +3497,9 @@ export class CostView extends AuthedElement {
           <span class="range-window" title=${this.rangeWindowTitle()}
             >${this.rangeWindowLabel()}</span
           >
+          <a class="issue-cost-link" href="/console/cost/by-issue"
+            >Cost per issue</a
+          >
         </div>
 
         ${
