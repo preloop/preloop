@@ -76,6 +76,21 @@ class _FakeClock:
         self.now += seconds
 
 
+@pytest.fixture(autouse=True)
+def _restore_litellm_model_cost() -> Iterator[None]:
+    """Undo every price these tests register in the process-global map.
+
+    ``register_model`` both adds keys and updates entries in place, so the
+    entries are copied, and the map is restored in place afterwards.
+    """
+    saved = {key: dict(entry) for key, entry in litellm.model_cost.items()}
+    try:
+        yield
+    finally:
+        litellm.model_cost.clear()
+        litellm.model_cost.update(saved)
+
+
 @pytest.fixture
 def upstream(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Upstream]:
     server = _Upstream()
@@ -323,8 +338,6 @@ def test_merge_respects_reviewed_and_first_party_prices(
     with patch.object(litellm, "register_model") as register:
         model_price_catalog.refresh_price_map_once()
     register.assert_not_called()
-    for key in ("gemini/tier-only-801",):
-        litellm.model_cost.pop(key, None)
 
 
 def test_refresh_disabled_under_testing_and_when_lookups_are_off(
@@ -359,7 +372,6 @@ def test_health_reports_last_price_map_fetch(
     assert price_map["entry_count"] == 1
     assert price_map["last_success_at"] is not None
     assert "url" not in json.dumps(price_map).lower()
-    litellm.model_cost.pop("gemini/health-801", None)
 
 
 def _load_update_model_prices() -> Any:
