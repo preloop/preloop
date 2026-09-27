@@ -2274,6 +2274,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}:
+    get:
+      tags:
+      - Account
+      summary: Get Account Session Artifact
+      description: 'Return one session artifact''s bytes, such as a browser-step screenshot.
+
+
+        The artifact must belong to this account and to the session in the path.
+
+        Unavailable bytes return 410 with the reason, so the console can keep
+
+        the step''s metadata and show why the image is gone.'
+      operationId: get_account_session_artifact_api_v1_runtime_sessions__runtime_session_id__artifacts__artifact_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Artifact Id
+      responses:
+        '200':
+          description: Artifact bytes in the stored media type
+        '404':
+          description: Session or artifact not found in this account
+        '410':
+          description: Artifact bytes were evicted or expired
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runtime-sessions/{runtime_session_id}/requests:
     get:
       tags:
@@ -17322,6 +17364,29 @@ components:
       required:
       - file
       title: Body_validate_policy_api_v1_policies_validate_post
+    BrowserScreenshotIn:
+      properties:
+        content_type:
+          type: string
+          enum:
+          - image/png
+          - image/jpeg
+          - image/webp
+          title: Content Type
+        data_base64:
+          type: string
+          title: Data Base64
+      type: object
+      required:
+      - content_type
+      - data_base64
+      title: BrowserScreenshotIn
+      description: 'An image the agent captured for one step, base64 encoded.
+
+
+        The bytes are decoded and checked in the ingest service so a bad image
+
+        rejects only its own row, not the whole batch.'
     BrowserStepBatchIn:
       properties:
         steps:
@@ -17427,6 +17492,10 @@ components:
           additionalProperties: true
           type: object
           title: Extra
+        screenshot:
+          anyOf:
+          - $ref: '#/components/schemas/BrowserScreenshotIn'
+          - type: 'null'
       type: object
       required:
       - source_step_id

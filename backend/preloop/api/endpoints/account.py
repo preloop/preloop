@@ -14,9 +14,11 @@ from fastapi import (
     HTTPException,
     Path,
     Query,
+    Response,
     UploadFile,
     status,
 )
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -35,6 +37,7 @@ from preloop.models.crud import (
     crud_managed_agent_enrollment,
     crud_runtime_session,
     crud_runtime_session_activity,
+    crud_runtime_session_artifact,
     crud_user,
 )
 from preloop.models.db.session import get_db_session
@@ -93,7 +96,10 @@ from preloop.schemas.subject_governance import (
     SubjectGovernanceConfig,
     SubjectGovernanceResponse,
 )
-from preloop.services.analytics_history import history_cutoff
+from preloop.services.analytics_history import (
+    history_cutoff,
+    require_session_history,
+)
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_MANAGED_AGENTS,
     ACCOUNT_TOPIC_AUDIT,
@@ -2631,6 +2637,76 @@ async def get_account_session_activity_timeline(
             account=account,
             runtime_session_id=runtime_session_id,
         )
+    )
+
+
+@router.get(
+    "/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}",
+    response_class=Response,
+    responses={
+        200: {"description": "Artifact bytes in the stored media type"},
+        404: {"description": "Session or artifact not found in this account"},
+        410: {"description": "Artifact bytes were evicted or expired"},
+    },
+)
+@require_permission("view_runtime_sessions")
+def get_account_session_artifact(
+    runtime_session_id: str,
+    artifact_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> Response:
+    """Return one session artifact's bytes, such as a browser-step screenshot.
+
+    The artifact must belong to this account and to the session in the path.
+    Unavailable bytes return 410 with the reason, so the console can keep
+    the step's metadata and show why the image is gone.
+    """
+    try:
+        session_uuid = UUID(runtime_session_id.strip())
+        artifact_uuid = UUID(artifact_id.strip())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Artifact not found") from None
+    session = crud_runtime_session.get_account_session(
+        db, account_id=str(account.id), runtime_session_id=str(session_uuid)
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    require_session_history(
+        db,
+        account=account,
+        summary={
+            "started_at": session.started_at,
+            "last_activity_at": session.last_activity_at,
+            "ended_at": session.ended_at,
+        },
+    )
+    artifact = crud_runtime_session_artifact.get(
+        db, account_id=account.id, artifact_id=artifact_uuid
+    )
+    if artifact is None or artifact.runtime_session_id != session_uuid:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.availability != "available" or artifact.ciphertext is None:
+        availability = (
+            artifact.availability if artifact.availability != "available" else "expired"
+        )
+        return JSONResponse(status_code=410, content={"availability": availability})
+    try:
+        content = crud_runtime_session_artifact.decrypt(artifact)
+    except ValueError:
+        logger.exception("Could not decrypt session artifact %s", artifact.id)
+        raise HTTPException(
+            status_code=500, detail="Artifact could not be read"
+        ) from None
+    return Response(
+        content=content,
+        media_type=artifact.content_type,
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
     )
 
 
