@@ -38,6 +38,11 @@ _CHECKS = {
         " AND hierarchy_path[1] = root_account_id"
         " AND hierarchy_path[cardinality(hierarchy_path)] = id"
     ),
+    # parent_account_id and hierarchy_path encode the same edge: keep them
+    # equal so the FK that guards deletes and the tree helpers agree.
+    "ck_account_parent_is_path_tail": (
+        "hierarchy_depth = 0 OR parent_account_id = hierarchy_path[hierarchy_depth]"
+    ),
 }
 
 _COMMENTS = {

@@ -439,3 +439,76 @@ def test_rule_share_needs_a_rule_and_rule_actions_are_closed(db_session):
     with pytest.raises(IntegrityError, match="ck_access_rule_actions"):
         db_session.flush()
     savepoint.rollback()
+
+
+def test_parent_must_be_the_path_element_above_self(db_session):
+    """parent_account_id and hierarchy_path encode one edge; they cannot drift."""
+    root = _account(db_session, "root")
+    stranger = _account(db_session, "stranger")
+    child_id = uuid.uuid4()
+    child = models.Account(
+        id=child_id,
+        organization_name="child",
+        parent_account_id=stranger.id,
+        root_account_id=root.id,
+        hierarchy_path=[root.id, child_id],
+        hierarchy_depth=1,
+    )
+    _rejected_by(db_session, "ck_account_parent_is_path_tail", child)
+
+
+def _live_share(db_session):
+    owner = _account(db_session, "owner")
+    recipient = place_under(models.Account(organization_name="recipient"), owner)
+    db_session.add(recipient)
+    share = models.ResourceShare(
+        owner_account_id=owner.id,
+        resource_type="ai_model",
+        resource_id=uuid.uuid4(),
+        target_mode="all",
+    )
+    db_session.add(share)
+    db_session.flush()
+    return share, recipient
+
+
+def _recipient(share, account) -> models.ResourceShareRecipient:
+    return models.ResourceShareRecipient(
+        share_id=share.id,
+        recipient_account_id=account.id,
+        owner_account_id=share.owner_account_id,
+        resource_type=share.resource_type,
+        resource_id=share.resource_id,
+    )
+
+
+def test_revoking_a_share_removes_its_recipient_rows(db_session):
+    """Hot paths read only the recipient table, so revocation must reach it."""
+    share, recipient = _live_share(db_session)
+    db_session.add(_recipient(share, recipient))
+    db_session.flush()
+
+    db_session.execute(
+        text("UPDATE resource_share SET revoked_at = now() WHERE id = :id"),
+        {"id": share.id},
+    )
+
+    remaining = db_session.execute(
+        text("SELECT count(*) FROM resource_share_recipient WHERE share_id = :id"),
+        {"id": share.id},
+    ).scalar()
+    assert remaining == 0
+
+
+def test_a_revoked_share_cannot_gain_recipients(db_session):
+    share, recipient = _live_share(db_session)
+    db_session.execute(
+        text("UPDATE resource_share SET revoked_at = now() WHERE id = :id"),
+        {"id": share.id},
+    )
+
+    savepoint = db_session.begin_nested()
+    db_session.add(_recipient(share, recipient))
+    with pytest.raises(IntegrityError, match="revoked"):
+        db_session.flush()
+    savepoint.rollback()

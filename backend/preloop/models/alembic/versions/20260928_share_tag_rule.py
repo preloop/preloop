@@ -6,7 +6,8 @@ Create Date: 2026-09-28
 
 Last of four revisions for the account hierarchy (#986). Tables only, no
 rows. ``resource_share_recipient`` is the materialized table hot paths read,
-through ``(recipient_account_id, resource_type)``. Tags are separate from
+through ``(recipient_account_id, resource_type)``; two triggers keep it free
+of revoked shares. Tags are separate from
 system metadata such as ``managed_agent.tags`` and runner ``labels``.
 Idempotent: each table is created only if it is missing.
 """
@@ -290,14 +291,70 @@ _TABLES = (
 )
 
 
+# Hot paths read resource_share_recipient alone, so a recipient row may exist
+# only while its share is live. Revoking a share deletes its recipient rows,
+# and a revoked share cannot gain new ones. The insert guard locks the share
+# row FOR SHARE, which conflicts with the revoking UPDATE: a concurrent
+# materializer either waits and then sees the revocation, or commits first and
+# has its rows deleted by the revoke trigger (which reads a fresh snapshot).
+_REVOKE_FUNCTION = """
+CREATE OR REPLACE FUNCTION preloop_resource_share_revoked() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    DELETE FROM resource_share_recipient WHERE share_id = NEW.id;
+    RETURN NULL;
+END
+$$
+"""
+_LIVE_FUNCTION = """
+CREATE OR REPLACE FUNCTION preloop_resource_share_recipient_live() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    share_revoked_at TIMESTAMPTZ;
+BEGIN
+    SELECT revoked_at INTO share_revoked_at
+    FROM resource_share WHERE id = NEW.share_id
+    FOR SHARE;
+    IF share_revoked_at IS NOT NULL THEN
+        RAISE EXCEPTION 'resource share % is revoked', NEW.share_id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$
+"""
+_TRIGGERS = (
+    (
+        "trg_resource_share_revoked",
+        "resource_share",
+        "AFTER UPDATE OF revoked_at ON resource_share FOR EACH ROW"
+        " WHEN (NEW.revoked_at IS NOT NULL)"
+        " EXECUTE FUNCTION preloop_resource_share_revoked()",
+    ),
+    (
+        "trg_resource_share_recipient_live",
+        "resource_share_recipient",
+        "BEFORE INSERT OR UPDATE OF share_id ON resource_share_recipient"
+        " FOR EACH ROW EXECUTE FUNCTION preloop_resource_share_recipient_live()",
+    ),
+)
+
+
 def upgrade() -> None:
-    """Create the sharing, tag and rule tables that are missing."""
+    """Create the missing tables, then (re)create the share triggers."""
     for name, create in _TABLES:
         if not _has_table(name):
             create()
+    op.execute(_REVOKE_FUNCTION)
+    op.execute(_LIVE_FUNCTION)
+    for trigger, table, definition in _TRIGGERS:
+        op.execute(f"DROP TRIGGER IF EXISTS {trigger} ON {table}")
+        op.execute(f"CREATE TRIGGER {trigger} {definition}")
 
 
 def downgrade() -> None:
-    """Drop the sharing, tag and rule tables."""
+    """Drop the sharing, tag and rule tables and the share triggers."""
     for name, _ in reversed(_TABLES):
         op.execute(f"DROP TABLE IF EXISTS {name}")
+    op.execute("DROP FUNCTION IF EXISTS preloop_resource_share_recipient_live()")
+    op.execute("DROP FUNCTION IF EXISTS preloop_resource_share_revoked()")

@@ -7,6 +7,12 @@ that can see the resource. Hot paths read only the recipient table, through a
 join on ``(recipient_account_id, resource_type)``; nothing walks the tree per
 request. This repository carries the schema only (#986); the materializer
 ships elsewhere.
+
+A recipient row exists only while its share is live, enforced by two
+database triggers (revision ``20260928_share_tag_rule``): setting
+``resource_share.revoked_at`` deletes the share's recipient rows, and a
+revoked share cannot gain new ones. Readers of the recipient table therefore
+never see a revoked share, whatever the service does or how late it runs.
 """
 
 from __future__ import annotations

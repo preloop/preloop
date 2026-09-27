@@ -182,6 +182,13 @@ class Account(Base):
             " AND hierarchy_path[cardinality(hierarchy_path)] = id",
             name="ck_account_hierarchy_path_shape",
         ),
+        # parent_account_id and hierarchy_path encode the same edge: keep
+        # them equal so the FK that guards deletes and the helpers agree.
+        CheckConstraint(
+            "hierarchy_depth = 0"
+            " OR parent_account_id = hierarchy_path[hierarchy_depth]",
+            name="ck_account_parent_is_path_tail",
+        ),
         Index(
             "ix_account_hierarchy_path",
             "hierarchy_path",
