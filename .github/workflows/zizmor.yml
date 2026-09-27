@@ -48,5 +48,10 @@ jobs:
         run: pip install zizmor==1.30.1
 
       # Exits non-zero on any finding not accepted in .github/zizmor.yml.
+      # GH_TOKEN enables the online audits (stale-action-refs,
+      # known-vulnerable-actions, ref-version-mismatch), which need API
+      # reads only; local runs without a token skip them.
       - name: Audit workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: zizmor --no-progress .github/workflows
