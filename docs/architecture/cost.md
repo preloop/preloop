@@ -74,18 +74,64 @@ page is unchanged.
     already claimed by one issue, exactly one closing reference. Anything else
     is unassigned. A pull request claimed by two issues is marked ambiguous,
     and executions linked only through it move to the unassigned bucket.
-*   **Write hooks:** the orchestrator terminal hook, `record_opened_pr`
-    (publication time), `process_webhook_event` (approval and merge times,
-    never creating rows) and `sync_execution_cost_rollup` (repricing). Each
-    runs in a savepoint and never fails its caller.
+*   **Write hooks:** the orchestrator terminal hook, the execution monitor's
+    stale pass and the crashed local dispatch path (terminal statuses written
+    outside the orchestrator), `record_opened_pr` (publication time),
+    `process_webhook_event` (approval and merge times, never creating rows)
+    and `sync_execution_cost_rollup` (repricing). Each runs in a savepoint
+    and never fails its caller.
+*   **PR opened time:** `issue_cost_pull_request.opened_at_source` says where
+    `opened_at` came from. `forge` is the pull request's own `created_at`,
+    read through `BaseTracker.find_open_pull_request_for_branch` on the
+    branch lookup bind path (GitHub, GitLab and Bitbucket) or from any later
+    pull request webhook; it replaces a Preloop time even when that is
+    earlier. `bind` is the time Preloop bound the pull request to the run and
+    `run_end` the end of the publishing run; both only fill an empty value.
+    The issue row carries the source as `pr_opened_at_source`.
 *   **Rebuild:** `POST /api/v1/cost/by-issue/rebuild` records finished
     executions of a window of at most 92 days that have no fact yet, each in
     its own savepoint. It is the recovery path for executions that ended
     outside the orchestrator or whose hook failed.
+*   **Scheduled rebuild:** the API role runs the same rebuild every
+    `ISSUE_COST_REBUILD_INTERVAL_SECONDS` (default 3600) for executions that
+    started in the last `ISSUE_COST_REBUILD_LOOKBACK_HOURS` (default 72), at
+    most `ISSUE_COST_REBUILD_MAX_EXECUTIONS_PER_ACCOUNT` (default 500) per
+    account per pass. Each account is rebuilt in its own transaction under a
+    `pg_try_advisory_xact_lock`, so replicas skip an account another one is
+    rebuilding. The pass then re-reads the estimate of recently active issues
+    from their synced issue rows. `ISSUE_COST_REBUILD_ENABLED=false` turns it
+    off. Older history still needs the rebuild endpoint.
+*   **Estimate:** the human estimate as the tracker states it, never
+    derived, for comparing AI cost with the estimate. Hours come from Jira
+    Original Estimate (`timeoriginalestimate`) or GitLab `time_estimate`.
+    Points, and hours on trackers without a native field, come from the
+    tracker's `meta_data.issue_estimate` configuration: `points_field` (an
+    issue field such as a Jira story points custom field or GitLab `weight`),
+    `hours_label_prefix` and `points_label_prefix` (labels such as
+    `estimate:4h` or `sp:3`; two labels with different values are no
+    estimate). Set it with `PUT /api/v1/trackers/{id}`; `meta_data` is
+    replaced as a whole, so send the existing keys too. Values are read from
+    the trigger payload when it is about the issue and from the synced issue
+    row (Jira and GitLab store the native fields in
+    `meta_data.estimate_fields`), the synced row winning. A reading that
+    states nothing never clears a stored estimate. Empty when the tracker has
+    no estimate.
 *   **Report:** `GET /api/v1/cost/by-issue` filters issues by first event
     time and shows their lifetime totals. The per-project and per-flow
-    summaries are sums of the rows. `/export` returns CSV (issue grain plus
-    one unassigned row) or JSON (with execution ids).
+    summaries are sums of the rows. `/unassigned/executions` lists the runs
+    in the unassigned bucket for the same filter. `/export` returns CSV
+    (issue grain plus one unassigned row) or JSON (with execution ids).
+*   **Export columns:** CSV columns, in order: `tracker`, `issue_key`,
+    `title`, `project`, `estimated_cost`, `total_tokens`, `run_count`,
+    `failed_run_count`, `first_event_at`, `pr_opened_at`, `approved_at`,
+    `merged_at`, `first_event_to_pr_opened_hours`,
+    `pr_opened_to_approved_hours`, `approved_to_merged_hours`, `issue_url`,
+    `pr_url`, `pr_opened_at_source`, `estimate_hours`,
+    `estimate_hours_source`, `estimate_points`, `estimate_points_source`.
+    Blank means unknown, never zero. The JSON export's `issues[]` objects
+    carry the same fields (null for unknown) plus `execution_ids`. Estimate
+    sources are `jira:timeoriginalestimate`, `gitlab:time_estimate`,
+    `<tracker type>:<points_field>` or `label:<prefix>`.
 
 ## Spend outlier alerts
 

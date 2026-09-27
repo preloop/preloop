@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from preloop.models.models.project import Project
 from preloop.models.models.organization import Organization
 from preloop.models.models.webhook import Webhook
+from preloop.services.issue_estimate import synced_estimate_fields
 from preloop.schemas.tracker_models import (
     Issue,
     IssueComment,
@@ -194,6 +195,9 @@ class BaseTracker(ABC):
                 "external_created_at": created_at,
                 "external_updated_at": last_updated,
                 "source": "preloop-sync",
+                # Raw native estimate fields (GitLab time_estimate, weight)
+                # for the issue cost report; empty for trackers without them.
+                "estimate_fields": synced_estimate_fields(issue_data),
             },
             "tracker_id": self.tracker_id,
             "comments": issue_data.get("comments", []),
@@ -229,6 +233,41 @@ class BaseTracker(ABC):
             "updated_at": comment_data.get("updated_at"),
             "created_at": comment_data.get("created_at"),
         }
+
+    async def find_open_pull_request_for_branch(
+        self, branch: str
+    ) -> Optional[Dict[str, Any]]:
+        """The open pull or merge request whose head is ``branch``.
+
+        Used to bind a pull request that deterministic publication code
+        opened when its log marker was lost, and to read the forge's own
+        ``created_at`` for it. Trackers without a pull request API return
+        None; a forge adapter overrides this.
+
+        Args:
+            branch: Head (source) branch name.
+
+        Returns:
+            The pull request in the shared list shape (``url``,
+            ``source_branch``, ``created_at``, ...), or None.
+        """
+        return None
+
+    @staticmethod
+    def _first_listed_for_branch(listing: Any, branch: str) -> Optional[Dict[str, Any]]:
+        """First listed pull request whose head really is ``branch``.
+
+        Providers filter by branch themselves; this guards an adapter or API
+        that ignored the filter and returned unrelated pull requests.
+        """
+        items = listing.get("items") if isinstance(listing, dict) else None
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("source_branch") != branch or not item.get("url"):
+                continue
+            return item
+        return None
 
     @abstractmethod
     async def register_webhook(self, **kwargs: Any) -> bool:

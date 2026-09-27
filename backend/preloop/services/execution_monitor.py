@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -162,13 +163,40 @@ class ExecutionMonitor:
             for execution in stale_executions:
                 await self._check_execution(db, execution)
 
+            finished = [
+                execution.id
+                for execution in stale_executions
+                if str(execution.status or "").upper()
+                in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+            ]
             db.commit()
+            # This path writes the terminal status itself and never reaches
+            # the orchestrator's terminal hook, so record the issue cost facts
+            # here. Best effort: the scheduled rebuild covers a failure.
+            self._record_issue_costs(db, finished)
 
         except Exception as e:
             logger.error(f"Error checking stale executions: {e}", exc_info=True)
             db.rollback()
         finally:
             db.close()
+
+    @staticmethod
+    def _record_issue_costs(db: Session, execution_ids: list[Any]) -> None:
+        """Record issue cost facts for executions this pass finished.
+
+        Args:
+            db: The monitor's session; the terminal statuses are committed.
+            execution_ids: Executions that are now terminal.
+        """
+        if not execution_ids:
+            return
+        from preloop.services.issue_cost_rollup import (
+            record_execution_finished_safely,
+        )
+
+        for execution_id in execution_ids:
+            record_execution_finished_safely(db, execution_id)
 
     async def _check_execution(self, db: Session, execution: FlowExecution):
         """

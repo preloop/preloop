@@ -6,6 +6,7 @@ import {
   getFlows,
   getIssueCostExecutions,
   getIssueCosts,
+  getUnassignedIssueCostExecutions,
   listProjects,
   type IssueCostExecution,
   type IssueCostFilter,
@@ -51,6 +52,31 @@ export function formatIssueHours(value: number | null | undefined): string {
   return `${value.toFixed(1)} h`;
 }
 
+/** The tracker's estimate, hours and/or points; blank when it has none. */
+export function formatIssueEstimate(row: IssueCostRow): string {
+  const parts: string[] = [];
+  if (row.estimate_hours !== null && row.estimate_hours !== undefined) {
+    parts.push(`${row.estimate_hours} h`);
+  }
+  if (row.estimate_points !== null && row.estimate_points !== undefined) {
+    parts.push(`${row.estimate_points} pts`);
+  }
+  return parts.join(' / ');
+}
+
+function estimateTitle(row: IssueCostRow): string {
+  return [row.estimate_hours_source, row.estimate_points_source]
+    .filter((source): source is string => Boolean(source))
+    .map((source) => `From ${source}`)
+    .join('; ');
+}
+
+const OPENED_SOURCE_TITLES: Record<string, string> = {
+  forge: 'PR opened: the pull request creation time from the forge',
+  bind: 'PR opened: approximate, the time Preloop bound the pull request',
+  run_end: 'PR opened: approximate, the end of the publishing run',
+};
+
 function formatTime(value: string | null): string {
   if (!value) return '';
   return new Date(value).toLocaleString();
@@ -84,6 +110,8 @@ export class IssueCostView extends AuthedElement {
     IssueCostExecution[] | 'loading' | 'error'
   > = {};
   @state() exporting: 'csv' | 'json' | null = null;
+  @state() unassignedRuns: IssueCostExecution[] | 'loading' | 'error' | null =
+    null;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -179,6 +207,7 @@ export class IssueCostView extends AuthedElement {
     try {
       this.report = await getIssueCosts(this.filter());
       this.expanded = {};
+      this.unassignedRuns = null;
     } catch (error) {
       this.error =
         error instanceof Error
@@ -201,6 +230,21 @@ export class IssueCostView extends AuthedElement {
       this.expanded = { ...this.expanded, [row.id]: executions };
     } catch {
       this.expanded = { ...this.expanded, [row.id]: 'error' };
+    }
+  }
+
+  async toggleUnassigned(): Promise<void> {
+    if (this.unassignedRuns) {
+      this.unassignedRuns = null;
+      return;
+    }
+    this.unassignedRuns = 'loading';
+    try {
+      this.unassignedRuns = await getUnassignedIssueCostExecutions(
+        this.filter()
+      );
+    } catch {
+      this.unassignedRuns = 'error';
     }
   }
 
@@ -244,50 +288,55 @@ export class IssueCostView extends AuthedElement {
     >`;
   }
 
+  renderExecutionTable(
+    state: IssueCostExecution[] | 'loading' | 'error',
+    label: string,
+    showLink = false
+  ) {
+    if (state === 'loading') {
+      return html`<sl-spinner></sl-spinner>`;
+    }
+    if (state === 'error') {
+      return html`<span class="muted">Could not load the executions.</span>`;
+    }
+    return html`<table class="styled-table" aria-label=${label}>
+      <thead>
+        <tr>
+          <th>Flow</th>
+          <th>Status</th>
+          ${showLink ? html`<th>Reason</th>` : nothing}
+          <th class="num">Cost</th>
+          <th>Start</th>
+          <th>End</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${state.map(
+          (execution) =>
+            html`<tr data-execution=${execution.execution_id}>
+              <td>
+                <a href="/console/flows/executions/${execution.execution_id}"
+                  >${execution.flow_name || execution.flow_id}</a
+                >
+              </td>
+              <td>${execution.status}</td>
+              ${showLink ? html`<td>${execution.link}</td>` : nothing}
+              <td class="num">${formatIssueCost(execution.estimated_cost)}</td>
+              <td>${formatTime(execution.start_time)}</td>
+              <td>${formatTime(execution.end_time)}</td>
+            </tr>`
+        )}
+      </tbody>
+    </table>`;
+  }
+
   renderExecutions(row: IssueCostRow) {
     const state = this.expanded[row.id];
     if (!state) return nothing;
-    let body;
-    if (state === 'loading') {
-      body = html`<sl-spinner></sl-spinner>`;
-    } else if (state === 'error') {
-      body = html`<span class="muted">Could not load the executions.</span>`;
-    } else {
-      body = html`<table
-        class="styled-table"
-        aria-label="Executions of ${row.issue_key}"
-      >
-        <thead>
-          <tr>
-            <th>Flow</th>
-            <th>Status</th>
-            <th class="num">Cost</th>
-            <th>Start</th>
-            <th>End</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${state.map(
-            (execution) =>
-              html`<tr data-execution=${execution.execution_id}>
-                <td>
-                  <a href="/console/flows/executions/${execution.execution_id}"
-                    >${execution.flow_name || execution.flow_id}</a
-                  >
-                </td>
-                <td>${execution.status}</td>
-                <td class="num">
-                  ${formatIssueCost(execution.estimated_cost)}
-                </td>
-                <td>${formatTime(execution.start_time)}</td>
-                <td>${formatTime(execution.end_time)}</td>
-              </tr>`
-          )}
-        </tbody>
-      </table>`;
-    }
     return html`<tr class="detail">
-      <td colspan="10">${body}</td>
+      <td colspan="11">
+        ${this.renderExecutionTable(state, `Executions of ${row.issue_key}`)}
+      </td>
     </tr>`;
   }
 
@@ -307,6 +356,7 @@ export class IssueCostView extends AuthedElement {
           <th class="num" title="First event to PR opened">To PR</th>
           <th class="num" title="PR opened to approved">To approval</th>
           <th class="num" title="Approved to merged">To merge</th>
+          <th class="num" title="The tracker's own estimate">Estimate</th>
           <th>PR</th>
         </tr>
       </thead>
@@ -344,7 +394,13 @@ export class IssueCostView extends AuthedElement {
                       : nothing
                   }
                 </td>
-                <td class="num">
+                <td
+                  class="num"
+                  title=${
+                    OPENED_SOURCE_TITLES[row.pr_opened_at_source ?? ''] ??
+                    nothing
+                  }
+                >
                   ${formatIssueHours(row.first_event_to_pr_opened_hours)}
                 </td>
                 <td class="num">
@@ -352,6 +408,9 @@ export class IssueCostView extends AuthedElement {
                 </td>
                 <td class="num">
                   ${formatIssueHours(row.approved_to_merged_hours)}
+                </td>
+                <td class="num estimate" title=${estimateTitle(row) || nothing}>
+                  ${formatIssueEstimate(row)}
                 </td>
                 <td>${this.renderLink(row.pr_url, row.pr_url ? 'PR' : '')}</td>
               </tr>
@@ -404,6 +463,22 @@ export class IssueCostView extends AuthedElement {
         could not be tied to exactly one issue. They are counted here and not in
         any issue row.
       </p>
+      <sl-button
+        size="small"
+        class="show-unassigned"
+        aria-expanded=${this.unassignedRuns ? 'true' : 'false'}
+        @click=${() => void this.toggleUnassigned()}
+        >${this.unassignedRuns ? 'Hide runs' : 'Show runs'}</sl-button
+      >
+      ${
+        this.unassignedRuns
+          ? this.renderExecutionTable(
+              this.unassignedRuns,
+              'Unassigned executions',
+              true
+            )
+          : nothing
+      }
     </sl-card>`;
   }
 

@@ -9273,6 +9273,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/by-issue/unassigned/executions:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: List Unassigned Issue Cost Executions
+      description: Executions in the unassigned bucket, for the report's drill-down.
+      operationId: list_unassigned_issue_cost_executions_api_v1_cost_by_issue_unassigned_executions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Executions that started at or after this time.
+          title: Start Date
+        description: Executions that started at or after this time.
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Executions that started before this time.
+          title: End Date
+        description: Executions that started before this time.
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IssueCostExecutionRow'
+                title: Response List Unassigned Issue Cost Executions Api V1 Cost
+                  By Issue Unassigned Executions Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/cost/by-issue/{rollup_id}/executions:
     get:
       tags:
@@ -22362,6 +22430,42 @@ components:
           - type: 'null'
           title: Approved To Merged Hours
           description: Blank when the pull request was not merged yet.
+        pr_opened_at_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr Opened At Source
+          description: 'Where pr_opened_at came from: forge (the pull request''s own
+            created_at), bind (when Preloop bound it to a run) or run_end (the publishing
+            run''s end).'
+        estimate_hours:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimate Hours
+          description: Human estimate in hours as the tracker states it. Blank when
+            the tracker has none; never derived.
+        estimate_hours_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Estimate Hours Source
+          description: Where estimate_hours was read, for example jira:timeoriginalestimate,
+            gitlab:time_estimate or label:estimate:.
+        estimate_points:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimate Points
+          description: Human estimate in points as the tracker states it. Blank when
+            the tracker has none; never derived.
+        estimate_points_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Estimate Points Source
+          description: Where estimate_points was read, for example jira:customfield_10016,
+            gitlab:weight or label:points:.
         execution_ids:
           anyOf:
           - items:

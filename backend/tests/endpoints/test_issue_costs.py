@@ -220,6 +220,41 @@ def test_executions_of_one_issue(client, db_session: Session, test_user) -> None
     assert rows[0]["end_time"] is not None
 
 
+def test_unassigned_executions_drill_down(
+    client, db_session: Session, test_user
+) -> None:
+    seeded = _seed(db_session, test_user.account_id)
+    stranger = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "stranger", "is_active": True, "meta_data": {}},
+    )
+    _seed(db_session, stranger.id)
+
+    response = client.get(f"{BASE}/unassigned/executions")
+
+    assert response.status_code == 200
+    rows = response.json()
+    assert [row["execution_id"] for row in rows] == [str(seeded["executions"][2].id)]
+    assert rows[0]["link"] == "unassigned"
+    assert rows[0]["flow_name"] == seeded["flow"].name
+    unassigned = client.get(BASE).json()["unassigned"]
+    assert sum(row["estimated_cost"] for row in rows) == unassigned["estimated_cost"]
+
+    later = client.get(
+        f"{BASE}/unassigned/executions",
+        params={"start_date": "2026-09-02T00:00:00Z"},
+    )
+    assert later.status_code == 200 and later.json() == []
+    reversed_period = client.get(
+        f"{BASE}/unassigned/executions",
+        params={
+            "start_date": "2026-09-02T00:00:00Z",
+            "end_date": "2026-09-01T00:00:00Z",
+        },
+    )
+    assert reversed_period.status_code == 422
+
+
 def test_executions_of_another_accounts_issue_is_404(
     client, db_session: Session, test_user
 ) -> None:

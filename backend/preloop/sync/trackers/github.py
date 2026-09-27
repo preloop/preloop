@@ -2137,6 +2137,22 @@ class GitHubTracker(BaseTracker):
             "updated_at": pr_data.get("updated_at"),
         }
 
+    async def find_open_pull_request_for_branch(
+        self, branch: str
+    ) -> Optional[Dict[str, Any]]:
+        """The open pull request whose head is ``branch`` of this repository.
+
+        Args:
+            branch: Head branch name.
+
+        Returns:
+            The pull request in the shared list shape, or None.
+        """
+        listing = await self.list_pull_requests(
+            state="open", limit=5, page=1, head_branch=branch
+        )
+        return self._first_listed_for_branch(listing, branch)
+
     async def find_pull_requests_by_branch(
         self, source_branch: str, target_branch: str
     ) -> List[Dict[str, Any]]:

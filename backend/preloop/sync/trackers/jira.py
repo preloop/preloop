@@ -15,6 +15,7 @@ from jira import JIRA, JIRAError
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_webhook, crud_organization, crud_project
+from preloop.services.issue_estimate import synced_estimate_fields
 from preloop.schemas.tracker_models import (
     Issue,
     IssueComment,
@@ -1311,6 +1312,8 @@ class JiraTracker(BaseTracker):
                 "assignees": assignees,
                 "url": issue_url,
                 "source": "preloop-sync",
+                # Raw "Original Estimate" (seconds) for the issue cost report.
+                "estimate_fields": synced_estimate_fields(issue_data),
             },
             "tracker_id": self.tracker_id,
         }
@@ -1343,6 +1346,7 @@ class JiraTracker(BaseTracker):
                 "issuetype",
                 "comment",
                 "issuelinks",
+                "timeoriginalestimate",
             ],
         }
 

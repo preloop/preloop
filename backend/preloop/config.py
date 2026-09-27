@@ -868,6 +868,39 @@ class Settings(BaseSettings):
             "(RETENTION_FLOOR_DAYS)."
         ),
     )
+    issue_cost_rebuild_enabled: bool = Field(
+        True,
+        description=(
+            "Run the scheduled per-issue cost rebuild: record finished "
+            "executions that no terminal hook recorded, and re-read issue "
+            "estimates from synced issues. Idempotent and additive "
+            "(ISSUE_COST_REBUILD_ENABLED)."
+        ),
+    )
+    issue_cost_rebuild_interval_seconds: int = Field(
+        3600,
+        ge=60,
+        description="Seconds between scheduled issue cost rebuild passes.",
+    )
+    issue_cost_rebuild_lookback_hours: int = Field(
+        72,
+        ge=1,
+        le=2208,
+        description=(
+            "How far back, by execution start, a scheduled rebuild looks for "
+            "unrecorded executions. Older history is backfilled with the "
+            "rebuild endpoint."
+        ),
+    )
+    issue_cost_rebuild_max_executions_per_account: int = Field(
+        500,
+        ge=1,
+        le=2000,
+        description=(
+            "Executions one scheduled pass records for a single account; the "
+            "rest are picked up by the next pass."
+        ),
+    )
     retention_purge_enabled: bool = Field(
         False,
         description=(

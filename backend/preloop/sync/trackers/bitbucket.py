@@ -489,6 +489,24 @@ class BitbucketTracker(BaseTracker):
         ]
         return {"items": items, "has_more": bool(data.get("next"))}
 
+    async def find_open_pull_request_for_branch(
+        self, branch: str
+    ) -> Optional[Dict[str, Any]]:
+        """The open pull request whose source is ``branch``.
+
+        Bitbucket's list endpoint has no plain branch filter, so this reads
+        the most recently updated page of open pull requests (a pull request
+        that was just opened is on it) and matches the source branch.
+
+        Args:
+            branch: Source branch name.
+
+        Returns:
+            The pull request in the shared list shape, or None.
+        """
+        listing = await self.list_pull_requests(state="open", limit=50, page=1)
+        return self._first_listed_for_branch(listing, branch)
+
     @staticmethod
     def _normalize_listed_pull_request(pr: Dict[str, Any]) -> Dict[str, Any]:
         """Map a Bitbucket pull request onto the shared PR list shape."""

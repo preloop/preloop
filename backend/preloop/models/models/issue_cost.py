@@ -97,11 +97,32 @@ class IssueCostRollup(Base):
     pr_opened_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # ``IssueCostPullRequest.opened_at_source`` of the pull request that set
+    # ``pr_opened_at``.
+    pr_opened_at_source: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
     approved_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     merged_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # The human estimate as the tracker states it, for "AI cost vs estimate".
+    # Read from the tracker only (a native field, a configured custom field or
+    # a configured label); never derived. NULL when the tracker has none.
+    estimate_hours: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
+    estimate_hours_source: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
+    estimate_points: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
+    estimate_points_source: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
     )
 
 
@@ -189,6 +210,10 @@ class IssueCostPullRequest(Base):
     opened_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Where ``opened_at`` came from: ``forge`` (the pull request's own
+    # ``created_at``), ``bind`` (when Preloop bound it to an execution) or
+    # ``run_end`` (the publishing run's end, the last resort).
+    opened_at_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

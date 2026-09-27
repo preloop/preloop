@@ -4456,27 +4456,32 @@ class FlowExecutionOrchestrator:
     async def _lookup_published_pr(
         self, client: Any, branch: str
     ) -> Optional[Dict[str, str]]:
-        """The open PR/MR whose head is ``branch`` on ``client``'s repo."""
-        kind = self._tracker_kind(client)
-        if kind == "gitlab":
-            listing = await client.list_merge_requests(
-                state="open", limit=5, page=1, source_branch=branch
-            )
-        elif kind == "github":
-            listing = await client.list_pull_requests(
-                state="open", limit=5, page=1, head_branch=branch
-            )
-        else:
+        """The open PR/MR whose head is ``branch`` on ``client``'s repo.
+
+        Goes through the tracker interface
+        (``BaseTracker.find_open_pull_request_for_branch``), so every forge
+        adapter that implements it is covered. The forge's ``created_at`` is
+        carried along, so "PR opened" is the forge's time, not the bind time.
+        """
+        finder = getattr(client, "find_open_pull_request_for_branch", None)
+        if finder is None:
             return None
-        for item in (listing or {}).get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            # The provider filter is authoritative; this guards a tracker
-            # that ignored it and returned unrelated PRs.
-            if item.get("source_branch") != branch or not item.get("url"):
-                continue
-            return {"url": str(item["url"]), "branch": branch, "provider": kind}
-        return None
+        item = await finder(branch)
+        if not isinstance(item, dict):
+            return None
+        # The adapter already filters; this guards one that did not.
+        if item.get("source_branch") != branch or not item.get("url"):
+            return None
+        found = {
+            "url": str(item["url"]),
+            "branch": branch,
+            "provider": self._tracker_kind(client)
+            or str(getattr(client, "tracker_type", "") or ""),
+        }
+        created_at = item.get("created_at")
+        if created_at:
+            found["created_at"] = str(created_at)
+        return found
 
     def _execution_already_bound(self) -> bool:
         """True when another path (MCP create_pull_request) bound a PR."""
@@ -4527,6 +4532,7 @@ class FlowExecutionOrchestrator:
                 self.execution_log.id,
                 found["url"],
                 source_branch=found["branch"],
+                opened_at=found.get("created_at"),
             )
             self._opened_pr_bound = True
             logger.info("Bound the published pull request by head branch lookup")

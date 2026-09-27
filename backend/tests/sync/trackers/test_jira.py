@@ -258,3 +258,34 @@ class TestJiraTracker(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(projects), 1)
             self.assertEqual(projects[0]["name"], "Test Project")
             mock_make_request.assert_called_once_with("GET", "project")
+
+
+def test_transform_issue_keeps_the_original_estimate():
+    with patch("preloop.sync.trackers.jira.JIRA"):
+        tracker = JiraTracker(
+            tracker_id=str(uuid4()),
+            api_key="fake_key",
+            connection_details={
+                "jira_url": "https://myjira.atlassian.net",
+                "username": "user@example.com",
+            },
+        )
+    project = MagicMock()
+    project.id = "proj-db-id"
+    transformed = tracker.transform_issue(
+        {
+            "id": "10001",
+            "key": "PROJ-1",
+            "fields": {
+                "summary": "Estimated",
+                "status": {"name": "To Do"},
+                "timeoriginalestimate": 28800,
+                "labels": ["backend"],
+            },
+        },
+        project,
+    )
+    assert transformed["meta_data"]["estimate_fields"] == {
+        "timeoriginalestimate": 28800
+    }
+    assert transformed["meta_data"]["labels"] == ["backend"]

@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/api/v1/cost/by-issue/export`, and `/api/v1/cost/by-issue/rebuild` backfills
   earlier runs. Per-flow cost charts are unchanged.
 
+- Cost per issue shows the tracker's own estimate next to the agent cost:
+  Jira Original Estimate, GitLab time estimate, or a configured story points
+  field or estimate label (tracker `meta_data.issue_estimate`). It is read
+  from the tracker only and stays empty when the tracker has none. The CSV
+  and JSON exports gain `estimate_hours`, `estimate_points`, their sources
+  and `pr_opened_at_source`. The unassigned bucket now lists its runs
+  (`/api/v1/cost/by-issue/unassigned/executions`), and a scheduled rebuild
+  (`ISSUE_COST_REBUILD_*` settings, on by default, hourly over the last 72
+  hours) records runs whose terminal hook did not.
+
 - Spend outlier alerts on the Attention page: a developer whose UTC-day spend
   is a multiple of their 28-day median, whose spend is mostly one top-tier
   model two days running, or a session over a cost threshold. Each alert fires
@@ -123,6 +133,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- Cost per issue: "PR opened" is the pull request's creation time from the
+  forge when Preloop bound it by branch lookup or saw a later pull request
+  webhook, instead of the bind time, on GitHub, GitLab and Bitbucket. Runs
+  failed by the stale execution monitor or by a crashed local dispatch are
+  now counted on their issue.
 
 - A flow execution dispatched in process (no execution worker) whose run
   raises before the runner records an outcome is marked `FAILED` with the
