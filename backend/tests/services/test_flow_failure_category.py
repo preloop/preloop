@@ -381,3 +381,32 @@ class TestModelStreamIdle:
             derive_failure_category(status="FAILED", error_message=message)
             == "model_transient"
         )
+
+    def test_classifier_follows_the_message_marker(self, monkeypatch):
+        """Rewording the marker must not silently demote the stall to timeout.
+
+        The rule is built from stream_stall.STALL_MESSAGE_MARKER, so a new
+        wording is classified without anyone touching the regex.
+        """
+        import importlib
+
+        import preloop.services.flow_failure_category as categories
+        import preloop.services.stream_stall as stream_stall
+
+        reworded = "while the model stream stayed silent"
+        monkeypatch.setattr(stream_stall, "STALL_MESSAGE_MARKER", reworded)
+        try:
+            importlib.reload(categories)
+            message = (
+                "Execution timed out after 900 seconds (this flow's timeout "
+                f"budget) {reworded}. The model provider sent nothing."
+            )
+            assert (
+                categories.derive_failure_category(
+                    status="FAILED", error_message=message
+                )
+                == "model_stream_idle"
+            )
+        finally:
+            monkeypatch.undo()
+            importlib.reload(categories)

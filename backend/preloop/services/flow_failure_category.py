@@ -100,6 +100,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Optional
 
+from preloop.services.stream_stall import STALL_MESSAGE_MARKER
 from preloop.services.upstream_errors import (
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     ERROR_CLASS_NETWORK,
@@ -209,9 +210,10 @@ _RUNNER_ERROR_RE = re.compile(
 # "Execution timed out after 900 seconds (this flow's timeout budget) while
 # waiting on a silent model stream." Preloop's own sentence, written only when
 # the timed-out run's log shows the stream was still idle (see
-# preloop.services.stream_stall). Matched before the plain timeout rule.
+# preloop.services.stream_stall). Matched before the plain timeout rule. Built
+# from the marker the message is written with, so the two cannot drift.
 _MODEL_STREAM_IDLE_RE = re.compile(
-    r"timed out after \d+ seconds[^\n]{0,80}while waiting on a silent model stream",
+    r"timed out after \d+ seconds[^\n]{0,80}" + re.escape(STALL_MESSAGE_MARKER),
     re.IGNORECASE,
 )
 # "Execution timed out after 3600 seconds"
