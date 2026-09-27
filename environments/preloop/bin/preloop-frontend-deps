@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Put the image's frontend/node_modules into a Preloop checkout, offline.
+#
+# The image runs `npm ci` for frontend/package-lock.json at build time.
+# When the checkout's lock is byte-identical, this copies that tree into
+# frontend/node_modules so `cd frontend && npm test` runs with no network.
+# When the lock differs it exits 65: run `npm --prefix frontend ci` instead.
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+baked=${PRELOOP_FRONTEND_DEPS:-/opt/preloop-frontend}
+lock="$root/frontend/package-lock.json"
+if [[ ! -f $lock ]]; then
+  echo 'preloop-frontend-deps: run it from a Preloop checkout' >&2
+  exit 64
+fi
+if ! cmp -s "$lock" "$baked/package-lock.json"; then
+  echo 'preloop-frontend-deps: frontend/package-lock.json differs from the' \
+    'image copy; run `npm --prefix frontend ci` (needs registry access)' >&2
+  exit 65
+fi
+if [[ -d $root/frontend/node_modules ]]; then
+  echo 'preloop-frontend-deps: frontend/node_modules already present'
+  exit 0
+fi
+cp -R --preserve=mode,timestamps,links "$baked/node_modules" "$root/frontend/node_modules"
+echo "preloop-frontend-deps: copied $baked/node_modules"

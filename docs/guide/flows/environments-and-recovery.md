@@ -72,6 +72,51 @@ steps are joined with newlines). Issue acceptance command IDs must also appear
 in the verification policy. Capability readiness is not test-result attestation;
 agent-sandbox files and log markers cannot authorize isolated publication.
 
+## Backend and frontend tests in the image
+
+The image built from `environments/preloop/Dockerfile` runs the Preloop
+test suites from a checkout with no network and no install step.
+
+- `/opt/preloop-tests` is a virtualenv installed from
+  `.github/requirements/app-dev.txt`, the hash-pinned lock the CI backend
+  shards install (runtime dependencies plus the `dev` extra, including
+  pytest). It is on `PATH`. The checkout itself is not installed.
+- `preloop-pytest [pytest args]` runs pytest from the checkout root with
+  `backend/` on `PYTHONPATH`. When `DATABASE_URL` is unset it starts a
+  throwaway PostgreSQL 16 cluster under `/tmp` (pgvector 0.8.6, built in
+  the image because Ubuntu's 0.6.0 lacks `subvector()`), applies the
+  checkout's migrations with `scripts/init_db.py`, and reapplies them only
+  when `backend/preloop/models/alembic` changes. With `DATABASE_URL` set
+  (the backend profile's sidecar) it uses that database as is. Tests,
+  migrations and `init_db.py` run under an environment allowlist: provider
+  keys are `mock_key` and agent API, gateway and git tokens are dropped.
+  It works as root, uid 1000 and uid 10000 (the Docker harness user, which
+  the image gives a passwd entry so `initdb` can run).
+- `preloop-frontend-deps` copies the image's `frontend/node_modules`
+  into the checkout when `frontend/package-lock.json` is byte-identical to
+  the one the image was built from, then `cd frontend && npm test` (or
+  `npx --no-install web-test-runner <file>`) runs offline against the
+  frontend's own pinned headless Chromium. On a different lock it exits 65; run
+  `npm --prefix frontend ci`, which needs registry access.
+- A pull request that changes `app-dev.txt` makes `preloop-pytest` warn
+  that the baked venv may lack a new dependency. Rebuild the image to pick
+  it up.
+
+`environments/preloop/python-venv-smoke.sh` is the build gate (imports
+only). Given a checkout path it runs a database-backed backend test file
+and a frontend test file offline:
+
+```text
+docker run --rm --network none --user 10000:10000 -e HOME=/tmp \
+  -v "$PWD:/src:ro" <image> /opt/preloop-pip/python-venv-smoke.sh /src
+```
+
+`backend/tests/test_preloop_backend_test_venv.py` runs the same command
+when `PRELOOP_ENVIRONMENT_IMAGE` names a built image and skips otherwise.
+The backend venv (about 980 MB), frontend tree (about 280 MB) and second
+headless Chromium (about 270 MB) grow the image from 2.5 GB to 3.8 GB
+unpacked (1.07 GB to 1.52 GB compressed).
+
 ## Browser profile
 
 `preloop-browser` in `environments/preloop/profile.json.example` uses the same

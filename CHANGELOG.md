@@ -149,6 +149,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for any prompt that references `flow.review_instructions`. The flow page
   shows the text when it is set. The reviewer prompt still keeps the first
   16 KiB.
+
+- The environment image (`environments/preloop/Dockerfile`) runs the backend
+  and frontend tests offline. `/opt/preloop-tests` now installs the backend
+  lock (`.github/requirements/app-dev.txt`, hash-pinned, the same set as the
+  CI backend shards) instead of a separate tooling list. `preloop-pytest`
+  runs pytest from a checkout, starting a throwaway PostgreSQL with pgvector
+  0.8.6 when `DATABASE_URL` is unset, and keeps agent tokens away from the
+  tests. `preloop-frontend-deps` copies a prebuilt `frontend/node_modules`.
+  The Pull Request Reviewer runs the test files a PR touches when these
+  runners are present. The image grows from 1.07 GB to 1.52 GB compressed.
 - A Copilot coverage matrix (`docs/guide/copilot.md`) states, for each
   Copilot surface, whether MCP tool calls are governed, whether model
   calls are metered, whether hooks record a session, and whether spend

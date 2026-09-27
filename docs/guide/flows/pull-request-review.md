@@ -272,6 +272,26 @@ forbidden, and a pull request that adds one is a blocking finding.
 The same markdown can be pasted into the flow's Review instructions when
 the repository cannot carry `.preloop/review-policy.md`.
 
+## Running tests
+
+Reading the tests is the main check; a run confirms it. Step 2.4 runs
+tests only on the PR branch from this repository, never on a fork's code,
+and never installs packages to do it. When nothing could run, the summary
+says "tests not run in this sandbox" and names the CI jobs to confirm.
+
+In the environment image built from `environments/preloop/Dockerfile`
+(see [Execution environments](environments-and-recovery.md#backend-and-frontend-tests-in-the-image)),
+the reviewer runs the backend test files the diff touches with
+`preloop-pytest -q -m "not integration" <files>`: the backend lock is
+preinstalled and the runner starts its own disposable database, with no
+network. For frontend test files it runs `preloop-frontend-deps`, then
+`cd frontend && npx --no-install web-test-runner <files>` (`--no-install`
+so a missing tree fails instead of fetching a package). It never runs the
+whole suite (CI shards it) and keeps runs under about 5 minutes. A failing
+test on the reviewed head is a finding. The default `codex-universal` image has
+neither runner, so there the reviewer only uses a test command whose
+dependencies are already installed.
+
 ## Not in this slice
 
 - No tracker-side relation read (GitLab's `/merge_requests/:iid/closes_issues`

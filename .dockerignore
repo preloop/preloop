@@ -2,6 +2,8 @@
 .git
 .gitignore
 .github
+# environments/preloop/Dockerfile bakes the backend test venv from this lock.
+!.github/requirements/app-dev.txt
 .gitlab-ci.yml
 
 # Python

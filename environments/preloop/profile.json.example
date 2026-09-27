@@ -33,9 +33,7 @@
     "image": "registry.example.com/preloop-environment@sha256:REPLACE_WITH_PUBLISHED_DIGEST",
     "harness": "codex",
     "setup_commands": [
-      "python3 -m venv .venv",
-      ".venv/bin/pip install -e '.[dev]'",
-      ".venv/bin/python scripts/init_db.py --force"
+      "PYTHONPATH=backend python scripts/init_db.py --force"
     ],
     "services": [
       {
@@ -63,17 +61,15 @@
     },
     "test_commands": {
       "backend": [
-        ".venv/bin/pytest backend/tests"
+        "preloop-pytest -m \"not integration\" backend/tests"
       ]
     },
     "artifact_paths": [
       "test-results"
     ],
     "lockfiles": [
-      "pyproject.toml"
-    ],
-    "cache_paths": [
-      ".venv"
+      "pyproject.toml",
+      ".github/requirements/app-dev.txt"
     ]
   },
   "preloop-application": {
