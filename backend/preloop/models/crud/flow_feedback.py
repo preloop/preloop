@@ -424,11 +424,31 @@ class CRUDFlowFeedback:
             thread.due_at = now
             db.commit()
             return None
+        # Record the publishing execution as the resume root for console
+        # rollups. Prefer the prior turn's root when this is a later repair.
+        details = dict(event_data)
+        resume = dict(details.get("_resume") or {})
+        if resume and thread.latest_execution_id is not None:
+            prior = db.get(models.FlowExecution, thread.latest_execution_id)
+            prior_resume = (
+                (prior.trigger_event_details or {}).get("_resume")
+                if prior is not None and isinstance(prior.trigger_event_details, dict)
+                else None
+            )
+            prior_root = (
+                prior_resume.get("resume_root")
+                if isinstance(prior_resume, dict)
+                else None
+            )
+            resume["resume_root"] = (
+                str(prior_root) if prior_root else str(thread.latest_execution_id)
+            )
+            details["_resume"] = resume
         execution = models.FlowExecution(
             id=uuid.uuid4(),
             flow_id=thread.flow_id,
             status="PENDING",
-            trigger_event_details=event_data,
+            trigger_event_details=details,
         )
         db.add(execution)
         db.flush()

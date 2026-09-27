@@ -168,17 +168,19 @@ export function getAgentControlInstallHint(
   const name = agent?.display_name || 'this agent';
   const state = getAgentControlState(agent);
 
-  // The CLI installer does not know Codex yet (`install-plugin` has no
-  // codex case). Offer the sidecar's npm install instead of a command
-  // that fails. The CLI slice will switch this back to install-plugin.
+  // The CLI installer knows Codex. The copyable command is install-plugin.
+  // The npm one-liner stays available for a machine that only needs the sidecar.
   if (kind === 'codex') {
+    const npmCommand = 'npm install -g @preloop-ai/codex-plugin';
+    const pending = state.state === 'install_pending';
     return {
       supported: true,
-      command: 'npm install -g @preloop-ai/codex-plugin',
+      command: `preloop agents install-plugin ${shellQuote('Codex CLI')}`,
       docsUrl: AGENT_CONTROL_DOCS_URL,
       placeholder: `Install Agent Control to talk to ${name}`,
-      helptext:
-        'Install the Codex sidecar, then run preloop-codex-plugin verify and preloop-codex-plugin run on the machine that runs Codex. The control file is ~/.codex/preloop-control.json.',
+      helptext: pending
+        ? `Agent Control config was written but the runtime plugin has not connected yet. Run this on the machine that runs Codex. To install the sidecar directly: ${npmCommand}`
+        : `This agent is not running the Agent Control plugin yet. Run this on the machine that runs Codex, then start it again. To install the sidecar directly: ${npmCommand}`,
     };
   }
 

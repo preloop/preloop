@@ -32,6 +32,7 @@ from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.secret_service import (
     ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+    ResolvedModelCredentials,
 )
 
 PINNED_ALIAS = "anthropic/claude-fable-5"
@@ -405,9 +406,7 @@ def test_negative_cache_expires(db_session, test_user, monkeypatch):
     """After the negative TTL the identifier is probed again."""
     _agent, _pinned, service = _enrolled_service(db_session, test_user)
     calls = _enable_verification(monkeypatch, outcome="rejected")
-    monkeypatch.setattr(
-        gateway_module, "_CLAUDE_FAMILY_VERIFY_NEGATIVE_TTL_SECONDS", 0
-    )
+    monkeypatch.setattr(gateway_module, "_CLAUDE_FAMILY_VERIFY_NEGATIVE_TTL_SECONDS", 0)
 
     for _ in range(2):
         with pytest.raises(ModelGatewayAPIError):
@@ -460,17 +459,14 @@ def test_inconclusive_probe_falls_back_marked_unverified(
     inconclusive = [
         record
         for record in caplog.records
-        if record.levelno == logging.WARNING
-        and "inconclusive" in record.getMessage()
+        if record.levelno == logging.WARNING and "inconclusive" in record.getMessage()
     ]
     assert len(inconclusive) == 1
     # The access token is never part of a log line.
     assert "oauth-access-token" not in caplog.text
 
 
-def test_verify_disabled_skips_probe_and_metadata(
-    db_session, test_user, monkeypatch
-):
+def test_verify_disabled_skips_probe_and_metadata(db_session, test_user, monkeypatch):
     """Flag off: no probe, and no new metadata beyond today's row."""
     _agent, _pinned, service = _enrolled_service(db_session, test_user)
     # The autouse fixture disabled verification; a probe would be a bug.
@@ -536,3 +532,81 @@ def test_probe_transport_error_is_unknown(monkeypatch):
     )
 
     assert outcome == "unknown"
+
+
+class _StaticSecrets:
+    """Stand-in secret service for credential-degradation branches."""
+
+    def __init__(self, resolved, *, raises: bool = False) -> None:
+        self._resolved = resolved
+        self._raises = raises
+
+    def resolve_ai_model_credentials(self, *_args, **_kwargs):
+        if self._raises:
+            raise RuntimeError("secret backend unavailable")
+        return self._resolved
+
+
+def _assert_unverified_registration(resolved) -> None:
+    assert resolved.model_identifier == "claude-sonnet-4-9"
+    assert resolved.meta_data["upstream_verification"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    "secrets",
+    [
+        _StaticSecrets(None, raises=True),
+        _StaticSecrets(None),
+        _StaticSecrets(
+            ResolvedModelCredentials(
+                credential_type="api_key",
+                backend_type="test",
+                value="sk-test",
+            )
+        ),
+        _StaticSecrets(
+            ResolvedModelCredentials(
+                credential_type=ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
+                backend_type="test",
+                value="",
+            )
+        ),
+    ],
+    ids=[
+        "resolve raises",
+        "resolve returns none",
+        "non-oauth credential",
+        "empty oauth value",
+    ],
+)
+def test_unusable_credentials_register_unverified(
+    db_session, test_user, monkeypatch, secrets: _StaticSecrets
+):
+    """A credential fault must not block registration of a healthy model."""
+    _agent, _pinned, service = _enrolled_service(db_session, test_user)
+    calls = _enable_verification(monkeypatch, outcome="verified")
+    monkeypatch.setattr(gateway_module, "get_secret_service", lambda: secrets)
+
+    resolved = service._resolve_requested_model(
+        "anthropic/claude-sonnet-4-9", provider="anthropic"
+    )
+
+    _assert_unverified_registration(resolved)
+    assert calls == []
+
+
+def test_verified_outcome_is_positive_cached(db_session, test_user, monkeypatch):
+    """A verified probe is reused for a day, so a repeat ask does not re-probe."""
+    _agent, pinned, service = _enrolled_service(db_session, test_user)
+    calls = _enable_verification(monkeypatch, outcome="verified")
+
+    first = service._verify_claude_family_model_upstream(
+        identifier="claude-sonnet-4-9", template=pinned
+    )
+    second = service._verify_claude_family_model_upstream(
+        identifier="claude-sonnet-4-9", template=pinned
+    )
+
+    assert first == "verified"
+    assert second == "verified"
+    assert calls == ["claude-sonnet-4-9"]

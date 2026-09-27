@@ -185,6 +185,42 @@ describe('FlowExecutionsView', () => {
     expect(cells[1].querySelectorAll('sl-badge').length).to.equal(1);
   });
 
+  it('labels a review resumption and links the publishing execution', async () => {
+    const publisherId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    fetchStub = stub([
+      {
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        flow_id: 'flow-1',
+        flow_name: 'Automated Issue Implementation',
+        status: 'FAILED',
+        start_time: '2026-03-09T12:00:00Z',
+        end_time: '2026-03-09T12:01:00Z',
+        estimated_cost: 0.04,
+        resume_of: publisherId,
+        resume_totals: { total_tokens: 1400, estimated_cost: 0.14 },
+      },
+    ]);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const line = el.shadowRoot!.querySelector(
+      '[data-testid="resume-line"]'
+    ) as HTMLElement;
+    expect(line, 'resume line').to.exist;
+    expect(line.textContent).to.contain('Resumption');
+    expect(line.textContent).to.contain('1.4K');
+    expect(line.textContent).to.contain('$0.14');
+    const link = line.querySelector(
+      '[data-testid="resume-of-link"]'
+    ) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).to.contain(
+      `/console/flows/executions/${publisherId}`
+    );
+  });
+
   it('fits the table inside its wrapper at 1440', async () => {
     // 1125px is the content width the console gives this table at a 1440
     // viewport, where the content-sized layout measured 1250px and pushed

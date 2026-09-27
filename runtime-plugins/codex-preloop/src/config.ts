@@ -24,6 +24,10 @@ export type ControlConfig = {
   runtime_principal_name?: string;
   /** Default cwd for sessions started remotely. Defaults to the home dir. */
   workspace_root?: string;
+  /** How many persistent checkouts to keep. Oldest clean dirs are removed. */
+  workspace_repositories_max?: number;
+  /** Timeout for git fetch and clone, in milliseconds. Defaults to 120000. */
+  workspace_fetch_timeout_ms?: number;
   /** Accepted for Claude-schema parity; never applied to a Codex thread. */
   permission_mode?: string;
   /** Root of Codex rollout transcripts. Defaults to ~/.codex/sessions. */

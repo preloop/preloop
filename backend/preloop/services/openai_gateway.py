@@ -391,8 +391,7 @@ def _claude_family_verification_cache_put(key: Tuple[str, str], outcome: str) ->
     with _CLAUDE_FAMILY_VERIFY_CACHE_LOCK:
         _CLAUDE_FAMILY_VERIFY_CACHE[key] = (outcome, expires_at)
         while (
-            len(_CLAUDE_FAMILY_VERIFY_CACHE)
-            > _CLAUDE_FAMILY_VERIFY_CACHE_MAX_ENTRIES
+            len(_CLAUDE_FAMILY_VERIFY_CACHE) > _CLAUDE_FAMILY_VERIFY_CACHE_MAX_ENTRIES
         ):
             oldest = next(iter(_CLAUDE_FAMILY_VERIFY_CACHE))
             if oldest == key:
@@ -4247,9 +4246,7 @@ class OpenAIGatewayService:
             "gateway": {
                 "enabled": True,
                 "url": template_gateway.get("url"),
-                "provider_adapter": template_gateway.get(
-                    "provider_adapter", "preloop"
-                ),
+                "provider_adapter": template_gateway.get("provider_adapter", "preloop"),
                 "model_alias": alias,
             },
             "managed_by": managed_by,
@@ -4346,8 +4343,9 @@ class OpenAIGatewayService:
                 status_code=status_code,
                 message=(
                     "OpenAI Codex OAuth credentials could not be refreshed. "
-                    "Run `codex login` on the agent host and rerun onboarding "
-                    "to reconnect the model gateway."
+                    'Run `preloop agents sync-credentials "Codex CLI"` to '
+                    "push the local ChatGPT login, or run `codex login` on "
+                    "the agent host and rerun onboarding."
                 ),
                 code=exc.code,
             ) from exc

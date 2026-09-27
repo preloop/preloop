@@ -296,6 +296,50 @@ describe('FlowExecutionView', () => {
         }
 
         if (
+          url.endsWith('/api/v1/flows/executions/exec-resume') &&
+          method === 'GET'
+        ) {
+          return new Response(
+            JSON.stringify({
+              id: 'exec-resume',
+              flow_id: 'flow-1',
+              status: 'FAILED',
+              start_time: '2026-03-09T12:00:00Z',
+              end_time: '2026-03-09T12:01:00Z',
+              estimated_cost: 0.04,
+              total_tokens: 400,
+              resume_of: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              resume_totals: { total_tokens: 1400, estimated_cost: 0.14 },
+              trigger_subject: 'preloop/preloop #78 · Pull Request Updated',
+              trigger_subject_url: 'https://github.com/preloop/preloop/pull/78',
+              trigger_event_details: {
+                source: 'github',
+                type: 'implementation_feedback',
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (
+          url.includes('/api/v1/flows/executions/exec-resume/') &&
+          method === 'GET'
+        ) {
+          return new Response(
+            JSON.stringify({
+              tool_calls: 0,
+              api_requests: 0,
+              token_usage: null,
+              estimated_cost: 0.04,
+              has_pricing: true,
+              logs: [],
+              source: 'database',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (
           url.includes(
             '/api/v1/flows/executions/exec-running/gateway-events'
           ) &&
@@ -446,7 +490,9 @@ describe('FlowExecutionView', () => {
     await waitUntil(
       () =>
         (element as any).execution?.id === executionId &&
-        !(element as any).isLoading,
+        !(element as any).isLoading &&
+        // The page paints before its logs land; these tests read them.
+        !(element as any).isLoadingLogs,
       `Execution view did not finish loading ${executionId}`
     );
     await element.updateComplete;
@@ -480,6 +526,23 @@ describe('FlowExecutionView', () => {
     );
     expect(link.getAttribute('target')).to.equal('_blank');
     expect(link.getAttribute('rel')).to.equal('noopener noreferrer');
+  });
+
+  it('shows Resumption with a link to the publishing execution', async () => {
+    const element = await load('exec-resume');
+    const line = element.shadowRoot!.querySelector(
+      '[data-testid="resume-line"]'
+    ) as HTMLElement;
+    expect(line, 'resume line').to.exist;
+    expect(line.textContent).to.contain('Resumption');
+    expect(line.textContent).to.contain('1.4K');
+    expect(line.textContent).to.contain('$0.14');
+    const link = line.querySelector(
+      '[data-testid="resume-of-link"]'
+    ) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).to.equal(
+      '/console/flows/executions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    );
   });
 
   it('renders execution-scoped gateway events with payload details', async () => {
@@ -726,6 +789,45 @@ describe('FlowExecutionView', () => {
       } finally {
         clearSpy.restore();
       }
+    });
+  });
+
+  describe('host execution metering', () => {
+    const withResult = async (result: Record<string, unknown>) => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        result,
+      };
+      element.requestUpdate();
+      await element.updateComplete;
+      return element;
+    };
+
+    it('says a Copilot host run is not gateway metered', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'copilot_cli',
+        gateway_metered: false,
+        premium_requests: 2,
+      });
+      expect(stripValue(element, 'strip-cost')).to.equal('Not gateway metered');
+      const badge = element.shadowRoot!.querySelector(
+        '[data-testid="strip-not-metered"]'
+      )!;
+      expect(badge.getAttribute('title')).to.contain('GitHub Copilot seat');
+      expect(badge.getAttribute('title')).to.contain('2 premium requests');
+    });
+
+    it('ignores the marker on container results', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'codex',
+        gateway_metered: false,
+      });
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="strip-not-metered"]')
+      ).to.equal(null);
     });
   });
 

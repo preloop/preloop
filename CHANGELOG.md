@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Flows can run GitHub Copilot CLI on a private runner as a host execution
+  profile (agent type `copilot`, profile `"executable": "copilot"`). The run
+  uses the runner user's Copilot login and seat, keeps the profile's
+  `allow_tools` / `deny_tools` rules, requires the Preloop approval hook for
+  `allow_all_tools`, and succeeds only on one Copilot `result` event with exit
+  code 0. Host runs are marked "Not gateway metered" on the execution page.
+  Missing login and a model the seat does not offer fail with named errors.
+- The Pull Request Reviewer reads `.preloop/review-policy.md` in full and
+  treats it as blocking rules. The same text can live on the flow as
+  `review_instructions` when the repository cannot commit that file
+  (`{{flow.review_instructions}}`). A declared version linter runs when
+  matching files change. Perl defaults to `perlver --blame`
+  (`Perl::MinimumVersion`) and the review says the linter was unavailable
+  when the sandbox has no perl.
+
 - The execution page Report tab reads one evidence-pack member at a time
   (`GET /api/v1/flows/executions/{id}/evidence/members`) and shows the report,
   findings and register. A verdict or findings summary on the run appears in
@@ -51,6 +66,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `aiosmtplib` is no longer a core dependency (nothing imported it).
+  `maxminddb` and `user-agents` moved from the core dependency list to a new
+  `ee` extra, since only the Enterprise Edition growth plugin uses them. The
+  hash-pinned locks no longer carry these packages or `ua-parser`. Builds
+  that need them install `".[ee]"`.
+
+- The console's browser error reporting reads its Sentry DSN from
+  `VITE_SENTRY_DSN` at build time and is off when the variable is unset. The
+  repository no longer contains a DSN. The frontend Docker image accepts it
+  as a build argument.
+
+- The console execution page paints as soon as the execution row loads.
+  Logs, flow, metrics and model calls then load side by side into their own
+  sections, and a failed one no longer holds up the rest. The first
+  model-call read asks for the newest 500 calls only. The run totals still
+  come from the execution row and metrics, and the timeline offers the
+  earlier calls. `GET /api/v1/flows/executions/{id}/gateway-events` accepts
+  `model_calls_only` and returns `has_more`. The execution detail response
+  now carries `flow_name`. A new index on `flow_execution_log`
+  (`execution_id`, `log_type`, `timestamp`) serves the filtered read.
+
 - At persist, a `minimum_elements.passed: true` claim is replaced when the
   delivered SBOM bytes are missing elements, and the agent's claim is kept
   on `verdict_corrected`. The verdict floor then moves the label to `fail`.
@@ -66,11 +102,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A flow execution dispatched in process (no execution worker) whose run
+  raises before the runner records an outcome is marked `FAILED` with the
+  error and a failure category, instead of staying `PENDING` with the
+  exception never retrieved. The dispatch task is kept referenced until it
+  finishes.
+
+- NATS admin alert tasks are kept referenced until they finish, and a failed
+  alert is logged instead of dropped.
+
+- The improve-compliance modal no longer logs full API responses to the
+  browser console.
+
+- Release OpenVEX states that `undici-types` 7.16.0 is not affected by
+  undici runtime advisories matched through its repository URL, because
+  the package ships only TypeScript declarations. `lodash.camelcase`
+  4.3.0 stays a dev dependency of the test runner (its parents have no
+  release that dropped it) and is recorded as not on the shipped
+  frontend execute path. Frontend SBOMs mark declaration-only packages
+  with `preloop:types_only`.
+
 - The Claude family autoregister verifies an unknown `claude-*` identifier
   against Anthropic's models endpoint before creating a catalog row
   (`model_gateway_claude_family_autoregister_verify_upstream`, default on). A
   404 no longer becomes a permanent model bound to the agent; an inconclusive
   probe still registers as before and is marked `unverified`. Refs #950.
+
 - A workspace checkpoint that exceeds the storage cap logs
   `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
   The last completed checkpoint stays the resume point. Other checkpoint

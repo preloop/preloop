@@ -10335,7 +10335,15 @@ paths:
       tags:
       - Flows
       summary: Get Flow Execution Gateway Events
-      description: Get normalized model gateway events for a flow execution.
+      description: "Get normalized model gateway events for a flow execution.\n\n\
+        Args:\n    execution_id: ID of the execution.\n    tail: Most recent rows\
+        \ to return (default 5000).\n    metadata_only: Drop the large payload fields\
+        \ (conversation preview,\n        tools, result, stream events).\n    model_calls_only:\
+        \ Return only ``model_gateway_call`` rows. Without it\n        every log row\
+        \ of the execution is returned, including the agent\n        log lines the\
+        \ logs endpoint already serves, and on a long run\n        those crowd the\
+        \ model calls out of ``tail``.\n\nReturns:\n    ``logs`` (newest first), ``source``,\
+        \ and ``has_more``: whether rows\n    older than the returned ``tail`` exist."
       operationId: get_flow_execution_gateway_events_api_v1_flows_executions__execution_id__gateway_events_get
       security:
       - bearerAuth: []
@@ -10353,6 +10361,7 @@ paths:
         schema:
           anyOf:
           - type: integer
+            minimum: 1
           - type: 'null'
           title: Tail
       - name: metadata_only
@@ -10362,6 +10371,13 @@ paths:
           type: boolean
           default: false
           title: Metadata Only
+      - name: model_calls_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Model Calls Only
       responses:
         '200':
           description: Successful Response
@@ -16357,6 +16373,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         id:
           type: string
           format: uuid
@@ -18223,6 +18254,21 @@ components:
         approvals are stored. A parked run holds no container and no runner: this
 
         is a governance object, not a spinner.'
+    ExecutionResumeTotals:
+      properties:
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          description: Summed tokens across the resume chain
+          default: 0
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          description: Summed estimated cost across the resume chain
+          default: 0.0
+      type: object
+      title: ExecutionResumeTotals
+      description: Combined tokens and cost for a publishing execution and its repairs.
     ExecutionRunner:
       properties:
         kind:
@@ -18315,6 +18361,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         id:
           type: string
           format: uuid
@@ -18609,6 +18670,16 @@ components:
         prompt_template:
           type: string
           title: Prompt Template
+        review_instructions:
+          anyOf:
+          - type: string
+            maxLength: 32768
+          - type: 'null'
+          title: Review Instructions
+          description: Blocking review rules for the Pull Request Reviewer. Same content
+            as .preloop/review-policy.md, for a repository that cannot commit that
+            file. Injected as {{flow.review_instructions}}. Empty means the repository
+            file is the only source.
         ai_model_id:
           anyOf:
           - type: string
@@ -18800,6 +18871,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         id:
           type: string
           format: uuid
@@ -18977,6 +19063,21 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        resume_of:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Resume Of
+          description: Publishing execution this repair resumes. Null when the row
+            is not a review/CI resumption. Distinct from parent_execution_id (delegation).
+        resume_totals:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionResumeTotals'
+          - type: 'null'
+          description: Summed total_tokens and estimated_cost for the publishing execution
+            and every repair that points at it. Null when the execution is not part
+            of a multi-turn resume chain.
         flow_id:
           type: string
           format: uuid
@@ -19398,6 +19499,16 @@ components:
           - type: string
           - type: 'null'
           title: Prompt Template
+        review_instructions:
+          anyOf:
+          - type: string
+            maxLength: 32768
+          - type: 'null'
+          title: Review Instructions
+          description: Blocking review rules for the Pull Request Reviewer. Same content
+            as .preloop/review-policy.md, for a repository that cannot commit that
+            file. Injected as {{flow.review_instructions}}. Empty means the repository
+            file is the only source.
         ai_model_id:
           anyOf:
           - type: string
@@ -19669,6 +19780,16 @@ components:
           - type: string
           - type: 'null'
           title: Prompt Template
+        review_instructions:
+          anyOf:
+          - type: string
+            maxLength: 32768
+          - type: 'null'
+          title: Review Instructions
+          description: Blocking review rules for the Pull Request Reviewer. Same content
+            as .preloop/review-policy.md, for a repository that cannot commit that
+            file. Injected as {{flow.review_instructions}}. Empty means the repository
+            file is the only source.
         ai_model_id:
           anyOf:
           - type: string

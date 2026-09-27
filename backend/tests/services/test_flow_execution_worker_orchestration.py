@@ -181,14 +181,26 @@ async def test_local_triage_callbacks_use_the_worker_claim_path(
     monkeypatch.setattr(
         "preloop.services.flow_execution_runner.run_existing_execution", direct
     )
+    scheduled_tasks: list[MagicMock] = []
+
+    def _capture_task(coro: object) -> MagicMock:
+        # Keep the coroutine to run below and hand back a task stand-in, since
+        # the dispatch site retains the task and attaches a done-callback.
+        callbacks.append(coro)
+        task = MagicMock()
+        scheduled_tasks.append(task)
+        return task
+
     monkeypatch.setattr(
-        "preloop.services.flow_trigger_service.asyncio.create_task", callbacks.append
+        "preloop.services.flow_trigger_service.asyncio.create_task", _capture_task
     )
+    monkeypatch.setattr("preloop.services.flow_trigger_service._LOCAL_RUN_TASKS", set())
     execution = MagicMock(id=uuid.uuid4(), status="PENDING")
     flow = MagicMock(account_id=uuid.uuid4())
     await service._start_flow_execution(flow, {}, None, precreated_execution=execution)
     await service._start_flow_execution(flow, {}, None, precreated_execution=execution)
     assert len(callbacks) == 2
+    assert all(task.add_done_callback.call_count == 1 for task in scheduled_tasks)
     await asyncio.gather(*callbacks)
     assert claim.await_count == 2
     assert all(call.args == (str(execution.id),) for call in claim.await_args_list)

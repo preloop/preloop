@@ -371,6 +371,12 @@ class FlowExecution(Base):
     # does not request it.
     delegation_label: Mapped[Optional[str]] = query_expression()
 
+    # Publishing execution id for a review/CI repair turn. Stored under
+    # trigger_event_details._resume.resume_root and projected for list rows
+    # the same way subjects are. Null on a first publication and on queries
+    # that do not request it.
+    resume_of: Mapped[Optional[str]] = query_expression()
+
     # Relationships
     flow = relationship(
         "Flow", back_populates="executions"
