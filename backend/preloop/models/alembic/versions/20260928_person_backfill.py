@@ -47,7 +47,10 @@ assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 
 def normalized_email(column: str) -> str:
-    """SQL for the normalized form of ``column``: trimmed ASCII space, lowercased."""
+    """SQL for the normalized form of ``column``.
+
+    Trimmed of ASCII whitespace (space, tab, newline, CR, FF, VT), lowercased.
+    """
     return f"lower(btrim({column}, E' \\t\\n\\r\\f\\x0b'))"
 
 
