@@ -410,3 +410,14 @@ class TestModelStreamIdle:
         finally:
             monkeypatch.undo()
             importlib.reload(categories)
+
+
+class TestApiDescription:
+    def test_field_description_lists_the_whole_vocabulary(self):
+        """API clients read the closed vocabulary from the schema text."""
+        from preloop.models.schemas.flow_execution import FlowExecutionBase
+
+        description = FlowExecutionBase.model_fields["failure_category"].description
+
+        missing = [c for c in FAILURE_CATEGORIES if c not in description]
+        assert missing == []
