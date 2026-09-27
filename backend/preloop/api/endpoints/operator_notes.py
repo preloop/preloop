@@ -327,7 +327,7 @@ def _claim_for_hook(
         )
         notes = operator_notes.claim_pending_notes(
             db,
-            account_id=str(context.user.account_id),
+            account_id=str(context.api_key.account_id),
             managed_agent_id=str(context.managed_agent.id),
             runtime_session_id=(
                 str(context.runtime_session.id)

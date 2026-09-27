@@ -252,3 +252,31 @@ async def test_shim_rows_never_receive_v1_events(db_session, account, make_endpo
     assert result.endpoints_matched == 1
     row = db_session.get(WebhookDelivery, result.delivery_ids[0])
     assert row.endpoint_id == account_endpoint.id
+
+
+def test_sync_shim_endpoint_matches_async_twin(db_session, account):
+    """The sync twin (used by policy notices) creates the same hidden row."""
+    workflow = _workflow(
+        db_session, account.id, {"webhook_url": "https://hooks.example.test/a"}
+    )
+
+    endpoint = approval_shim.sync_shim_endpoint(db_session, workflow)
+
+    assert endpoint is not None
+    assert endpoint.source == SOURCE_APPROVAL_WORKFLOW
+    assert endpoint.url == "https://hooks.example.test/a"
+    assert workflow.approval_config["webhook_secret"].startswith(SECRET_PREFIX)
+    again = approval_shim.sync_shim_endpoint(db_session, workflow)
+    assert again.id == endpoint.id
+    assert len(_shim_rows(db_session)) == 1
+
+
+def test_sync_shim_endpoint_deactivates_when_url_removed(db_session, account):
+    workflow = _workflow(
+        db_session, account.id, {"webhook_url": "https://hooks.example.test/a"}
+    )
+    endpoint = approval_shim.sync_shim_endpoint(db_session, workflow)
+    workflow.approval_config = {}
+
+    assert approval_shim.sync_shim_endpoint(db_session, workflow) is None
+    assert endpoint.active is False

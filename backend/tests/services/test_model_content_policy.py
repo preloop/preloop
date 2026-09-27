@@ -227,7 +227,9 @@ def test_extract_stream_text_from_chat_chunk():
 def test_wrap_stream_buffers_then_replays_when_allowed():
     gateway = SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        auth_context=SimpleNamespace(
+            account_id="acct", user=SimpleNamespace(account_id="acct", id="u")
+        ),
         _openai_stream_error_event=lambda exc, err: f"data: error {exc}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
     )
@@ -254,7 +256,9 @@ def test_wrap_stream_buffers_then_replays_when_allowed():
 def test_wrap_stream_denies_without_replaying_payload():
     gateway = SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        auth_context=SimpleNamespace(
+            account_id="acct", user=SimpleNamespace(account_id="acct", id="u")
+        ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.message}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
         _client_session_id=None,
@@ -315,7 +319,9 @@ def test_extract_stream_text_anthropic_content_block_delta_not_doubled():
 def test_wrap_stream_responses_assembled_text_is_not_doubled():
     gateway = SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        auth_context=SimpleNamespace(
+            account_id="acct", user=SimpleNamespace(account_id="acct", id="u")
+        ),
         _openai_stream_error_event=lambda exc, err: f"data: error {exc}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
         _client_session_id=None,
@@ -430,7 +436,9 @@ def test_buffered_response_policy_db_failure_emits_error_without_payload() -> No
 
     gateway = SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        auth_context=SimpleNamespace(
+            account_id="acct", user=SimpleNamespace(account_id="acct", id="u")
+        ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
     )
@@ -471,7 +479,9 @@ def test_response_buffer_still_enforces_current_deny_rule() -> None:
     )
     gateway = SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        auth_context=SimpleNamespace(
+            account_id="acct", user=SimpleNamespace(account_id="acct", id="u")
+        ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
     )
@@ -505,7 +515,9 @@ def test_response_rule_added_after_empty_request_preflight_blocks_output() -> No
     )
     gateway = SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id="acct", id="u")),
+        auth_context=SimpleNamespace(
+            account_id="acct", user=SimpleNamespace(account_id="acct", id="u")
+        ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.code}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
     )
