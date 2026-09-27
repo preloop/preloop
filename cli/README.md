@@ -204,7 +204,10 @@ preloop copilot --model anthropic/claude-sonnet-4-5 --provider anthropic
 variables pointed at the Preloop gateway. A missing binary, credential, or
 model alias exits without launching Copilot. `--token` and `PRELOOP_TOKEN`
 override the enrolled agent credential. See
-[docs/guide/copilot-cli.md](../docs/guide/copilot-cli.md).
+[docs/guide/copilot-cli.md](../docs/guide/copilot-cli.md). What Preloop
+governs and meters on each Copilot surface (VS Code Chat, this launcher,
+private-runner flows, the cloud agent, inline completions) is in
+[docs/guide/copilot.md](../docs/guide/copilot.md).
 
 ### Usage
 
