@@ -89,6 +89,13 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # admins bypass the flag in the console shell.
     result["features"].setdefault("policies_console", policies_console_enabled())
 
+    # Account capabilities (multiple accounts per person, parent and
+    # subaccount trees, tag based access rules) are provided by an extension
+    # plugin. The console and CLI gate their views and commands on these
+    # flags, so they default to off; setdefault keeps a plugin's value.
+    for capability in ("multi_account", "account_hierarchy", "abac_rules"):
+        result["features"].setdefault(capability, False)
+
     # Passkey (WebAuthn) support: PASSKEYS_ENABLED env, default true. The
     # login page uses this to decide whether to render "Sign in with passkey".
     # Import guarded so a missing/broken webauthn dependency degrades to
