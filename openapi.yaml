@@ -9127,6 +9127,226 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/cost/by-issue:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: List Issue Costs
+      description: Issue-level cost and cycle time, with per-project and per-flow
+        sums.
+      operationId: list_issue_costs_api_v1_cost_by_issue_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Issues whose first event is at or after this time.
+          title: Start Date
+        description: Issues whose first event is at or after this time.
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Issues whose first event is before this time.
+          title: End Date
+        description: Issues whose first event is before this time.
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueCostReport'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/by-issue/export:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Export Issue Costs
+      description: 'Export the issue rows of the current filter as CSV or JSON.
+
+
+        CSV is the flat issue grain plus one unassigned row. JSON carries the
+
+        contributing execution ids per issue and for the unassigned bucket.'
+      operationId: export_issue_costs_api_v1_cost_by_issue_export_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: format
+        in: query
+        required: false
+        schema:
+          enum:
+          - csv
+          - json
+          type: string
+          default: csv
+          title: Format
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/by-issue/{rollup_id}/executions:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: List Issue Cost Executions
+      description: Executions that contributed to one issue row.
+      operationId: list_issue_cost_executions_api_v1_cost_by_issue__rollup_id__executions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: rollup_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Rollup Id
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IssueCostExecutionRow'
+                title: Response List Issue Cost Executions Api V1 Cost By Issue  Rollup
+                  Id  Executions Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/by-issue/rebuild:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Rebuild Issue Costs
+      description: 'Record finished executions of a window that have no issue fact
+        yet.
+
+
+        Bounded per call; repeat until ``limit_reached`` is false. Executions
+
+        that fail to record are skipped, counted in ``failed`` and examined again
+
+        on the next call.'
+      operationId: rebuild_issue_costs_api_v1_cost_by_issue_rebuild_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueCostRebuildRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueCostRebuildResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/cost/copilot:
     get:
       tags:
@@ -21847,6 +22067,342 @@ components:
       - unit
       title: IntervalSchedule
       description: 'Friendly schedule form: run every N minutes/hours/days.'
+    IssueCostExecutionRow:
+      properties:
+        execution_id:
+          type: string
+          format: uuid
+          title: Execution Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          type: string
+          title: Flow Name
+        status:
+          type: string
+          title: Status
+        link:
+          type: string
+          title: Link
+          description: 'How the execution was attributed: lifecycle, resume, delegated,
+            retry, trigger_issue, pull_request, closing_reference, ambiguous or unassigned.'
+        pr_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr Url
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        start_time:
+          type: string
+          format: date-time
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Time
+      type: object
+      required:
+      - execution_id
+      - flow_id
+      - flow_name
+      - status
+      - link
+      - start_time
+      title: IssueCostExecutionRow
+      description: One execution that contributed to an issue (or to the unassigned
+        bucket).
+    IssueCostRebuildRequest:
+      properties:
+        start_date:
+          type: string
+          format: date-time
+          title: Start Date
+        end_date:
+          type: string
+          format: date-time
+          title: End Date
+      type: object
+      required:
+      - start_date
+      - end_date
+      title: IssueCostRebuildRequest
+      description: Window of finished executions to record.
+    IssueCostRebuildResponse:
+      properties:
+        recorded:
+          type: integer
+          title: Recorded
+        failed:
+          type: integer
+          title: Failed
+          description: Executions skipped because recording them failed.
+          default: 0
+        limit_reached:
+          type: boolean
+          title: Limit Reached
+      type: object
+      required:
+      - recorded
+      - limit_reached
+      title: IssueCostRebuildResponse
+      description: How many executions a rebuild recorded.
+    IssueCostReport:
+      properties:
+        start:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start
+        end:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End
+        project_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+        flow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+        issues:
+          items:
+            $ref: '#/components/schemas/IssueCostRow'
+          type: array
+          title: Issues
+        by_project:
+          items:
+            $ref: '#/components/schemas/IssueCostSummary'
+          type: array
+          title: By Project
+        by_flow:
+          items:
+            $ref: '#/components/schemas/IssueCostSummary'
+          type: array
+          title: By Flow
+        unassigned:
+          $ref: '#/components/schemas/IssueCostUnassigned'
+        truncated:
+          type: boolean
+          title: Truncated
+          default: false
+      type: object
+      required:
+      - issues
+      - by_project
+      - by_flow
+      - unassigned
+      title: IssueCostReport
+      description: Issue rows, per-project and per-flow sums and the unassigned bucket.
+    IssueCostRow:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        tracker_id:
+          type: string
+          format: uuid
+          title: Tracker Id
+        tracker_name:
+          type: string
+          title: Tracker Name
+        tracker_type:
+          type: string
+          title: Tracker Type
+        issue_key:
+          type: string
+          title: Issue Key
+        issue_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Issue Id
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        issue_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue Url
+        pr_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr Url
+        project_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+        project_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Name
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          description: Sum of the contributing executions' estimated_cost.
+        total_tokens:
+          type: integer
+          title: Total Tokens
+        run_count:
+          type: integer
+          title: Run Count
+        failed_run_count:
+          type: integer
+          title: Failed Run Count
+        first_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: First Event At
+        pr_opened_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Pr Opened At
+        approved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Approved At
+        merged_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Merged At
+        first_event_to_pr_opened_hours:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: First Event To Pr Opened Hours
+          description: Blank when the pull request was not opened yet.
+        pr_opened_to_approved_hours:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Pr Opened To Approved Hours
+          description: Blank when the pull request was not approved yet.
+        approved_to_merged_hours:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Approved To Merged Hours
+          description: Blank when the pull request was not merged yet.
+        execution_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+          - type: 'null'
+          title: Execution Ids
+          description: Contributing execution ids (JSON export only).
+      type: object
+      required:
+      - id
+      - tracker_id
+      - tracker_name
+      - tracker_type
+      - issue_key
+      - estimated_cost
+      - total_tokens
+      - run_count
+      - failed_run_count
+      title: IssueCostRow
+      description: One tracker issue with its summed cost and cycle-time milestones.
+    IssueCostSummary:
+      properties:
+        id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Id
+        name:
+          type: string
+          title: Name
+        issue_count:
+          type: integer
+          title: Issue Count
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+        total_tokens:
+          type: integer
+          title: Total Tokens
+        run_count:
+          type: integer
+          title: Run Count
+        failed_run_count:
+          type: integer
+          title: Failed Run Count
+      type: object
+      required:
+      - name
+      - issue_count
+      - estimated_cost
+      - total_tokens
+      - run_count
+      - failed_run_count
+      title: IssueCostSummary
+      description: Sum of issue rows for one project or one flow.
+    IssueCostUnassigned:
+      properties:
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        run_count:
+          type: integer
+          title: Run Count
+          default: 0
+        failed_run_count:
+          type: integer
+          title: Failed Run Count
+          default: 0
+        executions:
+          items:
+            $ref: '#/components/schemas/IssueCostExecutionRow'
+          type: array
+          title: Executions
+      type: object
+      title: IssueCostUnassigned
+      description: Executions that could not be tied to exactly one issue.
     IssueCreate:
       properties:
         title:

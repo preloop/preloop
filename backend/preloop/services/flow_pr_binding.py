@@ -542,6 +542,9 @@ def record_opened_pr(
             )
             return
         logger.info("Recorded opened PR on execution %s", execution_id)
+        from preloop.services.issue_cost_rollup import record_publication_safely
+
+        record_publication_safely(db, execution.id, stored_url)
         if source_branch:
             from preloop.services.flow_feedback import register_thread
 

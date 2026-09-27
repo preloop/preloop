@@ -369,6 +369,7 @@ export class LitApp extends LitElement {
               return commands.redirect('/console/agents');
             },
           },
+          { path: 'cost/by-issue', component: 'issue-cost-view' },
           { path: 'cost', component: 'cost-view' },
           { path: '/api-usage', component: 'api-usage-view' },
           { path: 'settings', redirect: '/console/settings/profile' },

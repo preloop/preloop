@@ -1296,6 +1296,136 @@ export async function getCostAnalyticsSummary(
   return response.json();
 }
 
+/** One execution that contributed to an issue's cost (#958). */
+export interface IssueCostExecution {
+  execution_id: string;
+  flow_id: string;
+  flow_name: string;
+  status: string;
+  link: string;
+  pr_url: string | null;
+  estimated_cost: number | null;
+  total_tokens: number;
+  start_time: string;
+  end_time: string | null;
+}
+
+/** One tracker issue with summed cost and cycle-time milestones. */
+export interface IssueCostRow {
+  id: string;
+  tracker_id: string;
+  tracker_name: string;
+  tracker_type: string;
+  issue_key: string;
+  issue_id: string | null;
+  title: string | null;
+  issue_url: string | null;
+  pr_url: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  estimated_cost: number;
+  total_tokens: number;
+  run_count: number;
+  failed_run_count: number;
+  first_event_at: string | null;
+  pr_opened_at: string | null;
+  approved_at: string | null;
+  merged_at: string | null;
+  first_event_to_pr_opened_hours: number | null;
+  pr_opened_to_approved_hours: number | null;
+  approved_to_merged_hours: number | null;
+}
+
+export interface IssueCostSummary {
+  id: string | null;
+  name: string;
+  issue_count: number;
+  estimated_cost: number;
+  total_tokens: number;
+  run_count: number;
+  failed_run_count: number;
+}
+
+export interface IssueCostReport {
+  start: string | null;
+  end: string | null;
+  project_id: string | null;
+  flow_id: string | null;
+  issues: IssueCostRow[];
+  by_project: IssueCostSummary[];
+  by_flow: IssueCostSummary[];
+  unassigned: {
+    estimated_cost: number;
+    total_tokens: number;
+    run_count: number;
+    failed_run_count: number;
+    /** Filled by the JSON export only; the report carries the totals. */
+    executions: IssueCostExecution[];
+  };
+  truncated: boolean;
+}
+
+export interface IssueCostFilter {
+  startDate?: string | null;
+  endDate?: string | null;
+  projectId?: string | null;
+  flowId?: string | null;
+}
+
+function issueCostQuery(filter: IssueCostFilter): URLSearchParams {
+  const query = new URLSearchParams();
+  if (filter.startDate) query.set('start_date', filter.startDate);
+  if (filter.endDate) query.set('end_date', filter.endDate);
+  if (filter.projectId) query.set('project_id', filter.projectId);
+  if (filter.flowId) query.set('flow_id', filter.flowId);
+  return query;
+}
+
+/** Issue-level cost and cycle time for one filter. */
+export async function getIssueCosts(
+  filter: IssueCostFilter = {}
+): Promise<IssueCostReport> {
+  const query = issueCostQuery(filter).toString();
+  const response = await fetchWithAuth(
+    query ? `/api/v1/cost/by-issue?${query}` : '/api/v1/cost/by-issue'
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch cost per issue');
+  }
+  return response.json();
+}
+
+/** Executions that contributed to one issue row. */
+export async function getIssueCostExecutions(
+  rollupId: string,
+  flowId?: string | null
+): Promise<IssueCostExecution[]> {
+  const query = flowId ? `?flow_id=${encodeURIComponent(flowId)}` : '';
+  const response = await fetchWithAuth(
+    `/api/v1/cost/by-issue/${encodeURIComponent(rollupId)}/executions${query}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch the executions of this issue');
+  }
+  return response.json();
+}
+
+/** CSV or JSON export of the issue rows for the current filter. */
+export async function exportIssueCosts(
+  format: 'csv' | 'json',
+  filter: IssueCostFilter = {}
+): Promise<Blob> {
+  const query = issueCostQuery(filter);
+  query.set('format', format);
+  const response = await fetchWithAuth(
+    `/api/v1/cost/by-issue/export?${query.toString()}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to export cost per issue');
+  }
+  return response.blob();
+}
+
 export async function getToolUsageStats(
   params: GatewayUsageSummaryParams = {}
 ): Promise<ToolUsageStatsResponse> {
