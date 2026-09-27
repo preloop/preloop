@@ -236,7 +236,7 @@ export class WelcomeView extends LitElement {
             ${
               this._needsPassword
                 ? 'Your account has been created. Please set your password to continue.'
-                : 'Your account is ready! Review your organization name and optionally connect GitHub to enable PR reviews and automation.'
+                : 'Your account is ready! Review your account name and optionally connect GitHub to enable PR reviews and automation.'
             }
           </p>
           ${
@@ -268,7 +268,7 @@ export class WelcomeView extends LitElement {
                     </div>
                     <div class="form-group">
                       <sl-input
-                        label="Organization"
+                        label="Account name"
                         value=${this._orgName}
                         @sl-change=${(e: any) => (this._orgName = e.target.value)}
                         required
