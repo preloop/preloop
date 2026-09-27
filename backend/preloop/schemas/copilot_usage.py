@@ -50,7 +50,13 @@ class CopilotConnectionUpsert(BaseModel):
         ge=0,
         description="Operator-entered monthly price per seat; null clears it.",
     )
-    is_active: bool = True
+    is_active: Optional[bool] = Field(
+        None,
+        description=(
+            "Pause (false) or resume (true) scheduled imports; omitted keeps "
+            "the current value (new connections start active)."
+        ),
+    )
 
 
 class CopilotConnectionResponse(BaseModel):
@@ -70,6 +76,7 @@ class CopilotConnectionResponse(BaseModel):
     per_user_billing_reason: Optional[str] = None
     metrics_status: Optional[str] = None
     metrics_reason: Optional[str] = None
+    last_warning: Optional[str] = None
 
 
 class CopilotSyncResponse(BaseModel):
@@ -133,6 +140,13 @@ class CopilotPremiumRequests(BaseModel):
     org_aggregate_net_amount: Optional[float] = Field(
         None,
         description="Spend stored only as an organization total.",
+    )
+    unattributed_net_amount: Optional[float] = Field(
+        None,
+        description=(
+            "Spend on per-user days that no current seat holder explains, "
+            "for example a developer whose seat was removed."
+        ),
     )
     aggregate_days: int = 0
     by_developer: List[CopilotDeveloperSpend] = Field(default_factory=list)

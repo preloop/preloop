@@ -227,6 +227,25 @@ export class CopilotUsagePanel extends AuthedElement {
     }
   }
 
+  private async resume(): Promise<void> {
+    const connection = this.summary?.connection;
+    if (!connection) return;
+    this.actionError = null;
+    this.notice = null;
+    try {
+      await saveCopilotConnection({
+        organization: connection.organization,
+        enterprise: connection.enterprise,
+        seat_price_monthly: connection.seat_price_monthly,
+        is_active: true,
+      });
+      await this.load();
+    } catch (error) {
+      this.actionError =
+        error instanceof Error ? error.message : 'Could not resume';
+    }
+  }
+
   private async removeConnection(): Promise<void> {
     this.actionError = null;
     this.notice = null;
@@ -362,6 +381,22 @@ export class CopilotUsagePanel extends AuthedElement {
           : nothing
       }
       ${
+        connection.last_warning
+          ? html`<sl-alert variant="warning" open data-testid="copilot-warning">
+              <sl-icon slot="icon" name="info-circle"></sl-icon>
+              ${connection.last_warning}
+            </sl-alert>`
+          : nothing
+      }
+      ${
+        connection.is_active
+          ? nothing
+          : html`<sl-alert variant="neutral" open data-testid="copilot-paused">
+              <sl-icon slot="icon" name="pause-circle"></sl-icon>
+              Imports are paused for this connection. Resume it to import again.
+            </sl-alert>`
+      }
+      ${
         connection.metrics_status === 'unavailable' && connection.metrics_reason
           ? html`<sl-alert variant="warning" open data-testid="copilot-metrics">
               <sl-icon slot="icon" name="info-circle"></sl-icon>
@@ -370,13 +405,23 @@ export class CopilotUsagePanel extends AuthedElement {
           : nothing
       }
       <div class="actions">
-        <sl-button
-          size="small"
-          data-testid="copilot-sync"
-          .loading=${this.syncing}
-          @click=${() => void this.sync()}
-          >Sync now</sl-button
-        >
+        ${
+          connection.is_active
+            ? html`<sl-button
+                size="small"
+                data-testid="copilot-sync"
+                .loading=${this.syncing}
+                @click=${() => void this.sync()}
+                >Sync now</sl-button
+              >`
+            : html`<sl-button
+                size="small"
+                variant="primary"
+                data-testid="copilot-resume"
+                @click=${() => void this.resume()}
+                >Resume imports</sl-button
+              >`
+        }
         <sl-button size="small" @click=${() => this.startEditing()}
           >Edit connection</sl-button
         >
@@ -499,6 +544,19 @@ export class CopilotUsagePanel extends AuthedElement {
                   <div class="stat-value">
                     ${this.formatCurrency(
                       premium.org_aggregate_net_amount,
+                      currency
+                    )}
+                  </div>
+                </div>`
+          }
+          ${
+            premium.unattributed_net_amount === null
+              ? nothing
+              : html`<div class="stat" data-testid="copilot-unattributed">
+                  <div class="stat-label">Not matched to a current seat</div>
+                  <div class="stat-value">
+                    ${this.formatCurrency(
+                      premium.unattributed_net_amount,
                       currency
                     )}
                   </div>

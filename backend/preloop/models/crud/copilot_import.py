@@ -66,6 +66,7 @@ class CRUDCopilotImportConnection(CRUDBase[CopilotImportConnection]):
         per_user_billing_reason: Optional[str] = None,
         metrics_status: Optional[str] = None,
         metrics_reason: Optional[str] = None,
+        warning: Optional[str] = None,
     ) -> CopilotImportConnection:
         """Persist the outcome of one sync attempt.
 
@@ -81,12 +82,15 @@ class CRUDCopilotImportConnection(CRUDBase[CopilotImportConnection]):
             metrics_status: ``available`` or ``unavailable``; left unchanged
                 when None.
             metrics_reason: Why the usage-metrics report is unavailable.
+            warning: Non-fatal problem from a successful sync; None clears
+                it. Left unchanged when the sync failed.
 
         Returns:
             The refreshed connection.
         """
         if error is None:
             connection.last_synced_at = synced_at
+            connection.last_warning = warning
         connection.last_error = error
         if synced_day is not None:
             connection.last_synced_day = synced_day
@@ -105,12 +109,23 @@ class CRUDCopilotImportConnection(CRUDBase[CopilotImportConnection]):
 class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
     """Writes and reads of Copilot rows in ``provider_billing_snapshot``."""
 
-    def _copilot_rows(self, db: Session, *, account_id: Union[uuid.UUID, str]) -> Any:
-        return db.query(ProviderBillingSnapshot).filter(
+    def _copilot_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        organization: Optional[str] = None,
+    ) -> Any:
+        query = db.query(ProviderBillingSnapshot).filter(
             ProviderBillingSnapshot.account_id == account_id,
             ProviderBillingSnapshot.provider == COPILOT_PROVIDER,
             ProviderBillingSnapshot.usage_source == IMPORTED_USAGE_SOURCE,
         )
+        if organization is not None:
+            query = query.filter(
+                ProviderBillingSnapshot.project_or_workspace_id == organization
+            )
+        return query
 
     def replace_day_rows(
         self,
@@ -173,37 +188,43 @@ class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
         account_id: Union[uuid.UUID, str],
         start: datetime,
         end: datetime,
+        organization: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Sum premium-request spend per (user, model) over a window.
 
         Organization aggregate rows come back with ``user_login=None``.
+        ``organization`` restricts the sum to rows imported for that
+        organization, so switching the connection to another organization
+        never mixes the two.
 
         Returns:
             Dicts with ``user_login``, ``model``, ``net_amount``,
             ``net_quantity`` and ``days``.
         """
         net_quantity = cast(ProviderBillingSnapshot.raw["netQuantity"].astext, Float)
-        rows = (
-            db.query(
-                ProviderBillingSnapshot.user_login.label("user_login"),
-                ProviderBillingSnapshot.model.label("model"),
-                func.sum(ProviderBillingSnapshot.cost_amount).label("net_amount"),
-                func.sum(net_quantity).label("net_quantity"),
-                func.count(func.distinct(ProviderBillingSnapshot.bucket_start)).label(
-                    "days"
-                ),
-            )
-            .filter(
-                ProviderBillingSnapshot.account_id == account_id,
-                ProviderBillingSnapshot.provider == COPILOT_PROVIDER,
-                ProviderBillingSnapshot.usage_source == IMPORTED_USAGE_SOURCE,
-                ProviderBillingSnapshot.line_item == LINE_ITEM_PREMIUM_REQUEST,
-                ProviderBillingSnapshot.bucket_start >= start,
-                ProviderBillingSnapshot.bucket_start < end,
-            )
-            .group_by(ProviderBillingSnapshot.user_login, ProviderBillingSnapshot.model)
-            .all()
+        query = db.query(
+            ProviderBillingSnapshot.user_login.label("user_login"),
+            ProviderBillingSnapshot.model.label("model"),
+            func.sum(ProviderBillingSnapshot.cost_amount).label("net_amount"),
+            func.sum(net_quantity).label("net_quantity"),
+            func.count(func.distinct(ProviderBillingSnapshot.bucket_start)).label(
+                "days"
+            ),
+        ).filter(
+            ProviderBillingSnapshot.account_id == account_id,
+            ProviderBillingSnapshot.provider == COPILOT_PROVIDER,
+            ProviderBillingSnapshot.usage_source == IMPORTED_USAGE_SOURCE,
+            ProviderBillingSnapshot.line_item == LINE_ITEM_PREMIUM_REQUEST,
+            ProviderBillingSnapshot.bucket_start >= start,
+            ProviderBillingSnapshot.bucket_start < end,
         )
+        if organization is not None:
+            query = query.filter(
+                ProviderBillingSnapshot.project_or_workspace_id == organization
+            )
+        rows = query.group_by(
+            ProviderBillingSnapshot.user_login, ProviderBillingSnapshot.model
+        ).all()
         return [
             {
                 "user_login": row.user_login,
@@ -227,10 +248,14 @@ class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
         line_item: str,
         start: datetime,
         end: datetime,
+        organization: Optional[str] = None,
     ) -> List[ProviderBillingSnapshot]:
-        """List Copilot rows of one line item in a window, oldest first."""
+        """List Copilot rows of one line item in a window, oldest first.
+
+        ``organization`` restricts the rows to that organization's imports.
+        """
         return (
-            self._copilot_rows(db, account_id=account_id)
+            self._copilot_rows(db, account_id=account_id, organization=organization)
             .filter(
                 ProviderBillingSnapshot.line_item == line_item,
                 ProviderBillingSnapshot.bucket_start >= start,
@@ -249,15 +274,18 @@ class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
         *,
         account_id: Union[uuid.UUID, str],
         before: datetime,
+        organization: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return the newest seat summary and seat rows before ``before``.
+
+        ``organization`` restricts the snapshot to that organization's imports.
 
         Returns:
             ``{"summary": row or None, "seats": [rows]}`` for the latest day
             that has a seat summary.
         """
         summary = (
-            self._copilot_rows(db, account_id=account_id)
+            self._copilot_rows(db, account_id=account_id, organization=organization)
             .filter(
                 ProviderBillingSnapshot.line_item == LINE_ITEM_SEAT_SUMMARY,
                 ProviderBillingSnapshot.bucket_start < before,
@@ -268,7 +296,7 @@ class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
         if summary is None:
             return {"summary": None, "seats": []}
         seats = (
-            self._copilot_rows(db, account_id=account_id)
+            self._copilot_rows(db, account_id=account_id, organization=organization)
             .filter(
                 and_(
                     ProviderBillingSnapshot.line_item == LINE_ITEM_SEAT,

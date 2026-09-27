@@ -10,12 +10,13 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
+from anyio import from_thread
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_or_404
-from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import models
 from preloop.models.crud import crud_copilot_import_connection
 from preloop.models.db.session import get_db_session
@@ -115,8 +116,11 @@ def upsert_copilot_connection(
         "secret_reference_id": secret_id,
         "enterprise_secret_reference_id": enterprise_secret_id,
         "seat_price_monthly": payload.seat_price_monthly,
-        "is_active": payload.is_active,
     }
+    if payload.is_active is not None:
+        values["is_active"] = payload.is_active
+    elif connection is None:
+        values["is_active"] = True
     if connection is None:
         connection = crud_copilot_import_connection.create(
             db, obj_in={"account_id": account.id, **values}
@@ -163,26 +167,37 @@ def delete_copilot_connection(
     status_code=status.HTTP_202_ACCEPTED,
 )
 @require_permission("manage_budgets")
-async def sync_copilot_connection(
+def sync_copilot_connection(
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
 ) -> CopilotSyncResponse:
-    """Queue an import for this account now (idempotent for the same day)."""
+    """Queue an import for this account now (idempotent for the same day).
 
-    def load() -> Optional[str]:
-        account = get_account_or_404(db, current_user)
-        connection = crud_copilot_import_connection.get_for_account(
-            db, account_id=account.id
-        )
-        return str(account.id) if connection else None
-
-    account_id = await run_db_off_loop(load)
-    if account_id is None:
+    A plain ``def`` handler runs on the threadpool, so the database lookup
+    never blocks the event loop; only the publish hops back onto the loop.
+    """
+    account = get_account_or_404(db, current_user)
+    connection = crud_copilot_import_connection.get_for_account(
+        db, account_id=account.id
+    )
+    if connection is None:
         raise HTTPException(status_code=404, detail="No Copilot connection")
-    try:
-        ack = await event_bus_service.publish_task(
+    if not connection.is_active:
+        # The worker skips paused connections, so queuing would report a
+        # sync that never runs.
+        raise HTTPException(
+            status_code=409,
+            detail="The Copilot connection is paused. Resume it to import.",
+        )
+    account_id = str(account.id)
+
+    async def publish() -> object:
+        return await event_bus_service.publish_task(
             "ingest_copilot_usage", account_id=account_id
         )
+
+    try:
+        ack = from_thread.run(publish)
     except Exception as exc:
         logger.exception("Failed to queue Copilot usage import")
         raise HTTPException(

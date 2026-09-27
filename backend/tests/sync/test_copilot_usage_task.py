@@ -29,7 +29,8 @@ async def test_scheduled_run_imports_every_connection(
     ingest = mocker.patch.object(
         copilot_usage_import, "ingest_copilot_usage", return_value={"a": {}}
     )
-    assert await tasks.ingest_copilot_usage() == {"a": {}}
+    result = await tasks.ingest_copilot_usage()
+    assert result == {"a": {}}
     ingest.assert_called_once_with(mock_db, account_id=None)
     mock_db.close.assert_called_once()
 
@@ -40,7 +41,8 @@ async def test_scheduled_run_noops_when_disabled(
 ) -> None:
     mocker.patch.object(settings, "copilot_usage_sync_enabled", False)
     ingest = mocker.patch.object(copilot_usage_import, "ingest_copilot_usage")
-    assert await tasks.ingest_copilot_usage() is None
+    result = await tasks.ingest_copilot_usage()
+    assert result is None
     ingest.assert_not_called()
 
 
@@ -64,5 +66,6 @@ async def test_unexpected_error_is_logged_not_raised(
     mocker.patch.object(
         copilot_usage_import, "ingest_copilot_usage", side_effect=RuntimeError("x")
     )
-    assert await tasks.ingest_copilot_usage() is None
+    result = await tasks.ingest_copilot_usage()
+    assert result is None
     mock_db.close.assert_called_once()

@@ -25,6 +25,7 @@ const connection = {
   per_user_billing_reason: null,
   metrics_status: 'available',
   metrics_reason: null,
+  last_warning: null,
 };
 
 const makeSummary = (
@@ -57,6 +58,7 @@ const makeSummary = (
     per_user_status: 'available',
     per_user_unavailable_reason: null,
     org_aggregate_net_amount: null,
+    unattributed_net_amount: null,
     aggregate_days: 0,
     by_developer: [
       { login: 'alice', net_amount: 1.6, net_quantity: 40 },
@@ -281,5 +283,55 @@ describe('CopilotUsagePanel', () => {
     await waitUntil(() =>
       text(element).includes('Could not queue the Copilot import')
     );
+  });
+
+  it('shows spend not matched to a current seat and the last warning', async () => {
+    const summary = makeSummary({
+      connection: {
+        ...connection,
+        last_warning: 'GitHub reported 5 seats but only 2 were listed.',
+      },
+    });
+    summary.premium_requests = {
+      ...summary.premium_requests,
+      total_net_amount: 2.9,
+      unattributed_net_amount: 0.5,
+    };
+    fetchStub.callsFake(async () => jsonResponse(summary));
+    const element = await mount();
+    expect(q(element, 'copilot-unattributed')?.textContent).to.contain('$0.50');
+    expect(q(element, 'copilot-warning')?.textContent).to.contain(
+      'only 2 were listed'
+    );
+    expect(q(element, 'copilot-org-total')).to.equal(null);
+    expect(q(element, 'copilot-per-user-reason')).to.equal(null);
+  });
+
+  it('shows a paused connection with Resume instead of Sync now', async () => {
+    let active = false;
+    let saved: Record<string, unknown> | null = null;
+    fetchStub.callsFake(async (input: RequestInfo, init?: RequestInit) => {
+      if (String(input).includes('/connection') && init?.method === 'PUT') {
+        saved = JSON.parse(String(init.body));
+        active = true;
+        return jsonResponse({ ...connection, is_active: true });
+      }
+      return jsonResponse(
+        makeSummary({ connection: { ...connection, is_active: active } })
+      );
+    });
+    const element = await mount();
+    expect(q(element, 'copilot-paused')).to.not.equal(null);
+    expect(q(element, 'copilot-sync')).to.equal(null);
+    (q(element, 'copilot-resume') as HTMLElement).click();
+    await waitUntil(() => saved !== null, 'resume should save');
+    expect(saved).to.deep.include({
+      organization: 'example-org',
+      seat_price_monthly: 19,
+      is_active: true,
+    });
+    expect(saved).to.not.have.property('token');
+    await waitUntil(() => q(element, 'copilot-sync'), 'sync should return');
+    expect(q(element, 'copilot-paused')).to.equal(null);
   });
 });

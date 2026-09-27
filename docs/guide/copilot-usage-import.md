@@ -76,11 +76,26 @@ Each day's rows replace that day's earlier rows, so running the import again
 (or pressing **Sync now**) never duplicates spend. Seats are a snapshot of
 the day the import ran.
 
+GitHub rate limits (429, or 403 with `Retry-After` or
+`x-ratelimit-remaining: 0`) are retried up to three times, waiting what GitHub
+asks for (at most 60 seconds per wait). If the limit outlasts the retries,
+the run fails with that message and the next run resumes from the last fully
+imported day.
+
+Setting `is_active` to `false` on the connection pauses scheduled imports.
+**Sync now** is then refused with 409 and the tab offers **Resume imports**.
+Saving the connection without `is_active` keeps its current state.
+
 ## When per-user data is not available
 
 Per-developer premium-request spend is tried in this order:
 
-1. The organization route, one call per seated user.
+1. The organization route, one call per seated user whose seat was active on
+   or after that day (seats never active are skipped). The organization total
+   for the day is then read once, and spend no queried user explains (for
+   example a developer whose seat was removed before the import) is kept as
+   **Not matched to a current seat**, so the day still adds up to GitHub's
+   bill. If that total is refused, the tab shows a warning instead.
 2. On 403 or 404, the enterprise route for the same users, when an
    enterprise slug is configured.
 3. Otherwise the organization total without a user filter. The tab then
@@ -91,6 +106,12 @@ If none of these can be read, the import fails with an explicit message on
 the tab (which route refused, and which role it needs). A missing usage
 metrics report does not fail the import: the tab explains why it is missing
 and the model mix then has no request-count fallback for that window.
+
+When GitHub reports more seats than the seat list returned, the import still
+succeeds and the tab shows a warning; those developers' spend lands in
+**Not matched to a current seat**. The tab only shows data for the
+organization currently connected; rows from an earlier organization are kept
+but not mixed in.
 
 ## Model mix
 

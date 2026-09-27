@@ -86,6 +86,7 @@ def upgrade() -> None:
         sa.Column("per_user_billing_reason", sa.Text(), nullable=True),
         sa.Column("metrics_status", sa.String(16), nullable=True),
         sa.Column("metrics_reason", sa.Text(), nullable=True),
+        sa.Column("last_warning", sa.Text(), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False
         ),

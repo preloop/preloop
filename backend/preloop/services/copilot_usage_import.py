@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time as time_module
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -61,6 +62,10 @@ MAX_CATCHUP_DAYS = 7
 SEATS_PAGE_SIZE = 100
 MAX_SEAT_PAGES = 100
 REQUEST_TIMEOUT_SECONDS = 30.0
+#: Retries for a rate-limited request (429, or 403 with rate-limit headers).
+RATE_LIMIT_RETRIES = 3
+#: Longest single wait honoured from ``Retry-After`` or the reset header.
+MAX_RATE_LIMIT_WAIT_SECONDS = 60.0
 #: Statuses that mean "this token cannot read this route" rather than an
 #: outage. The caller falls back to the next route or to the aggregate.
 _NOT_READABLE_STATUSES = frozenset({403, 404})
@@ -89,15 +94,52 @@ class GitHubResponse:
 class GitHubCopilotClient:
     """Thin GitHub REST client for the Copilot import routes."""
 
-    def __init__(self, http: httpx.Client, token: str) -> None:
+    def __init__(
+        self,
+        http: httpx.Client,
+        token: str,
+        *,
+        sleep: Callable[[float], None] = time_module.sleep,
+    ) -> None:
         """Bind an HTTP client and a bearer token.
 
         Args:
             http: Shared HTTP client (its transport is swapped in tests).
             token: GitHub token; never logged.
+            sleep: Waits between rate-limit retries (replaced in tests).
         """
         self._http = http
         self._token = token
+        self._sleep = sleep
+
+    @staticmethod
+    def _rate_limit_wait(response: httpx.Response, attempt: int) -> Optional[float]:
+        """Seconds to wait before retrying, or None when not rate limited.
+
+        GitHub signals primary and secondary rate limits with 429, or with a
+        403 that carries ``Retry-After`` or ``x-ratelimit-remaining: 0``. A
+        plain 403 (missing permission) is not retried.
+        """
+        headers = response.headers
+        limited = response.status_code == 429 or (
+            response.status_code == 403
+            and (
+                "retry-after" in headers or headers.get("x-ratelimit-remaining") == "0"
+            )
+        )
+        if not limited:
+            return None
+        wait = float(2**attempt)
+        retry_after = headers.get("retry-after")
+        reset = headers.get("x-ratelimit-reset")
+        try:
+            if retry_after is not None:
+                wait = float(retry_after)
+            elif reset is not None:
+                wait = float(reset) - datetime.now(UTC).timestamp()
+        except ValueError:
+            pass
+        return min(max(wait, 1.0), MAX_RATE_LIMIT_WAIT_SECONDS)
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> GitHubResponse:
         """GET one API route.
@@ -110,22 +152,37 @@ class GitHubCopilotClient:
             The status and decoded body (``None`` for an empty body).
 
         Raises:
-            CopilotImportError: On a transport failure or a 401.
+            CopilotImportError: On a transport failure, a 401, or a rate
+                limit that outlasts the retries.
         """
-        try:
-            response = self._http.get(
-                f"{GITHUB_API_BASE}{path}",
-                params=params,
-                headers={
-                    "Authorization": f"Bearer {self._token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": GITHUB_API_VERSION,
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise CopilotImportError(
-                f"GitHub request to {path} failed: {type(exc).__name__}"
-            ) from exc
+        attempt = 0
+        while True:
+            try:
+                response = self._http.get(
+                    f"{GITHUB_API_BASE}{path}",
+                    params=params,
+                    headers={
+                        "Authorization": f"Bearer {self._token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": GITHUB_API_VERSION,
+                    },
+                )
+            except httpx.HTTPError as exc:
+                raise CopilotImportError(
+                    f"GitHub request to {path} failed: {type(exc).__name__}"
+                ) from exc
+            wait = self._rate_limit_wait(response, attempt)
+            if wait is None:
+                break
+            if attempt >= RATE_LIMIT_RETRIES:
+                raise CopilotImportError(
+                    f"GitHub rate limited {path} ({response.status_code}) after "
+                    f"{RATE_LIMIT_RETRIES} retries. The next run resumes from "
+                    "the last fully imported day."
+                )
+            attempt += 1
+            logger.info("GitHub rate limited %s; retrying in %.0fs", path, wait)
+            self._sleep(wait)
         if response.status_code == 401:
             raise CopilotImportError(
                 "GitHub rejected the token (401). Check that it has not expired "
@@ -336,6 +393,7 @@ class PremiumRequestResult:
     per_user: bool
     scope: str
     reason: Optional[str] = None
+    warning: Optional[str] = None
 
 
 @dataclass
@@ -459,6 +517,102 @@ def _premium_rows(
     return rows
 
 
+#: Residual spend below this (in dollars) is rounding, not a missing user.
+_RESIDUAL_AMOUNT_EPSILON = 0.005
+#: Residual request count below this is rounding.
+_RESIDUAL_QUANTITY_EPSILON = 0.5
+
+
+def _residual_rows(
+    aggregate_body: Any,
+    per_user_rows: List[Dict[str, Any]],
+    *,
+    day: date,
+    org: str,
+    scope: str,
+    fetched_at: datetime,
+) -> List[Dict[str, Any]]:
+    """Rows for spend in the organization total that no queried user explains.
+
+    GitHub bills a day's premium requests to whoever used them, including a
+    developer whose seat was removed before the import ran. Those developers
+    are no longer in the seat list, so their spend is kept as an
+    ``unattributed`` organization row and the day still adds up to GitHub's
+    bill.
+    """
+    attributed: Dict[str, Dict[str, float]] = {}
+    for row in per_user_rows:
+        entry = attributed.setdefault(row["model"], {"amount": 0.0, "quantity": 0.0})
+        entry["amount"] += float(row["cost_amount"] or 0.0)
+        entry["quantity"] += float(row["raw"].get("netQuantity") or 0.0)
+    rows = []
+    for model, usage in _usage_by_model(aggregate_body).items():
+        seen = attributed.get(model, {"amount": 0.0, "quantity": 0.0})
+        amount = usage["netAmount"] - seen["amount"]
+        quantity = usage["netQuantity"] - seen["quantity"]
+        if amount < _RESIDUAL_AMOUNT_EPSILON and quantity < _RESIDUAL_QUANTITY_EPSILON:
+            continue
+        rows.append(
+            {
+                "provider": COPILOT_PROVIDER,
+                "granularity": "1d",
+                "bucket_start": day_start(day),
+                "bucket_end": day_start(day + timedelta(days=1)),
+                "model": model,
+                "line_item": LINE_ITEM_PREMIUM_REQUEST,
+                "project_or_workspace_id": org,
+                "user_login": None,
+                "usage_source": IMPORTED_USAGE_SOURCE,
+                "cost_basis": "reconciled",
+                "cost_amount": max(amount, 0.0),
+                "currency": "USD",
+                "raw": {
+                    "netAmount": max(amount, 0.0),
+                    "netQuantity": max(quantity, 0.0),
+                    "pricePerUnit": usage["pricePerUnit"],
+                    "skus": usage["skus"],
+                    "products": usage["products"],
+                    "scope": scope,
+                    "unattributed": True,
+                },
+                "fetched_at": fetched_at,
+            }
+        )
+    return rows
+
+
+def active_logins(seats: List[SeatInfo], day: date) -> List[str]:
+    """Seated logins that could have used Copilot on ``day``.
+
+    A seat whose ``last_activity_at`` is before ``day`` (or that has never
+    been active) cannot have premium requests on that day, so it is not
+    queried. Spend the filter misses still shows up as the unattributed
+    residual, so the day's total always matches GitHub's.
+
+    Args:
+        seats: Assigned seats from the seat list.
+        day: Report day.
+
+    Returns:
+        Logins to query, in seat-list order.
+    """
+    logins = []
+    for seat in seats:
+        if not seat.last_activity_at:
+            continue
+        try:
+            last = datetime.fromisoformat(seat.last_activity_at.replace("Z", "+00:00"))
+        except ValueError:
+            # Unknown format: query the user rather than risk missing spend.
+            logins.append(seat.login)
+            continue
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        if last.astimezone(UTC).date() >= day:
+            logins.append(seat.login)
+    return logins
+
+
 def fetch_premium_requests(
     *,
     org_client: GitHubCopilotClient,
@@ -468,13 +622,18 @@ def fetch_premium_requests(
     day: date,
     logins: List[str],
     fetched_at: datetime,
+    has_seats: bool = True,
 ) -> PremiumRequestResult:
     """Import one day of premium-request spend.
 
-    Per-user rows come from one call per seated user on the organization
-    route, then the enterprise route (when an enterprise slug is set). If
-    neither can be read, the organization aggregate (a call without
-    ``user``) is stored instead and the reason is kept with it. Nothing is
+    Per-user rows come from one call per active seated user on the
+    organization route, then the enterprise route (when an enterprise slug is
+    set). The same route's organization total is then read once, and any
+    spend no queried user explains is stored as an ``unattributed`` row, so
+    per-user rows never silently add up to less than GitHub's bill.
+
+    If neither route answers per user, the organization total (a call without
+    ``user``) is stored instead with the reason kept beside it. Nothing is
     ever split per user without a per-user answer from GitHub.
 
     Args:
@@ -483,11 +642,12 @@ def fetch_premium_requests(
         org: Organization login.
         enterprise: Enterprise slug, if configured.
         day: Report day.
-        logins: Seated user logins.
+        logins: Seated users active on or after ``day``.
         fetched_at: Timestamp stored on the rows.
+        has_seats: Whether GitHub listed any assigned seats at all.
 
     Returns:
-        The rows and whether they are per-user.
+        The rows, whether they are per-user, and any warning.
 
     Raises:
         CopilotImportError: When not even the aggregate is readable, or on an
@@ -497,51 +657,84 @@ def fetch_premium_requests(
     routes = _premium_routes(org_client, enterprise_client, org, enterprise)
     refusals: List[str] = []
 
-    if logins:
-        for route in routes:
-            first = route.client.get(
-                route.path, {**base, **route.extra, "user": logins[0]}
+    for route in routes if logins else []:
+        first = route.client.get(route.path, {**base, **route.extra, "user": logins[0]})
+        if first.status in _NOT_READABLE_STATUSES:
+            refusals.append(f"the {route.scope} route returned {first.status}")
+            continue
+        if first.status != 200:
+            raise _unexpected(first, f"{route.scope} premium-request usage")
+        rows = _premium_rows(
+            first.body,
+            day=day,
+            org=org,
+            user_login=logins[0],
+            scope=route.scope,
+            fetched_at=fetched_at,
+        )
+        for login in logins[1:]:
+            response = route.client.get(
+                route.path, {**base, **route.extra, "user": login}
             )
-            if first.status in _NOT_READABLE_STATUSES:
-                refusals.append(f"the {route.scope} route returned {first.status}")
+            if response.status == 404:
+                # The user left the organization after the seat list was
+                # read; their spend lands in the unattributed residual.
                 continue
-            if first.status != 200:
-                raise _unexpected(first, f"{route.scope} premium-request usage")
-            rows = _premium_rows(
-                first.body,
-                day=day,
-                org=org,
-                user_login=logins[0],
-                scope=route.scope,
-                fetched_at=fetched_at,
+            if response.status != 200:
+                raise _unexpected(
+                    response, f"{route.scope} premium-request usage for a user"
+                )
+            rows.extend(
+                _premium_rows(
+                    response.body,
+                    day=day,
+                    org=org,
+                    user_login=login,
+                    scope=route.scope,
+                    fetched_at=fetched_at,
+                )
             )
-            for login in logins[1:]:
-                response = route.client.get(
-                    route.path, {**base, **route.extra, "user": login}
+        warning = None
+        total = route.client.get(route.path, {**base, **route.extra})
+        if total.status == 200:
+            rows.extend(
+                _residual_rows(
+                    total.body,
+                    rows,
+                    day=day,
+                    org=org,
+                    scope=route.scope,
+                    fetched_at=fetched_at,
                 )
-                if response.status != 200:
-                    raise _unexpected(
-                        response, f"{route.scope} premium-request usage for a user"
-                    )
-                rows.extend(
-                    _premium_rows(
-                        response.body,
-                        day=day,
-                        org=org,
-                        user_login=login,
-                        scope=route.scope,
-                        fetched_at=fetched_at,
-                    )
-                )
-            return PremiumRequestResult(rows=rows, per_user=True, scope=route.scope)
-        reason = "Per-user premium-request spend is unavailable: " + "; ".join(refusals)
-        if not enterprise:
-            reason += (
-                ". For an organization owned by an enterprise, configure the "
-                "enterprise slug and an enterprise billing reader token."
+            )
+        elif total.status in _NOT_READABLE_STATUSES:
+            warning = (
+                f"The {route.scope} premium-request total returned "
+                f"{total.status}, so spend by developers who no longer hold a "
+                "seat could not be checked."
             )
         else:
-            reason += "."
+            raise _unexpected(total, f"{route.scope} premium-request usage")
+        return PremiumRequestResult(
+            rows=rows, per_user=True, scope=route.scope, warning=warning
+        )
+
+    if logins:
+        reason: Optional[str] = (
+            "Per-user premium-request spend is unavailable: " + "; ".join(refusals)
+        )
+        if not enterprise:
+            reason = (
+                f"{reason}. For an organization owned by an enterprise, "
+                "configure the enterprise slug and an enterprise billing reader "
+                "token."
+            )
+        else:
+            reason = f"{reason}."
+    elif has_seats:
+        # Seats exist but none was active on the day: any spend GitHub still
+        # reports belongs to former seat holders and is kept unattributed.
+        reason = None
     else:
         reason = (
             "Per-user premium-request spend is unavailable: GitHub listed no "
@@ -555,6 +748,19 @@ def fetch_premium_requests(
             continue
         if response.status != 200:
             raise _unexpected(response, f"{route.scope} premium-request usage")
+        if reason is None:
+            return PremiumRequestResult(
+                rows=_residual_rows(
+                    response.body,
+                    [],
+                    day=day,
+                    org=org,
+                    scope=route.scope,
+                    fetched_at=fetched_at,
+                ),
+                per_user=True,
+                scope=route.scope,
+            )
         return PremiumRequestResult(
             rows=_premium_rows(
                 response.body,
@@ -869,7 +1075,7 @@ def sync_connection(
             transport).
 
     Returns:
-        A summary with ``days``, ``per_user`` and ``error``.
+        A summary with ``days``, ``per_user``, ``error`` and ``warning``.
     """
     now = now or datetime.now(UTC)
     available_day = latest_available_day(now)
@@ -881,6 +1087,7 @@ def sync_connection(
     metrics_status: Optional[str] = None
     metrics_reason: Optional[str] = None
     error: Optional[str] = None
+    warnings: List[str] = []
     try:
         org_token = _resolve_token(
             db, connection.secret_reference_id, connection.account_id
@@ -914,7 +1121,12 @@ def sync_connection(
                     fetched_at=now,
                 ),
             )
-            logins = [seat.login for seat in seats]
+            if total_seats > len(seats):
+                warnings.append(
+                    f"GitHub reported {total_seats} seats but only {len(seats)} "
+                    "were listed, so some developers are counted as unattributed "
+                    "spend."
+                )
             for day in days:
                 premium = fetch_premium_requests(
                     org_client=org_client,
@@ -922,9 +1134,12 @@ def sync_connection(
                     org=org,
                     enterprise=connection.enterprise,
                     day=day,
-                    logins=logins,
+                    logins=active_logins(seats, day),
                     fetched_at=now,
+                    has_seats=bool(seats),
                 )
+                if premium.warning and premium.warning not in warnings:
+                    warnings.append(premium.warning)
                 metrics = fetch_user_metrics(
                     org_client, org=org, day=day, fetched_at=now
                 )
@@ -970,11 +1185,13 @@ def sync_connection(
         per_user_billing_reason=per_user_reason,
         metrics_status=metrics_status,
         metrics_reason=metrics_reason,
+        warning=" ".join(warnings) or None,
     )
     return {
         "days": [day.isoformat() for day in synced],
         "per_user": per_user_status == STATUS_AVAILABLE if per_user_status else None,
         "error": error,
+        "warning": " ".join(warnings) or None,
     }
 
 
@@ -1057,7 +1274,9 @@ def build_copilot_summary(
 
     Nothing here is merged into gateway totals. The seat estimate is only
     computed when the operator entered a seat price; otherwise it is None so
-    the page shows seats without a dollar seat line.
+    the page shows seats without a dollar seat line. While a connection
+    exists only its organization's rows are read, so rows kept from a
+    previously configured organization never mix into the current one.
 
     Args:
         db: Database session.
@@ -1071,8 +1290,13 @@ def build_copilot_summary(
     connection = crud_copilot_import_connection.get_for_account(
         db, account_id=account_id
     )
+    organization = connection.organization if connection else None
     totals = crud_copilot_usage.premium_request_totals(
-        db, account_id=account_id, start=start, end=end
+        db,
+        account_id=account_id,
+        start=start,
+        end=end,
+        organization=organization,
     )
     premium_rows = crud_copilot_usage.list_rows(
         db,
@@ -1080,14 +1304,28 @@ def build_copilot_summary(
         line_item=LINE_ITEM_PREMIUM_REQUEST,
         start=start,
         end=end,
+        organization=organization,
     )
-    aggregate_rows = [row for row in premium_rows if not row.user_login]
+    # Two kinds of rows have no login: the organization total stored when
+    # GitHub refused per-user answers, and the unattributed residual of a
+    # per-user day (spend by developers who no longer hold a seat).
+    aggregate_rows = [
+        row
+        for row in premium_rows
+        if not row.user_login and not (row.raw or {}).get("unattributed")
+    ]
+    unattributed_rows = [
+        row
+        for row in premium_rows
+        if not row.user_login and (row.raw or {}).get("unattributed")
+    ]
     aggregate_days = {row.bucket_start for row in aggregate_rows}
+    org_aggregate_amount = sum(float(row.cost_amount or 0) for row in aggregate_rows)
+    unattributed_amount = sum(float(row.cost_amount or 0) for row in unattributed_rows)
 
     by_developer: Dict[str, Dict[str, Any]] = {}
     by_model: Dict[str, Dict[str, Any]] = {}
     amount_by_user_model: Dict[str, Dict[str, float]] = {}
-    org_aggregate_amount = 0.0
     total_amount = 0.0
     for row in totals:
         amount = row["net_amount"] or 0.0
@@ -1101,7 +1339,6 @@ def build_copilot_summary(
         model_entry["net_quantity"] += quantity
         login = row["user_login"]
         if not login:
-            org_aggregate_amount += amount
             continue
         developer = by_developer.setdefault(
             login, {"login": login, "net_amount": 0.0, "net_quantity": 0.0}
@@ -1118,6 +1355,7 @@ def build_copilot_summary(
         line_item=LINE_ITEM_USAGE_METRICS,
         start=start,
         end=end,
+        organization=organization,
     )
     requests_by_user_model = _metrics_requests_by_user_model(metrics_rows)
     model_mix = []
@@ -1134,7 +1372,7 @@ def build_copilot_summary(
         per_user_status = STATUS_UNAVAILABLE
         latest = max(aggregate_rows, key=lambda row: row.bucket_start)
         per_user_reason = (latest.raw or {}).get("per_user_unavailable_reason")
-    elif by_developer:
+    elif by_developer or unattributed_rows:
         per_user_status = STATUS_AVAILABLE
         per_user_reason = None
     else:
@@ -1144,7 +1382,7 @@ def build_copilot_summary(
         per_user_reason = connection.per_user_billing_reason if connection else None
 
     seat_snapshot = crud_copilot_usage.latest_seat_snapshot(
-        db, account_id=account_id, before=end
+        db, account_id=account_id, before=end, organization=organization
     )
     seat_summary = seat_snapshot["summary"]
     total_seats: Optional[int] = None
@@ -1194,6 +1432,9 @@ def build_copilot_summary(
             "org_aggregate_net_amount": (
                 org_aggregate_amount if aggregate_rows else None
             ),
+            "unattributed_net_amount": (
+                unattributed_amount if unattributed_rows else None
+            ),
             "aggregate_days": len(aggregate_days),
             "by_developer": sorted(
                 by_developer.values(),
@@ -1226,4 +1467,5 @@ def connection_payload(
         "per_user_billing_reason": connection.per_user_billing_reason,
         "metrics_status": connection.metrics_status,
         "metrics_reason": connection.metrics_reason,
+        "last_warning": connection.last_warning,
     }

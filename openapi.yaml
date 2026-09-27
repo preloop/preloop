@@ -9144,7 +9144,13 @@ paths:
       - Cost Analytics
       - Cost Analytics
       summary: Sync Copilot Connection
-      description: Queue an import for this account now (idempotent for the same day).
+      description: 'Queue an import for this account now (idempotent for the same
+        day).
+
+
+        A plain ``def`` handler runs on the threadpool, so the database lookup
+
+        never blocks the event loop; only the publish hops back onto the loop.'
       operationId: sync_copilot_connection_api_v1_cost_copilot_connection_sync_post
       responses:
         '202':
@@ -17934,6 +17940,11 @@ components:
           - type: string
           - type: 'null'
           title: Metrics Reason
+        last_warning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Warning
       type: object
       required:
       - id
@@ -17984,9 +17995,12 @@ components:
           title: Seat Price Monthly
           description: Operator-entered monthly price per seat; null clears it.
         is_active:
-          type: boolean
+          anyOf:
+          - type: boolean
+          - type: 'null'
           title: Is Active
-          default: true
+          description: Pause (false) or resume (true) scheduled imports; omitted keeps
+            the current value (new connections start active).
       type: object
       required:
       - organization
@@ -18100,6 +18114,13 @@ components:
           - type: 'null'
           title: Org Aggregate Net Amount
           description: Spend stored only as an organization total.
+        unattributed_net_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Unattributed Net Amount
+          description: Spend on per-user days that no current seat holder explains,
+            for example a developer whose seat was removed.
         aggregate_days:
           type: integer
           title: Aggregate Days

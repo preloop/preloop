@@ -1545,6 +1545,8 @@ export interface CopilotConnection {
   per_user_billing_reason: string | null;
   metrics_status: string | null;
   metrics_reason: string | null;
+  // Non-fatal problem from the last successful import.
+  last_warning: string | null;
 }
 
 export interface CopilotConnectionUpsert {
@@ -1585,6 +1587,8 @@ export interface CopilotUsageSummary {
     per_user_status: 'available' | 'unavailable' | 'no_data' | string;
     per_user_unavailable_reason: string | null;
     org_aggregate_net_amount: number | null;
+    // Spend on per-developer days that no current seat holder explains.
+    unattributed_net_amount: number | null;
     aggregate_days: number;
     by_developer: { login: string; net_amount: number; net_quantity: number }[];
     by_model: { model: string; net_amount: number; net_quantity: number }[];

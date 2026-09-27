@@ -78,6 +78,8 @@ class FakeGitHub:
     org_aggregate_status: int = 200
     ent_aggregate_status: int = 200
     metrics_status: int = 200
+    bob_last_activity: Optional[str] = "2026-09-25T08:00:00Z"
+    total_seats: int = 2
     per_user: Dict[str, Dict[str, Any]] = field(
         default_factory=lambda: {
             "alice": _usage(_item("model-a", 1.20, 30), _item("model-b", 0.40, 10)),
@@ -137,7 +139,7 @@ class FakeGitHub:
             return httpx.Response(
                 200,
                 json={
-                    "total_seats": 2,
+                    "total_seats": self.total_seats,
                     "seats": [
                         {
                             "assignee": {
@@ -151,7 +153,7 @@ class FakeGitHub:
                         },
                         {
                             "assignee": {"login": "bob"},
-                            "last_activity_at": None,
+                            "last_activity_at": self.bob_last_activity,
                             "last_activity_editor": None,
                         },
                     ],
@@ -164,6 +166,8 @@ class FakeGitHub:
                 status = self.org_premium_status if is_org else self.ent_premium_status
                 if status != 200:
                     return httpx.Response(status, json={"message": "Forbidden"})
+                if user not in self.per_user:
+                    return httpx.Response(404, json={"message": "Not Found"})
                 return httpx.Response(200, json={"user": user, **self.per_user[user]})
             status = self.org_aggregate_status if is_org else self.ent_aggregate_status
             if status != 200:
@@ -325,7 +329,12 @@ def test_owner_sync_stores_seats_per_user_spend_and_metrics(
         db_session, connection, now=NOW, http_client_factory=github.factory()
     )
 
-    assert result == {"days": ["2026-09-24"], "per_user": True, "error": None}
+    assert result == {
+        "days": ["2026-09-24"],
+        "per_user": True,
+        "error": None,
+        "warning": None,
+    }
     seats = _rows(db_session, account_id, LINE_ITEM_SEAT)
     assert {seat.user_login for seat in seats} == {"alice", "bob"}
     alice_seat = next(seat for seat in seats if seat.user_login == "alice")
@@ -380,7 +389,13 @@ def test_requests_use_only_the_cited_routes_and_headers(
     # The legacy metrics route is never called.
     assert not any(r.url.path == f"/orgs/{ORG}/copilot/metrics" for r in api)
     premium = [r for r in api if r.url.path == ORG_PREMIUM]
-    assert {r.url.params["user"] for r in premium} == {"alice", "bob"}
+    # One call per active seated user plus one organization total for the
+    # residual check.
+    assert sorted(r.url.params.get("user", "") for r in premium) == [
+        "",
+        "alice",
+        "bob",
+    ]
     assert all(
         (r.url.params["year"], r.url.params["month"], r.url.params["day"])
         == ("2026", "9", "24")
@@ -698,3 +713,299 @@ def test_summary_without_connection_is_empty(
     assert summary["seats"]["total_seats"] is None
     assert summary["premium_requests"]["per_user_status"] == "no_data"
     assert summary["marker"] == "Not metered by the gateway"
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: residual spend, activity filter, rate limits, scoping
+# ---------------------------------------------------------------------------
+
+
+def test_former_seat_holder_spend_is_kept_as_unattributed(
+    db_session: Session, test_user: models.User
+) -> None:
+    account_id = test_user.account_id
+    connection = _make_connection(db_session, account_id)
+    # The organization total includes 0.50 from a developer who is no longer
+    # in the seat list.
+    github = FakeGitHub(
+        aggregate=_usage(_item("model-a", 2.50, 62), _item("model-b", 0.40, 10))
+    )
+
+    result = svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=github.factory()
+    )
+
+    assert result["per_user"] is True
+    premium = _rows(db_session, account_id, LINE_ITEM_PREMIUM_REQUEST)
+    residual = [row for row in premium if row.user_login is None]
+    assert len(residual) == 1
+    assert residual[0].model == "model-a"
+    assert residual[0].cost_amount == pytest.approx(0.50)
+    assert residual[0].raw["unattributed"] is True
+    assert residual[0].raw["netQuantity"] == pytest.approx(12)
+    assert "per_user_unavailable_reason" not in residual[0].raw
+
+    summary = svc.build_copilot_summary(
+        db_session, account_id=str(account_id), **_window()
+    )["premium_requests"]
+    assert summary["per_user_status"] == "available"
+    assert summary["total_net_amount"] == pytest.approx(2.90)
+    assert summary["unattributed_net_amount"] == pytest.approx(0.50)
+    assert summary["org_aggregate_net_amount"] is None
+    assert summary["aggregate_days"] == 0
+    assert {row["login"] for row in summary["by_developer"]} == {"alice", "bob"}
+
+
+def test_matching_total_stores_no_residual(
+    db_session: Session, test_user: models.User
+) -> None:
+    account_id = test_user.account_id
+    connection = _make_connection(db_session, account_id)
+    svc.sync_connection(
+        db_session,
+        connection,
+        now=NOW,
+        http_client_factory=FakeGitHub().factory(),
+    )
+
+    premium = _rows(db_session, account_id, LINE_ITEM_PREMIUM_REQUEST)
+    assert all(row.user_login for row in premium)
+    summary = svc.build_copilot_summary(
+        db_session, account_id=str(account_id), **_window()
+    )["premium_requests"]
+    assert summary["unattributed_net_amount"] is None
+
+
+def test_seats_inactive_on_the_day_are_not_queried(
+    db_session: Session, test_user: models.User
+) -> None:
+    account_id = test_user.account_id
+    connection = _make_connection(db_session, account_id)
+    github = FakeGitHub(bob_last_activity="2026-09-20T08:00:00Z")
+
+    svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=github.factory()
+    )
+
+    users = [
+        r.url.params.get("user")
+        for r in github.api_requests()
+        if r.url.path == ORG_PREMIUM
+    ]
+    assert "bob" not in users
+    assert "alice" in users
+    premium = _rows(db_session, account_id, LINE_ITEM_PREMIUM_REQUEST)
+    # Whatever GitHub still bills for the day is kept as a residual.
+    residual = [row for row in premium if row.user_login is None]
+    assert [row.cost_amount for row in residual] == [pytest.approx(0.80)]
+
+
+def test_active_logins_filters_by_last_activity() -> None:
+    def seat(login: str, last: Optional[str]) -> svc.SeatInfo:
+        return svc.SeatInfo(
+            login=login,
+            last_activity_at=last,
+            last_activity_editor=None,
+            created_at=None,
+            pending_cancellation_date=None,
+            plan_type=None,
+        )
+
+    seats = [
+        seat("same-day", "2026-09-24T23:59:00Z"),
+        seat("later", "2026-09-26T01:00:00+00:00"),
+        seat("earlier", "2026-09-23T23:59:59Z"),
+        seat("never", None),
+        seat("odd-format", "yesterday"),
+    ]
+    assert svc.active_logins(seats, DAY) == ["same-day", "later", "odd-format"]
+
+
+def test_no_active_seats_keeps_the_day_total_unattributed(
+    db_session: Session, test_user: models.User
+) -> None:
+    github = FakeGitHub()
+    with github.factory()() as http:
+        client = svc.GitHubCopilotClient(http, ORG_TOKEN)
+        result = svc.fetch_premium_requests(
+            org_client=client,
+            enterprise_client=None,
+            org=ORG,
+            enterprise=None,
+            day=DAY,
+            logins=[],
+            fetched_at=NOW,
+            has_seats=True,
+        )
+
+    assert result.per_user is True
+    assert result.reason is None
+    assert [(row["user_login"], row["cost_amount"]) for row in result.rows] == [
+        (None, pytest.approx(2.00))
+    ]
+    assert result.rows[0]["raw"]["unattributed"] is True
+    assert all("user" not in r.url.params for r in github.api_requests())
+
+
+def test_user_removed_mid_sync_is_skipped_not_fatal(
+    db_session: Session, test_user: models.User
+) -> None:
+    account_id = test_user.account_id
+    connection = _make_connection(db_session, account_id)
+    # bob is in the seat list but GitHub answers 404 for him.
+    github = FakeGitHub(
+        per_user={"alice": _usage(_item("model-a", 1.20, 30))},
+    )
+
+    result = svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=github.factory()
+    )
+
+    assert result["error"] is None
+    assert result["per_user"] is True
+    premium = _rows(db_session, account_id, LINE_ITEM_PREMIUM_REQUEST)
+    by_login = {row.user_login: row.cost_amount for row in premium}
+    assert by_login == {"alice": pytest.approx(1.20), None: pytest.approx(0.80)}
+
+
+def test_refused_total_after_per_user_records_a_warning(
+    db_session: Session, test_user: models.User
+) -> None:
+    account_id = test_user.account_id
+    connection = _make_connection(db_session, account_id)
+    github = FakeGitHub(org_aggregate_status=403)
+
+    result = svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=github.factory()
+    )
+
+    assert result["per_user"] is True
+    assert result["error"] is None
+    assert "403" in result["warning"]
+    db_session.refresh(connection)
+    assert connection.last_warning == result["warning"]
+    assert svc.connection_payload(connection)["last_warning"] == result["warning"]
+    assert {
+        row.user_login
+        for row in _rows(db_session, account_id, LINE_ITEM_PREMIUM_REQUEST)
+    } == {"alice", "bob"}
+
+    # A later clean sync clears the warning.
+    connection.last_synced_day = None
+    svc.sync_connection(
+        db_session,
+        connection,
+        now=NOW,
+        http_client_factory=FakeGitHub().factory(),
+    )
+    db_session.refresh(connection)
+    assert connection.last_warning is None
+
+
+def test_truncated_seat_list_records_a_warning(
+    db_session: Session, test_user: models.User
+) -> None:
+    connection = _make_connection(db_session, test_user.account_id)
+    github = FakeGitHub(total_seats=5)
+
+    result = svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=github.factory()
+    )
+
+    assert result["error"] is None
+    assert "5 seats" in result["warning"]
+    assert "only 2" in result["warning"]
+
+
+def _client_with(
+    responses: List[httpx.Response], sleeps: List[float]
+) -> svc.GitHubCopilotClient:
+    queue = list(responses)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return queue.pop(0)
+
+    return svc.GitHubCopilotClient(
+        httpx.Client(transport=httpx.MockTransport(handler)),
+        "t",
+        sleep=sleeps.append,
+    )
+
+
+def test_rate_limited_requests_are_retried_after_the_advertised_wait() -> None:
+    sleeps: List[float] = []
+    client = _client_with(
+        [
+            httpx.Response(429, headers={"retry-after": "7"}),
+            httpx.Response(
+                403,
+                headers={"x-ratelimit-remaining": "0", "retry-after": "2"},
+            ),
+            httpx.Response(200, json={"ok": True}),
+        ],
+        sleeps,
+    )
+
+    response = client.get("/orgs/example-org/copilot/billing")
+
+    assert response.status == 200
+    assert response.body == {"ok": True}
+    assert sleeps == [7.0, 2.0]
+
+
+def test_rate_limit_wait_is_capped_and_retries_are_bounded() -> None:
+    sleeps: List[float] = []
+    client = _client_with(
+        [httpx.Response(429, headers={"retry-after": "3600"})]
+        * (svc.RATE_LIMIT_RETRIES + 1),
+        sleeps,
+    )
+
+    with pytest.raises(svc.CopilotImportError, match="rate limited"):
+        client.get("/orgs/example-org/copilot/billing")
+
+    assert sleeps == [svc.MAX_RATE_LIMIT_WAIT_SECONDS] * svc.RATE_LIMIT_RETRIES
+
+
+def test_plain_permission_403_is_not_retried() -> None:
+    sleeps: List[float] = []
+    client = _client_with([httpx.Response(403, json={"message": "Forbidden"})], sleeps)
+
+    response = client.get("/orgs/example-org/copilot/billing")
+
+    assert response.status == 403
+    assert sleeps == []
+
+
+def test_summary_reads_only_the_connected_organization(
+    db_session: Session, test_user: models.User
+) -> None:
+    account_id = test_user.account_id
+    connection = _make_connection(db_session, account_id)
+    svc.sync_connection(
+        db_session,
+        connection,
+        now=NOW,
+        http_client_factory=FakeGitHub().factory(),
+    )
+    before = svc.build_copilot_summary(
+        db_session, account_id=str(account_id), **_window()
+    )
+    assert before["premium_requests"]["total_net_amount"] == pytest.approx(2.40)
+    assert before["seats"]["total_seats"] == 2
+
+    # Switching the connection to another organization hides the first
+    # organization's history instead of mixing it in.
+    crud_copilot_import_connection.update(
+        db_session, db_obj=connection, obj_in={"organization": "other-org"}
+    )
+    after = svc.build_copilot_summary(
+        db_session, account_id=str(account_id), **_window()
+    )
+    assert after["premium_requests"]["total_net_amount"] is None
+    assert after["premium_requests"]["by_developer"] == []
+    assert after["seats"]["total_seats"] is None
+    assert after["model_mix"] == []
+
+    # The rows are kept, not deleted.
+    assert _rows(db_session, account_id, LINE_ITEM_PREMIUM_REQUEST)

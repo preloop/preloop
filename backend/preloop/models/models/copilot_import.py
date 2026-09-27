@@ -85,6 +85,9 @@ class CopilotImportConnection(Base):
     # Same pair for the usage-metrics reports (policy or permission gaps).
     metrics_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     metrics_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Non-fatal problem from the last successful sync (for example a seat
+    # list GitHub truncated), shown beside the import status.
+    last_warning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     account = relationship("Account")
     secret_reference = relationship(

@@ -135,7 +135,8 @@ def test_delete_removes_connection_and_secrets(client, db_session, test_user) ->
         db_session, account_id=test_user.account_id
     )
     secret_id = connection.secret_reference_id
-    assert client.delete(CONNECTION_URL).status_code == 204
+    first = client.delete(CONNECTION_URL)
+    assert first.status_code == 204
     assert (
         crud_copilot_import_connection.get_for_account(
             db_session, account_id=test_user.account_id
@@ -143,7 +144,8 @@ def test_delete_removes_connection_and_secrets(client, db_session, test_user) ->
         is None
     )
     assert crud_secret_reference.get(db_session, id=secret_id) is None
-    assert client.delete(CONNECTION_URL).status_code == 404
+    second = client.delete(CONNECTION_URL)
+    assert second.status_code == 404
 
 
 def test_sync_without_connection_is_404(client) -> None:
@@ -167,6 +169,43 @@ def test_sync_queues_the_import_for_this_account(client, test_user) -> None:
 def test_sync_reports_unavailable_task_bus(client) -> None:
     _connect(client)
     with patch(PUBLISH, new_callable=AsyncMock, return_value=None):
-        assert client.post(SYNC_URL).status_code == 503
+        unreachable = client.post(SYNC_URL)
+    assert unreachable.status_code == 503
     with patch(PUBLISH, new_callable=AsyncMock, side_effect=RuntimeError("down")):
-        assert client.post(SYNC_URL).status_code == 503
+        failing = client.post(SYNC_URL)
+    assert failing.status_code == 503
+
+
+def test_sync_of_paused_connection_is_409(client) -> None:
+    _connect(client, is_active=False)
+    with patch(PUBLISH, new_callable=AsyncMock, return_value=object()) as publish:
+        response = client.post(SYNC_URL)
+    assert response.status_code == 409
+    assert "paused" in response.json()["detail"]
+    publish.assert_not_called()
+
+
+def test_is_active_is_kept_unless_sent(client) -> None:
+    created = _connect(client)
+    assert created.json()["is_active"] is True
+
+    paused = _connect(client, token=None, is_active=False)
+    assert paused.json()["is_active"] is False
+
+    # Editing the price without is_active must not resume the connection.
+    edited = client.put(
+        CONNECTION_URL,
+        json={"organization": "example-org", "seat_price_monthly": 21.0},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["is_active"] is False
+    assert edited.json()["seat_price_monthly"] == 21.0
+
+    resumed = client.put(
+        CONNECTION_URL,
+        json={"organization": "example-org", "is_active": True},
+    )
+    assert resumed.json()["is_active"] is True
+    with patch(PUBLISH, new_callable=AsyncMock, return_value=object()):
+        queued = client.post(SYNC_URL)
+    assert queued.status_code == 202
