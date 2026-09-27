@@ -9,22 +9,46 @@ REPO = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO / "environments" / "preloop" / "Dockerfile"
 SMOKE = REPO / "environments" / "preloop" / "perl-toolchain-smoke.sh"
 
-# Ubuntu 24.04 package versions apt installs on the pinned base image.
-PINNED_PACKAGES = (
-    "perl=5.38.2-3.2ubuntu0.6",
-    "cpanminus=1.7047-1",
-    "libperl-minimumversion-perl=1.40-1",
-    "libperl-critic-perl=1.152-1",
-    "libtest-harness-perl=3.48-1",
-    "libtest-simple-perl=1.302198-1",
+# Distro package names. Exact `name=version` pins are rejected: noble-updates
+# drops superseded point releases, so a pin fails the next security update.
+PACKAGES = (
+    "perl",
+    "cpanminus",
+    "libperl-minimumversion-perl",
+    "libperl-critic-perl",
+    "libtest-harness-perl",
+    "libtest-simple-perl",
 )
 
 
-def test_dockerfile_installs_pinned_perl_packages() -> None:
-    """The image layer names perl, cpanminus, and the linter packages."""
+def _apt_install_packages(text: str) -> list[str]:
+    """Return package tokens in the first ``apt-get install`` instruction."""
+    packages: list[str] = []
+    in_install = False
+    for line in text.splitlines():
+        if "apt-get install" in line:
+            in_install = True
+            continue
+        if not in_install:
+            continue
+        stripped = line.strip().rstrip("\\").strip()
+        if stripped.startswith("&&") or not stripped:
+            break
+        packages.append(stripped)
+    return packages
+
+
+def test_dockerfile_installs_distro_perl_packages() -> None:
+    """The image layer names perl, cpanminus, and the linter packages.
+
+    Packages are unpinned. An exact version pin against noble-updates
+    breaks the next point release, and ``Dockerfile.dev`` does not pin
+    apt packages either. The smoke script is the build gate.
+    """
     text = DOCKERFILE.read_text()
-    for package in PINNED_PACKAGES:
-        assert package in text, package
+    packages = _apt_install_packages(text)
+    assert packages == list(PACKAGES)
+    assert all("=" not in package for package in packages)
     assert "perl-toolchain-smoke.sh" in text
     assert "rm -rf /var/lib/apt/lists/*" in text
 
