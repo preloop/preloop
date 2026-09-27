@@ -25,7 +25,11 @@ from preloop.schemas.flow_continuation import (
     ContinuationPreview,
 )
 from preloop.services.flow_artifacts import artifact_thread_id, artifact_reference
-from preloop.services.flow_feedback import feedback_policy, register_thread
+from preloop.services.flow_feedback import (
+    _repository_identity,
+    feedback_policy,
+    register_thread,
+)
 from preloop.services.flow_pr_binding import normalize_pr_url
 from preloop.services.flow_feedback_provider import (
     FeedbackProvider,
@@ -94,8 +98,8 @@ def _load_source(
             )
         payload = details.get("payload") or {}
         repository = payload.get("repository") or payload.get("project") or {}
-        repository_id = repository.get("id")
         provider = details.get("source")
+        repository_id = _repository_identity(provider, repository)
         number = urlparse(pr_url).path.rstrip("/").split("/")[-1]
         try:
             tracker_id = UUID(
@@ -106,7 +110,7 @@ def _load_source(
                 "Execution has no valid tracker binding"
             ) from exc
         if (
-            provider not in {"github", "gitlab"}
+            provider not in {"github", "gitlab", "bitbucket"}
             or not repository_id
             or not number.isdigit()
         ):
@@ -293,6 +297,35 @@ async def _read_publication(source: dict[str, Any]) -> dict[str, Any]:
             "branch": pr.get("head", {}).get("ref"),
             "head_sha": pr.get("head", {}).get("sha"),
             "pr_url": pr.get("html_url"),
+        }
+        return await _feedback_preflight(client, source, publication)
+    if source["provider"] == "bitbucket":
+        from preloop.utils.bitbucket import (
+            looks_like_uuid,
+            normalize_uuid,
+            repository_api_path,
+        )
+
+        base = repository_api_path(source["repository_id"])
+        response = await client._request("GET", f"{base}/pullrequests/{number}")
+        pr = response.json()
+        expected = source["repository_id"].split("/", 1)[-1]
+
+        def repo_matches(repo_obj: Any) -> bool:
+            repo_obj = repo_obj or {}
+            if looks_like_uuid(expected):
+                return normalize_uuid(repo_obj.get("uuid")) == normalize_uuid(expected)
+            return str(repo_obj.get("full_name") or "") == source["repository_id"]
+
+        publication = {
+            "open": str(pr.get("state") or "").upper() == "OPEN",
+            "same_repository": all(
+                repo_matches((pr.get(side) or {}).get("repository"))
+                for side in ("source", "destination")
+            ),
+            "branch": ((pr.get("source") or {}).get("branch") or {}).get("name"),
+            "head_sha": ((pr.get("source") or {}).get("commit") or {}).get("hash"),
+            "pr_url": ((pr.get("links") or {}).get("html") or {}).get("href"),
         }
         return await _feedback_preflight(client, source, publication)
     path = f"/projects/{repository}/merge_requests/{number}"

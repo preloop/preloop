@@ -47,6 +47,9 @@ class TestGetFeatures:
                 "session_optimization": True,
                 "policies_console": True,
                 "passkeys": True,
+                "multi_account": False,
+                "account_hierarchy": False,
+                "abac_rules": False,
             },
         }
         mock_get_plugin_manager.assert_called_once()
@@ -77,6 +80,9 @@ class TestGetFeatures:
                 "session_optimization": True,
                 "policies_console": True,
                 "passkeys": True,
+                "multi_account": False,
+                "account_hierarchy": False,
+                "abac_rules": False,
             },
         }
 
@@ -107,7 +113,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 10
+        assert len(result["features"]) == 13
         assert result["features"]["session_optimization"] is True
 
     @patch("preloop.api.auth.bootstrap.crud_user")
@@ -353,3 +359,45 @@ class TestGetFeatures:
         assert result["features"]["registration"] is False
         assert result["features"]["registration_bootstrap_pending"] is False
         assert result["features"]["first_account_pending"] is False
+
+
+class TestAccountCapabilities:
+    """The account capabilities (issue #988) default off; a plugin turns them on."""
+
+    CAPABILITIES = ("multi_account", "account_hierarchy", "abac_rules")
+
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_capabilities_default_off(self, mock_get_plugin_manager, mock_crud_user):
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+
+        features = get_features(db=MagicMock())["features"]
+
+        for name in self.CAPABILITIES:
+            assert features[name] is False, name
+
+    @patch("preloop.api.auth.bootstrap.crud_user")
+    @patch("preloop.api.endpoints.features.get_plugin_manager")
+    def test_plugin_value_is_kept(self, mock_get_plugin_manager, mock_crud_user):
+        from preloop.api.endpoints.features import get_features
+
+        mock_plugin_manager = MagicMock()
+        mock_plugin_manager.get_enabled_features.return_value = {
+            "plugins": [{"name": "ee"}],
+            "features": {name: True for name in self.CAPABILITIES},
+        }
+        mock_get_plugin_manager.return_value = mock_plugin_manager
+        mock_crud_user.has_any_users.return_value = True
+
+        features = get_features(db=MagicMock())["features"]
+
+        for name in self.CAPABILITIES:
+            assert features[name] is True, name

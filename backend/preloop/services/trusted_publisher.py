@@ -69,10 +69,12 @@ class PublicationBinding:
             raise PublicationError(
                 "Publisher requires a credential-free HTTPS repository binding"
             )
-        if self.provider not in {"github", "gitlab"}:
+        if self.provider not in {"github", "gitlab", "bitbucket"}:
             raise PublicationError("Unsupported publication provider")
         if self.provider == "github" and parsed.hostname != "github.com":
             raise PublicationError("GitHub publication requires github.com")
+        if self.provider == "bitbucket" and parsed.hostname != "bitbucket.org":
+            raise PublicationError("Bitbucket publication requires bitbucket.org")
         if not re.fullmatch(r"/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", parsed.path):
             raise PublicationError("Invalid repository path")
         for branch in (self.branch, self.base):
@@ -194,7 +196,14 @@ class CleanGitRepository:
         """Run only publisher-authored Git arguments with bounded time/output."""
         environment = dict(self.environment)
         if lease:
-            header = base64.b64encode(f"x-access-token:{lease.token}".encode()).decode()
+            # Bitbucket git-over-HTTPS pairs an access token with the static
+            # ``x-token-auth`` user; GitHub App leases use ``x-access-token``.
+            username = (
+                "x-token-auth"
+                if urlsplit(lease.repository_url).hostname == "bitbucket.org"
+                else "x-access-token"
+            )
+            header = base64.b64encode(f"{username}:{lease.token}".encode()).decode()
             environment.update(
                 {
                     "GIT_CONFIG_COUNT": "1",
@@ -335,30 +344,42 @@ class PullRequestPublisher:
         """Reuse retries and update only provenance on an existing PR/MR."""
         lease.validate(binding)
         github = binding.provider == "github"
+        bitbucket = binding.provider == "bitbucket"
         host = urlsplit(binding.repository_url).netloc
-        endpoint = (
-            f"https://api.github.com/repos/{binding.project_path}/pulls"
-            if github
-            else f"https://{host}/api/v4/projects/{quote(binding.project_path, safe='')}/merge_requests"
-        )
-        headers = (
-            {"Authorization": f"Bearer {lease.token}"}
-            if github
-            else {"PRIVATE-TOKEN": lease.token}
-        )
-        params = (
-            {
+        if github:
+            endpoint = f"https://api.github.com/repos/{binding.project_path}/pulls"
+            headers = {"Authorization": f"Bearer {lease.token}"}
+            params: dict[str, str] = {
                 "state": "open",
                 "head": f"{binding.project_path.split('/')[0]}:{binding.branch}",
                 "base": binding.base,
             }
-            if github
-            else {
+        elif bitbucket:
+            endpoint = (
+                "https://api.bitbucket.org/2.0/repositories/"
+                f"{binding.project_path}/pullrequests"
+            )
+            headers = {"Authorization": f"Bearer {lease.token}"}
+            # Branch names are validated by the binding (no quotes possible),
+            # so the q filter needs no escaping.
+            params = {
+                "state": "OPEN",
+                "q": (
+                    f'source.branch.name = "{binding.branch}" AND '
+                    f'destination.branch.name = "{binding.base}"'
+                ),
+            }
+        else:
+            endpoint = (
+                f"https://{host}/api/v4/projects/"
+                f"{quote(binding.project_path, safe='')}/merge_requests"
+            )
+            headers = {"PRIVATE-TOKEN": lease.token}
+            params = {
                 "state": "opened",
                 "source_branch": binding.branch,
                 "target_branch": binding.base,
             }
-        )
 
         async def request(method: str, url: str, **kwargs: Any) -> Any:
             try:
@@ -383,6 +404,10 @@ class PullRequestPublisher:
 
         async def lookup() -> dict[str, Any] | None:
             rows = await request("GET", endpoint, params=params)
+            if bitbucket:
+                if not isinstance(rows, dict):
+                    raise PublicationError("Invalid PR provider response")
+                rows = rows.get("values")
             if not isinstance(rows, list) or len(rows) > 1:
                 raise PublicationError(
                     "PR lookup returned an ambiguous or invalid binding"
@@ -402,6 +427,20 @@ class PullRequestPublisher:
                     raise PublicationError(
                         "Provider PR does not match the bound repository/branches"
                     )
+            elif bitbucket:
+                source = row.get("source") or {}
+                destination = row.get("destination") or {}
+                if (
+                    (source.get("branch") or {}).get("name") != binding.branch
+                    or (destination.get("branch") or {}).get("name") != binding.base
+                    or (source.get("repository") or {}).get("full_name")
+                    != binding.project_path
+                    or (destination.get("repository") or {}).get("full_name")
+                    != binding.project_path
+                ):
+                    raise PublicationError(
+                        "Provider PR does not match the bound repository/branches"
+                    )
             elif (
                 row.get("source_branch") != binding.branch
                 or row.get("target_branch") != binding.base
@@ -415,17 +454,28 @@ class PullRequestPublisher:
         existing = await lookup()
         field_name = "body" if github else "description"
         if existing is None:
-            payload = {
+            payload: dict[str, Any] = {
                 "title": title,
                 field_name: upsert_provenance(
                     body, binding.records, binding.public_url
                 ),
             }
-            payload.update(
-                {"head": binding.branch, "base": binding.base}
-                if github
-                else {"source_branch": binding.branch, "target_branch": binding.base}
-            )
+            if github:
+                payload.update({"head": binding.branch, "base": binding.base})
+            elif bitbucket:
+                payload.update(
+                    {
+                        "source": {"branch": {"name": binding.branch}},
+                        "destination": {"branch": {"name": binding.base}},
+                    }
+                )
+            else:
+                payload.update(
+                    {
+                        "source_branch": binding.branch,
+                        "target_branch": binding.base,
+                    }
+                )
             try:
                 created = await request("POST", endpoint, json=payload)
             except PublicationError:
@@ -438,7 +488,8 @@ class PullRequestPublisher:
                 existing = created
                 if not isinstance(existing, dict):
                     raise PublicationError("Invalid PR create response")
-        number = existing.get("number" if github else "iid")
+        number_key = "number" if github else ("id" if bitbucket else "iid")
+        number = existing.get(number_key)
         if not isinstance(number, int) or number < 1:
             raise PublicationError("Provider did not return a PR identity")
         current_body = existing.get(field_name) or ""
@@ -453,10 +504,14 @@ class PullRequestPublisher:
                 f"{endpoint}/{number}",
                 json={field_name: updated_body},
             )
-        url = existing.get("html_url" if github else "web_url")
-        expected_prefix = f"https://{host}/{binding.project_path}/" + (
-            "pull/" if github else "-/merge_requests/"
-        )
+        if bitbucket:
+            url = ((existing.get("links") or {}).get("html") or {}).get("href")
+            expected_prefix = f"https://{host}/{binding.project_path}/pull-requests/"
+        else:
+            url = existing.get("html_url" if github else "web_url")
+            expected_prefix = f"https://{host}/{binding.project_path}/" + (
+                "pull/" if github else "-/merge_requests/"
+            )
         if url != f"{expected_prefix}{number}":
             raise PublicationError("Provider returned an unexpected PR URL")
         return {

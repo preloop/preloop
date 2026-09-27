@@ -37,6 +37,7 @@ import type {
 } from '../../types';
 
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { debugLog } from '../../utils/debug';
 
 /** Tracker spelling in, console sentence case out. */
 function complianceStatusLabel(status: string | null | undefined): string {
@@ -390,7 +391,7 @@ export class IssuesComplianceView extends LitElement {
           ? this._selectedProjectIds
           : undefined;
       const skip = (this._currentPage - 1) * this._pageSize;
-      console.log(`Searching with query: "${this._searchQuery}"`);
+      debugLog(`Searching with query: "${this._searchQuery}"`);
 
       // Only include query parameter if it's not empty
       const searchParams: any = {

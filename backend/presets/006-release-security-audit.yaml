@@ -96,8 +96,8 @@ prompt_template: |
   - Optional PREVIOUS RESULT: a prior run's result.json
     (preloop.cra.releaseaudit/v1 or preloop.cra.vulnscan/v1), delivered
     in the seed (e.g. previous/result.json) or by URL. If absent, drift
-    is null and the corresponding check is marked skipped — never guess a
-    baseline.
+    is null and the corresponding check is marked skipped with
+    missing_input "previous result" — never guess a baseline.
   - Optional git checkouts (product mode): the flow's git clone config
     may have cloned one or more repositories under /workspace. Inventory
     them (e.g. find /workspace -maxdepth 2 -name .git -type d) and
@@ -257,7 +257,8 @@ prompt_template: |
      pre-normalization, do not write that N differences remain.
   6. Build cross-check (only if build manifests provided): components in
      the build but missing from the SBOM, version disagreements;
-     otherwise mark skipped.
+     otherwise mark skipped with missing_input "build_manifest" (a
+     limitation, not a finding).
   7. License flags (only if a policy file provided; otherwise flag only
      components with no license at all).
 
@@ -437,6 +438,19 @@ prompt_template: |
     in an ask_user question. Suppression is a cheaper, quieter outcome
     than a danger approval, and that is the whole point: authoring VEX
     has to reduce interrupts or nobody will author it.
+  - A finding is CLOSED BY VEX when vex_status is not_affected with a
+    recognised machine-readable justification (the OpenVEX / CSAF
+    vocabulary, e.g. vulnerable_code_not_present, or the CycloneDX
+    analysis.justification vocabulary, e.g. code_not_reachable), or
+    fixed with a non-empty justification, AND vex_statement_id names
+    the statement. A closed finding stays in findings, in
+    evidence/findings.json and in the pack, and it does not by itself
+    hold the overall verdict below "pass". false_positive, free-text
+    justifications and a missing statement id do not close a finding;
+    affected and under_investigation never do. Write the number of
+    closed findings to vuln_scan.closed_by_vex. The platform recounts
+    it from findings when it persists the result and records any
+    difference, so count it rather than estimate it.
   - Suppression is echoed, never silent. audit-report.md carries a VEX
     SUPPRESSIONS section naming each suppressed finding, the statement
     id and the justification, so a reader sees exactly which advisories
@@ -646,8 +660,9 @@ prompt_template: |
   workspace seed — find /workspace -maxdepth 3 -name .git -type d),
   or (b) the payload carries a repository_url (make an anonymous
   read-only clone into /tmp). If neither, mark the check
-  "gap_register: skipped — no repository attached" and set
-  gap_register to null — that is not a failure. When project_path
+  "gap_register: skipped — no repository attached" with
+  missing_input "repository" and set gap_register to null — that is
+  not a failure. When project_path
   scoped this run, every command, item and pointer in this phase stays
   inside that path (PROJECT SCOPE RULE, PHASE 0).
 
@@ -846,12 +861,17 @@ prompt_template: |
   its met/gap/partial/declared status and its evidence pointer, the
   SHA+path register, and an explicit list of what was NOT checkable
   from the repository alone (the not_checkable field is required).
-  GAP-REGISTER SEVERITY RULE: every gap item also appears in checks[]
-  with passed:false, but gap items alone must NOT flip the overall
-  severity gate or the SBOM-audit verdict. The overall verdict rules do
-  not change: "fail" only if the SBOM audit failed OR the severity gate
-  failed. Gap items can move a clean run to "pass_with_findings" and
-  nothing more. State this explicitly in audit-report.md so nobody
+  GAP-REGISTER SEVERITY RULE: every gap or partial item also appears
+  in checks[] with passed:false, named gap_register_<item id> (for
+  example gap_register_cvd_policy), but gap items alone must NOT flip
+  the overall severity gate or the SBOM-audit verdict. The overall
+  verdict rules do not change: "fail" only if the SBOM audit failed OR
+  the severity gate failed. A gap or partial item, or any
+  secrets finding, moves a clean run to "pass_with_findings" and
+  nothing more. A "declared" item does not hold the verdict: it is
+  recorded, and it keeps gap_register.ready false, but it is not an
+  open gap. A met item has no failed mirror check: a failed check named
+  after a met item holds the verdict like any other failed cross-check. State this explicitly in audit-report.md so nobody
   reads a green gate as a clean gap register.
   gap_register.ready is a summary flag with one meaning: true only when
   no item is a gap or partial and secrets_findings_count is 0. A
@@ -890,8 +910,11 @@ prompt_template: |
       the components no source could screen
       (source_matrix.screened_by_no_source, with their classes), every
       source whose negative control came back blind, skipped
-      cross-checks, absent baselines, and everything gap-register.md
-      lists as not checkable from the repository alone.
+      cross-checks (each limitation with the input it lacked), absent
+      baselines, and everything gap-register.md lists as not checkable
+      from the repository alone. State how many findings are closed by
+      VEX (vuln_scan.closed_by_vex): closed findings are still listed
+      in the findings register.
       ARTICLE 14 REPORTING BOX (mandatory, immediately after BOX 2 and
       before VEX SUPPRESSIONS, because a deadline outranks a finding
       list). It opens with one sentence, always in the same place:
@@ -971,7 +994,8 @@ prompt_template: |
   pack in a dedicated product-level compliance repo, cross-linked by
   commit SHA. This phase runs ONLY when git checkouts exist under
   /workspace; with no checkouts, mark the check
-  "evidence_storage: skipped — no repositories attached" and set
+  "evidence_storage: skipped — no repositories attached" with
+  missing_input "repository checkouts" and set
   evidence_storage to null (the run then behaves exactly like an
   artifact-only audit — that is not a failure).
 
@@ -1105,6 +1129,7 @@ prompt_template: |
       "findings": [ { "id": "...", "pkg": "...", "version": "...", "severity": "...", "cvss": <n|null>, "epss": <n|null>, "kev": true|false, "fix_version": "<or null>", "vex_status": "<or null>", "vex_statement_id": "<the statement's own id, or null>", "vex_justification": "<the statement's machine-readable justification, verbatim, or null>", "sources": [ "osv_purl" | "osv_git" | "nvd_cpe" | "osv_distro" ], "match_kind": "database" | "heuristic", "waived": true|false, "aliases": [ "<other ids for the same advisory>" ] | null } ],
       "counts_by_severity": { "critical": 0, "high": 0, "medium": 0, "low": 0, "unknown": 0 },
       "art14_candidates": [ "<CVE ids of KEV-listed findings>" ],
+      "closed_by_vex": <int, findings closed by a valid VEX statement>,
       "reporting": {
         "assessment": "no_reportable_vulnerability" | "reportable_candidate" | "undetermined",
         "basis": "<one sentence naming the evidence, e.g. 'KEV snapshot 2026-09-02, component present at the vulnerable version, no VEX statement' or 'KEV hit cleared by OpenVEX not_affected/vulnerable_code_not_present'>",
@@ -1142,6 +1167,8 @@ prompt_template: |
       "resolved_vulns": [ "<ids>" ],
       "new_kev": [ "<ids>" ],
       "gate_transitions": [ "<e.g. 'gate: pass -> fail'>" ],
+      "closed_by_vex": { "previous": <the baseline's vuln_scan.closed_by_vex, or null>, "current": <this run's> },
+      "limitations": { "previous": [ "<the baseline's limitation check names>" ] | null, "current": [ "<this run's>" ] },
       "alert": true|false
     },
     "verdict": "pass" | "pass_with_findings" | "fail",
@@ -1161,7 +1188,8 @@ prompt_template: |
       "compliance_repo": null | { "remote": "...", "commit": "<HEAD SHA at clone>", "evidence_path": "products/<product>/audits/<run>/", "committed": true|false },
       "code_repos": [ { "remote": "...", "commit": "<HEAD SHA>", "branch": "...", "stub_path": ".preloop/evidence/<stub filename>", "committed": true|false } ]
     },
-    "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "details": "<evidence>" } ],
+    "checks": [ { "name": "...", "passed": true|false, "skipped": true|false, "missing_input": "<when skipped because an input was not delivered: that input, e.g. build_manifest; otherwise null>", "details": "<evidence>" } ],
+    "limitations": [ { "check": "<skipped check name>", "missing_input": "<the input it lacked>" } ],
     "assessments": [ { "topic": "...", "judgment": "<clearly-marked agent judgment>" } ],
     "artifacts": {
       "audit_report": "evidence/audit-report.md",
@@ -1179,13 +1207,32 @@ prompt_template: |
   - counts_by_severity is the count of the final vuln_scan.findings
     list (critical, high, medium, low, unknown). Count that list. Do
     not estimate an aggregate.
-  - Overall verdict: "fail" if the SBOM audit failed OR the severity gate
-    failed AFTER deterministic waiver application; "pass_with_findings"
-    if everything gated passed but findings, waived failures, or skipped
-    cross-checks exist; "pass" only when clean. PHASE 3.5 gap
-    items never change this: they appear as checks with passed:false and
-    can carry a run to "pass_with_findings", but a gap item alone never
-    flips the severity gate or the SBOM-audit verdict to "fail".
+  - Overall verdict. pass means: minimum elements passed, gate passed,
+    no open (non-VEX-closed) findings, no failed cross-checks, no
+    gap/partial register items. "fail" if the SBOM audit failed OR the
+    severity gate failed AFTER deterministic waiver application.
+    Otherwise "pass_with_findings" when any of these exists: a finding
+    not closed by VEX (affected, under_investigation, no statement, or
+    an unrecognised justification), a waived failure, a cross-check
+    that ran and failed, a skip that names no missing input, a gap or
+    partial register item, a secrets finding, a blind negative control
+    or a component screened by no source. PHASE 3.5 gap items never
+    flip the severity gate or the SBOM-audit verdict to "fail".
+  - A finding closed by VEX is still reported. It stays in findings and
+    in the pack and is counted in vuln_scan.closed_by_vex; it just does
+    not hold the verdict.
+  - A cross-check skipped because its input was not delivered is a
+    LIMITATION, not a finding. Mark it skipped:true, name the input in
+    missing_input, and list it in "limitations" as {"check",
+    "missing_input"}. It does not hold the verdict. A check that ran and
+    failed does. A skip that names no missing input, or names an input
+    inputs_declared shows as delivered, is treated as a finding.
+  - The platform recomputes closed_by_vex, limitations and the overall
+    verdict from the document when it persists the result. A verdict
+    that disagrees is corrected and the correction is recorded in
+    verdict_corrected: upwards to what the facts require, or down by at
+    most one step. A "fail" is never moved when the severity gate, SBOM
+    validity or the minimum-elements check failed.
     If sbom_audit.verdict is fail, result.verdict MUST be fail
     (gap-register cannot upgrade it to pass_with_findings, and no
     waiver can either: waivers reconfigure only the severity gate).
@@ -1213,6 +1260,8 @@ prompt_template: |
     severity-derived number, or an EPSS value to make the gate
     arithmetic look complete: a fabricated score is a worse defect than
     a missing one.
+  - Write cvss and epss as JSON numbers or null, never as strings:
+    cvss in the range 0 to 10, epss in the range 0 to 1.
   - "scope" records the unit of audit. With no project_path in the
     payload, write null: the whole repository was audited and nothing
     else about the run changes. With one, write the block with covers

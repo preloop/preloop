@@ -1496,7 +1496,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         remove_reaction: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Update a pull request's metadata, submit a review, and/or manage reactions. To update PR properties: provide title, description, labels, state (open/closed), etc. To submit a review: provide review_action (approve/request_changes/comment) with optional review_body and review_comments for inline feedback. To add/remove reactions: use add_reaction or remove_reaction with emoji names (GitHub: +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab: thumbsup, thumbsdown, smile, eyes, rocket, etc.)."""
+        """Update a pull request's metadata, submit a review, and/or manage reactions. To update PR properties: provide title, description, labels, state (open/closed), etc. To submit a review: provide review_action (approve/request_changes/comment) with optional review_body and review_comments for inline feedback. On Bitbucket, unapprove and remove_request_changes withdraw a verdict, and a review comment with task: true also opens a task. To add/remove reactions: use add_reaction or remove_reaction with emoji names (GitHub: +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab: thumbsup, thumbsdown, smile, eyes, rocket, etc.)."""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -1567,7 +1567,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         extra_options: dict | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Create a pull request (GitHub) or merge request (GitLab). Auto-detects platform from project. Provide project as slug (owner/repo), full path, or URL. Use extra_options for GitLab-specific options like squash, remove_source_branch, assignee_ids, reviewer_ids, milestone_id."""
+        """Create a pull request (GitHub, Bitbucket) or merge request (GitLab). Auto-detects platform from project. Provide project as slug (owner/repo), full path, or URL. Use extra_options for GitLab-specific options like squash, remove_source_branch, assignee_ids, reviewer_ids, milestone_id. On Bitbucket, extra_options.close_source_branch deletes the source branch on merge; assignees, labels and milestone are ignored."""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 

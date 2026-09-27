@@ -30,6 +30,10 @@ from preloop.services.report_publication import (
     MAX_COMMIT_MESSAGE_LENGTH,
     MAX_PATH_LENGTH,
 )
+from preloop.services.stream_stall import (
+    STREAM_IDLE_TIMEOUT_CONFIG_KEY,
+    validate_stream_idle_timeout,
+)
 from preloop.utils.schedule_text import (
     WEEKDAYS,
     describe_cron,
@@ -63,6 +67,111 @@ class GitCloneRepository(BaseModel):
     def serialize_uuids(self, value: Optional[UUID]) -> Optional[str]:
         """Serialize UUID fields to strings."""
         return str(value) if value is not None else None
+
+
+_REPOSITORY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+class RepositoryBinding(BaseModel):
+    """A code-host repository that an issue-only tracker's flows work on.
+
+    A Jira project has no git repository of its own. A binding names the
+    repository on a code-host tracker the account already has (GitHub,
+    GitLab, or any tracker whose client sets ``hosts_repositories``). The
+    clone and push credential comes from that tracker, never from the
+    issue tracker's token.
+    """
+
+    tracker_id: UUID = Field(
+        description="Code-host tracker that hosts the repository and supplies "
+        "the clone and push credential"
+    )
+    repository: str = Field(
+        min_length=3,
+        max_length=255,
+        description="Repository path on the code host: owner/name, "
+        "group/subgroup/name, or workspace/repo",
+    )
+    base_branch: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="Branch to check out and open the pull request against. "
+        "When unset, the flow's source_branch is used",
+    )
+    default: bool = Field(
+        default=False,
+        description="Use this entry when the binding lists several repositories",
+    )
+
+    @field_validator("repository")
+    @classmethod
+    def validate_repository(cls, value: str) -> str:
+        """Require a slash-separated path of plain segments."""
+        cleaned = value.strip().strip("/")
+        if cleaned.endswith(".git"):
+            cleaned = cleaned[: -len(".git")]
+        segments = cleaned.split("/")
+        if len(segments) < 2 or any(
+            not segment
+            or segment in {".", ".."}
+            or not _REPOSITORY_SEGMENT_RE.match(segment)
+            for segment in segments
+        ):
+            raise ValueError(
+                "repository must be a path such as owner/name or workspace/repo"
+            )
+        return cleaned
+
+    @field_validator("base_branch")
+    @classmethod
+    def validate_base_branch(cls, value: Optional[str]) -> Optional[str]:
+        """Reject branch names git would refuse or a shell could misread."""
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if (
+            cleaned.startswith(("-", "/"))
+            or cleaned.endswith(("/", ".lock"))
+            or ".." in cleaned
+            or any(ch.isspace() or ch in "~^:?*[\\" for ch in cleaned)
+        ):
+            raise ValueError(f"base_branch is not a valid branch name: {value!r}")
+        return cleaned
+
+    @field_serializer("tracker_id")
+    def serialize_tracker_id(self, value: UUID) -> str:
+        """Serialize the tracker id to a string."""
+        return str(value)
+
+
+def validate_repository_bindings(
+    bindings: List[RepositoryBinding],
+) -> List[RepositoryBinding]:
+    """Reject binding lists that cannot pick one repository.
+
+    Args:
+        bindings: Parsed binding entries.
+
+    Returns:
+        The same list.
+
+    Raises:
+        ValueError: More than one entry is marked default, or the same
+            repository is listed twice.
+    """
+    if sum(1 for binding in bindings if binding.default) > 1:
+        raise ValueError("repository_bindings may mark at most one entry as default")
+    seen: set[tuple[str, str]] = set()
+    for binding in bindings:
+        key = (str(binding.tracker_id), binding.repository.lower())
+        if key in seen:
+            raise ValueError(
+                f"repository_bindings lists {binding.repository} more than once"
+            )
+        seen.add(key)
+    return bindings
 
 
 class ReportPublication(BaseModel):
@@ -329,6 +438,14 @@ class GitCloneConfig(BaseModel):
     repositories: List[GitCloneRepository] = Field(
         default_factory=list, description="List of repositories to clone"
     )
+    repository_bindings: List[RepositoryBinding] = Field(
+        default_factory=list,
+        description=(
+            "Code-host repositories for flows triggered by an issue-only "
+            "tracker (Jira). Used only when repositories is empty and the "
+            "trigger is Jira; overrides the Jira project's default binding"
+        ),
+    )
     git_user_name: Optional[str] = Field(
         default="Preloop", description="Name to use for git commits"
     )
@@ -419,6 +536,14 @@ class GitCloneConfig(BaseModel):
             "no agent runs"
         ),
     )
+
+    @field_validator("repository_bindings")
+    @classmethod
+    def validate_bindings(
+        cls, value: List[RepositoryBinding]
+    ) -> List[RepositoryBinding]:
+        """At most one default, no duplicate repositories."""
+        return validate_repository_bindings(value)
 
     @model_validator(mode="after")
     def validate_backport(self) -> "GitCloneConfig":
@@ -1031,8 +1156,21 @@ class FlowNotifications(BaseModel):
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
 
-    webhook_secret: str = Field(
-        description="Secure token for authenticating webhook requests (auto-generated)"
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description=(
+            "Secure token for authenticating webhook requests (auto-generated "
+            "for webhook triggers; unset on flows triggered by tracker events)"
+        ),
+    )
+    supersede_on_update: bool = Field(
+        default=False,
+        description=(
+            "When a pull or merge request gets a new head, stop this flow's "
+            "executions still working on an older head of the same request "
+            "before starting the new one. Off by default; the Pull Request "
+            "Reviewer preset turns it on."
+        ),
     )
     dedupe_path: Optional[str] = Field(
         default=None,
@@ -1367,6 +1505,9 @@ class FlowBase(BaseModel):
         limits = v.get("limits")
         if limits is not None:
             FlowExecutionLimits.model_validate(limits)
+        idle = v.get(STREAM_IDLE_TIMEOUT_CONFIG_KEY)
+        if idle is not None:
+            validate_stream_idle_timeout(idle)
         return v
 
     @field_validator("trigger_project_ids", mode="before")

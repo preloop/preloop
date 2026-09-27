@@ -110,7 +110,7 @@ Every schema includes:
   "inputs_declared": {"<input>": "<what was actually delivered>"},
   "runner": {"kind": "hosted | self_hosted | null", "id": null},
   "regime_profile": "cra",
-  "checks": [{"name": "...", "passed": true, "skipped": false, "details": "evidence"}],
+  "checks": [{"name": "...", "passed": true, "skipped": false, "missing_input": null, "details": "evidence"}],
   "assessments": [{"topic": "...", "judgment": "agent judgment, marked as such"}],
   "artifacts": {"<name>": "<workspace-relative path>"},
   "disclaimer": "Machine-generated evidence for conformity assessment support. Not a conformity assessment, certification, or legal advice."
@@ -501,6 +501,7 @@ and waiver fields on the gate.
       "unknown": 0
     },
     "art14_candidates": [],
+    "closed_by_vex": 0,
     "reporting": {
       "assessment": "no_reportable_vulnerability | reportable_candidate | undetermined",
       "basis": "<one sentence naming the evidence>",
@@ -552,8 +553,13 @@ and waiver fields on the gate.
     "resolved_vulns": [],
     "new_kev": [],
     "gate_transitions": ["gate: pass -> fail"],
+    "closed_by_vex": {"previous": null, "current": 0},
+    "limitations": {"previous": null, "current": ["build_manifest_cross_check"]},
     "alert": true
   },
+  "limitations": [
+    {"check": "build_manifest_cross_check", "missing_input": "build_manifest"}
+  ],
   "verdict": "pass | pass_with_findings | fail",
   "gap_register": {
     "ran": true,
@@ -612,16 +618,62 @@ is `null` when product mode was skipped (no checkouts). `scope` is `null`
 when the whole repository was the unit of audit (see
 [Auditing one project inside a repository](#auditing-one-project-inside-a-repository)).
 
-Overall `verdict`: `fail` if the SBOM audit failed **or** the severity
-gate failed after deterministic waiver application; `pass_with_findings`
-if everything gated passed but findings, waived failures, or skipped
-cross-checks exist; `pass` only when clean. If `sbom_audit.verdict` is
-`fail`, `result.verdict` must be `fail`. A run with any applied waiver
-can never end better than `pass_with_findings`.
+Overall `verdict`: pass means: minimum elements passed, gate passed, no
+open (non-VEX-closed) findings, no failed cross-checks, no gap/partial
+register items. `fail` if the SBOM audit failed **or** the severity gate
+failed after deterministic waiver application. Otherwise
+`pass_with_findings`. If `sbom_audit.verdict` is `fail`, `result.verdict`
+must be `fail`. A run with any applied waiver can never end better than
+`pass_with_findings`.
 
-Gap-register items appear in `checks[]` as `passed: false` and may
-move a clean run to `pass_with_findings`. They never flip the severity
-gate or `sbom_audit.verdict`. `not_checkable` is required.
+What holds a run at `pass_with_findings`:
+
+- a finding that is not closed by VEX (see below);
+- a waived gate failure;
+- a cross-check that ran and failed;
+- a skipped check that does not name a missing input, or names one that
+  `inputs_declared` shows was delivered;
+- a `gap` or `partial` register item, or any secrets finding;
+- a heuristic or database source whose negative control came back
+  blind, or a component that no source screened.
+
+What does not hold it:
+
+- **A finding closed by VEX.** A finding is closed when `vex_status` is
+  `not_affected` with a recognised justification (the OpenVEX and CSAF
+  vocabulary, such as `vulnerable_code_not_present`, or the CycloneDX
+  `analysis.justification` vocabulary, such as `code_not_reachable`), or
+  `fixed` with any justification, and `vex_statement_id` names the
+  statement. The finding stays in `vuln_scan.findings`, in
+  `evidence/findings.json` and in the pack. It is counted in
+  `vuln_scan.closed_by_vex`. `affected`, `under_investigation`,
+  `false_positive`, a free-text justification and a missing statement id
+  leave it open. This is narrower than gate suppression: a
+  `false_positive` or free-text statement still leaves the gate
+  population, but it keeps the run at `pass_with_findings`.
+- **A limitation.** A cross-check skipped because its input was not
+  delivered is written as `skipped: true` with `missing_input` naming
+  the input, and it is listed in `limitations[]` as
+  `{"check", "missing_input"}`.
+- **A `declared` register item.** It keeps `gap_register.ready` false,
+  because a declaration is not evidence, but it is not an open gap.
+- **License flags and SBOM coverage.** They hold the nested
+  `sbom_audit.verdict`, as before, not the overall verdict.
+
+`vuln_scan.closed_by_vex` and `limitations` are derived by the platform
+at persist from the findings and `checks[]`. A value the agent wrote is
+a claim: when it differs, the derived value replaces it and the change
+is recorded on `verdict_corrected`. `drift.closed_by_vex` and
+`drift.limitations` carry the baseline value (`previous`, read by the
+agent from the previous result, `null` when that result predates these
+fields) next to this run's value (`current`, stamped by the platform).
+
+Gap-register `gap` and `partial` items appear in `checks[]` as
+`passed: false`, named `gap_register_<item id>`, and move a clean run to
+`pass_with_findings`. They never flip the severity gate or
+`sbom_audit.verdict`. A failed check named after an item whose status is
+`met` is a contradiction, not a mirror, and it holds the verdict like any
+other failed cross-check. `not_checkable` is required.
 `secrets_findings_count` must equal the SHA+path **finding** row count
 (not the gitleaks count). A previous run's SHA+path set is a freeze
 floor: dropping a row without `resolved` plus a reason fails platform
@@ -914,26 +966,54 @@ The persist boundary now rewrites the label and records what it did:
 ]
 ```
 
-Two limits make this safe to rely on:
+A release audit's overall label is recomputed from the rule in
+[the release audit section](#preloopcrareleaseauditv1-release-security-audit),
+and that recomputation can also move it toward less severe:
 
-- **The verdict label only moves toward more severe.** `coverage`,
-  `license_flags`, the findings and the gate stay as the agent wrote
+```json
+"verdict": "pass",
+"verdict_corrected": [
+  {
+    "path": "result.verdict",
+    "submitted": "pass_with_findings",
+    "corrected": "pass",
+    "reason": "pass means: minimum elements passed, gate passed, no open (non-VEX-closed) findings, no failed cross-checks, no gap/partial register items. Recomputed: no holding facts (closed_by_vex=26, limitations=3)",
+    "corrected_by": "platform_contract_validator"
+  }
+]
+```
+
+Three limits make this safe to rely on:
+
+- **Only the label moves.** `coverage`,
+  `license_flags`, finding severity and the gate stay as the agent wrote
   them. `minimum_elements` is replaced only when the platform measured
   the delivered bytes and the agent's `passed: true` contradicts that
   measurement (see below). `counts_by_severity` is replaced only when
   it disagrees with the findings list.
-- **Never less severe.** `pass` to `pass_with_findings` and anything to
-  `fail` are applied; `fail` to `pass` is refused and the result still
-  fails closed, because that direction is the platform clearing a
-  release it was handed as denied. An agent who already failed minimum
-  elements keeps that claim.
+- **Toward less severe, one step at most.** A release audit label that
+  is more severe than its facts moves down by one step: `fail` to
+  `pass_with_findings`, or `pass_with_findings` to `pass`. `fail` never
+  moves to `pass` in one correction. A `fail` is never moved at all when
+  the severity gate, SBOM validity or the minimum-elements check failed,
+  because that direction would be the platform clearing a release it
+  was handed as denied. An agent who already failed minimum elements
+  keeps that claim. The SBOM audit (preset 004) and the nested
+  `sbom_audit.verdict` still only move toward more severe.
+- **Recorded.** Every correction, in either direction, is on
+  `verdict_corrected` with the submitted value, the corrected value and
+  the facts that decided it.
 
 The corrected result is then re-validated in full. If anything else in
 the contract is also wrong, the run fails closed exactly as before, with
 the raw document under `result.raw`. Presets are not told about this:
 the contract still requires the agent to write the correct verdict, and
 the repair exists so one enum does not cost a complete, digest-verified
-audit.
+audit. A finding `epss` or `cvss` written as a string is coerced to a
+number when that string is a finite value in range (epss from 0 to 1,
+cvss from 0 to 10), recorded on `verdict_corrected` as the reported
+string and the stored number, and re-validated; a string that does not
+parse stays a contract failure that names the finding index and the value.
 
 ## What our own SBOMs carry
 
@@ -957,6 +1037,22 @@ that property as evidence that a git-range match through the package
 `vcs_url` does not describe code in the component. The property does not
 suppress a finding on its own. A VEX statement does. The `sbom` job fails when
 `python -m preloop.cra measure` reports `passed: false`.
+
+The same stamp fills a declared `licenses` entry when a component has none
+and a local source names exactly one SPDX license. Python `METADATA` uses
+`License-Expression`, then a `License` value that is itself an SPDX expression
+or a well-known license text, then a single mapped `Classifier: License ::`
+entry, then a `License-File` whose text is one well-known license. npm uses
+`package.json` `license`, or a one-element `licenses` array
+when `license` is absent. Go modules use a `LICENSE` file in the module cache
+when the text is one SPDX identifier or one well-known license header, and
+the Go standard library is `BSD-3-Clause`. `preloop:license_source` names
+that derivation (`pypi_license_expression`, `pypi_license`, `pypi_classifier`,
+`pypi_license_file`, `npm_license`, `npm_licenses`, `go_module_license`, or
+`go_stdlib`). A source
+that names more than one license, or none that this stamp recognizes, is left
+blank. The quality table the SBOM job prints shows declared license coverage
+before and after the stamp (`lic0`, `lic1`).
 
 OpenVEX documents live in `security/vex/`. The release workflow copies
 every `security/vex/*.openvex.json` into the SBOM artifact and the GitHub
@@ -991,15 +1087,21 @@ as before.
 `counts_by_severity` is arithmetic over the findings list the agent
 submitted. When that aggregate is the only contract failure, the platform
 recomputes it, records each key as reported versus derived on
-`verdict_corrected`, and re-validates in full. Findings are not edited.
+`verdict_corrected`, and re-validates in full. Finding severity is not
+edited.
 A count mismatch together with any other failure still fails closed, and
 the other failure is what is reported. An agent's evidence-pack prose that
 repeats the wrong number is left as the agent wrote it.
 
-A run is never made less severe by the platform. Corrections move a
-verdict toward `fail`, replace a passing minimum-elements claim that the
-bytes contradict, or replace an aggregate that does not match the
-findings. They do not clear a release the agent denied.
+Corrections move a verdict toward `fail`, replace a passing
+minimum-elements claim that the bytes contradict, replace an aggregate
+that does not match the findings, or replace `closed_by_vex` and
+`limitations` with the values derived from the findings and checks. The
+one correction toward less severe is the bounded release-audit
+recomputation described in
+[When the platform corrects a verdict](#when-the-platform-corrects-a-verdict).
+It never clears a release whose gate, SBOM validity or minimum-elements
+check failed.
 
 ## CI runbook
 
@@ -1245,6 +1347,12 @@ ENISA single reporting platform and none is planned here: the filing decision
 and the filing itself stay with the manufacturer, who signs it. What the
 platform does is tell you, in one place and in one sentence, that a clock is
 running and when it stops.
+
+The operational side (who files, the fill-in templates for the three reports,
+the decision points, and a rehearsal checklist) lives in the
+[Article 14 reporting runbooks](../../security/article-14-runbooks.md). This
+section documents the machine-readable `reporting` block those runbooks read
+from.
 
 ### The block
 

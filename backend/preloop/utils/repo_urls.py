@@ -11,7 +11,10 @@ from urllib.parse import urlparse
 
 
 def tracker_host_kind(url: str) -> Optional[str]:
-    """Return ``github``/``gitlab`` based on hostname allowlist, not substring match."""
+    """Return ``github``/``gitlab``/``bitbucket`` from a hostname allowlist.
+
+    Matches exact hostnames (and subdomains), never substrings.
+    """
 
     try:
         parsed = urlparse(url)
@@ -30,6 +33,9 @@ def tracker_host_kind(url: str) -> Optional[str]:
 
     if any(part == "gitlab" for part in hostname.split(".")):
         return "gitlab"
+
+    if hostname == "bitbucket.org" or hostname.endswith(".bitbucket.org"):
+        return "bitbucket"
 
     return None
 

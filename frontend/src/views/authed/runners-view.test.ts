@@ -15,7 +15,7 @@ describe('RunnersView', () => {
   function createFetchStub(
     runners: unknown[] = [],
     account: { default_runner_pool?: string | null } = {},
-    options: { failPatch?: boolean } = {}
+    options: { failPatch?: boolean; deleteConflict?: boolean } = {}
   ) {
     return sinon
       .stub(window, 'fetch')
@@ -35,6 +35,29 @@ describe('RunnersView', () => {
             ...runner,
             concurrency: body.concurrency,
             capacity: body.concurrency,
+          });
+        }
+        const method = String(init?.method || 'GET').toUpperCase();
+        if (url.includes('/api/v1/runners/') && url.endsWith('/token')) {
+          const runner = (runners[0] || {}) as Record<string, unknown>;
+          return json({ ...runner, token: 'prl_runner_example' });
+        }
+        if (url.includes('/api/v1/runners/') && method === 'DELETE') {
+          if (options.deleteConflict && !url.includes('force=true')) {
+            return json(
+              {
+                detail:
+                  'Runner holds 1 active execution(s). Stop them first, or retry with force=true to halt them and delete the runner.',
+              },
+              409
+            );
+          }
+          return json({
+            id: (runners[0] as { id?: string })?.id,
+            deleted: true,
+            halted_execution_ids: url.includes('force=true')
+              ? ['22222222-2222-4222-8222-222222222222']
+              : [],
           });
         }
         if (url.includes('/api/v1/runners')) {
@@ -533,5 +556,142 @@ describe('RunnersView', () => {
     await element.updateComplete;
     expect(element.shadowRoot?.textContent).to.contain('office-mac');
     expect(element.shadowRoot?.textContent).to.contain('ops@example.com');
+  });
+  const actionRunner = {
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'office-mac',
+    hostname: 'mac.local',
+    os: 'darwin',
+    arch: 'arm64',
+    labels: ['local'],
+    status: 'online',
+    last_heartbeat: '2026-09-27T10:00:00Z',
+    running_execution_ids: [],
+    current_execution_id: null,
+  };
+
+  async function loadedView(): Promise<RunnersView> {
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+    return element;
+  }
+
+  function requestsMatching(
+    predicate: (url: string, method: string) => boolean
+  ) {
+    return fetchStub
+      .getCalls()
+      .filter((call) =>
+        predicate(
+          String(call.args[0]),
+          String(
+            (call.args[1] as RequestInit | undefined)?.method || 'GET'
+          ).toUpperCase()
+        )
+      );
+  }
+
+  it('deletes a runner after confirmation and drops its row', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    sinon.stub(window, 'confirm').returns(true);
+    const element = await loadedView();
+
+    (
+      element.shadowRoot?.querySelector('.delete-runner') as HTMLElement
+    ).click();
+    await waitUntil(
+      () => !element.shadowRoot?.textContent?.includes('office-mac'),
+      'Deleted runner row did not disappear'
+    );
+    const deletes = requestsMatching((_url, method) => method === 'DELETE');
+    expect(deletes).to.have.length(1);
+    expect(String(deletes[0].args[0])).to.contain(
+      '/api/v1/runners/11111111-1111-4111-8111-111111111111'
+    );
+    expect(String(deletes[0].args[0])).not.to.contain('force=true');
+  });
+
+  it('does nothing when the delete is not confirmed', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    sinon.stub(window, 'confirm').returns(false);
+    const element = await loadedView();
+
+    (
+      element.shadowRoot?.querySelector('.delete-runner') as HTMLElement
+    ).click();
+    await element.updateComplete;
+    expect(
+      requestsMatching((_url, method) => method === 'DELETE')
+    ).to.have.length(0);
+    expect(element.shadowRoot?.textContent).to.contain('office-mac');
+  });
+
+  it('surfaces the active lease refusal and offers a force delete', async () => {
+    fetchStub = createFetchStub([actionRunner], {}, { deleteConflict: true });
+    sinon.stub(window, 'confirm').returns(true);
+    const element = await loadedView();
+
+    (
+      element.shadowRoot?.querySelector('.delete-runner') as HTMLElement
+    ).click();
+    await waitUntil(
+      () => Boolean(element.shadowRoot?.querySelector('.force-delete')),
+      'Force delete was not offered'
+    );
+    expect(
+      element.shadowRoot?.querySelector('.action-notice-text')?.textContent
+    ).to.contain('Runner holds 1 active execution(s)');
+    expect(element.shadowRoot?.textContent).to.contain('office-mac');
+
+    (element.shadowRoot?.querySelector('.force-delete') as HTMLElement).click();
+    await waitUntil(
+      () => !element.shadowRoot?.textContent?.includes('office-mac'),
+      'Force deleted runner row did not disappear'
+    );
+    const forced = requestsMatching(
+      (url, method) => method === 'DELETE' && url.includes('force=true')
+    );
+    expect(forced).to.have.length(1);
+  });
+
+  it('rotates the token without showing it', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    sinon.stub(window, 'confirm').returns(true);
+    const element = await loadedView();
+
+    (element.shadowRoot?.querySelector('.rotate-token') as HTMLElement).click();
+    await waitUntil(
+      () => Boolean(element.shadowRoot?.querySelector('.action-notice-text')),
+      'Rotation notice did not appear'
+    );
+    const rotations = requestsMatching(
+      (url, method) => method === 'POST' && url.endsWith('/token')
+    );
+    expect(rotations).to.have.length(1);
+    expect(String(rotations[0].args[0])).to.contain(
+      '/api/v1/runners/11111111-1111-4111-8111-111111111111/token'
+    );
+    expect(element.shadowRoot?.textContent).to.contain('Token rotated');
+    expect(element.shadowRoot?.textContent).not.to.contain(
+      'prl_runner_example'
+    );
+  });
+
+  it('removes a runner deleted elsewhere from a websocket event', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    const element = await loadedView();
+    expect(element.shadowRoot?.textContent).to.contain('office-mac');
+
+    onRunnerMessage?.({
+      type: 'runner_deleted',
+      payload: { id: '11111111-1111-4111-8111-111111111111' },
+    });
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).not.to.contain('office-mac');
   });
 });

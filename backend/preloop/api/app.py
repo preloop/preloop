@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Any
+from typing import Any, AsyncGenerator, Optional
 from urllib.parse import quote
 from uuid import UUID
 from fastapi import Depends, FastAPI, Request, HTTPException, WebSocket
@@ -127,6 +127,37 @@ class PyinstrumentMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_ISSUE_COLLECTION_PATH = "/api/v1/issues"
+
+
+def api_usage_action_type(method: str, path: str) -> Optional[str]:
+    """Classify issue create, update and delete usage.
+
+    ``create_issue`` is only ``POST /api/v1/issues``. A POST whose path
+    merely contains ``/issues`` (a comment, a lifecycle call, a search)
+    is not issue creation. Item updates and deletes are ``PUT``,
+    ``PATCH`` or ``DELETE`` on a path under ``/api/v1/issues/``.
+
+    Args:
+        method: HTTP method.
+        path: Request path, without the query string.
+
+    Returns:
+        The usage action, or None when this request is not that kind of
+        issue mutation.
+    """
+    normalized = path.rstrip("/") or "/"
+    if method == "POST" and normalized == _ISSUE_COLLECTION_PATH:
+        return "create_issue"
+    if not normalized.startswith(f"{_ISSUE_COLLECTION_PATH}/"):
+        return None
+    if method in ("PUT", "PATCH"):
+        return "update_issue"
+    if method == "DELETE":
+        return "delete_issue"
+    return None
+
+
 class ApiUsageMiddleware(BaseHTTPMiddleware):
     """Middleware to track API usage."""
 
@@ -167,16 +198,9 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
         # Extract tracking information
         method = request.method
         status_code = response.status_code
-        action_type = None
-
-        # Determine the action type based on the path and method
-        if "/issues" in path:
-            if method == "POST":
-                action_type = "create_issue"
-            elif method == "PUT" or method == "PATCH":
-                action_type = "update_issue"
-            elif method == "DELETE":
-                action_type = "delete_issue"
+        # create_issue is the collection route only. Nested POSTs such as
+        # comments must not be counted as issue creation.
+        action_type = api_usage_action_type(method, path)
 
         # Get user_id from auth token if available
         user_id = None
@@ -366,6 +390,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info(
             "Retention purge sweeper not started (enabled=%s, role=%s).",
             settings.retention_purge_enabled,
+            service_role,
+        )
+
+    # Start the scheduled issue cost rebuild (skip in testing mode). It records
+    # finished executions that no terminal hook recorded and refreshes issue
+    # estimates. Idempotent, additive and per-account locked, so several API
+    # replicas running it at once is safe.
+    issue_cost_rebuild_sweeper = None
+    if not is_testing and is_api_role and settings.issue_cost_rebuild_enabled:
+        from preloop.services.issue_cost_rebuild_sweeper import (
+            get_issue_cost_rebuild_sweeper,
+        )
+
+        issue_cost_rebuild_sweeper = get_issue_cost_rebuild_sweeper()
+        await issue_cost_rebuild_sweeper.start()
+    else:
+        logger.info(
+            "Issue cost rebuild sweeper not started (enabled=%s, role=%s).",
+            settings.issue_cost_rebuild_enabled,
             service_role,
         )
 
@@ -596,8 +639,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     from preloop.services.model_content_policy import set_model_io_approval_loop
+    from preloop.services.model_price_catalog import start_price_map_refresh
 
     price_refresher = start_reviewed_price_refresh()
+    # Merge the upstream price map on startup and every TTL so a model the
+    # vendored snapshot lacks is priced without waiting for a miss (#801).
+    price_map_refresher = start_price_map_refresh()
     set_model_io_approval_loop(asyncio.get_running_loop())
     try:
         yield
@@ -605,6 +652,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         set_model_io_approval_loop(None)
         if price_refresher is not None:
             await price_refresher.stop()
+        if price_map_refresher is not None:
+            await price_map_refresher.stop()
 
     # Shutdown logic
 
@@ -682,6 +731,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(
                 f"Error stopping session search backfill sweeper: {e}", exc_info=True
+            )
+
+    if not is_testing and issue_cost_rebuild_sweeper:
+        try:
+            await issue_cost_rebuild_sweeper.stop()
+            logger.info("Issue cost rebuild sweeper stopped.")
+        except Exception as e:
+            logger.error(
+                f"Error stopping issue cost rebuild sweeper: {e}", exc_info=True
             )
 
     # Stop the retention purge sweeper. A pass in flight finishes its current
@@ -810,6 +868,7 @@ def _register_control_plane_routes(
         copilot_usage,
         cost,
         event_webhooks,
+        issue_costs,
         exports,
         features,
         issues,
@@ -1061,6 +1120,12 @@ def _register_control_plane_routes(
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(
+        issue_costs.router,
+        prefix="/api/v1",
+        tags=["Cost Analytics"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
         copilot_usage.router,
         prefix="/api/v1",
         tags=["Cost Analytics"],
@@ -1098,6 +1163,14 @@ def _register_control_plane_routes(
     # Policies router for policy-as-code YAML import/export
     app.include_router(
         policies.router,
+        prefix="/api/v1",
+        tags=["Policies"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    from preloop.api.endpoints import policy_notices
+
+    app.include_router(
+        policy_notices.router,
         prefix="/api/v1",
         tags=["Policies"],
         dependencies=[Depends(get_current_active_user)],

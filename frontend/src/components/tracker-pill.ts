@@ -39,6 +39,9 @@ export class TrackerPill extends LitElement {
     if (type.includes('gitlab') || name.includes('gitlab')) {
       return 'gitlab';
     }
+    if (type.includes('bitbucket')) {
+      return 'bucket';
+    }
     return 'box-seam';
   }
 

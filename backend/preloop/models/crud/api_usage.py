@@ -155,6 +155,25 @@ EMPTY_CACHE_SPLIT: Dict[str, int] = {
 _MAX_GET_BY_IDS = 100
 
 
+def _usage_account_clause(
+    column: Any, account_id: Any, account_ids: Optional[Sequence[Any]]
+) -> Any:
+    """``account_id`` equality, or membership in ``account_ids`` when given.
+
+    ``account_ids`` is account hook H8: a plugin rolls up several accounts
+    (for example a parent and its children) in one aggregate. ``None`` keeps
+    the single-account filter unchanged; an empty list matches nothing.
+    """
+    if account_ids is None:
+        return column == account_id
+    return column.in_(
+        [
+            value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+            for value in account_ids
+        ]
+    )
+
+
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
 
@@ -956,10 +975,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ai_model_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
         exclude_retries: bool = False,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Get aggregated gateway usage totals for an account or flow.
 
         Args:
+            account_ids: When given, aggregate over these accounts instead of
+                ``account_id`` alone (account hook H8, for example a parent
+                and its children). The caller decides who may read them.
             exclude_retries: When True, rows marked as retries of an earlier
                 identical request are excluded. Default False — retried calls
                 consume real provider tokens, so they count as spend unless
@@ -1014,7 +1037,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             *cache_split_columns(),
         ).filter(
             ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
+            _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
             exclude_replay_usage_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
@@ -1335,12 +1358,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ai_model_ids: Optional[Sequence[str]] = None,
         failed_since: Optional[Mapping[str, datetime]] = None,
         limit: Optional[int] = 20,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Group gateway usage by model.
 
         Args:
             db: Database session.
             account_id: Account whose gateway usage is aggregated.
+            account_ids: When given, aggregate over these accounts instead of
+                ``account_id`` alone (account hook H8).
             start_date: Inclusive lower bound on usage timestamp.
             end_date: Exclusive upper bound on usage timestamp.
             flow_id: Restrict to a single flow.
@@ -1445,7 +1471,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             # appear as separate groups when model_alias differs (intentional —
             # callers often filter/sort by the client-visible alias).
             ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
+            _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
             exclude_replay_usage_condition(),
         )
         if start_date:
@@ -1950,8 +1976,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ai_model_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Group gateway usage by UTC day.
+
+        ``account_ids``, when given, aggregates over those accounts instead of
+        ``account_id`` alone (account hook H8).
 
         The day bucket is aggregated in a materialized CTE with no
         ``ORDER BY``. Materializing stops the planner from pulling the
@@ -1973,7 +2003,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             *cache_split_columns(),
         ).filter(
             ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
+            _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
             exclude_replay_usage_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
@@ -2207,9 +2237,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         """Count API requests made during execution timeframe."""
         from preloop.models import models
 
+        # Imported rows (host-exec hooks, subscription seat usage) are linked
+        # to the execution for display but are not API requests.
         explicit_count = (
             db.query(ApiUsage)
-            .filter(ApiUsage.flow_execution_id == execution.id)
+            .filter(
+                ApiUsage.flow_execution_id == execution.id,
+                or_(
+                    ApiUsage.action_type.is_(None),
+                    ApiUsage.action_type != self.IMPORTED_USAGE_ACTION_TYPE,
+                ),
+            )
             .count()
         )
         if explicit_count:
@@ -2257,12 +2295,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         model_alias: Optional[str] = None,
         purpose: Optional[str] = None,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> float:
         """Sum estimated gateway spend for an account since a timestamp.
 
         Args:
             db: Database session.
             account_id: Owning account id.
+            account_ids: When given, sum over these accounts instead of
+                ``account_id`` alone (account hook H8).
             start: Inclusive lower bound on ``timestamp``.
             flow_id: Optional flow id filter.
             api_key_id: Optional API key id filter.
@@ -2279,7 +2320,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(func.sum(self.model.estimated_cost), 0.0)
         ).filter(
             self.model.action_type == "model_gateway",
-            self.model.account_id == account_id,
+            _usage_account_clause(self.model.account_id, account_id, account_ids),
             self.model.timestamp >= start,
         )
         if flow_id:
@@ -3064,6 +3105,85 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 found[fingerprint] = row
         return found
 
+    def link_imported_rows_to_flow_execution(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        providers: List[str],
+        conversation_id: str,
+        flow_id: Any,
+        flow_execution_id: Any,
+    ) -> int:
+        """Attach hook rows of one host CLI session to its flow execution.
+
+        Rows the hook pushed without an execution id (an older CLI, or a
+        hook the operator configured by hand) are linked when the runner
+        reports the session id at completion. Rows already linked keep
+        their execution.
+
+        Args:
+            db: Database session (not committed).
+            account_id: Owning account id.
+            providers: Ingest source labels of the harness.
+            conversation_id: CLI session id the runner reported.
+            flow_id: Flow of the execution.
+            flow_execution_id: Execution to link to.
+
+        Returns:
+            Number of rows linked.
+        """
+        if not conversation_id or not providers:
+            return 0
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.provider_name.in_(list(providers)),
+                ApiUsage.conversation_id == conversation_id,
+                ApiUsage.flow_execution_id.is_(None),
+            )
+            .update(
+                {
+                    ApiUsage.flow_id: flow_id,
+                    ApiUsage.flow_execution_id: flow_execution_id,
+                },
+                synchronize_session=False,
+            )
+        )
+
+    def list_imported_rows_for_flow_execution(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        flow_execution_id: Any,
+        limit: int = 2000,
+    ) -> List[ApiUsage]:
+        """Imported (non-gateway) rows linked to one flow execution.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            flow_execution_id: Execution id.
+            limit: Maximum rows returned, oldest first.
+
+        Returns:
+            Imported usage rows ordered by timestamp.
+        """
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.flow_execution_id == flow_execution_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            )
+            .order_by(ApiUsage.timestamp.asc(), ApiUsage.id.asc())
+            .limit(limit)
+            .all()
+        )
+
     def log_imported_usage_event(
         self,
         db: Session,
@@ -3089,6 +3209,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
         runtime_session_id: Optional[Any] = None,
+        flow_id: Optional[Any] = None,
+        flow_execution_id: Optional[Any] = None,
         import_fingerprint: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
         endpoint: Optional[str] = None,
@@ -3134,6 +3256,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_session_id: Runtime session the record's conversation
                 was registered as, so the row shows up in that session's
                 usage like gateway rows do.
+            flow_id: Flow the usage belongs to, for host-exec flow runs.
+            flow_execution_id: Flow execution the usage belongs to. Set only
+                after the caller verified the execution is a host-exec run of
+                this account.
             import_fingerprint: Stable dedupe key; when a row with the same
                 fingerprint already exists for the account, the event is
                 skipped and ``None`` is returned (re-importing the same CSV
@@ -3199,6 +3325,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
             runtime_session_id=runtime_session_id,
+            flow_id=flow_id,
+            flow_execution_id=flow_execution_id,
             meta_data=merged_meta,
             timestamp=timestamp,
         )

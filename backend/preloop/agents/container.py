@@ -58,6 +58,11 @@ from preloop.utils.execve_limits import (
     prompt_transport_env,
 )
 from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.bitbucket import (
+    payload_commit_hash as bitbucket_payload_commit_hash,
+    pr_source_branch as bitbucket_pr_source_branch,
+    pr_target_branch as bitbucket_pr_target_branch,
+)
 from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
 from preloop.utils.workspace_baseline import (
     BaselineDelivery,
@@ -280,14 +285,15 @@ COMMIT_PR_LIST_FILE = "/tmp/preloop-commit-pr-list.txt"
 # ``object_attributes.*`` paths, so those names alias onto the GitHub shape.
 _GIT_CONFIG_PLACEHOLDER_RE = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
 _GIT_CONFIG_PATH_ALIASES = {
-    "object_attributes.title": ("issue.title",),
+    # issue.fields.summary: Jira issue webhooks (repository binding, #957).
+    "object_attributes.title": ("issue.title", "issue.fields.summary"),
     "object_attributes.description": ("issue.body", "issue.description"),
     "object_attributes.number": ("issue.number",),
     "object_attributes.iid": ("issue.number",),
 }
 
-# Builds the GitHub/GitLab create payload in the container so title and body
-# can contain quotes and newlines. Reads, in order: result.json (agent),
+# Builds the GitHub/GitLab/Bitbucket create payload in the container so title
+# and body can contain quotes and newlines. Reads, in order: result.json (agent),
 # flow-configured title/body, then the commit subject/body (with a flow
 # execution link, and a **Commits:** list when the push is more than one
 # commit).
@@ -362,6 +368,13 @@ if reason and not applied:
         body += extra if len(encoded) <= budget else encoded[:budget].decode("utf-8", "ignore")
 if kind == "gitlab":
     payload = {"title": title, "description": body, "source_branch": head, "target_branch": base}
+elif kind == "bitbucket":
+    payload = {
+        "title": title,
+        "description": body,
+        "source": {"branch": {"name": head}},
+        "destination": {"branch": {"name": base}},
+    }
 else:
     payload = {"title": title, "body": body, "head": head, "base": base}
 Path(out_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -399,9 +412,12 @@ try:
     if len(raw) > MAX_ARTIFACT_BYTES:
         raise ValueError("lookup response too large")
     candidates = json.loads(raw)
+    if kind == "bitbucket" and isinstance(candidates, dict):
+        # Bitbucket wraps list responses in {"values": [...]}.
+        candidates = candidates.get("values")
     if not isinstance(candidates, list):
         raise ValueError("lookup response is not a list")
-    field = "description" if kind == "gitlab" else "body"
+    field = "body" if kind == "github" else "description"
     payload = {}
     try:
         with open(payload_path, "rb") as stream:
@@ -417,15 +433,25 @@ try:
             r"<!-- preloop:failure:([0-9a-f-]{36}):start -->.*?<!-- preloop:failure:\1:end -->",
             payload[field], re.DOTALL,
         )
-    candidates = [item for item in candidates if isinstance(item, dict) and (
-        item.get("source_branch") if kind == "gitlab" else (item.get("head") or {}).get("ref")
-    ) == branch]
+    def _source_branch(item):
+        if kind == "gitlab":
+            return item.get("source_branch")
+        if kind == "bitbucket":
+            return ((item.get("source") or {}).get("branch") or {}).get("name")
+        return (item.get("head") or {}).get("ref")
+
+    candidates = [
+        item
+        for item in candidates
+        if isinstance(item, dict) and _source_branch(item) == branch
+    ]
     if execution_link and candidates:
         update_required = True
     if len(candidates) != 1:
         raise ValueError("lookup did not identify one source branch")
     existing = candidates[0]
-    number = existing.get("iid" if kind == "gitlab" else "number")
+    number_key = {"gitlab": "iid", "bitbucket": "id"}.get(kind, "number")
+    number = existing.get(number_key)
     if type(number) is not int or number <= 0:
         raise ValueError("invalid PR number")
     original = existing.get(field) or ""
@@ -467,7 +493,7 @@ except (OSError, ValueError, KeyError, TypeError, RecursionError):
 """
     )
     update_path = f"{EVIDENCE_DIR_PATH}/pr-failure-update.json"
-    method = "PUT" if kind == "gitlab" else "PATCH"
+    method = "PATCH" if kind == "github" else "PUT"
     provenance_args = ""
     if execution_link:
         provenance_args = f' {shlex.quote(execution_link)} "$(git rev-parse HEAD)"'
@@ -600,6 +626,55 @@ def build_gitlab_mr_capture_shell(
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
     else
       echo "No merge request URL could be resolved for branch {branch}"
+    fi
+"""
+
+
+def build_bitbucket_pr_capture_shell(
+    *,
+    repo_path: str,
+    branch: str,
+    execution_link: str = "",
+) -> str:
+    """Bitbucket counterpart of :func:`build_github_pr_capture_shell`.
+
+    Reads the ``PRELOOP_BB_AUTH`` header variable the create shell set, so the
+    lookup and the body update reuse whichever auth scheme the create call
+    settled on (Bearer, or Basic after a 401).
+    """
+
+    grep_pr = (
+        'grep -o \'"href"[[:space:]]*:[[:space:]]*'
+        '"https://bitbucket.org/[^"]*/pull-requests/[0-9]*"\''
+    )
+    sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
+    api_url = f"https://api.bitbucket.org/2.0/repositories/{repo_path}/pullrequests"
+    return f"""
+    # Initialised here, not only in the lookup fallback: the happy path
+    # (URL in the create response) reads these under ``set -u``. The harness
+    # runs this under ``set -euo pipefail``, so a grep with no match must not
+    # end the block before the fallback (``|| true`` on each capture).
+    PRELOOP_PROVENANCE_FAILED=
+    PRELOOP_BODY_UPDATED=
+    PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url}) || true
+    if [ -z "$PR_URL" ]; then
+      echo "No PR URL in the create response; looking it up by source branch"
+      curl -sS --get \\
+        -H "$PRELOOP_BB_AUTH" \\
+        --data-urlencode 'state=OPEN' \\
+        --data-urlencode 'q=source.branch.name = "{branch}"' \\
+        -o {PR_LOOKUP_FILE} \\
+        "{api_url}" \\
+        || echo "PR lookup by source branch failed"
+      PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url}) || true
+      {_existing_pr_failure_update_shell(kind="bitbucket", api_url=api_url, authorization="$PRELOOP_BB_AUTH", branch=branch, execution_link=execution_link)}
+    fi
+    if [ -n "${{PRELOOP_PROVENANCE_FAILED:-}}" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
+      echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
+    elif [ -n "${{PR_URL:-}}" ]; then
+      echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"bitbucket\\"}}"
+    else
+      echo "No pull request URL could be resolved for branch {branch}"
     fi
 """
 
@@ -3861,7 +3936,7 @@ class ContainerAgentExecutor(AgentExecutor):
             # provider from the controller's tracker binding (including
             # self-hosted GitLab), then pass it as data to template discovery.
             repos = git_clone_config.get("repositories") or [{}]
-            _, template_provider = self._resolve_repository_token(
+            _, template_provider, _ = self._resolve_repository_token(
                 repos[0], execution_context
             )
             if template_provider not in {"github", "gitlab"}:
@@ -4318,8 +4393,8 @@ fi
         self,
         repo_config: Dict[str, Any],
         execution_context: Dict[str, Any],
-    ) -> tuple[Optional[str], Optional[str]]:
-        """Return ``(token, tracker_type)`` for one repository entry.
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Return ``(token, tracker_type, git_username)`` for one repository.
 
         Sources, in order:
 
@@ -4364,9 +4439,27 @@ fi
                 raise ValueError(
                     "Isolated agent clone requires a controller-issued read-only credential"
                 )
-            return credential.get("token"), credential.get("tracker_type")
+            return (
+                credential.get("token"),
+                credential.get("tracker_type"),
+                credential.get("username"),
+            )
 
         git_credentials_map = execution_context.get("git_credentials_map") or {}
+
+        if execution_context.get("repository_binding"):
+            # A bound execution was triggered by an issue tracker (Jira). Its
+            # token is not a git credential, and sending it to the code host
+            # would leak it, so only the bound code-host tracker counts.
+            tracker_id = repo_config.get("tracker_id")
+            tracker_creds = (
+                (git_credentials_map.get(tracker_id) or {}) if tracker_id else {}
+            )
+            return (
+                tracker_creds.get("token") or None,
+                tracker_creds.get("tracker_type"),
+                tracker_creds.get("username"),
+            )
 
         candidate_ids = [
             repo_config.get("tracker_id"),
@@ -4377,15 +4470,19 @@ fi
                 continue
             tracker_creds = git_credentials_map.get(tracker_id) or {}
             if tracker_creds.get("token"):
-                return tracker_creds.get("token"), tracker_creds.get("tracker_type")
+                return (
+                    tracker_creds.get("token"),
+                    tracker_creds.get("tracker_type"),
+                    tracker_creds.get("username"),
+                )
 
         trigger_project_id = execution_context.get("trigger_project_id")
         if trigger_project_id:
-            token, tracker_type = self._get_token_from_project(
+            token, tracker_type, username = self._get_token_from_project(
                 trigger_project_id, execution_context.get("account_id")
             )
             if token:
-                return token, tracker_type
+                return token, tracker_type, username
 
         # Nothing usable: return the tracker type when known, so the caller can
         # still log which host kind was expected.
@@ -4394,9 +4491,41 @@ fi
                 (git_credentials_map.get(tracker_id) or {}) if tracker_id else {}
             )
             if tracker_creds.get("tracker_type"):
-                return None, tracker_creds.get("tracker_type")
+                return None, tracker_creds.get("tracker_type"), None
 
-        return None, None
+        return None, None, None
+
+    def _resolve_git_username(
+        self,
+        repo_config: Dict[str, Any],
+        execution_context: Dict[str, Any],
+        host_kind: Optional[str],
+        tracker_type: Optional[str],
+        resolved_username: Optional[str] = None,
+    ) -> str:
+        """Return the git username to pair with this repository's token.
+
+        Most providers accept a fixed placeholder username. Bitbucket needs a
+        username that matches the kind of token (the account's Bitbucket
+        username or ``x-bitbucket-api-token-auth`` for an API token,
+        ``x-token-auth`` for access and OAuth tokens), so the orchestrator
+        resolves it per tracker and ships it in ``git_credentials_map``, and
+        the database fallback derives it from the tracker row
+        (``resolved_username``, from :meth:`_resolve_repository_token`).
+        """
+        if resolved_username:
+            return str(resolved_username)
+        git_credentials_map = execution_context.get("git_credentials_map") or {}
+        for tracker_id in (
+            repo_config.get("tracker_id"),
+            execution_context.get("trigger_tracker_id"),
+        ):
+            if not tracker_id:
+                continue
+            creds = git_credentials_map.get(tracker_id) or {}
+            if creds.get("token") and creds.get("username"):
+                return str(creds["username"])
+        return credential_username(host_kind, tracker_type)
 
     def _build_git_credential(
         self,
@@ -4413,7 +4542,7 @@ fi
 
         safe_url = strip_url_credentials(repo_url)
 
-        token, tracker_type = self._resolve_repository_token(
+        token, tracker_type, resolved_username = self._resolve_repository_token(
             repo_config, execution_context
         )
         if not token:
@@ -4436,7 +4565,9 @@ fi
                 tracker_type,
             )
 
-        username = credential_username(host_kind, tracker_type)
+        username = self._resolve_git_username(
+            repo_config, execution_context, host_kind, tracker_type, resolved_username
+        )
         self.logger.info(
             "Prepared git credential for %s (user=%s, token not in URL)",
             repo_url_log_location(safe_url),
@@ -4958,6 +5089,37 @@ true
             self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
             return ""
 
+    def _resolve_bitbucket_api_email(
+        self,
+        repo_config: Dict[str, Any],
+        execution_context: Dict[str, Any],
+    ) -> str:
+        """The Basic-auth email for a Bitbucket API token, or empty.
+
+        Shipped in ``git_credentials_map`` by the orchestrator only when the
+        tracker authenticates with a personal API token, the one credential
+        kind whose Bearer form Bitbucket can refuse. Constrained to safe
+        characters because it is interpolated into the post-execution shell.
+        """
+        git_credentials_map = execution_context.get("git_credentials_map") or {}
+        for tracker_id in (
+            (repo_config or {}).get("tracker_id"),
+            execution_context.get("trigger_tracker_id"),
+        ):
+            if not tracker_id:
+                continue
+            creds = git_credentials_map.get(tracker_id) or {}
+            if not (creds.get("token") and creds.get("email")):
+                continue
+            email = str(creds["email"])
+            if re.fullmatch(r"[A-Za-z0-9._%+@-]+", email):
+                return email
+            self.logger.warning(
+                "Ignoring a Bitbucket Basic-auth email with unexpected characters"
+            )
+            return ""
+        return ""
+
     def _build_pr_or_mr_create_shell(
         self,
         *,
@@ -4969,13 +5131,13 @@ true
         repo_url: Optional[str],
         safe_target: str,
         safe_source: str,
+        repo_config: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build post-push PR/MR creation. JSON is encoded by python in-container."""
 
-        effective_type = (
-            tracker_type if tracker_type in {"github", "gitlab"} else host_kind
-        )
-        if effective_type not in {"github", "gitlab"} or not token_ref or not repo_url:
+        supported = {"github", "gitlab", "bitbucket"}
+        effective_type = tracker_type if tracker_type in supported else host_kind
+        if effective_type not in supported or not token_ref or not repo_url:
             if git_config.get("create_pull_request"):
                 self.logger.warning(
                     "create_pull_request is enabled but PR/MR creation was skipped "
@@ -5048,6 +5210,64 @@ true
                     token_ref=token_ref,
                     owner=owner,
                     repo=repo,
+                    branch=safe_target,
+                    execution_link=execution_link,
+                )
+            )
+
+        if effective_type == "bitbucket":
+            from urllib.parse import urlparse as _urlparse
+
+            parsed = _urlparse(strip_url_credentials(repo_url))
+            repo_path = (parsed.path or "").lstrip("/").removesuffix(".git")
+            repo_path = repo_path.rstrip("/")
+            if len([part for part in repo_path.split("/") if part]) != 2:
+                return ""
+            api_url = (
+                f"https://api.bitbucket.org/2.0/repositories/{repo_path}/pullrequests"
+            )
+            api_email = self._resolve_bitbucket_api_email(
+                repo_config or {}, execution_context
+            )
+            create_curl = f"""curl -sS -o {PR_RESPONSE_FILE} -w "%{{http_code}}" \\
+        -X POST \\
+        -H "$PRELOOP_BB_AUTH" \\
+        -H "Content-Type: application/json" \\
+        --data-binary @{PR_PAYLOAD_FILE} \\
+        "{api_url}" \\
+        || echo "000\""""
+            basic_retry = ""
+            if api_email:
+                # A personal API token can be refused as Bearer; the tracker
+                # client falls back to Basic <email>:<token> and so does this
+                # shell. PRELOOP_BB_AUTH carries the surviving scheme into the
+                # capture shell's lookup and body update.
+                basic_retry = f"""
+      if [ "$HTTP_CODE" = "401" ]; then
+        echo "Bearer auth was refused; retrying with Basic auth"
+        PRELOOP_BB_AUTH="Authorization: Basic $(printf '%s' "{api_email}:{token_ref}" | python3 -c 'import base64,sys;sys.stdout.write(base64.b64encode(sys.stdin.buffer.read()).decode())')"
+        HTTP_CODE=$({create_curl})
+      fi
+"""
+            curl_cmd = f"""
+    echo "Creating pull request on Bitbucket..."
+    PRELOOP_BB_AUTH="Authorization: Bearer {token_ref}"
+    if [ ! -s {PR_PAYLOAD_FILE} ]; then
+      echo "PR payload was not written; skipping create"
+    else
+      HTTP_CODE=$({create_curl})
+{basic_retry}      echo "PR create HTTP $HTTP_CODE"
+      if [ "$HTTP_CODE" != "201" ]; then
+        echo "PR create response:"
+        cat {PR_RESPONSE_FILE} 2>/dev/null || true
+      fi
+    fi
+"""
+            return (
+                prepare
+                + curl_cmd
+                + build_bitbucket_pr_capture_shell(
+                    repo_path=repo_path,
                     branch=safe_target,
                     execution_link=execution_link,
                 )
@@ -5148,7 +5368,7 @@ true
 
         repo_config = repositories[0]
         clone_path = self._resolve_repository_clone_path(repo_config, 0)
-        token, tracker_type = self._resolve_repository_token(
+        token, tracker_type, _ = self._resolve_repository_token(
             repo_config, execution_context
         )
         trigger_data = execution_context.get("trigger_event_data", {})
@@ -5194,6 +5414,7 @@ true
             repo_url=repo_url,
             safe_target=plan.branch,
             safe_source=base_branch,
+            repo_config=repo_config,
         )
         if not pull_request_shell:
             # No token, or a provider with no pull request API here: pushing a
@@ -5208,7 +5429,9 @@ true
             git_user_email=str(git_config.get("git_user_email") or "hello@preloop.ai"),
             push_auth_shell=build_push_auth_setup_shell(
                 token_ref=token_ref,
-                username=credential_username(host_kind, tracker_type),
+                username=self._resolve_git_username(
+                    repo_config, execution_context, host_kind, tracker_type
+                ),
             ),
             pull_request_shell=pull_request_shell,
         )
@@ -5572,7 +5795,7 @@ true
 
                 # Resolve the tracker token the same way clone does, so a
                 # missing tracker_id still finds the trigger-project token.
-                token, tracker_type = self._resolve_repository_token(
+                token, tracker_type, resolved_username = self._resolve_repository_token(
                     repo_config, execution_context
                 )
 
@@ -5595,7 +5818,13 @@ true
                     if repo_url
                     else None
                 )
-                username = credential_username(host_kind, tracker_type)
+                username = self._resolve_git_username(
+                    repo_config,
+                    execution_context,
+                    host_kind,
+                    tracker_type,
+                    resolved_username,
+                )
                 push_auth = build_push_auth_setup_shell(
                     token_ref=token_ref, username=username
                 )
@@ -5680,6 +5909,7 @@ true
                         repo_url=repo_url,
                         safe_target=safe_target,
                         safe_source=publication_base,
+                        repo_config=repo_config,
                     )
                     if pr_create_cmd:
                         repo_post_commands.append(pr_create_cmd)
@@ -5865,6 +6095,15 @@ true
                     self.logger.info(f"Constructed GitHub clone URL for {slug}")
                     return clone_url
 
+                elif tracker_type == "bitbucket":
+                    # Bitbucket Cloud: https://bitbucket.org/{workspace}/{repo}.git
+                    if not slug.endswith(".git"):
+                        slug = f"{slug}.git"
+
+                    clone_url = f"https://bitbucket.org/{slug}"
+                    self.logger.info(f"Constructed Bitbucket clone URL for {slug}")
+                    return clone_url
+
                 else:
                     self.logger.warning(
                         f"Tracker type '{tracker_type}' not supported for git clone"
@@ -5883,29 +6122,32 @@ true
 
     def _get_token_from_project(
         self, project_id: str, account_id: str
-    ) -> tuple[Optional[str], Optional[str]]:
-        """Get the API token and tracker type from a project's tracker.
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Get the API token, tracker type and git username from a project.
 
         Args:
             project_id: Project ID
             account_id: Account ID
 
         Returns:
-            Tuple of (token, tracker_type) or (None, None) if not found
+            Tuple of (token, tracker_type, git_username), all None if not
+            found. The username is only set for trackers whose token must be
+            paired with a specific git user (Bitbucket).
         """
         try:
             from preloop.models.crud import crud_project, crud_tracker
             from preloop.models.db.session import get_db_session
+            from preloop.services.tracker_git_token import resolve_tracker_git_username
 
             db = next(get_db_session())
             try:
                 project = crud_project.get(db, id=str(project_id))
                 if not project:
-                    return None, None
+                    return None, None, None
 
                 organization = project.organization
                 if not organization:
-                    return None, None
+                    return None, None, None
 
                 tracker = crud_tracker.get(db, id=organization.tracker_id)
                 resolved_token = tracker.resolved_api_key if tracker else ""
@@ -5921,16 +6163,20 @@ true
                             "context to carry it",
                             tracker.id,
                         )
-                    return None, None
+                    return None, None, None
 
-                return resolved_token, tracker.tracker_type.lower()
+                return (
+                    resolved_token,
+                    tracker.tracker_type.lower(),
+                    resolve_tracker_git_username(tracker),
+                )
 
             finally:
                 db.close()
 
         except Exception as e:
             self.logger.warning(f"Error getting token from project {project_id}: {e}")
-            return None, None
+            return None, None, None
 
     def _extract_merge_request_ref_from_trigger(
         self, trigger_data: Dict[str, Any]
@@ -6009,6 +6255,12 @@ true
                 self.logger.info(f"Extracted target branch from GitLab MR: {branch}")
                 return branch
 
+            # Bitbucket Cloud PR - pullrequest.destination.branch.name
+            branch = bitbucket_pr_target_branch(payload)
+            if branch:
+                self.logger.info(f"Extracted target branch from Bitbucket PR: {branch}")
+                return branch
+
             project = payload.get("project")
             if isinstance(project, dict) and project.get("default_branch"):
                 return project["default_branch"]
@@ -6059,6 +6311,12 @@ true
                 )
                 return branch
 
+            # Bitbucket Cloud PR (and PR comment) - pullrequest.source.branch
+            branch = bitbucket_pr_source_branch(payload)
+            if branch:
+                self.logger.info(f"Extracted source branch from Bitbucket PR: {branch}")
+                return branch
+
             return None
         except Exception as e:
             self.logger.debug(f"Error extracting source branch from trigger: {e}")
@@ -6102,6 +6360,11 @@ true
                 if isinstance(head, dict) and head.get("sha"):
                     return head["sha"]
 
+            # Bitbucket Cloud PR or repo:push
+            sha = bitbucket_payload_commit_hash(payload)
+            if sha:
+                return sha
+
             # Direct references
             if "sha" in payload:
                 return payload["sha"]
@@ -6135,6 +6398,13 @@ true
                     url = repo.get("clone_url") or repo.get("html_url") or ""
                     if url:
                         self.logger.info(f"Found GitHub repo URL in trigger: {url}")
+                        return url
+                    # Bitbucket Cloud: repository.links.html.href
+                    html = (repo.get("links") or {}).get("html") or {}
+                    href = html.get("href") if isinstance(html, dict) else None
+                    if href:
+                        url = f"{href.rstrip('/')}.git"
+                        self.logger.info(f"Found Bitbucket repo URL in trigger: {url}")
                     return url
 
             # GitLab structure

@@ -145,6 +145,11 @@ def list_projects(
                 "tracker_configurations": project.tracker_settings,
                 "created_at": project.created_at.isoformat(),
                 "updated_at": project.updated_at.isoformat(),
+                "group": (
+                    project.meta_data.get("project_name")
+                    if isinstance(project.meta_data, dict)
+                    else None
+                ),
             }
         )
 

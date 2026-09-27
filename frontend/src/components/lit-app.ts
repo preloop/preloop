@@ -1,7 +1,12 @@
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
-import { router, Router, type Route } from '../router';
-import { withLazyRoutes } from '../lazy-routes';
+import { router, Router, LOCATION_CHANGED, type Route } from '../router';
+import {
+  CapabilityRouteGate,
+  isCapabilityPath,
+  withLazyRoutes,
+} from '../lazy-routes';
+import { loadCapabilities } from '../capabilities';
 import { consoleRouteLoaders } from './console-route-loaders';
 import { routeLoadingRenderer } from './route-loading';
 import { getBrandConfig, isSaaS } from '../brand-config';
@@ -369,6 +374,7 @@ export class LitApp extends LitElement {
               return commands.redirect('/console/agents');
             },
           },
+          { path: 'cost/by-issue', component: 'issue-cost-view' },
           { path: 'cost', component: 'cost-view' },
           { path: '/api-usage', component: 'api-usage-view' },
           { path: 'settings', redirect: '/console/settings/profile' },
@@ -427,7 +433,41 @@ export class LitApp extends LitElement {
       // any real route would swallow it.
       { path: '(.*)', component: 'not-found-view' },
     ];
-    void router.setRoutes(withLazyRoutes(routes, consoleRouteLoaders));
+    const table = withLazyRoutes(routes, consoleRouteLoaders);
+    this.installRoutes(table);
+  }
+
+  /**
+   * Install the route table, plus the console routes that `/features`
+   * capabilities turn on (multi-account, account hierarchy, access rules).
+   * Those register only once the capability is known to be present, so a
+   * deployment without them never matches, loads or links to them.
+   */
+  private installRoutes(table: Route[]) {
+    const consoleRoute = table.find((route) => route.path === '/console');
+    if (!consoleRoute) {
+      void router.setRoutes(table);
+      return;
+    }
+    const gate = new CapabilityRouteGate(router, consoleRoute, () =>
+      loadCapabilities()
+    );
+    const syncInConsole = () => {
+      if (window.location.pathname.startsWith('/console')) {
+        void gate.sync();
+      }
+    };
+    window.addEventListener(LOCATION_CHANGED, syncInConsole);
+    if (isCapabilityPath(window.location.pathname)) {
+      // A deep link to a gated view waits for the answer, so it never flashes
+      // the not-found page before its route exists.
+      void gate
+        .sync({ render: false })
+        .finally(() => void router.setRoutes(table));
+      return;
+    }
+    void router.setRoutes(table);
+    syncInConsole();
   }
 
   /**

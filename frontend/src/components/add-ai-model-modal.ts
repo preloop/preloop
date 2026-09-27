@@ -46,6 +46,7 @@ const PROVIDER_OPTIONS: ProviderOption[] = [
   { value: 'zai', label: 'Z.ai (GLM)', serviceKinds: ['llm'] },
   { value: 'mistral', label: 'Mistral', serviceKinds: ['llm'] },
   { value: 'bedrock', label: 'AWS Bedrock', serviceKinds: ['llm'] },
+  { value: 'azure', label: 'Azure OpenAI', serviceKinds: ['llm'] },
   { value: 'openrouter', label: 'OpenRouter', serviceKinds: ['llm'] },
   {
     value: 'openai-compatible',
@@ -72,6 +73,8 @@ const PROVIDER_DEFAULT_ENDPOINTS: Record<string, string> = {
   zai: 'https://api.z.ai/api/paas/v4',
   mistral: 'https://api.mistral.ai/v1',
   openrouter: 'https://openrouter.ai/api/v1',
+  // Per-resource: https://<resource>.openai.azure.com
+  azure: '',
   'openai-compatible': '',
   custom: '',
 };
@@ -89,6 +92,24 @@ const ENDPOINT_LISTED_PROVIDERS = ['openai-compatible', 'custom', 'openrouter'];
  * availability is regional, so the region must be resolved before listing.
  */
 const BEDROCK_DEFAULT_REGION = 'us-east-1';
+
+/**
+ * Shown as the Azure OpenAI api-version placeholder. Blank means the server
+ * default; the gateway (services/azure_openai.py) also reads a version from a
+ * pasted `?api-version=` URL.
+ */
+const AZURE_EXAMPLE_API_VERSION = '2024-10-21';
+
+/** Read one string field of `meta_data.provider_runtime`, trimmed. */
+function providerRuntimeString(
+  metaData: Record<string, unknown> | undefined | null,
+  key: string
+): string {
+  const runtime = metaData?.provider_runtime;
+  if (!runtime || typeof runtime !== 'object') return '';
+  const value = (runtime as Record<string, unknown>)[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
 
 const QWEN_SINGAPORE_KEY_URL =
   'https://modelstudio.console.alibabacloud.com/ap-southeast-1?tab=globalset#/efm/api_key';
@@ -243,6 +264,9 @@ export class AddAIModelModal extends LitElement {
   @state() private _bedrockSecretAccessKey = '';
   @state() private _bedrockSessionToken = '';
   @state() private _bedrockRegion = BEDROCK_DEFAULT_REGION;
+  /** Azure OpenAI api-version and pricing base model (provider_runtime). */
+  @state() private _azureApiVersion = '';
+  @state() private _azureBaseModel = '';
 
   private get _isEditing(): boolean {
     return !!this.model;
@@ -250,6 +274,10 @@ export class AddAIModelModal extends LitElement {
 
   private get _isBedrock(): boolean {
     return this._currentModel.provider_name === 'bedrock';
+  }
+
+  private get _isAzure(): boolean {
+    return this._currentModel.provider_name === 'azure';
   }
 
   /** True once enough AWS material is present to attempt a live listing. */
@@ -350,6 +378,16 @@ export class AddAIModelModal extends LitElement {
       if (typeof storedRegion === 'string' && storedRegion.trim()) {
         this._bedrockRegion = storedRegion.trim();
       }
+      // Same for Azure: an edit must not drop the api-version the gateway
+      // sends or the base model that prices a custom deployment name.
+      this._azureApiVersion = providerRuntimeString(
+        this.model.meta_data,
+        'api_version'
+      );
+      this._azureBaseModel = providerRuntimeString(
+        this.model.meta_data,
+        'base_model'
+      );
     }
   }
 
@@ -359,6 +397,8 @@ export class AddAIModelModal extends LitElement {
     this._bedrockSecretAccessKey = '';
     this._bedrockSessionToken = '';
     this._bedrockRegion = BEDROCK_DEFAULT_REGION;
+    this._azureApiVersion = '';
+    this._azureBaseModel = '';
   }
 
   /**
@@ -409,6 +449,36 @@ export class AddAIModelModal extends LitElement {
         region: this._bedrockRegion.trim() || BEDROCK_DEFAULT_REGION,
       };
     }
+    if (provider === 'azure') {
+      // Read by the gateway (services/azure_openai.py and model_pricing.py).
+      // Blank fields are removed so the server defaults apply.
+      const runtime: Record<string, unknown> = {
+        ...(baseMeta.provider_runtime as Record<string, unknown> | undefined),
+      };
+      const apiVersion = this._azureApiVersion.trim();
+      const baseModel = this._azureBaseModel.trim();
+      if (apiVersion) runtime.api_version = apiVersion;
+      else delete runtime.api_version;
+      if (baseModel) runtime.base_model = baseModel;
+      else delete runtime.base_model;
+      baseMeta.provider_runtime = runtime;
+    } else if (
+      String(this.model?.provider_name || '').toLowerCase() === 'azure' &&
+      baseMeta.provider_runtime &&
+      typeof baseMeta.provider_runtime === 'object'
+    ) {
+      // An Azure model switched to another provider must not keep the
+      // Azure-form keys: pricing reads base_model for any provider and
+      // would price the new model from the old deployment's base model.
+      // Only a switch away from Azure strips them, so a base_model set
+      // through the API on, say, a Bedrock ARN survives an edit.
+      const {
+        api_version: _apiVersion,
+        base_model: _baseModel,
+        ...rest
+      } = baseMeta.provider_runtime as Record<string, unknown>;
+      baseMeta.provider_runtime = rest;
+    }
     const gatewayEnabled =
       modelKind === 'llm' &&
       this._preloopGatewayEnabled &&
@@ -458,6 +528,10 @@ export class AddAIModelModal extends LitElement {
         this._bedrockSessionToken = val || '';
       } else if (field === 'bedrock_region') {
         this._bedrockRegion = val || BEDROCK_DEFAULT_REGION;
+      } else if (field === 'azure_api_version') {
+        this._azureApiVersion = val || '';
+      } else if (field === 'azure_base_model') {
+        this._azureBaseModel = val || '';
       } else if (field === 'model_identifier')
         this._currentModel.model_identifier = val || undefined;
     }
@@ -547,6 +621,8 @@ export class AddAIModelModal extends LitElement {
         return 'https://console.mistral.ai/api-keys';
       case 'openrouter':
         return 'https://openrouter.ai/keys';
+      case 'azure':
+        return 'https://portal.azure.com/';
       case 'openai-compatible':
       case 'custom':
         return 'https://platform.openai.com/api-keys';
@@ -922,6 +998,72 @@ export class AddAIModelModal extends LitElement {
     return html``;
   }
 
+  /**
+   * Azure OpenAI has no model listing: the operator names the deployment.
+   * The deployment name is the model identifier the gateway routes to
+   * (`azure/<deployment>`). The fetch button is hidden for Azure, so the
+   * suggestion picker below never renders and this input is the only one.
+   */
+  private _renderAzureDeploymentInput() {
+    return html`
+      <sl-input
+        class="full-width"
+        label="Deployment name"
+        data-field="model_identifier"
+        placeholder="The deployment name, not the model name"
+        .value=${this._currentModel.model_identifier || ''}
+        @sl-input=${(e: Event) => {
+          this._handleCustomModelInput(e);
+          this.requestUpdate();
+        }}
+        ?disabled=${this._isSubmitting}
+      >
+        <div slot="help-text">
+          Azure portal &gt; your resource &gt; Model deployments. Requests go to
+          this deployment.
+        </div>
+      </sl-input>
+    `;
+  }
+
+  /** api-version and pricing base model, stored in provider_runtime. */
+  private _renderAzureFields() {
+    return html`
+      <sl-input
+        label="API version"
+        data-field="azure_api_version"
+        .value=${this._azureApiVersion}
+        @sl-input=${(e: Event) => {
+          this._azureApiVersion = (e.target as HTMLInputElement).value;
+          this.requestUpdate();
+        }}
+        placeholder=${AZURE_EXAMPLE_API_VERSION}
+        ?disabled=${this._isSubmitting}
+      >
+        <div slot="help-text">
+          e.g. ${AZURE_EXAMPLE_API_VERSION}, or v1 for the v1 API. Blank uses
+          the server default.
+        </div>
+      </sl-input>
+      <sl-input
+        label="Base model (for pricing)"
+        data-field="azure_base_model"
+        .value=${this._azureBaseModel}
+        @sl-input=${(e: Event) => {
+          this._azureBaseModel = (e.target as HTMLInputElement).value;
+          this.requestUpdate();
+        }}
+        placeholder="gpt-4o-mini"
+        ?disabled=${this._isSubmitting}
+      >
+        <div slot="help-text">
+          The model behind the deployment. Prices a deployment whose name is not
+          a catalog model.
+        </div>
+      </sl-input>
+    `;
+  }
+
   render() {
     if (!this.open) return html``;
 
@@ -1082,7 +1224,16 @@ export class AddAIModelModal extends LitElement {
                               regions.
                             </div>
                           `
-                        : ''
+                        : this._isAzure
+                          ? html`
+                              <div slot="help-text">
+                                The resource endpoint from the Azure portal
+                                (Keys and Endpoint), e.g.
+                                https://my-resource.openai.azure.com. A pasted
+                                deployment URL is reduced to this root.
+                              </div>
+                            `
+                          : ''
                     }
                   </sl-input>
                   <sl-input
@@ -1132,6 +1283,7 @@ export class AddAIModelModal extends LitElement {
                           `
                     }
                   </sl-input>
+                  ${this._isAzure ? this._renderAzureFields() : ''}
                 `
           }
 
@@ -1191,7 +1343,8 @@ export class AddAIModelModal extends LitElement {
             </div>
           </div>
 
-          <div class="full-width">
+          ${this._isAzure ? this._renderAzureDeploymentInput() : ''}
+          <div class="full-width" ?hidden=${this._isAzure}>
             <!-- A secondary action at natural width: full width made it read
                  as the primary action of the form. -->
             <sl-button

@@ -47,6 +47,11 @@ GIT_CREDENTIALS_FILE = "/tmp/.preloop-git-credentials"
 # password; ``x-access-token`` is the convention GitHub itself uses.
 GITHUB_CREDENTIAL_USER = "x-access-token"
 GITLAB_CREDENTIAL_USER = "gitlab-ci-token"
+# Bitbucket Cloud API tokens accept this static username for git over HTTPS.
+# Access tokens and OAuth tokens need ``x-token-auth`` instead; that choice is
+# made per tracker (``tracker_git_token.resolve_tracker_git_username``) and
+# carried in ``git_credentials_map``. The account email is never valid here.
+BITBUCKET_CREDENTIAL_USER = "x-bitbucket-api-token-auth"
 DEFAULT_CREDENTIAL_USER = "oauth2"
 
 
@@ -58,6 +63,8 @@ def credential_username(host_kind: Optional[str], tracker_type: Optional[str]) -
         return GITHUB_CREDENTIAL_USER
     if kind == "gitlab":
         return GITLAB_CREDENTIAL_USER
+    if kind == "bitbucket":
+        return BITBUCKET_CREDENTIAL_USER
     return DEFAULT_CREDENTIAL_USER
 
 

@@ -178,6 +178,7 @@ async def notify_terminal_execution(
     trigger_event_details: Optional[Dict[str, Any]],
     result: Optional[Dict[str, Any]],
     tracker_client: Any,
+    skip_success_comment: bool = False,
 ) -> NotificationOutcome:
     """Apply flow.notifications after a terminal status write.
 
@@ -188,6 +189,8 @@ async def notify_terminal_execution(
         trigger_event_details: Execution trigger snapshot.
         result: Execution result (PR URL lives here).
         tracker_client: Tracker client with ``add_comment``, or None.
+        skip_success_comment: The PR URL was already commented on the
+            triggering issue (Jira write-back), so do not post it again.
 
     Returns:
         What was posted or skipped. Never raises: tracker errors are logged.
@@ -200,7 +203,12 @@ async def notify_terminal_execution(
 
     if is_success_status(status) and parsed.on_success_comment:
         pr_url = extract_opened_pr_url(result)
-        if not pr_url:
+        if skip_success_comment:
+            logger.info(
+                "Success comment skipped for execution %s: already posted",
+                execution_id,
+            )
+        elif not pr_url:
             logger.info(
                 "Success comment skipped for execution %s: no PR URL on result",
                 execution_id,

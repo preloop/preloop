@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Run backend pytest from a Preloop checkout inside the environment image.
+#
+# Uses the venv baked from .github/requirements/app-dev.txt (no network).
+# When DATABASE_URL is unset it starts a throwaway PostgreSQL 16 + pgvector
+# cluster under /tmp, applies the checkout's migrations once, and points the
+# tests at it. Extra arguments go to pytest unchanged:
+#   preloop-pytest backend/tests/services/test_flow_environment.py -q
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+cd "$root"
+if [[ ! -f pyproject.toml || ! -d backend/tests ]]; then
+  echo 'preloop-pytest: run it from a Preloop checkout' >&2
+  exit 64
+fi
+
+venv=${PRELOOP_TEST_VENV:-/opt/preloop-tests}
+lock=.github/requirements/app-dev.txt
+if [[ -f $lock && -f $venv/app-dev.txt ]] && ! cmp -s "$lock" "$venv/app-dev.txt"; then
+  echo "preloop-pytest: warning: $lock differs from the lock baked into" \
+    "$venv; a dependency this change adds or bumps may be missing" >&2
+fi
+
+export PATH="$venv/bin:$PATH"
+export PYTHONPATH="$root/backend${PYTHONPATH:+:$PYTHONPATH}"
+export PRELOOP_DISABLE_TELEMETRY=true
+# Tests never reach a provider. Do not hand them the agent's own model key.
+export OPENAI_API_KEY=mock_key ANTHROPIC_API_KEY=mock_key
+
+# Checkout code (tests, migrations, init_db.py) runs with this allowlist
+# only, so the agent's API, gateway, and git tokens stay out of its reach.
+KEEP_ENV=(PATH HOME LANG LC_ALL TERM TMPDIR TZ PYTHONPATH
+  PYTHONDONTWRITEBYTECODE PLAYWRIGHT_BROWSERS_PATH NODE_PATH
+  PRELOOP_DISABLE_TELEMETRY PRELOOP_BROWSER_CI DATABASE_URL NATS_URL
+  FLOW_FEEDBACK_TEST_DATABASE_URL OPENAI_API_KEY ANTHROPIC_API_KEY
+  PYTEST_ADDOPTS COVERAGE_FILE)
+clean_env() {
+  local name kept=()
+  for name in "${KEEP_ENV[@]}"; do
+    [[ -z ${!name+x} ]] || kept+=("$name=${!name}")
+  done
+  env -i "${kept[@]}" "$@"
+}
+
+as_db_owner() {
+  if [[ $(id -u) -eq 0 ]]; then
+    runuser -u postgres -- "$@"
+  else
+    "$@"
+  fi
+}
+
+if [[ -z ${DATABASE_URL:-} ]]; then
+  pgroot=${PRELOOP_TEST_PGROOT:-/usr/lib/postgresql}
+  pgbin=$(find "$pgroot" -maxdepth 2 -name bin -type d 2>/dev/null | sort -V | tail -n 1 || true)
+  if [[ -z $pgbin ]]; then
+    echo 'preloop-pytest: no PostgreSQL here and DATABASE_URL is unset' >&2
+    exit 69
+  fi
+  data=${PRELOOP_TEST_PGDATA:-/tmp/preloop-test-pg}
+  port=${PRELOOP_TEST_PGPORT:-55432}
+  # Migration state lives next to the cluster it describes (initdb needs
+  # an empty data dir), and a fresh cluster always gets migrated.
+  marker="${data}.schema"
+  if [[ ! -s $data/PG_VERSION ]]; then
+    rm -f "$marker"
+    mkdir -p "$data"
+    [[ $(id -u) -ne 0 ]] || chown postgres:postgres "$data"
+    as_db_owner "$pgbin/initdb" -D "$data" -U postgres --auth=trust \
+      -E UTF8 >"${data}.initdb.log" 2>&1 \
+      || { cat "${data}.initdb.log" >&2; exit 70; }
+  fi
+  if ! as_db_owner "$pgbin/pg_ctl" -D "$data" status >/dev/null 2>&1; then
+    as_db_owner "$pgbin/pg_ctl" -D "$data" -l "$data/server.log" -w \
+      -o "-p $port -k $data -c listen_addresses=127.0.0.1 -c fsync=off" \
+      start >/dev/null || { cat "$data/server.log" >&2; exit 70; }
+  fi
+  export DATABASE_URL="postgresql://postgres@127.0.0.1:$port/preloop_test"
+  # Re-run migrations only when the checkout's migration tree changes.
+  schema=$(find backend/preloop/models/alembic -type f -name '*.py' -print0 \
+    | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+  if [[ ! -f $marker || $(cat "$marker") != "$schema" ]]; then
+    as_db_owner "$pgbin/psql" -q -h 127.0.0.1 -p "$port" -U postgres -d postgres \
+      -c 'DROP DATABASE IF EXISTS preloop_test' -c 'CREATE DATABASE preloop_test'
+    as_db_owner "$pgbin/psql" -q -h 127.0.0.1 -p "$port" -U postgres -d preloop_test \
+      -c 'CREATE EXTENSION IF NOT EXISTS vector'
+    clean_env python scripts/init_db.py --force >"${data}.init.log" 2>&1 \
+      || { tail -n 40 "${data}.init.log" >&2; exit 70; }
+    printf '%s' "$schema" >"$marker"
+  fi
+fi
+export FLOW_FEEDBACK_TEST_DATABASE_URL=${FLOW_FEEDBACK_TEST_DATABASE_URL:-$DATABASE_URL}
+
+clean_env pytest "$@"

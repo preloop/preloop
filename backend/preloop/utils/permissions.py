@@ -12,8 +12,14 @@ import asyncio
 import functools
 import inspect
 import threading
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, status
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+    from preloop.models.models.user import User
 
 try:
     from preloop.plugins.proprietary.rbac.permissions import (
@@ -76,14 +82,75 @@ def _run_awaitable_sync(awaitable):
     return result.get("value")
 
 
+def _check_authorizer(permission_name: str, kwargs: dict) -> None:
+    """Ask the registered authorizer (account hook H4) about an endpoint.
+
+    The action is the permission name and there is no resource: this is the
+    endpoint-level gate. Only a deny changes anything (403).
+    """
+    from preloop.plugins.account_hooks import AuthorizationContext, authorize
+
+    user = kwargs.get("current_user")
+    ctx = AuthorizationContext(
+        account_id=getattr(user, "account_id", None),
+        db=kwargs.get("db"),
+        user=user,
+    )
+    decision = authorize(ctx, permission_name, None)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=decision.reason or f"Permission denied: {permission_name}",
+        )
+
+
+def _with_authorizer(func, permission_name: str):
+    """Consult the H4 authorizer before ``func``, keeping sync/async shape.
+
+    Plugins register the authorizer at startup, after endpoints are
+    decorated, so the registry is read on every call. With nothing
+    registered the call goes straight through.
+    """
+    from preloop.plugins.account_hooks import get_authorizer
+
+    if asyncio.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def authorized_async(*args, **kwargs):
+            if get_authorizer() is not None:
+                from preloop.api.loop_safety import run_db_off_loop
+
+                await run_db_off_loop(
+                    lambda: _check_authorizer(permission_name, kwargs)
+                )
+            return await func(*args, **kwargs)
+
+        return authorized_async
+
+    @functools.wraps(func)
+    def authorized_sync(*args, **kwargs):
+        if get_authorizer() is not None:
+            _check_authorizer(permission_name, kwargs)
+        return func(*args, **kwargs)
+
+    return authorized_sync
+
+
 def require_permission(permission_name: str):
-    """Return a decorator that preserves sync/async behavior."""
+    """Return a decorator that preserves sync/async behavior.
+
+    Without the RBAC plugin the endpoint is only wrapped for the account
+    authorizer (H4). With it, RBAC runs first as the ceiling, then the
+    authorizer, then the endpoint.
+    """
 
     def decorator(func):
         if _plugin_require_permission is None:
-            return func
+            return _with_authorizer(func, permission_name)
 
-        plugin_wrapped = _plugin_require_permission(permission_name)(func)
+        plugin_wrapped = _plugin_require_permission(permission_name)(
+            _with_authorizer(func, permission_name)
+        )
 
         if asyncio.iscoroutinefunction(func):
 
@@ -112,47 +179,133 @@ def require_permission(permission_name: str):
     return decorator
 
 
+def _held_role_ids(user_id: object, account_id: object) -> Any:
+    """Role ids assigned directly or through a team in the user's account.
+
+    Roles granted by a team in another account are excluded here. Callers
+    still drop roles whose own ``account_id`` belongs to a different account,
+    so a system role (``account_id`` is null) can be held and a custom role
+    from elsewhere cannot.
+    """
+    from sqlalchemy import select, union
+
+    from preloop.models.models.permission import TeamRole, UserRole
+    from preloop.models.models.team import Team, TeamMembership
+
+    direct_role_ids = select(UserRole.role_id).where(UserRole.user_id == user_id)
+    team_role_ids = (
+        select(TeamRole.role_id)
+        .join(TeamMembership, TeamMembership.team_id == TeamRole.team_id)
+        .join(Team, Team.id == TeamRole.team_id)
+        .where(TeamMembership.user_id == user_id, Team.account_id == account_id)
+    )
+    return union(direct_role_ids, team_role_ids)
+
+
+def _scoped_held_roles(user_id: object, account_id: object) -> Any:
+    """Roles the user holds that belong to their account.
+
+    System roles (``account_id`` is null) count. A custom role scoped to
+    another account does not. Shared by the boolean check and the listing
+    so the two cannot drift.
+    """
+    from sqlalchemy import and_, or_
+
+    from preloop.models.models.permission import Role
+
+    return and_(
+        Role.id.in_(_held_role_ids(user_id, account_id)),
+        or_(Role.account_id.is_(None), Role.account_id == account_id),
+    )
+
+
 def user_holds_permission(db, current_user, permission_name: str) -> bool:
     """Whether one of a user's roles grants ``permission_name``.
 
-    Generalised from the kill switch's own copy of this walk, which stays
-    where it is because its tests patch that module's plugin symbols.
+    This is the single resolver for "which roles does this user hold in
+    their account". ``preloop.api.auth.permissions.has_permission`` (the
+    fallback used when no RBAC plugin overlay is installed) delegates here,
+    and ``get_user_permissions`` lists names from the same role set via
+    :func:`user_permission_names`. The kill switch keeps its own copy because
+    its tests patch that module's plugin symbols.
 
-    Data driven on the seeded role/permission matrix, with the ``owner``
-    system role treated as all-powerful (the implicit-owner convention the
-    RBAC layer already follows). Team roles count, so a permission granted
-    through a team is not silently ignored.
+    A role is held when it is assigned to the user directly, or to a team in
+    the user's account that the user belongs to. Roles scoped to another
+    account never count. Data driven on the seeded role/permission matrix,
+    with the ``owner`` system role treated as all-powerful (the
+    implicit-owner convention the RBAC layer already follows). A custom role
+    that merely happens to be named ``owner`` gets no special treatment.
+
+    Resolved in one SQL round trip because the fallback runs on every
+    decorated request.
     """
-    from preloop.models.crud import (
-        crud_role,
-        crud_team,
-        crud_team_role,
-        crud_user_role,
-    )
+    from sqlalchemy import and_, or_, select, true
 
-    roles = crud_user_role.get_user_roles(db, user_id=current_user.id)
-    offset = 0
-    while True:
-        teams = crud_team.get_user_teams(
-            db, user_id=current_user.id, skip=offset, limit=100
+    from preloop.models.models.permission import Permission, Role, RolePermission
+
+    user_id = current_user.id
+    account_id = current_user.account_id
+
+    role_grants_permission = (
+        select(RolePermission.id)
+        .join(Permission, Permission.id == RolePermission.permission_id)
+        .where(
+            RolePermission.role_id == Role.id,
+            Permission.name == permission_name,
         )
-        for team in teams:
-            if team.account_id == current_user.account_id:
-                roles.extend(crud_team_role.get_team_roles(db, team_id=team.id))
-        if len(teams) < 100:
-            break
-        offset += len(teams)
-    for role in roles:
-        if role.account_id is not None and role.account_id != current_user.account_id:
-            continue
-        if role.name == "owner" and role.is_system_role:
-            return True
-        if any(
-            permission.name == permission_name
-            for permission in crud_role.get_permissions(db, role_id=role.id)
-        ):
-            return True
-    return False
+        .exists()
+    )
+    held_role = select(Role.id).where(
+        _scoped_held_roles(user_id, account_id),
+        or_(
+            and_(Role.name == "owner", Role.is_system_role == true()),
+            role_grants_permission,
+        ),
+    )
+    return bool(db.scalar(select(held_role.exists())))
+
+
+def user_permission_names(db: Session, current_user: User) -> list[str]:
+    """Permission names granted by roles the user holds in their account.
+
+    Same role set as :func:`user_holds_permission`: direct assignments and
+    roles granted through teams in the user's account. Roles scoped to
+    another account never count. Holding the system ``owner`` role expands
+    to every permission name. A custom role that is merely named ``owner``
+    does not.
+
+    Args:
+        db: Database session.
+        current_user: User whose permissions are listed.
+
+    Returns:
+        Permission names. Order is not significant.
+    """
+    from sqlalchemy import or_, select, true
+
+    from preloop.models.models.permission import Permission, Role, RolePermission
+
+    user_id = current_user.id
+    account_id = current_user.account_id
+
+    system_owner_held = (
+        select(Role.id)
+        .where(
+            _scoped_held_roles(user_id, account_id),
+            Role.name == "owner",
+            Role.is_system_role == true(),
+        )
+        .exists()
+    )
+    granted_permission_ids = (
+        select(RolePermission.permission_id)
+        .join(Role, Role.id == RolePermission.role_id)
+        .where(_scoped_held_roles(user_id, account_id))
+    )
+    names = select(Permission.name).where(
+        or_(system_owner_held, Permission.id.in_(granted_permission_ids))
+    )
+    return list(db.scalars(names).all())
 
 
 def ensure_permission_in_oss(db, current_user, permission_name: str) -> None:

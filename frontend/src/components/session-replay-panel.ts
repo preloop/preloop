@@ -4972,9 +4972,9 @@ export class SessionReplayPanel extends LitElement {
   }
 
   // Drill-down: full request context for an expanded turn. Uses the lazy
-  // eventDetails fetch — the complete message list, model, tokens, finish
-  // reason, retries, and tools with per-tool schema cost.
-  // TODO: deeper nested-tree drill-down (per-message / per-tool sub-trees).
+  // eventDetails fetch: the complete message list, model, tokens, finish
+  // reason, retries, and tools with per-tool schema cost. It does not open
+  // a further tree per message or per tool.
   private renderChatTurnDetail(turn: ChatTurn) {
     if (!turn.event) return nothing;
     const detail = this.eventDetails[turn.event.id];

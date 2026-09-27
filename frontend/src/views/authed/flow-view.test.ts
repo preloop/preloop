@@ -1,4 +1,5 @@
 import { expect } from '@open-wc/testing';
+import sinon from 'sinon';
 
 import './flow-view';
 import type { FlowView } from './flow-view';
@@ -357,6 +358,143 @@ describe('FlowView detail page language', () => {
       );
     } finally {
       element.remove();
+    }
+  });
+});
+
+describe('FlowView production logging', () => {
+  function createElement(): FlowView {
+    return document.createElement('flow-view') as FlowView;
+  }
+
+  afterEach(() => {
+    document.body.querySelectorAll('sl-alert').forEach((node) => node.remove());
+    localStorage.clear();
+  });
+
+  it('confirms enablement in a toast and does not use console.log', async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    const fetchStub = sinon.stub(window, 'fetch').resolves(
+      new Response(JSON.stringify({ id: 'flow-1', is_enabled: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const log = sinon.spy(console, 'log');
+    const element = createElement() as any;
+    element.flowId = 'flow-1';
+    element.flow = { name: 'Test', is_enabled: false };
+
+    try {
+      await element.toggleFlowEnabled();
+      expect(log.called, 'no console.log').to.equal(false);
+      expect(element.flow.is_enabled).to.equal(true);
+      const alert = document.body.querySelector('sl-alert');
+      expect(alert?.textContent).to.contain('Flow enabled successfully');
+    } finally {
+      log.restore();
+      fetchStub.restore();
+    }
+  });
+
+  it('toasts the server reason when enabling a flow fails', async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    const alertStub = sinon.stub(window, 'alert');
+    const fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input, init) => {
+        const url = String(input);
+        const method = (init?.method || 'GET').toUpperCase();
+        if (url.includes('/api/v1/flows/') && method === 'PUT') {
+          return new Response(
+            JSON.stringify({ detail: 'Schedule is invalid' }),
+            {
+              status: 400,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    const element = createElement() as any;
+    element.flowId = 'flow-1';
+    element.flow = { name: 'Test', is_enabled: false };
+
+    try {
+      await element.toggleFlowEnabled();
+      expect(alertStub.called).to.equal(false);
+      expect(element.flow.is_enabled).to.equal(false);
+      const toast = document.body.querySelector('sl-alert');
+      expect(toast?.textContent).to.contain('Schedule is invalid');
+    } finally {
+      alertStub.restore();
+      fetchStub.restore();
+    }
+  });
+
+  it('keeps console.log and console.debug out of the flow view', async () => {
+    const response = await fetch(new URL('./flow-view.ts', import.meta.url));
+    const source = await response.text();
+    expect(source).to.not.match(/console\.log\s*\(/);
+    expect(source).to.not.match(/console\.debug\s*\(/);
+  });
+});
+
+describe('FlowView review instructions', () => {
+  async function renderDetail(overrides: Record<string, unknown> = {}) {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flowId = 'flow-1';
+    element.flow = {
+      id: 'flow-1',
+      name: 'Pull Request Reviewer',
+      agent_type: 'codex',
+      is_enabled: true,
+      trigger_event_source: 'webhook',
+      ...overrides,
+    };
+    element.recentExecutions = [];
+    document.body.appendChild(element);
+    await element.updateComplete;
+    return element;
+  }
+
+  it('shows review instructions read-only when they are set', async () => {
+    const element = await renderDetail({
+      review_instructions: 'Keep the declared runtime.',
+    });
+    try {
+      const card = element.shadowRoot.querySelector(
+        '[data-review-instructions]'
+      );
+      expect(card).to.exist;
+      expect(card.textContent).to.include('Review instructions');
+      expect(card.textContent).to.include('Keep the declared runtime.');
+      expect(card.querySelector('sl-textarea')).to.equal(null);
+    } finally {
+      element.remove();
+    }
+  });
+
+  it('hides review instructions when they are unset or blank', async () => {
+    const unset = await renderDetail();
+    const blank = await renderDetail({ review_instructions: '   ' });
+    try {
+      expect(
+        unset.shadowRoot.querySelector('[data-review-instructions]')
+      ).to.equal(null);
+      expect(
+        blank.shadowRoot.querySelector('[data-review-instructions]')
+      ).to.equal(null);
+    } finally {
+      unset.remove();
+      blank.remove();
     }
   });
 });

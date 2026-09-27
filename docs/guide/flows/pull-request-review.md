@@ -7,6 +7,9 @@ PR actually does what the issue it references asked for.
 The preset ships as `backend/presets/002-pull-request-reviewer.yaml`
 (slug `pull-request-reviewer`).
 
+Operators set blocking review policy on the flow form's Review instructions
+field when the repository cannot hold `.preloop/review-policy.md`.
+
 The review is **stateful**. One summary comment carries HTML markers
 (`<!-- preloop-review:flow-id:pr-reviewer -->`,
 `<!-- preloop-review:reviewed-sha:SHA -->`) and is rewritten in place on each
@@ -149,6 +152,21 @@ re-checked; the rest keep their checkbox untouched.
 
 `issue_coverage` is `[]` when the PR references no issue.
 
+## Stale reviews stop on their own
+
+When a pull request (GitHub, Bitbucket) or merge request (GitLab) is merged
+or closed, Preloop stops every execution still bound to it, in any flow of
+the account, unless that flow itself triggers on the merge or close. The
+execution shows the reason, for example "Stopped because pull request
+example/repo#12 was merged". Nothing happens if no run is bound.
+
+With `webhook_config.supersede_on_update: true`, a new head commit also
+stops the older run of the same flow on the same pull request before the
+new head is reviewed. The preset sets it; flows created from the preset
+before this change keep the old behaviour (the new head waits for the older
+run) until the flag is set on them. It applies only when the flow triggers
+on `pull_request_updated` (`merge_request_updated` on GitLab).
+
 ## Repository review policy
 
 Agent instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`,
@@ -232,21 +250,15 @@ A reported version newer than `minimum_version` is a HIGH finding. An equal
 version is not. Dotted numbers compare numerically: 5.10 is newer than 5.9
 and older than 5.16.
 
-The reviewer sandbox is `ghcr.io/openai/codex-universal` (see
+The default reviewer sandbox is `ghcr.io/openai/codex-universal` (see
 `backend/preloop/agents/images.py`). That image is not built from this
-repository. `environments/preloop/Dockerfile` is an integration fixture,
-not the reviewer image, and it does not install Perl. When `perl` or
+repository and does not guarantee Perl. When `perl` or
 `Perl::MinimumVersion` is absent, the review says "version linter
 unavailable in this sandbox" and judges the diff from the policy. That is
 not a pass.
 
-An image you build can add the smallest useful Perl toolchain.
-`Perl::MinimumVersion` is pure Perl (it pulls PPI):
-
-```text
-apt-get install -y --no-install-recommends perl cpanminus
-cpanm --notest Perl::MinimumVersion
-```
+The environment image built from `environments/preloop/Dockerfile` ships
+`perlver`. A private runner gets it with `cpanm Perl::MinimumVersion`.
 
 ### Perl 5.10 example
 
@@ -259,6 +271,26 @@ forbidden, and a pull request that adds one is a blocking finding.
 
 The same markdown can be pasted into the flow's Review instructions when
 the repository cannot carry `.preloop/review-policy.md`.
+
+## Running tests
+
+Reading the tests is the main check; a run confirms it. Step 2.4 runs
+tests only on the PR branch from this repository, never on a fork's code,
+and never installs packages to do it. When nothing could run, the summary
+says "tests not run in this sandbox" and names the CI jobs to confirm.
+
+In the environment image built from `environments/preloop/Dockerfile`
+(see [Execution environments](environments-and-recovery.md#backend-and-frontend-tests-in-the-image)),
+the reviewer runs the backend test files the diff touches with
+`preloop-pytest -q -m "not integration" <files>`: the backend lock is
+preinstalled and the runner starts its own disposable database, with no
+network. For frontend test files it runs `preloop-frontend-deps`, then
+`cd frontend && npx --no-install web-test-runner <files>` (`--no-install`
+so a missing tree fails instead of fetching a package). It never runs the
+whole suite (CI shards it) and keeps runs under about 5 minutes. A failing
+test on the reviewed head is a finding. The default `codex-universal` image has
+neither runner, so there the reviewer only uses a test command whose
+dependencies are already installed.
 
 ## Not in this slice
 

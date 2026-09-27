@@ -36,6 +36,7 @@ from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.model_gateway_budget import ModelGatewayBudgetService
 from preloop.models.crud import crud_managed_agent
+from preloop.plugins.account_hooks import get_budget_extension
 from preloop.models.crud.budget import (
     ACCOUNT_LEVEL_SUBJECT_TYPES,
     crud_budget_policy,
@@ -209,7 +210,7 @@ class ModelGatewayBudgetEnforcer:
             )
 
         now = datetime.now(timezone.utc)
-        account_id = auth_context.user.account_id
+        account_id = auth_context.account_id
 
         model_alias = resolve_ai_model_runtime(
             ai_model
@@ -226,6 +227,23 @@ class ModelGatewayBudgetEnforcer:
             model_alias=model_alias,
             api_key_id=auth_context.api_key.id if auth_context.api_key else None,
         )
+        # Policies of other accounts that also cover this request, such as an
+        # ancestor's (account hook H5). Their spend lives under their own
+        # account, so each is read from ``policy.account_id`` below.
+        extension = get_budget_extension()
+        if extension is not None:
+            extra = list(
+                extension.extra_policies(
+                    db,
+                    account_id=account_id,
+                    auth_context=auth_context,
+                    ai_model=ai_model,
+                    model_alias=model_alias,
+                )
+                or []
+            )
+            if extra:
+                candidates = list(candidates) + extra
         if not candidates:
             return None
         subject_types = {policy.subject_type for policy in candidates}
@@ -280,6 +298,9 @@ class ModelGatewayBudgetEnforcer:
                 Optional[datetime],
             ]
         ] = set()
+        # Buckets of other accounts' policies (hook H5), keyed by that account.
+        foreign_buckets: Dict[str, List[Any]] = {}
+        own_account = str(account_id)
 
         unenforceable_hard_limit = False
         for policy in policies_by_id.values():
@@ -311,6 +332,12 @@ class ModelGatewayBudgetEnforcer:
                 policy.period,
                 p_start,
             )
+            policy_account = str(policy.account_id or account_id)
+            if policy_account != own_account:
+                evaluations.append((policy, p_start, (policy_account, bucket_key)))
+                if bucket_key not in foreign_buckets.setdefault(policy_account, []):
+                    foreign_buckets[policy_account].append(bucket_key)
+                continue
             evaluations.append((policy, p_start, bucket_key))
             if bucket_key not in seen_buckets:
                 seen_buckets.add(bucket_key)
@@ -332,20 +359,17 @@ class ModelGatewayBudgetEnforcer:
             )
             return unpriced_budget_warning(model_alias)
 
-        spend_map: Dict[
-            Tuple[
-                str,
-                Optional[uuid.UUID],
-                Optional[str],
-                models.BudgetPeriod,
-                Optional[datetime],
-            ],
-            float,
-        ] = {}
+        spend_map: Dict[Any, float] = {}
         if buckets_to_fetch:
             spend_map = crud_budget_spend.get_spend_multi(
                 db=db, account_id=account_id, buckets=buckets_to_fetch
             )
+        for foreign_account, foreign in foreign_buckets.items():
+            foreign_spend = crud_budget_spend.get_spend_multi(
+                db=db, account_id=foreign_account, buckets=foreign
+            )
+            for foreign_key, amount in foreign_spend.items():
+                spend_map[(foreign_account, foreign_key)] = amount
 
         for policy, _p_start, bucket_key in evaluations:
             current_spend = spend_map.get(bucket_key, 0.0)

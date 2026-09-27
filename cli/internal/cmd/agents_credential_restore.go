@@ -40,6 +40,9 @@ type exportedModelCredential struct {
 	Refresh        string `json:"refresh"`
 	Expires        int64  `json:"expires"`
 	AccountID      string `json:"account_id"`
+	// LastRefresh is when Preloop last wrote the bundle (RFC 3339, UTC).
+	// Older servers omit it.
+	LastRefresh string `json:"last_refresh"`
 }
 
 // restoreSubscriptionLoginOnOffboard exports the live subscription OAuth
@@ -187,15 +190,48 @@ func updateClaudeKeychainCredentialBlob(blob string) {
 
 // writeCodexSubscriptionCredential merges the exported bundle into Codex's
 // auth.json (creating it when absent), preserving unrelated fields such as
-// id_token — Codex re-derives a fresh id_token on its next refresh using the
-// restored refresh token.
+// id_token and auth_mode. Codex re-derives a fresh id_token on its next
+// refresh using the restored refresh token.
 func writeCodexSubscriptionCredential(bundle exportedModelCredential) (string, error) {
-	path := resolveCodexAuthPath()
+	path := resolveCodexAuthWritePath()
+	existing, _ := os.ReadFile(path) //nolint:errcheck // absent file: create it
+	data, err := mergeCodexAuthDocument(existing, bundle, time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return "", fmt.Errorf("failed to encode auth file: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("failed to create %s: %w", filepath.Dir(path), err)
+	}
+	if err := writeFileAtomically(path, data, 0o600, ".auth-*.json"); err != nil {
+		return "", fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return path, nil
+}
 
+// resolveCodexAuthWritePath returns the file Codex reads its login from. A
+// symlinked auth.json is resolved so the atomic rename replaces the target
+// and not the link.
+func resolveCodexAuthWritePath() string {
+	path := resolveCodexAuthPath()
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
+// mergeCodexAuthDocument writes the bundle into a Codex auth document (the
+// auth.json shape, which is also the Keychain blob). tokens.access_token,
+// tokens.refresh_token, tokens.account_id, and last_refresh are set. Every
+// other field, including tokens.id_token, auth_mode, and OPENAI_API_KEY, is
+// kept as it was. A missing or corrupt document is rebuilt.
+func mergeCodexAuthDocument(
+	existing []byte,
+	bundle exportedModelCredential,
+	lastRefresh string,
+) ([]byte, error) {
 	document := map[string]interface{}{}
-	if data, readErr := os.ReadFile(path); readErr == nil {
-		_ = json.Unmarshal(data, &document) //nolint:errcheck // corrupt file → rebuild
-		if document == nil {
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &document); err != nil || document == nil {
 			document = map[string]interface{}{}
 		}
 	}
@@ -211,17 +247,6 @@ func writeCodexSubscriptionCredential(bundle exportedModelCredential) (string, e
 		tokens["account_id"] = accountID
 	}
 	document["tokens"] = tokens
-	document["last_refresh"] = time.Now().UTC().Format(time.RFC3339)
-
-	data, err := json.MarshalIndent(document, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to encode auth file: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", fmt.Errorf("failed to create %s: %w", filepath.Dir(path), err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return "", fmt.Errorf("failed to write %s: %w", path, err)
-	}
-	return path, nil
+	document["last_refresh"] = lastRefresh
+	return json.MarshalIndent(document, "", "  ")
 }

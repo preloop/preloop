@@ -8,6 +8,8 @@ import {
   resendVerificationEmail,
 } from '../../api';
 import { formStyles } from '../../styles/form-styles';
+import { hasCapability } from '../../capabilities';
+import type { Membership } from '../../hierarchy-api';
 import { getBrandConfig } from '../../brand-config';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -50,6 +52,16 @@ export class LoginView extends LitElement {
 
   @state()
   private resending = false;
+
+  /** Capability `multi_account` from /features (off in OSS). */
+  private multiAccount = false;
+
+  /**
+   * Memberships to choose from after sign-in, set only when the person has
+   * several accounts and none was used last. Null renders the sign-in form.
+   */
+  @state()
+  private chooserMemberships: Membership[] | null = null;
 
   static styles = [
     formStyles,
@@ -134,6 +146,7 @@ export class LoginView extends LitElement {
       this.registrationEnabled = features.features['registration'] !== false;
       this.passkeysEnabled =
         features.features['passkeys'] !== false && passkeysSupported();
+      this.multiAccount = hasCapability(features.features, 'multi_account');
     } catch (error) {
       this.oauthProviders = [];
       // Fail open, matching the /register route guard.
@@ -158,6 +171,32 @@ export class LoginView extends LitElement {
     }
   }
 
+  /**
+   * After tokens are stored: open the account chooser when the person has
+   * several accounts and no last used one, otherwise continue as before.
+   * Any failure here falls back to the normal redirect.
+   */
+  private async _continueAfterSignIn(data: object) {
+    const lastActive = (data as { last_active_account_id?: unknown })
+      .last_active_account_id;
+    if (this.multiAccount && !lastActive) {
+      try {
+        const [{ getMemberships }] = await Promise.all([
+          import('../../hierarchy-api'),
+          import('../authed/hierarchy/account-login-chooser'),
+        ]);
+        const memberships = await getMemberships();
+        if (memberships.length > 1) {
+          this.chooserMemberships = memberships;
+          return;
+        }
+      } catch {
+        // No memberships endpoint: a single account, carry on.
+      }
+    }
+    this._navigateAfterLogin();
+  }
+
   private async handlePasskeySignIn() {
     this.error = '';
     try {
@@ -170,7 +209,7 @@ export class LoginView extends LitElement {
       window.dispatchEvent(
         new CustomEvent('auth-change', { bubbles: true, composed: true })
       );
-      this._navigateAfterLogin();
+      await this._continueAfterSignIn(data);
     } catch (error) {
       // A cancelled ceremony (user dismissed the prompt) is not an error
       // worth showing.
@@ -209,7 +248,7 @@ export class LoginView extends LitElement {
       window.dispatchEvent(
         new CustomEvent('auth-change', { bubbles: true, composed: true })
       );
-      this._navigateAfterLogin();
+      await this._continueAfterSignIn(data);
     } catch (error) {
       if (error instanceof Error) {
         this.error = error.message;
@@ -316,68 +355,81 @@ export class LoginView extends LitElement {
         <div class="form-container">
           <h2>Sign in to ${getBrandConfig().name}</h2>
           ${
-            this.successMessage
-              ? html`<div class="success-message">${this.successMessage}</div>`
-              : ''
+            this.chooserMemberships
+              ? html`<account-login-chooser
+                  .memberships=${this.chooserMemberships}
+                  .navigate=${() => this._navigateAfterLogin()}
+                ></account-login-chooser>`
+              : this._renderSignInForm()
           }
-          ${
-            this.error
-              ? html`<div class="error-message">
-                  ${this.error}
-                  ${
-                    this.unverifiedEmail
-                      ? html`<div class="resend-row">
-                          <sl-button
-                            id="resend-verification"
-                            size="small"
-                            variant="default"
-                            ?loading=${this.resending}
-                            @click=${this._handleResend}
-                          >
-                            Send a new verification email
-                          </sl-button>
-                        </div>`
-                      : nothing
-                  }
-                </div>`
-              : ''
-          }
-          ${this._renderOAuthButtons()}
-          <form @submit=${this.handleLogin}>
-            <div class="form-group">
-              <sl-input
-                label="Username"
-                id="username"
-                name="username"
-                required
-              ></sl-input>
-            </div>
-            <div class="form-group">
-              <sl-input
-                type="password"
-                label="Password"
-                id="password"
-                name="password"
-                required
-                password-toggle
-              ></sl-input>
-            </div>
-            <div class="form-actions">
-              <sl-button type="submit" variant="primary" style="width: 100%;"
-                >Sign in</sl-button
-              >
-            </div>
-            <div class="form-links">
-              <a href="/forgot-password">Forgot Password?</a>
-              ${
-                this.registrationEnabled
-                  ? html` &middot; <a href="/register">Create Account</a>`
-                  : nothing
-              }
-            </div>
-          </form>
         </div>
       </div>
+    `;
+  }
+
+  private _renderSignInForm() {
+    return html`
+      ${
+        this.successMessage
+          ? html`<div class="success-message">${this.successMessage}</div>`
+          : ''
+      }
+      ${
+        this.error
+          ? html`<div class="error-message">
+              ${this.error}
+              ${
+                this.unverifiedEmail
+                  ? html`<div class="resend-row">
+                      <sl-button
+                        id="resend-verification"
+                        size="small"
+                        variant="default"
+                        ?loading=${this.resending}
+                        @click=${this._handleResend}
+                      >
+                        Send a new verification email
+                      </sl-button>
+                    </div>`
+                  : nothing
+              }
+            </div>`
+          : ''
+      }
+      ${this._renderOAuthButtons()}
+      <form @submit=${this.handleLogin}>
+        <div class="form-group">
+          <sl-input
+            label="Username"
+            id="username"
+            name="username"
+            required
+          ></sl-input>
+        </div>
+        <div class="form-group">
+          <sl-input
+            type="password"
+            label="Password"
+            id="password"
+            name="password"
+            required
+            password-toggle
+          ></sl-input>
+        </div>
+        <div class="form-actions">
+          <sl-button type="submit" variant="primary" style="width: 100%;"
+            >Sign in</sl-button
+          >
+        </div>
+        <div class="form-links">
+          <a href="/forgot-password">Forgot Password?</a>
+          ${
+            this.registrationEnabled
+              ? html` &middot; <a href="/register">Create Account</a>`
+              : nothing
+          }
+        </div>
+      </form>
     `;
   }
 }

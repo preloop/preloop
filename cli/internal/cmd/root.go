@@ -109,6 +109,9 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
 	rootCmd.PersistentFlags().StringVar(&FlagToken, "token", "", "access token (overrides PRELOOP_TOKEN env var and config file)")
 	rootCmd.PersistentFlags().StringVar(&FlagURL, "url", "", "API base URL (overrides PRELOOP_URL env var and config file)")
+	rootCmd.PersistentFlags().StringVar(&FlagProfile, "profile", "", "config profile to use (overrides PRELOOP_PROFILE and the file's current profile)")
+	rootCmd.PersistentFlags().StringVar(&FlagAccount, "account", "", "account slug to act in for this command (overrides PRELOOP_ACCOUNT and the profile's current account)")
+	cobra.OnInitialize(applySelection)
 
 	// Add subcommands
 	rootCmd.AddCommand(loginCmd)
@@ -130,4 +133,13 @@ func init() {
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(evidenceCmd)
+	rootCmd.AddCommand(accountsCmd)
+
+	// Groups that need a server capability: hidden from help and refused at
+	// run time unless GET /api/v1/features reports it.
+	rootCmd.AddCommand(newSubaccountsCmd())
+	rootCmd.AddCommand(newShareCmd())
+	rootCmd.AddCommand(newTagsCmd())
+	rootCmd.AddCommand(newAccessCmd())
+	installCapabilityHelp(rootCmd)
 }

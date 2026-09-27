@@ -514,18 +514,12 @@ async function performFetchWithAuth(
     }
 
     if (isUpstreamGatewayError) {
-      console.log(
-        'Gateway upstream returned 401, returning error directly without refreshing token'
-      );
       return response;
     }
-
-    console.log('Access token expired, attempting to refresh...');
 
     // If another tab or process already refreshed the token, use the new one directly
     const currentToken = localStorage.getItem('accessToken');
     if (currentToken && currentToken !== accessToken) {
-      console.log('Token was already refreshed, retrying request');
       headers.set('Authorization', `Bearer ${currentToken}`);
       options.headers = headers;
       return fetch(url, options);
@@ -1247,6 +1241,39 @@ export async function getAttentionDismissals(): Promise<
   return (body?.items || []) as AttentionDismissal[];
 }
 
+/** One notify rule's hits over the summary window (#959). */
+export interface PolicyNoticeRuleSummary {
+  rule_id: string;
+  rule_description?: string | null;
+  target: 'model.request' | 'model.response' | string;
+  count: number;
+  /** Newest hit id; a new hit changes it and brings a dismissed card back. */
+  last_hit_id: string;
+  last_hit_at: string;
+  /** Secret-redacted, at most 280 characters; null when redaction failed. */
+  last_excerpt?: string | null;
+  last_user_id?: string | null;
+  last_username?: string | null;
+}
+
+export interface PolicyNoticeSummary {
+  days: number;
+  rules: PolicyNoticeRuleSummary[];
+}
+
+/** Notify rule hits grouped by rule, for the Attention page. */
+export async function getPolicyNoticeSummary(
+  days = 7
+): Promise<PolicyNoticeSummary> {
+  const response = await fetchWithAuth(
+    `/api/v1/policies/notices/summary?days=${encodeURIComponent(String(days))}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch policy notices');
+  }
+  return (await response.json()) as PolicyNoticeSummary;
+}
+
 export async function dismissAttentionItem(
   itemId: string,
   body: {
@@ -1294,6 +1321,157 @@ export async function getCostAnalyticsSummary(
     throw new Error('Failed to fetch cost analytics summary');
   }
   return response.json();
+}
+
+/** One execution that contributed to an issue's cost (#958). */
+export interface IssueCostExecution {
+  execution_id: string;
+  flow_id: string;
+  flow_name: string;
+  status: string;
+  link: string;
+  pr_url: string | null;
+  estimated_cost: number | null;
+  total_tokens: number;
+  start_time: string;
+  end_time: string | null;
+}
+
+/** One tracker issue with summed cost and cycle-time milestones. */
+export interface IssueCostRow {
+  id: string;
+  tracker_id: string;
+  tracker_name: string;
+  tracker_type: string;
+  issue_key: string;
+  issue_id: string | null;
+  title: string | null;
+  issue_url: string | null;
+  pr_url: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  estimated_cost: number;
+  total_tokens: number;
+  run_count: number;
+  failed_run_count: number;
+  first_event_at: string | null;
+  pr_opened_at: string | null;
+  approved_at: string | null;
+  merged_at: string | null;
+  first_event_to_pr_opened_hours: number | null;
+  pr_opened_to_approved_hours: number | null;
+  approved_to_merged_hours: number | null;
+  /** forge (the PR's own created_at), bind or run_end; null without a PR. */
+  pr_opened_at_source: string | null;
+  /** The tracker's estimate; null when the tracker states none. */
+  estimate_hours: number | null;
+  estimate_hours_source: string | null;
+  estimate_points: number | null;
+  estimate_points_source: string | null;
+}
+
+export interface IssueCostSummary {
+  id: string | null;
+  name: string;
+  issue_count: number;
+  estimated_cost: number;
+  total_tokens: number;
+  run_count: number;
+  failed_run_count: number;
+}
+
+export interface IssueCostReport {
+  start: string | null;
+  end: string | null;
+  project_id: string | null;
+  flow_id: string | null;
+  issues: IssueCostRow[];
+  by_project: IssueCostSummary[];
+  by_flow: IssueCostSummary[];
+  unassigned: {
+    estimated_cost: number;
+    total_tokens: number;
+    run_count: number;
+    failed_run_count: number;
+    /** Filled by the JSON export only; the report carries the totals. */
+    executions: IssueCostExecution[];
+  };
+  truncated: boolean;
+}
+
+export interface IssueCostFilter {
+  startDate?: string | null;
+  endDate?: string | null;
+  projectId?: string | null;
+  flowId?: string | null;
+}
+
+function issueCostQuery(filter: IssueCostFilter): URLSearchParams {
+  const query = new URLSearchParams();
+  if (filter.startDate) query.set('start_date', filter.startDate);
+  if (filter.endDate) query.set('end_date', filter.endDate);
+  if (filter.projectId) query.set('project_id', filter.projectId);
+  if (filter.flowId) query.set('flow_id', filter.flowId);
+  return query;
+}
+
+/** Issue-level cost and cycle time for one filter. */
+export async function getIssueCosts(
+  filter: IssueCostFilter = {}
+): Promise<IssueCostReport> {
+  const query = issueCostQuery(filter).toString();
+  const response = await fetchWithAuth(
+    query ? `/api/v1/cost/by-issue?${query}` : '/api/v1/cost/by-issue'
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch cost per issue');
+  }
+  return response.json();
+}
+
+/** Executions that contributed to one issue row. */
+export async function getIssueCostExecutions(
+  rollupId: string,
+  flowId?: string | null
+): Promise<IssueCostExecution[]> {
+  const query = flowId ? `?flow_id=${encodeURIComponent(flowId)}` : '';
+  const response = await fetchWithAuth(
+    `/api/v1/cost/by-issue/${encodeURIComponent(rollupId)}/executions${query}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch the executions of this issue');
+  }
+  return response.json();
+}
+
+/** Executions in the unassigned bucket of the current filter. */
+export async function getUnassignedIssueCostExecutions(
+  filter: IssueCostFilter = {}
+): Promise<IssueCostExecution[]> {
+  const query = issueCostQuery(filter).toString();
+  const response = await fetchWithAuth(
+    `/api/v1/cost/by-issue/unassigned/executions${query ? `?${query}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch the unassigned executions');
+  }
+  return response.json();
+}
+
+/** CSV or JSON export of the issue rows for the current filter. */
+export async function exportIssueCosts(
+  format: 'csv' | 'json',
+  filter: IssueCostFilter = {}
+): Promise<Blob> {
+  const query = issueCostQuery(filter);
+  query.set('format', format);
+  const response = await fetchWithAuth(
+    `/api/v1/cost/by-issue/export?${query.toString()}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to export cost per issue');
+  }
+  return response.blob();
 }
 
 export async function getToolUsageStats(
@@ -2698,6 +2876,24 @@ export async function getTrackers() {
   return response.json();
 }
 
+/**
+ * Pick a readable message from a tracker endpoint error body. FastAPI puts
+ * it in `detail` (a string, or a list for validation errors).
+ */
+export function trackerErrorDetail(errorData: any, fallback: string): string {
+  const detail = errorData?.detail ?? errorData?.message;
+  if (typeof detail === 'string' && detail) {
+    return detail;
+  }
+  return fallback;
+}
+
+/** Extra tracker settings sent with connection tests and project listing. */
+export interface TrackerConnectionOptions {
+  connectionDetails?: Record<string, unknown>;
+  authType?: string;
+}
+
 export async function addTracker(trackerData: any) {
   const response = await fetchWithAuth('/api/v1/trackers', {
     method: 'POST',
@@ -2705,7 +2901,8 @@ export async function addTracker(trackerData: any) {
     body: JSON.stringify(trackerData),
   });
   if (!response.ok) {
-    throw new Error('Failed to add tracker');
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(trackerErrorDetail(errorData, 'Failed to add tracker'));
   }
   return response.json();
 }
@@ -2717,7 +2914,8 @@ export async function updateTracker(trackerId: string, trackerData: any) {
     body: JSON.stringify(trackerData),
   });
   if (!response.ok) {
-    throw new Error('Failed to update tracker');
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(trackerErrorDetail(errorData, 'Failed to update tracker'));
   }
   return response.json();
 }
@@ -2736,15 +2934,16 @@ export async function validateTrackerToken(
   token: string,
   url?: string,
   username?: string,
-  id?: string
+  id?: string,
+  options: TrackerConnectionOptions = {}
 ) {
-  console.log('Validating tracker token', type, token, url, username);
   const payload: {
     tracker_id?: string;
     tracker_type: string;
     api_key: string;
     url?: string;
-    connection_details?: { username?: string };
+    connection_details?: Record<string, unknown>;
+    auth_type?: string;
   } = {
     tracker_type: type,
     api_key: token,
@@ -2757,6 +2956,15 @@ export async function validateTrackerToken(
   }
   if (type.toLowerCase() === 'jira' && username) {
     payload.connection_details = { username };
+  }
+  if (options.connectionDetails) {
+    payload.connection_details = {
+      ...(payload.connection_details ?? {}),
+      ...options.connectionDetails,
+    };
+  }
+  if (options.authType) {
+    payload.auth_type = options.authType;
   }
 
   const response = await fetchWithAuth('/api/v1/trackers/test-and-list-orgs', {
@@ -2782,7 +2990,8 @@ export async function listProjectsForOrg(
   orgId: string,
   url?: string,
   username?: string,
-  trackerId?: string
+  trackerId?: string,
+  options: TrackerConnectionOptions = {}
 ) {
   const payload: any = {
     tracker_id: trackerId,
@@ -2795,6 +3004,15 @@ export async function listProjectsForOrg(
   }
   if (trackerType.toLowerCase() === 'jira' && username) {
     payload.connection_details = { username };
+  }
+  if (options.connectionDetails) {
+    payload.connection_details = {
+      ...(payload.connection_details ?? {}),
+      ...options.connectionDetails,
+    };
+  }
+  if (options.authType) {
+    payload.auth_type = options.authType;
   }
 
   const response = await fetchWithAuth(
@@ -3221,6 +3439,40 @@ export async function changePassword(passwords: {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
       extractErrorMessage(errorData, 'Failed to change password')
+    );
+  }
+}
+
+/** One CLI login (`preloop auth login`) of the signed-in user. */
+export interface CliSession {
+  id: string;
+  created_at: string;
+  last_seen_at: string | null;
+  user_agent: string | null;
+  hostname: string | null;
+  /** True for the session the request's own token belongs to. */
+  current: boolean;
+}
+
+/** List the signed-in user's active CLI logins. */
+export async function listCliSessions(): Promise<CliSession[]> {
+  const response = await fetchWithAuth('/api/v1/auth/sessions/cli');
+  if (!response.ok) {
+    throw new Error('Failed to load CLI sessions');
+  }
+  return response.json();
+}
+
+/** Revoke one CLI login; its access and refresh tokens stop working. */
+export async function revokeCliSession(sessionId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/auth/sessions/cli/${encodeURIComponent(sessionId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to revoke CLI session')
     );
   }
 }
@@ -3725,7 +3977,19 @@ export function flowWriteErrorMessage(
   return fallback;
 }
 
-export async function createFlow(flow: any): Promise<any> {
+/**
+ * Flow write fields copied from the OpenAPI `FlowCreate` and `FlowUpdate`
+ * schemas (`review_instructions`, maxLength 32768).
+ *
+ * Null clears a saved policy. The reviewer prompt keeps the first 16,384
+ * characters and drops the rest.
+ */
+export interface FlowWrite {
+  review_instructions?: string | null;
+  [key: string]: unknown;
+}
+
+export async function createFlow(flow: FlowWrite): Promise<any> {
   const response = await fetchWithAuth('/api/v1/flows', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -3738,7 +4002,10 @@ export async function createFlow(flow: any): Promise<any> {
   return response.json();
 }
 
-export async function updateFlow(flowId: string, flow: any): Promise<any> {
+export async function updateFlow(
+  flowId: string,
+  flow: FlowWrite
+): Promise<any> {
   const response = await fetchWithAuth(`/api/v1/flows/${flowId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -4088,6 +4355,39 @@ export async function getFlowExecutionLogs(
   return response.json();
 }
 
+/** One CLI session the runner's usage hook observed during a host run. */
+export interface HostExecSession {
+  conversation_id: string | null;
+  source: string | null;
+  runtime_session_id: string | null;
+  event_count: number;
+  event_types: Record<string, number>;
+  first_event_at: string | null;
+  last_event_at: string | null;
+  models: string[];
+}
+
+/** Hook sessions and seat usage linked to a host-exec flow execution. */
+export interface HostExecSessionsResponse {
+  execution_id: string;
+  sessions: HostExecSession[];
+  event_count: number;
+  premium_requests: number | null;
+  gateway_metered: boolean;
+}
+
+export async function getFlowExecutionHostSessions(
+  executionId: string
+): Promise<HostExecSessionsResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/flows/executions/${executionId}/host-sessions`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch host execution sessions');
+  }
+  return response.json();
+}
+
 export async function getFlowExecutionGatewayEvents(
   executionId: string,
   tail?: number,
@@ -4298,6 +4598,65 @@ export async function updateRunnerConcurrency(
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
       extractErrorMessage(errorData, 'Failed to update runner concurrency')
+    );
+  }
+  return response.json();
+}
+
+/** Raised when the server refuses to delete a runner that holds leases. */
+export class RunnerHasLeasesError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunnerHasLeasesError';
+  }
+}
+
+export interface RunnerDeleteResult {
+  id: string;
+  deleted: boolean;
+  halted_execution_ids: string[];
+}
+
+/**
+ * Delete a persistent runner. Without ``force`` the server answers 409
+ * while the runner holds an execution; with it those executions are halted.
+ */
+export async function deleteRunner(
+  runnerId: string,
+  force = false
+): Promise<RunnerDeleteResult> {
+  const query = force ? '?force=true' : '';
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}${query}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const message = extractErrorMessage(errorData, 'Failed to delete runner');
+    if (response.status === 409) {
+      throw new RunnerHasLeasesError(message);
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+/**
+ * Issue a new token for a runner. The old token stops working at once and
+ * the connected runner is disconnected. The response carries the new token
+ * a single time.
+ */
+export async function rotateRunnerToken(
+  runnerId: string
+): Promise<RunnerRecord & { token: string }> {
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}/token`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to rotate runner token')
     );
   }
   return response.json();
@@ -4544,7 +4903,6 @@ export async function getProjectDuplicateStats(options: {
   params.append('status', status);
   params.append('similarity_threshold', similarity_threshold.toString());
   const url = `/api/v1/project-duplicate-stats?${params.toString()}`;
-  console.log(url);
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch project duplicate stats');
@@ -4556,8 +4914,6 @@ export async function dismissDuplicatePair(
   issue1Id: string,
   issue2Id: string
 ): Promise<{ success: boolean }> {
-  console.log(`Dismissing duplicate pair: ${issue1Id} and ${issue2Id}`);
-
   // Simulate network delay
   await new Promise((resolve) => setTimeout(resolve, 500));
 
@@ -4904,7 +5260,8 @@ export async function deleteAccessRule(ruleId: string): Promise<void> {
 
 export interface ModelIOCondition {
   expression: string;
-  action: 'allow' | 'deny' | 'require_approval';
+  /** `notify` is model I/O only: record and tell policy owners, never block. */
+  action: 'allow' | 'deny' | 'require_approval' | 'notify';
   condition_type?: 'simple' | 'cel';
   description?: string | null;
 }

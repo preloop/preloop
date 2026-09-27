@@ -32,7 +32,7 @@
     "build": "vite build",
     "build:watch": "vite build --watch",
     "preview": "vite preview",
-    "test": "web-test-runner \"src/**/*.test.{ts,js}\"",
+    "test": "node scripts/check-unreferenced-todos.mjs && node scripts/check-frontend-console.mjs && web-test-runner \"src/**/*.test.{ts,js}\"",
     "test:coverage": "web-test-runner \"src/**/*.test.{ts,js}\" --coverage",
     "test:visual": "playwright test tests/visual/",
     "test:visual:update": "playwright test tests/visual/ --update-snapshots",

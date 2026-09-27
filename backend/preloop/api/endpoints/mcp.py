@@ -29,6 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import HTTPException
 
+from preloop.api.endpoints import mcp_bitbucket
 from preloop.api.common import (
     get_tracker_client,
     load_compliance_prompts_config,
@@ -256,15 +257,15 @@ def _extract_assignee_name(assignee_data: Any) -> Optional[str]:
     return str(assignee_data)
 
 
-def _detect_platform_from_url(url: str) -> Literal["github", "gitlab"]:
+def _detect_platform_from_url(url: str) -> Literal["github", "gitlab", "bitbucket"]:
     """
-    Detect if URL is GitHub or GitLab.
+    Detect if URL is GitHub, GitLab or Bitbucket Cloud.
 
     Args:
         url: The URL to analyze.
 
     Returns:
-        "github" or "gitlab" based on URL analysis.
+        "github", "gitlab" or "bitbucket" based on URL analysis.
 
     Raises:
         ValueError: If platform cannot be determined.
@@ -272,7 +273,7 @@ def _detect_platform_from_url(url: str) -> Literal["github", "gitlab"]:
     from preloop.utils.repo_urls import tracker_host_kind
 
     host_kind = tracker_host_kind(url)
-    if host_kind in ("github", "gitlab"):
+    if host_kind in ("github", "gitlab", "bitbucket"):
         return host_kind
 
     # Path-based fallback for non-standard hosts (parsed path segments only).
@@ -368,11 +369,26 @@ def _parse_pr_key_from_url(url: str) -> Optional[Dict[str, Any]]:
     Supports:
       - GitHub:  https://github.com/org/repo/pull/123
       - GitLab:  https://gitlab.example.com/group/project/-/merge_requests/28
+      - Bitbucket Cloud: https://bitbucket.org/workspace/repo/pull-requests/7
 
     Returns dict with platform, project_path, owner, repo, pr_number, or None.
     """
+    from preloop.utils.repo_urls import tracker_host_kind
+
     parsed = urlparse(url)
     path = parsed.path.rstrip("/")
+
+    # Bitbucket Cloud: /workspace/repo/pull-requests/7[/diff|/commits|...]
+    if tracker_host_kind(url) == "bitbucket":
+        m = re.match(r"^/([^/]+)/([^/]+)/pull-requests/(\d+)(?:/.*)?$", path)
+        if m:
+            return {
+                "platform": "bitbucket",
+                "project_path": f"{m.group(1)}/{m.group(2)}",
+                "owner": m.group(1),
+                "repo": m.group(2),
+                "pr_number": m.group(3),
+            }
 
     # GitLab: /group/subgroup/project/-/merge_requests/28
     m = re.match(r"^/(.+?)/-/merge_requests/(\d+)$", path)
@@ -482,9 +498,12 @@ def _find_pr_project(
     if not project_obj:
         from preloop.models.crud import crud_tracker
 
-        tracker_type = (
-            TrackerType.GITHUB if platform != "gitlab" else TrackerType.GITLAB
-        )
+        if platform == "bitbucket":
+            tracker_type = TrackerType.BITBUCKET
+        elif platform == "gitlab":
+            tracker_type = TrackerType.GITLAB
+        else:
+            tracker_type = TrackerType.GITHUB
         trackers = crud_tracker.get_by_type(
             db,
             tracker_type=tracker_type,
@@ -542,6 +561,33 @@ def _normalize_url(url: str) -> str:
         (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "", "")
     )
     return normalized
+
+
+async def _run_bitbucket(action: str, call: Awaitable[_ToolResult]) -> _ToolResult:
+    """Await a Bitbucket MCP handler and map provider errors to HTTP errors.
+
+    Args:
+        action: Short description used in logs and error details.
+        call: The handler coroutine.
+
+    Returns:
+        The handler result.
+
+    Raises:
+        HTTPException: Re-raised as is, or 502 for provider failures.
+    """
+    try:
+        return await call
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.error(f"Bitbucket: failed to {action}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to {action} on Bitbucket: {str(e)}",
+        ) from e
 
 
 def _find_issue_by_identifier(db, identifier: str, account_id: str) -> Issue:
@@ -1669,7 +1715,7 @@ async def add_comment(
     is_merge_request = False
     project_path = None
     pr_mr_number = None
-    platform: Optional[Literal["github", "gitlab"]] = None
+    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = None
 
     if target.startswith("http"):
         # Detect platform from URL
@@ -1694,6 +1740,13 @@ async def add_comment(
         # Also handles self-hosted GitLab where platform was detected via URL patterns
         # (e.g., https://git.example.com/owner/repo/-/merge_requests/123)
         # platform is set from _detect_platform_from_url which checks for /merge_requests/ pattern
+        elif platform == "bitbucket" and "/pull-requests/" in target:
+            is_pull_request = True
+            bb = _parse_pr_key_from_url(_normalize_url(target))
+            if bb:
+                pr_mr_number = bb["pr_number"]
+                project_path = bb["project_path"]
+                logger.info(f"Detected Bitbucket PR: {project_path}#{pr_mr_number}")
         elif platform == "gitlab" and "/merge_requests/" in target:
             is_merge_request = True
             mr_parts = target.split("/merge_requests/")
@@ -1735,6 +1788,20 @@ async def add_comment(
         )
         # Release the read transaction before the external tracker request.
         db.close()
+
+        if (tracker_client.tracker_type or "").lower() == "bitbucket":
+            return await _run_bitbucket(
+                f"add comment to {pr_mr_number}",
+                mcp_bitbucket.add_comment(
+                    tracker_client,
+                    pr_mr_number,
+                    comment,
+                    path=path,
+                    line=line,
+                    side=side,
+                    in_reply_to=in_reply_to,
+                ),
+            )
 
         # Determine platform from tracker if not yet known
         if platform is None:
@@ -2085,7 +2152,7 @@ async def get_pull_request(
     project_path = pr_info["project_path"]
     owner = pr_info["owner"]
     repo = pr_info["repo"]
-    platform: Optional[Literal["github", "gitlab"]] = pr_info["platform"]
+    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = pr_info["platform"]
 
     # Find the project
     project_obj = _find_pr_project(
@@ -2103,6 +2170,17 @@ async def get_pull_request(
     )
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()
+
+    if (tracker_client.tracker_type or "").lower() == "bitbucket":
+        return await _run_bitbucket(
+            f"get pull request {pr_number}",
+            mcp_bitbucket.get_pull_request(
+                tracker_client,
+                pr_number,
+                include_comments=include_comments,
+                include_diff=include_diff,
+            ),
+        )
 
     # Determine platform from tracker if not yet known
     if platform is None:
@@ -2242,7 +2320,7 @@ async def update_pull_request(
     project_path = pr_info["project_path"]
     owner = pr_info["owner"]
     repo = pr_info["repo"]
-    platform: Optional[Literal["github", "gitlab"]] = pr_info["platform"]
+    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = pr_info["platform"]
 
     # Find the project
     project_obj = _find_pr_project(
@@ -2260,6 +2338,27 @@ async def update_pull_request(
     )
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()
+
+    if (tracker_client.tracker_type or "").lower() == "bitbucket":
+        return await _run_bitbucket(
+            f"update pull request {pr_number}",
+            mcp_bitbucket.update_pull_request(
+                tracker_client,
+                pr_number,
+                title=title,
+                description=description,
+                state=state,
+                assignees=assignees,
+                reviewers=reviewers,
+                labels=labels,
+                draft=draft,
+                review_action=review_action,
+                review_body=review_body,
+                review_comments=review_comments,
+                add_reaction=add_reaction,
+                remove_reaction=remove_reaction,
+            ),
+        )
 
     # Determine platform from tracker if not yet known
     if platform is None:
@@ -2749,8 +2848,8 @@ async def create_pull_request(
     """
     Handles the 'create_pull_request' tool call.
 
-    Creates a GitHub pull request or GitLab merge request.
-    Auto-detects the platform from the project configuration.
+    Creates a GitHub pull request, GitLab merge request or Bitbucket pull
+    request. Auto-detects the platform from the project configuration.
 
     Args:
         project: Project identifier (slug like "owner/repo", full path, or URL).
@@ -2784,7 +2883,7 @@ async def create_pull_request(
             platform = None
         parsed_project = urlparse(project)
         path_parts = [p for p in parsed_project.path.split("/") if p]
-        if platform == "github" and len(path_parts) >= 2:
+        if platform in {"github", "bitbucket"} and len(path_parts) >= 2:
             project_path = f"{path_parts[0]}/{path_parts[1]}"
         elif platform == "gitlab" and path_parts:
             project_path = "/".join(path_parts).rstrip("/")
@@ -2826,6 +2925,31 @@ async def create_pull_request(
     # Determine platform from tracker if not already known
     if platform is None:
         platform = tracker_client.tracker_type.lower()
+
+    if platform == "bitbucket":
+        logger.info(
+            f"Creating Bitbucket PR: {title} ({source_branch} -> {target_branch})"
+        )
+        response = await _run_bitbucket(
+            "create pull request",
+            mcp_bitbucket.create_pull_request(
+                tracker_client,
+                title=title,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                description=description,
+                draft=draft,
+                assignees=assignees,
+                reviewers=reviewers,
+                labels=labels,
+                milestone=milestone,
+                extra_options=extra_options,
+            ),
+        )
+        _record_opened_pr_on_execution(
+            db, url=response.url, source_branch=source_branch
+        )
+        return response
 
     try:
         if platform == "github":
@@ -3052,7 +3176,7 @@ async def update_comment(
     # Detect platform and parse target
     project_path = None
     pr_mr_number = None
-    platform: Optional[Literal["github", "gitlab"]] = None
+    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = None
 
     if target.startswith("http"):
         try:
@@ -3074,6 +3198,12 @@ async def update_comment(
         # Also handles self-hosted GitLab where platform was detected via URL patterns
         # (e.g., https://git.example.com/owner/repo/-/merge_requests/123)
         # platform is set from _detect_platform_from_url which checks for /merge_requests/ pattern
+        elif platform == "bitbucket" and "/pull-requests/" in target:
+            bb = _parse_pr_key_from_url(_normalize_url(target))
+            if bb:
+                pr_mr_number = bb["pr_number"]
+                project_path = bb["project_path"]
+                logger.info(f"Detected Bitbucket PR: {project_path}#{pr_mr_number}")
         elif platform == "gitlab" and "/merge_requests/" in target:
             mr_parts = target.split("/merge_requests/")
             pr_mr_number = mr_parts[-1].rstrip("/").split("?")[0].split("#")[0]
@@ -3126,6 +3256,19 @@ async def update_comment(
     )
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()
+
+    if (tracker_client.tracker_type or "").lower() == "bitbucket":
+        return await _run_bitbucket(
+            f"update comment {comment_id}",
+            mcp_bitbucket.update_comment(
+                tracker_client,
+                pr_mr_number,
+                comment_id,
+                body=body,
+                resolved=resolved,
+                thread_id=thread_id,
+            ),
+        )
 
     # Determine platform from tracker if not yet known
     if platform is None:

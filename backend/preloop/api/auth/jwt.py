@@ -16,10 +16,13 @@ from jwt import PyJWTError
 from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
+from preloop.api.auth.key_scopes import enforce_api_key_route_scope
+
 # Configuration
 from preloop.config import settings
 from preloop.models.crud import (
     crud_api_key,
+    crud_flow_execution,
     crud_managed_agent,
     crud_runtime_session,
     crud_user,
@@ -129,6 +132,35 @@ def _managed_agent_for_api_key(
     )
 
 
+def _reject_finished_flow_execution_key(session: Any, api_key: Any) -> None:
+    """Reject a flow execution key once its execution has finished.
+
+    The orchestrator revokes these keys when the run ends. This check keeps
+    the binding server-side for the case where that revocation was missed
+    (worker crash, failed commit): the key dies with its execution rather
+    than with its two hour expiry. Parked executions keep their key, since
+    they resume. An execution that cannot be found is left to the callers'
+    own provenance checks.
+    """
+    context_data = (
+        api_key.context_data if isinstance(api_key.context_data, dict) else {}
+    )
+    execution_id = context_data.get("flow_execution_id")
+    if not execution_id:
+        return
+    execution_status = crud_flow_execution.get_status(
+        session, execution_id=execution_id, account_id=api_key.account_id
+    )
+    if execution_status is None:
+        return
+    if str(execution_status).upper() in crud_flow_execution.TERMINAL_EXECUTION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Flow execution has ended",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def _authenticate_with_api_key(
     session: Any,
     api_key: Any,
@@ -219,11 +251,35 @@ def _authenticate_with_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if not allow_stale_runtime_session and not allow_ended_runtime_session:
+        _reject_finished_flow_execution_key(session, api_key)
+
     user = crud_user.get(session, id=api_key.user_id)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User associated with API key not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if str(api_key.account_id) != str(user.account_id):
+        # A key is bound to one account for life. When its owner resolves to
+        # a different account, fail closed exactly like an unknown key so the
+        # client learns nothing about either account.
+        logger.warning(
+            "API key rejected: key account does not match its user's account",
+            extra={
+                "event": "api_key_account_mismatch",
+                "api_key_id": str(api_key.id),
+                "api_key_prefix": getattr(api_key, "key_prefix", None),
+                "user_id": str(user.id),
+                "key_account_id": str(api_key.account_id),
+                "user_account_id": str(user.account_id),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -440,6 +496,13 @@ def create_refresh_token(
     )
 
 
+def _optional_claim(value: Any) -> Optional[str]:
+    """Return a string claim, or None when it is missing or not a string."""
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def decode_token(token: str) -> TokenData:
     """Decode a JWT token.
 
@@ -482,6 +545,8 @@ def decode_token(token: str) -> TokenData:
             refresh=refresh,
             session_started_at=(datetime.fromtimestamp(sat, tz=UTC) if sat else None),
             gen=gen,
+            sid=_optional_claim(payload.get("sid")),
+            jti=_optional_claim(payload.get("jti")),
         )
     except PyJWTError:
         raise HTTPException(
@@ -570,6 +635,50 @@ def reject_stale_token_generation(user: User, token_data: TokenData) -> None:
         )
 
 
+def reject_revoked_cli_session(db: Any, user: User, token_data: TokenData) -> None:
+    """Reject a CLI JWT whose ``cli_session`` row is revoked or missing.
+
+    Tokens without a ``sid`` claim (console logins, CLI logins from before
+    the claim existed) are not tied to a row and pass; the generation check
+    still applies to them.
+
+    Args:
+        db: Database session.
+        user: The user loaded for this token.
+        token_data: Decoded token claims.
+
+    Raises:
+        HTTPException: 401 when the session is revoked, missing, or belongs
+            to another user.
+    """
+    if token_data.sid is None:
+        return
+    from preloop.models.crud import crud_cli_session
+
+    try:
+        session_id = uuid.UUID(token_data.sid)
+    except ValueError:
+        session_id = None
+    if session_id is None or not crud_cli_session.is_active(
+        db, session_id=session_id, user_id=user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=SESSION_REVOKED_DETAIL,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def reject_revoked_token(db: Any, user: User, token_data: TokenData) -> None:
+    """Apply every JWT revocation check: generation, then CLI session.
+
+    Raises:
+        HTTPException: 401 when the token was revoked either way.
+    """
+    reject_stale_token_generation(user, token_data)
+    reject_revoked_cli_session(db, user, token_data)
+
+
 def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db_session),
@@ -610,6 +719,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
@@ -680,7 +790,7 @@ def get_current_user(
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            reject_stale_token_generation(user, token_data)
+            reject_revoked_token(db, user, token_data)
 
             return user  # Return the full User object
         except (HTTPException, SQLAlchemyPoolTimeout):
@@ -722,6 +832,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
@@ -769,6 +880,8 @@ def get_current_active_user(
 def get_current_active_user_optional(
     token: str = Depends(oauth2_scheme_optional),
     db: Session = Depends(get_db_session),
+    # See get_current_user: FastAPI injects the concrete Request type.
+    request: Request = None,  # type: ignore[assignment]
 ) -> Optional[User]:
     """
     Get the current active user if a valid token is provided, otherwise return None.
@@ -778,8 +891,9 @@ def get_current_active_user_optional(
         return None
     try:
         # We must call get_current_user with the token parameter, not as a dependency,
-        # to bypass the strict oauth2_scheme it depends on.
-        user = get_current_user(token=token, db=db)
+        # to bypass the strict oauth2_scheme it depends on. The request is passed
+        # so API key scopes are checked against the actual route.
+        user = get_current_user(token=token, db=db, request=request)
         if user and user.is_active:
             return user
         return None
@@ -862,7 +976,7 @@ def get_user_from_token_if_valid_sync(
 
         user = crud_user.get(db_session, id=user_id)
         if user and user.is_active:
-            reject_stale_token_generation(user, token_data)
+            reject_revoked_token(db_session, user, token_data)
             return user
 
     except SQLAlchemyPoolTimeout:

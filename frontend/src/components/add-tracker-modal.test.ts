@@ -652,4 +652,105 @@ describe('AddTrackerModal', () => {
       });
     });
   });
+
+  describe('Bitbucket connection details', () => {
+    it('sends workspace, token kind, email and username for a personal API token', async () => {
+      element = await fixture(html`<add-tracker-modal></add-tracker-modal>`);
+      const el = element as any;
+      el.trackerType = 'bitbucket';
+      el.bitbucketWorkspace = ' example-workspace ';
+      el.bitbucketRepository = 'example-repo';
+      el.bitbucketEmail = 'reviewer@example.com';
+      el.trackerUsername = 'review-bot';
+      el.tokenExpiresAt = '2026-12-31';
+
+      expect(element.bitbucketConnectionDetails()).to.deep.equal({
+        workspace: 'example-workspace',
+        token_kind: 'api_token',
+        repository: 'example-repo',
+        email: 'reviewer@example.com',
+        username: 'review-bot',
+        token_expires_at: '2026-12-31',
+      });
+    });
+
+    it('drops email and username for an access token or OAuth token', async () => {
+      element = await fixture(html`<add-tracker-modal></add-tracker-modal>`);
+      const el = element as any;
+      el.trackerType = 'bitbucket';
+      el.bitbucketWorkspace = 'example-workspace';
+      el.bitbucketEmail = 'reviewer@example.com';
+      el.trackerUsername = 'review-bot';
+
+      el.bitbucketTokenKind = 'access_token';
+      expect(element.bitbucketConnectionDetails()).to.deep.equal({
+        workspace: 'example-workspace',
+        token_kind: 'access_token',
+      });
+
+      el.bitbucketAuthType = 'oauth_token';
+      expect(element.bitbucketConnectionDetails()).to.deep.equal({
+        workspace: 'example-workspace',
+      });
+    });
+
+    it('loads the saved Bitbucket settings in edit mode', async () => {
+      const tracker = {
+        id: 'bb-1',
+        name: 'Bitbucket',
+        tracker_type: 'bitbucket',
+        url: 'https://api.bitbucket.org/2.0',
+        auth_type: 'oauth_token',
+        connection_details: {
+          workspace: 'example-workspace',
+          repository: 'example-repo',
+          token_expires_at: '2026-12-31',
+        },
+        scope_rules: [],
+      };
+      element = await fixture(
+        html`<add-tracker-modal .tracker=${tracker}></add-tracker-modal>`
+      );
+      const el = element as any;
+
+      expect(el.bitbucketAuthType).to.equal('oauth_token');
+      expect(el.authMethod).to.equal('api_token');
+      expect(element.bitbucketConnectionDetails()).to.deep.equal({
+        workspace: 'example-workspace',
+        repository: 'example-repo',
+        token_expires_at: '2026-12-31',
+      });
+    });
+  });
+
+  describe('Jira username edits', () => {
+    it('sends the edited username as connection_details', async () => {
+      const tracker = {
+        id: 'jira-1',
+        name: 'Jira',
+        tracker_type: 'jira',
+        url: 'https://jira.example.com',
+        connection_details: { username: 'old-user' },
+        scope_rules: [],
+      };
+      element = await fixture(
+        html`<add-tracker-modal .tracker=${tracker}></add-tracker-modal>`
+      );
+      const { updateStub } = setupStubs(element);
+      updateStub.resolves({
+        id: 'jira-1',
+        connection_details: { username: 'edited-user' },
+      });
+      (element as any).trackerUsername = 'edited-user';
+
+      await element.handleSave();
+
+      expect(updateStub).to.have.been.calledOnce;
+      const payload = updateStub.firstCall.args[1];
+      expect(payload.connection_details).to.deep.equal({
+        username: 'edited-user',
+      });
+      expect(payload.config).to.deep.equal({ username: 'edited-user' });
+    });
+  });
 });

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from preloop.models.models.project import Project
 from preloop.models.models.organization import Organization
 from preloop.models.models.webhook import Webhook
+from preloop.services.issue_estimate import synced_estimate_fields
 from preloop.schemas.tracker_models import (
     Issue,
     IssueComment,
@@ -29,6 +30,17 @@ class BaseTracker(ABC):
 
     # Subclasses should override this
     tracker_type: str = "unknown"
+
+    # True when the provider hosts git repositories that a flow can clone,
+    # push to and open pull requests on. Issue-only trackers (Jira) leave it
+    # False; a repository binding may only name a tracker that sets it.
+    hosts_repositories: bool = False
+
+    # True when the provider tracks issues and has no repository of its own.
+    # A flow triggered from such a tracker may apply a repository binding.
+    # Independent of hosts_repositories: a code host can leave both False
+    # until its clone path is wired, without being treated as issue-only.
+    hosts_issues: bool = False
 
     def __init__(
         self, tracker_id: str, api_key: str, connection_details: Dict[str, Any]
@@ -194,6 +206,9 @@ class BaseTracker(ABC):
                 "external_created_at": created_at,
                 "external_updated_at": last_updated,
                 "source": "preloop-sync",
+                # Raw native estimate fields (GitLab time_estimate, weight)
+                # for the issue cost report; empty for trackers without them.
+                "estimate_fields": synced_estimate_fields(issue_data),
             },
             "tracker_id": self.tracker_id,
             "comments": issue_data.get("comments", []),
@@ -229,6 +244,22 @@ class BaseTracker(ABC):
             "updated_at": comment_data.get("updated_at"),
             "created_at": comment_data.get("created_at"),
         }
+
+    @staticmethod
+    def _first_listed_for_branch(listing: Any, branch: str) -> Optional[Dict[str, Any]]:
+        """First listed pull request whose head really is ``branch``.
+
+        Providers filter by branch themselves; this guards an adapter or API
+        that ignored the filter and returned unrelated pull requests.
+        """
+        items = listing.get("items") if isinstance(listing, dict) else None
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("source_branch") != branch or not item.get("url"):
+                continue
+            return item
+        return None
 
     @abstractmethod
     async def register_webhook(self, **kwargs: Any) -> bool:

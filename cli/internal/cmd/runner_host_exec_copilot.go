@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -62,8 +63,7 @@ var (
 )
 
 func hostExecIsCopilotBinary(executable string) bool {
-	base := strings.ToLower(filepath.Base(strings.TrimSpace(executable)))
-	_, ok := hostExecCopilotNames[base]
+	_, ok := hostExecCopilotNames[hostExecBinaryBase(executable)]
 	return ok
 }
 
@@ -120,7 +120,7 @@ func validateCopilotToolRules(field string, rules []string) error {
 // prompt uses the `--prompt=` spelling of -p so a prompt that starts with a
 // dash is never parsed as a flag. --allow-all-tools is only ever set when the
 // operator opted in on the local profile.
-func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any) ([]string, error) {
+func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any, mcpArgs ...string) ([]string, error) {
 	prompt, err := jobPromptText(job)
 	if err != nil {
 		return nil, err
@@ -140,11 +140,18 @@ func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any) ([]st
 		}
 		args = append(args, "--model="+alias)
 	}
+	args = append(args, mcpArgs...)
 	if profile.AllowAllTools {
 		args = append(args, "--allow-all-tools")
 	} else {
 		for _, rule := range profile.AllowTools {
 			args = append(args, "--allow-tool="+strings.TrimSpace(rule))
+		}
+		if len(mcpArgs) > 0 {
+			// The flow's Preloop MCP server is filtered server-side to the
+			// flow's allowed tools; -p mode cannot prompt, so grant it here.
+			// A deny_tools rule for the server still wins.
+			args = append(args, "--allow-tool="+hostExecMCPServerName)
 		}
 	}
 	for _, rule := range profile.DenyTools {
@@ -153,13 +160,19 @@ func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any) ([]st
 	return args, nil
 }
 
-// copilotHostExecEnv keeps the runner user's environment, including a
-// COPILOT_GITHUB_TOKEN / GH_TOKEN login, and drops the variables that would
-// route the run through a BYOK provider or grant every tool.
+// copilotHostExecEnv is the Copilot-specific strip stage applied after the
+// allowlist in hostExecChildEnv. The allowlist keeps the seat login
+// (COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN); this pass drops the
+// variables that would route the run through a BYOK provider or grant every
+// tool.
 func copilotHostExecEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, entry := range environ {
-		key := strings.SplitN(entry, "=", 2)[0]
+		// Compare case-insensitively: Windows environment names are, and
+		// the allowlist admits COPILOT_* in any case there, so a mixed-case
+		// Copilot_Allow_All must not slip past. On POSIX a lowercase name is
+		// not read by Copilot, so dropping it too costs nothing.
+		key := strings.ToUpper(strings.SplitN(entry, "=", 2)[0])
 		if _, drop := copilotStrippedEnv[key]; drop {
 			continue
 		}
@@ -278,6 +291,19 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
+// copilotApprovalHookKeys names the command keys Copilot executes on goos:
+// bash on POSIX and powershell on Windows, matching what onboarding writes
+// (copilotCommandHookEntryFor). An entry under the other key never runs, so
+// accepting it would let allow_all_tools start with no approval gate (for
+// example a bash entry left by an older onboarding on a Windows host).
+// Copilot has no generic "command" key, so none is accepted.
+func copilotApprovalHookKeys(goos string) []string {
+	if goos == "windows" {
+		return []string{"powershell"}
+	}
+	return []string{"bash"}
+}
+
 func copilotApprovalHookInstalled() (bool, error) {
 	path, err := copilotPreloopHooksPath()
 	if err != nil {
@@ -291,9 +317,11 @@ func copilotApprovalHookInstalled() (bool, error) {
 	entries, _ := hooks["preToolUse"].([]interface{})
 	for _, raw := range entries {
 		entry, _ := raw.(map[string]interface{})
-		bash, _ := entry["bash"].(string)
-		if strings.Contains(bash, "agents permission-hook") {
-			return true, nil
+		for _, key := range copilotApprovalHookKeys(runtime.GOOS) {
+			command, _ := entry[key].(string)
+			if strings.Contains(command, "agents permission-hook") {
+				return true, nil
+			}
 		}
 	}
 	return false, nil

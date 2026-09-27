@@ -18,6 +18,9 @@ import {
   listProjectsForOrg,
   uploadAvatar,
   validateTrackerToken,
+  addTracker,
+  updateTracker,
+  trackerErrorDetail,
   startCheckout,
   startAnonymousCheckout,
   getPlanChoice,
@@ -958,6 +961,130 @@ describe('api', () => {
       expect(
         await messageOf(listProjectsForOrg('github', 'unchanged', '9001'))
       ).to.equal('Failed to list projects for organization');
+    });
+
+    const okJson = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    it('validateTrackerToken sends Bitbucket auth type and connection details', async () => {
+      fetchStub.resolves(okJson({ success: true, orgs: [] }));
+
+      await validateTrackerToken(
+        'bitbucket',
+        'token-value',
+        undefined,
+        undefined,
+        undefined,
+        {
+          authType: 'oauth_token',
+          connectionDetails: { token_kind: 'access', username: 'bot' },
+        }
+      );
+
+      const [, options] = fetchStub.firstCall.args;
+      const body = JSON.parse(options.body);
+      expect(body.tracker_type).to.equal('bitbucket');
+      expect(body.auth_type).to.equal('oauth_token');
+      expect(body.connection_details).to.deep.equal({
+        token_kind: 'access',
+        username: 'bot',
+      });
+    });
+
+    it('validateTrackerToken merges extra details with the Jira username', async () => {
+      fetchStub.resolves(okJson({ success: true, orgs: [] }));
+
+      await validateTrackerToken(
+        'jira',
+        'token-value',
+        'https://jira.example.com',
+        'someone',
+        undefined,
+        { connectionDetails: { extra: 1 } }
+      );
+
+      const body = JSON.parse(fetchStub.firstCall.args[1].body);
+      expect(body.connection_details).to.deep.equal({
+        username: 'someone',
+        extra: 1,
+      });
+      expect(body).to.not.have.property('auth_type');
+    });
+
+    it('validateTrackerToken does not write the token to the console', async () => {
+      fetchStub.resolves(okJson({ success: true, orgs: [] }));
+      const log = sinon.spy(console, 'log');
+      const debug = sinon.spy(console, 'debug');
+      try {
+        await validateTrackerToken(
+          'github',
+          'secret-token-value',
+          'https://tracker.example.com',
+          'someone'
+        );
+        const dumped = [log, debug]
+          .flatMap((spy) => spy.args)
+          .flat()
+          .map((part) => String(part))
+          .join('\n');
+        expect(dumped).to.not.contain('secret-token-value');
+        expect(log.called).to.equal(false);
+        expect(debug.called).to.equal(false);
+      } finally {
+        log.restore();
+        debug.restore();
+      }
+    });
+
+    it('listProjectsForOrg forwards Bitbucket options', async () => {
+      fetchStub.resolves(okJson({ projects: [] }));
+
+      await listProjectsForOrg(
+        'bitbucket',
+        'token-value',
+        'ws-uuid',
+        undefined,
+        undefined,
+        'tracker-1',
+        {
+          authType: 'api_token',
+          connectionDetails: { email: 'reviewer@example.com' },
+        }
+      );
+
+      const body = JSON.parse(fetchStub.firstCall.args[1].body);
+      expect(body.tracker_id).to.equal('tracker-1');
+      expect(body.auth_type).to.equal('api_token');
+      expect(body.connection_details).to.deep.equal({
+        email: 'reviewer@example.com',
+      });
+    });
+
+    it('addTracker and updateTracker surface the backend detail', async () => {
+      fetchStub.resolves(
+        errorResponse({ detail: 'Bitbucket app passwords are not supported.' })
+      );
+      expect(
+        await messageOf(addTracker({ tracker_type: 'bitbucket' }))
+      ).to.equal('Bitbucket app passwords are not supported.');
+
+      fetchStub.resolves(errorResponse({}));
+      expect(await messageOf(updateTracker('t-1', {}))).to.equal(
+        'Failed to update tracker'
+      );
+    });
+
+    it('trackerErrorDetail prefers detail, then message, then the fallback', () => {
+      expect(trackerErrorDetail({ detail: 'd', message: 'm' }, 'f')).to.equal(
+        'd'
+      );
+      expect(trackerErrorDetail({ message: 'm' }, 'f')).to.equal('m');
+      expect(trackerErrorDetail({ detail: [{ msg: 'x' }] }, 'f')).to.equal('f');
+      expect(trackerErrorDetail({ detail: '' }, 'f')).to.equal('f');
+      expect(trackerErrorDetail(null, 'f')).to.equal('f');
     });
   });
   describe('flow write refusals', () => {

@@ -215,6 +215,13 @@ async def get_tracker_client(
     elif tracker_type == "github":
         full_config["owner"] = organization.name
         full_config["repo"] = project.name
+    elif tracker_type == "bitbucket":
+        # Bitbucket PR calls address the repository as "workspace/repo".
+        full_config["repo_full_name"] = (
+            project.slug
+            or (project.meta_data or {}).get("full_name")
+            or f"{organization.identifier}/{project.name}"
+        )
     elif tracker_type == "jira":
         # Jira might need project_key in config for some operations, add if available
         if "project_key" not in full_config:

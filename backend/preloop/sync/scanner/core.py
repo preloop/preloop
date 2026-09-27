@@ -57,12 +57,15 @@ class TrackerClient:
         if not initialize_client:
             # Webhook payload transforms need identity and URL configuration,
             # never API credentials, OAuth installation lookup or network auth.
+            from ..trackers.bitbucket import BitbucketTracker
             from ..trackers.github import GitHubTracker
             from ..trackers.gitlab import GitLabTracker
             from ..trackers.jira import JiraTracker
 
             if self.tracker_type == "github":
                 self.client = GitHubTracker(tracker.id, "", connection_details)
+            elif self.tracker_type == "bitbucket":
+                self.client = BitbucketTracker(tracker.id, "", connection_details)
             elif self.tracker_type == "gitlab":
                 self.client = GitLabTracker(
                     tracker.id, "", connection_details, initialize_client=False
@@ -130,6 +133,15 @@ class TrackerClient:
             from ..trackers.jira import JiraTracker
 
             self.client = JiraTracker(
+                tracker.id, tracker.resolved_api_key, connection_details
+            )
+        elif self.tracker_type == "bitbucket":
+            from ..trackers.bitbucket import BitbucketTracker
+
+            connection_details["auth_type"] = (
+                getattr(tracker, "auth_type", None) or "api_token"
+            )
+            self.client = BitbucketTracker(
                 tracker.id, tracker.resolved_api_key, connection_details
             )
         else:
@@ -624,6 +636,26 @@ async def _process_organization(
                         exc_info=True,
                     )
                     org_stats["organizations"]["errors"] += 1
+            elif client.tracker_type == "bitbucket":
+                # Bitbucket hooks are per repository; the workspace-level hook
+                # API is not used so a repository access token also works.
+                for project in projects:
+                    try:
+                        if not await client.client.is_webhook_registered_for_project(
+                            project, webhook_target_url
+                        ):
+                            await client.client.register_webhook(
+                                db=db,
+                                project=project,
+                                webhook_url=webhook_target_url,
+                                secret=current_secret_to_use,
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Error registering webhook for Bitbucket repository {project.identifier}: {e}",
+                            exc_info=True,
+                        )
+                        org_stats["organizations"]["errors"] += 1
             else:
                 # Handle other tracker types here if necessary
                 pass

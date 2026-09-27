@@ -766,6 +766,18 @@ type localEnrollmentState struct {
 	// The permission hook waits before trying again so a stalled API cannot
 	// hold every tool decision.
 	CodexOAuthSyncLastAttempt string `json:"codex_oauth_sync_last_attempt,omitempty"`
+	// CodexOAuthSyncedServerExpiresMS is Preloop's stored access-token
+	// expiry (epoch milliseconds) at the last sync in either direction. A
+	// larger value on Preloop's rotation marker means Preloop rotated the
+	// bundle since then and the hook pulls it into the local login.
+	CodexOAuthSyncedServerExpiresMS int64 `json:"codex_oauth_synced_server_expires_ms,omitempty"`
+	// CodexOAuthServerCheckedAt is when the hook last read Preloop's
+	// rotation marker. The hook reads it at most once per
+	// codexOAuthServerCheckInterval while the local login is unchanged.
+	CodexOAuthServerCheckedAt string `json:"codex_oauth_server_checked_at,omitempty"`
+	// CodexOAuthSyncModelIDs caches one model row id per distinct Codex
+	// OAuth secret for this enrollment, so a marker check is one request.
+	CodexOAuthSyncModelIDs []string `json:"codex_oauth_sync_model_ids,omitempty"`
 }
 
 type managedMCPAdapter interface {
@@ -5838,10 +5850,20 @@ func saveLocalEnrollmentState(state *localEnrollmentState) error {
 	// Write a temp file in the same directory and rename it over the target.
 	// os.WriteFile truncates in place, so two hook processes (or a hook and
 	// sync-credentials) can tear the JSON. Rename replaces the inode on Unix.
-	dir := filepath.Dir(statePath)
-	tmp, err := os.CreateTemp(dir, ".enrollment-*.json")
-	if err != nil {
+	if err := writeFileAtomically(statePath, data, 0600, ".enrollment-*.json"); err != nil {
 		return fmt.Errorf("failed to persist local enrollment state: %w", err)
+	}
+	return nil
+}
+
+// writeFileAtomically writes data to a temp file next to path and renames it
+// over path, so a concurrent reader sees either the old or the new content
+// and never a torn file. The temp file gets perm before any byte is written.
+func writeFileAtomically(path string, data []byte, perm os.FileMode, pattern string) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return err
 	}
 	tmpName := tmp.Name()
 	cleanup := true
@@ -5850,24 +5872,24 @@ func saveLocalEnrollmentState(state *localEnrollmentState) error {
 			_ = os.Remove(tmpName)
 		}
 	}()
-	if err := tmp.Chmod(0600); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("failed to persist local enrollment state: %w", err)
+		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("failed to persist local enrollment state: %w", err)
+		return err
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("failed to persist local enrollment state: %w", err)
+		return err
 	}
-	if err := os.Rename(tmpName, statePath); err != nil {
+	if err := os.Rename(tmpName, path); err != nil {
 		// Windows rename does not replace an existing file.
-		if rmErr := os.Remove(statePath); rmErr != nil && !os.IsNotExist(rmErr) {
-			return fmt.Errorf("failed to persist local enrollment state: %w", err)
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) {
+			return err
 		}
-		if err := os.Rename(tmpName, statePath); err != nil {
-			return fmt.Errorf("failed to persist local enrollment state: %w", err)
+		if err := os.Rename(tmpName, path); err != nil {
+			return err
 		}
 	}
 	cleanup = false
@@ -5944,13 +5966,16 @@ func writeJSONDocument(path string, doc map[string]interface{}) error {
 	}
 	data = append(data, '\n')
 	// 0600: the managed config embeds the durable runtime bearer token, so it
-	// must not be world-readable. Chmod after write enforces the mode even when
-	// the file already existed (os.WriteFile only sets mode on creation).
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write managed config: %w", err)
+	// must not be world-readable. The document is written to a sibling temp
+	// file and renamed into place, so a concurrent reader (a CLI starting up,
+	// or a second writer) never observes a truncated or half-written file.
+	// A symlinked config is replaced at its target so dotfile links survive.
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
 	}
-	if err := os.Chmod(path, 0600); err != nil {
-		return fmt.Errorf("failed to secure managed config permissions: %w", err)
+	if err := writeFileAtomic(target, data, 0600); err != nil {
+		return fmt.Errorf("failed to write managed config: %w", err)
 	}
 	return nil
 }

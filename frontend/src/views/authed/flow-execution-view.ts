@@ -16,9 +16,11 @@ import {
   getFlowExecutionMetrics,
   getFlowExecutionLogs,
   getFlowExecutionGatewayEvents,
+  getFlowExecutionHostSessions,
   getFlowExecutionGatewayEvent,
   retryFlowExecution,
 } from '../../api';
+import type { HostExecSessionsResponse } from '../../api';
 import type { FlowGatewayEvent, GatewayTokenUsage } from '../../types';
 import {
   formatLocalTime,
@@ -32,6 +34,7 @@ import {
   canRetryExecution,
   confirmRetryExecution,
 } from '../../actions/flow-execution-actions';
+import { showToast } from '../../components/confirm-dialog';
 import '../../components/resource-actions.ts';
 import '../../components/operator-note-composer.ts';
 import {
@@ -118,6 +121,13 @@ interface FlowExecution {
   trigger_event_id?: string;
   agent_session_reference?: string;
   error_message?: string;
+  /**
+   * Why an automatic stop ended this run, e.g. its pull request was merged
+   * (#1032). Absent on a run an operator stopped and on older servers.
+   */
+  stop_reason?: string | null;
+  /** Machine-readable cause of the automatic stop (`pr_merged`, ...). */
+  stop_source?: string | null;
   /**
    * Which layer broke this run (#361). Absent on a run that did not fail and
    * on servers that do not derive it yet.
@@ -214,6 +224,21 @@ function firstErrorLine(message?: string | null): string {
   if (!message) return '';
   const line = message.split('\n').find((part) => part.trim().length > 0);
   return (line || '').trim();
+}
+
+/**
+ * Why a stopped run stopped, when the server stopped it on its own: its
+ * pull request was merged, closed or got a new head (#1032). The row's
+ * error_message is overwritten by the orchestrator's generic "stopped by
+ * user request" line once the container is gone, so stop_reason is the
+ * durable answer.
+ */
+function automaticStopReason(execution: {
+  status: string;
+  stop_reason?: string | null;
+}): string {
+  if ((execution.status || '').toUpperCase() !== 'STOPPED') return '';
+  return (execution.stop_reason || '').trim();
 }
 
 /**
@@ -448,6 +473,19 @@ export class FlowExecutionView extends LitElement {
         border-bottom: 1px solid var(--console-hairline);
         margin-bottom: 16px;
       }
+      .host-sessions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 20px;
+        margin: -8px 0 16px;
+      }
+      .host-session {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 6px;
+        min-width: 0;
+      }
       .strip-item {
         display: flex;
         align-items: baseline;
@@ -519,6 +557,21 @@ export class FlowExecutionView extends LitElement {
         overflow: hidden;
         overflow-wrap: anywhere;
         white-space: normal;
+      }
+      /* A run the server stopped because its pull request moved on is not
+         broken: neutral, and it says why. */
+      .stop-line {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: -4px 0 16px;
+        color: var(--sl-color-neutral-700);
+        font-size: var(--console-text-body);
+        overflow-wrap: anywhere;
+      }
+      .stop-line sl-icon {
+        flex-shrink: 0;
+        margin-top: 3px;
       }
       /* A parked run is waiting on a person, not broken: amber, and it says
          who and until when rather than spinning. */
@@ -947,6 +1000,10 @@ export class FlowExecutionView extends LitElement {
   /** Which tab is showing; seeded from `?tab=` or the remembered choice. */
   @state()
   private activeTab: ExecutionTab = 'timeline';
+
+  /** Hook sessions and seat usage of a Copilot or Cursor host run. */
+  @state()
+  private hostSessions: HostExecSessionsResponse | null = null;
 
   /** Same receipt the Records card reads, so the Report tab cannot disagree. */
   @state()
@@ -1733,6 +1790,11 @@ export class FlowExecutionView extends LitElement {
     this.gatewayEventsTruncated = false;
     this.gatewayEventsBounded = false;
     this.liveToolActivityEvents = [];
+    // Sessions belong to one execution; a refresh of the same one keeps
+    // them so the panel does not flicker, a new execution starts empty.
+    if (this.hostSessions?.execution_id !== executionId) {
+      this.hostSessions = null;
+    }
 
     let execution: FlowExecution;
     try {
@@ -1806,9 +1868,31 @@ export class FlowExecutionView extends LitElement {
       const flow = await getFlow(execution.flow_id);
       if (!current()) return;
       this.flow = flow;
+      if (flow.agent_type === 'copilot' || flow.agent_type === 'cursor') {
+        void this.loadHostSessions(execution.id, current);
+      }
     } catch (error) {
       // The title falls back to the detail row's flow name.
       console.error('Failed to fetch flow details:', error);
+    }
+  }
+
+  /** Host sessions for the execution on screen, never a previous one. */
+  private currentHostSessions(): HostExecSessionsResponse | null {
+    const sessions = this.hostSessions;
+    return sessions && sessions.execution_id === this.executionId
+      ? sessions
+      : null;
+  }
+
+  private async loadHostSessions(executionId: string, current: () => boolean) {
+    try {
+      const sessions = await getFlowExecutionHostSessions(executionId);
+      if (!current()) return;
+      this.hostSessions = sessions;
+    } catch (error) {
+      // The strip still reads the premium count from the result.
+      console.error('Failed to fetch host execution sessions:', error);
     }
   }
 
@@ -1935,6 +2019,12 @@ export class FlowExecutionView extends LitElement {
     // continues successfully. Only a terminal execution failure owns this
     // banner; request diagnostics remain in the timeline.
     if (!isExecutionRequestFailureStatus(execution.status)) {
+      return '';
+    }
+    // A run the server stopped because its pull request moved on did not
+    // fail; the stop line says why, and the stored error_message is only
+    // the orchestrator's generic "stopped by user request" (#1032).
+    if (automaticStopReason(execution)) {
       return '';
     }
     const failed = this.firstFailedGatewayEvent();
@@ -2563,7 +2653,9 @@ export class FlowExecutionView extends LitElement {
           timestamp: execution.end_time,
           statusLabel: executionStatusLabel(execution.status),
           statusVariant: executionStatusVariant(execution.status),
-          statusDetail: firstErrorLine(execution.error_message),
+          statusDetail: firstErrorLine(
+            automaticStopReason(execution) || execution.error_message
+          ),
         });
       }
     }
@@ -2876,7 +2968,9 @@ export class FlowExecutionView extends LitElement {
   }
 
   private renderOutputPanel(execution: FlowExecution) {
+    const stopReason = automaticStopReason(execution);
     const hasAnything =
+      stopReason ||
       execution.error_message ||
       execution.result ||
       execution.model_output_summary ||
@@ -2927,7 +3021,17 @@ export class FlowExecutionView extends LitElement {
             : ''
         }
         ${
-          execution.error_message
+          stopReason
+            ? html`
+                <section class="output-section" data-testid="stop-reason">
+                  <h2 class="section-title">Why it stopped</h2>
+                  <p>${stopReason}</p>
+                </section>
+              `
+            : ''
+        }
+        ${
+          execution.error_message && !stopReason
             ? html`
                 <section class="output-section">
                   <h2 class="section-title">Error</h2>
@@ -3173,6 +3277,44 @@ ${execution.resolved_input_prompt}</pre>
   }
 
   /**
+   * CLI sessions the runner's usage hook linked to this host run. Hidden for
+   * container runs and for host runs whose hook reported nothing.
+   */
+  private renderHostSessions() {
+    const sessions = this.currentHostSessions()?.sessions ?? [];
+    if (sessions.length === 0) {
+      return '';
+    }
+    return html`<div class="host-sessions" data-testid="host-sessions">
+      <span class="strip-label">Host CLI sessions</span>
+      ${sessions.map((session) => {
+        const id = session.conversation_id || 'unnamed session';
+        const types = Object.entries(session.event_types)
+          .map(([type, count]) => `${type} ${count}`)
+          .join(', ');
+        return html`<div
+          class="host-session"
+          data-testid="host-session"
+          title=${types}
+        >
+          <a
+            class="strip-link"
+            href="/console/runtime-sessions?query=${encodeURIComponent(id)}"
+            >${shortenIdentifier(id)}</a
+          >
+          <span class="strip-note"
+            >${session.source || ''} · ${session.event_count.toLocaleString()}
+            hook
+            event${session.event_count === 1 ? '' : 's'}${
+              session.models.length ? ` · ${session.models.join(', ')}` : ''
+            }</span
+          >
+        </div>`;
+      })}
+    </div>`;
+  }
+
+  /**
    * One hairline row instead of five cards: what ran, how long, on which
    * model, what it cost and where to find the session. Values are the
    * loudest thing in the row; the labels stay in the meta register.
@@ -3198,7 +3340,10 @@ ${execution.resolved_input_prompt}</pre>
           pill
           data-testid="strip-not-metered"
           title=${hostMetering.title}
-          >Not gateway metered</sl-badge
+          >${hostExecCostLabel(
+            execution.result,
+            this.currentHostSessions()?.premium_requests
+          )}</sl-badge
         >`
       : this.hasPricing
         ? formatEstimatedCost(this.budgetUsed)
@@ -3531,6 +3676,7 @@ ${execution.resolved_input_prompt}</pre>
     const running = this.isExecutionRunning();
     const statusVariant = executionStatusVariant(execution.status);
     const errorLine = this.errorLineText(execution);
+    const stopLine = automaticStopReason(execution);
 
     return html`
       <view-header
@@ -3570,7 +3716,7 @@ ${execution.resolved_input_prompt}</pre>
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          ${this.renderSummaryStrip(execution)}
+          ${this.renderSummaryStrip(execution)} ${this.renderHostSessions()}
           <execution-records-card
             execution-id=${execution.id}
           ></execution-records-card>
@@ -3594,6 +3740,14 @@ ${execution.resolved_input_prompt}</pre>
                 >
                   <sl-icon name="exclamation-triangle"></sl-icon>
                   <span class="error-text">${errorLine}</span>
+                </div>`
+              : ''
+          }
+          ${
+            stopLine
+              ? html`<div class="stop-line" data-testid="stop-line">
+                  <sl-icon name="stop-circle"></sl-icon>
+                  <span>${stopLine}</span>
                 </div>`
               : ''
           }
@@ -3863,7 +4017,11 @@ ${log.payload.content}</pre>
       this.requestUpdate();
     } catch (error) {
       console.error('Failed to stop execution:', error);
-      // TODO: Show error notification to user
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to stop the run.';
+      showToast(detail, 'danger');
     }
   }
 
@@ -3913,6 +4071,29 @@ ${log.payload.content}</pre>
   getStatusVariant(status: string) {
     return executionStatusVariant(status);
   }
+}
+
+/**
+ * Visible cost cell for a host-exec run: the seat usage the CLI reported,
+ * or a plain "not metered" note when it reported none.
+ */
+export function hostExecCostLabel(
+  result: Record<string, unknown> | null | undefined,
+  fallbackPremium?: number | null
+): string {
+  const reported = result?.premium_requests;
+  const premium =
+    typeof reported === 'number' && Number.isFinite(reported) && reported >= 0
+      ? reported
+      : typeof fallbackPremium === 'number' &&
+          Number.isFinite(fallbackPremium) &&
+          fallbackPremium >= 0
+        ? fallbackPremium
+        : null;
+  if (premium === null) {
+    return 'Not gateway metered';
+  }
+  return `${premium} premium request${premium === 1 ? '' : 's'}, not metered by the gateway`;
 }
 
 /**

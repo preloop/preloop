@@ -320,6 +320,7 @@ async def _bind_isolated_repository(
         expected_remote_sha=expected_remote,
         base_sha=base_sha,
         previous_records=previous_records,
+        tracker_type=str(tracker.tracker_type or "github").lower(),
     )
     resolved = {
         **repository,
@@ -528,7 +529,7 @@ async def prepare_isolated_publication(
                 leases.append(lease)
                 credentials[normalize_repository_url(target.repository_url)] = {
                     "token": lease.token,
-                    "tracker_type": "github",
+                    "tracker_type": target.tracker_type,
                     "permission": "read",
                 }
                 if str(target.tracker_id) not in credentials:
@@ -549,7 +550,7 @@ async def prepare_isolated_publication(
         str(primary.tracker_id),
         {
             "token": leases[0].token,
-            "tracker_type": "github",
+            "tracker_type": primary.tracker_type,
             "permission": "read",
         },
     )

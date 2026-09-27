@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"io"
@@ -23,11 +25,17 @@ const (
 	hostExecProfilesFileName   = "runner-host-profiles.json"
 	hostExecProfilesEnv        = "PRELOOP_RUNNER_HOST_PROFILES"
 	hostExecWorkspaceDir       = ".preloop-host-exec"
+	hostExecWorkspacesDirName  = "host-workspaces"
 	hostExecMaxArgv            = 32
 	hostExecMaxArgBytes        = 4096
+	hostExecMaxPassEnv         = 64
 	hostExecMaxPromptBytes     = 64 * 1024
 	hostExecDefaultTimeout     = 30 * time.Minute
 	hostExecCompletionProtocol = "host_exec"
+	// hostExecPromptPreambleKey marks a runner-local job copy whose prompt
+	// carries the checkout preamble. It is set only in memory, after
+	// jobRejectedHostExecInjection has run on the delivered job.
+	hostExecPromptPreambleKey = "runner_prompt_preamble"
 )
 
 var (
@@ -42,20 +50,30 @@ var (
 // hostExecProfile is a runner-local command template. The control plane
 // never supplies the executable, argv, environment, or workspace.
 type hostExecProfile struct {
-	Name           string            `json:"name"`
-	Executable     string            `json:"executable"`
-	Argv           []string          `json:"argv"`
+	Name       string   `json:"name"`
+	Executable string   `json:"executable"`
+	Argv       []string `json:"argv"`
+	// WorkspaceRoot is optional; empty means the runner's own data
+	// directory (~/.preloop/host-workspaces).
 	WorkspaceRoot  string            `json:"workspace_root"`
 	TimeoutSeconds int               `json:"timeout_seconds"`
 	ForceWrites    bool              `json:"force_writes"`
 	PassModel      bool              `json:"pass_model"`
 	ModelMap       map[string]string `json:"model_map"`
+	// PassEnv names extra environment variables copied from the runner
+	// process into the job. Everything not named here, in the per-OS
+	// baseline, or in the harness's own variable namespace is withheld.
+	PassEnv []string `json:"pass_env,omitempty"`
 	// Copilot CLI only. AllowTools and DenyTools become --allow-tool and
 	// --deny-tool; AllowAllTools is the operator's explicit opt-in to
 	// --allow-all-tools and requires the Preloop preToolUse approval hook.
 	AllowTools    []string `json:"allow_tools,omitempty"`
 	DenyTools     []string `json:"deny_tools,omitempty"`
 	AllowAllTools bool     `json:"allow_all_tools,omitempty"`
+	// AllowCheckout is the operator's opt-in to cloning a flow's
+	// repositories into the execution directory. Repository content is
+	// untrusted input to the CLI, so a profile never clones by default.
+	AllowCheckout bool `json:"allow_checkout,omitempty"`
 }
 
 type hostExecProfilesFile struct {
@@ -145,14 +163,23 @@ func normalizeHostExecProfile(profile hostExecProfile) (hostExecProfile, error) 
 		return hostExecProfile{}, err
 	}
 	profile.WorkspaceRoot = strings.TrimSpace(profile.WorkspaceRoot)
-	if !filepath.IsAbs(profile.WorkspaceRoot) {
+	if profile.WorkspaceRoot != "" && !filepath.IsAbs(profile.WorkspaceRoot) {
 		return hostExecProfile{}, fmt.Errorf("workspace_root must be an absolute path")
 	}
 	if profile.TimeoutSeconds < 0 {
 		return hostExecProfile{}, fmt.Errorf("timeout_seconds must be >= 0")
 	}
-	if runtime.GOOS == "windows" {
-		return hostExecProfile{}, fmt.Errorf("host execution requires Unix process-group ownership")
+	if len(profile.PassEnv) > hostExecMaxPassEnv {
+		return hostExecProfile{}, fmt.Errorf(
+			"pass_env supports at most %d entries", hostExecMaxPassEnv,
+		)
+	}
+	for i, name := range profile.PassEnv {
+		if !hostExecEnvNameRe.MatchString(name) {
+			return hostExecProfile{}, fmt.Errorf(
+				"pass_env[%d] is not a valid environment variable name", i,
+			)
+		}
 	}
 	harness := hostExecProfileHarness(profile)
 	if harness == "" {
@@ -225,8 +252,7 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 }
 
 func hostExecIsCursorBinary(executable string) bool {
-	base := strings.ToLower(filepath.Base(strings.TrimSpace(executable)))
-	_, ok := hostExecCursorNames[base]
+	_, ok := hostExecCursorNames[hostExecBinaryBase(executable)]
 	return ok
 }
 
@@ -262,6 +288,7 @@ func jobRejectedHostExecInjection(job map[string]any) string {
 		"executable", "argv", "env", "session_id", "cursor_api_key", "api_key",
 		"copilot_github_token", "github_token", "gh_token", "allow_tools", "deny_tools", "allow_all_tools",
 		"resume_from", "launch", "launch_version", "script", "environment", "account_api_token", "custom_commands",
+		hostExecPromptPreambleKey,
 	} {
 		if _, ok := job[key]; ok {
 			return "job must not supply " + key
@@ -302,21 +329,36 @@ func lookupHostExecProfile(name string) (hostExecProfile, error) {
 
 func resolveHostExecBinary(executable string) (string, error) {
 	cleaned := strings.TrimSpace(executable)
+	if err := hostExecExecutableShapeError(runtime.GOOS, cleaned); err != nil {
+		return "", err
+	}
+	path, err := lookupHostExecBinary(cleaned)
+	if err != nil {
+		return "", err
+	}
+	if err := hostExecRunnableError(runtime.GOOS, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// lookupHostExecBinary locates a shape-checked profile executable.
+func lookupHostExecBinary(cleaned string) (string, error) {
 	base := filepath.Base(cleaned)
 	if hostExecIsCopilotBinary(cleaned) && base == cleaned {
-		path, err := resolveRuntimeExecutable("copilot")
-		if err != nil {
-			return "", fmt.Errorf(
-				"copilot_not_installed: Copilot CLI (copilot) was not found on %s; install it with `npm install -g @github/copilot`",
-				runtimeExecutableSearchDescription("copilot"),
-			)
+		for _, name := range hostExecCommandCandidates(cleaned, "copilot") {
+			if path, err := resolveHostExecRuntimeExecutable(name); err == nil {
+				return path, nil
+			}
 		}
-		return path, nil
+		return "", fmt.Errorf(
+			"copilot_not_installed: Copilot CLI (copilot) was not found on %s; install it with `npm install -g @github/copilot`",
+			runtimeExecutableSearchDescription("copilot"),
+		)
 	}
 	if hostExecIsCursorBinary(cleaned) && base == cleaned {
-		for _, name := range []string{"cursor-agent", "agent"} {
-			path, err := resolveRuntimeExecutable(name)
-			if err == nil {
+		for _, name := range hostExecCommandCandidates(cleaned, "cursor-agent", "agent") {
+			if path, err := resolveHostExecRuntimeExecutable(name); err == nil {
 				return path, nil
 			}
 		}
@@ -335,15 +377,33 @@ func resolveHostExecBinary(executable string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if info.IsDir() || info.Mode()&0111 == 0 {
+		if !isExecutableFileInfo(resolved, info) {
 			return "", fmt.Errorf("executable %q is not runnable", resolved)
 		}
 		return resolved, nil
 	}
-	if strings.Contains(cleaned, string(os.PathSeparator)) {
+	if strings.ContainsRune(cleaned, os.PathSeparator) ||
+		(runtime.GOOS == "windows" && strings.ContainsRune(cleaned, '/')) {
 		return "", fmt.Errorf("executable must be a command name or an absolute path")
 	}
-	return resolveRuntimeExecutable(cleaned)
+	return resolveHostExecRuntimeExecutable(cleaned)
+}
+
+// hostExecCommandCandidates puts the profile's own spelling first (it may
+// carry an explicit Windows extension such as copilot.cmd) and then the
+// canonical command names, without duplicates.
+func hostExecCommandCandidates(cleaned string, names ...string) []string {
+	out := make([]string, 0, len(names)+1)
+	seen := map[string]struct{}{}
+	for _, name := range append([]string{cleaned}, names...) {
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 func canonicalizeExistingDir(path string) (string, error) {
@@ -362,6 +422,25 @@ func canonicalizeExistingDir(path string) (string, error) {
 		return "", fmt.Errorf("%s is not a directory", resolved)
 	}
 	return resolved, nil
+}
+
+// hostExecWorkspaceRoot returns the profile's workspace root, defaulting to
+// a directory under the runner's own data dir. The default is created with
+// owner-only permissions; on Windows a directory under the user profile
+// inherits the profile's user-only ACLs.
+func hostExecWorkspaceRoot(profile hostExecProfile) (string, error) {
+	if profile.WorkspaceRoot != "" {
+		return profile.WorkspaceRoot, nil
+	}
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(dir, hostExecWorkspacesDirName)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return root, nil
 }
 
 func boundHostExecWorkspace(root, executionID string) (string, error) {
@@ -422,7 +501,11 @@ func jobPromptText(job map[string]any) (string, error) {
 	if !utf8.ValidString(prompt) {
 		return "", fmt.Errorf("prompt is not valid UTF-8")
 	}
-	if len(prompt) > hostExecMaxPromptBytes {
+	limit := hostExecMaxPromptBytes
+	if prefixed, _ := job[hostExecPromptPreambleKey].(bool); prefixed {
+		limit += hostExecPreambleMaxBytes
+	}
+	if len(prompt) > limit {
 		return "", fmt.Errorf("prompt exceeds %d bytes", hostExecMaxPromptBytes)
 	}
 	return prompt, nil
@@ -469,12 +552,13 @@ func jobModelIdentifier(job map[string]any) string {
 	return value
 }
 
-func buildHostExecArgs(profile hostExecProfile, job map[string]any, workspace string) ([]string, error) {
+func buildHostExecArgs(profile hostExecProfile, job map[string]any, workspace string, extra ...string) ([]string, error) {
 	args := ensureCursorCaptureArgs(append([]string{}, profile.Argv...))
 	args = append(args, "--workspace", workspace)
 	if profile.ForceWrites {
 		args = append(args, "--force")
 	}
+	args = append(args, extra...)
 	if requested := jobModelIdentifier(job); requested != "" {
 		alias := profile.ModelMap[requested]
 		if alias == "" {
@@ -494,58 +578,166 @@ func buildHostExecArgs(profile hostExecProfile, job map[string]any, workspace st
 	return args, nil
 }
 
+// hostExecRun is a prepared host job: the CLI command plus the work that
+// must happen before it starts (checkout) and after it ends (cleanup).
+type hostExecRun struct {
+	cmd       *exec.Cmd
+	timeout   time.Duration
+	workspace string
+	checkout  *hostExecCheckout
+	cleanup   func()
+}
+
 func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, error) {
+	run, err := newHostExecJob(job)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return run.cmd, run.cmd.Path, run.timeout, nil
+}
+
+// newHostExecJob validates a host lease and prepares everything that does
+// not block: profile, fresh execution directory, MCP config and argv. The
+// checkout runs later on the job goroutine so the session loop keeps
+// heartbeating while git works.
+func newHostExecJob(job map[string]any) (*hostExecRun, error) {
+	if reason, ok := job["launch_error"].(string); ok && reason != "" {
+		if len(reason) > 512 {
+			reason = "control plane could not prepare the host execution"
+		}
+		return nil, fmt.Errorf("host execution launch: %s", reason)
+	}
 	if reason := jobRejectedHostExecInjection(job); reason != "" {
-		return nil, "", 0, fmt.Errorf("%s", reason)
+		return nil, fmt.Errorf("%s", reason)
 	}
 	agentType, _ := job["agent_type"].(string)
 	wantHarness := hostExecHarnessForAgentType(agentType)
 	if wantHarness == "" || job["completion_protocol"] != hostExecCompletionProtocol {
-		return nil, "", 0, fmt.Errorf("host job requires explicit Cursor or Copilot host_exec protocol")
+		return nil, fmt.Errorf("host job requires explicit Cursor or Copilot host_exec protocol")
 	}
 	name := jobHostExecProfileName(job)
 	profile, err := lookupHostExecProfile(name)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, err
 	}
 	if harness := hostExecProfileHarness(profile); harness != wantHarness {
-		return nil, "", 0, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"host execution profile %q runs %s, not the leased %s harness",
 			profile.Name, harness, wantHarness,
 		)
 	}
 	if err := enforceHostExecModel(profile, job); err != nil {
-		return nil, "", 0, err
+		return nil, err
+	}
+	mcpToken, err := jobHostExecMCPToken(job)
+	if err != nil {
+		return nil, err
+	}
+	checkout, err := jobHostExecCheckout(job)
+	if err != nil {
+		return nil, err
+	}
+	if checkout != nil && !profile.AllowCheckout {
+		return nil, fmt.Errorf(
+			"%s: the flow clones repositories but host profile %q does not set allow_checkout; set \"allow_checkout\": true in %s to let this profile clone flow repositories",
+			hostExecCheckoutNotAllows, profile.Name, hostExecProfilesFileName,
+		)
 	}
 	executionID, _ := job["execution_id"].(string)
-	workspace, err := boundHostExecWorkspace(profile.WorkspaceRoot, executionID)
+	root, err := hostExecWorkspaceRoot(profile)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, err
 	}
-	bin, err := resolveHostExecBinary(profile.Executable)
+	workspace, err := boundHostExecWorkspace(root, executionID)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, err
+	}
+	bin, argvPrefix, err := resolveHostExecCommand(profile.Executable)
+	if err != nil {
+		return nil, err
+	}
+	if preamble := hostExecCheckoutPreamble(workspace, checkout); preamble != "" {
+		prompt, err := jobPromptText(job)
+		if err != nil {
+			return nil, err
+		}
+		if len(preamble) > hostExecPreambleMaxBytes {
+			return nil, fmt.Errorf("host checkout paths exceed %d bytes", hostExecPreambleMaxBytes)
+		}
+		job = cloneJobWithPrompt(job, preamble+prompt)
+	}
+	var files []string
+	cleanup := func() {
+		for _, path := range files {
+			_ = os.Remove(path)
+		}
+	}
+	var mcpArgs []string
+	if mcpToken != "" {
+		mcpArgs, files, err = hostExecMCPConfig(wantHarness, workspace, mcpToken)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var args []string
-	env := os.Environ()
+	env := hostExecFlowEnv(
+		hostExecChildEnv(runtime.GOOS, wantHarness, profile, os.Environ()), job,
+	)
+	env = hostExecPrependPath(runtime.GOOS, env, hostExecBinaryDirs(bin, profile.Executable)...)
 	if wantHarness == hostExecHarnessCopilot {
-		if err := prepareCopilotHostExecHooks(profile); err != nil {
-			return nil, "", 0, err
+		if err = prepareCopilotHostExecHooks(profile); err == nil {
+			args, err = buildCopilotHostExecArgs(profile, job, mcpArgs...)
 		}
-		args, err = buildCopilotHostExecArgs(profile, job)
 		env = copilotHostExecEnv(env)
 	} else {
-		args, err = buildHostExecArgs(profile, job, workspace)
+		args, err = buildHostExecArgs(profile, job, workspace, mcpArgs...)
 	}
 	if err != nil {
-		return nil, "", 0, err
+		cleanup()
+		return nil, err
+	}
+	args = append(argvPrefix, args...)
+	if err := hostExecCommandLineError(runtime.GOOS, bin, args); err != nil {
+		cleanup()
+		return nil, err
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = workspace
 	cmd.Env = env
 	cmd.SysProcAttr = hostExecSysProcAttr()
 	cmd.WaitDelay = 250 * time.Millisecond
-	return cmd, bin, hostExecTimeout(profile, job), nil
+	return &hostExecRun{
+		cmd:       cmd,
+		timeout:   hostExecTimeout(profile, job),
+		workspace: workspace,
+		checkout:  checkout,
+		cleanup:   cleanup,
+	}, nil
+}
+
+// hostExecBinaryDirs lists the directories of the spawned binary and of an
+// absolute profile executable (whose symlinks resolveHostExecBinary
+// follows), which is where a Node version manager keeps node itself.
+func hostExecBinaryDirs(bin, executable string) []string {
+	dirs := []string{filepath.Dir(bin)}
+	cleaned := strings.TrimSpace(executable)
+	if filepath.IsAbs(cleaned) {
+		dirs = append(dirs, filepath.Dir(filepath.Clean(cleaned)))
+	}
+	return dirs
+}
+
+// cloneJobWithPrompt returns a shallow copy with a replaced prompt so the
+// caller's job map (which may be retained for replay) is never modified.
+// The prompt bound applies to the flow prompt, not the runner preamble.
+func cloneJobWithPrompt(job map[string]any, prompt string) map[string]any {
+	out := make(map[string]any, len(job)+1)
+	for key, value := range job {
+		out[key] = value
+	}
+	out["prompt"] = prompt
+	out[hostExecPromptPreambleKey] = true
+	return out
 }
 
 // runnerHeartbeatMessage reports what this process can do, including how
@@ -631,24 +823,55 @@ func beginHostExecJob(
 	halted *atomic.Bool,
 	jobs *runnerJobs,
 ) error {
-	cmd, _, timeout, err := newHostExecJobCmd(job)
+	run, err := newHostExecJob(job)
 	profile := jobHostExecProfileName(job)
 	if err != nil {
 		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", hostExec: true, profile: profile, errMsg: err.Error(), exitCode: -1}
 		jobs.remember(outcome)
 		return writeJobOutcome(conn, outcome)
 	}
+	cmd, timeout := run.cmd, run.timeout
 	agentType, _ := job["agent_type"].(string)
 	buffer := &runnerLogBuffer{native: true, harness: hostExecHarnessForAgentType(agentType)}
 	cmd.Stdout, cmd.Stderr = buffer, buffer
-	if err := cmd.Start(); err != nil {
-		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", hostExec: true, profile: profile, errMsg: err.Error(), exitCode: -1}
-		jobs.remember(outcome)
-		return writeJobOutcome(conn, outcome)
-	}
-	jobs.start(&runnerJob{executionID: executionID, cmd: cmd, halted: halted})
+	gate := &hostExecGate{}
+	jobs.start(&runnerJob{executionID: executionID, cmd: cmd, halted: halted, hostGate: gate})
 	done := jobs.outcomes
 	go func() {
+		defer run.cleanup()
+		failed := func(status, msg string) {
+			buffer.finish()
+			done <- leasedJobOutcome{executionID: executionID, status: status, hostExec: true, profile: profile, errMsg: msg, exitCode: -1, logBuffer: buffer}
+		}
+		if run.checkout != nil {
+			checkoutTimeout := hostExecCheckoutTimeout
+			if timeout < checkoutTimeout {
+				checkoutTimeout = timeout
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), checkoutTimeout)
+			if !gate.setCancel(cancel) {
+				failed("STOPPED", "")
+				return
+			}
+			err := runHostExecCheckout(ctx, run.workspace, run.checkout, buffer.note)
+			cancel()
+			switch {
+			case halted.Load():
+				failed("STOPPED", "")
+				return
+			case err != nil:
+				failed("FAILED", err.Error())
+				return
+			}
+		}
+		if err := gate.start(cmd); err != nil {
+			if errors.Is(err, errHostExecHaltedBeforeStart) {
+				failed("STOPPED", "")
+			} else {
+				failed("FAILED", err.Error())
+			}
+			return
+		}
 		outcome := waitHostExecJob(cmd, executionID, buffer, halted, timeout, profile)
 		if buffer.harness == hostExecHarnessCopilot && outcome.status == "FAILED" {
 			outcome.errMsg = copilotHostExecFailure(buffer, profile, job, outcome.errMsg)

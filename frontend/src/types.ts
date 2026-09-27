@@ -54,7 +54,14 @@ export function defaultFlowNotifications(): FlowNotifications {
 }
 
 export interface FlowWebhookConfig {
-  webhook_secret: string;
+  /** Set on webhook-triggered flows only; tracker flows have none. */
+  webhook_secret?: string | null;
+  dedupe_path?: string | null;
+  /**
+   * Stop this flow's run on an older pull request head when a new head
+   * arrives (#1032). Off unless the flow opts in.
+   */
+  supersede_on_update?: boolean;
 }
 
 /** Server-computed schedule state; read-only for the console. */
@@ -107,9 +114,17 @@ export interface Flow {
   /**
    * Blocking review rules for the Pull Request Reviewer. Same markdown as
    * `.preloop/review-policy.md`. Null or absent means the repository file
-   * is the only source.
+   * is the only source. The reviewer prompt keeps the first 16,384
+   * characters. The API accepts up to 32,768.
    */
   review_instructions?: string | null;
+  /**
+   * Catalog identity for a built-in preset. Null on an account flow, whose
+   * name can be edited and is not identity.
+   */
+  slug?: string | null;
+  /** Preset this flow was created from, when it was created from one. */
+  source_preset_id?: string | null;
   agent_type?: string;
   agent_config?: Record<string, unknown>;
   ai_model_id?: string;
@@ -1785,6 +1800,8 @@ export interface Project {
   url?: string;
   organization_id: string;
   tracker_id?: string;
+  /** Grouping inside the organization, e.g. the Bitbucket project. */
+  group?: string | null;
 }
 
 export interface Organization {

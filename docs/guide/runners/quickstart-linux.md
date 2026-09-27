@@ -6,6 +6,11 @@ executions for your account, and runs the agent in a local Docker
 container — same model as GitHub/GitLab self-hosted runners. No inbound
 ports, no Kubernetes.
 
+Running on a developer laptop instead? The
+[Windows quickstart](quickstart-windows.md) and
+[macOS quickstart](quickstart-macos.md) cover those platforms, where host
+execution profiles are the primary mode.
+
 ## Requirements
 
 - Linux x86_64 or arm64 (bare metal, VM, or Proxmox guest).
@@ -87,7 +92,9 @@ preloop flow trigger <flow-id-or-name> --runner local --wait
 
 When stdin is not a TTY (CI), `flow trigger` waits by default, streams
 execution logs to stdout, and exits non-zero on FAILED / STOPPED /
-TIMEOUT. If no runner in the chosen private pool has a free slot, the job queues
+TIMEOUT. If the CI job is cancelled, the CLI stops the execution
+before exiting (see [cancelled CI jobs](../flows/ci-trigger.md#cancelled-ci-jobs-stop-the-execution)).
+If no runner in the chosen private pool has a free slot, the job queues
 for 15 minutes and then fails. Hosted compute is used only when no
 private runner is online, or when the flow or account default is
 `server`.
@@ -114,6 +121,34 @@ sudo loginctl enable-linger $USER
 The service reads credentials the same way the CLI does; make sure
 `~/.preloop/config.yaml` exists (via `preloop login`) for the user that
 runs the service, since the unit does not inherit your shell exports.
+
+### Rotate the token or retire the runner
+
+```sh
+preloop runner rotate-token        # new token in runner.json, service restarted
+preloop runner disable --delete    # stop the service, then delete the runner
+preloop runner disable --delete --force   # also halt executions it still holds
+```
+
+`rotate-token` asks the server for a new runner token. The old token is
+rejected from that moment, and a runner still connected with it is
+disconnected. The new token is written to `~/.preloop/runner.json` and never
+printed.
+
+`disable --delete` stops and removes the service, then deletes the runner on
+the server and removes `runner.json`. The server refuses while the runner
+still holds an execution; `--force` halts those executions the way the kill
+switch does and deletes the runner anyway. Flows routed to the runner's
+labels fall back to their configured runner pool behaviour.
+
+The console offers the same two actions on the Runners page. Rotating from
+the console does not show the new token: run `preloop runner restart` on the
+machine and the service reconnects with a fresh one.
+
+The API behind both is `DELETE /api/v1/runners/{runner_id}` (with
+`?force=true` to halt held executions) and
+`POST /api/v1/runners/{runner_id}/token`. Both need the same permission as
+registering a runner.
 
 ## Ephemeral (CI) mode: one job, then gone
 
@@ -311,8 +346,11 @@ The runner advertises profile names, capabilities and supported requested model
 identifiers (at most 64 profiles and 64 models per profile). Executables, argv,
 local aliases and credentials stay on the host. Restart `preloop runner fg`
 after editing the file. On the flow, choose `cursor`, select a private runner
-pool and set `agent_config.host_exec_profile`. Hosted compute and Windows host
-profiles are unavailable.
+pool and set `agent_config.host_exec_profile`. Hosted compute never runs host
+profiles. Windows and macOS runners support them; the
+[Windows quickstart](quickstart-windows.md) and
+[macOS quickstart](quickstart-macos.md) list the per-OS executable detection
+paths, service install and Windows command-line limits.
 
 An optional local `model_map` maps requested identifiers to Cursor aliases,
 for example `"model_map": {"team-fast": "sonnet-4.6"}`. Every nonempty requested
@@ -335,27 +373,88 @@ so the runner can validate structured completion. `force_writes` defaults to fal
 a profile whose operator intends to permit writes.
 
 Each job creates a fresh directory under
-`{workspace_root}/.preloop-host-exec/{execution_id}`. Existing directories and
-symlinks are rejected. This controls working-directory placement, not OS
-filesystem access: Cursor runs as the runner user with that user's local login,
-environment and filesystem permissions. Use a dedicated OS user or VM when
-stronger host isolation is needed. Halt, cancellation and deadline expiry clean
-up the process group. The tighter profile/flow timeout applies.
+`{workspace_root}/.preloop-host-exec/{execution_id}`. `workspace_root` is
+optional; when omitted, workspaces live under `~/.preloop/host-workspaces`
+(mode 0700). Existing directories and symlinks are rejected. This controls
+working-directory placement, not OS filesystem access: Cursor runs as the
+runner user with that user's local login and filesystem permissions. Use a
+dedicated OS user or VM when stronger host isolation is needed. Halt,
+cancellation and deadline expiry clean up the process group. The tighter
+profile/flow timeout applies.
 
-Cursor's local configuration, MCP servers and hooks apply. Flow
-`allowed_mcp_tools` and server settings are not injected or enforced as a
-sandbox on this path. The enforced controls are profile selection, explicit
-model mapping, working-directory creation, deadline, cancellation and terminal
-result validation. This slice does not add Agent Control, flow governance,
-native session continuation or usage ingestion. Runs use the operator's Cursor
-plan; no unlimited usage or inferred billing is promised.
+The job's environment is built from an allowlist, not inherited wholesale: a
+per-OS system baseline (`HOME`, `PATH`, locale, proxy and TLS variables), the
+harness's own variables (`CURSOR_*` for Cursor; `COPILOT_*`, `GH_*` and
+`GITHUB_TOKEN` for Copilot, minus the BYOK overrides), and any names the
+profile lists in `"pass_env"` (for example
+`"pass_env": ["SSH_AUTH_SOCK"]`). The runner's own `PRELOOP_TOKEN` and
+unrelated secrets in the operator's session never reach the job.
 
-Success requires exit zero and a successful Cursor stream-json result; exit
-zero alone fails. Remote repository clone/setup, custom commands, workspace
-seeds, native CLI session resume and isolated PR publication are rejected.
-Isolated publication mode is rejected before execution.
-The workspace starts empty. Use the Docker harness for repository
-implementation flows that need the managed checkout/test/publication pipeline.
+Cursor's local configuration, MCP servers and hooks apply. When the flow
+allows MCP tools or servers, the runner also adds a `preloop-flow` MCP
+server for that run only: a `.cursor/mcp.json` in the run directory (mode
+`0600`, removed afterwards) plus `--approve-mcps`. Copilot profiles get the
+same server through `--additional-mcp-config`. The server's token is scoped
+to the execution, exposes only the flow's allowed tools and is revoked when
+the run completes. The enforced controls are profile selection, explicit
+model mapping, working-directory creation, deadline, cancellation, the
+flow's MCP tool list and terminal result validation. This slice does not
+add Agent Control or native session continuation. Runs use the operator's
+Cursor plan or Copilot seat; no unlimited usage or inferred billing is
+promised.
+
+The runner exports `PRELOOP_FLOW_EXECUTION_ID` and `PRELOOP_FLOW_ID` to the
+CLI. The Preloop usage hook forwards the execution id with each record, so
+hook-observed sessions and events are linked to the flow execution (only
+for host-profile executions of the same account). Records pushed without it
+are linked at completion by the CLI session id.
+
+Success requires exit zero and a successful structured result; exit zero
+alone fails. Custom commands, clone `setup_commands`, workspace seeds,
+native CLI session resume, pull request creation and isolated publication
+are rejected before execution.
+
+#### Repository checkout (`allow_checkout`)
+
+A flow with git clone enabled gets a checkout plan with each lease: for
+every repository the URL, branch, pinned commit (for a pull request, its
+head commit and the refs that reach it), a path relative to the run
+directory and a read credential from the flow's tracker. The plan is built
+at delivery and never stored in `pending_job`. The runner clones only when
+the profile opts in:
+
+```json
+{"name": "copilot-review", "executable": "copilot", "allow_checkout": true}
+```
+
+Without `allow_checkout` the run fails with `host_checkout_not_allowed`.
+With it, the runner:
+
+- runs `git clone` into the run directory (`workspace` for a trigger
+  project, `workspace-1`, `workspace-2` or `workspace/<path>` for configured
+  repositories; absolute and `..` paths are refused), then checks out the
+  pinned commit, fetching the listed refs when the commit is not on the
+  cloned branch;
+- passes the credential as an HTTP header scoped to that repository URL,
+  with redirects, terminal prompts, askpass and non-HTTP transports off,
+  and inherited `GIT_*` overrides removed. The token never appears in the
+  remote URL, `.git/config`, argv or the log. A plan that pairs a
+  credential with a plain `http` URL is refused unless the host is
+  loopback;
+- sets the flow's git user name and email in each clone and starts the
+  prompt with a short note listing the checkout paths;
+- stops the clone on halt or cancellation, and gives the checkout at most
+  15 minutes (or the profile timeout, when shorter) on top of the CLI
+  run's own deadline. Errors are reported as `host_checkout_failed` or
+  `git_not_installed`.
+
+A checked-out repository is untrusted input. The CLI runs as the runner
+user in that directory, so repository instructions and tool configuration
+reach it. Enable `allow_checkout` only on a profile whose runner user and
+tool rules suit the repositories the flow clones, and use a dedicated OS
+user or VM when stronger isolation is needed. Host runs do not push
+branches or open pull requests; use the Docker harness for flows that
+publish.
 
 ### Copilot CLI profiles
 
@@ -367,7 +466,9 @@ optional `copilot_model` to a `model_map` alias. Copilot profiles take
 completion must carry exactly one Copilot `result` event with exit code 0.
 The rest of this section applies unchanged. See
 [Copilot CLI](../copilot-cli.md#run-copilot-cli-from-flows-private-runner-host-profile)
-for the profile format and named errors.
+for the profile format and named errors, and
+[Copilot coverage](../copilot.md) for what this path does and does not
+meter.
 
 ## Trusted runner options
 

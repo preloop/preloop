@@ -57,6 +57,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -109,6 +111,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -180,24 +184,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
 
+      # No dependency caches in this job: its outputs are published and
+      # attested (SBOMs), so a poisoned cache would flow into a release
+      # artifact (zizmor cache-poisoning).
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          package-manager-cache: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
+          cache: false
 
       - name: Resolve SBOM version
         id: sbom-version
@@ -286,6 +294,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -329,12 +339,17 @@ jobs:
             goarch: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
+      # No Go module/build cache: this job builds the released CLI binaries,
+      # so a poisoned cache would flow into a published artifact (zizmor
+      # cache-poisoning).
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: cli/go.mod
-          cache-dependency-path: cli/go.sum
+          cache: false
 
       - name: Embed Windows PE version info
         if: matrix.goos == 'windows'
@@ -406,6 +421,12 @@ jobs:
           path: unsigned-bundle/*
           if-no-files-found: error
 
+      # Signing is best-effort while credentials are absent, UNLESS the
+      # repository variable SIGNPATH_SIGNING_REQUIRED is 'true': then a
+      # release with missing SignPath secrets/vars fails instead of quietly
+      # publishing unsigned binaries. Set the variable when SignPath is
+      # approved and verified (docs/windows-code-signing.md) so signing can
+      # never silently regress afterwards.
       - name: Check SignPath configuration
         id: signpath-check
         env:
@@ -413,10 +434,17 @@ jobs:
           ORG_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
           PROJECT: ${{ vars.SIGNPATH_PROJECT_SLUG }}
           POLICY: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          REQUIRED: ${{ vars.SIGNPATH_SIGNING_REQUIRED }}
         run: |
+          # Case-insensitive truthiness: TRUE/True/1 must not silently keep
+          # the fail-open path this switch exists to close.
+          required=$(printf '%s' "$REQUIRED" | tr '[:upper:]' '[:lower:]')
           if [ -n "$TOKEN" ] && [ -n "$ORG_ID" ] && [ -n "$PROJECT" ] && [ -n "$POLICY" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
             echo "::notice::SignPath signing enabled — Windows CLI will be Authenticode-signed"
+          elif [ "$required" = "true" ] || [ "$required" = "1" ]; then
+            echo "::error::SIGNPATH_SIGNING_REQUIRED is set but the SignPath secrets/vars are not configured. Refusing to release unsigned Windows binaries. See docs/windows-code-signing.md"
+            exit 1
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "::warning::SignPath secrets/vars missing — Windows CLI will be UNSIGNED. See docs/windows-code-signing.md"
@@ -468,6 +496,8 @@ jobs:
       PRELOOP_DISABLE_TELEMETRY: 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Enable Defender before downloading executables
         shell: powershell
         run: ./scripts/prepare-windows-defender.ps1
@@ -567,6 +597,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run release smoke test
         run: |
@@ -615,6 +647,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python
@@ -676,7 +709,7 @@ jobs:
 
       - name: Generate changelog
         id: changelog
-        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4.9.0
         continue-on-error: true
         with:
           config: cliff.toml
@@ -834,10 +867,15 @@ jobs:
 
       - name: Trigger charts index update
         if: success()
+        # The tag travels through env, not template expansion inside run:,
+        # so a crafted ref name cannot become shell code (zizmor
+        # template-injection).
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           curl -sS -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.CHARTS_REPO_TOKEN }}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/repos/preloop/helm-charts/dispatches \
-            -d '{"event_type":"preloop-release","client_payload":{"tag":"${{ github.ref_name }}"}}'
+            -d "{\"event_type\":\"preloop-release\",\"client_payload\":{\"tag\":\"${RELEASE_TAG}\"}}"

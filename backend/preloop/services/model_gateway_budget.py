@@ -116,7 +116,7 @@ class ModelGatewayBudgetService:
         self, ai_model: AIModel, payload: Dict[str, Any]
     ) -> BudgetCheckResult:
         """Check whether a gateway request can proceed within configured budgets."""
-        account = crud_account.get(self.db, id=self.auth_context.user.account_id)
+        account = crud_account.get(self.db, id=self.auth_context.account_id)
         subject_context = (
             build_subject_context_from_api_key(self.auth_context.api_key)
             if self.auth_context.api_key
@@ -173,7 +173,7 @@ class ModelGatewayBudgetService:
 
         # 2. Check trial mode limitation
         subscription = crud_subscription.get_active_for_account(
-            self.db, account_id=str(self.auth_context.user.account_id)
+            self.db, account_id=str(self.auth_context.account_id)
         )
         if (
             subscription
@@ -184,7 +184,7 @@ class ModelGatewayBudgetService:
                 float(settings.billing_trial_hosted_model_hard_cap_usd), 0.0
             )
             trial_hosted_model_current_spend_usd = self._get_trial_hosted_model_spend(
-                account_id=str(self.auth_context.user.account_id),
+                account_id=str(self.auth_context.account_id),
                 start=subscription.current_period_start,
                 end=subscription.current_period_end or datetime.now(timezone.utc),
             )
@@ -219,7 +219,7 @@ class ModelGatewayBudgetService:
             now = datetime.now(timezone.utc)
             month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             trial_hosted_model_current_spend_usd = self._get_trial_hosted_model_spend(
-                account_id=str(self.auth_context.user.account_id),
+                account_id=str(self.auth_context.account_id),
                 start=month_start,
                 end=now,
             )
@@ -417,7 +417,7 @@ class ModelGatewayBudgetService:
         return crud_flow.get(
             self.db,
             id=flow_id,
-            account_id=self.auth_context.user.account_id,
+            account_id=self.auth_context.account_id,
         )
 
     def _estimate_request_cost(
@@ -464,7 +464,10 @@ class ModelGatewayBudgetService:
         self, ai_model: AIModel, payload: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
         """Return account pricing override for preflight cost estimates."""
-        from preloop.services.pricing_overrides import resolve_pricing_override
+        from preloop.services.pricing_overrides import (
+            pricing_account_id,
+            resolve_pricing_override,
+        )
 
         raw_model = payload.get("model")
         requested_alias = None
@@ -477,7 +480,7 @@ class ModelGatewayBudgetService:
 
         return resolve_pricing_override(
             self.db,
-            account_id=self.auth_context.user.account_id,
+            account_id=pricing_account_id(self.auth_context.account_id, ai_model),
             ai_model=ai_model,
             requested_alias=requested_alias,
         )

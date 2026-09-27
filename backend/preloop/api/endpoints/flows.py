@@ -21,7 +21,10 @@ from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.auth import get_current_active_user
 from preloop.models.models.user import User
+from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
+from preloop.schemas.host_exec_usage import HostExecSessionsResponse
+from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.execution_metrics import (
     project_execution_totals,
     project_resume_lineage,
@@ -50,7 +53,6 @@ from preloop.services.flow_delegation import (
     CallableFlowsError,
     validate_callable_flows,
 )
-from preloop.services import flow_tree_stop
 from preloop.services.model_routing import (
     ModelRoutingError,
     model_usable_for_agent as _model_usable_for_agent,
@@ -189,7 +191,11 @@ def create_flow(
     ):
         # Generate a secure 32-byte URL-safe token
         webhook_secret = secrets.token_urlsafe(32)
-        flow_in.webhook_config = schemas.WebhookConfig(webhook_secret=webhook_secret)
+        # Keep the other settings the caller sent (dedupe_path,
+        # supersede_on_update); only the secret is server-generated.
+        flow_in.webhook_config = (
+            flow_in.webhook_config or schemas.WebhookConfig()
+        ).model_copy(update={"webhook_secret": webhook_secret})
         flow_in.trigger_event_source = "webhook"
         flow_in.trigger_event_types = ["webhook"]
 
@@ -289,12 +295,23 @@ def read_flows(
     current_user: User = Depends(get_current_active_user),
 ):
     """Retrieve flows for the account."""
-    flows = crud_flow.get_multi(
-        db, account_id=current_user.account_id, skip=skip, limit=limit
+    flows = filter_viewable(
+        db,
+        current_user,
+        VISIBLE_FLOW,
+        crud_flow.get_multi(
+            db,
+            account_id=current_user.account_id,
+            skip=skip,
+            limit=limit,
+            include_shared=True,
+        ),
     )
 
     if flows:
-        flow_ids = [f.id for f in flows]
+        # Execution stats cover own flows only: the runs of a flow another
+        # account shares here (account hook H3) belong to that account.
+        flow_ids = [f.id for f in flows if f.account_id == current_user.account_id]
         stats = crud_flow_execution.get_execution_stats_for_flows(
             db, flow_ids, start_date=stats_since
         )
@@ -1642,6 +1659,39 @@ async def get_flow_execution_logs(
 MODEL_GATEWAY_CALL_LOG_TYPE = "model_gateway_call"
 
 
+@router.get(
+    "/flows/executions/{execution_id}/host-sessions",
+    response_model=HostExecSessionsResponse,
+)
+@require_permission("view_flows")
+def get_flow_execution_host_sessions(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> HostExecSessionsResponse:
+    """Hook sessions and seat usage of a run on a host-exec profile.
+
+    Args:
+        execution_id: ID of the execution.
+
+    Returns:
+        Sessions observed by the runner's usage hook, their event counts,
+        and the Copilot premium requests the CLI reported. None of it is
+        gateway traffic.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    return HostExecSessionsResponse.model_validate(
+        summarize_host_exec_usage(
+            db, account_id=current_user.account_id, execution_id=execution.id
+        )
+    )
+
+
 @router.get("/flows/executions/{execution_id}/gateway-events")
 @require_permission("view_flows")
 def get_flow_execution_gateway_events(
@@ -1865,13 +1915,16 @@ async def send_execution_command(
     command_data: schemas.FlowExecutionCommand,
     current_user: User = Depends(get_current_active_user),
 ):
-    """Send a command to a running flow execution."""
+    """Send a command to a running flow execution.
+
+    ``stop`` goes through ``preloop.services.flow_execution_stop``, the same
+    code path the automatic pull request stops use (#1032). It is idempotent:
+    stopping an execution that already ended changes nothing and answers with
+    the status it ended in.
+    """
     import logging
-    from datetime import datetime, timezone
-    from preloop.agents.container import ContainerAgentExecutor
-    from preloop.agents.codex import CodexAgent
+    from preloop.services.flow_execution_stop import stop_execution
     from preloop.sync.services.event_bus import get_nats_client
-    import os
 
     logger = logging.getLogger(__name__)
 
@@ -1889,155 +1942,19 @@ async def send_execution_command(
     if not execution:
         raise HTTPException(status_code=404, detail="Flow execution not found")
 
-    # Handle stop command - stop container directly
     if command_data.command == "stop":
-        # A parent parked on the flows it started leaves the park here, before
-        # any I/O, and terminally (#689). From this write on, a child reaching
-        # a terminal state claims nothing and the sweep lists nothing, so the
-        # stop cannot race a resume into existence while the container teardown
-        # below takes its seconds. The tree itself is stopped after the status
-        # update, once this execution is unambiguously terminal.
-        stops_a_tree = flow_tree_stop.parked_on_children(execution)
-        if stops_a_tree:
-            flow_tree_stop.close_children_park(db, parent=execution)
-
-        session_reference = execution.agent_session_reference
-        stoppable = execution.status in [
-            "RUNNING",
-            "STARTING",
-            "INITIALIZING",
-            "PENDING",
-        ]
-        runner_id = runner_id_from_session_reference(session_reference)
-        queued_pool = pool_from_session_reference(session_reference)
-        if runner_id is not None and stoppable:
-            # Runner-backed execution: the lease reference is not a container
-            # or Job name, so a container executor cannot see or stop the
-            # runner's process (and only builds an invalid Kubernetes
-            # selector trying). Flag the halt so the runner stops the job
-            # itself; its output already streams into flow_execution_log.
-            # Halt is per assignment: this runner may be running other jobs
-            # that nobody asked to stop.
-            if crud_flow_runner.request_halt(
-                db, runner_id=runner_id, execution_id=execution_id
-            ):
-                logger.info(
-                    f"Requested halt on runner {runner_id} for execution {execution_id}"
-                )
-        elif queued_pool is not None and stoppable:
-            # Queued for a private pool: nothing runs yet, so there is no
-            # container, Job, or runner to stop. The status update below is
-            # all that is needed.
-            pass
-        # Stop the container if it's running
-        elif session_reference and stoppable:
-            try:
-                # Get the flow to determine agent type
-                flow = crud_flow.get(
-                    db=db, id=execution.flow_id, account_id=current_user.account_id
-                )
-                if flow:
-                    use_kubernetes = (
-                        os.getenv("USE_KUBERNETES_FOR_AGENTS", "false").lower()
-                        == "true"
-                    )
-
-                    # Create agent executor to fetch logs and stop the container
-                    # CodexAgent auto-detects Kubernetes environment, no need to pass use_kubernetes
-                    if flow.agent_type == "codex":
-                        agent = CodexAgent(config={})
-                    else:
-                        agent = ContainerAgentExecutor(
-                            agent_type=flow.agent_type,
-                            config={},
-                            image="dummy-image",
-                            use_kubernetes=use_kubernetes,
-                        )
-
-                    # Fetch final logs before stopping the container
-                    try:
-                        container_logs = await agent.get_logs(
-                            execution.agent_session_reference, tail=5000
-                        )
-
-                        # Persist final logs to normalized flow_execution_log table
-                        if container_logs:
-                            for log_line in container_logs:
-                                crud_flow_execution.append_log(
-                                    db,
-                                    execution_id=str(execution_id),
-                                    log_data={
-                                        "type": "agent_log_line",
-                                        "payload": {"line": log_line},
-                                    },
-                                    commit=False,
-                                )
-                            db.commit()
-                            logger.info(
-                                f"Persisted {len(container_logs)} log lines to database for execution {execution_id}"
-                            )
-                    except Exception as log_error:
-                        logger.error(
-                            f"Failed to fetch and persist logs before stopping: {log_error}"
-                        )
-                        # Continue with stop even if log fetching fails
-
-                    # Stop the container
-                    await agent.stop(execution.agent_session_reference)
-                    logger.info(
-                        f"Stopped container {execution.agent_session_reference} for execution {execution_id}"
-                    )
-            except Exception as e:
-                logger.error(
-                    f"Failed to stop container for execution {execution_id}: {e}"
-                )
-                # Continue with status update even if container stop fails
-
-        # Update execution status
-        update_data = schemas.FlowExecutionUpdate(
-            status="STOPPED",
-            error_message="Manually stopped by user",
-            end_time=datetime.now(timezone.utc),
+        outcome = await stop_execution(
+            db,
+            execution,
+            account_id=current_user.account_id,
+            nats_client=nats_client,
+            command_payload=command_data.payload,
         )
-        crud_flow_execution.update(db=db, db_obj=execution, obj_in=update_data)
-        db.commit()
-
-        # Stopping a parent stops the flows it was waiting for (#689): the
-        # decision, why it is the one taken, and what the operator sees are in
-        # preloop/services/flow_tree_stop.py. Never fails the stop: this
-        # execution is already terminal and every write below is retried by
-        # nothing, so a failure here must be visible in the log rather than as
-        # a 500 on a stop that did happen.
-        if stops_a_tree:
-            try:
-                await flow_tree_stop.stop_tree_for_stopped_parent(
-                    db,
-                    parent=execution,
-                    account_id=current_user.account_id,
-                    nats_client=nats_client,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to stop the tree of execution %s", execution_id
-                )
-
-        # Try to send stop command via NATS (best effort - don't fail if this doesn't work)
-        try:
-            from preloop.services.flow_orchestrator import (
-                FlowExecutionOrchestrator,
-            )
-
-            await FlowExecutionOrchestrator.send_command(
-                execution_id=str(execution_id),
-                command=command_data.command,
-                payload=command_data.payload,
-                nats_client=nats_client,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send stop command via NATS: {e}")
-            # Not a critical error - container is already stopped
-
-        return {"status": "stopped"}
+        if outcome.stopped or outcome.status.upper() == "STOPPED":
+            return {"status": "stopped"}
+        # Already ended some other way (succeeded, failed, timed out): the
+        # stop is a no-op, and the caller learns how the run ended.
+        return {"status": "not_running", "execution_status": outcome.status}
 
     # For other commands, try to send via NATS
     try:
@@ -2525,14 +2442,23 @@ def update_flow(
     # later (e.g. cloned presets, which start with no trigger) ended up
     # with webhook_config=None: the console never shows a webhook URL and
     # the flow is untriggerable. Mirror the create-path behavior here.
+    existing_secret = (flow.webhook_config or {}).get("webhook_secret")
+    if flow_in.webhook_config is not None and not flow_in.webhook_config.webhook_secret:
+        # A client updating another webhook_config key (for example
+        # supersede_on_update) does not resend the secret: keep it.
+        if existing_secret:
+            flow_in.webhook_config = flow_in.webhook_config.model_copy(
+                update={"webhook_secret": existing_secret}
+            )
     if (
         effective_source == "webhook"
-        and not flow.webhook_config
-        and not flow_in.webhook_config
+        and not existing_secret
+        and not (flow_in.webhook_config and flow_in.webhook_config.webhook_secret)
     ):
-        flow_in.webhook_config = schemas.WebhookConfig(
-            webhook_secret=secrets.token_urlsafe(32)
-        )
+        flow_in.webhook_config = (
+            flow_in.webhook_config
+            or schemas.WebhookConfig(**(flow.webhook_config or {}))
+        ).model_copy(update={"webhook_secret": secrets.token_urlsafe(32)})
 
     # Detect customization for template-tracked flows
     # If the user modifies the prompt or tools, mark them as customized

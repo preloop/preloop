@@ -1467,6 +1467,113 @@ describe('RuntimeSessionsView', () => {
       expect(notice!.textContent).to.contain('Semantic ranking is not enabled');
     });
 
+    it('keeps the semantic search settings closed and unread until asked', async () => {
+      const element = await renderedSearch();
+
+      expect(
+        element.shadowRoot!.querySelector('session-embedding-settings')
+      ).to.equal(null);
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/settings/embedding'))
+      ).to.equal(false);
+      expect(
+        element.shadowRoot!.querySelector(
+          '[data-testid="embedding-settings-toggle"]'
+        )
+      ).to.not.equal(null);
+    });
+
+    it('offers the opt in from the semantic_not_enabled notice', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+        async () =>
+          new Response(
+            JSON.stringify(
+              searchResponse({
+                mode: 'hybrid',
+                degraded: {
+                  keyword: true,
+                  semantic: false,
+                  reasons: ['semantic_not_enabled'],
+                  detail:
+                    'This account has not opted in to embedding its session content, so these are keyword results.',
+                },
+              })
+            ),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+
+      const element = await renderedSearch();
+      const open = element.shadowRoot!.querySelector(
+        '[data-testid="degraded-notice"] [data-testid="open-embedding-settings"]'
+      ) as HTMLElement | null;
+      expect(open).to.not.equal(null);
+
+      open!.click();
+      await element.updateComplete;
+
+      expect(
+        element.shadowRoot!.querySelector('session-embedding-settings')
+      ).to.not.equal(null);
+    });
+
+    it('does not offer the opt in for a degraded reason it cannot fix', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+        async () =>
+          new Response(
+            JSON.stringify(
+              searchResponse({
+                mode: 'hybrid',
+                degraded: {
+                  keyword: true,
+                  semantic: false,
+                  reasons: ['semantic_disabled'],
+                  detail:
+                    'Semantic ranking is switched off on this deployment.',
+                },
+              })
+            ),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+
+      const element = await renderedSearch();
+
+      expect(
+        element.shadowRoot!.querySelector(
+          '[data-testid="open-embedding-settings"]'
+        )
+      ).to.equal(null);
+    });
+
+    it('re-runs the current search after the embedding setting is saved', async () => {
+      const element = await renderedSearch();
+      const before = searchCalls().length;
+
+      element
+        .shadowRoot!.querySelector('[data-testid="embedding-settings-toggle"]')!
+        .dispatchEvent(new Event('click'));
+      await element.updateComplete;
+      const card = element.shadowRoot!.querySelector(
+        'session-embedding-settings'
+      )!;
+      card.dispatchEvent(
+        new CustomEvent('session-embedding-changed', {
+          bubbles: true,
+          composed: true,
+          detail: { setting: { enabled: true } },
+        })
+      );
+
+      await waitUntil(
+        () => searchCalls().length > before,
+        'the search was not re-run after the opt in',
+        { timeout: 3000 }
+      );
+    });
+
     it('issues one request after the debounce, not one per keystroke', async () => {
       const element = (await fixture(
         html`<runtime-sessions-view></runtime-sessions-view>`

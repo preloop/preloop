@@ -111,3 +111,29 @@ def test_transform_comment(tracker):
     assert transformed["external_id"] == "comment-1"
     assert transformed["body"] == "A test comment"
     assert transformed["issue_id"] == "issue-db-id"
+
+
+def test_transform_issue_keeps_native_estimate_fields(tracker):
+    issue_data = {
+        "id": "issue-2",
+        "title": "Estimated",
+        "state": "opened",
+        "time_stats": {"time_estimate": 7200, "total_time_spent": 60},
+        "weight": 3,
+    }
+    mock_project = Mock()
+    mock_project.id = "project-db-id"
+    transformed = tracker.transform_issue(issue_data, mock_project)
+    assert transformed["meta_data"]["estimate_fields"] == {
+        "time_estimate": 7200,
+        "weight": 3,
+    }
+
+
+def test_transform_issue_without_estimate_stores_nothing(tracker):
+    mock_project = Mock()
+    mock_project.id = "project-db-id"
+    transformed = tracker.transform_issue(
+        {"id": "issue-3", "title": "Plain", "state": "open"}, mock_project
+    )
+    assert transformed["meta_data"]["estimate_fields"] == {}

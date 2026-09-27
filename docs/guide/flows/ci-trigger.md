@@ -21,9 +21,21 @@ jobs:
         run: |
           curl -fsSL https://preloop.ai/install/cli | sh
           export PATH="${HOME}/.local/bin:${PATH}"
-          preloop flow trigger pull-request-reviewer \
-            --payload '{"pull_request":{"url":"https://github.com/example/repo/pull/1"}}'
+          jq '{source: "github", type: "pull_request_opened",
+               payload: {pull_request: .pull_request, repository: .repository}}' \
+            "$GITHUB_EVENT_PATH" \
+            | preloop flow trigger pull-request-reviewer --payload -
 ```
+
+The request body becomes the flow's trigger event as is. Flow inputs go under
+`payload`: the Pull Request Reviewer prompt reads
+`trigger_event.payload.object_attributes.*`, which Preloop builds from a
+GitHub-shaped `payload.pull_request` (title, body, `html_url`, `user.login`,
+`head.ref`, `base.ref`) when `source` is `github`. A pull request placed at the
+top level of the body, next to `payload` instead of inside it, renders every
+one of those fields empty. `type` is what the prompt sees as the trigger; use
+`pull_request_updated` for later pushes so the reviewer can do an incremental
+pass.
 
 `PRELOOP_TOKEN` is an account API token. OIDC exchange is not part of this
 command yet. Use `--payload -` to pipe a JSON event file from a previous step.
@@ -32,6 +44,28 @@ Omit `--wait` in CI; waiting is the default when stdin is not a TTY.
 On GitHub-hosted runners the installer writes to `~/.local/bin`, which is
 not on PATH. In a single step, export it as above. Across steps, append
 that directory to `$GITHUB_PATH` in the install step.
+
+## Cancelled CI jobs stop the execution
+
+When the job is cancelled (a newer push, a closed pull request, or the
+cancel button), the runner sends the CLI SIGINT or SIGTERM. In CI the CLI
+then stops the execution on the server, prints its id and final status, and
+exits 130 (SIGINT) or 143 (SIGTERM). A run that finished just before the
+signal is reported, not stopped. This is `--stop-on-interrupt`, on by
+default when stdin is not a TTY. In a terminal it is off, so Ctrl-C only
+ends the CLI and the run continues; pass `--stop-on-interrupt` to stop it.
+
+Pair it with a concurrency group so a new push cancels the older job:
+
+```yaml
+concurrency:
+  group: preloop-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+```
+
+On GitLab, mark the job `interruptible: true` and enable auto-cancel of
+redundant pipelines. The stop only happens if the runner signals the job
+before killing it; a job killed outright leaves the execution running.
 
 ## `runner_pool` flow config
 

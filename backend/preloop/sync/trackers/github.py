@@ -68,6 +68,7 @@ class GitHubTracker(BaseTracker):
     """
 
     tracker_type: str = "github"
+    hosts_repositories: bool = True
     API_BASE_URL = "https://api.github.com"
 
     def __init__(
@@ -2095,6 +2096,14 @@ class GitHubTracker(BaseTracker):
             ),
         }
 
+    async def list_open_pull_requests_by_source_branch(
+        self, branch: str
+    ) -> Dict[str, Any]:
+        """Open pull requests whose head is ``branch``, in the shared shape."""
+        return await self.list_pull_requests(
+            state="open", limit=5, page=1, head_branch=branch
+        )
+
     async def branch_exists(self, branch: str) -> bool:
         """Whether ``branch`` exists on the connected repository.
 
@@ -3669,6 +3678,7 @@ class GitHubTracker(BaseTracker):
         context: str = "preloop",
         description: Optional[str] = None,
         target_url: Optional[str] = None,
+        refname: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a commit status (check) on a specific commit.
 
@@ -3681,10 +3691,13 @@ class GitHubTracker(BaseTracker):
                      Default is "preloop".
             description: A short description of the status (max 140 chars).
             target_url: URL to link to for more details (e.g., flow execution page).
+            refname: Pull request source branch. Unused: GitHub associates a
+                status with every pull request whose head is ``sha``.
 
         Returns:
             Dictionary with status details.
         """
+        del refname
         owner = self.connection_details.get("owner")
         repo = self.connection_details.get("repo")
 

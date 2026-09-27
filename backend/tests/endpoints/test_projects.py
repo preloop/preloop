@@ -246,6 +246,43 @@ class TestListProjects:
             assert len(result) == 1
             assert result[0]["name"] == "Test Project"
 
+    def test_list_projects_exposes_bitbucket_project_group(
+        self, mock_user, mock_project, mock_db_session
+    ):
+        """Bitbucket repositories carry their Bitbucket project as ``group``."""
+        mock_project.meta_data = {"project_name": "Platform"}
+        with patch.object(
+            projects, "get_accessible_projects", return_value=[mock_project]
+        ):
+            result = call_endpoint(
+                projects.list_projects,
+                organization_id=None,
+                limit=100,
+                offset=0,
+                db=mock_db_session,
+                current_user=mock_user,
+            )
+
+        assert result[0]["group"] == "Platform"
+
+    def test_list_projects_group_defaults_to_none(
+        self, mock_user, mock_project, mock_db_session
+    ):
+        """Projects without a Bitbucket project name have no group."""
+        with patch.object(
+            projects, "get_accessible_projects", return_value=[mock_project]
+        ):
+            result = call_endpoint(
+                projects.list_projects,
+                organization_id=None,
+                limit=100,
+                offset=0,
+                db=mock_db_session,
+                current_user=mock_user,
+            )
+
+        assert result[0]["group"] is None
+
     def test_list_projects_with_organization_filter(
         self, mock_user, mock_organization, mock_project, mock_db_session
     ):

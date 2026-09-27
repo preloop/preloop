@@ -248,7 +248,16 @@ async def consent_submit(
         # Authenticate user — try username first, then email
         user = crud_user.get_by_username(db, username=username)
         if not user:
-            user = crud_user.get_by_email(db, email=username)
+            # An address can hold a row in several accounts, each with its
+            # own password. The password picks the row; if it opens none, or
+            # more than one, nobody is signed in rather than a guessed row.
+            matches = [
+                candidate
+                for candidate in crud_user.list_by_email(db, email=username)
+                if candidate.hashed_password
+                and verify_password(password, candidate.hashed_password)
+            ]
+            user = matches[0] if len(matches) == 1 else None
         if not user or not user.hashed_password:
             return _render_error_response(
                 "Invalid username or password",

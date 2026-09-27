@@ -26,6 +26,24 @@ def runner_capacity(runner: models.FlowRunner) -> int:
     return int(getattr(runner, "capacity", models.DEFAULT_RUNNER_CONCURRENCY))
 
 
+class RunnerHasLeasesError(Exception):
+    """A runner still holds executions and the caller did not force."""
+
+    def __init__(self, execution_ids: List[UUID]) -> None:
+        self.execution_ids = list(execution_ids)
+        super().__init__(f"Runner holds {len(self.execution_ids)} active execution(s)")
+
+
+def _runner_visibility_clause(db: Session, account_id: Any) -> Any:
+    """Own runners, or own plus shared ones when account hook H3 names some."""
+    from preloop.plugins.account_hooks import VISIBLE_RUNNER, extra_visible_ids
+
+    shared_ids = extra_visible_ids(db, account_id, VISIBLE_RUNNER)
+    if not shared_ids:
+        return FlowRunner.account_id == account_id
+    return or_(FlowRunner.account_id == account_id, FlowRunner.id.in_(shared_ids))
+
+
 class CRUDFlowRunner(CRUDBase[FlowRunner]):
     """CRUD helpers for FlowRunner."""
 
@@ -390,9 +408,10 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         skip: int = 0,
         limit: int = 100,
     ) -> List[FlowRunner]:
+        """Runners of the account, plus runners shared with it (hook H3)."""
         return (
             db.query(FlowRunner)
-            .filter(FlowRunner.account_id == account_id)
+            .filter(_runner_visibility_clause(db, account_id))
             .order_by(FlowRunner.last_heartbeat.desc().nullslast())
             .offset(skip)
             .limit(limit)
@@ -413,7 +432,7 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         list fills the emptiest machine before doubling up on a busy one.
         """
         pool = (pool or "").strip()
-        query = db.query(FlowRunner).filter(FlowRunner.account_id == account_id)
+        query = db.query(FlowRunner).filter(_runner_visibility_clause(db, account_id))
         if online_only:
             cutoff = datetime.now(timezone.utc) - ONLINE_HEARTBEAT_TTL
             query = query.filter(
@@ -835,6 +854,114 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         )
         db.commit()
         return bool(deleted)
+
+    def delete_runner(
+        self,
+        db: Session,
+        *,
+        runner_id: UUID,
+        account_id: UUID,
+        force: bool = False,
+        reason: str = "The runner holding this execution was deleted",
+    ) -> Optional[List[UUID]]:
+        """Delete one runner row of an account, and with it its token.
+
+        The WebSocket authenticates against this row, so removing it is what
+        rejects the token from then on. A runner that holds leases is only
+        deleted with ``force``: each held execution is then stopped and
+        settled (``stop_for_runner_removal``) and its runtime API keys are
+        revoked, since the process holding them has lost its channel to
+        report back.
+
+        Lock order matches ``lease_job``: the account first, then the runner
+        row. Holding the runner row lock while counting its assignments is
+        what stops a concurrent lease from sneaking a job onto a runner that
+        is being deleted without ``force``.
+
+        Args:
+            db: Database session.
+            runner_id: Runner to delete.
+            account_id: Owning account; another account's runner is not found.
+            force: Stop held executions instead of refusing.
+            reason: Stop reason written on each held execution.
+
+        Returns:
+            The executions that were stopped (empty for an idle runner), or
+            None when no such runner exists in the account.
+
+        Raises:
+            RunnerHasLeasesError: The runner holds executions and ``force``
+                is False. Nothing was changed.
+        """
+        from preloop.models.crud import crud_api_key, crud_flow_execution
+
+        from .account_halt import crud_account_halt
+
+        try:
+            crud_account_halt.lock_account(db, account_id=account_id)
+            runner = (
+                db.query(FlowRunner)
+                .filter(FlowRunner.id == runner_id, FlowRunner.account_id == account_id)
+                .populate_existing()
+                .with_for_update()
+                .first()
+            )
+            if runner is None:
+                db.rollback()
+                return None
+            held = [
+                row.execution_id
+                for row in db.query(FlowRunnerAssignment)
+                .filter(FlowRunnerAssignment.runner_id == runner_id)
+                .order_by(FlowRunnerAssignment.assigned_at)
+                .all()
+            ]
+            if held and not force:
+                db.rollback()
+                raise RunnerHasLeasesError(held)
+            now = datetime.now(timezone.utc)
+            for execution_id in held:
+                crud_flow_execution.stop_for_runner_removal(
+                    db, execution_id=execution_id, reason=reason, now=now
+                )
+                crud_api_key.deactivate_runtime_keys_for_flow_execution(
+                    db, account_id=account_id, execution_id=execution_id, commit=False
+                )
+            db.query(FlowRunner).filter(FlowRunner.id == runner_id).delete(
+                synchronize_session=False
+            )
+            db.commit()
+            db.expire_all()
+            return held
+        except RunnerHasLeasesError:
+            raise
+        except Exception:
+            db.rollback()
+            raise
+
+    def rotate_token(
+        self, db: Session, *, runner_id: UUID, account_id: UUID, token_hash: str
+    ) -> Optional[FlowRunner]:
+        """Replace one runner's token hash; the previous token stops working.
+
+        Args:
+            db: Database session.
+            runner_id: Runner whose credential rotates.
+            account_id: Owning account; another account's runner is not found.
+            token_hash: Hash of the newly minted token.
+
+        Returns:
+            The updated runner, or None when no such runner exists in the account.
+        """
+        updated = (
+            db.query(FlowRunner)
+            .filter(FlowRunner.id == runner_id, FlowRunner.account_id == account_id)
+            .update({FlowRunner.token_hash: token_hash}, synchronize_session=False)
+        )
+        db.commit()
+        if not updated:
+            return None
+        return self.get_fresh(db, runner_id=runner_id)
 
     def sweep_stale_ephemeral(
         self,

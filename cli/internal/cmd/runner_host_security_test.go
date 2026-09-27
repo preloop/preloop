@@ -116,8 +116,12 @@ func TestHostExecTerminalCleanupAndHaltPrecedence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			probe := filepath.Join(t.TempDir(), "child")
 			t.Setenv("NATIVE_TEST_CHILD", probe)
-			binary := installFakeHostCLI(t, tc.child+"\necho $! > \"$NATIVE_TEST_CHILD\"\necho '{\"type\":\"result\",\"subtype\":\"success\"}'\nexit 0")
-			writeHostExecProfiles(t, []hostExecProfile{{Name: "native", Executable: binary, WorkspaceRoot: t.TempDir()}})
+			// Publish the PID with an atomic rename: the probe must never be
+			// observable while empty, or the halt case can stop the parent
+			// between the shell's truncating open and the write and leave
+			// no PID to verify (the historical flake).
+			binary := installFakeHostCLI(t, tc.child+"\necho $! > \"$NATIVE_TEST_CHILD.tmp\"\nmv \"$NATIVE_TEST_CHILD.tmp\" \"$NATIVE_TEST_CHILD\"\necho '{\"type\":\"result\",\"subtype\":\"success\"}'\nexit 0")
+			writeHostExecProfiles(t, []hostExecProfile{{Name: "native", Executable: binary, WorkspaceRoot: t.TempDir(), PassEnv: []string{"NATIVE_TEST_CHILD"}}})
 			cmd, _, _, err := newHostExecJobCmd(nativeTestJob())
 			if err != nil {
 				t.Fatal(err)

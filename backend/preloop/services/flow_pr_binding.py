@@ -56,7 +56,7 @@ def _is_tracker_api_url(url: str) -> bool:
     path = parsed.path or ""
     if "/api/v4/" in path:
         return True
-    if host == "api.github.com":
+    if host in {"api.github.com", "api.bitbucket.org"}:
         return True
     return False
 
@@ -123,6 +123,13 @@ def extract_pr_url_from_comment_event(event_data: Dict[str, Any]) -> Optional[st
         if found:
             return found
 
+    bitbucket_pr = payload.get("pullrequest")
+    if isinstance(bitbucket_pr, dict):
+        links = bitbucket_pr.get("links") or {}
+        found = _first_html_pr_url((links.get("html") or {}).get("href"))
+        if found:
+            return found
+
     return None
 
 
@@ -174,7 +181,7 @@ def parse_review_marker(body: Optional[str]) -> Optional[str]:
 
 
 def extract_comment_body(event_data: Dict[str, Any]) -> str:
-    """Best-effort comment body for GitHub and GitLab comment events."""
+    """Best-effort comment body for GitHub, GitLab and Bitbucket comments."""
 
     payload = event_data.get("payload") or event_data
     if not isinstance(payload, dict):
@@ -185,6 +192,12 @@ def extract_comment_body(event_data: Dict[str, Any]) -> str:
             value = comment.get(key)
             if isinstance(value, str) and value:
                 return value
+        # Bitbucket Cloud: comment.content.raw
+        content = comment.get("content")
+        if isinstance(content, dict):
+            raw = content.get("raw")
+            if isinstance(raw, str) and raw:
+                return raw
     elif isinstance(comment, str) and comment:
         return comment
     obj_attrs = payload.get("object_attributes")
@@ -521,8 +534,20 @@ def record_opened_pr(
     source_branch: Optional[str] = None,
     *,
     raise_errors: bool = False,
+    opened_at: Any = None,
 ) -> None:
-    """Merge the PR URL; best effort except when the runner awaits acknowledgment."""
+    """Merge the PR URL; best effort except when the runner awaits acknowledgment.
+
+    Args:
+        db: Database session.
+        execution_id: The execution that opened the pull request.
+        pr_url: The pull request URL.
+        source_branch: Its head branch, when known.
+        raise_errors: Re-raise a failed write (the runner waits for it).
+        opened_at: The forge's ``created_at`` for the pull request, when the
+            caller read it from the forge. The issue cost rollup then reports
+            that time as "PR opened" instead of the bind time.
+    """
 
     try:
         if not execution_id or not pr_url:
@@ -542,6 +567,11 @@ def record_opened_pr(
             )
             return
         logger.info("Recorded opened PR on execution %s", execution_id)
+        from preloop.services.issue_cost_rollup import record_publication_safely
+
+        record_publication_safely(
+            db, execution.id, stored_url, forge_opened_at=opened_at
+        )
         if source_branch:
             from preloop.services.flow_feedback import register_thread
 
@@ -637,9 +667,10 @@ def is_bound_implementation_comment(
     if execution is None or execution.flow_id != flow.id:
         return False
     source = execution.trigger_event_details or {}
+    provider = source.get("source")
     if (
-        source.get("source") not in {"github", "gitlab"}
-        or source.get("source") != event.get("source")
+        provider not in {"github", "gitlab", "bitbucket"}
+        or provider != event.get("source")
         or str(source.get("account_id")) != str(account_id)
         or str(source.get("tracker_id")) != str(tracker_id)
     ):
@@ -648,10 +679,15 @@ def is_bound_implementation_comment(
     original = source.get("payload") or {}
     repository = payload.get("repository") or payload.get("project") or {}
     original_repository = original.get("repository") or original.get("project") or {}
-    repository_id = repository.get("id")
-    return bool(repository_id) and str(repository_id) == str(
-        original_repository.get("id")
-    )
+    if provider == "bitbucket":
+        from preloop.utils.bitbucket import repository_identity
+
+        repository_id = repository_identity(repository)
+        original_id = repository_identity(original_repository)
+    else:
+        repository_id = repository.get("id")
+        original_id = original_repository.get("id")
+    return bool(repository_id) and str(repository_id) == str(original_id)
 
 
 def record_runner_handoff_markers(

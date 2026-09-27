@@ -15,7 +15,7 @@ Preloop is one self-hostable service that sits between your AI agents and everyt
 - **Policy-as-code with human approvals.** YAML plus CEL. Approve from mobile, watch, Slack, Mattermost, email, or the CLI.
 - **Runtime session observability.** One timeline per session: tool calls, model calls, policy, approvals, spend, outcomes.
 
-Onboard existing agents with one command. Talk to long-running ones from the console, phone, or watch. Deploy event-driven automations when GitHub, GitLab, Jira, or a webhook fires. Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Windsurf, and any MCP-compatible agent.
+Onboard existing agents with one command. Talk to long-running ones from the console, phone, or watch. Deploy event-driven automations when GitHub, GitLab, Bitbucket Cloud, Jira, or a webhook fires. Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Windsurf, and any MCP-compatible agent.
 
 Flow presets can review pull requests, implement issues, scan for vulnerabilities, collect machine evidence for CRA- and EU AI Act-style reviews (SBOM verify, exploit check); Runtime Observability keeps the session timeline next to it. That is not a conformity assessment, certification, or legal advice. Presets: [security audit presets](docs/guide/flows/security-audit-presets.md).
 
@@ -76,14 +76,14 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes. | AgentOps, Langfuse, LangSmith |
 | **Evidence packs** | Apache flow presets write `result.json` plus an evidence directory for CRA / AI Act-style work. Not a certification. | Custom GRC folders |
 
-Upstream providers include OpenAI, Anthropic, Google, AWS Bedrock, [Alibaba Cloud Model Studio (Qwen)](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot (Kimi), Z.ai (GLM), OpenRouter, and any OpenAI-compatible endpoint you configure. [Reviewed model pricing](docs/guide/model-price-refresh.md) distributes verified tariffs to gateway, API, and worker processes, and Alibaba tariffs preserve regional and cache-policy differences. The weekly review preset prepares tested pricing PRs after you bind its repository and model; historical repricing is a separate operation. Models or billing modes without verified rates remain visibly unpriced. [OTLP export](docs/guide/observability-otlp.md) is off by default; turn it on and governed model calls and MCP tool calls emit OpenTelemetry GenAI spans to any OTLP backend, without replacing the spend ledger.
+Upstream providers include OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guide/providers/bedrock.md), [Azure OpenAI](docs/guide/providers/azure-openai.md), [Alibaba Cloud Model Studio (Qwen)](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot (Kimi), Z.ai (GLM), OpenRouter, and any OpenAI-compatible endpoint you configure. [Reviewed model pricing](docs/guide/model-price-refresh.md) distributes verified tariffs to gateway, API, and worker processes, and Alibaba tariffs preserve regional and cache-policy differences. The weekly review preset prepares tested pricing PRs after you bind its repository and model; historical repricing is a separate operation. Models or billing modes without verified rates remain visibly unpriced. [OTLP export](docs/guide/observability-otlp.md) is off by default; turn it on and governed model calls and MCP tool calls emit OpenTelemetry GenAI spans to any OTLP backend, without replacing the spend ledger.
 
 ```text
 AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execute
                    → [Gateway] → Budget + attribution             → Model
 ```
 
-Connect GitHub, GitLab, or Jira as flow triggers and issue tools. Automations ship as presets, including the [Issue Triage Assistant](./docs/guide/flows/issue-triage.md), [Pull Request Reviewer](./docs/guide/flows/pull-request-review.md) and [Observe / Eval](./backend/presets/003-observe-eval.yaml). Or write your own. A flow can also start another flow of the same account as a child of itself, and the execution page shows the resulting tree: [flow delegation](docs/guide/flows/flow-delegation.md). [Automated issue implementation](docs/guide/flows/durable-implementation-feedback.md) can resume its PR branch and native agent conversation after review or CI feedback, with durable turn budgets and current-head gates. A finished run whose PR publication was not recorded can be recovered by explicitly selecting and verifying its published PR and branch; when the native checkpoint is unavailable, follow-up requires acknowledgment that it starts a fresh conversation.
+Connect GitHub, GitLab, Bitbucket Cloud, or Jira as flow triggers and issue tools ([Bitbucket Cloud setup](docs/guide/bitbucket-tracker.md), [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md)). Automations ship as presets, including the [Issue Triage Assistant](./docs/guide/flows/issue-triage.md), [Pull Request Reviewer](./docs/guide/flows/pull-request-review.md) and [Observe / Eval](./backend/presets/003-observe-eval.yaml). Or write your own. A flow can also start another flow of the same account as a child of itself, and the execution page shows the resulting tree: [flow delegation](docs/guide/flows/flow-delegation.md). [Automated issue implementation](docs/guide/flows/durable-implementation-feedback.md) can resume its PR branch and native agent conversation after review or CI feedback, with durable turn budgets and current-head gates. A finished run whose PR publication was not recorded can be recovered by explicitly selecting and verifying its published PR and branch; when the native checkpoint is unavailable, follow-up requires acknowledgment that it starts a fresh conversation.
 
 CI can trigger a flow too: the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md) (`.github/actions/run-flow`) starts a flow from a workflow job, streams the execution log, and fails the job on the execution's verdict. Where the agent container runs is your choice. [Private runners](docs/guide/runners/quickstart-linux.md) run it on your own machines over an outbound WebSocket, with no inbound ports: `preloop runner fg` holds several executions at once (default 2), and `--once --ephemeral` is a one-shot runner that exists for a single CI job.
 
@@ -144,11 +144,13 @@ preloop login --url http://localhost:3000
 preloop agents discover
 ```
 
-Console: `http://localhost:3000`. The CLI stores the instance URL in `~/.preloop/config.yaml`. Without `--url` or `PRELOOP_URL`, it defaults to `https://preloop.ai`. `preloop auth logout` clears this machine; `preloop auth logout --all` also revokes every other CLI and console session. Command list: [CLI authentication](cli/README.md#authentication).
+Console: `http://localhost:3000`. The CLI stores the instance URL in `~/.preloop/config.yaml`. Without `--url` or `PRELOOP_URL`, it defaults to `https://preloop.ai`. `preloop auth logout` revokes this machine's login and clears it; `preloop auth logout --all` also revokes every other CLI and console session; `preloop auth sessions list` and `revoke <id>` manage individual CLI logins. Command list: [CLI authentication](cli/README.md#authentication).
 
 Public TLS, SMTP (approvals, invites, password resets), upgrades, and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), [TLS](https://docs.preloop.ai/self-hosting/tls/), [Upgrading](https://docs.preloop.ai/upgrade/). Helm chart: [`helm/preloop`](helm/preloop) ([private cluster](helm/preloop/README.md#private-cluster)). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules.
 
-Production self-host: `SECRET_KEY` is required or the app refuses to start. Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
+What stays stable across those upgrades, and how a breaking change is announced, is the [compatibility policy](docs/compatibility.md).
+
+Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
 
 ## Working in this repository
 
@@ -160,6 +162,7 @@ This file is the product intro. It is not the architecture and not the coding co
 | Commands, DB/CRUD rules, Lit frontend | [AGENTS.md](AGENTS.md) |
 | PR process | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Operator and client guides | [docs.preloop.ai](https://docs.preloop.ai) |
+| Compatibility of public surfaces | [docs/compatibility.md](docs/compatibility.md) |
 | Policy examples | [`backend/presets/`](./backend/presets/) |
 
 Do not load this README plus ARCHITECTURE.md end-to-end "for context." Pick the row above.

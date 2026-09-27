@@ -12,7 +12,6 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from preloop.models.models.user import User
-from preloop.models.crud import crud_user_role, crud_role
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +19,11 @@ logger = logging.getLogger(__name__)
 def has_permission(user: User, permission_name: str, db: Session) -> bool:
     """Check if a user has a specific permission.
 
-    This function checks if the user has been assigned a role that grants
-    the specified permission. Permissions are aggregated from all roles
-    assigned to the user.
+    Permissions are aggregated from every role the user holds in their
+    account: roles assigned directly and roles granted through team
+    membership. Role resolution is shared with
+    :func:`preloop.utils.permissions.user_holds_permission`, so both checks
+    always agree.
 
     Args:
         user: The user to check permissions for.
@@ -33,71 +34,50 @@ def has_permission(user: User, permission_name: str, db: Session) -> bool:
         True if the user has the permission, False otherwise.
 
     Note:
-        - Users with the "owner" role have all permissions automatically
+        - Users holding the system "owner" role have all permissions
         - Inactive users have no permissions
-        - Permissions are cached per request for performance
+        - Resolved in a single query
     """
+    # Imported here, not at module level: preloop.utils.permissions imports
+    # the RBAC plugin at import time, and the plugin may import this module.
+    from preloop.utils.permissions import user_holds_permission
+
     if not user.is_active:
         return False
 
-    # Get all roles assigned to the user
-    user_roles = crud_user_role.get_by_user(db, user_id=user.id)
-
-    if not user_roles:
-        return False
-
-    # Check each role for the permission
-    for user_role in user_roles:
-        role = crud_role.get(db, id=user_role.role_id)
-        if not role:
-            continue
-
-        # Owner role has all permissions
-        if role.name == "owner":
-            return True
-
-        # Check if this role has the specific permission
-        for role_perm in role.permissions:
-            if role_perm.permission.name == permission_name:
-                return True
-
-    return False
+    return user_holds_permission(db, user, permission_name)
 
 
 def get_user_permissions(user: User, db: Session) -> List[str]:
     """Get all permissions for a user.
+
+    Permissions are aggregated from every role the user holds in their
+    account: roles assigned directly and roles granted through team
+    membership. Role resolution is shared with
+    :func:`preloop.utils.permissions.user_permission_names`, so this list
+    agrees with :func:`has_permission`.
 
     Args:
         user: The user to get permissions for.
         db: Database session.
 
     Returns:
-        List of permission names the user has.
+        Permission names the user has. Empty when the user is inactive.
+        Order is not significant. The system owner role expands to every
+        permission name.
+
+    Note:
+        Users holding the system "owner" role have all permissions.
+        Inactive users have no permissions.
     """
+    # Imported here, not at module level: preloop.utils.permissions imports
+    # the RBAC plugin at import time, and the plugin may import this module.
+    from preloop.utils.permissions import user_permission_names
+
     if not user.is_active:
         return []
 
-    permissions = set()
-    user_roles = crud_user_role.get_by_user(db, user_id=user.id)
-
-    for user_role in user_roles:
-        role = crud_role.get(db, id=user_role.role_id)
-        if not role:
-            continue
-
-        # Owner role has all permissions
-        if role.name == "owner":
-            # Get all permissions from the database
-            from preloop.models.models.permission import Permission
-
-            all_perms = db.query(Permission).all()
-            return [p.name for p in all_perms]
-
-        # Add this role's permissions
-        for role_perm in role.permissions:
-            permissions.add(role_perm.permission.name)
-
-    return list(permissions)
+    return user_permission_names(db, user)
 
 
 def require_permission(permission_name: str):
