@@ -31,15 +31,21 @@ jobs:
           set -euo pipefail
           # Match on the PR number or the head SHA, not just the branch name:
           # a fork PR's head branch name can collide with a branch here.
+          # A run already linked to a PR is cancelled only when that link is
+          # this PR. The head SHA is the fallback for runs with no PR linkage
+          # yet, so closing a parent does not cancel a stacked child's runs
+          # that happen to share the same commit.
           # shellcheck disable=SC2016  # $pr/$sha/$self are jq variables
-          for run_status in queued in_progress waiting pending requested; do
+          for run_status in queued in_progress; do
             gh api --paginate \
-              "repos/$REPO/actions/runs?branch=$HEAD_REF&status=$run_status&per_page=100" \
+              "repos/$REPO/actions/runs" -X GET \
+              -f branch="$HEAD_REF" -f status="$run_status" -F per_page=100 \
             | jq -r --arg pr "$PR_NUMBER" --arg sha "$HEAD_SHA" --arg self "$GITHUB_RUN_ID" '
                 .workflow_runs[]
                 | select((.id | tostring) != $self)
-                | select(.head_sha == $sha or (.pull_requests // [] | any(.number == ($pr | tonumber))))
-                | "\(.id) \(.name)"'
+                | select(if ((.pull_requests // []) | length) > 0 then (.pull_requests | any(.number == ($pr | tonumber))) else .head_sha == $sha end)
+                | "\(.id) \(.name)"' \
+              || { echo "query for $run_status failed" >&2; continue; }
           done | sort -u | while read -r id name; do
             echo "Cancelling run $id ($name)"
             gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null \

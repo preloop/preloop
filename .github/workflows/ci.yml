@@ -28,6 +28,8 @@ concurrency:
   # One run per PR, or per branch on push. A newer commit cancels the older
   # run on PRs and on main; tags, schedules and manual runs are never
   # cancelled (each tag is its own ref, so tags never collide anyway).
+  # Cancelling a main image push can leave :edge briefly inconsistent; the
+  # superseding build republishes it.
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
