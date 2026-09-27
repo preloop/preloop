@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
+  a login row selector, a revoke fan-out for "sign out everywhere", a
+  visibility provider for models, MCP servers, managed agents, flows and
+  runners owned by another account, one `authorize(ctx, action, resource)`
+  decision consulted by `require_permission`, gateway model access, tool
+  policy, runner dispatch and list endpoints, extra budget policies and spend
+  buckets, inherited kill switch scopes, a billing account resolver, and an
+  `account_ids` list on the gateway usage summaries. Every hook is a no-op
+  until a plugin registers it, and adds no query when unset.
 - Copilot and Cursor host execution profiles can run review and
   implementation flows. A profile that sets `allow_checkout` clones the
   flow's repositories into the run directory at the pinned commit, with a

@@ -82,14 +82,75 @@ def _run_awaitable_sync(awaitable):
     return result.get("value")
 
 
+def _check_authorizer(permission_name: str, kwargs: dict) -> None:
+    """Ask the registered authorizer (account hook H4) about an endpoint.
+
+    The action is the permission name and there is no resource: this is the
+    endpoint-level gate. Only a deny changes anything (403).
+    """
+    from preloop.plugins.account_hooks import AuthorizationContext, authorize
+
+    user = kwargs.get("current_user")
+    ctx = AuthorizationContext(
+        account_id=getattr(user, "account_id", None),
+        db=kwargs.get("db"),
+        user=user,
+    )
+    decision = authorize(ctx, permission_name, None)
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=decision.reason or f"Permission denied: {permission_name}",
+        )
+
+
+def _with_authorizer(func, permission_name: str):
+    """Consult the H4 authorizer before ``func``, keeping sync/async shape.
+
+    Plugins register the authorizer at startup, after endpoints are
+    decorated, so the registry is read on every call. With nothing
+    registered the call goes straight through.
+    """
+    from preloop.plugins.account_hooks import get_authorizer
+
+    if asyncio.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def authorized_async(*args, **kwargs):
+            if get_authorizer() is not None:
+                from preloop.api.loop_safety import run_db_off_loop
+
+                await run_db_off_loop(
+                    lambda: _check_authorizer(permission_name, kwargs)
+                )
+            return await func(*args, **kwargs)
+
+        return authorized_async
+
+    @functools.wraps(func)
+    def authorized_sync(*args, **kwargs):
+        if get_authorizer() is not None:
+            _check_authorizer(permission_name, kwargs)
+        return func(*args, **kwargs)
+
+    return authorized_sync
+
+
 def require_permission(permission_name: str):
-    """Return a decorator that preserves sync/async behavior."""
+    """Return a decorator that preserves sync/async behavior.
+
+    Without the RBAC plugin the endpoint is only wrapped for the account
+    authorizer (H4). With it, RBAC runs first as the ceiling, then the
+    authorizer, then the endpoint.
+    """
 
     def decorator(func):
         if _plugin_require_permission is None:
-            return func
+            return _with_authorizer(func, permission_name)
 
-        plugin_wrapped = _plugin_require_permission(permission_name)(func)
+        plugin_wrapped = _plugin_require_permission(permission_name)(
+            _with_authorizer(func, permission_name)
+        )
 
         if asyncio.iscoroutinefunction(func):
 

@@ -133,6 +133,34 @@ def resolve_active_override_row(
     return None
 
 
+def pricing_account_id(
+    caller_account_id: Union[uuid.UUID, str], ai_model: Any
+) -> Union[uuid.UUID, str]:
+    """Account whose price overrides apply to a request on ``ai_model``.
+
+    The caller's own account, except for a model another account shares
+    here through the visibility provider (account hook H3): that model is
+    priced with its owner's overrides, so a recipient cannot re-price it.
+    Only a model that entered through H3 can have a foreign owner, so with no
+    provider registered this always returns ``caller_account_id``.
+
+    Args:
+        caller_account_id: Account the request runs in.
+        ai_model: The resolved model row or snapshot.
+
+    Returns:
+        The account id to look overrides up under.
+    """
+    from preloop.plugins.account_hooks import get_visibility_provider
+
+    if get_visibility_provider() is None:
+        return caller_account_id
+    owner = getattr(ai_model, "account_id", None)
+    if owner is None or str(owner) == str(caller_account_id):
+        return caller_account_id
+    return owner
+
+
 def resolve_pricing_override(
     db: Session,
     *,

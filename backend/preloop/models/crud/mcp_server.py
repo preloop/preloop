@@ -107,6 +107,63 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
             .all()
         )
 
+    def get_active_visible_by_account(
+        self,
+        db: Session,
+        account_id: str,
+    ) -> List[models.MCPServer]:
+        """Active MCP servers the account may call tools on.
+
+        The account's own servers, then servers another account shares with
+        it (account hook H3). Without a visibility provider this is exactly
+        ``get_active_by_account``. Only tool discovery and tool calls use
+        it: policy and configuration code stays on the own servers.
+        """
+        from preloop.plugins.account_hooks import (
+            VISIBLE_MCP_SERVER,
+            extra_visible_ids,
+        )
+
+        own = self.get_active_by_account(db, account_id=account_id)
+        shared_ids = extra_visible_ids(db, account_id, VISIBLE_MCP_SERVER)
+        if not shared_ids:
+            return own
+        own_ids = {server.id for server in own}
+        shared = (
+            db.query(self.model)
+            .filter(
+                self.model.id.in_(shared_ids),
+                self.model.status == "active",
+            )
+            .order_by(self.model.created_at, self.model.id)
+            .all()
+        )
+        return own + [server for server in shared if server.id not in own_ids]
+
+    def get_visible(
+        self, db: Session, id: UUID, account_id: str
+    ) -> Optional[models.MCPServer]:
+        """An MCP server the account owns, or one shared with it (hook H3).
+
+        The server row carries its owner's credentials, which the caller
+        uses on the server side to connect and never returns to a client.
+        """
+        own = self.get(db, id=id, account_id=account_id)
+        if own is not None:
+            return own
+        from preloop.plugins.account_hooks import (
+            VISIBLE_MCP_SERVER,
+            extra_visible_ids,
+        )
+
+        shared_ids = {
+            str(shared)
+            for shared in extra_visible_ids(db, account_id, VISIBLE_MCP_SERVER)
+        }
+        if str(id) not in shared_ids:
+            return None
+        return self.get(db, id=id)
+
     def remove(
         self, db: Session, *, id: UUID, account_id: str
     ) -> Optional[models.MCPServer]:
