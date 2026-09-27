@@ -2096,19 +2096,12 @@ async def {internal_name}({params_str}):
         if not is_playwright_tool(client_tool_name) or not correlation_id:
             return
 
-        import base64
-
-        from pydantic import ValidationError
-
         from preloop.models.crud import crud_runtime_session_activity
-        from preloop.schemas.browser_step import (
-            ERROR_STORAGE_BUDGET_EXHAUSTED,
-            BrowserScreenshotIn,
-        )
+        from preloop.schemas.browser_step import ERROR_STORAGE_BUDGET_EXHAUSTED
         from preloop.services.browser_steps import (
             attach_screenshot,
-            decode_screenshot,
             enforce_session_screenshot_bound,
+            screenshot_bytes_error,
         )
         from preloop.services.playwright_steps import derive_step, extract_screenshot
         from preloop.services.session_search_index import index_browser_step
@@ -2147,27 +2140,15 @@ async def {internal_name}({params_str}):
                 extracted = extract_screenshot(raw_result)
                 if extracted is not None:
                     media_type, data = extracted
-                    try:
-                        screenshot_in = BrowserScreenshotIn(
-                            content_type=media_type,  # type: ignore[arg-type]
-                            data_base64=base64.b64encode(data).decode("ascii"),
-                        )
-                    except ValidationError:
+                    error = screenshot_bytes_error(media_type, data)
+                    if error is not None:
                         logger.info(
-                            "Skipping Playwright screenshot with media type %r",
-                            media_type,
+                            "Skipping Playwright screenshot for step %s: %s",
+                            correlation_id,
+                            error,
                         )
                     else:
-                        image, error = decode_screenshot(screenshot_in)
-                        if error is not None:
-                            logger.info(
-                                "Skipping Playwright screenshot for step %s: %s",
-                                correlation_id,
-                                error,
-                            )
-                            image = None
-                        else:
-                            content_type = media_type
+                        image, content_type = data, media_type
             if image is not None and content_type is not None:
                 # A full account budget drops the image and keeps the step.
                 try:

@@ -27,6 +27,7 @@ import base64
 import binascii
 from typing import Any, Final
 
+from preloop.config import settings
 from preloop.schemas.browser_step import (
     BrowserStepAction,
     BrowserStepIn,
@@ -158,9 +159,12 @@ def extract_screenshot(result: Any) -> tuple[str, bytes] | None:
 
     Returns:
         ``(media_type, data)`` for the first ``ImageContent`` item, or
-        ``None`` when there is no image or its base64 payload is invalid.
-        ``media_type`` falls back to ``image/png`` when the item names none,
-        which is what Playwright MCP produces by default.
+        ``None`` when there is no image, its base64 payload is invalid, or
+        the payload is too long to decode to at most
+        ``runtime_session_screenshot_max_bytes`` (checked on the encoded
+        length, so an oversized image is never decoded). ``media_type``
+        falls back to ``image/png`` when the item names none, which is what
+        Playwright MCP produces by default.
     """
     items = result
     if not isinstance(items, (list, tuple)):
@@ -171,10 +175,19 @@ def extract_screenshot(result: Any) -> tuple[str, bytes] | None:
         if getattr(item, "type", None) != "image":
             continue
         data = getattr(item, "data", None)
-        if not isinstance(data, str) or not data.strip():
+        if not isinstance(data, str):
+            return None
+        encoded = data.strip()
+        if not encoded:
+            return None
+        # Base64 carries 3 bytes per 4 characters; anything longer than the
+        # encoding of the cap cannot decode to an allowed size. Same check
+        # as decode_screenshot, applied before allocating the decoded copy.
+        max_bytes = int(settings.runtime_session_screenshot_max_bytes)
+        if len(encoded) > 4 * ((max_bytes + 2) // 3):
             return None
         try:
-            decoded = base64.b64decode(data.strip(), validate=True)
+            decoded = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError):
             return None
         if not decoded:

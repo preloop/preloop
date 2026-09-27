@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -10,10 +11,12 @@ from uuid import uuid4
 
 import pytest
 from mcp import types
+from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_runtime_session, crud_runtime_session_activity
 from preloop.schemas.browser_step import BrowserStepIn
+from preloop.services.browser_steps import screenshot_bytes_error
 from preloop.services.dynamic_fastmcp import DynamicFastMCP
 from preloop.services.dynamic_mcp_server import UserContext
 from preloop.services.playwright_steps import (
@@ -211,6 +214,55 @@ class TestExtractScreenshot:
         assert extract_screenshot([bad]) is None
         assert extract_screenshot([empty]) is None
 
+    def test_an_oversized_payload_is_refused_before_it_is_decoded(self, monkeypatch):
+        from preloop.config import settings
+        from preloop.services import playwright_steps
+
+        monkeypatch.setattr(settings, "runtime_session_screenshot_max_bytes", 64)
+        decode = MagicMock(side_effect=AssertionError("must not decode"))
+        monkeypatch.setattr(playwright_steps.base64, "b64decode", decode)
+        # 128 bytes encode to 172 characters; the 64-byte cap allows 88.
+        too_big = SimpleNamespace(
+            type="image",
+            data=base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 120).decode("ascii"),
+            mimeType="image/png",
+        )
+
+        assert extract_screenshot([too_big]) is None
+        decode.assert_not_called()
+
+    def test_a_payload_at_the_cap_is_still_decoded(self, monkeypatch):
+        from preloop.config import settings
+
+        monkeypatch.setattr(settings, "runtime_session_screenshot_max_bytes", 64)
+        at_cap = b"\x89PNG\r\n\x1a\n" + b"\0" * 56
+        item = SimpleNamespace(
+            type="image",
+            data=base64.b64encode(at_cap).decode("ascii"),
+            mimeType="image/png",
+        )
+
+        assert extract_screenshot([item]) == ("image/png", at_cap)
+
+
+class TestScreenshotBytesError:
+    """The firewall validates decoded bytes with the API's rules, no re-encode."""
+
+    def test_accepts_a_declared_image_under_the_cap(self):
+        assert screenshot_bytes_error("image/png", PNG_1X1) is None
+
+    def test_refuses_size_type_and_signature_like_the_api(self, monkeypatch):
+        from preloop.config import settings
+
+        assert screenshot_bytes_error("image/png", b"not a png") == "screenshot_invalid"
+        assert screenshot_bytes_error("image/png", b"") == "screenshot_invalid"
+        assert screenshot_bytes_error("image/gif", PNG_1X1) == "screenshot_invalid"
+        assert screenshot_bytes_error("image/jpeg", PNG_1X1) == "screenshot_invalid"
+        monkeypatch.setattr(
+            settings, "runtime_session_screenshot_max_bytes", len(PNG_1X1) - 1
+        )
+        assert screenshot_bytes_error("image/png", PNG_1X1) == "screenshot_too_large"
+
 
 class _NoCloseSession:
     """Hand the test session to code that closes its own db handle."""
@@ -308,6 +360,56 @@ class TestNextBrowserStepIndex:
             )
             == 5
         )
+
+    def test_concurrent_derivations_on_one_session_take_turns(self, db_engine):
+        """A second transaction waits for the first to finish before reading.
+
+        Two connections stand in for two concurrent tool calls. The second
+        call to ``next_browser_step_index`` must block while the first
+        transaction is open, and return once it rolls back. A different
+        session is not held up.
+        """
+        session_id = uuid4()
+        other_session_id = uuid4()
+        first = Session(bind=db_engine.connect())
+        second = Session(bind=db_engine.connect())
+        third = Session(bind=db_engine.connect())
+        finished = threading.Event()
+        result: dict[str, int] = {}
+
+        def read_second():
+            result["index"] = crud_runtime_session_activity.next_browser_step_index(
+                second, runtime_session_id=session_id
+            )
+            finished.set()
+
+        try:
+            assert (
+                crud_runtime_session_activity.next_browser_step_index(
+                    first, runtime_session_id=session_id
+                )
+                == 0
+            )
+            worker = threading.Thread(target=read_second, daemon=True)
+            worker.start()
+            # The other session's lock is independent of the held one.
+            assert (
+                crud_runtime_session_activity.next_browser_step_index(
+                    third, runtime_session_id=other_session_id
+                )
+                == 0
+            )
+            assert not finished.wait(0.5), "second reader did not wait for the lock"
+            first.rollback()
+            assert finished.wait(5), "second reader never acquired the lock"
+            assert result["index"] == 0
+            worker.join(timeout=5)
+        finally:
+            for session in (first, second, third):
+                session.rollback()
+                bind = session.get_bind()
+                session.close()
+                bind.close()
 
 
 class TestFirewallDerivationAgainstTheDatabase:

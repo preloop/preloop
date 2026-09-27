@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import Integer, and_, case, cast, func, tuple_
+from sqlalchemy import Integer, and_, case, cast, func, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -379,14 +379,30 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         ``metadata.step_index`` already stored on the session across every
         source. A session with no browser steps starts at 0.
 
+        An MCP client can dispatch browser calls on one session
+        concurrently, and each derivation reads then inserts in its own
+        transaction. To keep the numbering consecutive, this takes a
+        transaction-scoped advisory lock keyed on the session before reading;
+        a concurrent caller for the same session waits until this
+        transaction commits or rolls back and then sees the new row. Other
+        sessions are not blocked. The caller must insert and commit in the
+        same transaction for the lock to cover the insert.
+
         Args:
-            db: Database session.
+            db: Database session. The lock is released with its transaction.
             runtime_session_id: Session the step will be attached to.
 
         Returns:
             ``1 + max(step_index)`` over the session's ``browser_step`` rows,
             or ``0`` when there are none.
         """
+        db.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    func.hashtext(f"browser_step_index:{runtime_session_id}")
+                )
+            )
+        )
         step_index = self.model.metadata_["step_index"].astext
         highest = (
             db.query(func.max(cast(step_index, Integer)))
