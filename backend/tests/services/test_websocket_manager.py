@@ -12,6 +12,7 @@ from sqlalchemy.exc import (
     TimeoutError as SQLAlchemyTimeoutError,
 )
 
+from preloop.services import websocket_manager as wsm
 from preloop.services.websocket_manager import (
     LOG_PERSIST_MAX_ATTEMPTS,
     LOG_PERSIST_MAX_CONCURRENCY,
@@ -834,6 +835,96 @@ class TestNatsConsumer:
             assert mock_ws.send_text.called
 
         # Clean up
+        consumer_task.cancel()
+        try:
+            await consumer_task
+        except asyncio.CancelledError:
+            # Expected when cancelling the NATS consumer background task.
+            pass
+
+
+class TestAdminAlertSupervision:
+    """Admin alerts from the NATS handler are referenced and their errors logged."""
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    async def test_alert_task_is_held_until_done_then_released(self, mock_notify):
+        task = wsm._spawn_admin_alert(subject="Subject", message="Body")
+
+        assert task is not None
+        assert task in wsm._admin_alert_tasks
+        await task
+        await asyncio.sleep(0)
+
+        mock_notify.assert_called_once_with(subject="Subject", message="Body")
+        assert task not in wsm._admin_alert_tasks
+
+    @patch("preloop.services.websocket_manager.logger")
+    @patch(
+        "preloop.services.websocket_manager.notify_admins",
+        side_effect=RuntimeError("smtp unreachable"),
+    )
+    async def test_failed_alert_is_logged_not_raised(self, _mock_notify, mock_logger):
+        task = wsm._spawn_admin_alert(subject="Subject", message="Body")
+
+        assert task is not None
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+        assert task not in wsm._admin_alert_tasks
+        mock_logger.warning.assert_called_once()
+        logged_exc = mock_logger.warning.call_args.kwargs["exc_info"]
+        assert isinstance(logged_exc, RuntimeError)
+        assert str(logged_exc) == "smtp unreachable"
+
+    @patch("preloop.services.websocket_manager.logger")
+    async def test_scheduling_failure_is_logged_and_swallowed(self, mock_logger):
+        def _refuse(coro, *args, **kwargs):
+            coro.close()
+            raise RuntimeError("no running event loop")
+
+        with patch.object(wsm.asyncio, "create_task", side_effect=_refuse):
+            task = wsm._spawn_admin_alert(subject="Subject", message="Body")
+
+        assert task is None
+        mock_logger.warning.assert_called_once()
+
+    @patch("preloop.services.websocket_manager.notify_admins")
+    @patch("preloop.services.websocket_manager.get_task_publisher")
+    async def test_processing_error_alert_goes_through_supervision(
+        self, mock_get_publisher, mock_notify
+    ):
+        manager = WebSocketManager()
+        manager.broadcast_json = AsyncMock(side_effect=ValueError("broken"))
+        mock_nc = MagicMock()
+        mock_nc.is_connected = True
+        mock_get_publisher.return_value = MagicMock(nc=mock_nc)
+        captured_handler = None
+
+        async def mock_subscribe(subject, cb=None, **kwargs):
+            nonlocal captured_handler
+            if subject == "flow-updates.*" and not kwargs.get("queue"):
+                captured_handler = cb or kwargs.get("cb")
+            return AsyncMock()
+
+        mock_nc.subscribe = mock_subscribe
+        consumer_task = asyncio.create_task(nats_consumer(manager))
+        await asyncio.sleep(0.1)
+        mock_msg = MagicMock()
+        mock_msg.data.decode.return_value = json.dumps({"account_id": "acct-1"})
+
+        with patch.object(
+            wsm, "_spawn_admin_alert", wraps=wsm._spawn_admin_alert
+        ) as spawn:
+            await captured_handler(mock_msg)
+            spawn.assert_called_once()
+            assert "Processing Failed" in spawn.call_args.kwargs["subject"]
+
+        pending = [t for t in wsm._admin_alert_tasks if not t.done()]
+        await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert not wsm._admin_alert_tasks
+        mock_notify.assert_called_once()
+
         consumer_task.cancel()
         try:
             await consumer_task
