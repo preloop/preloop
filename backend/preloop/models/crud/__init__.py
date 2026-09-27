@@ -52,6 +52,7 @@ from .flow_execution_log import CRUDFlowExecutionLog
 from .flow_runner import CRUDFlowRunner, crud_flow_runner
 from .issue import CRUDIssue
 from .issue_cost import crud_issue_cost
+from .cli_session import CRUDCliSession, crud_cli_session
 from .issue_lifecycle import crud_issue_lifecycle
 from .security_maintenance import crud_security_maintenance
 from .organization import CRUDOrganization  # Removed create_organization import
@@ -240,6 +241,8 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 __all__ = [
     "crud_flow_feedback",
     "crud_issue_cost",
+    "CRUDCliSession",
+    "crud_cli_session",
     "crud_issue_lifecycle",
     "crud_security_maintenance",
     "CRUDBase",
