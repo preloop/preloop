@@ -19,6 +19,11 @@ from preloop.services.model_context_limits import (
     limits_for_execution,
 )
 from preloop.services.model_runtime_resolver import gateway_url_for_api
+from preloop.services.stream_stall import (
+    STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
+    STREAM_IDLE_TIMEOUT_LOG_PREFIX,
+    resolve_stream_idle_timeout_seconds,
+)
 
 from .cli_session import (
     AGENT_SESSION_MARKER,
@@ -443,6 +448,10 @@ fi
         shell_locked = self._shell_locked(execution_context)
         sandbox_flags = self._codex_sandbox_flags(shell_locked)
         attach_mcp = self._attach_preloop_mcp(execution_context)
+        stream_idle_timeout_seconds = resolve_stream_idle_timeout_seconds(
+            execution_context.get("agent_config"),
+            execution_context.get("flow_timeout_seconds"),
+        )
         # The live reminder is delivered later on this same executor. A
         # read-only run must not resume under --yolo.
         self.live_nudge_command = (
@@ -568,6 +577,14 @@ fi
             (execution_context.get("model_parameters") or {}).get("reasoning_effort"),
             attach_mcp=attach_mcp,
             shell_locked=shell_locked,
+            stream_idle_timeout_seconds=stream_idle_timeout_seconds,
+        )
+        # Native OpenAI writes no provider block, so the bound is not ours
+        # to report there.
+        idle_bound_line = (
+            f'echo "{STREAM_IDLE_TIMEOUT_LOG_PREFIX}{stream_idle_timeout_seconds}"'
+            if model_provider != "openai"
+            else ""
         )
         if attach_mcp:
             mcp_status_line = 'echo "MCP Server: $PRELOOP_MCP_URL"'
@@ -677,6 +694,7 @@ echo "Model: {model}"
 echo "Provider: {model_provider}"
 {mcp_status_line}
 echo "=========================="
+{idle_bound_line}
 
 # Resume the prior CLI session when a correlated restart restored one;
 # expands to nothing on a cold start.
@@ -929,6 +947,7 @@ exit $CODEX_EXIT_CODE
         reasoning_effort: Optional[str] = None,
         attach_mcp: bool = True,
         shell_locked: bool = False,
+        stream_idle_timeout_seconds: int = STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -954,6 +973,10 @@ exit $CODEX_EXIT_CODE
                 defaults to never asking; the lines keep a resume from
                 prompting. Not set on the ``--yolo`` path, because
                 ``never`` plus ``danger-full-access`` is rejected.
+            stream_idle_timeout_seconds: How long a custom-provider stream
+                may send nothing before Codex treats it as dropped. See
+                :func:`preloop.services.stream_stall.resolve_stream_idle_timeout_seconds`.
+                Native OpenAI keeps Codex's built-in value.
 
         Returns:
             Shell script block to write auth.json and config.toml
@@ -1014,7 +1037,7 @@ env_key = "{env_key}"
 wire_api = "{wire_api}"
 request_max_retries = 4
 stream_max_retries = 5
-stream_idle_timeout_ms = 600000
+stream_idle_timeout_ms = {stream_idle_timeout_seconds * 1000}
 {mcp_server}EOF"""
         else:
             # Built-in OpenAI already retries 4/5. Do not emit

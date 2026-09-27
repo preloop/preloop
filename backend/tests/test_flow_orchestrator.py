@@ -1876,6 +1876,11 @@ class TestFlowExecutionOrchestrator:
         )
         assert execution_context["model_api_key"] is None
         assert "model_gateway_disabled_reason" not in execution_context
+        # Harness waits (the Codex stream idle bound) are kept inside it.
+        assert (
+            execution_context["flow_timeout_seconds"]
+            == orchestrator._execution_timeout_budget().seconds
+        )
 
     def test_resolve_trigger_project_id_prefers_event_project(
         self, db_session: Session, test_flow: Flow, mock_nats_client
@@ -3536,6 +3541,28 @@ class TestFlowTimeoutSecondsField:
                 agent_type="codex",
                 agent_config={},
                 timeout_seconds=bad,
+            )
+
+    @pytest.mark.parametrize("idle", [30, 90, 3600])
+    def test_schema_accepts_a_stream_idle_bound(self, idle):
+        flow_in = FlowCreate(
+            name="Reviewer",
+            prompt_template="review",
+            agent_type="codex",
+            agent_config={"stream_idle_timeout_seconds": idle},
+        )
+        assert flow_in.agent_config["stream_idle_timeout_seconds"] == idle
+
+    @pytest.mark.parametrize("bad", [0, 29, 3601, "90", True, 90.5])
+    def test_schema_rejects_a_bad_stream_idle_bound(self, bad):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="stream_idle_timeout_seconds"):
+            FlowCreate(
+                name="Reviewer",
+                prompt_template="review",
+                agent_type="codex",
+                agent_config={"stream_idle_timeout_seconds": bad},
             )
 
     def test_budget_persists_through_the_crud_layer(

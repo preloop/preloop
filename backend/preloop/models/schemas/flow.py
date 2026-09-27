@@ -30,6 +30,10 @@ from preloop.services.report_publication import (
     MAX_COMMIT_MESSAGE_LENGTH,
     MAX_PATH_LENGTH,
 )
+from preloop.services.stream_stall import (
+    STREAM_IDLE_TIMEOUT_CONFIG_KEY,
+    validate_stream_idle_timeout,
+)
 from preloop.utils.schedule_text import (
     WEEKDAYS,
     describe_cron,
@@ -1367,6 +1371,9 @@ class FlowBase(BaseModel):
         limits = v.get("limits")
         if limits is not None:
             FlowExecutionLimits.model_validate(limits)
+        idle = v.get(STREAM_IDLE_TIMEOUT_CONFIG_KEY)
+        if idle is not None:
+            validate_stream_idle_timeout(idle)
         return v
 
     @field_validator("trigger_project_ids", mode="before")
