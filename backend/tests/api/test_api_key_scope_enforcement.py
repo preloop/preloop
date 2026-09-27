@@ -287,6 +287,23 @@ def test_off_mode_allows(
     assert response.status_code == 200, response.text
 
 
+@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"])
+def test_flow_token_for_finished_execution_is_rejected(
+    db_session: Session, test_user: models.User, enforcement_mode, status: str
+) -> None:
+    """The execution binding holds server-side even if revocation was missed."""
+    token = _flow_token(db_session, test_user, status=status)
+    assert get_user_from_token_if_valid_sync(token, db_session) is None
+
+
+@pytest.mark.parametrize("status", ["PENDING", "RUNNING", "WAITING_FOR_HUMAN"])
+def test_flow_token_for_live_execution_is_accepted(
+    db_session: Session, test_user: models.User, enforcement_mode, status: str
+) -> None:
+    token = _flow_token(db_session, test_user, status=status)
+    assert get_user_from_token_if_valid_sync(token, db_session) is not None
+
+
 def test_unified_websocket_rejects_mcp_only_keys(
     db_session: Session,
     test_user: models.User,

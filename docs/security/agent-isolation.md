@@ -199,6 +199,10 @@ The limits worth knowing:
   WebSockets refuse it (`backend/preloop/api/auth/key_scopes.py`).
   `API_KEY_SCOPE_ENFORCEMENT` switches this to `audit` (log and allow) or
   `off`; the default is `enforce`.
+- **The key dies with its execution.** Beside the revocation above, the
+  authentication path refuses a flow execution key once its execution has
+  reached a terminal status, so a missed revocation does not leave a live
+  key for the rest of the two hours. Parked executions keep their key.
 - **The tool allow list is checked on every call.** `allowed_mcp_tools`
   limits both the tools the MCP layer lists and the tools it will run for
   the key (`backend/preloop/services/dynamic_fastmcp.py`).
