@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -159,9 +160,48 @@ func TestResolveWindowsCmdShimTarget(t *testing.T) {
 	if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := resolveWindowsCmdShimTarget(shim)
-	if !ok || got != script {
-		t.Fatalf("resolveWindowsCmdShimTarget = %q, %v; want %q", got, ok, script)
+	got, flags, ok := resolveWindowsCmdShimTarget(shim)
+	if !ok || got != script || len(flags) != 0 {
+		t.Fatalf("resolveWindowsCmdShimTarget = %q, %v, %v; want %q", got, flags, ok, script)
+	}
+
+	// cmd-shim copies shebang flags before the script; they are kept.
+	flagged := filepath.Join(dir, "flagged.cmd")
+	flaggedBody := "@ECHO off\r\n" +
+		`endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" --no-warnings --enable-source-maps "%dp0%\node_modules\@github\copilot\index.js" %*` + "\r\n"
+	if err := os.WriteFile(flagged, []byte(flaggedBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, flags, ok = resolveWindowsCmdShimTarget(flagged)
+	if !ok || got != script || strings.Join(flags, " ") != "--no-warnings --enable-source-maps" {
+		t.Fatalf("flagged shim = %q, %v, %v", got, flags, ok)
+	}
+
+	// Anything between the interpreter and the script that is not a plain
+	// flag makes the shim opaque, so it is not unwrapped.
+	for name, between := range map[string]string{
+		"opaque-arg.cmd":  `%EXTRA% `,
+		"opaque-word.cmd": `run `,
+	} {
+		path := filepath.Join(dir, name)
+		line := `"%_prog%" ` + between + `"%dp0%\node_modules\@github\copilot\index.js" %*` + "\r\n"
+		if err := os.WriteFile(path, []byte(line), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, ok := resolveWindowsCmdShimTarget(path); ok {
+			t.Fatalf("%s must not unwrap", name)
+		}
+	}
+
+	// A script reference without the cmd-shim interpreter marker is not a
+	// shim invocation this code can reproduce.
+	noProg := filepath.Join(dir, "noprog.cmd")
+	noProgBody := `node "%dp0%\node_modules\@github\copilot\index.js" %*` + "\r\n"
+	if err := os.WriteFile(noProg, []byte(noProgBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := resolveWindowsCmdShimTarget(noProg); ok {
+		t.Fatal("shim without %_prog% must not unwrap")
 	}
 
 	// A batch file that is not an npm shim is left alone.
@@ -169,7 +209,7 @@ func TestResolveWindowsCmdShimTarget(t *testing.T) {
 	if err := os.WriteFile(plain, []byte("@echo hello\r\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := resolveWindowsCmdShimTarget(plain); ok {
+	if _, _, ok := resolveWindowsCmdShimTarget(plain); ok {
 		t.Fatal("plain batch file must not resolve to a shim target")
 	}
 
@@ -179,7 +219,7 @@ func TestResolveWindowsCmdShimTarget(t *testing.T) {
 	if err := os.WriteFile(broken, []byte(brokenBody), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := resolveWindowsCmdShimTarget(broken); ok {
+	if _, _, ok := resolveWindowsCmdShimTarget(broken); ok {
 		t.Fatal("missing shim target must not resolve")
 	}
 }
@@ -201,7 +241,10 @@ func TestHostExecCommandLineError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "host_exec_command_too_long") {
 		t.Fatalf("oversized batch command line: err = %v", err)
 	}
-	for _, unsafe := range []string{`say "hi"`, "100% done", "a\nb", "a\rb"} {
+	for _, unsafe := range []string{
+		`say "hi"`, "100% done", "a\nb", "a\rb",
+		"hello&calc.exe", "a|whoami", `x>C:\out.txt`, "y<in", "a^b", "wow!",
+	} {
 		err = hostExecCommandLineError("windows", `C:\npm\copilot.cmd`, []string{unsafe})
 		if err == nil || !strings.Contains(err.Error(), "host_exec_batch_argument_unsafe") {
 			t.Fatalf("batch arg %q: err = %v", unsafe, err)
@@ -428,5 +471,206 @@ func TestCopilotCommandHookEntryPerOS(t *testing.T) {
 	}
 	if _, ok := windows["bash"]; ok {
 		t.Fatal("windows entry must not carry bash")
+	}
+}
+
+// TestResolveWindowsCmdShimCommandPrefersBundledNode checks the unwrap picks
+// the node.exe beside the shim before node on PATH, exactly like the shim,
+// and keeps the shim's interpreter flags ahead of the script.
+func TestResolveWindowsCmdShimCommandPrefersBundledNode(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "node_modules", "@github", "copilot", "index.js")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("// entry\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(dir, "copilot.cmd")
+	body := `"%_prog%" --no-warnings "%dp0%\node_modules\@github\copilot\index.js" %*` + "\r\n"
+	if err := os.WriteFile(shim, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bundled := filepath.Join(dir, "node.exe")
+	if err := os.WriteFile(bundled, []byte("MZ"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	node, prefix, ok := resolveWindowsCmdShimCommand(shim)
+	if !ok || node != bundled {
+		t.Fatalf("node = %q, ok = %v; want bundled %q", node, ok, bundled)
+	}
+	if strings.Join(prefix, "|") != "--no-warnings|"+script {
+		t.Fatalf("prefix = %v", prefix)
+	}
+
+	// Without a bundled node.exe and no node anywhere, the shim is not
+	// unwrapped, so the batch guard decides instead.
+	if err := os.Remove(bundled); err != nil {
+		t.Fatal(err)
+	}
+	testenv.SetTempHome(t)
+	if _, _, ok := resolveWindowsCmdShimCommand(shim); ok && !nodeOnSystemSearchDirs() {
+		t.Fatal("shim unwrapped with no node available")
+	}
+}
+
+// nodeOnSystemSearchDirs reports whether a system-wide node exists in the
+// host-exec-only search directories, which the PATH override cannot hide.
+func nodeOnSystemSearchDirs() bool {
+	for _, dir := range hostExecSystemSearchDirs(runtime.GOOS) {
+		if _, err := os.Stat(filepath.Join(dir, "node")); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func TestHostExecExecutableShapeError(t *testing.T) {
+	cases := []struct {
+		goos, executable string
+		ok               bool
+	}{
+		{"windows", "copilot", true},
+		{"windows", "copilot.cmd", true},
+		{"windows", `C:\npm\copilot.cmd`, true},
+		{"windows", `c:/npm/copilot.cmd`, true},
+		{"windows", `\\server\share\copilot.exe`, true},
+		{"windows", `C:copilot.cmd`, false},
+		{"windows", `C:..\npm\copilot.cmd`, false},
+		{"windows", `npm\copilot.cmd`, false},
+		{"windows", `.\copilot.cmd`, false},
+		{"windows", `\npm\copilot.cmd`, false},
+		{"linux", "copilot", true},
+		{"linux", "/usr/local/bin/copilot", true},
+		{"linux", "bin/copilot", false},
+		{"darwin", "./copilot", false},
+	}
+	for _, tc := range cases {
+		err := hostExecExecutableShapeError(tc.goos, tc.executable)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s %q: err = %v, want ok=%v", tc.goos, tc.executable, err, tc.ok)
+		}
+	}
+}
+
+func TestHostExecRunnableErrorRejectsPowerShellOnWindows(t *testing.T) {
+	err := hostExecRunnableError("windows", `C:\Users\jane\bin\cursor-agent.ps1`)
+	if err == nil || !strings.Contains(err.Error(), "host_exec_executable_unsupported") {
+		t.Fatalf("ps1 on windows: err = %v", err)
+	}
+	for _, path := range []string{`C:\npm\copilot.cmd`, `C:\bin\agent.EXE`} {
+		if err := hostExecRunnableError("windows", path); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+	}
+	if err := hostExecRunnableError("darwin", "/opt/homebrew/bin/cursor-agent"); err != nil {
+		t.Fatalf("POSIX has no extension rule: %v", err)
+	}
+}
+
+func TestHostExecPrependPath(t *testing.T) {
+	got := hostExecPrependPath("darwin",
+		[]string{"HOME=/Users/jane", "PATH=/usr/bin:/bin"},
+		"/Users/jane/.nvm/versions/node/v22/bin", "/usr/bin",
+	)
+	if got[1] != "PATH=/Users/jane/.nvm/versions/node/v22/bin:/usr/bin:/bin" {
+		t.Fatalf("darwin PATH = %v", got)
+	}
+	got = hostExecPrependPath("windows",
+		[]string{`Path=C:\Windows\system32;C:\Users\jane\AppData\Roaming\npm\`},
+		`c:\users\jane\appdata\roaming\npm`, `C:\nvm4w\nodejs`,
+	)
+	if got[0] != `Path=C:\nvm4w\nodejs;C:\Windows\system32;C:\Users\jane\AppData\Roaming\npm\` {
+		t.Fatalf("windows PATH = %v", got)
+	}
+	got = hostExecPrependPath("linux", []string{"HOME=/h"}, "/opt/node/bin")
+	if got[len(got)-1] != "PATH=/opt/node/bin" {
+		t.Fatalf("missing PATH = %v", got)
+	}
+	env := []string{"PATH=/a:/b"}
+	if out := hostExecPrependPath("linux", env, "/b", "", "."); out[0] != "PATH=/a:/b" {
+		t.Fatalf("no-op prepend changed PATH: %v", out)
+	}
+}
+
+// TestNewHostExecJobPutsBinaryDirOnPath runs a host job under a launchd-like
+// minimal PATH and checks the CLI's own directory (where a Node version
+// manager keeps node) is on the child's PATH.
+func TestNewHostExecJobPutsBinaryDirOnPath(t *testing.T) {
+	binary := installFakeHostCLI(t, `printf '%s' "$PATH"`)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	writeHostExecProfiles(t, []hostExecProfile{{
+		Name: "native", Executable: binary, WorkspaceRoot: t.TempDir(),
+	}})
+	cmd, _, _, err := newHostExecJobCmd(nativeTestJob())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The spawned binary is the symlink-resolved path; the profile's own
+	// directory follows it, then the runner's PATH.
+	resolved, err := filepath.EvalSymlinks(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := strings.Split(string(out), ":")
+	if entries[0] != filepath.Dir(resolved) || !strings.HasSuffix(string(out), ":/usr/bin:/bin") {
+		t.Fatalf("child PATH = %q, want %s first", out, filepath.Dir(resolved))
+	}
+	found := false
+	for _, entry := range entries {
+		found = found || entry == filepath.Dir(binary)
+	}
+	if !found {
+		t.Fatalf("child PATH = %q lacks the profile directory %s", out, filepath.Dir(binary))
+	}
+}
+
+func TestCopilotHostExecEnvStripsAnyCase(t *testing.T) {
+	environ := hostExecChildEnv("windows", hostExecHarnessCopilot, hostExecProfile{}, []string{
+		"copilot_allow_all=true",
+		"Copilot_Provider_Base_Url=https://byok.example",
+		"copilot_offline=1",
+		"COPILOT_GITHUB_TOKEN=seat",
+		"Path=C:\\Windows",
+	})
+	got := strings.Join(copilotHostExecEnv(environ), "\n")
+	for _, leaked := range []string{"copilot_allow_all", "Copilot_Provider_Base_Url", "copilot_offline"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("%s survived the strip: %s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "COPILOT_GITHUB_TOKEN=seat") || !strings.Contains(got, "Path=") {
+		t.Fatalf("seat login or PATH dropped: %s", got)
+	}
+}
+
+func TestHostExecFlowEnvReplacesAnyCase(t *testing.T) {
+	id := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	got := hostExecFlowEnv([]string{"preloop_flow_execution_id=spoofed"}, map[string]any{"execution_id": id})
+	if strings.Join(got, "\n") != "PRELOOP_FLOW_EXECUTION_ID="+id {
+		t.Fatalf("env = %v", got)
+	}
+}
+
+func TestCopilotApprovalHookKeysPerOS(t *testing.T) {
+	if got := copilotApprovalHookKeys("windows"); strings.Join(got, ",") != "powershell" {
+		t.Fatalf("windows keys = %v", got)
+	}
+	for _, goos := range []string{"linux", "darwin"} {
+		if got := copilotApprovalHookKeys(goos); strings.Join(got, ",") != "bash" {
+			t.Fatalf("%s keys = %v", goos, got)
+		}
+	}
+	// The keys match what onboarding writes on each OS.
+	for _, goos := range []string{"windows", "linux"} {
+		entry := copilotCommandHookEntryFor(goos, "preloop agents permission-hook", 0)
+		if _, ok := entry[copilotApprovalHookKeys(goos)[0]]; !ok {
+			t.Fatalf("%s onboarding entry %v not under the checked key", goos, entry)
+		}
 	}
 }

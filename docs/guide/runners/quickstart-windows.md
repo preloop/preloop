@@ -116,15 +116,24 @@ completion, injection rejection). Windows specifics:
   `@github/copilot` is a `copilot.cmd` batch shim. Batch files receive their
   command line through `cmd.exe`, which cannot safely carry arbitrary prompt
   text, so the runner reads the shim and runs its Node script with
-  `node.exe` directly.
+  `node.exe` directly: the `node.exe` beside the shim when there is one
+  (nvm-windows, Volta, portable installs), otherwise `node` on `PATH`, with
+  any interpreter flags the shim passes (such as `--no-warnings`).
 - **Batch scripts fail closed.** If the profile resolves to a bare `.cmd` or
-  `.bat` that is not an npm shim, a prompt containing quotes, percent signs
-  or newlines is rejected before launch (`host_exec_batch_argument_unsafe`),
+  `.bat` that is not an npm shim, a prompt containing quotes, percent signs,
+  newlines or cmd.exe operators (`&`, `|`, `<`, `>`, `^`, `!`) is rejected
+  before launch (`host_exec_batch_argument_unsafe`),
   and the whole command line is capped at 8000 characters. Native
   executables are capped at 30000 characters
   (`host_exec_command_too_long`); Windows command lines cannot exceed the
   32767 character CreateProcess limit, so very large prompts need the
   Docker harness on a Linux runner.
+- **Executable rules.** A profile `executable` is a command name or a fully
+  qualified path (`C:\...` or `\\server\share\...`); relative and
+  drive-relative spellings such as `C:copilot.cmd` are rejected. It must
+  resolve to a `.exe`, `.cmd`, `.bat` or `.com`; PowerShell scripts
+  (`.ps1`) are refused with `host_exec_executable_unsupported`, so point
+  the profile at the CLI's `.cmd` shim or `.exe` instead.
 - **Workspace.** `workspace_root` is optional. When omitted, job workspaces
   are created under `%USERPROFILE%\.preloop\host-workspaces`, which inherits
   your user profile's ACLs (other non-admin users cannot read it). Each job
@@ -140,10 +149,16 @@ completion, injection rejection). Windows specifics:
 - **Halt kills the process tree.** Stop, cancellation and deadline expiry
   use `taskkill /T /F`, so the agent CLI and every descendant (node, tools,
   spawned shells) are terminated, matching the Unix process-group kill.
+  The runner pins the job's PID with a process handle first and skips
+  taskkill once the job has exited, so a recycled PID never points it at
+  an unrelated process.
 - **Copilot hooks run under PowerShell.** The Preloop usage hooks written to
   `%USERPROFILE%\.copilot\hooks\preloop.json` (or `%COPILOT_HOME%\hooks`)
   use the `powershell` command form on Windows; no bash is required
-  anywhere on this path.
+  anywhere on this path. A profile with `"allow_all_tools": true` requires
+  the Preloop approval hook under the `powershell` key; a `bash` entry left
+  by an older onboarding never runs on Windows and does not count, so
+  re-run approval onboarding after upgrading.
 
 ## What is and is not metered
 
@@ -162,7 +177,7 @@ completion, injection rejection). Windows specifics:
 | Symptom | Fix |
 | --- | --- |
 | `copilot_not_installed` in the execution log | Install with `npm install -g @github/copilot` as the runner user, or put `copilot.exe` on `PATH`. |
-| `copilot_not_logged_in` | Run `copilot` once and `/login` as the runner user, or set `COPILOT_GITHUB_TOKEN` in the profile's `pass_env` source environment. |
+| `copilot_not_logged_in` | Run `copilot` once and `/login` as the runner user, or set `COPILOT_GITHUB_TOKEN` in the environment the runner (or its scheduled task) starts with; `COPILOT_*`, `GH_*` and `GITHUB_TOKEN` reach Copilot jobs without `pass_env`. |
 | `host_exec_batch_argument_unsafe` | The CLI resolved to a bare batch script. Install the native `.exe`, or install via npm so the shim can be unwrapped to `node.exe`. |
 | `schtasks: ... Access is denied` on `runner enable` | Run the command from an elevated PowerShell prompt once. The task itself still runs as your user. |
 | A stopped execution leaves processes behind | Report it: halt uses `taskkill /T /F` and should kill the whole tree. `runner.log` records the runner side. |

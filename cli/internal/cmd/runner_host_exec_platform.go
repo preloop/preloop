@@ -25,6 +25,13 @@ const (
 	// hostExecBatchMaxCommandLine stays under the 8191 character cmd.exe
 	// limit that applies when the target is a .bat/.cmd script.
 	hostExecBatchMaxCommandLine = 8000
+	// hostExecBatchUnsafeChars cannot reach a .bat/.cmd target intact.
+	// CreateProcess runs such a target as cmd.exe /c "<command line>", and
+	// os/exec leaves an argument without whitespace unquoted, so &, |, <
+	// and > act as operators (command execution, redirection), ^ is eaten
+	// as an escape, ! expands under delayed expansion, % expands variables,
+	// and quotes or line breaks end the argument early.
+	hostExecBatchUnsafeChars = "\"%\r\n&|<>^!"
 )
 
 // windowsExecutableExtensions are the extensions the runner accepts as
@@ -153,30 +160,75 @@ var windowsCmdShimScriptRe = regexp.MustCompile(
 	`"%dp0%[\\/]([^"%]+\.(?:js|cjs|mjs))"`,
 )
 
+// windowsCmdShimProgMarker is how cmd-shim invokes the interpreter it
+// selected ("%dp0%\node.exe" when present, otherwise node on PATH).
+const windowsCmdShimProgMarker = `"%_prog%"`
+
+// windowsCmdShimFlagRe bounds the interpreter flags cmd-shim copies from a
+// shebang (for example --no-warnings or --enable-source-maps). Anything
+// else between the interpreter and the script makes the shim opaque.
+var windowsCmdShimFlagRe = regexp.MustCompile(`^--?[A-Za-z0-9][A-Za-z0-9_.:,=/+-]*$`)
+
 // resolveWindowsCmdShimTarget parses an npm-style .cmd shim and returns the
-// Node script it wraps. Running the script through node.exe directly keeps
-// the prompt out of cmd.exe, whose unquoting rules cannot safely carry
-// arbitrary text, and restores the full CreateProcess command-line budget.
-func resolveWindowsCmdShimTarget(shimPath string) (string, bool) {
+// Node script it wraps plus the interpreter flags the shim passes before
+// it. Running the script through node.exe directly keeps the prompt out of
+// cmd.exe, whose unquoting rules cannot safely carry arbitrary text, and
+// restores the full CreateProcess command-line budget. A shim whose
+// interpreter invocation cannot be reproduced exactly is not unwrapped.
+func resolveWindowsCmdShimTarget(shimPath string) (string, []string, bool) {
 	info, err := os.Stat(shimPath)
 	if err != nil || info.Size() > 64*1024 {
-		return "", false
+		return "", nil, false
 	}
 	raw, err := os.ReadFile(shimPath)
 	if err != nil {
-		return "", false
+		return "", nil, false
 	}
-	match := windowsCmdShimScriptRe.FindSubmatch(raw)
-	if match == nil {
-		return "", false
+	for _, line := range strings.Split(string(raw), "\n") {
+		loc := windowsCmdShimScriptRe.FindStringSubmatchIndex(line)
+		if loc == nil {
+			continue
+		}
+		prog := strings.LastIndex(line[:loc[0]], windowsCmdShimProgMarker)
+		if prog < 0 {
+			return "", nil, false
+		}
+		flags := strings.Fields(line[prog+len(windowsCmdShimProgMarker) : loc[0]])
+		for _, flag := range flags {
+			if !windowsCmdShimFlagRe.MatchString(flag) {
+				return "", nil, false
+			}
+		}
+		rel := strings.ReplaceAll(line[loc[2]:loc[3]], "\\", string(filepath.Separator))
+		rel = strings.ReplaceAll(rel, "/", string(filepath.Separator))
+		script := filepath.Join(filepath.Dir(shimPath), rel)
+		if info, err := os.Stat(script); err != nil || info.IsDir() {
+			return "", nil, false
+		}
+		return script, flags, true
 	}
-	rel := strings.ReplaceAll(string(match[1]), "\\", string(filepath.Separator))
-	rel = strings.ReplaceAll(rel, "/", string(filepath.Separator))
-	script := filepath.Join(filepath.Dir(shimPath), rel)
-	if info, err := os.Stat(script); err != nil || info.IsDir() {
-		return "", false
+	return "", nil, false
+}
+
+// resolveWindowsCmdShimCommand returns the interpreter and argv prefix that
+// reproduce an npm .cmd shim without cmd.exe. Like the shim, it prefers the
+// node.exe shipped beside the shim (nvm-windows, Volta and portable
+// prefixes) and only then falls back to node on PATH.
+func resolveWindowsCmdShimCommand(shimPath string) (string, []string, bool) {
+	script, flags, ok := resolveWindowsCmdShimTarget(shimPath)
+	if !ok {
+		return "", nil, false
 	}
-	return script, true
+	node := filepath.Join(filepath.Dir(shimPath), "node.exe")
+	if info, err := os.Stat(node); err != nil || info.IsDir() {
+		resolved, lookErr := resolveHostExecRuntimeExecutable("node")
+		if lookErr != nil {
+			return "", nil, false
+		}
+		node = resolved
+	}
+	prefix := append(append([]string{}, flags...), script)
+	return node, prefix, true
 }
 
 // resolveHostExecCommand resolves a profile executable to the binary to spawn
@@ -191,10 +243,8 @@ func resolveHostExecCommand(executable string) (string, []string, error) {
 	if runtime.GOOS != "windows" || !isWindowsBatchName(bin) {
 		return bin, nil, nil
 	}
-	if script, ok := resolveWindowsCmdShimTarget(bin); ok {
-		if node, nodeErr := resolveHostExecRuntimeExecutable("node"); nodeErr == nil {
-			return node, []string{script}, nil
-		}
+	if node, prefix, ok := resolveWindowsCmdShimCommand(bin); ok {
+		return node, prefix, nil
 	}
 	return bin, nil, nil
 }
@@ -212,9 +262,9 @@ func hostExecCommandLineError(goos, bin string, args []string) error {
 	if isWindowsBatchName(bin) {
 		limit = hostExecBatchMaxCommandLine
 		for _, arg := range args {
-			if strings.ContainsAny(arg, "\"%\r\n") {
+			if strings.ContainsAny(arg, hostExecBatchUnsafeChars) {
 				return fmt.Errorf(
-					"host_exec_batch_argument_unsafe: %q is a cmd.exe script and cannot safely receive arguments containing quotes, percent signs or newlines; install the CLI's native executable or point the profile at a .exe",
+					"host_exec_batch_argument_unsafe: %q is a cmd.exe script and cannot safely receive arguments containing quotes, percent signs, newlines or cmd.exe operators (& | < > ^ !); install the CLI's native executable or point the profile at a .exe",
 					bin,
 				)
 			}
@@ -402,4 +452,113 @@ func hostExecChildEnv(
 		}
 	}
 	return out
+}
+
+// hostExecExecutableShapeError enforces the "command name or absolute path"
+// rule for a profile executable before any lookup. On Windows a
+// drive-relative spelling ("C:copilot.cmd") is neither: LookPath resolves it
+// against the current directory of that drive.
+func hostExecExecutableShapeError(goos, executable string) error {
+	if goos == "windows" {
+		if isWindowsAbsPath(executable) {
+			return nil
+		}
+		if strings.ContainsAny(executable, `\/:`) {
+			return fmt.Errorf("executable must be a command name or an absolute path")
+		}
+		return nil
+	}
+	if strings.HasPrefix(executable, "/") {
+		return nil
+	}
+	if strings.ContainsRune(executable, '/') {
+		return fmt.Errorf("executable must be a command name or an absolute path")
+	}
+	return nil
+}
+
+// isWindowsAbsPath reports whether path is fully qualified on Windows: a
+// drive letter followed by a separator, or a UNC path. It is independent of
+// the host OS so the rule is testable everywhere.
+func isWindowsAbsPath(path string) bool {
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {
+		c := path[0] | 0x20
+		return c >= 'a' && c <= 'z'
+	}
+	return strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//")
+}
+
+// hostExecRunnableError rejects a resolved executable the runner cannot
+// start. On Windows CreateProcess only runs the extensions the runner lists;
+// a PowerShell script (cursor-agent.ps1) would pass LookPath and then fail
+// at job time with an opaque "not a valid Win32 application".
+func hostExecRunnableError(goos, path string) error {
+	if goos != "windows" || isWindowsExecutableName(path) {
+		return nil
+	}
+	return fmt.Errorf(
+		"host_exec_executable_unsupported: %q is not a .exe, .cmd, .bat or .com; point the profile at the CLI's .cmd shim or .exe (PowerShell scripts are not launched directly)",
+		path,
+	)
+}
+
+// hostExecPrependPath puts dirs at the front of PATH in environ, skipping
+// any directory already listed. A CLI installed by a Node version manager
+// (nvm, fnm, Volta) is found through its install directory even when the
+// runner runs under launchd or a scheduled task with a minimal PATH, and
+// its "#!/usr/bin/env node" needs that same directory to find node.
+func hostExecPrependPath(goos string, environ []string, dirs ...string) []string {
+	sep := ":"
+	if goos == "windows" {
+		sep = ";"
+	}
+	index := -1
+	current := ""
+	for i, entry := range environ {
+		key, value, _ := strings.Cut(entry, "=")
+		if key == "PATH" || (goos == "windows" && strings.EqualFold(key, "PATH")) {
+			index, current = i, value
+			break
+		}
+	}
+	existing := map[string]struct{}{}
+	for _, dir := range strings.Split(current, sep) {
+		if dir != "" {
+			existing[hostExecPathKey(goos, dir)] = struct{}{}
+		}
+	}
+	var front []string
+	for _, dir := range dirs {
+		if dir == "" || dir == "." {
+			continue
+		}
+		key := hostExecPathKey(goos, dir)
+		if _, seen := existing[key]; seen {
+			continue
+		}
+		existing[key] = struct{}{}
+		front = append(front, dir)
+	}
+	if len(front) == 0 {
+		return environ
+	}
+	out := append([]string{}, environ...)
+	value := strings.Join(front, sep)
+	if current != "" {
+		value += sep + current
+	}
+	if index < 0 {
+		return append(out, "PATH="+value)
+	}
+	key, _, _ := strings.Cut(out[index], "=")
+	out[index] = key + "=" + value
+	return out
+}
+
+func hostExecPathKey(goos, dir string) string {
+	dir = strings.TrimRight(dir, `/\`)
+	if goos == "windows" {
+		return strings.ToLower(dir)
+	}
+	return dir
 }

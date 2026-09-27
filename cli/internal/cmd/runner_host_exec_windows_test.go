@@ -245,3 +245,36 @@ func TestWindowsTaskkillPathIsSystemDirectory(t *testing.T) {
 		t.Fatalf("taskkill not found at %q: %v", path, err)
 	}
 }
+
+// TestKillRunnerJobProcessSkipsTaskkillAfterWait checks the deferred cleanup
+// after a normal exit never hands a possibly recycled PID to taskkill, while
+// a live job still gets the tree kill.
+func TestKillRunnerJobProcessSkipsTaskkillAfterWait(t *testing.T) {
+	var calls []int
+	original := runWindowsTaskkill
+	runWindowsTaskkill = func(pid int) error {
+		calls = append(calls, pid)
+		return original(pid)
+	}
+	t.Cleanup(func() { runWindowsTaskkill = original })
+
+	exited := exec.Command("cmd.exe", "/c", "exit 0")
+	if err := exited.Run(); err != nil {
+		t.Fatal(err)
+	}
+	killRunnerJobProcess(exited)
+	if len(calls) != 0 {
+		t.Fatalf("taskkill ran for a waited process: %v", calls)
+	}
+
+	live := exec.Command("ping", "-n", "120", "127.0.0.1")
+	live.SysProcAttr = hostExecSysProcAttr()
+	if err := live.Start(); err != nil {
+		t.Fatal(err)
+	}
+	killRunnerJobProcess(live)
+	_ = live.Wait()
+	if len(calls) != 1 || calls[0] != live.Process.Pid {
+		t.Fatalf("taskkill calls = %v, want [%d]", calls, live.Process.Pid)
+	}
+}

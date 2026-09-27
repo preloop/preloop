@@ -425,7 +425,7 @@ func hostExecMCPConfig(harness, workspace, token string) ([]string, []string, er
 func hostExecFlowEnv(environ []string, job map[string]any) []string {
 	out := make([]string, 0, len(environ)+2)
 	for _, entry := range environ {
-		key := strings.SplitN(entry, "=", 2)[0]
+		key := strings.ToUpper(strings.SplitN(entry, "=", 2)[0])
 		if key == "PRELOOP_FLOW_EXECUTION_ID" || key == "PRELOOP_FLOW_ID" {
 			continue
 		}

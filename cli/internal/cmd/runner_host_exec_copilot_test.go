@@ -245,6 +245,24 @@ echo '{"type":"result","sessionId":"s","exitCode":0}'
 	if _, _, _, err := newHostExecJobCmd(copilotJob(nil)); err == nil || !strings.Contains(err.Error(), "copilot_approval_hook_missing") {
 		t.Fatalf("err = %v", err)
 	}
+	// Entries Copilot never executes on this OS do not satisfy the gate: a
+	// powershell entry on POSIX, or a generic command key anywhere.
+	for i, key := range []string{"powershell", "command"} {
+		dead := map[string]any{
+			"version": 1,
+			"hooks": map[string]any{
+				"preToolUse": []any{map[string]any{"type": "command", key: "preloop agents permission-hook --source copilot_cli"}},
+			},
+		}
+		raw, _ := json.Marshal(dead)
+		if err := os.WriteFile(filepath.Join(copilotHome, "hooks", "preloop.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		job := copilotJob(map[string]any{"execution_id": fmt.Sprintf("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee%d", i)})
+		if _, _, _, err := newHostExecJobCmd(job); err == nil || !strings.Contains(err.Error(), "copilot_approval_hook_missing") {
+			t.Fatalf("%s-keyed hook accepted: err = %v", key, err)
+		}
+	}
 	approval := map[string]any{
 		"version": 1,
 		"hooks": map[string]any{

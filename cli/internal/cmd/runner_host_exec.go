@@ -329,6 +329,21 @@ func lookupHostExecProfile(name string) (hostExecProfile, error) {
 
 func resolveHostExecBinary(executable string) (string, error) {
 	cleaned := strings.TrimSpace(executable)
+	if err := hostExecExecutableShapeError(runtime.GOOS, cleaned); err != nil {
+		return "", err
+	}
+	path, err := lookupHostExecBinary(cleaned)
+	if err != nil {
+		return "", err
+	}
+	if err := hostExecRunnableError(runtime.GOOS, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// lookupHostExecBinary locates a shape-checked profile executable.
+func lookupHostExecBinary(cleaned string) (string, error) {
 	base := filepath.Base(cleaned)
 	if hostExecIsCopilotBinary(cleaned) && base == cleaned {
 		for _, name := range hostExecCommandCandidates(cleaned, "copilot") {
@@ -668,6 +683,7 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	env := hostExecFlowEnv(
 		hostExecChildEnv(runtime.GOOS, wantHarness, profile, os.Environ()), job,
 	)
+	env = hostExecPrependPath(runtime.GOOS, env, hostExecBinaryDirs(bin, profile.Executable)...)
 	if wantHarness == hostExecHarnessCopilot {
 		if err = prepareCopilotHostExecHooks(profile); err == nil {
 			args, err = buildCopilotHostExecArgs(profile, job, mcpArgs...)
@@ -697,6 +713,18 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		checkout:  checkout,
 		cleanup:   cleanup,
 	}, nil
+}
+
+// hostExecBinaryDirs lists the directories of the spawned binary and of an
+// absolute profile executable (whose symlinks resolveHostExecBinary
+// follows), which is where a Node version manager keeps node itself.
+func hostExecBinaryDirs(bin, executable string) []string {
+	dirs := []string{filepath.Dir(bin)}
+	cleaned := strings.TrimSpace(executable)
+	if filepath.IsAbs(cleaned) {
+		dirs = append(dirs, filepath.Dir(filepath.Clean(cleaned)))
+	}
+	return dirs
 }
 
 // cloneJobWithPrompt returns a shallow copy with a replaced prompt so the

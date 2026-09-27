@@ -106,7 +106,9 @@ completion, injection rejection, process-group halt). macOS specifics:
   `~/.npm-global/bin`, `~/.copilot/bin`, `~/Library/pnpm`, nvm-managed Node
   installs, `/opt/homebrew/bin` and `/usr/local/bin`. A runner started by
   launchd finds Homebrew- and npm-installed CLIs even though launchd's own
-  `PATH` is minimal.
+  `PATH` is minimal. The CLI's own directory is put at the front of the
+  job's `PATH`, so a CLI installed under nvm, fnm or Volta finds the `node`
+  its `#!/usr/bin/env node` line asks for.
 - **Workspace.** `workspace_root` is optional. When omitted, job workspaces
   are created under `~/.preloop/host-workspaces` (mode 0700). Each job still
   gets a fresh `.preloop-host-exec/<execution_id>` directory; reuse and

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -167,7 +168,11 @@ func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any, mcpAr
 func copilotHostExecEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, entry := range environ {
-		key := strings.SplitN(entry, "=", 2)[0]
+		// Compare case-insensitively: Windows environment names are, and
+		// the allowlist admits COPILOT_* in any case there, so a mixed-case
+		// Copilot_Allow_All must not slip past. On POSIX a lowercase name is
+		// not read by Copilot, so dropping it too costs nothing.
+		key := strings.ToUpper(strings.SplitN(entry, "=", 2)[0])
 		if _, drop := copilotStrippedEnv[key]; drop {
 			continue
 		}
@@ -286,6 +291,19 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
+// copilotApprovalHookKeys names the command keys Copilot executes on goos:
+// bash on POSIX and powershell on Windows, matching what onboarding writes
+// (copilotCommandHookEntryFor). An entry under the other key never runs, so
+// accepting it would let allow_all_tools start with no approval gate (for
+// example a bash entry left by an older onboarding on a Windows host).
+// Copilot has no generic "command" key, so none is accepted.
+func copilotApprovalHookKeys(goos string) []string {
+	if goos == "windows" {
+		return []string{"powershell"}
+	}
+	return []string{"bash"}
+}
+
 func copilotApprovalHookInstalled() (bool, error) {
 	path, err := copilotPreloopHooksPath()
 	if err != nil {
@@ -299,9 +317,7 @@ func copilotApprovalHookInstalled() (bool, error) {
 	entries, _ := hooks["preToolUse"].([]interface{})
 	for _, raw := range entries {
 		entry, _ := raw.(map[string]interface{})
-		// Onboarding writes bash on POSIX and powershell on Windows; the
-		// generic command key is accepted for hand-written entries.
-		for _, key := range []string{"bash", "powershell", "command"} {
+		for _, key := range copilotApprovalHookKeys(runtime.GOOS) {
 			command, _ := entry[key].(string)
 			if strings.Contains(command, "agents permission-hook") {
 				return true, nil
