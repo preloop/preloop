@@ -870,3 +870,40 @@ def test_register_tracker_keeps_missing_field_error(
     detail = response.json()["detail"]
     assert detail.startswith("Missing required field: api_key")
     assert "Invalid request format" not in detail
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+async def test_jira_username_update_without_config_persists(
+    mock_publish_task, client: TestClient, db_session, test_user
+):
+    """The console PUT payload (no legacy config key) round trips the username."""
+    tracker = Tracker(
+        name="Jira console",
+        tracker_type="jira",
+        url="https://jira.example.com",
+        account_id=test_user.account_id,
+        api_key="jira_key",
+        connection_details={"username": "old-user"},
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    response = client.put(
+        f"/api/v1/trackers/{tracker.id}",
+        json={
+            "name": "Jira console",
+            "type": "jira",
+            "url": "https://jira.example.com",
+            "scope_rules": [],
+            "connection_details": {"username": "edited-user"},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["connection_details"]["username"] == "edited-user"
+    db_session.refresh(tracker)
+    assert tracker.connection_details["username"] == "edited-user"
+
+    fetched = client.get(f"/api/v1/trackers/{tracker.id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["connection_details"]["username"] == "edited-user"
