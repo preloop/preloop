@@ -366,6 +366,12 @@ class TestSbomExploitCheckPreset:
         # Never claim absence for unmatchable components.
         assert "unmatchable" in prompt
 
+    def test_cvss_and_epss_are_json_numbers(self):
+        prompt = _load_preset(PRESET_FILES["SBOM Exploit Check"])["prompt_template"]
+        assert "Write cvss and epss as JSON numbers or null, never as strings" in _norm(
+            prompt
+        )
+
     def test_completion_status_contract(self):
         """The vulnscan schema has no top-level verdict, so a required
         top-level "status" field is its flow completion signal: "success"
@@ -401,6 +407,12 @@ class TestReleaseSecurityAuditPreset:
         assert "never guess a baseline" in _norm(prompt)
         assert "api.osv.dev/v1/querybatch" in prompt
         assert "known_exploited_vulnerabilities.json" in prompt
+
+    def test_cvss_and_epss_are_json_numbers(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        assert "Write cvss and epss as JSON numbers or null, never as strings" in _norm(
+            prompt
+        )
 
     def test_measure_command_and_counted_severities(self):
         prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
