@@ -4,6 +4,8 @@ import logging
 import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from urllib.parse import urlsplit
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -79,11 +81,13 @@ def _log_insecure_placeholder_jwt_banner() -> None:
 def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> None:
     """Reject placeholder JWT secrets in production; warn loudly otherwise.
 
-    Helm ``jwtSecret`` stays optional so ``helm template`` and existing
-    upgrades still render. ENVIRONMENT=production already fails closed when
-    SECRET_KEY is missing; the same gate rejects these public placeholders.
-    Development, test, and unset ENVIRONMENT (the chart default) log a
-    CRITICAL banner instead of refusing to start.
+    The Helm chart fails closed on the same placeholder list at install time
+    (templates/secret.yaml mirrors it); this startup gate is the backstop
+    for non-Helm deployments and for installs that predate the chart guard.
+    ENVIRONMENT=production already fails closed when SECRET_KEY is missing;
+    the same gate rejects these public placeholders. Development, test, and
+    unset ENVIRONMENT (the chart default) log a CRITICAL banner instead of
+    refusing to start.
 
     Args:
         secret: Configured JWT signing key.
@@ -99,6 +103,31 @@ def warn_or_reject_placeholder_jwt_secret(secret: str, *, environment: str) -> N
     # Log a canned banner in a helper that does not take the signing key, so
     # the key never reaches a logging sink (CodeQL py/clear-text-logging).
     _log_insecure_placeholder_jwt_banner()
+
+
+def warn_default_database_credentials(database_url: str) -> None:
+    """Warn when the database URL carries the development default credentials.
+
+    The development docker compose stack defaults ``POSTGRES_PASSWORD`` to
+    ``postgres``, which is fine on a laptop and must never face the internet.
+    The warning message contains no part of the URL, so no credential (not
+    even the public default) reaches a logging sink.
+
+    Args:
+        database_url: The resolved ``DATABASE_URL`` value.
+    """
+    try:
+        parsed = urlsplit(database_url)
+        username, password = parsed.username, parsed.password
+    except ValueError:
+        return
+    if username == "postgres" and password == "postgres":
+        logger.warning(
+            "DATABASE_URL authenticates with the development default "
+            "postgres credentials. Set POSTGRES_PASSWORD (docker compose) "
+            "or a real DATABASE_URL for any deployment that leaves this "
+            "machine."
+        )
 
 
 def _load_release_version(
@@ -375,6 +404,15 @@ class Settings(BaseSettings):
         description=(
             "Disable proprietary RBAC permission checks and plugin loading. "
             "Set via DISABLE_RBAC=true for OSS / unrestricted access."
+        ),
+    )
+    api_key_scope_enforcement: Literal["enforce", "audit", "off"] = Field(
+        "enforce",
+        description=(
+            "How API keys whose only scopes are MCP scopes (flow execution and "
+            "runtime session tokens) are treated on REST routes: 'enforce' "
+            "denies them with 403, 'audit' logs and allows, 'off' allows. "
+            "Set via API_KEY_SCOPE_ENFORCEMENT; unknown values mean 'enforce'."
         ),
     )
 
@@ -1548,6 +1586,7 @@ class Settings(BaseSettings):
         if not database_url:
             database_url = "postgresql+psycopg://postgres:postgres@localhost/preloop"
             logger.warning(f"DATABASE_URL not set, using default: {database_url}")
+        warn_default_database_credentials(database_url)
 
         secret_key = os.getenv("SECRET_KEY")
         env = os.getenv("ENVIRONMENT", "development")
@@ -1608,6 +1647,12 @@ class Settings(BaseSettings):
             "t",
             "yes",
         )
+        api_key_scope_enforcement = (
+            os.getenv("API_KEY_SCOPE_ENFORCEMENT", "enforce").strip().lower()
+        )
+        if api_key_scope_enforcement not in ("enforce", "audit", "off"):
+            # Fail closed: a typo must not silently switch enforcement off.
+            api_key_scope_enforcement = "enforce"
         bootstrap_token = os.getenv("PRELOOP_BOOTSTRAP_TOKEN", "")
         require_email_verification = os.getenv(
             "REQUIRE_EMAIL_VERIFICATION", "false"
@@ -1753,6 +1798,7 @@ class Settings(BaseSettings):
                 email_verification_resend_window_seconds
             ),
             disable_rbac=disable_rbac,
+            api_key_scope_enforcement=api_key_scope_enforcement,
             database=database,
             security=security,
             server=server,

@@ -18,11 +18,17 @@ To install the chart with the release name `preloop`:
 # helm repo add preloop https://charts.preloop.ai
 # helm repo update
 
-# Install the chart from local path
-helm install preloop ./helm/preloop
+# Install the chart from local path. The JWT signing key is required: the
+# chart refuses to install with an empty or placeholder value.
+helm install preloop ./helm/preloop \
+  --set environment.jwtSecret="$(openssl rand -hex 32)"
 ```
 
 The command deploys Preloop on the Kubernetes cluster in the default configuration. The [Parameters](#parameters) section lists the parameters that can be configured during installation.
+
+Alternatively, keep the key out of Helm values entirely by creating a
+Kubernetes Secret and pointing `existingSecret` at it; see
+[Application secrets](#application-secrets).
 
 ## Private cluster
 
@@ -396,7 +402,7 @@ The `pre-upgrade` hook runs against the pods that are still serving. See
 | `environment.host`             | Server host                                           | `0.0.0.0`   |
 | `environment.port`             | Server port                                           | `8000`      |
 | `environment.debug`            | Enable debug mode                                     | `false`     |
-| `environment.jwtSecret`        | JWT secret key                                        | `change-this-in-production` |
+| `environment.jwtSecret`        | JWT signing key. Required unless `existingSecret` is set; empty and placeholder values refuse to install | `""` (fails closed) |
 | `environment.jwtAlgorithm`     | JWT algorithm                                         | `HS256`     |
 | `environment.jwtExpireMinutes` | JWT expiration time in minutes                        | `60`        |
 | `environment.requireEmailVerification` | Require a verified email before a password user may sign in (`REQUIRE_EMAIL_VERIFICATION`) | `false` |
@@ -640,11 +646,21 @@ database:
 
 ### JWT Authentication
 
-Preloop uses JWT for authentication. By default, it uses a placeholder JWT secret. For production deployments, you should set a proper JWT secret:
+Preloop uses JWT for authentication. There is no default signing key: the
+chart fails closed and refuses to install while `environment.jwtSecret` is
+empty or one of the published placeholders (unless `existingSecret` supplies
+the key). Generate a real one:
+
+```bash
+helm install preloop ./helm/preloop \
+  --set environment.jwtSecret="$(openssl rand -hex 32)"
+```
+
+Or in a values file:
 
 ```yaml
 environment:
-  jwtSecret: your-secure-jwt-secret
+  jwtSecret: <output of openssl rand -hex 32>
 ```
 
 ### Ingress Configuration

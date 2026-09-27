@@ -159,7 +159,10 @@ def _get_proxied_tools_sync(
     """
 
     # Get all active MCP servers for this account using CRUD layer
-    mcp_servers = crud_mcp_server.get_active_by_account(db, account_id=account_id)
+    # Own servers plus any another account shares here (account hook H3).
+    mcp_servers = crud_mcp_server.get_active_visible_by_account(
+        db, account_id=account_id
+    )
 
     # Get all tool configurations for this account (for filtering) using CRUD layer
     tool_configs = crud_tool_configuration.get_by_source(
