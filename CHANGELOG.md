@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Provider onboarding guides for Amazon Bedrock and Azure OpenAI
+  (`docs/guide/providers/`): console steps, credential fields, minimum IAM
+  policy or Azure role, a first gateway request, Cost page pricing, and common
+  errors. `preloop models smoke <model-alias>` sends one small chat completion
+  through the gateway and prints status, latency, tokens and the usage row id.
+  Non-streaming gateway responses now carry an `X-Preloop-Usage-Id` header.
+- Azure OpenAI is selectable in **Add model** with a deployment name, an
+  **API version** and a **Base model (for pricing)**. The gateway now sends the
+  resource root and api-version to Azure (a pasted deployment URL or
+  `/openai/v1` URL is reduced to the resource root), and a deployment or a
+  Bedrock inference profile ARN is priced from
+  `meta_data.provider_runtime.base_model` when set.
+
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
   a login row selector, a revoke fan-out for "sign out everywhere", a
   visibility provider for models, MCP servers, managed agents, flows and
@@ -204,6 +217,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- Bedrock models saved with the `aws` provider alias no longer send the stored
+  AWS credential JSON as an API key; they unpack it like `bedrock` models.
 
 - The flow page no longer writes websocket payloads or the enable and
   disable result to the browser console. Enabling or disabling a flow

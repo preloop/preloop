@@ -493,3 +493,33 @@ func TestDo_SetsPreloopCLIIdentityHeaders(t *testing.T) {
 		)
 	}
 }
+
+func TestPostRaw_ReturnsNon2xxWithHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			t.Errorf("unexpected Authorization %q", got)
+		}
+		w.Header().Set("X-Preloop-Usage-Id", "usage-1")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream failed"}}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithToken(server.URL, "tok")
+	resp, err := client.PostRaw("/openai/v1/chat/completions", map[string]string{"model": "m"})
+	if err != nil {
+		t.Fatalf("PostRaw returned error for a non-2xx status: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if resp.Header.Get("X-Preloop-Usage-Id") != "usage-1" {
+		t.Fatalf("usage header not returned: %v", resp.Header)
+	}
+	if !strings.Contains(string(resp.Body), "upstream failed") {
+		t.Fatalf("body not returned: %s", resp.Body)
+	}
+}
