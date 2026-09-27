@@ -5,7 +5,7 @@ import asyncio
 import shlex
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 import re
 
 from sqlalchemy.orm import Session
@@ -54,6 +54,7 @@ from preloop.agents.verification import (
 )
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+    FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
     derive_failure_category,
 )
@@ -143,6 +144,9 @@ from preloop.services.account_realtime import (
     build_account_event,
     emit_account_event,
 )
+
+if TYPE_CHECKING:
+    from preloop.services.backport import BackportPlan
 
 logger = logging.getLogger(__name__)
 
@@ -7332,6 +7336,126 @@ class FlowExecutionOrchestrator:
                                 {"reason": str(exc)},
                             )
 
+    def _resolve_backport_plan(self) -> Optional["BackportPlan"]:
+        """The flow's backport plan, or None for an ordinary agent flow.
+
+        Raises:
+            BackportConfigError: The block is enabled but invalid. Raised
+                rather than ignored so a misconfigured backport flow fails
+                instead of running an agent nobody asked for.
+        """
+        from preloop.services.backport import resolve_backport_plan
+
+        if self.flow is None:
+            return None
+        return resolve_backport_plan(getattr(self.flow, "git_clone_config", None))
+
+    async def _run_backport_within_budget(self, plan: "BackportPlan") -> Dict[str, Any]:
+        """Run the backport under the flow's wall-clock budget.
+
+        The agent path enforces ``timeout_seconds`` in its monitor, which a
+        backport never reaches, so the same budget is applied here. A run cut
+        short keeps whatever it already pushed or opened, and a retry picks
+        that work up (branch names are deterministic).
+
+        Args:
+            plan: The flow's validated backport plan.
+
+        Returns:
+            The backport result, or a FAILED timeout result.
+        """
+        budget = self._execution_timeout_budget()
+        try:
+            async with asyncio.timeout(budget.seconds):
+                return await self._run_backport(plan)
+        except TimeoutError:
+            message = budget.timeout_message()
+            return {
+                "status": "FAILED",
+                "output_summary": f"Backport did not finish: {message}",
+                "error_message": message,
+                "failure_category": FAILURE_CATEGORY_TIMEOUT,
+                "result": {"backport": {"error": message, "targets": []}},
+            }
+
+    async def _run_backport(self, plan: "BackportPlan") -> Dict[str, Any]:
+        """Run the control-plane backport and shape it like an agent result.
+
+        Args:
+            plan: The flow's validated backport plan.
+
+        Returns:
+            A dict the terminal path of :meth:`run` understands: ``status``,
+            ``output_summary``, ``error_message``, ``failure_category`` and
+            ``result`` (the per-target report under ``backport``).
+        """
+        from preloop.models.crud import crud_tracker
+        from preloop.services.backport import (
+            BackportEventError,
+            agent_result_for,
+            agent_result_for_error,
+            event_base_branch,
+            extract_merged_change,
+            run_backport,
+        )
+        from preloop.services.backport_hosts import (
+            BackportHostError,
+            backport_host_for,
+        )
+
+        # Defense in depth: the trigger service already refuses these events.
+        if event_base_branch(self.trigger_event_data) != plan.source_branch:
+            return agent_result_for_error(
+                "the event is not a merge into the configured source branch "
+                f"{plan.source_branch}"
+            )
+        try:
+            change = extract_merged_change(self.trigger_event_data)
+        except BackportEventError as error:
+            return agent_result_for_error(str(error))
+
+        tracker_id = self.trigger_event_data.get("tracker_id")
+        tracker = crud_tracker.get(self.db, id=tracker_id) if tracker_id else None
+        if tracker is None:
+            return agent_result_for_error("the triggering tracker was not found")
+        try:
+            backport_host_for(tracker.tracker_type, None)
+        except BackportHostError as error:
+            return agent_result_for_error(str(error))
+
+        client = await self._get_tracker_client_for_status()
+        if client is None:
+            return agent_result_for_error(
+                "no tracker client could be resolved for the triggering repository"
+            )
+        host = backport_host_for(tracker.tracker_type, client)
+        token = await resolve_tracker_git_token(tracker)
+
+        git_config = getattr(self.flow, "git_clone_config", None)
+        if not isinstance(git_config, dict):
+            git_config = {}
+        report = await run_backport(
+            plan,
+            change,
+            host,
+            token=token,
+            committer_name=str(git_config.get("git_user_name") or "Preloop"),
+            committer_email=str(git_config.get("git_user_email") or "git@preloop.ai"),
+        )
+        if report.comment_status == "failed":
+            await self._emit_execution_warning(
+                "Backport summary comment could not be posted on the original "
+                f"pull request: {report.comment_error}",
+            )
+        for item in report.targets:
+            if item.review_request_error:
+                await self._emit_execution_warning(
+                    f"Backport to {item.target_branch}: the review request "
+                    f"failed ({item.review_request_error}). The pull request "
+                    "stays open.",
+                )
+        return agent_result_for(report)
+
     async def run(self):
         """
         Execute the flow through its full lifecycle.
@@ -7377,26 +7501,41 @@ class FlowExecutionOrchestrator:
             # Stage 3: Mark as initializing
             await self._update_execution_log(status="INITIALIZING")
 
-            # Stage 3: Prepare execution context
-            execution_context = await self._prepare_execution_context()
+            # Backport flows (issue #961) run no agent: the control plane
+            # cherry-picks the merged change and opens the pull requests, so
+            # a conflict can never be "resolved" by a model.
+            backport_plan = self._resolve_backport_plan()
+            if backport_plan is not None:
+                await self._update_execution_log(
+                    status="RUNNING",
+                    resolved_input_prompt=(
+                        "Backport (no agent): cherry-pick the merged change "
+                        f"from {backport_plan.source_branch} onto "
+                        + ", ".join(backport_plan.target_branches)
+                    ),
+                )
+                agent_result = await self._run_backport_within_budget(backport_plan)
+            else:
+                # Stage 3: Prepare execution context
+                execution_context = await self._prepare_execution_context()
 
-            # Store resolved prompt for debugging/audit and mark as STARTING
-            await self._update_execution_log(
-                status="STARTING",
-                resolved_input_prompt=execution_context["prompt"],
-            )
+                # Store resolved prompt for debugging/audit and mark as STARTING
+                await self._update_execution_log(
+                    status="STARTING",
+                    resolved_input_prompt=execution_context["prompt"],
+                )
 
-            # Stages 4 and 5: start the agent and monitor it, retrying the
-            # whole attempt when the upstream model provider failed in a way
-            # that another attempt could plausibly survive.
-            agent_result, session_reference = await self._run_agent_with_retries(
-                execution_context
-            )
+                # Stages 4 and 5: start the agent and monitor it, retrying the
+                # whole attempt when the upstream model provider failed in a
+                # way that another attempt could plausibly survive.
+                agent_result, session_reference = await self._run_agent_with_retries(
+                    execution_context
+                )
 
-            # Fold private-runner logs before terminal binding. Isolated
-            # publication still ignores agent-controlled PR markers.
-            await self._replay_persisted_runner_logs()
-            await self._finish_isolated_publication(agent_result)
+                # Fold private-runner logs before terminal binding. Isolated
+                # publication still ignores agent-controlled PR markers.
+                await self._replay_persisted_runner_logs()
+                await self._finish_isolated_publication(agent_result)
 
             # Update execution log with final results including detailed logs
             final_status = agent_result.get("status", "FAILED")
