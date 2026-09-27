@@ -186,6 +186,10 @@ def _event_label_names(payload: Dict[str, Any]) -> List[str]:
 #: finishes also guarantees its done-callback runs and sees the outcome.
 _LOCAL_RUN_TASKS: Set["asyncio.Task[None]"] = set()
 
+#: Worker-thread writes that record a crashed local dispatch as FAILED, held
+#: until they finish for the same reason as ``_LOCAL_RUN_TASKS``.
+_LOCAL_RUN_FAILURE_WRITES: Set["asyncio.Task[bool]"] = set()
+
 #: Statuses a crashed local dispatch may overwrite with FAILED. Terminal rows
 #: already say how the run ended, and parked or resuming rows belong to the
 #: park/resume handshake, so neither is touched.
@@ -271,7 +275,8 @@ def _supervise_local_run(
 
     Without it, an exception raised by the in-process run is never retrieved:
     nothing is logged and the execution stays PENDING until the next process
-    restart runs execution recovery.
+    restart runs execution recovery. The error is logged here; the FAILED
+    write is handed to a worker thread so it never blocks the event loop.
 
     Args:
         task: The finished local-dispatch task.
@@ -297,10 +302,83 @@ def _supervise_local_run(
         exc,
         exc_info=exc,
     )
-    if _record_local_run_failure(session_factory, execution_id, exc):
+    # This callback runs on the event-loop thread. The status write is
+    # synchronous SQLAlchemy work that can block on a slow or exhausted pool
+    # (plausibly the very reason the run failed), so it runs in a worker
+    # thread instead of stalling every other request on the loop.
+    write = asyncio.to_thread(
+        _record_local_run_failure_and_log, session_factory, execution_id, exc
+    )
+    try:
+        write_task = task.get_loop().create_task(write)
+    except RuntimeError:
+        # The loop is closing: nothing scheduled now would run. The row stays
+        # active and execution recovery picks it up on the next start.
+        write.close()
+        logger.warning(
+            "Could not schedule the failure write for execution %s; leaving "
+            "it for execution recovery",
+            execution_id,
+        )
+        return
+    _LOCAL_RUN_FAILURE_WRITES.add(write_task)
+    write_task.add_done_callback(
+        functools.partial(_log_failure_write_outcome, execution_id=execution_id)
+    )
+
+
+def _record_local_run_failure_and_log(
+    session_factory: Callable[[], Session],
+    execution_id: uuid.UUID,
+    exc: BaseException,
+) -> bool:
+    """Record a crashed local dispatch and log when the row was marked.
+
+    Runs in a worker thread (see ``_supervise_local_run``).
+
+    Args:
+        session_factory: Zero-argument callable returning a fresh Session.
+        execution_id: The execution the failed task was running.
+        exc: The exception the task raised.
+
+    Returns:
+        True when the execution was marked FAILED.
+    """
+    marked = _record_local_run_failure(session_factory, execution_id, exc)
+    if marked:
         logger.info(
             "Execution %s marked FAILED after its local dispatch raised",
             execution_id,
+        )
+    return marked
+
+
+def _log_failure_write_outcome(
+    write_task: "asyncio.Task[bool]", *, execution_id: uuid.UUID
+) -> None:
+    """Done-callback for the failure write: release it and log a crash.
+
+    ``_record_local_run_failure`` already logs its own database errors, so
+    this only reports a write that was cancelled or failed outside it.
+
+    Args:
+        write_task: The finished failure-write task.
+        execution_id: The execution whose failure was being recorded.
+    """
+    _LOCAL_RUN_FAILURE_WRITES.discard(write_task)
+    if write_task.cancelled():
+        logger.warning(
+            "Failure write for execution %s was cancelled; leaving it for "
+            "execution recovery",
+            execution_id,
+        )
+        return
+    write_exc = write_task.exception()
+    if write_exc is not None:
+        logger.error(
+            "Could not record the local dispatch failure of execution %s",
+            execution_id,
+            exc_info=write_exc,
         )
 
 

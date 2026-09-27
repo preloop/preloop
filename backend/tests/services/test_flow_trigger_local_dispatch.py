@@ -9,6 +9,7 @@ recorded on the execution instead of stranding the row in PENDING.
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Set
@@ -79,6 +80,13 @@ async def _await_new_local_tasks(before: Set["asyncio.Task[None]"]) -> None:
     await asyncio.gather(*new_tasks, return_exceptions=True)
     # Done-callbacks are scheduled with call_soon; let them run.
     await asyncio.sleep(0)
+    await _await_failure_writes()
+
+
+async def _await_failure_writes() -> None:
+    """Wait for the worker-thread failure writes and their done-callbacks."""
+    await asyncio.gather(*fts._LOCAL_RUN_FAILURE_WRITES, return_exceptions=True)
+    await asyncio.sleep(0)
 
 
 class TestLocalDispatchFailure:
@@ -130,6 +138,7 @@ class TestLocalDispatchFailure:
         assert logged.args[1] == execution.id
         assert isinstance(logged.kwargs["exc_info"], RuntimeError)
         assert not (fts._LOCAL_RUN_TASKS - before)
+        assert not fts._LOCAL_RUN_FAILURE_WRITES
 
     async def test_successful_local_run_leaves_execution_alone(
         self, db_session: Session, test_user: Any
@@ -235,6 +244,7 @@ class TestSuperviseLocalRun:
             fts._supervise_local_run(
                 task, execution_id=uuid.uuid4(), session_factory=lambda: session
             )
+            await _await_failure_writes()
 
         crud.update.assert_not_called()
         session.commit.assert_not_called()
@@ -256,6 +266,7 @@ class TestSuperviseLocalRun:
             fts._supervise_local_run(
                 task, execution_id=uuid.uuid4(), session_factory=lambda: session
             )
+            await _await_failure_writes()
 
         session.rollback.assert_called_once()
         session.close.assert_called_once()
@@ -263,3 +274,78 @@ class TestSuperviseLocalRun:
             "Could not record the local dispatch failure"
             in logger.exception.call_args.args[0]
         )
+
+    async def test_status_write_runs_off_the_event_loop_thread(self) -> None:
+        task = _finished_task(RuntimeError("dispatch failed"))
+        await asyncio.gather(task, return_exceptions=True)
+        session = MagicMock(spec=Session)
+        factory_threads: list[int] = []
+
+        def _factory() -> Session:
+            factory_threads.append(threading.get_ident())
+            return session
+
+        with patch.object(fts, "crud_flow_execution") as crud:
+            crud.get.return_value = SimpleNamespace(
+                status="PENDING", agent_session_reference=None
+            )
+            fts._supervise_local_run(
+                task, execution_id=uuid.uuid4(), session_factory=_factory
+            )
+            # Nothing touched the database on the loop thread.
+            assert factory_threads == []
+            assert len(fts._LOCAL_RUN_FAILURE_WRITES) == 1
+            await _await_failure_writes()
+
+        assert len(factory_threads) == 1
+        assert factory_threads[0] != threading.get_ident()
+        crud.update.assert_called_once()
+        session.commit.assert_called_once()
+        assert not fts._LOCAL_RUN_FAILURE_WRITES
+
+    async def test_crashed_failure_write_is_logged(self) -> None:
+        task = _finished_task(RuntimeError("dispatch failed"))
+        await asyncio.gather(task, return_exceptions=True)
+        execution_id = uuid.uuid4()
+
+        with (
+            patch.object(
+                fts,
+                "_record_local_run_failure",
+                side_effect=RuntimeError("write crashed"),
+            ),
+            patch.object(fts, "logger") as logger,
+        ):
+            fts._supervise_local_run(
+                task, execution_id=execution_id, session_factory=MagicMock()
+            )
+            await _await_failure_writes()
+
+        logged = [
+            call
+            for call in logger.error.call_args_list
+            if "Could not record" in call.args[0]
+        ]
+        assert len(logged) == 1
+        assert logged[0].args[1] == execution_id
+        assert str(logged[0].kwargs["exc_info"]) == "write crashed"
+        assert not fts._LOCAL_RUN_FAILURE_WRITES
+
+    async def test_unschedulable_write_is_left_for_recovery(self) -> None:
+        task = _finished_task(RuntimeError("dispatch failed"))
+        await asyncio.gather(task, return_exceptions=True)
+        closing_loop = MagicMock()
+        closing_loop.create_task.side_effect = RuntimeError("loop is closed")
+        factory = MagicMock()
+
+        with (
+            patch.object(task, "get_loop", return_value=closing_loop),
+            patch.object(fts, "logger") as logger,
+        ):
+            fts._supervise_local_run(
+                task, execution_id=uuid.uuid4(), session_factory=factory
+            )
+
+        factory.assert_not_called()
+        assert not fts._LOCAL_RUN_FAILURE_WRITES
+        assert "execution recovery" in logger.warning.call_args.args[0]
