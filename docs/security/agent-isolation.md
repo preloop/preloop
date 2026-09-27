@@ -190,17 +190,21 @@ only when the flow allows MCP servers or tools.
 
 The limits worth knowing:
 
-- **Scopes are recorded, not enforced.** The generic API key path
-  (`backend/preloop/api/auth/jwt.py`) authenticates the key and returns the
-  owning user; it does not compare the requested route against the key's
-  scopes, and the MCP HTTP layer says as much in
-  `backend/preloop/services/mcp_http.py` ("we do not use scopes"). For two
-  hours the token is as powerful as the user it belongs to.
-- **The allow lists live in the token context, not in the token check.**
-  `allowed_mcp_servers` and `allowed_mcp_tools` scope what the MCP layer
-  offers the agent; they are not a second authorization boundary. Codex
-  does not open a Preloop MCP session when both lists are empty, so an
-  unused client cannot reconnect until the flow timeout.
+- **The key is limited to MCP scopes.** A key whose scopes are all
+  `mcp:*` authenticates on the MCP endpoint and on the runtime routes that
+  check their own credentials (model gateway, agent control WebSocket,
+  permission checks, operator note pull, browser steps, artifacts). The
+  generic REST dependency answers 403 with `detail.code`
+  `api_key_scope_denied` for every other `/api/v1` route, and the console
+  WebSockets refuse it (`backend/preloop/api/auth/key_scopes.py`).
+  `API_KEY_SCOPE_ENFORCEMENT` switches this to `audit` (log and allow) or
+  `off`; the default is `enforce`.
+- **The tool allow list is checked on every call.** `allowed_mcp_tools`
+  limits both the tools the MCP layer lists and the tools it will run for
+  the key (`backend/preloop/services/dynamic_fastmcp.py`).
+  `allowed_mcp_servers` shapes which servers are offered. Codex does not
+  open a Preloop MCP session when both lists are empty, so an unused client
+  cannot reconnect until the flow timeout.
 - **Shell is a separate control.** `agent_config.sandbox_type: read-only`
   launches Codex with `--sandbox read-only`, disables the `shell_tool`
   feature, and does not pass `--yolo`. `config.toml` pins
@@ -208,9 +212,9 @@ The limits worth knowing:
   the run does not wait for a person. Any other value, including the
   preset default `exec`, keeps `--yolo`.
 
-Reducing that blast radius is a backend change, not a chart change: enforce
-the scopes on the key, and give the runtime principal its own role instead
-of the primary user's.
+Within MCP, the key still acts as the account's primary user for the tools
+the flow allows. Giving the runtime principal its own role instead of the
+primary user's is the remaining backend change.
 
 ## Residual risks
 

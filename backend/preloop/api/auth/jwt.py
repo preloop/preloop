@@ -16,6 +16,8 @@ from jwt import PyJWTError
 from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
+from preloop.api.auth.key_scopes import enforce_api_key_route_scope
+
 # Configuration
 from preloop.config import settings
 from preloop.models.crud import (
@@ -610,6 +612,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
@@ -722,6 +725,7 @@ def get_current_user(
                 )
 
                 user = _authenticate_with_api_key(db, api_key)
+                enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)
 
                 logger.info(
@@ -769,6 +773,8 @@ def get_current_active_user(
 def get_current_active_user_optional(
     token: str = Depends(oauth2_scheme_optional),
     db: Session = Depends(get_db_session),
+    # See get_current_user: FastAPI injects the concrete Request type.
+    request: Request = None,  # type: ignore[assignment]
 ) -> Optional[User]:
     """
     Get the current active user if a valid token is provided, otherwise return None.
@@ -778,8 +784,9 @@ def get_current_active_user_optional(
         return None
     try:
         # We must call get_current_user with the token parameter, not as a dependency,
-        # to bypass the strict oauth2_scheme it depends on.
-        user = get_current_user(token=token, db=db)
+        # to bypass the strict oauth2_scheme it depends on. The request is passed
+        # so API key scopes are checked against the actual route.
+        user = get_current_user(token=token, db=db, request=request)
         if user and user.is_active:
             return user
         return None
