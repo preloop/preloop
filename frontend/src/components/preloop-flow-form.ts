@@ -1197,6 +1197,11 @@ export class PreloopFlowForm extends LitElement {
         max_budget: this.flow.max_budget || undefined,
         is_enabled: this.flow.is_enabled ?? true,
         runner_pool: this.normalizedFlowRunnerPool(),
+        // Sent only when this form has the field. An unrelated fixture that
+        // never loaded it leaves the stored value alone.
+        ...('review_instructions' in this.flow
+          ? { review_instructions: this.flow.review_instructions ?? null }
+          : {}),
         // Sent only once filters exist on the form. An explicit null (set by
         // clearEventFilters) is forwarded so the backend clears saved filters.
         ...(this.flow.trigger_config !== undefined
@@ -3560,6 +3565,14 @@ export class PreloopFlowForm extends LitElement {
             .value=${this.flow.prompt_template || ''}
             @sl-input=${(e: Event) =>
               this.handleInputChange('prompt_template', e)}
+          ></sl-textarea>
+          <sl-textarea
+            label="Review instructions"
+            rows="4"
+            help-text="Blocking rules for the Pull Request Reviewer. Same markdown as .preloop/review-policy.md. Leave blank when the repository file is enough. Stored on the flow, so a preset update does not wipe it."
+            .value=${this.flow.review_instructions || ''}
+            @sl-input=${(e: Event) =>
+              this.handleInputChange('review_instructions', e)}
           ></sl-textarea>
         </sl-card>
 
