@@ -47,12 +47,24 @@ func killRunnerJobProcess(cmd *exec.Cmd) {
 		return
 	}
 	defer syscall.CloseHandle(pin)
-	if errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+	if !runnerJobProcessUnwaited(cmd.Process.Signal(syscall.Signal(0))) {
 		return
 	}
 	if err := runWindowsTaskkill(cmd.Process.Pid); err != nil {
 		_ = cmd.Process.Kill()
 	}
+}
+
+// runnerJobProcessUnwaited interprets a probe Signal on Windows. Once Wait
+// has returned, os marks the process released (Wait uses statusReleased, not
+// statusDone, "for compatibility") and Signal reports syscall.EINVAL; a
+// process known to be finished reports os.ErrProcessDone. Either means the
+// handle that pinned the PID is gone. A live, unwaited process answers
+// signal 0 with EWINDOWS (unsupported signal) today, or nil should os ever
+// support it.
+func runnerJobProcessUnwaited(signalErr error) bool {
+	return !errors.Is(signalErr, os.ErrProcessDone) &&
+		!errors.Is(signalErr, syscall.EINVAL)
 }
 
 // runWindowsTaskkill kills the process tree rooted at pid. A variable so the

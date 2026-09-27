@@ -262,6 +262,9 @@ func TestKillRunnerJobProcessSkipsTaskkillAfterWait(t *testing.T) {
 	if err := exited.Run(); err != nil {
 		t.Fatal(err)
 	}
+	if runnerJobProcessUnwaited(exited.Process.Signal(syscall.Signal(0))) {
+		t.Fatal("a waited process must not probe as unwaited")
+	}
 	killRunnerJobProcess(exited)
 	if len(calls) != 0 {
 		t.Fatalf("taskkill ran for a waited process: %v", calls)
