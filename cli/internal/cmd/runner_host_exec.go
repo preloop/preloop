@@ -260,7 +260,7 @@ func jobRejectedHostExecInjection(job map[string]any) string {
 	}
 	for _, key := range []string{
 		"executable", "argv", "env", "session_id", "cursor_api_key", "api_key",
-		"copilot_github_token", "github_token", "gh_token", "allow_tools", "allow_all_tools",
+		"copilot_github_token", "github_token", "gh_token", "allow_tools", "deny_tools", "allow_all_tools",
 		"resume_from", "launch", "launch_version", "script", "environment", "account_api_token", "custom_commands",
 	} {
 		if _, ok := job[key]; ok {

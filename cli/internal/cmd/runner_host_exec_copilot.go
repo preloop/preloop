@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -182,11 +185,8 @@ func copilotHostExecEnv(environ []string) []string {
 // `preloop agents onboard "Copilot CLI" --approvals`; without it every tool
 // would run ungated, so the job fails before Copilot starts.
 func prepareCopilotHostExecHooks(profile hostExecProfile) error {
-	command := copilotUsageHookCommand()
-	for _, key := range copilotUsageHookEvents {
-		if err := upsertCopilotHookEvent(key, command, cursorUsageHookTimeoutSeconds); err != nil {
-			return fmt.Errorf("copilot_hooks_unavailable: install Preloop Copilot hooks: %w", err)
-		}
+	if err := ensureCopilotHostExecUsageHooks(); err != nil {
+		return fmt.Errorf("copilot_hooks_unavailable: install Preloop Copilot hooks: %w", err)
 	}
 	if !profile.AllowAllTools {
 		return nil
@@ -200,6 +200,80 @@ func prepareCopilotHostExecHooks(profile hostExecProfile) error {
 			"copilot_approval_hook_missing: profile %q sets allow_all_tools, which requires the Preloop preToolUse approval hook; run `preloop agents onboard \"Copilot CLI\" --approvals` as the runner user",
 			profile.Name,
 		)
+	}
+	return nil
+}
+
+// copilotHooksMu serializes concurrent host jobs in one runner so their
+// read-modify-write cycles on the hooks file cannot interleave.
+var copilotHooksMu sync.Mutex
+
+// ensureCopilotHostExecUsageHooks upserts every usage hook in one pass. A
+// Copilot process from a concurrent job may be loading the same file, so the
+// file is never truncated in place: an unchanged document is not rewritten
+// (the steady state), and a changed one is replaced by rename.
+func ensureCopilotHostExecUsageHooks() error {
+	copilotHooksMu.Lock()
+	defer copilotHooksMu.Unlock()
+	path, err := copilotPreloopHooksPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("failed to create Copilot hooks directory: %w", err)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to read %s: %w", path, err)
+	}
+	doc, err := loadJSONDocumentOrEmpty(path)
+	if err != nil {
+		return err
+	}
+	doc["version"] = 1
+	hooks := ensureObjectChild(doc, "hooks")
+	command := copilotUsageHookCommand()
+	for _, key := range copilotUsageHookEvents {
+		hooks[key] = []interface{}{copilotCommandHookEntry(command, cursorUsageHookTimeoutSeconds)}
+	}
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to encode Copilot hooks: %w", err)
+	}
+	data = append(data, '\n')
+	if bytes.Equal(current, data) {
+		return nil
+	}
+	return writeFileAtomic(path, data, 0o600)
+}
+
+// writeFileAtomic writes data to a temp file in the target directory and
+// renames it over path, so readers see the old or the new file, never a
+// partial one.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for %s: %w", path, err)
+	}
+	name := tmp.Name()
+	cleanup := func() { _ = os.Remove(name) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("failed to secure %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to replace %s: %w", path, err)
 	}
 	return nil
 }
@@ -258,9 +332,7 @@ func applyCopilotLine(capture *copilotCapture, line string) bool {
 		// Copilot prints startup failures (no login, unknown model) as plain
 		// text before any JSONL. Keep the first one for the error message.
 		if capture.ErrorLine == "" || (!strings.HasPrefix(capture.ErrorLine, "Error:") && strings.HasPrefix(trimmed, "Error:")) {
-			if len(trimmed) > copilotMaxErrorBytes {
-				trimmed = trimmed[:copilotMaxErrorBytes]
-			}
+			trimmed = truncateUTF8(trimmed, copilotMaxErrorBytes)
 			capture.ErrorLine = trimmed
 		}
 		return true
@@ -365,4 +437,16 @@ func uniqueSortedStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+// truncateUTF8 cuts s to at most max bytes without splitting a rune.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

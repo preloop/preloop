@@ -134,7 +134,9 @@ The runner removes `COPILOT_PROVIDER_*`, `COPILOT_OFFLINE` and
 `COPILOT_ALLOW_ALL` from the Copilot environment so a host profile always
 uses the seat, never a BYOK endpoint. It also installs the Preloop usage
 hooks in `~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks`) before
-each run, leaving other hook files untouched.
+each run, leaving other hook files untouched. An unchanged hooks file is
+not rewritten, and a changed one is replaced atomically, so concurrent runs
+never read a partial file.
 
 Named errors:
 
@@ -144,6 +146,7 @@ Named errors:
 | `copilot_not_logged_in` | The runner user has no Copilot login. |
 | `copilot_model_unavailable` | The seat does not offer the mapped model. The error lists the profile's `model_map` aliases; Copilot CLI has no non-interactive way to list the seat's models. |
 | `copilot_approval_hook_missing` | `allow_all_tools` is set but the approval hook is not installed. |
+| `copilot_hooks_unavailable` | Preloop could not install or read its own hooks file under `~/.copilot/hooks` (or `$COPILOT_HOME/hooks`). The run fails before Copilot starts. |
 
 Like Cursor host profiles, this path does not clone repositories, open
 pull requests, run custom commands or resume sessions, and flow MCP tool

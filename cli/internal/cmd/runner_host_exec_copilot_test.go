@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
@@ -382,5 +385,121 @@ func TestCopilotStreamParserIgnoresUntrustedFields(t *testing.T) {
 	result, err := copilotRunnerResult(capture)
 	if err != nil || result["status"] != "success" {
 		t.Fatalf("result=%v err=%v", result, err)
+	}
+}
+
+func TestCopilotHostExecHooksAreIdempotentAndReplacedAtomically(t *testing.T) {
+	testenv.SetTempHome(t)
+	copilotHome := t.TempDir()
+	t.Setenv("COPILOT_HOME", copilotHome)
+	path := filepath.Join(copilotHome, "hooks", "preloop.json")
+	if err := ensureCopilotHostExecUsageHooks(); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && first.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", first.Mode().Perm())
+	}
+	// Steady state: an unchanged document is not rewritten, so a Copilot
+	// process from a concurrent job never sees the file replaced.
+	if err := ensureCopilotHostExecUsageHooks(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(first, second) || !second.ModTime().Equal(first.ModTime()) {
+		t.Fatal("unchanged hooks file was rewritten")
+	}
+
+	// Concurrent jobs racing with a reader: every read parses in full.
+	stale := []byte(`{"version":1,"hooks":{"preToolUse":[{"type":"command","bash":"preloop agents permission-hook --source copilot_cli"}]}}` + "\n")
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				close(readErr)
+				return
+			default:
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				readErr <- fmt.Errorf("reader saw a partial hooks file: %v: %q", err, raw)
+				close(readErr)
+				return
+			}
+		}
+	}()
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				copilotHooksMu.Lock()
+				err := writeFileAtomic(path, stale, 0o600)
+				copilotHooksMu.Unlock()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if err := ensureCopilotHostExecUsageHooks(); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	if err := <-readErr; err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "permission-hook") || !strings.Contains(string(raw), "usage hook --from copilot") {
+		t.Fatalf("final hooks = %s", raw)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != "preloop.json" {
+			t.Fatalf("leftover file %s", entry.Name())
+		}
+	}
+}
+
+func TestCopilotHostExecRejectsInjectedDenyTools(t *testing.T) {
+	if got := jobRejectedHostExecInjection(copilotJob(map[string]any{"deny_tools": []string{"write"}})); !strings.Contains(got, "deny_tools") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestCopilotErrorLineTruncatesOnRuneBoundary(t *testing.T) {
+	line := "Error: " + strings.Repeat("a", copilotMaxErrorBytes-8) + "é and more"
+	var capture copilotCapture
+	applyCopilotLine(&capture, line)
+	if len(capture.ErrorLine) > copilotMaxErrorBytes || !utf8.ValidString(capture.ErrorLine) {
+		t.Fatalf("error line = %d bytes, valid=%v", len(capture.ErrorLine), utf8.ValidString(capture.ErrorLine))
+	}
+	if !strings.HasSuffix(capture.ErrorLine, "a") {
+		t.Fatalf("suffix = %q", capture.ErrorLine[len(capture.ErrorLine)-4:])
+	}
+	if got := truncateUTF8("ok", 10); got != "ok" {
+		t.Fatalf("short string changed: %q", got)
 	}
 }
