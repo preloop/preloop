@@ -1,0 +1,68 @@
+slug: release-backport
+supports_persistent: false
+name: Release Backport
+description: >-
+  When a pull request merges into a release branch, cherry-pick its merge
+  commit onto the later release branches and the default branch, and open one
+  backport pull request per target for review. Conflicts are reported with the
+  conflicting files and left for a person. Nothing is ever merged.
+icon: git
+trigger_event_source: null
+# pull_request_merged is GitHub, merge_request_merged is GitLab. The flow only
+# starts for a merge into git_clone_config.backport.source_branch; a merge into
+# any other branch is ignored by the trigger.
+#
+# Bitbucket: backports need the Bitbucket Cloud pull request support tracked
+# in issue #955. Until it lands, a Bitbucket repository is refused with a
+# message that says so. The backport runner talks to code hosts through one
+# small adapter, so Bitbucket is an adapter away, not a redesign.
+trigger_event_types:
+  - pull_request_merged
+  - merge_request_merged
+trigger_config:
+  filter_conditions: {}
+# No agent runs for this flow. When git_clone_config.backport is enabled the
+# control plane performs the backport itself, so this prompt is never sent to
+# a model. agent_type and prompt_template are still required fields of a flow.
+prompt_template: |
+  This flow runs no agent. Preloop backports the merged pull request on the
+  control plane:
+
+  Merged pull request: {{trigger_event.payload.pull_request.html_url}}{{trigger_event.payload.object_attributes.url}}
+
+  For each target branch in git_clone_config.backport.target_branches, in
+  order, the merge commit is cherry-picked onto a new branch named
+  backport/pr-<number>-to-<target>, cut from the target tip. A clean pick is
+  pushed and opened as a pull request for review. A conflicting pick pushes
+  nothing and is reported with its conflicting files. The execution result
+  lists a status per target and a summary comment is posted on the original
+  pull request.
+agent_type: codex
+agent_config:
+  sandbox_type: read-only
+allowed_mcp_servers: []
+allowed_mcp_tools: []
+git_clone_config:
+  # Backport pushes its own branches and opens its own pull requests, so the
+  # agent checkout and agent publication stay off.
+  enabled: false
+  repositories: []
+  git_user_name: Preloop
+  git_user_email: hello@preloop.ai
+  create_pull_request: false
+  backport:
+    enabled: true
+    # Replace these placeholders before enabling the flow. source_branch is
+    # the release branch whose merges are backported (release N). The targets
+    # are tried in order, for example release N+1 and then the default
+    # branch. source_branch may never appear among the targets.
+    source_branch: release/1.0
+    target_branches:
+      - release/1.1
+      - main
+    # Usernames asked to review every backport pull request. A failed review
+    # request is recorded on the execution and the pull request stays open.
+    reviewers: []
+    comment_on_original: true
+timeout_seconds: 900
+is_preset: true

@@ -1694,6 +1694,53 @@ class GitLabTracker(BaseTracker):
             "updated_at": data.get("updated_at"),
         }
 
+    async def find_merge_requests_by_branch(
+        self, source_branch: str, target_branch: str
+    ) -> List[Dict[str, Any]]:
+        """Merge requests in any state from ``source_branch`` into ``target_branch``.
+
+        Only merge requests whose source branch lives in the connected project
+        are returned, so a fork with the same branch name never matches.
+
+        Args:
+            source_branch: Source branch name.
+            target_branch: Target branch name.
+
+        Returns:
+            Normalized merge requests (see ``list_merge_requests``), newest
+            first. ``state`` is ``open``, ``closed``, ``merged`` or ``locked``.
+        """
+        project_id = self._get_project_id()
+        project = await self._make_request(self.gl.projects.get, project_id)
+        mrs = await self._make_request(
+            project.mergerequests.list,
+            source_branch=source_branch,
+            target_branch=target_branch,
+            state="all",
+            order_by="created_at",
+            sort="desc",
+            per_page=20,
+        )
+        matches: List[Dict[str, Any]] = []
+        for mr in list(mrs or []):
+            data = mr if isinstance(mr, dict) else getattr(mr, "attributes", {})
+            source_project = data.get("source_project_id")
+            target_project = data.get("target_project_id")
+            if (
+                source_project is not None
+                and target_project is not None
+                and source_project != target_project
+            ):
+                continue
+            item = self._normalize_listed_merge_request(mr)
+            if (
+                item["source_branch"] != source_branch
+                or item["target_branch"] != target_branch
+            ):
+                continue
+            matches.append(item)
+        return matches
+
     async def update_merge_request(
         self,
         mr_identifier: str,

@@ -110,3 +110,12 @@ the exact revision that closed an issue through a verified merged PR. Both use t
 public lifecycle controller; neither requires private presets or plugins. Configure
 project policy, scoped repository checkout and approved test environments as
 explained in [the lifecycle guide](../../docs/guide/flows/issue-lifecycle.md).
+
+## Control-plane presets
+
+`018-release-backport.yaml` runs no agent. When `git_clone_config.backport`
+is enabled, the orchestrator cherry-picks the merged pull request onto each
+target branch itself and opens the backport pull requests. `agent_type` and
+`prompt_template` are still present because a flow requires them, but the
+prompt is never sent to a model. See
+[the backport guide](../../docs/guide/flows/release-backport.md).

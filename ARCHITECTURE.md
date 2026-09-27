@@ -116,6 +116,12 @@ Execution environment profiles and hosted checkpoint recovery are documented in
 The sandboxed-browser allowlist sidecar lives in
 [`environments/egress-proxy`](environments/egress-proxy/README.md).
 
+A flow with an enabled `git_clone_config.backport` block runs in a
+control-plane mode: the orchestrator cherry-picks the merge commit onto each
+target branch in a scratch repository and opens one pull request per target,
+with no agent container. See
+[Release backport](docs/guide/flows/release-backport.md).
+
 ### Flow delegation and execution trees
 
 A flow execution can start another flow of the same account as a child of
