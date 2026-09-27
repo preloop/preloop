@@ -40,6 +40,10 @@ func applyLeadingRootFlags(cmd *cobra.Command, args []string) ([]string, error) 
 	// same variables (FlagToken, FlagURL, ...) the root command binds.
 	fs.AddFlagSet(cmd.Root().PersistentFlags())
 	if err := fs.Parse(leading); err != nil {
+		// Reached by one-token forms such as --help=true: help is a local
+		// flag on each command, not a root persistent flag, so pflag reports
+		// ErrHelp. A bare leading --help never gets here (the root command
+		// handles it before the launcher runs). Show the launcher's help.
 		if errors.Is(err, pflag.ErrHelp) {
 			return []string{"--help"}, nil
 		}

@@ -211,11 +211,21 @@ func TestSplitLeadingRootFlagsFallsBackWhenArgvDoesNotMatch(t *testing.T) {
 }
 
 func TestApplyLeadingRootFlagsHelpBeforeSubcommand(t *testing.T) {
+	// A bare leading --help never reaches the launcher: cobra's root command
+	// prints its own help. The one-token forms (--help=true, -h=true) do reach
+	// it, split cleanly, and hit pflag.ErrHelp while parsing the leading flags.
 	prev := os.Args
 	t.Cleanup(func() { os.Args = prev })
-	os.Args = []string{"preloop", "--help", "copilot"}
-	got, err := applyLeadingRootFlags(copilotCmd, []string{"--help"})
-	if err != nil || strings.Join(got, " ") != "--help" {
-		t.Fatalf("got %q, %v; want [--help], nil", got, err)
+	for _, flag := range []string{"--help=true", "-h=true"} {
+		t.Run(flag, func(t *testing.T) {
+			if _, _, ok := splitLeadingRootFlags(copilotCmd, []string{flag, "copilot"}, []string{flag}); !ok {
+				t.Fatalf("expected %s copilot to split, so the ErrHelp branch is exercised", flag)
+			}
+			os.Args = []string{"preloop", flag, "copilot"}
+			got, err := applyLeadingRootFlags(copilotCmd, []string{flag})
+			if err != nil || strings.Join(got, " ") != "--help" {
+				t.Fatalf("got %q, %v; want [--help], nil", got, err)
+			}
+		})
 	}
 }
