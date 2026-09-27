@@ -13120,15 +13120,19 @@ paths:
     put:
       tags:
       - Runtime Sessions
-      summary: Set how much of a session this account embeds
-      description: 'Change the scope. Existing vectors are never touched by this call.
+      summary: Opt in to session embedding, or change its scope and cap
+      description: 'Change what this account embeds. Existing vectors are never touched.
 
 
         Narrowing to ``summaries_only`` stops new transcript chunks being
 
         embedded from the next worker pass; widening to ``full`` gives the
 
-        untouched backlog back to the worker, still under the daily cap.'
+        untouched backlog back to the worker, still under the daily cap.
+
+        Turning embedding off keeps the provider details, so turning it back on
+
+        needs only ``{"enabled": true}``.'
       operationId: update_session_embedding_setting_api_v1_runtime_sessions_settings_embedding_put
       requestBody:
         content:
@@ -20343,8 +20347,10 @@ components:
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
             budget_exceeded, model_config, no_confirmation, agent_no_progress, setup_failed,
-            tool_error, agent_error, timeout, cancelled, unknown. Null for successful
-            or still-running executions, and for executions that predate this field.'
+            verification_failed, verification_blocked, tool_error, agent_error, model_stream_idle
+            (timed out while the model stream was silent), timeout, cancelled, unknown.
+            Null for successful or still-running executions, and for executions that
+            predate this field.'
         queued_reason:
           anyOf:
           - type: string
@@ -29000,6 +29006,38 @@ components:
       - evicted_count_30d
       title: SessionArtifactUsageResponse
       description: Account session-artifact usage against the storage budget.
+    SessionEmbeddingCorpus:
+      properties:
+        vectors:
+          type: integer
+          title: Vectors
+          description: Chunks carrying a vector of any model.
+          default: 0
+        model_vectors:
+          type: integer
+          title: Model Vectors
+          description: Chunks embedded with the model configured now.
+          default: 0
+        pending:
+          type: integer
+          title: Pending
+          description: Chunks inside the current scope still waiting for one.
+          default: 0
+        embedded_through:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Embedded Through
+          description: Newest chunk embedded with the configured model.
+      type: object
+      title: SessionEmbeddingCorpus
+      description: 'How much of this account''s corpus semantic search can read.
+
+
+        The same counts search uses to explain a thin semantic answer, published
+
+        so a user who opted in yesterday can see the backlog rather than guess.'
     SessionEmbeddingSettingResponse:
       properties:
         enabled:
@@ -29047,6 +29085,15 @@ components:
           - type: 'null'
           title: Daily Cap Usd
           description: Account cap in USD; null falls back to the deployment.
+        deployment_daily_cap_usd:
+          type: number
+          title: Deployment Daily Cap Usd
+          description: The deployment default cap a null account cap uses.
+        deployment_embedding_enabled:
+          type: boolean
+          title: Deployment Embedding Enabled
+          description: False when the deployment kill switch has turned embedding
+            off for every account, whatever this setting says.
         degraded_reason:
           anyOf:
           - type: string
@@ -29060,29 +29107,82 @@ components:
           - type: 'null'
           title: Degraded At
           description: When that degraded state was recorded.
+        corpus:
+          $ref: '#/components/schemas/SessionEmbeddingCorpus'
+          description: How far embedding has got through this account's corpus.
       type: object
       required:
       - enabled
       - scope
       - provider
       - dimensions
+      - deployment_daily_cap_usd
+      - deployment_embedding_enabled
       title: SessionEmbeddingSettingResponse
       description: What one account's embedding setting says right now.
     SessionEmbeddingSettingUpdate:
       properties:
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+          description: Turn embedding on or off. Turning it on needs a model, either
+            in this body or already on the setting from an earlier opt in.
         scope:
-          type: string
-          enum:
-          - summaries_only
-          - full
+          anyOf:
+          - type: string
+            enum:
+            - summaries_only
+            - full
+          - type: 'null'
           title: Scope
           description: summaries_only (default) or full.
+        daily_cap_usd:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Daily Cap Usd
+          description: Account cap in USD. An explicit null clears it back to the
+            deployment default; leaving the field out keeps the current cap.
+        provider:
+          anyOf:
+          - type: string
+            enum:
+            - openai_compatible
+            - local
+          - type: 'null'
+          title: Provider
+          description: Provider family; only accepted when enabling.
+        model_identifier:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Model Identifier
+          description: Model name as the provider knows it; only when enabling.
+        base_url:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Base Url
+          description: https endpoint for openai_compatible; only when enabling.
       additionalProperties: false
       type: object
-      required:
-      - scope
       title: SessionEmbeddingSettingUpdate
-      description: The one thing this endpoint lets an account change.
+      description: 'What the console''s opt in card saves. Absent fields are left
+        alone.
+
+
+        An explicit ``null`` is read as absent for every field except
+
+        ``daily_cap_usd``, where it is the documented way to clear the account
+
+        cap. A client that round trips nullable values must not turn embedding
+
+        off, or be refused for naming a provider, by sending ``null``.'
     SessionSavedSearchCreate:
       properties:
         name:
@@ -31688,7 +31788,9 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Updated connection details
+          description: Updated connection details. The legacy key 'config' is still
+            accepted. A null connection_details is treated as absent and falls back
+            to config. When both are objects, connection_details wins.
         meta_data:
           anyOf:
           - additionalProperties: true

@@ -277,8 +277,10 @@ def list_ai_models(
     current_user: User = Depends(get_current_active_user),
 ) -> List[AIModelRead]:
     """List all AI Models associated with the authenticated user's account."""
+    from preloop.plugins.account_hooks import VISIBLE_AI_MODEL, filter_viewable
+
     models = crud_ai_model.get_by_account(db=db, account_id=current_user.account_id)
-    return models
+    return filter_viewable(db, current_user, VISIBLE_AI_MODEL, models)
 
 
 @router.get(

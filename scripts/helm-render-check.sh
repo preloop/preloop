@@ -6,22 +6,38 @@ set -eu
 
 CHART=./helm/preloop
 
+# The chart fails closed on an empty or placeholder jwtSecret (see
+# templates/secret.yaml), so every render below supplies a test value.
+JWT_TEST_SECRET="helm-render-check-signing-key-not-a-real-secret"
+render() { helm template t "$CHART" --set environment.jwtSecret="$JWT_TEST_SECRET" "$@"; }
+
 echo "==> helm dependency build"
 helm repo add nats https://nats-io.github.io/k8s/helm/charts >/dev/null 2>&1 || true
 helm dependency build "$CHART" >/dev/null
 
 echo "==> helm lint"
-helm lint "$CHART"
+helm lint "$CHART" --set environment.jwtSecret="$JWT_TEST_SECRET"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+echo "==> jwtSecret: empty and placeholder values must refuse to render"
+if helm template t "$CHART" >/dev/null 2>&1; then
+  fail "chart rendered with the default (empty) jwtSecret"
+fi
+if helm template t "$CHART" \
+  --set environment.jwtSecret=change-this-in-production >/dev/null 2>&1; then
+  fail "chart rendered with the published placeholder jwtSecret"
+fi
+helm template t "$CHART" --set existingSecret=preloop-app >/dev/null 2>&1 \
+  || fail "existingSecret does not bypass the jwtSecret guard"
+
 echo "==> defaults: backup must be OFF"
-out=$(helm template t "$CHART")
+out=$(render)
 echo "$out" | grep -q "kind: ScheduledBackup" && fail "ScheduledBackup rendered with defaults"
 echo "$out" | grep -q "barmanObjectStore" && fail "barmanObjectStore rendered with defaults"
 
 echo "==> prod profile: backup + ScheduledBackup ON"
-out=$(helm template t "$CHART" -f "$CHART/values-backup-prod.yaml")
+out=$(render -f "$CHART/values-backup-prod.yaml")
 echo "$out" | grep -q "kind: ScheduledBackup" || fail "ScheduledBackup missing (prod profile)"
 echo "$out" | grep -q "barmanObjectStore" || fail "barmanObjectStore missing (prod profile)"
 echo "$out" | grep -q 'retentionPolicy: "30d"' || fail "prod retention wrong"
@@ -29,32 +45,32 @@ echo "$out" | grep -q 'schedule: "0 0 2 \* \* \*"' || fail "prod schedule wrong"
 echo "$out" | grep -q "backupOwnerReference: none" || fail "prod backupOwnerReference should be none"
 
 echo "==> staging profile: backup + ScheduledBackup ON"
-out=$(helm template t "$CHART" -f "$CHART/values-backup-staging.yaml")
+out=$(render -f "$CHART/values-backup-staging.yaml")
 echo "$out" | grep -q "kind: ScheduledBackup" || fail "ScheduledBackup missing (staging profile)"
 echo "$out" | grep -q 'retentionPolicy: "7d"' || fail "staging retention wrong"
 echo "$out" | grep -q 'schedule: "0 0 3 \* \* \*"' || fail "staging schedule wrong"
 echo "$out" | grep -q "backupOwnerReference: none" || fail "staging backupOwnerReference should be none"
 
 echo "==> backup.enabled without destinationPath must fail fast"
-if helm template t "$CHART" --set database.cnpg.backup.enabled=true >/dev/null 2>&1; then
+if render --set database.cnpg.backup.enabled=true >/dev/null 2>&1; then
   fail "template rendered despite missing destinationPath"
 fi
 
 echo "==> scheduled.enabled=false suppresses ScheduledBackup only"
-out=$(helm template t "$CHART" -f "$CHART/values-backup-prod.yaml" \
+out=$(render -f "$CHART/values-backup-prod.yaml" \
   --set database.cnpg.backup.scheduled.enabled=false)
 echo "$out" | grep -q "kind: ScheduledBackup" && fail "ScheduledBackup rendered when scheduled.enabled=false"
 echo "$out" | grep -q "barmanObjectStore" || fail "WAL archiving suppressed by scheduled.enabled=false"
 
 echo "==> endpointURL / serverName render when set"
-out=$(helm template t "$CHART" -f "$CHART/values-backup-prod.yaml" \
+out=$(render -f "$CHART/values-backup-prod.yaml" \
   --set database.cnpg.backup.endpointURL=https://minio.example.com \
   --set database.cnpg.backup.serverName=preloop-db-v2)
 echo "$out" | grep -q "endpointURL: https://minio.example.com" || fail "endpointURL not rendered"
 echo "$out" | grep -q "serverName: preloop-db-v2" || fail "serverName not rendered"
 
 echo "==> service role, flow inflight, gateway memory request"
-out=$(helm template t "$CHART")
+out=$(render)
 echo "$out" | grep -A1 'name: PRELOOP_SERVICE_ROLE' | grep -q 'value: "gateway"' \
   || fail "PRELOOP_SERVICE_ROLE=gateway missing"
 echo "$out" | grep -A1 'name: PRELOOP_SERVICE_ROLE' | grep -q 'value: "api"' \
@@ -64,7 +80,7 @@ echo "$out" | grep -A1 'name: FLOW_EXECUTION_MAX_INFLIGHT' | grep -q 'value: "10
 echo "$out" | grep -q 'memory: 768Mi' || fail "gateway memory request 768Mi missing"
 
 echo "==> agent isolation: policy renders by default, in the release namespace"
-np=$(helm template t "$CHART" --namespace preloop \
+np=$(render --namespace preloop \
   --show-only templates/agent-networkpolicy.yaml | grep -v '^ *#' | grep -v '^$')
 echo "$np" | grep -q "name: t-preloop-agent-execution" \
   || fail "agent NetworkPolicy missing with defaults"
@@ -90,19 +106,19 @@ echo "$np" | grep -q '4222' && fail "agent policy allows the NATS port"
 echo "$np" | grep -q 'component: console' && fail "agent policy allows the console"
 
 echo "==> agent isolation: dedicated namespace keeps the namespace-wide deny"
-out=$(helm template t "$CHART" --set agentExecution.namespace.create=true)
+out=$(render --set agentExecution.namespace.create=true)
 echo "$out" | grep -q "name: agent-execution-isolation" \
   || fail "namespace default-deny missing when namespace.create=true"
 echo "$out" | grep -q "namespace: agent-executions" \
   || fail "agent policy not placed in the agent namespace"
 
 echo "==> agent isolation: can be turned off"
-out=$(helm template t "$CHART" --set agentExecution.networkPolicy.enabled=false)
+out=$(render --set agentExecution.networkPolicy.enabled=false)
 echo "$out" | grep -q "kind: NetworkPolicy" \
   && fail "NetworkPolicy rendered while networkPolicy.enabled=false"
 
 echo "==> agent isolation: no CIDR value at all falls back to RFC1918 plus metadata"
-np=$(helm template t "$CHART" --set 'agentExecution.networkPolicy.clusterCidrs=null' \
+np=$(render --set 'agentExecution.networkPolicy.clusterCidrs=null' \
   --set 'agentExecution.networkPolicy.excludeCIDRs=null' \
   --show-only templates/agent-networkpolicy.yaml | grep -v '^ *#')
 for cidr in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.169.254/32; do
@@ -112,18 +128,18 @@ done
 echo "==> agent isolation: a legacy excludeCIDRs list survives the upgrade unchanged"
 # Helm lays saved values over the new chart defaults, so the only way the
 # deprecated key can still be read is for the new key to default to empty.
-np=$(helm template t "$CHART" \
+np=$(render \
   --set 'agentExecution.networkPolicy.excludeCIDRs={100.64.0.0/10}' \
   --show-only templates/agent-networkpolicy.yaml | grep -v '^ *#')
 echo "$np" | grep -q '100.64.0.0/10' || fail "legacy excludeCIDRs carve-out dropped"
 echo "$np" | grep -q '10.0.0.0/8' && fail "legacy excludeCIDRs was merged with the fallback instead of replacing it"
-np=$(helm template t "$CHART" \
+np=$(render \
   --set 'agentExecution.networkPolicy.clusterCidrs={10.244.0.0/16}' \
   --set 'agentExecution.networkPolicy.excludeCIDRs={100.64.0.0/10}' \
   --show-only templates/agent-networkpolicy.yaml | grep -v '^ *#')
 echo "$np" | grep -q '10.244.0.0/16' || fail "clusterCidrs not rendered when both keys are set"
 echo "$np" | grep -q '100.64.0.0/10' && fail "excludeCIDRs still read although clusterCidrs is set"
-helm template t "$CHART" --set 'agentExecution.networkPolicy.excludeCIDRs={100.64.0.0/10}' >/dev/null \
+render --set 'agentExecution.networkPolicy.excludeCIDRs={100.64.0.0/10}' >/dev/null \
   || fail "chart does not render with a legacy excludeCIDRs value"
 # helm template does not emit NOTES.txt, so the deprecation notice is checked
 # in the template source, the way backend/tests/helm/test_agent_isolation.py does.
@@ -131,13 +147,13 @@ grep -q 'excludeCIDRs is deprecated' "$CHART/templates/NOTES.txt" \
   || fail "NOTES.txt lost the excludeCIDRs deprecation notice"
 
 echo "==> agent isolation: legacy additionalEgressRules still appended"
-np=$(helm template t "$CHART" \
+np=$(render \
   --set 'agentExecution.networkPolicy.additionalEgressRules[0].to[0].ipBlock.cidr=10.42.7.0/24' \
   --show-only templates/agent-networkpolicy.yaml | grep -v '^ *#')
 echo "$np" | grep -q '10.42.7.0/24' || fail "legacy additionalEgressRules dropped"
 
 echo "==> agent isolation: nodeCidrs re-admits kubelet probes and nothing else"
-np=$(helm template t "$CHART" \
+np=$(render \
   --set 'agentExecution.networkPolicy.nodeCidrs={10.0.0.0/24}' \
   --show-only templates/agent-networkpolicy.yaml | grep -v '^ *#')
 echo "$np" | grep -q 'ingress: \[\]' && fail "ingress still empty although nodeCidrs is set"
@@ -168,11 +184,11 @@ assert_prefixed_endpoints() {
   || fail "the endpoint selector guard flags a prefixed key or a sibling field"
 
 echo "==> agent isolation: Cilium variant replaces the plain policy"
-out=$(helm template t "$CHART" --namespace preloop \
+out=$(render --namespace preloop \
   --set agentExecution.networkPolicy.cilium.enabled=true)
 echo "$out" | grep -B2 -A6 'kind: NetworkPolicy' | grep -q 'name: t-preloop-agent-execution' \
   && fail "plain agent NetworkPolicy still rendered alongside the Cilium policy"
-cnp=$(helm template t "$CHART" --namespace preloop \
+cnp=$(render --namespace preloop \
   --set agentExecution.networkPolicy.cilium.enabled=true \
   --show-only templates/agent-ciliumnetworkpolicy.yaml | grep -v '^ *#')
 echo "$cnp" | grep -q 'kind: CiliumNetworkPolicy' || fail "CiliumNetworkPolicy missing"
@@ -201,7 +217,7 @@ echo "$cnp" | grep -q 'component: console' && fail "Cilium policy allows the con
 assert_prefixed_endpoints "$cnp"
 
 echo "==> agent isolation: Cilium variant, strict ingress and knobs"
-cnp=$(helm template t "$CHART" --namespace preloop \
+cnp=$(render --namespace preloop \
   --set agentExecution.networkPolicy.cilium.enabled=true \
   --set agentExecution.networkPolicy.cilium.allowHostIngress=false \
   --set 'agentExecution.networkPolicy.cilium.internetEntities={world,host,remote-node}' \
@@ -214,7 +230,7 @@ echo "$cnp" | grep -A4 'toEntities:' | grep -q '\- remote-node' || fail "interne
 echo "$cnp" | grep -q 'port: "443"' || fail "internetPorts not applied to the Cilium internet rule"
 echo "$cnp" | grep -q '203.0.113.0/24' || fail "cilium.extraEgress not appended"
 assert_prefixed_endpoints "$cnp"
-cnp=$(helm template t "$CHART" --namespace preloop \
+cnp=$(render --namespace preloop \
   --set agentExecution.networkPolicy.cilium.enabled=true \
   --set 'agentExecution.networkPolicy.dns.podSelectorLabels.k8s-app=null' \
   --set 'agentExecution.networkPolicy.dns.podSelectorLabels.app=coredns' \
@@ -226,7 +242,7 @@ echo "$cnp" | grep -q 'k8s:any:tier' && fail "a caller-supplied label source was
 assert_prefixed_endpoints "$cnp"
 
 echo "==> agent isolation: Cilium variant keeps the namespace-wide deny in a dedicated namespace"
-out=$(helm template t "$CHART" \
+out=$(render \
   --set agentExecution.networkPolicy.cilium.enabled=true \
   --set agentExecution.namespace.create=true)
 echo "$out" | grep -q 'kind: CiliumNetworkPolicy' || fail "Cilium policy missing in dedicated namespace mode"
@@ -235,17 +251,17 @@ echo "$out" | grep -q 'namespace: agent-executions' || fail "Cilium policy not p
 assert_prefixed_endpoints "$out"
 
 echo "==> agent isolation: quota does not depend on the network policy"
-out=$(helm template t "$CHART" --set agentExecution.namespace.create=true \
+out=$(render --set agentExecution.namespace.create=true \
   --set agentExecution.networkPolicy.enabled=false)
 echo "$out" | grep -q 'kind: ResourceQuota' || fail "ResourceQuota dropped when networkPolicy.enabled=false"
 echo "$out" | grep -q 'kind: NetworkPolicy' && fail "NetworkPolicy rendered while networkPolicy.enabled=false"
 
 echo "==> control plane ingress policy: opt in, needs pod CIDRs"
-if helm template t "$CHART" \
+if render \
   --set agentExecution.networkPolicy.controlPlaneIngress.enabled=true >/dev/null 2>&1; then
   fail "control plane policy rendered without podCidrs"
 fi
-out=$(helm template t "$CHART" \
+out=$(render \
   --set agentExecution.networkPolicy.controlPlaneIngress.enabled=true \
   --set 'agentExecution.networkPolicy.controlPlaneIngress.podCidrs={10.244.0.0/16}')
 echo "$out" | grep -q "name: t-preloop-control-plane-ingress" \
@@ -253,7 +269,7 @@ echo "$out" | grep -q "name: t-preloop-control-plane-ingress" \
 echo "$out" | grep -q "10.244.0.0/16" || fail "pod CIDR not carved out of the ipBlock"
 
 echo "==> credentials: no literal DATABASE_URL or SMTP_PASSWORD in any pod spec"
-out=$(helm template t "$CHART" --set config.smtp.host=smtp.example.com \
+out=$(render --set config.smtp.host=smtp.example.com \
   --set config.smtp.password=not-a-real-password)
 echo "$out" | grep -A1 'name: DATABASE_URL' | grep -q 'value: postgresql' \
   && fail "DATABASE_URL still rendered as a literal env value"
@@ -266,14 +282,14 @@ echo "$out" | grep -q 'checksum/credentials:' \
   || fail "credentials checksum annotation missing (pods would not roll)"
 
 echo "==> credentials: operator Secret wins and the chart Secret is dropped"
-out=$(helm template t "$CHART" --set database.urlFromSecret.name=my-db-secret)
+out=$(render --set database.urlFromSecret.name=my-db-secret)
 echo "$out" |  grep -A4 'name: DATABASE_URL' | grep -q 'name: "my-db-secret"' \
   || fail "database.urlFromSecret not honoured"
 echo "$out" | grep -q "t-preloop-credentials" \
   && fail "chart credentials Secret rendered even though urlFromSecret is set"
 
 echo "==> superuser access can be disabled"
-out=$(helm template t "$CHART" --set database.cnpg.enableSuperuserAccess=false)
+out=$(render --set database.cnpg.enableSuperuserAccess=false)
 echo "$out" | grep -q "enableSuperuserAccess: false" \
   || fail "enableSuperuserAccess knob not wired"
 echo "$out" | grep -q "t-preloop-db-superuser" \

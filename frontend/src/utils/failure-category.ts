@@ -88,6 +88,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     label: 'agent error',
     tooltip: 'The agent process itself ended with an error.',
   },
+  model_stream_idle: {
+    label: 'model stream idle',
+    tooltip:
+      'The run reached its time limit while the model stream was sending nothing. Lower agent_config.stream_idle_timeout_seconds or use another model; a longer limit rarely helps.',
+  },
   timeout: {
     label: 'timeout',
     tooltip: 'The run reached its time limit and was stopped.',

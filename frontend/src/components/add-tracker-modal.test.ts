@@ -722,4 +722,35 @@ describe('AddTrackerModal', () => {
       });
     });
   });
+
+  describe('Jira username edits', () => {
+    it('sends the edited username as connection_details', async () => {
+      const tracker = {
+        id: 'jira-1',
+        name: 'Jira',
+        tracker_type: 'jira',
+        url: 'https://jira.example.com',
+        connection_details: { username: 'old-user' },
+        scope_rules: [],
+      };
+      element = await fixture(
+        html`<add-tracker-modal .tracker=${tracker}></add-tracker-modal>`
+      );
+      const { updateStub } = setupStubs(element);
+      updateStub.resolves({
+        id: 'jira-1',
+        connection_details: { username: 'edited-user' },
+      });
+      (element as any).trackerUsername = 'edited-user';
+
+      await element.handleSave();
+
+      expect(updateStub).to.have.been.calledOnce;
+      const payload = updateStub.firstCall.args[1];
+      expect(payload.connection_details).to.deep.equal({
+        username: 'edited-user',
+      });
+      expect(payload.config).to.deep.equal({ username: 'edited-user' });
+    });
+  });
 });
