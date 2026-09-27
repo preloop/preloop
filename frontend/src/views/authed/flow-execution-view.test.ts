@@ -661,9 +661,13 @@ describe('FlowExecutionView', () => {
     await waitUntil(
       () =>
         (element as any).execution?.id === 'exec-running' &&
-        !(element as any).isLoading,
+        !(element as any).isLoading &&
+        // The mcp_call entries are synthesized after the logs land, which
+        // is after first paint.
+        !(element as any).isLoadingLogs,
       'Running execution view did not finish loading'
     );
+    await element.updateComplete;
 
     expect((element as any).toolCalls).to.equal(3);
     expect(
