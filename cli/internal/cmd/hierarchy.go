@@ -255,6 +255,13 @@ type share struct {
 	Target       shareTarget `json:"target"`
 }
 
+// shareRequest is the body of POST /shares: a share without its id.
+type shareRequest struct {
+	ResourceType string      `json:"resource_type"`
+	ResourceID   string      `json:"resource_id"`
+	Target       shareTarget `json:"target"`
+}
+
 func (t shareTarget) String() string {
 	switch t.Type {
 	case "selected":
@@ -344,7 +351,7 @@ Shared resources are read-only in subaccounts and never expose credentials.`,
 			if err != nil {
 				return err
 			}
-			body := share{ResourceType: args[0], ResourceID: args[1], Target: target}
+			body := shareRequest{ResourceType: args[0], ResourceID: args[1], Target: target}
 			var created share
 			if err := client.Post(accountPath(accountID, "/shares"), body, &created); err != nil {
 				return notFoundAsMissing(err, args[0]+" "+args[1])
@@ -382,6 +389,10 @@ Shared resources are read-only in subaccounts and never expose credentials.`,
 type resourceTags struct {
 	Tags         map[string]string `json:"tags"`
 	GovernedKeys []string          `json:"governed_keys"`
+	// Version identifies the tag set that was read. The write sends it back
+	// and the server answers 409 when the set changed in between, so two
+	// editors cannot silently overwrite each other.
+	Version *string `json:"version"`
 }
 
 func formatTagMap(tags map[string]string) string {
@@ -402,7 +413,9 @@ func tagsPath(kind, id string) string {
 }
 
 // updateTags reads the tags of a resource, applies change and writes the
-// whole set back. Keys the parent governs cannot be changed here.
+// whole set back with the version it read. Keys the parent governs cannot
+// be changed here, and a set changed by someone else in between is not
+// overwritten.
 func updateTags(cmd *cobra.Command, kind, id string, change func(map[string]string) ([]string, error)) error {
 	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
@@ -429,7 +442,11 @@ func updateTags(cmd *cobra.Command, kind, id string, change func(map[string]stri
 		}
 	}
 	var saved resourceTags
-	if err := client.Put(tagsPath(kind, id), map[string]any{"tags": current.Tags}, &saved); err != nil {
+	body := map[string]any{"tags": current.Tags, "version": current.Version}
+	if err := client.Put(tagsPath(kind, id), body, &saved); err != nil {
+		if api.IsStatus(err, http.StatusConflict) {
+			return fmt.Errorf("the tags of %s %s changed while this command ran; nothing was saved, run it again", kind, id)
+		}
 		return notFoundAsMissing(err, kind+" "+id)
 	}
 	if saved.Tags == nil {

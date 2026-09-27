@@ -342,3 +342,105 @@ func TestAuthStatusShowsProfileAndAccount(t *testing.T) {
 		}
 	}
 }
+
+// tagServer serves one resource's tags at version v1 and records writes.
+type tagServer struct {
+	mu       sync.Mutex
+	puts     []map[string]any
+	conflict bool
+	shares   []map[string]any
+}
+
+func (s *tagServer) handler(t *testing.T) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		switch {
+		case r.URL.Path == "/api/v1/auth/users/me":
+			_ = json.NewEncoder(w).Encode(map[string]string{"account_id": "acc-root"})
+		case r.URL.Path == "/api/v1/tags/ai_model/m1" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tags":          map[string]string{"env": "prod"},
+				"governed_keys": []string{"customer"},
+				"version":       "v1",
+			})
+		case r.URL.Path == "/api/v1/tags/ai_model/m1" && r.Method == http.MethodPut:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			s.puts = append(s.puts, body)
+			if s.conflict {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"detail":"version mismatch"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"tags": body["tags"], "version": "v2"})
+		case r.URL.Path == "/api/v1/accounts/acc-root/shares" && r.Method == http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			s.shares = append(s.shares, body)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "sh-1"})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
+func setupTagServer(t *testing.T, fake *tagServer) {
+	t.Helper()
+	home := testenv.SetTempHome(t)
+	for _, env := range []string{config.EnvProfile, config.EnvAccount, config.EnvToken, config.EnvURL} {
+		t.Setenv(env, "")
+	}
+	server := httptest.NewServer(fake.handler(t))
+	t.Cleanup(server.Close)
+	writeProfileConfig(t, home, server.URL)
+	withFeatures(t, map[string]any{"account_hierarchy": true, "abac_rules": true})
+}
+
+func TestTagsSetSendsTheVersionItRead(t *testing.T) {
+	fake := &tagServer{}
+	setupTagServer(t, fake)
+
+	if _, err := runRoot(t, "--profile", "work", "tags", "set", "ai_model", "m1", "tier=gold"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.puts) != 1 {
+		t.Fatalf("puts = %v", fake.puts)
+	}
+	if fake.puts[0]["version"] != "v1" {
+		t.Fatalf("version sent = %v", fake.puts[0]["version"])
+	}
+	tags := fake.puts[0]["tags"].(map[string]any)
+	if tags["env"] != "prod" || tags["tier"] != "gold" {
+		t.Fatalf("tags sent = %v", tags)
+	}
+}
+
+func TestTagsSetReportsAConcurrentChange(t *testing.T) {
+	fake := &tagServer{conflict: true}
+	setupTagServer(t, fake)
+
+	_, err := runRoot(t, "--profile", "work", "tags", "set", "ai_model", "m1", "tier=gold")
+	if err == nil || !strings.Contains(err.Error(), "changed while this command ran") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestShareAddSendsNoID(t *testing.T) {
+	fake := &tagServer{}
+	setupTagServer(t, fake)
+
+	if _, err := runRoot(t, "--profile", "work", "share", "add", "ai_model", "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.shares) != 1 {
+		t.Fatalf("shares = %v", fake.shares)
+	}
+	if _, ok := fake.shares[0]["id"]; ok {
+		t.Fatalf("POST /shares carried an id: %v", fake.shares[0])
+	}
+	if fake.shares[0]["resource_type"] != "ai_model" || fake.shares[0]["resource_id"] != "m1" {
+		t.Fatalf("body = %v", fake.shares[0])
+	}
+}
