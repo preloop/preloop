@@ -29,8 +29,8 @@ transcript.
 
 | Surface | MCP tool calls governed | Model calls metered | Sessions recorded (hooks) | Spend visible | Status today |
 | --- | --- | --- | --- | --- | --- |
-| VS Code Copilot Chat, GitHub-hosted models | Yes, for MCP servers Preloop writes | Not possible: no proxy for GitHub-hosted models | Not possible: no hook surface in VS Code Chat | Premium-request import | MCP shipped. Metering and hooks not possible |
-| VS Code Copilot Chat, BYOK (custom endpoint) | Same MCP path as the row above | Planned ([#787](https://github.com/preloop/preloop/issues/787)) | Not possible: no hook surface in VS Code Chat | Gateway, only if #787 lands. Import stays GitHub-reported | Planned ([#787](https://github.com/preloop/preloop/issues/787)) |
+| VS Code Copilot Chat, GitHub-hosted models | Yes, for MCP servers Preloop writes | Not possible: no proxy for GitHub-hosted models | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Premium-request import | MCP shipped. Metering not possible; hooks not wired |
+| VS Code Copilot Chat, BYOK (custom endpoint) | Same MCP path as the row above | Planned ([#787](https://github.com/preloop/preloop/issues/787)) | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Gateway, only if #787 lands. Import stays GitHub-reported | Planned ([#787](https://github.com/preloop/preloop/issues/787)) |
 | Copilot CLI, GitHub-hosted, interactive on a laptop | Yes, after onboard. Native tools need `--approvals` | Not possible: no proxy for GitHub-hosted models | Yes, lifecycle only | Premium-request import | Shipped |
 | Copilot CLI, GitHub-hosted, flow on a private-runner host profile | Only the runner user's own MCP file. Flow MCP settings do not apply | Not possible: no proxy for GitHub-hosted models | Yes. The runner installs usage hooks before the run | Execution: not gateway metered, plus a premium-request count. Dollars: import | Shipped ([#956](https://github.com/preloop/preloop/issues/956)) |
 | Copilot CLI BYOK through the gateway (`preloop copilot`) | Same CLI MCP and approval hooks | Yes: tokens, cost, and session replay | Yes, when the CLI hooks are installed | Gateway. Not the premium-request import | Shipped |
@@ -59,6 +59,9 @@ Preloop does not install a hook into VS Code Chat. GitHub's hooks page
 lists Copilot CLI and the Copilot cloud agent, not VS Code Chat
 (read 2026-09-27). The customization cheat sheet marks VS Code hooks as
 preview (read 2026-09-27). That preview is not a file Preloop writes.
+`isCopilotVSCodeHookEventName` in `cli/internal/cmd/usage_hook_copilot.go`
+accepts the PascalCase payload if something pipes it in. Nothing in
+onboarding writes a VS Code hook config, so sessions stay unrecorded.
 
 Spend for this row is the [premium-request import](copilot-usage-import.md):
 daily, marked not metered by the gateway
@@ -76,8 +79,8 @@ claim that path works, and it does not name a plan. If it lands, those
 calls are gateway usage (tokens, cost, session replay). Until then,
 model metering is planned (#787).
 
-The hook cell is the same as the GitHub-hosted row: no hook surface in
-VS Code Chat.
+The hook cell is the same as the GitHub-hosted row: VS Code hooks are
+a GitHub preview, and Preloop writes no such file.
 
 Gateway spend and the import are different ledgers. The import stores
 GitHub's reported figures only. A call that never reached GitHub is not
