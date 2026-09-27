@@ -20,6 +20,8 @@ import '../../components/console-header';
 import '../../components/approval-bypass-banner';
 import '../../components/kill-switch-banner';
 import '../../components/usage-nudge-banner';
+import '../../components/capability-extension';
+import { hasCapability } from '../../capabilities';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import {
   getFeatures,
@@ -979,6 +981,19 @@ export class ConsoleShell extends LitElement {
                               )
                             : ''
                         }
+                        ${
+                          // Served by an extension plugin; the capability in
+                          // /features is the only switch.
+                          hasCapability(this.features, 'account_hierarchy')
+                            ? html`${this._renderNavLink(
+                                '/console/settings/subaccounts',
+                                html`<sl-menu-item>Subaccounts</sl-menu-item>`
+                              )}${this._renderNavLink(
+                                '/console/settings/access-grants',
+                                html`<sl-menu-item>Access grants</sl-menu-item>`
+                              )}`
+                            : nothing
+                        }
                         ${this._renderNavLink(
                           '/console/settings/api-keys',
                           html`<sl-menu-item>API Keys</sl-menu-item>`
@@ -1037,6 +1052,14 @@ export class ConsoleShell extends LitElement {
                       label="Open menu"
                       @click=${this._handleSidebarToggle}
                     ></sl-icon-button>
+                    ${
+                      hasCapability(this.features, 'multi_account')
+                        ? html`<capability-extension
+                            slot="account-switcher"
+                            name="account-switcher"
+                          ></capability-extension>`
+                        : nothing
+                    }
                   </console-header>
                   <!-- Sits directly under the header so a relaxed governance
                        state is visible on every console page, not just the

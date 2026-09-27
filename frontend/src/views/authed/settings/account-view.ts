@@ -428,7 +428,7 @@ export class AccountView extends LitElement {
       });
 
       this.accountOrganization = updated;
-      this.orgSuccessMessage = 'Organization name saved successfully';
+      this.orgSuccessMessage = 'Account name saved successfully';
       setTimeout(() => (this.orgSuccessMessage = ''), 3000);
     } catch (error) {
       this.orgErrorMessage = (error as Error).message;
@@ -953,10 +953,10 @@ export class AccountView extends LitElement {
       <view-header headerText="Account" width="narrow"></view-header>
       <div class="column-layout narrow">
         <div class="main-column">
-          <!-- Organization Details Section -->
+          <!-- Account details section -->
           <sl-card style="margin-bottom: 2rem;">
             <h2 slot="header" style="margin: 0; font-size: 1.25rem;">
-              Organization Details
+              Account
             </h2>
 
             ${
@@ -985,8 +985,8 @@ export class AccountView extends LitElement {
 
             <div style="display: flex; flex-direction: column; gap: 1rem;">
               <sl-input
-                label="Organization Name"
-                placeholder="Enter your organization name"
+                label="Account name"
+                placeholder="Enter your account name"
                 value=${this.organizationName}
                 @sl-input=${(e: any) =>
                   (this.organizationName = e.target.value)}
@@ -1003,7 +1003,7 @@ export class AccountView extends LitElement {
                   @click=${this._handleSaveOrganization}
                   ?loading=${this.isSavingOrg}
                 >
-                  Save Organization Name
+                  Save account name
                 </sl-button>
               </div>
             </div>

@@ -122,7 +122,24 @@ def test_unavailable_publication_and_resume() -> None:
         resume_from="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     )
     assert host_exec_unavailable_reason(session_id="ses-untrusted")
-    assert host_exec_unavailable_reason(git_clone_config={"enabled": True})
+    assert (
+        host_exec_unavailable_reason(git_clone_config={"setup_commands": ["make"]})
+        == "host execution does not run remote clone setup commands"
+    )
+
+
+def test_unavailable_reason_allows_checkout_for_review_flows() -> None:
+    """A clone without publication or setup commands can run on a host."""
+    assert (
+        host_exec_unavailable_reason(
+            git_clone_config={
+                "enabled": True,
+                "repositories": [{"repository_url": "https://git.example.com/o/r"}],
+                "create_pull_request": False,
+            }
+        )
+        is None
+    )
 
 
 def test_unavailable_reason_rejects_isolated_publication_mode() -> None:
