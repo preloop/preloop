@@ -959,8 +959,12 @@ def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
                 import litellm
 
                 with _lock:
-                    existing = litellm.model_cost.get(candidate, {})
-                    if not existing.get("preloop_price_provenance"):
+                    # Same invariant as the eager merge: a reviewed price or a
+                    # first-party overlay row is never replaced by upstream.
+                    # The merge skips protected keys, so a stomped row here
+                    # could not be repaired for the life of the process.
+                    existing = litellm.model_cost.get(candidate)
+                    if not _is_protected_price(candidate, existing):
                         litellm.register_model({candidate: entry})
                 matched_key = candidate
                 logger.info(

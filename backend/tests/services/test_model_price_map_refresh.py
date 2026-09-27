@@ -420,3 +420,42 @@ def test_runtime_tier_flattening_matches_the_snapshot_script(
     assert model_price_catalog._flatten_tiered_prices(
         entry
     ) == script._flatten_tiered_pricing(entry)
+
+
+@pytest.mark.parametrize(
+    ("key", "current"),
+    [
+        (
+            "moonshot/overlay-lookup-801",
+            {**_price_entry(1.0, 1.0), "litellm_provider": "moonshot"},
+        ),
+        (
+            "deepseek/policy-lookup-801",
+            {**_price_entry(1.0, 1.0), "preloop_price_policy": {"kind": "bands"}},
+        ),
+    ],
+)
+def test_on_miss_lookup_never_replaces_protected_prices(
+    monkeypatch: pytest.MonkeyPatch, key: str, current: Dict[str, Any]
+) -> None:
+    """The on-miss path honours the same protection as the eager merge.
+
+    Otherwise a live lookup could replace a first-party overlay or a
+    policy-priced row, and the eager merge (which skips protected keys)
+    would never repair it.
+    """
+    model_price_catalog.reset_lookup_state_for_tests()
+    monkeypatch.setitem(litellm.model_cost, key, dict(current))
+    monkeypatch.setattr(
+        model_price_catalog,
+        "_vendored_overlay_keys",
+        frozenset({"moonshot/overlay-lookup-801"}),
+    )
+    monkeypatch.setattr(
+        model_price_catalog,
+        "_fetch_remote_price_map",
+        lambda: {key: _price_entry(9.0, 9.0)},
+    )
+
+    assert model_price_catalog.lookup_model_price_now([key]) == key
+    assert litellm.model_cost[key]["input_cost_per_token"] == 1e-06
