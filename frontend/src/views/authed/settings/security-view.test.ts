@@ -252,6 +252,21 @@ describe('SecurityView', () => {
     (buttons[1] as HTMLElement).click();
 
     await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await waitUntil(
+      () => dialog.shadowRoot?.textContent?.includes('build-host'),
+      'dialog names the host'
+    );
+    (
+      dialog.shadowRoot?.querySelector(
+        '[data-testid="confirm-dialog-confirm"]'
+      ) as HTMLElement
+    ).click();
+
+    await waitUntil(
       () =>
         !element.shadowRoot
           ?.querySelector('[data-testid="cli-sessions"]')
@@ -271,5 +286,46 @@ describe('SecurityView', () => {
       element.shadowRoot?.querySelector('[data-testid="cli-sessions"]')
         ?.textContent
     ).to.contain('laptop.example.com');
+  });
+
+  it('keeps the CLI login when the revoke is cancelled', async () => {
+    fetchStub = createFetchStub({ withCliSessions: true });
+    const element = (await fixture(
+      html`<security-view></security-view>`
+    )) as SecurityView;
+    await waitUntil(
+      () => element.shadowRoot?.querySelector('[data-testid="cli-sessions"]'),
+      'CLI logins card'
+    );
+
+    (
+      element.shadowRoot!.querySelectorAll(
+        '[data-testid="revoke-cli-session"]'
+      )[1] as HTMLElement
+    ).click();
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await waitUntil(
+      () => dialog.shadowRoot?.querySelector('sl-button:not([data-testid])'),
+      'cancel control'
+    );
+    (
+      dialog.shadowRoot!.querySelector(
+        'sl-button:not([data-testid])'
+      ) as HTMLElement
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const deletes = fetchStub
+      .getCalls()
+      .filter((c) => (c.args[1]?.method || '').toUpperCase() === 'DELETE');
+    expect(deletes).to.have.length(0);
+    expect(
+      element.shadowRoot?.querySelector('[data-testid="cli-sessions"]')
+        ?.textContent
+    ).to.contain('build-host');
   });
 });

@@ -72,7 +72,19 @@ export class SecurityView extends LitElement {
     }
   }
 
-  private async handleRevokeCliSession(id: string) {
+  private async handleRevokeCliSession(session: CliSession) {
+    const confirmed = await confirmDialog({
+      title: 'Revoke CLI login',
+      message: `Sign out the CLI on ${session.hostname || 'this unknown host'}?`,
+      detail:
+        'Its access and refresh tokens stop working at once. Other logins are not affected.',
+      confirmLabel: 'Revoke',
+      variant: 'danger',
+    });
+    if (!confirmed) {
+      return;
+    }
+    const id = session.id;
     this.cliSessionMessage = '';
     try {
       await revokeCliSession(id);
@@ -128,7 +140,7 @@ export class SecurityView extends LitElement {
                             outline
                             data-testid="revoke-cli-session"
                             @click="${() =>
-                              this.handleRevokeCliSession(session.id)}"
+                              this.handleRevokeCliSession(session)}"
                             >Revoke</sl-button
                           >
                         </li>
