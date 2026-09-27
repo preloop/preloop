@@ -215,7 +215,9 @@ class TestGate:
         event["type"] = "pull_request_opened"
         assert not backport_event_matches(CONFIG, event)
 
-    def test_invalid_config_never_starts_the_flow(self) -> None:
+    def test_invalid_config_never_starts_the_flow_and_says_why(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         stored = {
             "backport": {
                 "enabled": True,
@@ -223,7 +225,10 @@ class TestGate:
                 "target_branches": ["main"],
             }
         }
-        assert not backport_event_matches(stored, github_event(base="main"))
+        with caplog.at_level("WARNING", logger="preloop.services.backport"):
+            assert not backport_event_matches(stored, github_event(base="main"))
+        assert "Backport flow not started" in caplog.text
+        assert "git_clone_config.backport is invalid" in caplog.text
 
     def test_trigger_service_applies_the_gate(self) -> None:
         from preloop.services.flow_trigger_service import FlowTriggerService

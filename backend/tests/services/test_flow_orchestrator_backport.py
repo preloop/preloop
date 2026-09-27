@@ -168,3 +168,26 @@ async def test_run_skips_the_agent_for_a_backport_flow() -> None:
     assert final["status"] == "SUCCEEDED"
     assert final["result"]["backport"] == {"targets": []}
     assert update.await_args_list[1].kwargs["status"] == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_backport_is_bounded_by_the_flow_timeout_budget() -> None:
+    import asyncio
+
+    subject = orchestrator(event())
+    subject.flow.timeout_seconds = 60
+
+    async def slow(_plan: BackportPlan) -> Dict[str, Any]:
+        await asyncio.sleep(3600)
+        return {}
+
+    with (
+        patch.object(subject, "_run_backport", slow),
+        patch("preloop.services.flow_orchestrator.FLOW_TIMEOUT_SECONDS_MIN", 0),
+    ):
+        subject.flow.timeout_seconds = 0.05
+        result = await subject._run_backport_within_budget(PLAN)
+
+    assert result["status"] == "FAILED"
+    assert result["failure_category"] == "timeout"
+    assert "timed out" in result["error_message"]

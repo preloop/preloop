@@ -27,6 +27,7 @@ Bitbucket follows issue #955; see :mod:`preloop.services.backport_hosts`.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -42,6 +43,8 @@ from preloop.services.backport_git import (
     CherryPickOutcome,
 )
 from preloop.services.backport_hosts import BackportHost, BackportHostError
+
+logger = logging.getLogger(__name__)
 
 BACKPORT_RESULT_KEY = "backport"
 BACKPORT_EVENT_TYPES = frozenset({"pull_request_merged", "merge_request_merged"})
@@ -236,7 +239,10 @@ def backport_event_matches(
     """
     try:
         plan = resolve_backport_plan(git_clone_config)
-    except BackportConfigError:
+    except BackportConfigError as error:
+        # Never start an agent for a broken backport block, but make the
+        # "flow never fires" case visible in the logs.
+        logger.warning("Backport flow not started: %s", error)
         return False
     if plan is None:
         return True

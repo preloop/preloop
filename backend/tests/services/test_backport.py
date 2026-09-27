@@ -331,11 +331,12 @@ async def test_retry_after_push_opens_the_pull_request_without_repushing(
 
 
 @pytest.mark.asyncio
-async def test_closed_or_merged_backport_is_left_alone(repo: Repo) -> None:
+@pytest.mark.parametrize("state", ["closed", "merged"])
+async def test_closed_or_merged_backport_is_left_alone(repo: Repo, state: str) -> None:
     sha = merge_pull_request(repo)
     host = FakeHost()
     host.changes[("backport/pr-812-to-release-1.1", "release/1.1")] = HostChange(
-        number=700, url="https://github.example/acme/widgets/pull/700", state="closed"
+        number=700, url="https://github.example/acme/widgets/pull/700", state=state
     )
 
     report = await backport(repo, host, sha)
@@ -410,7 +411,6 @@ async def test_never_merges_into_any_target(repo: Repo) -> None:
 
     after = {b: repo.remote_sha(b) for b in before}
     assert after == before
-    assert not hasattr(FakeHost, "merge_change")
 
 
 @pytest.mark.asyncio
@@ -537,3 +537,27 @@ def test_token_is_sent_as_a_scoped_header_never_in_the_url(tmp_path: Path) -> No
     assert "s3cr3t" not in env["GIT_CONFIG_VALUE_0"]
     assert env["GIT_ALLOW_PROTOCOL"] == "https"
     assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+
+
+def test_git_errors_never_carry_git_output(tmp_path: Path) -> None:
+    """Git's stderr can echo the remote and auth failures; it never leaks."""
+    from preloop.services.backport_git import BackportGitError, BackportWorkspace
+
+    missing = tmp_path / "no-such-remote.git"
+    workspace = BackportWorkspace(
+        tmp_path / "scratch",
+        repository_url=missing.as_uri(),
+        token="s3cr3t",
+        auth_username="x-access-token",
+        committer_name="Preloop",
+        committer_email="bot@example.com",
+        allow_file_protocol=True,
+    )
+    (tmp_path / "scratch").mkdir()
+    workspace.init()
+    with pytest.raises(BackportGitError) as caught:
+        workspace.remote_branch_sha("main")
+    message = str(caught.value)
+    assert message == "Git ls-remote failed"
+    assert "no-such-remote" not in message
+    assert "s3cr3t" not in message

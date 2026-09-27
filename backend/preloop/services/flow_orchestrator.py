@@ -54,6 +54,7 @@ from preloop.agents.verification import (
 )
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+    FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
     derive_failure_category,
 )
@@ -7332,6 +7333,34 @@ class FlowExecutionOrchestrator:
             return None
         return resolve_backport_plan(getattr(self.flow, "git_clone_config", None))
 
+    async def _run_backport_within_budget(self, plan: "BackportPlan") -> Dict[str, Any]:
+        """Run the backport under the flow's wall-clock budget.
+
+        The agent path enforces ``timeout_seconds`` in its monitor, which a
+        backport never reaches, so the same budget is applied here. A run cut
+        short keeps whatever it already pushed or opened, and a retry picks
+        that work up (branch names are deterministic).
+
+        Args:
+            plan: The flow's validated backport plan.
+
+        Returns:
+            The backport result, or a FAILED timeout result.
+        """
+        budget = self._execution_timeout_budget()
+        try:
+            async with asyncio.timeout(budget.seconds):
+                return await self._run_backport(plan)
+        except TimeoutError:
+            message = budget.timeout_message()
+            return {
+                "status": "FAILED",
+                "output_summary": f"Backport did not finish: {message}",
+                "error_message": message,
+                "failure_category": FAILURE_CATEGORY_TIMEOUT,
+                "result": {"backport": {"error": message, "targets": []}},
+            }
+
     async def _run_backport(self, plan: "BackportPlan") -> Dict[str, Any]:
         """Run the control-plane backport and shape it like an agent result.
 
@@ -7468,7 +7497,7 @@ class FlowExecutionOrchestrator:
                         + ", ".join(backport_plan.target_branches)
                     ),
                 )
-                agent_result = await self._run_backport(backport_plan)
+                agent_result = await self._run_backport_within_budget(backport_plan)
             else:
                 # Stage 3: Prepare execution context
                 execution_context = await self._prepare_execution_context()

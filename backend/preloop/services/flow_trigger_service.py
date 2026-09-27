@@ -1152,8 +1152,8 @@ class FlowTriggerService:
             getattr(flow, "git_clone_config", None), event_data
         ):
             logger.info(
-                "Flow %s: backport flow skipped, the event is not a merge into "
-                "its source branch",
+                "Flow %s: backport gate did not match (not a merge into the "
+                "source branch, or an invalid backport block)",
                 flow.id,
             )
             return False
