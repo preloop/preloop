@@ -54,6 +54,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import '../../components/capability-extension';
 
 /**
  * Runtime ids as the product spells them.
@@ -807,6 +808,10 @@ export class FlowView extends LitElement {
               }
             </div>
           </sl-card>
+          <capability-extension
+            name="resource-access"
+            .context=${{ kind: 'flow', resourceId: this.flowId ?? '' }}
+          ></capability-extension>
 
           ${
             this.flow.prompt_template
@@ -820,6 +825,23 @@ export class FlowView extends LitElement {
                       style="white-space: pre-wrap; word-wrap: break-word; font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); background: var(--sl-color-neutral-50); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); margin: 0; max-height: 300px; overflow-y: auto;"
                     >
 ${this.flow.prompt_template}</pre>
+                  </sl-card>
+                `
+              : ''
+          }
+          ${
+            typeof this.flow.review_instructions === 'string' &&
+            this.flow.review_instructions.trim()
+              ? html`
+                  <sl-card data-review-instructions>
+                    <div slot="header">
+                      <sl-icon name="shield-check"></sl-icon>
+                      Review instructions
+                    </div>
+                    <pre
+                      style="white-space: pre-wrap; word-wrap: break-word; font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); background: var(--sl-color-neutral-50); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); margin: 0; max-height: 300px; overflow-y: auto;"
+                    >
+${this.flow.review_instructions}</pre>
                   </sl-card>
                 `
               : ''

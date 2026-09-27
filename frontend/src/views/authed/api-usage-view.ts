@@ -43,6 +43,7 @@ import {
   requestHistoryUpgrade,
 } from '../../utils/history-window';
 import { analyticsWindow } from '../../utils/usage-nudges';
+import '../../components/capability-extension';
 import {
   formatTimeRangeWindow,
   resolvePreviousTimeRange,
@@ -1520,6 +1521,10 @@ export class ApiUsageView extends LitElement {
               </sl-input>
             </div>
 
+            <capability-extension
+              name="usage-rollup"
+              .context=${{ range: this.selectedRange }}
+            ></capability-extension>
             ${
               this.error
                 ? html`

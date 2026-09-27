@@ -3,7 +3,8 @@
 Copilot requests go from the editor straight to GitHub, so the gateway never
 sees them. This import reads what GitHub reports about seats, premium-request
 spend and per-user usage, and shows it in the **Copilot** tab of the Cost
-page.
+page. Which Copilot surfaces this import covers, and which ones the gateway
+meters instead, is in [Copilot coverage](copilot.md).
 
 Every figure in that tab carries the marker **Not metered by the gateway**.
 Imported Copilot rows never count toward gateway usage, budgets, budget

@@ -81,6 +81,7 @@ import {
   getVisibleAgentTags,
 } from '../../utils/agent-display';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import '../../components/capability-extension';
 
 interface GovernanceToolDefinition {
   name: string;
@@ -2891,6 +2892,10 @@ export class AgentDetailView extends LitElement {
       <div class="page" style="padding-top: 0;">
         ${this.renderSummaryStrip(aggregate)} ${this.renderIdentityHistory()}
         ${this.renderOperatorNotes()}
+        <capability-extension
+          name="resource-access"
+          .context=${{ kind: 'managed_agent', resourceId: this.agent.id }}
+        ></capability-extension>
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {

@@ -26,6 +26,7 @@ from preloop.cra.schemas import (
     is_cra_schema_id,
 )
 from preloop.cra.repair import (
+    apply_coerced_finding_scores,
     apply_derived_severity_counts,
     apply_measured_minimum_elements,
     corrections_summary,
@@ -336,6 +337,13 @@ def apply_cra_persist_boundary(
 
     candidate = _candidate_with_measurement(payload, trigger_payload)
     candidate, element_corrections = apply_measured_minimum_elements(candidate)
+    score_corrections: list[Any] = []
+    # A quoted score is formatting. Coerce it only when every non-numeric
+    # epss/cvss value is a finite number in range, then re-validate. A
+    # string that does not parse is left in place so that failure, which
+    # names the finding index and the value, is what the operator sees.
+    if not validation.ok:
+        candidate, score_corrections = apply_coerced_finding_scores(candidate)
     count_corrections: list[Any] = []
     # Counts are repaired only when they are the whole failure. Any other
     # contract failure still fails closed, and is what the operator sees.
@@ -345,11 +353,19 @@ def apply_cra_persist_boundary(
     verdict_list: list[Any] = []
     schema = payload.get("schema") if isinstance(payload, Mapping) else None
     if schema in (SCHEMA_SBOMAUDIT_V1, SCHEMA_RELEASEAUDIT_V1) and (
-        not validation.ok or element_corrections or count_corrections
+        not validation.ok
+        or element_corrections
+        or count_corrections
+        or score_corrections
     ):
         candidate, verdict_list = verdict_corrections(candidate)
 
-    corrections = [*element_corrections, *count_corrections, *verdict_list]
+    corrections = [
+        *element_corrections,
+        *count_corrections,
+        *score_corrections,
+        *verdict_list,
+    ]
     if corrections:
         # Re-validated in full. The run is saved only when the whole contract
         # then passes. Receipts and evidence packs are built from this object
