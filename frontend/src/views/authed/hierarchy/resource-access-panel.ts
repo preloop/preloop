@@ -1,0 +1,402 @@
+import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
+import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/radio/radio.js';
+import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
+import '@shoelace-style/shoelace/dist/components/tag/tag.js';
+import {
+  NO_CAPABILITIES,
+  isCapabilityOff,
+  type CapabilitySet,
+} from '../../../capabilities';
+import {
+  createShare,
+  currentAccountId,
+  deleteShare,
+  getTags,
+  listShares,
+  listSubaccounts,
+  setTags,
+  type Share,
+  type ShareTarget,
+  type ShareableKind,
+  type Subaccount,
+  type Tags,
+} from '../../../hierarchy-api';
+import { parseTags } from './tags';
+
+const SHAREABLE: readonly ShareableKind[] = [
+  'ai_model',
+  'mcp_server',
+  'managed_agent',
+  'flow',
+  'runner_pool',
+  'policy',
+];
+
+type Section = 'loading' | 'on' | 'off';
+
+/**
+ * Sharing and tags for one resource, mounted on its detail page through
+ * `<capability-extension name="resource-access">`.
+ *
+ * Context: `kind` (resource type), `resourceId`, and `sharedFrom` when the
+ * resource belongs to a parent (then nothing here is editable and sharing is
+ * not offered). Each section hides on its own when its endpoint is missing,
+ * and the panel reports `capability-off` when both are.
+ */
+@customElement('resource-access-panel')
+export class ResourceAccessPanel extends LitElement {
+  static styles = css`
+    :host {
+      display: block;
+      margin-top: var(--sl-spacing-medium);
+    }
+    section + section {
+      margin-top: var(--sl-spacing-medium);
+      border-top: 1px solid var(--sl-color-neutral-200);
+      padding-top: var(--sl-spacing-medium);
+    }
+    h3 {
+      font-size: var(--sl-font-size-medium);
+      margin: 0 0 var(--sl-spacing-x-small);
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--sl-spacing-x-small);
+      align-items: center;
+      margin: var(--sl-spacing-x-small) 0;
+    }
+    .muted {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-small);
+    }
+    .error {
+      color: var(--sl-color-danger-700);
+    }
+  `;
+
+  @property({ attribute: false }) context: Record<string, unknown> = {};
+  @property({ attribute: false }) capabilities: CapabilitySet = NO_CAPABILITIES;
+
+  @state() private shareState: Section = 'off';
+  @state() private tagState: Section = 'off';
+  @state() private shares: Share[] = [];
+  @state() private subaccounts: Subaccount[] = [];
+  @state() private tags: Tags = {};
+  @state() private governed: string[] = [];
+  @state() private draftShared = false;
+  @state() private draftTarget: ShareTarget['type'] = 'all';
+  @state() private draftSelected = new Set<string>();
+  @state() private draftTag = '';
+  @state() private error = '';
+  @state() private saving = false;
+
+  private accountId = '';
+  private generation = 0;
+
+  private get kind(): string {
+    return String(this.context.kind ?? '');
+  }
+  private get resourceId(): string {
+    return String(this.context.resourceId ?? '');
+  }
+  private get readOnly(): boolean {
+    return Boolean(this.context.sharedFrom);
+  }
+
+  protected willUpdate(changed: PropertyValues) {
+    if (changed.has('context') || changed.has('capabilities')) void this.load();
+  }
+
+  private async load() {
+    const generation = ++this.generation;
+    const id = this.resourceId;
+    if (!id || !this.kind) return;
+    const wantShares =
+      this.capabilities.has('account_hierarchy') &&
+      !this.readOnly &&
+      SHAREABLE.includes(this.kind as ShareableKind);
+    const wantTags = this.capabilities.has('abac_rules');
+    this.shareState = wantShares ? 'loading' : 'off';
+    this.tagState = wantTags ? 'loading' : 'off';
+    this.error = '';
+    try {
+      this.accountId = await currentAccountId();
+    } catch {
+      this.shareState = this.tagState = 'off';
+      return;
+    }
+    await Promise.all([
+      wantShares ? this.loadShares(generation, id) : null,
+      wantTags ? this.loadTags(generation, id) : null,
+    ]);
+    if (
+      generation === this.generation &&
+      this.shareState === 'off' &&
+      this.tagState === 'off'
+    ) {
+      this.dispatchEvent(new CustomEvent('capability-off', { bubbles: true }));
+    }
+  }
+
+  private async loadShares(generation: number, id: string) {
+    try {
+      const [shares, subaccounts] = await Promise.all([
+        listShares(this.accountId, this.kind as ShareableKind, id),
+        listSubaccounts(this.accountId),
+      ]);
+      if (generation !== this.generation) return;
+      // Only shares of this resource, whatever the server sends.
+      this.shares = shares.filter(
+        (s) => s.resource_id === id && s.resource_type === this.kind
+      );
+      this.subaccounts = subaccounts;
+      this.resetShareDraft();
+      this.shareState = 'on';
+    } catch {
+      if (generation === this.generation) this.shareState = 'off';
+    }
+  }
+
+  private async loadTags(generation: number, id: string) {
+    try {
+      const result = await getTags(this.kind, id);
+      if (generation !== this.generation) return;
+      this.tags = result.tags;
+      this.governed = result.governed_keys ?? [];
+      this.tagState = 'on';
+    } catch {
+      // Missing endpoint, or an id this account cannot see: show nothing.
+      if (generation === this.generation) this.tagState = 'off';
+    }
+  }
+
+  private resetShareDraft() {
+    const current = this.shares[0]?.target;
+    this.draftShared = this.shares.length > 0;
+    this.draftTarget = current?.type ?? 'all';
+    this.draftSelected = new Set(
+      current?.type === 'selected' ? current.subaccount_ids : []
+    );
+    this.draftTag =
+      current?.type === 'tag' ? `${current.key}=${current.value}` : '';
+  }
+
+  private buildTarget(): ShareTarget | string {
+    if (this.draftTarget === 'all') return { type: 'all' };
+    if (this.draftTarget === 'selected') {
+      if (this.draftSelected.size === 0)
+        return 'Choose at least one subaccount.';
+      return { type: 'selected', subaccount_ids: [...this.draftSelected] };
+    }
+    const { tags, errors } = parseTags(this.draftTag);
+    const entries = Object.entries(tags);
+    if (errors.length || entries.length !== 1) {
+      return 'Enter one tag as key=value.';
+    }
+    const [key, value] = entries[0];
+    return { type: 'tag', key, value };
+  }
+
+  private saveShare = async () => {
+    this.error = '';
+    const target = this.draftShared ? this.buildTarget() : null;
+    if (typeof target === 'string') {
+      this.error = target;
+      return;
+    }
+    this.saving = true;
+    try {
+      for (const share of this.shares) {
+        await deleteShare(this.accountId, share.id);
+      }
+      if (target) {
+        await createShare(this.accountId, {
+          resource_type: this.kind as ShareableKind,
+          resource_id: this.resourceId,
+          target,
+        });
+      }
+      await this.loadShares(this.generation, this.resourceId);
+    } catch (error) {
+      if (isCapabilityOff(error)) this.shareState = 'off';
+      else this.error = error instanceof Error ? error.message : 'Failed';
+    } finally {
+      this.saving = false;
+    }
+  };
+
+  private async writeTags(next: Tags) {
+    this.error = '';
+    try {
+      const result = await setTags(this.kind, this.resourceId, next);
+      this.tags = result.tags;
+      this.governed = result.governed_keys ?? this.governed;
+    } catch (error) {
+      if (isCapabilityOff(error)) this.tagState = 'off';
+      else this.error = error instanceof Error ? error.message : 'Failed';
+    }
+  }
+
+  private addTag = () => {
+    const input = this.renderRoot.querySelector<HTMLInputElement>('#new-tag');
+    const { tags, errors } = parseTags(input?.value ?? '');
+    if (errors.length) {
+      this.error = errors.join('. ');
+      return;
+    }
+    const blocked = Object.keys(tags).filter((k) => this.governed.includes(k));
+    if (blocked.length) {
+      this.error = `Only the parent account sets ${blocked.join(', ')}.`;
+      return;
+    }
+    if (input) input.value = '';
+    void this.writeTags({ ...this.tags, ...tags });
+  };
+
+  private removeTag(key: string) {
+    const next = { ...this.tags };
+    delete next[key];
+    void this.writeTags(next);
+  }
+
+  private renderShare() {
+    const pickTarget = (e: Event) =>
+      (this.draftTarget = (e.target as HTMLInputElement)
+        .value as ShareTarget['type']);
+    return html`<section data-testid="share-section">
+      <h3>Sharing</h3>
+      <sl-switch
+        data-testid="share-toggle"
+        ?checked=${this.draftShared}
+        @sl-change=${(e: Event) =>
+          (this.draftShared = (e.target as HTMLInputElement).checked)}
+        >Share with subaccounts</sl-switch
+      >
+      ${
+        this.draftShared
+          ? html`<sl-radio-group
+                size="small"
+                label="With"
+                data-testid="share-target"
+                .value=${this.draftTarget}
+                @sl-change=${pickTarget}
+              >
+                <sl-radio value="all">All subaccounts</sl-radio>
+                <sl-radio value="selected">Selected subaccounts</sl-radio>
+                <sl-radio value="tag">Subaccounts with a tag</sl-radio>
+              </sl-radio-group>
+              ${
+                this.draftTarget === 'selected'
+                  ? html`<div class="row">
+                      ${this.subaccounts.map(
+                        (sub) =>
+                          html`<sl-checkbox
+                            size="small"
+                            data-subaccount=${sub.id}
+                            ?checked=${this.draftSelected.has(sub.id)}
+                            @sl-change=${(e: Event) => {
+                              const next = new Set(this.draftSelected);
+                              if ((e.target as HTMLInputElement).checked)
+                                next.add(sub.id);
+                              else next.delete(sub.id);
+                              this.draftSelected = next;
+                            }}
+                            >${sub.name}</sl-checkbox
+                          >`
+                      )}
+                    </div>`
+                  : nothing
+              }
+              ${
+                this.draftTarget === 'tag'
+                  ? html`<sl-input
+                      size="small"
+                      data-testid="share-tag"
+                      placeholder="customer=acme"
+                      .value=${this.draftTag}
+                      @sl-input=${(e: Event) =>
+                        (this.draftTag = (e.target as HTMLInputElement).value)}
+                    ></sl-input>`
+                  : nothing
+              }`
+          : nothing
+      }
+      <div class="row">
+        <sl-button
+          size="small"
+          variant="primary"
+          data-testid="share-save"
+          ?loading=${this.saving}
+          @click=${this.saveShare}
+          >Save sharing</sl-button
+        >
+      </div>
+    </section>`;
+  }
+
+  private renderTags() {
+    const entries = Object.entries(this.tags);
+    return html`<section data-testid="tag-section">
+      <h3>Tags</h3>
+      <div class="row">
+        ${
+          entries.length === 0
+            ? html`<span class="muted">No tags.</span>`
+            : entries.map(([key, value]) => {
+                const locked = this.readOnly || this.governed.includes(key);
+                return html`<sl-tag
+                  size="small"
+                  data-key=${key}
+                  ?removable=${!locked}
+                  @sl-remove=${() => this.removeTag(key)}
+                  >${key}=${value}${
+                    locked && !this.readOnly ? ' (set by parent)' : ''
+                  }</sl-tag
+                >`;
+              })
+        }
+      </div>
+      ${
+        this.readOnly
+          ? nothing
+          : html`<div class="row">
+              <sl-input
+                id="new-tag"
+                size="small"
+                placeholder="key=value"
+              ></sl-input>
+              <sl-button
+                size="small"
+                data-testid="tag-add"
+                @click=${this.addTag}
+                >Add tag</sl-button
+              >
+            </div>`
+      }
+    </section>`;
+  }
+
+  render() {
+    const share = this.shareState === 'on';
+    const tags = this.tagState === 'on';
+    if (!share && !tags) return nothing;
+    return html`<sl-card>
+      ${share ? this.renderShare() : nothing}
+      ${tags ? this.renderTags() : nothing}
+      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+    </sl-card>`;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'resource-access-panel': ResourceAccessPanel;
+  }
+}
