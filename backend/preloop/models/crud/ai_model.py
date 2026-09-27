@@ -6,7 +6,7 @@ import logging
 import uuid
 from typing import Any, Dict, Optional, Sequence
 
-from sqlalchemy import or_
+from sqlalchemy import case, or_
 from sqlalchemy.orm import Session, joinedload
 
 from preloop.models.models.ai_model import AIModel
@@ -426,10 +426,27 @@ class CRUDAIModel(CRUDBase[AIModel]):
         second query. Returns None when the id is missing or belongs to
         another account.
         """
-        return (
+        own = (
             db.query(self.model)
             .options(joinedload(self.model.credentials_secret))
             .filter(self.model.id == id, self.model.account_id == account_id)
+            .first()
+        )
+        if own is not None:
+            return own
+        # A model another account shares here (account hook H3). The row keeps
+        # its owner's credential secret; callers only use it server side.
+        from preloop.plugins.account_hooks import VISIBLE_AI_MODEL, extra_visible_ids
+
+        visible = {
+            str(extra) for extra in extra_visible_ids(db, account_id, VISIBLE_AI_MODEL)
+        }
+        if str(id) not in visible:
+            return None
+        return (
+            db.query(self.model)
+            .options(joinedload(self.model.credentials_secret))
+            .filter(self.model.id == id)
             .first()
         )
 
@@ -517,15 +534,36 @@ class CRUDAIModel(CRUDBase[AIModel]):
         tiebreak. Model resolution and therefore pricing depend on this ordering
         being stable across requests, so it must not be removed.
         """
+        from preloop.plugins.account_hooks import VISIBLE_AI_MODEL, extra_visible_ids
+
+        shared_ids = extra_visible_ids(db, account_id, VISIBLE_AI_MODEL)
+        if not shared_ids:
+            return (
+                db.query(self.model)
+                .filter(
+                    or_(
+                        self.model.account_id == account_id,
+                        self.model.account_id.is_(None),
+                    )
+                )
+                .order_by(
+                    self.model.account_id.is_(None).asc(),
+                    self.model.created_at.asc(),
+                    self.model.id.asc(),
+                )
+                .all()
+            )
+        # Models shared from another account (account hook H3) sit between
+        # the account's own models and system defaults, so an own alias
+        # shadows a shared one and a shared alias shadows a system one.
+        own = self.model.account_id == account_id
+        system = self.model.account_id.is_(None)
+        rank = case((own, 0), (system, 2), else_=1)
         return (
             db.query(self.model)
-            .filter(
-                or_(
-                    self.model.account_id == account_id, self.model.account_id.is_(None)
-                )
-            )
+            .filter(or_(own, system, self.model.id.in_(shared_ids)))
             .order_by(
-                self.model.account_id.is_(None).asc(),
+                rank.asc(),
                 self.model.created_at.asc(),
                 self.model.id.asc(),
             )

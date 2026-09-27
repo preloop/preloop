@@ -1158,7 +1158,10 @@ async def {internal_name}({params_str}):
         db = next(db_dependency)
         try:
             # Use CRUD layer to get MCP server
-            mcp_server = crud_mcp_server.get(db, id=server_id, account_id=account_id)
+            # Own server, or one shared here (account hook H3).
+            mcp_server = crud_mcp_server.get_visible(
+                db, id=server_id, account_id=account_id
+            )
 
             if not mcp_server:
                 return _wrapper_tool_error(
