@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Any
+from typing import Any, AsyncGenerator, Optional
 from urllib.parse import quote
 from uuid import UUID
 from fastapi import Depends, FastAPI, Request, HTTPException, WebSocket
@@ -127,6 +127,37 @@ class PyinstrumentMiddleware(BaseHTTPMiddleware):
         return response
 
 
+_ISSUE_COLLECTION_PATH = "/api/v1/issues"
+
+
+def api_usage_action_type(method: str, path: str) -> Optional[str]:
+    """Classify issue create, update and delete usage.
+
+    ``create_issue`` is only ``POST /api/v1/issues``. A POST whose path
+    merely contains ``/issues`` (a comment, a lifecycle call, a search)
+    is not issue creation. Item updates and deletes are ``PUT``,
+    ``PATCH`` or ``DELETE`` on a path under ``/api/v1/issues/``.
+
+    Args:
+        method: HTTP method.
+        path: Request path, without the query string.
+
+    Returns:
+        The usage action, or None when this request is not that kind of
+        issue mutation.
+    """
+    normalized = path.rstrip("/") or "/"
+    if method == "POST" and normalized == _ISSUE_COLLECTION_PATH:
+        return "create_issue"
+    if not normalized.startswith(f"{_ISSUE_COLLECTION_PATH}/"):
+        return None
+    if method in ("PUT", "PATCH"):
+        return "update_issue"
+    if method == "DELETE":
+        return "delete_issue"
+    return None
+
+
 class ApiUsageMiddleware(BaseHTTPMiddleware):
     """Middleware to track API usage."""
 
@@ -167,16 +198,9 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
         # Extract tracking information
         method = request.method
         status_code = response.status_code
-        action_type = None
-
-        # Determine the action type based on the path and method
-        if "/issues" in path:
-            if method == "POST":
-                action_type = "create_issue"
-            elif method == "PUT" or method == "PATCH":
-                action_type = "update_issue"
-            elif method == "DELETE":
-                action_type = "delete_issue"
+        # create_issue is the collection route only. Nested POSTs such as
+        # comments must not be counted as issue creation.
+        action_type = api_usage_action_type(method, path)
 
         # Get user_id from auth token if available
         user_id = None

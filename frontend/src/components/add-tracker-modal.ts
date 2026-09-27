@@ -1104,14 +1104,21 @@ export class AddTrackerModal extends LitElement {
       }
     }
 
+    const connectionDetails =
+      this.trackerType === 'bitbucket'
+        ? this.bitbucketConnectionDetails()
+        : {
+            username: this.trackerUsername,
+          };
     const trackerData: any = {
       name: this.trackerName,
       type: this.trackerType,
       url: this.trackerUrl,
       scope_rules: scopeRules,
-      config: {
-        username: this.trackerUsername,
-      },
+      // Updates persist connection_details. config is the legacy key.
+      // Send both while older servers still read config.
+      config: connectionDetails,
+      connection_details: connectionDetails,
     };
 
     // Add auth-specific fields
@@ -1127,12 +1134,8 @@ export class AddTrackerModal extends LitElement {
       trackerData.api_key = this.trackerToken;
     }
     if (this.trackerType === 'bitbucket') {
-      const details = this.bitbucketConnectionDetails();
       trackerData.url = BITBUCKET_WEB_URL;
       trackerData.auth_type = this.bitbucketAuthType;
-      trackerData.config = details;
-      // The update endpoint reads connection_details, not config.
-      trackerData.connection_details = details;
     }
 
     try {
