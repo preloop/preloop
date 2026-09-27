@@ -57,13 +57,20 @@ def _with_gateway_warnings(
     could not be enforced because the model has no known price. Surfacing
     them as ``X-Preloop-Warning`` keeps the body OpenAI-compatible while
     making the condition visible to the caller.
+
+    The id of the usage row written for the request is returned as
+    ``X-Preloop-Usage-Id`` so a caller (``preloop models smoke``) can name
+    the exact row the Cost page counts.
     """
+    headers: Dict[str, str] = {}
     warning = service.response_warning
     if warning:
-        return JSONResponse(
-            content=result,
-            headers={"X-Preloop-Warning": _sanitize_header_value(warning)},
-        )
+        headers["X-Preloop-Warning"] = _sanitize_header_value(warning)
+    usage_id = getattr(service, "last_usage_id", None)
+    if isinstance(usage_id, str) and usage_id:
+        headers["X-Preloop-Usage-Id"] = _sanitize_header_value(usage_id)
+    if headers:
+        return JSONResponse(content=result, headers=headers)
     return result
 
 
