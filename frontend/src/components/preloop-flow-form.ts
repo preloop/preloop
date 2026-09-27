@@ -782,7 +782,9 @@ export class PreloopFlowForm extends LitElement {
       this.triggerType = 'schedule';
     } else if (source) {
       this.triggerType = 'tracker';
-    } else if (this.flow?.webhook_config) {
+    } else if (this.flow?.webhook_config?.webhook_secret) {
+      // A tracker flow can carry webhook_config for its other settings
+      // (supersede_on_update); only a secret makes it a webhook flow.
       this.triggerType = 'webhook';
     }
 

@@ -505,7 +505,11 @@ async def stop_tree_for_stopped_parent(
 
 
 def close_children_park(
-    db: Any, *, parent: Any, now: Optional[datetime] = None
+    db: Any,
+    *,
+    parent: Any,
+    now: Optional[datetime] = None,
+    reason: str = "Manually stopped by user",
 ) -> bool:
     """Take a parent parked on children out of the park, terminally.
 
@@ -520,7 +524,7 @@ def close_children_park(
     closed = crud_flow_execution.close_children_park_for_stop(
         db,
         execution_id=parent.id,
-        reason="Manually stopped by user",
+        reason=reason,
         now=now or datetime.now(UTC),
     )
     if closed:

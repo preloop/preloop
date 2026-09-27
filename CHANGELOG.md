@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Merging or closing a pull request (GitHub, GitLab or Bitbucket) stops
+  every execution still working on it: queued, running, parked, and runs a
+  comment on the request resumed. The stop goes through the same code as
+  the console's Stop button, runs whether or not a flow subscribes to the
+  merge, and is a no-op when nothing is bound. Flows that trigger on
+  `pull_request_merged`/`pull_request_closed` (or the merge request
+  equivalents) are left alone and still start. The execution records why
+  in `stop_reason` and `stop_source` (`pr_merged`, `pr_closed`), the
+  console shows the reason on the execution page, and each stop is logged
+  as a `flow_execution_stopped_for_pull_request` event (#1032).
+- `webhook_config.supersede_on_update` (default off): when a pull or merge
+  request gets a new head, the flow's run on the older head is stopped
+  (`stop_source` `pr_superseded`) before the run for the new head starts.
+  The Pull Request Reviewer preset sets it. Existing flows cloned from the
+  preset keep their current behaviour until the flag is set on them (#1032).
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
   a login row selector, a revoke fan-out for "sign out everywhere", a
   visibility provider for models, MCP servers, managed agents, flows and
@@ -158,6 +173,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `webhook_config.webhook_secret` is optional in the flow API, so a flow
+  triggered by tracker events can carry `webhook_config` for
+  `supersede_on_update` alone. An update that sends `webhook_config`
+  without the secret keeps the stored one, and creating a webhook flow keeps
+  the other `webhook_config` keys next to the generated secret. The console
+  treats a flow as a webhook flow only when it has a secret (#1032).
+- The flow execution stop command lives in
+  `preloop.services.flow_execution_stop`, shared by the endpoint and the
+  pull request stops. Stopping an execution that already ended now answers
+  `{"status": "not_running", "execution_status": ...}` and leaves the row
+  as it was; it used to overwrite a finished run with STOPPED. A second stop
+  of a stopped execution still answers `{"status": "stopped"}` (#1032).
 - API keys whose scopes are all `mcp:*` (flow execution, runtime session and
   managed agent credentials) are limited to MCP and the runtime routes that
   check their own credentials. Other REST routes answer 403 with
