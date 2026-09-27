@@ -1,4 +1,5 @@
 import { expect } from '@open-wc/testing';
+import sinon from 'sinon';
 
 import './flow-view';
 import type { FlowView } from './flow-view';
@@ -358,5 +359,48 @@ describe('FlowView detail page language', () => {
     } finally {
       element.remove();
     }
+  });
+});
+
+describe('FlowView production logging', () => {
+  function createElement(): FlowView {
+    return document.createElement('flow-view') as FlowView;
+  }
+
+  afterEach(() => {
+    document.body.querySelectorAll('sl-alert').forEach((node) => node.remove());
+    localStorage.clear();
+  });
+
+  it('confirms enablement in a toast and does not use console.log', async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    const fetchStub = sinon.stub(window, 'fetch').resolves(
+      new Response(JSON.stringify({ id: 'flow-1', is_enabled: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    const log = sinon.spy(console, 'log');
+    const element = createElement() as any;
+    element.flowId = 'flow-1';
+    element.flow = { name: 'Test', is_enabled: false };
+
+    try {
+      await element.toggleFlowEnabled();
+      expect(log.called, 'no console.log').to.equal(false);
+      expect(element.flow.is_enabled).to.equal(true);
+      const alert = document.body.querySelector('sl-alert');
+      expect(alert?.textContent).to.contain('Flow enabled successfully');
+    } finally {
+      log.restore();
+      fetchStub.restore();
+    }
+  });
+
+  it('keeps console.log and console.debug out of the flow view', async () => {
+    const response = await fetch(new URL('./flow-view.ts', import.meta.url));
+    const source = await response.text();
+    expect(source).to.not.match(/console\.log\s*\(/);
+    expect(source).to.not.match(/console\.debug\s*\(/);
   });
 });

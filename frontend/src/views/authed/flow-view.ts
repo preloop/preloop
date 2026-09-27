@@ -470,9 +470,6 @@ export class FlowView extends LitElement {
     this.unsubscribe = unifiedWebSocketManager.subscribe(
       'flow_executions',
       (message) => {
-        // Handle incoming WebSocket messages
-        console.log('Received flow update:', message);
-
         // If this is an execution_started event for our flow, add it to recent executions
         if (
           message.type === 'execution_started' &&
@@ -515,11 +512,6 @@ export class FlowView extends LitElement {
         }
       }
     );
-
-    // Track connection state
-    unifiedWebSocketManager.onStateChange((state) => {
-      console.log(`Flow view WebSocket state: ${state}`);
-    });
   }
 
   /**
@@ -1291,11 +1283,13 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         is_enabled: newEnabledState,
       };
 
-      // Show feedback
-      const message = newEnabledState
-        ? 'Flow enabled successfully'
-        : 'Flow disabled successfully';
-      console.log(message);
+      // The switch already moved. Say so where the operator can see it.
+      showToast(
+        newEnabledState
+          ? 'Flow enabled successfully'
+          : 'Flow disabled successfully',
+        'success'
+      );
     } catch (error) {
       console.error('Failed to toggle flow enabled state:', error);
       alert('Failed to update flow. Please try again.');
