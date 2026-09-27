@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -242,5 +243,71 @@ func TestRunnerDisableDeleteStopsTheServiceBeforeDeleting(t *testing.T) {
 	}
 	if strings.Join(order, ",") != "service stop,remove unit,DELETE server" {
 		t.Fatalf("order = %v", order)
+	}
+}
+
+func TestRunnerDisableDeleteWithoutAServiceIgnoresTheRemovalError(t *testing.T) {
+	testenv.SetTempHome(t)
+	seedRunnerState(t)
+	stubRunnerService(t, false)
+	previousRemove := runnerServiceRemove
+	// What schtasks /Delete gives back for a task that does not exist: a
+	// plain exit error, not os.ErrNotExist.
+	runnerServiceRemove = func() error { return errors.New("exit status 1") }
+	t.Cleanup(func() { runnerServiceRemove = previousRemove })
+	var deletes int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletes++
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": revokeRunnerID, "deleted": true})
+	}))
+	defer server.Close()
+	previousURL, previousToken := FlagURL, FlagToken
+	FlagURL, FlagToken = server.URL, "tok"
+	t.Cleanup(func() { FlagURL, FlagToken = previousURL, previousToken })
+
+	cmd := runnerDisableCmd
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("delete", "false")
+	})
+	if err := cmd.Flags().Set("delete", "true"); err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+	if err := runRunnerDisable(cmd, nil); err != nil {
+		t.Fatalf("disable --delete without a service: %v", err)
+	}
+	if deletes != 1 {
+		t.Fatalf("deletes = %d", deletes)
+	}
+}
+
+func TestRunnerDisableDeleteReportsARemovalErrorForAnInstalledService(t *testing.T) {
+	testenv.SetTempHome(t)
+	seedRunnerState(t)
+	stubRunnerService(t, true)
+	previousRemove := runnerServiceRemove
+	runnerServiceRemove = func() error { return errors.New("access denied") }
+	t.Cleanup(func() { runnerServiceRemove = previousRemove })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": revokeRunnerID, "deleted": true})
+	}))
+	defer server.Close()
+	previousURL, previousToken := FlagURL, FlagToken
+	FlagURL, FlagToken = server.URL, "tok"
+	t.Cleanup(func() { FlagURL, FlagToken = previousURL, previousToken })
+
+	cmd := runnerDisableCmd
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("delete", "false")
+	})
+	if err := cmd.Flags().Set("delete", "true"); err != nil {
+		t.Fatal(err)
+	}
+	cmd.SetOut(&bytes.Buffer{})
+	err := runRunnerDisable(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("err = %v", err)
 	}
 }

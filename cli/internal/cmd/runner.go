@@ -1295,6 +1295,10 @@ func runRunnerDisable(cmd *cobra.Command, args []string) error {
 	if force && !deleteRunner {
 		return errors.New("--force only applies together with --delete")
 	}
+	// Asked before the removal, which is what makes it false on macOS and
+	// Linux. On Windows a missing task is a generic schtasks exit error, not
+	// ErrNotExist, so the removal error alone cannot tell the two apart.
+	installed := runnerServiceInstalled()
 	// Stop first: a service still running would reconnect, or take a new
 	// lease, between the delete and its removal.
 	_ = runnerServiceAction("stop")
@@ -1302,7 +1306,7 @@ func runRunnerDisable(cmd *cobra.Command, args []string) error {
 	if !deleteRunner {
 		return removeErr
 	}
-	if removeErr != nil && errors.Is(removeErr, os.ErrNotExist) {
+	if removeErr != nil && (!installed || errors.Is(removeErr, os.ErrNotExist)) {
 		// No service was installed (a runner started with fg). Deleting the
 		// server row is still what was asked for.
 		removeErr = nil
