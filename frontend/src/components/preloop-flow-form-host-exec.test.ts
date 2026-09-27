@@ -145,9 +145,10 @@ describe('PreloopFlowForm host execution submit', () => {
     void (element as any).handleFormSubmit(new Event('submit'));
     const event = await submitted;
     expect(event.detail.flow.ai_model_id ?? '').to.equal('');
-    expect(element.shadowRoot?.textContent).to.include(
-      'These flow tool settings do not apply.'
-    );
+    expect(
+      element.shadowRoot?.querySelector('[data-host-exec-mcp-note]')
+        ?.textContent
+    ).to.include('preloop-flow');
     expect(
       element.shadowRoot?.querySelector('sl-select[label="AI model"]')
     ).to.equal(null);
@@ -188,6 +189,38 @@ describe('PreloopFlowForm host execution submit', () => {
     );
   });
 
+  it('explains the host checkout opt-in and refuses pull requests', async () => {
+    const element = await mount({
+      name: 'Review locally',
+      prompt_template: 'review',
+      agent_type: 'copilot',
+      runner_pool: 'office-mac',
+      agent_config: { host_exec_profile: 'copilot-review' },
+      git_clone_config: { enabled: true },
+    });
+    const notice = element.shadowRoot?.querySelector(
+      '[data-host-exec-clone-notice]'
+    );
+    expect(notice?.getAttribute('data-host-exec-clone-notice')).to.equal(
+      'checkout'
+    );
+    expect(notice?.textContent).to.include('allow_checkout');
+
+    element.flow = {
+      ...element.flow,
+      agent_type: 'cursor',
+      git_clone_config: { enabled: true, create_pull_request: true },
+    } as any;
+    await element.updateComplete;
+    const refused = element.shadowRoot?.querySelector(
+      '[data-host-exec-clone-notice]'
+    );
+    expect(refused?.getAttribute('data-host-exec-clone-notice')).to.equal(
+      'refused'
+    );
+    expect(refused?.textContent).to.include('Cursor runner will refuse');
+  });
+
   it('saves a Copilot host profile with copilot_model only', async () => {
     const element = await mount({
       name: 'Review locally',
@@ -216,9 +249,8 @@ describe('PreloopFlowForm host execution submit', () => {
     ).to.equal(null);
     const text = element.shadowRoot?.textContent || '';
     expect(text).to.include('not metered by the Preloop gateway');
-    expect(text).to.include(
-      "Copilot profiles use the runner user's local Copilot MCP configuration."
-    );
+    expect(text).to.include('preloop-flow');
+    expect(text).to.include('scoped to this execution');
 
     const submitted = oneEvent(element, 'flow-submit');
     void (element as any).handleFormSubmit(new Event('submit'));

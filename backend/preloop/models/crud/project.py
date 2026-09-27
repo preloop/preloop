@@ -155,6 +155,89 @@ class CRUDProject(CRUDBase[Project]):
             query = query.filter(Tracker.account_id == account_id)
         return query.offset(skip).limit(limit).all()
 
+    def get_for_tracker_by_path(
+        self,
+        db: Session,
+        *,
+        tracker_id: str,
+        account_id: str,
+        path: str,
+    ) -> Optional[Project]:
+        """Get the active repository project ``path`` synced from a tracker.
+
+        Code hosts store the repository path (``owner/name``,
+        ``group/subgroup/name``) as the project slug. The match is
+        case-insensitive because GitHub and GitLab treat paths that way.
+
+        Args:
+            db: Database session.
+            tracker_id: Tracker the project must belong to.
+            account_id: Account that must own the tracker.
+            path: Repository path.
+
+        Returns:
+            The project, or None when the tracker has not synced it.
+        """
+        lowered = path.strip().lower()
+        return (
+            db.query(Project)
+            .join(Organization)
+            .join(Tracker)
+            .filter(Tracker.id == tracker_id)
+            .filter(Tracker.account_id == account_id)
+            .filter(Project.is_active.is_(True))
+            .filter(
+                or_(
+                    func.lower(Project.slug) == lowered,
+                    func.lower(Project.identifier) == lowered,
+                )
+            )
+            .order_by(Project.updated_at.desc())
+            .first()
+        )
+
+    def get_for_tracker_by_key(
+        self,
+        db: Session,
+        *,
+        tracker_id: str,
+        key: Optional[str],
+        external_id: Optional[str],
+    ) -> Optional[Project]:
+        """Get the active project an issue-tracker webhook names.
+
+        Jira sync stores the project key as the slug (older rows used it as
+        the identifier) and the numeric project id as the identifier. Only
+        those are compared, never display names.
+
+        Args:
+            db: Database session.
+            tracker_id: Tracker the webhook arrived on.
+            key: Project key (``PROJ``), matched case-insensitively.
+            external_id: Numeric project id from the tracker.
+
+        Returns:
+            The project, or None when neither value matches.
+        """
+        conditions = []
+        if key:
+            lowered = key.strip().lower()
+            conditions.append(func.lower(Project.slug) == lowered)
+            conditions.append(func.lower(Project.identifier) == lowered)
+        if external_id:
+            conditions.append(Project.identifier == external_id.strip())
+        if not conditions:
+            return None
+        return (
+            db.query(Project)
+            .join(Organization)
+            .filter(Organization.tracker_id == tracker_id)
+            .filter(Project.is_active.is_(True))
+            .filter(or_(*conditions))
+            .order_by(Project.updated_at.desc())
+            .first()
+        )
+
     def get_for_organization(
         self,
         db: Session,

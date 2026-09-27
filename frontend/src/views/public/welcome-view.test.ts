@@ -60,6 +60,27 @@ describe('WelcomeView', () => {
     expect(el.shadowRoot?.textContent).to.contain('Welcome to Test Brand');
   });
 
+  it('says account, not organization, on both onboarding steps', async () => {
+    const el = await mount();
+    (el as any)._username = 'bob';
+    (el as any)._email = 'bob@example.com';
+    (el as any)._claimToken = 'claim-token-abc';
+    (el as any)._error = '';
+    await el.updateComplete;
+    const labels = () =>
+      [...el.shadowRoot!.querySelectorAll('sl-input')].map((i) =>
+        i.getAttribute('label')
+      );
+    expect(labels()).to.include('Account name');
+    expect(el.shadowRoot!.textContent).not.to.match(/organi[sz]ation/i);
+    expect(labels().join(' ')).not.to.match(/organi[sz]ation/i);
+
+    (el as any)._needsPassword = false;
+    await el.updateComplete;
+    expect(labels()).to.include('Account name');
+    expect(el.shadowRoot!.textContent).not.to.match(/organi[sz]ation/i);
+  });
+
   it('rejects a password shorter than 8 characters without calling the API', async () => {
     const el = await mount();
     (el as any)._username = 'bob';
