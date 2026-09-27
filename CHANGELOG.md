@@ -124,6 +124,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The flow page no longer writes websocket payloads or the enable and
+  disable result to the browser console. Enabling or disabling a flow
+  shows a toast. Other `console.log` and `console.debug` calls in the
+  console go through a helper that a production build drops. The
+  frontend test run fails if a new call is added outside that helper.
+
+- Stopping a run and resolving a duplicate tell the operator when the
+  request fails. The six TODO comments in the console that named no
+  issue are gone. The frontend test run fails if a TODO or FIXME has
+  no issue number.
+
+- The API client does not log token-refresh progress, request URLs, or
+  tracker credentials. The same console check rejects `console.log` and
+  `console.debug` in that file.
+
 - A flow execution dispatched in process (no execution worker) whose run
   raises before the runner records an outcome is marked `FAILED` with the
   error and a failure category, instead of staying `PENDING` with the

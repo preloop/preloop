@@ -11,6 +11,7 @@
 
 import { MessageRouter } from './message-router';
 import { getVisitorId } from './visitor-id';
+import { debugLog } from '../utils/debug';
 
 export enum ConnectionState {
   DISCONNECTED = 'disconnected',
@@ -40,7 +41,7 @@ export class UnifiedWebSocketManager {
       const token = localStorage.getItem('accessToken');
       if (token) {
         this.send({ type: 'authenticate', token });
-        console.log('Sent authentication message (auth-change)');
+        debugLog('Sent authentication message (auth-change)');
       }
     }
   };
@@ -109,7 +110,7 @@ export class UnifiedWebSocketManager {
       this.state === ConnectionState.CONNECTING ||
       this.state === ConnectionState.CONNECTED
     ) {
-      console.log('WebSocket already connecting or connected');
+      debugLog('WebSocket already connecting or connected');
       return;
     }
 
@@ -197,7 +198,7 @@ export class UnifiedWebSocketManager {
    * Handle WebSocket open event.
    */
   private handleOpen(): void {
-    console.log('Unified WebSocket connected');
+    debugLog('Unified WebSocket connected');
 
     // Reset retry count on successful connection
     this.retryCount = 0;
@@ -208,7 +209,7 @@ export class UnifiedWebSocketManager {
     const token = localStorage.getItem('accessToken');
     if (token) {
       this.send({ type: 'authenticate', token });
-      console.log('Sent authentication message');
+      debugLog('Sent authentication message');
     }
 
     this.syncServerSubscriptions();
@@ -227,7 +228,7 @@ export class UnifiedWebSocketManager {
       // Handle handshake
       if (message.type === 'handshake') {
         this.sessionId = message.session_id;
-        console.log(
+        debugLog(
           `Session established: ${this.sessionId}, authenticated: ${message.authenticated}`
         );
         return;
@@ -235,7 +236,7 @@ export class UnifiedWebSocketManager {
 
       // Handle authentication response
       if (message.type === 'authenticated') {
-        console.log(`Authenticated as: ${message.user?.username}`);
+        debugLog(`Authenticated as: ${message.user?.username}`);
         this.syncServerSubscriptions();
         // Route to subscribers so they can react (e.g., refresh data)
         this.router.route(message);
@@ -251,7 +252,7 @@ export class UnifiedWebSocketManager {
 
       // Handle subscription acknowledgements internally to prevent triggering redundant view updates
       if (message.type === 'subscription_ack') {
-        console.log(
+        debugLog(
           `[UnifiedWebSocketManager] Subscribed to topic: ${message.topic}`
         );
         return;
@@ -274,7 +275,7 @@ export class UnifiedWebSocketManager {
    * Handle WebSocket close event.
    */
   private handleClose(event: CloseEvent): void {
-    console.log(`WebSocket closed: code=${event.code}, reason=${event.reason}`);
+    debugLog(`WebSocket closed: code=${event.code}, reason=${event.reason}`);
 
     this.stopHeartbeat();
     this.ws = null;
@@ -307,7 +308,7 @@ export class UnifiedWebSocketManager {
     }
 
     const delay = this.calculateRetryDelay(this.retryCount);
-    console.log(`Reconnecting in ${delay}ms (attempt ${this.retryCount + 1})`);
+    debugLog(`Reconnecting in ${delay}ms (attempt ${this.retryCount + 1})`);
 
     this.retryTimeout = window.setTimeout(() => {
       this.retryCount++;
