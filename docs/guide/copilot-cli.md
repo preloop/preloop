@@ -38,7 +38,7 @@ preloop --url https://preloop.example.com --token "$PRELOOP_TOKEN" \
 ```
 
 Arguments after Preloop's own flags are passed through to `copilot`. Global
-Preloop flags (`--token`, `--url`, `--config`, `-v`) belong **before** the
+Preloop flags (`--token`, `--url`, `-v`) belong **before** the
 `copilot` subcommand. Preloop reads them there and does not forward them to
 `copilot`, so a `--token` value never appears in the Copilot process
 arguments. Anything after `copilot` (other than `--model` and `--provider`)
