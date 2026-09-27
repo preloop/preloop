@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Pull Request Reviewer reads `.preloop/review-policy.md` in full and
+  treats it as blocking rules. The same text can live on the flow as
+  `review_instructions` when the repository cannot commit that file
+  (`{{flow.review_instructions}}`). A declared version linter runs when
+  matching files change. Perl defaults to `perlver --blame`
+  (`Perl::MinimumVersion`) and the review says the linter was unavailable
+  when the sandbox has no perl.
+
 - The execution page Report tab reads one evidence-pack member at a time
   (`GET /api/v1/flows/executions/{id}/evidence/members`) and shows the report,
   findings and register. A verdict or findings summary on the run appears in
