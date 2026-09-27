@@ -17,10 +17,10 @@ For maintainers: the operational runbooks for CRA Article 14 reporting (early wa
 
 ## Support Period
 
-> **PROPOSED WORDING, DATES NOT YET CONFIRMED.** Everything in this section is
-> a drafted proposal awaiting sign-off. The end date below is a placeholder
-> with a defensible rationale, not a commitment, until it is confirmed. Once it
-> is, delete this notice. Nothing else in this file is draft.
+> Signed off by the Preloop release manager on 2026-09-27. The end date below
+> is a commitment under the extension rules in this section, not a proposal.
+> Changes to it follow the announcement rules below and are recorded in
+> `CHANGELOG.md`.
 
 The previous wording said security fixes were "generally applied to the latest
 supported release line". CRA Article 13(8) and Annex II require a stated
