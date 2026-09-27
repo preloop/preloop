@@ -11141,7 +11141,16 @@ paths:
       tags:
       - Flows
       summary: Send Execution Command
-      description: Send a command to a running flow execution.
+      description: 'Send a command to a running flow execution.
+
+
+        ``stop`` goes through ``preloop.services.flow_execution_stop``, the same
+
+        code path the automatic pull request stops use (#1032). It is idempotent:
+
+        stopping an execution that already ended changes nothing and answers with
+
+        the status it ended in.'
       operationId: send_execution_command_api_v1_flows_executions__execution_id__command_post
       security:
       - bearerAuth: []
@@ -32730,9 +32739,20 @@ components:
     WebhookConfig:
       properties:
         webhook_secret:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Webhook Secret
-          description: Secure token for authenticating webhook requests (auto-generated)
+          description: Secure token for authenticating webhook requests (auto-generated
+            for webhook triggers; unset on flows triggered by tracker events)
+        supersede_on_update:
+          type: boolean
+          title: Supersede On Update
+          description: When a pull or merge request gets a new head, stop this flow's
+            executions still working on an older head of the same request before starting
+            the new one. Off by default; the Pull Request Reviewer preset turns it
+            on.
+          default: false
         dedupe_path:
           anyOf:
           - type: string
@@ -32742,8 +32762,6 @@ components:
             key (e.g. 'data.issue.id'). When unset, defaults to 'attachments.0.title_link'
             then 'data.issue.id'.
       type: object
-      required:
-      - webhook_secret
       title: WebhookConfig
       description: Configuration for webhook triggers.
     WebhookDeliveryRead:

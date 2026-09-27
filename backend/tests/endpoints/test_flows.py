@@ -1755,11 +1755,16 @@ async def test_send_execution_command_stop_success(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
+    # The stop itself runs in the shared service (#1032).
+    mocker.patch(
+        "preloop.services.flow_execution_stop.crud_flow_execution",
+        mock_crud_flow_execution,
+    )
     mock_crud_flow_execution.get.return_value = mock_execution
     mock_crud_flow_execution.update.return_value = mock_execution
 
     mock_crud_flow = mocker.patch(
-        "preloop.api.endpoints.flows.crud_flow",
+        "preloop.services.flow_execution_stop.crud_flow",
         new_callable=MagicMock,
     )
     mock_crud_flow.get.return_value = mock_flow
@@ -1806,14 +1811,16 @@ async def test_send_execution_command_stop_success(
     mock_get_nats_client.assert_called_once()
     mock_agent.stop.assert_called_once_with("test-session-123")
 
-    # Update is called once (status). Logs are persisted via append_log.
-    assert mock_crud_flow_execution.update.call_count == 1
+    # One conditional status write. Logs are persisted via append_log.
+    assert mock_crud_flow_execution.mark_stopped.call_count == 1
     assert mock_crud_flow_execution.append_log.call_count == 2  # 2 log lines
 
-    # Verify the final update call has status='STOPPED'
-    final_call = mock_crud_flow_execution.update.call_args
-    assert final_call.kwargs["obj_in"].status == "STOPPED"
-    assert final_call.kwargs["obj_in"].error_message == "Manually stopped by user"
+    # An operator's stop records no automatic reason.
+    final_call = mock_crud_flow_execution.mark_stopped.call_args
+    assert final_call.kwargs["execution_id"] == execution_id
+    assert final_call.kwargs["error_message"] == "Manually stopped by user"
+    assert final_call.kwargs["stop_reason"] is None
+    assert final_call.kwargs["stop_source"] is None
 
     # Verify send_command was called with nats_client
     mock_send_command.assert_called_once()
@@ -1843,11 +1850,16 @@ async def test_send_execution_command_stop_runner_backed_halts_runner(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
+    # The stop itself runs in the shared service (#1032).
+    mocker.patch(
+        "preloop.services.flow_execution_stop.crud_flow_execution",
+        mock_crud_flow_execution,
+    )
     mock_crud_flow_execution.get.return_value = mock_execution
     mock_crud_flow_execution.update.return_value = mock_execution
 
     mock_crud_flow_runner = mocker.patch(
-        "preloop.api.endpoints.flows.crud_flow_runner",
+        "preloop.services.flow_execution_stop.crud_flow_runner",
         new_callable=MagicMock,
     )
     mock_crud_flow_runner.request_halt.return_value = True
@@ -1887,8 +1899,7 @@ async def test_send_execution_command_stop_runner_backed_halts_runner(
     assert halt_call.kwargs["execution_id"] == execution_id
     mock_codex_agent.assert_not_called()
     mock_container_executor.assert_not_called()
-    final_call = mock_crud_flow_execution.update.call_args
-    assert final_call.kwargs["obj_in"].status == "STOPPED"
+    mock_crud_flow_execution.mark_stopped.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1910,11 +1921,16 @@ async def test_send_execution_command_stop_queued_runner_touches_nothing(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
+    # The stop itself runs in the shared service (#1032).
+    mocker.patch(
+        "preloop.services.flow_execution_stop.crud_flow_execution",
+        mock_crud_flow_execution,
+    )
     mock_crud_flow_execution.get.return_value = mock_execution
     mock_crud_flow_execution.update.return_value = mock_execution
 
     mock_crud_flow_runner = mocker.patch(
-        "preloop.api.endpoints.flows.crud_flow_runner",
+        "preloop.services.flow_execution_stop.crud_flow_runner",
         new_callable=MagicMock,
     )
 
@@ -1949,8 +1965,7 @@ async def test_send_execution_command_stop_queued_runner_touches_nothing(
     mock_crud_flow_runner.get.assert_not_called()
     mock_codex_agent.assert_not_called()
     mock_container_executor.assert_not_called()
-    final_call = mock_crud_flow_execution.update.call_args
-    assert final_call.kwargs["obj_in"].status == "STOPPED"
+    mock_crud_flow_execution.mark_stopped.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1974,11 +1989,16 @@ async def test_send_execution_command_stop_pending_execution(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
+    # The stop itself runs in the shared service (#1032).
+    mocker.patch(
+        "preloop.services.flow_execution_stop.crud_flow_execution",
+        mock_crud_flow_execution,
+    )
     mock_crud_flow_execution.get.return_value = mock_execution
     mock_crud_flow_execution.update.return_value = mock_execution
 
     mock_crud_flow_runner = mocker.patch(
-        "preloop.api.endpoints.flows.crud_flow_runner",
+        "preloop.services.flow_execution_stop.crud_flow_runner",
         new_callable=MagicMock,
     )
 
@@ -2014,9 +2034,8 @@ async def test_send_execution_command_stop_pending_execution(
     mock_codex_agent.assert_not_called()
     mock_container_executor.assert_not_called()
     assert mock_crud_flow_execution.append_log.call_count == 0
-    final_call = mock_crud_flow_execution.update.call_args
-    assert final_call.kwargs["obj_in"].status == "STOPPED"
-    assert final_call.kwargs["obj_in"].error_message == "Manually stopped by user"
+    final_call = mock_crud_flow_execution.mark_stopped.call_args
+    assert final_call.kwargs["error_message"] == "Manually stopped by user"
 
 
 def _mock_execution_log_row(execution_id: uuid.UUID, message: str) -> MagicMock:
@@ -3041,6 +3060,119 @@ async def test_update_flow_webhook_keeps_existing_secret(
     )
 
     assert flow_update.webhook_config is None
+
+
+def _webhook_update_flow(mocker, *, source, webhook_config):
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    mock_flow = MagicMock()
+    mock_flow.name = "Reviewer"
+    mock_flow.trigger_event_source = source
+    mock_flow.webhook_config = webhook_config
+    mock_flow.schedule_config = None
+    mock_flow.source_preset_id = None
+    mock_flow.is_enabled = True
+    mock_crud_flow.get.return_value = mock_flow
+    mock_crud_flow.update.return_value = schemas.FlowResponse(
+        id=uuid.uuid4(),
+        name="Reviewer",
+        trigger_event_source=source,
+        trigger_event_types=["webhook"],
+        prompt_template="p",
+        created_at=datetime.now(ZoneInfo("UTC")),
+        updated_at=datetime.now(ZoneInfo("UTC")),
+    )
+    return mock_crud_flow
+
+
+@pytest.mark.asyncio
+async def test_update_flow_setting_supersede_keeps_the_webhook_secret(
+    mock_account: Account, mocker: MockerFixture
+):
+    """Turning on supersede_on_update does not need, or lose, the secret."""
+    _webhook_update_flow(
+        mocker, source="webhook", webhook_config={"webhook_secret": "existing-secret"}
+    )
+    flow_update = schemas.FlowUpdate(
+        webhook_config=schemas.WebhookConfig(supersede_on_update=True)
+    )
+
+    await maybe_await(
+        flows.update_flow(
+            db=MagicMock(),
+            flow_id=uuid.uuid4(),
+            flow_in=flow_update,
+            current_user=mock_account,
+        )
+    )
+
+    assert flow_update.webhook_config.webhook_secret == "existing-secret"
+    assert flow_update.webhook_config.supersede_on_update is True
+
+
+@pytest.mark.asyncio
+async def test_update_flow_switch_to_webhook_keeps_supersede_flag(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A tracker flow with only the flag gets a secret added, flag intact."""
+    _webhook_update_flow(
+        mocker, source=None, webhook_config={"supersede_on_update": True}
+    )
+    flow_update = schemas.FlowUpdate(
+        trigger_event_source="webhook", trigger_event_types=["webhook"]
+    )
+
+    await maybe_await(
+        flows.update_flow(
+            db=MagicMock(),
+            flow_id=uuid.uuid4(),
+            flow_in=flow_update,
+            current_user=mock_account,
+        )
+    )
+
+    assert len(flow_update.webhook_config.webhook_secret) >= 32
+    assert flow_update.webhook_config.supersede_on_update is True
+
+
+@pytest.mark.asyncio
+async def test_create_webhook_flow_keeps_supersede_flag(
+    mock_account: Account, mocker: MockerFixture
+):
+    """The generated secret is added to, not substituted for, the config."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    mock_crud_flow.create.side_effect = lambda db, flow_in, account_id: (
+        schemas.FlowResponse(
+            **flow_in.model_dump(),
+            id=uuid.uuid4(),
+            created_at=datetime.now(ZoneInfo("UTC")),
+            updated_at=datetime.now(ZoneInfo("UTC")),
+        )
+    )
+    flow_in = schemas.FlowCreate(
+        name="Webhook reviewer",
+        prompt_template="p",
+        agent_type="codex",
+        agent_config={},
+        trigger_event_source="webhook",
+        webhook_config=schemas.WebhookConfig(
+            supersede_on_update=True, dedupe_path="data.id"
+        ),
+    )
+
+    await maybe_await(
+        flows.create_flow(db=MagicMock(), flow_in=flow_in, current_user=mock_account)
+    )
+
+    assert len(flow_in.webhook_config.webhook_secret) >= 32
+    assert flow_in.webhook_config.supersede_on_update is True
+    assert flow_in.webhook_config.dedupe_path == "data.id"
+
+
+def test_webhook_config_defaults_to_no_supersede():
+    """Off unless a flow opts in (#1032); a secret is no longer required."""
+    config = schemas.WebhookConfig()
+    assert config.supersede_on_update is False
+    assert config.webhook_secret is None
 
 
 @pytest.mark.asyncio
