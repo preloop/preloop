@@ -852,7 +852,7 @@ class TestAdminAlertSupervision:
 
         assert task is not None
         assert task in wsm._admin_alert_tasks
-        await task
+        await asyncio.gather(task)
         await asyncio.sleep(0)
 
         mock_notify.assert_called_once_with(subject="Subject", message="Body")
