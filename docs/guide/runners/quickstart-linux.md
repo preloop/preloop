@@ -6,6 +6,11 @@ executions for your account, and runs the agent in a local Docker
 container — same model as GitHub/GitLab self-hosted runners. No inbound
 ports, no Kubernetes.
 
+Running on a developer laptop instead? The
+[Windows quickstart](quickstart-windows.md) and
+[macOS quickstart](quickstart-macos.md) cover those platforms, where host
+execution profiles are the primary mode.
+
 ## Requirements
 
 - Linux x86_64 or arm64 (bare metal, VM, or Proxmox guest).
@@ -311,8 +316,11 @@ The runner advertises profile names, capabilities and supported requested model
 identifiers (at most 64 profiles and 64 models per profile). Executables, argv,
 local aliases and credentials stay on the host. Restart `preloop runner fg`
 after editing the file. On the flow, choose `cursor`, select a private runner
-pool and set `agent_config.host_exec_profile`. Hosted compute and Windows host
-profiles are unavailable.
+pool and set `agent_config.host_exec_profile`. Hosted compute never runs host
+profiles. Windows and macOS runners support them; the
+[Windows quickstart](quickstart-windows.md) and
+[macOS quickstart](quickstart-macos.md) list the per-OS executable detection
+paths, service install and Windows command-line limits.
 
 An optional local `model_map` maps requested identifiers to Cursor aliases,
 for example `"model_map": {"team-fast": "sonnet-4.6"}`. Every nonempty requested
@@ -335,12 +343,22 @@ so the runner can validate structured completion. `force_writes` defaults to fal
 a profile whose operator intends to permit writes.
 
 Each job creates a fresh directory under
-`{workspace_root}/.preloop-host-exec/{execution_id}`. Existing directories and
-symlinks are rejected. This controls working-directory placement, not OS
-filesystem access: Cursor runs as the runner user with that user's local login,
-environment and filesystem permissions. Use a dedicated OS user or VM when
-stronger host isolation is needed. Halt, cancellation and deadline expiry clean
-up the process group. The tighter profile/flow timeout applies.
+`{workspace_root}/.preloop-host-exec/{execution_id}`. `workspace_root` is
+optional; when omitted, workspaces live under `~/.preloop/host-workspaces`
+(mode 0700). Existing directories and symlinks are rejected. This controls
+working-directory placement, not OS filesystem access: Cursor runs as the
+runner user with that user's local login and filesystem permissions. Use a
+dedicated OS user or VM when stronger host isolation is needed. Halt,
+cancellation and deadline expiry clean up the process group. The tighter
+profile/flow timeout applies.
+
+The job's environment is built from an allowlist, not inherited wholesale: a
+per-OS system baseline (`HOME`, `PATH`, locale, proxy and TLS variables), the
+harness's own variables (`CURSOR_*` for Cursor; `COPILOT_*`, `GH_*` and
+`GITHUB_TOKEN` for Copilot, minus the BYOK overrides), and any names the
+profile lists in `"pass_env"` (for example
+`"pass_env": ["SSH_AUTH_SOCK"]`). The runner's own `PRELOOP_TOKEN` and
+unrelated secrets in the operator's session never reach the job.
 
 Cursor's local configuration, MCP servers and hooks apply. Flow
 `allowed_mcp_tools` and server settings are not injected or enforced as a

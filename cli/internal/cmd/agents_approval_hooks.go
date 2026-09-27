@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/preloop/preloop/cli/internal/api"
@@ -581,17 +582,40 @@ func copilotPreloopHooksPath() (string, error) {
 }
 
 func copilotUsageHookCommand() string {
-	return fmt.Sprintf("%s usage hook --from copilot", preloopExecutableForHooks())
+	return copilotUsageHookCommandFor(runtime.GOOS)
 }
 
-// copilotCommandHookEntry builds one Copilot hooks-reference command object.
-// Existing writers put the executable invocation in `bash`; they do not set
-// powershell, so neither do we (the cross-platform `command` fallback is also
-// unused so the file matches the documented bash-shaped example).
-func copilotCommandHookEntry(bash string, timeoutSec int) map[string]interface{} {
-	entry := map[string]interface{}{
-		"type": "command",
-		"bash": bash,
+// copilotUsageHookCommandFor renders the usage hook invocation for one OS.
+// The Windows entry runs under PowerShell, where a bare path containing
+// spaces (C:\Program Files\...) would not parse, so the executable is
+// single-quoted and invoked with the call operator.
+func copilotUsageHookCommandFor(goos string) string {
+	exe := preloopExecutableForHooks()
+	if goos == "windows" {
+		return fmt.Sprintf(
+			"& '%s' usage hook --from copilot",
+			strings.ReplaceAll(exe, "'", "''"),
+		)
+	}
+	return fmt.Sprintf("%s usage hook --from copilot", exe)
+}
+
+// copilotCommandHookEntry builds one Copilot hooks-reference command object
+// for the OS this runner is on.
+func copilotCommandHookEntry(command string, timeoutSec int) map[string]interface{} {
+	return copilotCommandHookEntryFor(runtime.GOOS, command, timeoutSec)
+}
+
+// copilotCommandHookEntryFor builds one Copilot hooks-reference command
+// object. POSIX hosts keep the documented bash-shaped entry. Windows hosts
+// get a powershell entry, because Copilot never executes the bash key there
+// and the hooks would silently not run.
+func copilotCommandHookEntryFor(goos, command string, timeoutSec int) map[string]interface{} {
+	entry := map[string]interface{}{"type": "command"}
+	if goos == "windows" {
+		entry["powershell"] = command
+	} else {
+		entry["bash"] = command
 	}
 	if timeoutSec > 0 {
 		entry["timeoutSec"] = timeoutSec

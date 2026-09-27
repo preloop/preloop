@@ -117,7 +117,7 @@ func TestHostExecTerminalCleanupAndHaltPrecedence(t *testing.T) {
 			probe := filepath.Join(t.TempDir(), "child")
 			t.Setenv("NATIVE_TEST_CHILD", probe)
 			binary := installFakeHostCLI(t, tc.child+"\necho $! > \"$NATIVE_TEST_CHILD\"\necho '{\"type\":\"result\",\"subtype\":\"success\"}'\nexit 0")
-			writeHostExecProfiles(t, []hostExecProfile{{Name: "native", Executable: binary, WorkspaceRoot: t.TempDir()}})
+			writeHostExecProfiles(t, []hostExecProfile{{Name: "native", Executable: binary, WorkspaceRoot: t.TempDir(), PassEnv: []string{"NATIVE_TEST_CHILD"}}})
 			cmd, _, _, err := newHostExecJobCmd(nativeTestJob())
 			if err != nil {
 				t.Fatal(err)

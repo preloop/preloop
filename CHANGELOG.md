@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Private runners on Windows and macOS run host execution profiles (Cursor,
+  Copilot CLI) end to end. The runner finds `cursor-agent` and `copilot`
+  through per-OS locations (`%APPDATA%\npm`, `%USERPROFILE%\.copilot`,
+  Homebrew and npm global paths), unwraps npm `.cmd` shims to `node.exe` so
+  prompts never pass through `cmd.exe`, enforces Windows command-line limits
+  with named errors, and kills the whole process tree on halt (`taskkill
+  /T`). `preloop runner enable` installs a logon scheduled task on Windows
+  and a launchd agent on macOS, both running as the user with output in
+  `~/.preloop/runner.log`; `install`/`uninstall` are accepted aliases. Host
+  jobs now start from an allowlisted environment (system baseline, the
+  harness's own variables, plus profile `pass_env` names) instead of the
+  operator's full environment, `workspace_root` is optional (defaulting to
+  `~/.preloop/host-workspaces`), and Copilot hook entries use `powershell`
+  on Windows. See `docs/guide/runners/quickstart-windows.md` and
+  `quickstart-macos.md`.
+
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
   the first event to PR opened, PR opened to approved, and approved to merged

@@ -23,8 +23,10 @@ const (
 	hostExecProfilesFileName   = "runner-host-profiles.json"
 	hostExecProfilesEnv        = "PRELOOP_RUNNER_HOST_PROFILES"
 	hostExecWorkspaceDir       = ".preloop-host-exec"
+	hostExecWorkspacesDirName  = "host-workspaces"
 	hostExecMaxArgv            = 32
 	hostExecMaxArgBytes        = 4096
+	hostExecMaxPassEnv         = 64
 	hostExecMaxPromptBytes     = 64 * 1024
 	hostExecDefaultTimeout     = 30 * time.Minute
 	hostExecCompletionProtocol = "host_exec"
@@ -42,14 +44,20 @@ var (
 // hostExecProfile is a runner-local command template. The control plane
 // never supplies the executable, argv, environment, or workspace.
 type hostExecProfile struct {
-	Name           string            `json:"name"`
-	Executable     string            `json:"executable"`
-	Argv           []string          `json:"argv"`
+	Name       string   `json:"name"`
+	Executable string   `json:"executable"`
+	Argv       []string `json:"argv"`
+	// WorkspaceRoot is optional; empty means the runner's own data
+	// directory (~/.preloop/host-workspaces).
 	WorkspaceRoot  string            `json:"workspace_root"`
 	TimeoutSeconds int               `json:"timeout_seconds"`
 	ForceWrites    bool              `json:"force_writes"`
 	PassModel      bool              `json:"pass_model"`
 	ModelMap       map[string]string `json:"model_map"`
+	// PassEnv names extra environment variables copied from the runner
+	// process into the job. Everything not named here, in the per-OS
+	// baseline, or in the harness's own variable namespace is withheld.
+	PassEnv []string `json:"pass_env,omitempty"`
 	// Copilot CLI only. AllowTools and DenyTools become --allow-tool and
 	// --deny-tool; AllowAllTools is the operator's explicit opt-in to
 	// --allow-all-tools and requires the Preloop preToolUse approval hook.
@@ -145,14 +153,23 @@ func normalizeHostExecProfile(profile hostExecProfile) (hostExecProfile, error) 
 		return hostExecProfile{}, err
 	}
 	profile.WorkspaceRoot = strings.TrimSpace(profile.WorkspaceRoot)
-	if !filepath.IsAbs(profile.WorkspaceRoot) {
+	if profile.WorkspaceRoot != "" && !filepath.IsAbs(profile.WorkspaceRoot) {
 		return hostExecProfile{}, fmt.Errorf("workspace_root must be an absolute path")
 	}
 	if profile.TimeoutSeconds < 0 {
 		return hostExecProfile{}, fmt.Errorf("timeout_seconds must be >= 0")
 	}
-	if runtime.GOOS == "windows" {
-		return hostExecProfile{}, fmt.Errorf("host execution requires Unix process-group ownership")
+	if len(profile.PassEnv) > hostExecMaxPassEnv {
+		return hostExecProfile{}, fmt.Errorf(
+			"pass_env supports at most %d entries", hostExecMaxPassEnv,
+		)
+	}
+	for i, name := range profile.PassEnv {
+		if !hostExecEnvNameRe.MatchString(name) {
+			return hostExecProfile{}, fmt.Errorf(
+				"pass_env[%d] is not a valid environment variable name", i,
+			)
+		}
 	}
 	harness := hostExecProfileHarness(profile)
 	if harness == "" {
@@ -225,8 +242,7 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 }
 
 func hostExecIsCursorBinary(executable string) bool {
-	base := strings.ToLower(filepath.Base(strings.TrimSpace(executable)))
-	_, ok := hostExecCursorNames[base]
+	_, ok := hostExecCursorNames[hostExecBinaryBase(executable)]
 	return ok
 }
 
@@ -304,19 +320,19 @@ func resolveHostExecBinary(executable string) (string, error) {
 	cleaned := strings.TrimSpace(executable)
 	base := filepath.Base(cleaned)
 	if hostExecIsCopilotBinary(cleaned) && base == cleaned {
-		path, err := resolveRuntimeExecutable("copilot")
-		if err != nil {
-			return "", fmt.Errorf(
-				"copilot_not_installed: Copilot CLI (copilot) was not found on %s; install it with `npm install -g @github/copilot`",
-				runtimeExecutableSearchDescription("copilot"),
-			)
+		for _, name := range hostExecCommandCandidates(cleaned, "copilot") {
+			if path, err := resolveHostExecRuntimeExecutable(name); err == nil {
+				return path, nil
+			}
 		}
-		return path, nil
+		return "", fmt.Errorf(
+			"copilot_not_installed: Copilot CLI (copilot) was not found on %s; install it with `npm install -g @github/copilot`",
+			runtimeExecutableSearchDescription("copilot"),
+		)
 	}
 	if hostExecIsCursorBinary(cleaned) && base == cleaned {
-		for _, name := range []string{"cursor-agent", "agent"} {
-			path, err := resolveRuntimeExecutable(name)
-			if err == nil {
+		for _, name := range hostExecCommandCandidates(cleaned, "cursor-agent", "agent") {
+			if path, err := resolveHostExecRuntimeExecutable(name); err == nil {
 				return path, nil
 			}
 		}
@@ -335,15 +351,33 @@ func resolveHostExecBinary(executable string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if info.IsDir() || info.Mode()&0111 == 0 {
+		if !isExecutableFileInfo(resolved, info) {
 			return "", fmt.Errorf("executable %q is not runnable", resolved)
 		}
 		return resolved, nil
 	}
-	if strings.Contains(cleaned, string(os.PathSeparator)) {
+	if strings.ContainsRune(cleaned, os.PathSeparator) ||
+		(runtime.GOOS == "windows" && strings.ContainsRune(cleaned, '/')) {
 		return "", fmt.Errorf("executable must be a command name or an absolute path")
 	}
-	return resolveRuntimeExecutable(cleaned)
+	return resolveHostExecRuntimeExecutable(cleaned)
+}
+
+// hostExecCommandCandidates puts the profile's own spelling first (it may
+// carry an explicit Windows extension such as copilot.cmd) and then the
+// canonical command names, without duplicates.
+func hostExecCommandCandidates(cleaned string, names ...string) []string {
+	out := make([]string, 0, len(names)+1)
+	seen := map[string]struct{}{}
+	for _, name := range append([]string{cleaned}, names...) {
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 func canonicalizeExistingDir(path string) (string, error) {
@@ -362,6 +396,25 @@ func canonicalizeExistingDir(path string) (string, error) {
 		return "", fmt.Errorf("%s is not a directory", resolved)
 	}
 	return resolved, nil
+}
+
+// hostExecWorkspaceRoot returns the profile's workspace root, defaulting to
+// a directory under the runner's own data dir. The default is created with
+// owner-only permissions; on Windows a directory under the user profile
+// inherits the profile's user-only ACLs.
+func hostExecWorkspaceRoot(profile hostExecProfile) (string, error) {
+	if profile.WorkspaceRoot != "" {
+		return profile.WorkspaceRoot, nil
+	}
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Join(dir, hostExecWorkspacesDirName)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return root, nil
 }
 
 func boundHostExecWorkspace(root, executionID string) (string, error) {
@@ -518,16 +571,20 @@ func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, er
 		return nil, "", 0, err
 	}
 	executionID, _ := job["execution_id"].(string)
-	workspace, err := boundHostExecWorkspace(profile.WorkspaceRoot, executionID)
+	root, err := hostExecWorkspaceRoot(profile)
 	if err != nil {
 		return nil, "", 0, err
 	}
-	bin, err := resolveHostExecBinary(profile.Executable)
+	workspace, err := boundHostExecWorkspace(root, executionID)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	bin, argvPrefix, err := resolveHostExecCommand(profile.Executable)
 	if err != nil {
 		return nil, "", 0, err
 	}
 	var args []string
-	env := os.Environ()
+	env := hostExecChildEnv(runtime.GOOS, wantHarness, profile, os.Environ())
 	if wantHarness == hostExecHarnessCopilot {
 		if err := prepareCopilotHostExecHooks(profile); err != nil {
 			return nil, "", 0, err
@@ -538,6 +595,10 @@ func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, er
 		args, err = buildHostExecArgs(profile, job, workspace)
 	}
 	if err != nil {
+		return nil, "", 0, err
+	}
+	args = append(argvPrefix, args...)
+	if err := hostExecCommandLineError(runtime.GOOS, bin, args); err != nil {
 		return nil, "", 0, err
 	}
 	cmd := exec.Command(bin, args...)

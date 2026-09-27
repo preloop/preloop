@@ -76,13 +76,6 @@ func runCopilotHostJob(t *testing.T, job map[string]any) (leasedJobOutcome, *run
 func TestNormalizeCopilotHostExecProfile(t *testing.T) {
 	root := t.TempDir()
 	base := hostExecProfile{Name: "copilot-seat", Executable: "copilot", WorkspaceRoot: root}
-	if runtime.GOOS == "windows" {
-		// Windows rejects every native profile before harness checks.
-		if _, err := normalizeHostExecProfile(base); err == nil || !strings.Contains(err.Error(), "Unix process-group ownership") {
-			t.Fatalf("windows copilot profile: err = %v", err)
-		}
-		return
-	}
 	if _, err := normalizeHostExecProfile(base); err != nil {
 		t.Fatalf("plain copilot profile rejected: %v", err)
 	}
@@ -115,13 +108,6 @@ func TestCopilotHostExecAdvertisesCopilotCapability(t *testing.T) {
 		ModelMap:      map[string]string{"claude-sonnet-4.6": "claude-sonnet-4.6"},
 	}})
 	ads := hostExecAdvertisements()
-	if runtime.GOOS == "windows" {
-		// Native profiles are Unix-only, so Windows advertises none.
-		if len(ads) != 0 {
-			t.Fatalf("windows ads = %#v", ads)
-		}
-		return
-	}
 	if len(ads) != 1 {
 		t.Fatalf("ads = %#v", ads)
 	}
@@ -147,6 +133,7 @@ echo '{"type":"result","sessionId":"ses-1","exitCode":0}'
 	t.Setenv("COPILOT_PROVIDER_API_KEY", "byok-key")
 	t.Setenv("COPILOT_ALLOW_ALL", "true")
 	t.Setenv("COPILOT_GITHUB_TOKEN", "seat-login")
+	t.Setenv("PRELOOP_TOKEN", "runner-credential")
 	writeHostExecProfiles(t, []hostExecProfile{{
 		Name:          "copilot-seat",
 		Executable:    "copilot",
@@ -154,6 +141,7 @@ echo '{"type":"result","sessionId":"ses-1","exitCode":0}'
 		ModelMap:      map[string]string{"team-default": "claude-sonnet-4.6"},
 		AllowTools:    []string{"write", "shell(git:*)"},
 		DenyTools:     []string{"shell(git push)"},
+		PassEnv:       []string{"PRELOOP_HOST_EXEC_PROBE"},
 	}})
 	outcome, _ := runCopilotHostJob(t, copilotJob(map[string]any{
 		"prompt":           "-starts with a dash",
@@ -180,7 +168,10 @@ echo '{"type":"result","sessionId":"ses-1","exitCode":0}'
 		t.Fatal(err)
 	}
 	env := string(envRaw)
-	for _, banned := range []string{"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY", "COPILOT_ALLOW_ALL"} {
+	for _, banned := range []string{
+		"COPILOT_PROVIDER_BASE_URL", "COPILOT_PROVIDER_API_KEY",
+		"COPILOT_ALLOW_ALL", "PRELOOP_TOKEN",
+	} {
 		if strings.Contains(env, banned+"=") {
 			t.Fatalf("%s leaked into the Copilot environment", banned)
 		}
@@ -249,6 +240,7 @@ echo '{"type":"result","sessionId":"s","exitCode":0}'
 		WorkspaceRoot: t.TempDir(),
 		AllowAllTools: true,
 		AllowTools:    []string{"write"},
+		PassEnv:       []string{"PRELOOP_HOST_EXEC_PROBE"},
 	}})
 	if _, _, _, err := newHostExecJobCmd(copilotJob(nil)); err == nil || !strings.Contains(err.Error(), "copilot_approval_hook_missing") {
 		t.Fatalf("err = %v", err)
@@ -417,9 +409,9 @@ func TestCopilotHostExecHooksAreIdempotentAndReplacedAtomically(t *testing.T) {
 	}
 
 	if runtime.GOOS == "windows" {
-		// Host execution is Unix-only (Windows rejects profiles before hooks
-		// are touched), and Windows cannot rename over a file a reader holds
-		// open, so the concurrent replacement check below is Unix-only.
+		// Windows cannot rename over a file a reader holds open, so the
+		// concurrent replacement check below is Unix-only. Steady-state
+		// (unchanged file, no rewrite) is covered above on every OS.
 		return
 	}
 	// Concurrent jobs racing with a reader: every read parses in full.
