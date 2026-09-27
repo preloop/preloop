@@ -1,0 +1,47 @@
+# Cancel queued and running workflow runs when a pull request is closed or
+# merged. `concurrency.cancel-in-progress` only fires when a newer run in
+# the same group starts; nothing starts when a PR closes, so its runs would
+# otherwise sit in the queue until a runner frees up and then run to
+# completion for a branch nobody is looking at.
+name: Cancel runs for closed pull requests
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cancel:
+    name: Cancel runs for the closed PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel runs for the PR head branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Match on the PR number or the head SHA, not just the branch name:
+          # a fork PR's head branch name can collide with a branch here.
+          # shellcheck disable=SC2016  # $pr/$sha/$self are jq variables
+          for run_status in queued in_progress waiting pending requested; do
+            gh api --paginate \
+              "repos/$REPO/actions/runs?branch=$HEAD_REF&status=$run_status&per_page=100" \
+            | jq -r --arg pr "$PR_NUMBER" --arg sha "$HEAD_SHA" --arg self "$GITHUB_RUN_ID" '
+                .workflow_runs[]
+                | select((.id | tostring) != $self)
+                | select(.head_sha == $sha or (.pull_requests // [] | any(.number == ($pr | tonumber))))
+                | "\(.id) \(.name)"'
+          done | sort -u | while read -r id name; do
+            echo "Cancelling run $id ($name)"
+            gh api -X POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null \
+              || echo "  could not cancel $id (already finished?)"
+          done
