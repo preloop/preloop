@@ -124,6 +124,32 @@ class CRUDCliSession:
         db.commit()
         return revoked
 
+    def revoke_all(
+        self, db: Session, *, user_id: uuid.UUID, commit: bool = True
+    ) -> int:
+        """Mark every active session of ``user_id`` revoked.
+
+        Args:
+            db: Database session.
+            user_id: Owner of the sessions.
+            commit: Commit immediately. Pass False to join the caller's
+                transaction (sign out everywhere bumps the generation in the
+                same commit).
+
+        Returns:
+            The number of sessions revoked.
+        """
+        stmt = (
+            update(CliSession)
+            .where(CliSession.user_id == user_id, CliSession.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC))
+            .returning(CliSession.id)
+        )
+        revoked = len(db.execute(stmt).all())
+        if commit:
+            db.commit()
+        return revoked
+
     def list_active(self, db: Session, *, user_id: uuid.UUID) -> List[CliSession]:
         """Return the user's unrevoked sessions, most recently used first."""
         stmt = (

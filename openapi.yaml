@@ -288,7 +288,11 @@ paths:
 
         token (including this request''s) fails the generation check on the next
 
-        use. API keys and runner tokens are unchanged.'
+        use. Active ``cli_session`` rows are marked revoked in the same commit so
+
+        the CLI session list matches what is enforced. API keys and runner tokens
+
+        are unchanged.'
       operationId: revoke_all_sessions_api_v1_auth_sessions_revoke_all_post
       responses:
         '200':

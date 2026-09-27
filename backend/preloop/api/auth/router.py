@@ -1189,8 +1189,11 @@ def revoke_all_sessions(
 
     Increments ``auth_generation`` so every outstanding access and refresh
     token (including this request's) fails the generation check on the next
-    use. API keys and runner tokens are unchanged.
+    use. Active ``cli_session`` rows are marked revoked in the same commit so
+    the CLI session list matches what is enforced. API keys and runner tokens
+    are unchanged.
     """
+    crud_cli_session.revoke_all(db, user_id=current_user.id, commit=False)
     new_generation = crud_user.bump_auth_generation(db, user_id=current_user.id)
     return {"auth_generation": new_generation}
 

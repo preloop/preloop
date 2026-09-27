@@ -301,3 +301,47 @@ def test_oauth_revoke_with_unknown_session_returns_success(client, test_user):
 
     assert response.status_code == 200
     assert _me(client, token).status_code == 401
+
+
+def test_revoke_all_marks_every_cli_session_revoked(client, db_session, test_user):
+    laptop = _cli_login(client, test_user, hostname="laptop")
+    _cli_login(client, test_user, hostname="build-host")
+
+    response = client.post(
+        "/api/v1/auth/sessions/revoke-all",
+        headers={"Authorization": f"Bearer {laptop['access_token']}"},
+    )
+
+    assert response.status_code == 200
+    db_session.expire_all()
+    assert crud_cli_session.list_active(db_session, user_id=test_user.id) == []
+    fresh = _cli_login(client, test_user, hostname="new-host")
+    listed = client.get(
+        "/api/v1/auth/sessions/cli",
+        headers={"Authorization": f"Bearer {fresh['access_token']}"},
+    )
+    assert [row["hostname"] for row in listed.json()] == ["new-host"]
+
+
+def test_oauth_revoke_with_expired_cli_token_revokes_its_session(
+    client, db_session, test_user
+):
+    tokens = _cli_login(client, test_user)
+    refresh = decode_token(tokens["refresh_token"])
+    expired = create_access_token(
+        {
+            "sub": str(test_user.id),
+            "scopes": [],
+            "refresh": True,
+            "sid": refresh.sid,
+            "jti": refresh.jti,
+        },
+        expires_delta=timedelta(minutes=-5),
+    )
+
+    response = client.post("/oauth/revoke", data={"token": expired})
+
+    assert response.status_code == 200
+    db_session.expire_all()
+    assert crud_cli_session.list_active(db_session, user_id=test_user.id) == []
+    assert _me(client, tokens["access_token"]).status_code == 401

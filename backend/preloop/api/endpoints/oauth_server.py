@@ -18,9 +18,12 @@ import uuid
 from typing import Any, Optional
 from urllib.parse import urlencode
 
+import jwt as pyjwt
 from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
+
+from preloop.schemas.auth import TokenData
 
 logger = logging.getLogger(__name__)
 
@@ -654,6 +657,33 @@ async def register_client(request_body: dict):
 # ---------------------------------------------------------------------------
 
 
+def _decode_expired_cli_jwt(token: str) -> Optional[TokenData]:
+    """Decode a correctly signed but expired CLI JWT that carries a ``sid``.
+
+    Only the expiry check is skipped; the signature is still verified.
+
+    Returns:
+        The token data, or None when the token is not ours, is invalid for
+        another reason, or has no ``sid``.
+    """
+    from preloop.api.auth.jwt import ALGORITHM, SECRET_KEY
+
+    try:
+        payload = pyjwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except pyjwt.PyJWTError:
+        return None
+    sid = payload.get("sid")
+    sub = payload.get("sub")
+    if not isinstance(sid, str) or not sid or not isinstance(sub, str) or not sub:
+        return None
+    return TokenData(sub=sub, sid=sid)
+
+
 def _revoke_cli_jwt(token: str) -> Optional[JSONResponse]:
     """Revoke the ``cli_session`` behind a CLI JWT.
 
@@ -666,7 +696,11 @@ def _revoke_cli_jwt(token: str) -> Optional[JSONResponse]:
     try:
         token_data = decode_token(token)
     except HTTPException:
-        return None
+        # An expired CLI token still names its session. Revoke that row so
+        # logging out with a stale token does not leave it listed as active.
+        token_data = _decode_expired_cli_jwt(token)
+        if token_data is None:
+            return None
 
     if token_data.sid is None:
         # Console JWTs and CLI JWTs from before cli_session have no row to
