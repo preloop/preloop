@@ -303,7 +303,10 @@ def test_is_notify_only() -> None:
 def _gateway():
     return SimpleNamespace(
         db=MagicMock(),
-        auth_context=SimpleNamespace(user=SimpleNamespace(account_id=ACCOUNT, id=USER)),
+        auth_context=SimpleNamespace(
+            account_id=ACCOUNT,
+            user=SimpleNamespace(id=USER),
+        ),
         _openai_stream_error_event=lambda exc, _err: f"data: {exc.message}\n\n",
         _sse_done=lambda: "data: [DONE]\n\n",
         _client_session_id=None,
@@ -344,6 +347,7 @@ def test_notify_only_stream_is_not_buffered(captured) -> None:
 
     assert len(rest) == 3
     assert len(captured.notices) == 1
+    assert captured.notices[0].account_id == ACCOUNT
     assert captured.notices[0].target == "model.response"
     assert "project-x" in (captured.notices[0].excerpt or "")
 
