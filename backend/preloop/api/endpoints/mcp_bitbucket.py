@@ -31,6 +31,7 @@ from fastapi import HTTPException
 
 from preloop.schemas.mcp import (
     AddCommentResponse,
+    CreatePullRequestResponse,
     PullRequestResponse,
     UpdateCommentResponse,
     UpdatePullRequestResponse,
@@ -170,6 +171,86 @@ async def get_pull_request(
         is_draft=bool(pr.get("draft", False)),
         comments=comments,
         changes=changes,
+    )
+
+
+async def create_pull_request(
+    client: BitbucketTracker,
+    *,
+    title: str,
+    source_branch: str,
+    target_branch: str,
+    description: Optional[str] = None,
+    draft: bool = False,
+    assignees: Optional[List[str]] = None,
+    reviewers: Optional[List[str]] = None,
+    labels: Optional[List[str]] = None,
+    milestone: Optional[str] = None,
+    extra_options: Optional[Dict[str, Any]] = None,
+    repo_full_name: Optional[str] = None,
+) -> CreatePullRequestResponse:
+    """Create a pull request.
+
+    Args:
+        client: The Bitbucket tracker client.
+        title: Pull request title.
+        source_branch: Branch containing the changes.
+        target_branch: Branch to merge into.
+        description: Markdown description.
+        draft: Create as a draft pull request.
+        assignees: Not supported; reported as ignored.
+        reviewers: Reviewer account ids or user UUIDs, applied best effort.
+        labels: Not supported; reported as ignored.
+        milestone: Not supported; reported as ignored.
+        extra_options: ``close_source_branch`` (or the GitLab-named
+            ``remove_source_branch``) deletes the source branch on merge.
+        repo_full_name: ``workspace/repo``; defaults to the client's repository.
+
+    Returns:
+        The created pull request in the shared MCP shape.
+    """
+    options = extra_options or {}
+    close_source_branch = bool(
+        options.get("close_source_branch", options.get("remove_source_branch", False))
+    )
+    result = await client.create_pull_request(
+        title=title,
+        source_branch=source_branch,
+        target_branch=target_branch,
+        description=description,
+        draft=draft,
+        assignees=assignees,
+        reviewers=reviewers,
+        labels=labels,
+        milestone=milestone,
+        close_source_branch=close_source_branch,
+        repo_full_name=repo_full_name,
+    )
+
+    message = f"Successfully created pull request #{result['number']}"
+    ignored = [
+        name
+        for name, value in (
+            ("assignees", assignees),
+            ("labels", labels),
+            ("milestone", milestone),
+        )
+        if value
+    ]
+    if ignored:
+        message += (
+            f". Note: ignored on Bitbucket Cloud: {', '.join(ignored)} (no equivalent)"
+        )
+
+    return CreatePullRequestResponse(
+        pull_request_id=str(result["id"]),
+        number=int(result["number"]),
+        status="created",
+        message=message,
+        url=result["url"],
+        source_branch=source_branch,
+        target_branch=target_branch,
+        is_draft=bool(result.get("is_draft", False)),
     )
 
 

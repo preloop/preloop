@@ -216,3 +216,158 @@ async def test_orchestrator_credentials_carry_bitbucket_username(
         {"token": "tok", "tracker_type": "bitbucket"},
     )
     assert default.username == "x-bitbucket-api-token-auth"
+
+
+class TestResolveRepositoryUrlFromTrigger:
+    """The repository URL is found in nested and bare trigger payloads."""
+
+    def _orchestrator(self, trigger_event_data) -> FlowExecutionOrchestrator:
+        return FlowExecutionOrchestrator(
+            db=MagicMock(),
+            flow_id="flow",
+            trigger_event_data=trigger_event_data,
+            nats_client=AsyncMock(),
+        )
+
+    def test_nested_payload_shape(self) -> None:
+        orch = self._orchestrator({"source": "bitbucket", "payload": PR_PAYLOAD})
+        assert (
+            orch._resolve_repository_url_from_trigger()
+            == "https://bitbucket.org/ws/repo"
+        )
+
+    def test_bare_provider_payload_shape(self) -> None:
+        orch = self._orchestrator(dict(PR_PAYLOAD))
+        assert (
+            orch._resolve_repository_url_from_trigger()
+            == "https://bitbucket.org/ws/repo"
+        )
+
+    def test_clone_url_wins_over_html_link(self) -> None:
+        payload = {
+            "repository": {
+                "clone_url": "https://github.com/acme/app.git",
+                "html_url": "https://github.com/acme/app",
+            }
+        }
+        orch = self._orchestrator({"payload": payload})
+        assert (
+            orch._resolve_repository_url_from_trigger()
+            == "https://github.com/acme/app.git"
+        )
+
+    def test_gitlab_project_shape(self) -> None:
+        payload = {"project": {"http_url_to_repo": "https://gitlab.com/g/app.git"}}
+        orch = self._orchestrator({"payload": payload})
+        assert (
+            orch._resolve_repository_url_from_trigger()
+            == "https://gitlab.com/g/app.git"
+        )
+
+    def test_no_repository_returns_none(self) -> None:
+        orch = self._orchestrator({"payload": {"other": 1}})
+        assert orch._resolve_repository_url_from_trigger() is None
+
+
+class TestPublishedPrLookup:
+    """Branch lookup goes through the uniform tracker method, host-free."""
+
+    def test_tracker_kind_from_tracker_type(self) -> None:
+        assert (
+            FlowExecutionOrchestrator._tracker_kind(
+                SimpleNamespace(tracker_type="bitbucket")
+            )
+            == "bitbucket"
+        )
+        assert (
+            FlowExecutionOrchestrator._tracker_kind(
+                SimpleNamespace(tracker_type="GitHub")
+            )
+            == "github"
+        )
+        assert (
+            FlowExecutionOrchestrator._tracker_kind(
+                SimpleNamespace(tracker_type="jira")
+            )
+            is None
+        )
+
+    async def test_lookup_returns_matching_pr(
+        self, orchestrator: FlowExecutionOrchestrator
+    ) -> None:
+        client = SimpleNamespace(
+            tracker_type="bitbucket",
+            list_open_pull_requests_by_source_branch=AsyncMock(
+                return_value={
+                    "items": [
+                        {"source_branch": "other", "url": "https://x/1"},
+                        {
+                            "source_branch": "feature",
+                            "url": "https://bitbucket.org/ws/repo/pull-requests/7",
+                        },
+                    ]
+                }
+            ),
+        )
+        found = await orchestrator._lookup_published_pr(client, "feature")
+        assert found == {
+            "url": "https://bitbucket.org/ws/repo/pull-requests/7",
+            "branch": "feature",
+            "provider": "bitbucket",
+        }
+
+    async def test_issue_tracker_client_is_skipped(
+        self, orchestrator: FlowExecutionOrchestrator
+    ) -> None:
+        client = SimpleNamespace(
+            tracker_type="jira",
+            list_open_pull_requests_by_source_branch=AsyncMock(),
+        )
+        assert await orchestrator._lookup_published_pr(client, "feature") is None
+        client.list_open_pull_requests_by_source_branch.assert_not_awaited()
+
+
+class TestBitbucketCredentialEmail:
+    """The Atlassian email ships only for personal API token trackers."""
+
+    async def _creds(self, orchestrator, details, auth_type="api_token"):
+        tracker = SimpleNamespace(
+            tracker_type="bitbucket",
+            auth_type=auth_type,
+            connection_details=details,
+        )
+        with (
+            patch("preloop.models.crud.crud_tracker.get", return_value=tracker),
+            patch(
+                "preloop.services.flow_orchestrator.resolve_tracker_git_token",
+                new=AsyncMock(return_value="tok"),
+            ),
+        ):
+            return await orchestrator._get_tracker_credentials_by_id("t-1")
+
+    async def test_api_token_tracker_ships_email(
+        self, orchestrator: FlowExecutionOrchestrator
+    ) -> None:
+        creds = await self._creds(
+            orchestrator, {"email": "dev@example.com", "token_kind": "api_token"}
+        )
+        assert creds["email"] == "dev@example.com"
+
+    async def test_access_token_tracker_ships_no_email(
+        self, orchestrator: FlowExecutionOrchestrator
+    ) -> None:
+        creds = await self._creds(
+            orchestrator,
+            {"email": "dev@example.com", "token_kind": "access_token"},
+        )
+        assert "email" not in creds
+
+    async def test_oauth_tracker_ships_no_email(
+        self, orchestrator: FlowExecutionOrchestrator
+    ) -> None:
+        creds = await self._creds(
+            orchestrator,
+            {"email": "dev@example.com"},
+            auth_type="oauth_token",
+        )
+        assert "email" not in creds

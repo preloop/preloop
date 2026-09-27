@@ -2095,6 +2095,14 @@ class GitHubTracker(BaseTracker):
             ),
         }
 
+    async def list_open_pull_requests_by_source_branch(
+        self, branch: str
+    ) -> Dict[str, Any]:
+        """Open pull requests whose head is ``branch``, in the shared shape."""
+        return await self.list_pull_requests(
+            state="open", limit=5, page=1, head_branch=branch
+        )
+
     async def branch_exists(self, branch: str) -> bool:
         """Whether ``branch`` exists on the connected repository.
 

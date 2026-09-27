@@ -49,8 +49,10 @@ from preloop.utils.bitbucket import (
     BITBUCKET_API_BASE_URL,
     BITBUCKET_AUTH_API_TOKEN,
     BITBUCKET_WEBHOOK_EVENTS,
+    COMMIT_STATUS_STATES,
     TOKEN_KIND_API_TOKEN,
     build_object_attributes,
+    looks_like_uuid,
     normalize_uuid,
     pull_request_web_url,
     user_name,
@@ -81,6 +83,9 @@ class BitbucketTracker(BaseTracker):
     """Bitbucket Cloud client for repositories, pull requests and webhooks."""
 
     tracker_type = "bitbucket"
+    # A Bitbucket tracker is a code host: an issue-only trigger (Jira) may
+    # bind its repository for clone and publication.
+    hosts_repositories: bool = True
 
     def __init__(
         self,
@@ -463,6 +468,7 @@ class BitbucketTracker(BaseTracker):
         limit: int = 20,
         page: int = 1,
         repo_full_name: Optional[str] = None,
+        source_branch: Optional[str] = None,
     ) -> Dict[str, Any]:
         """List pull requests in the shared PR list shape.
 
@@ -471,23 +477,236 @@ class BitbucketTracker(BaseTracker):
             limit: Page size (``pagelen``, at most 50 on Bitbucket).
             page: 1-based page number.
             repo_full_name: ``workspace/repo``; defaults to the bound one.
+            source_branch: Only pull requests from this source branch
+                (a Bitbucket ``q`` filter on ``source.branch.name``).
 
         Returns:
             ``{"items": [...], "has_more": bool}``.
         """
+        params: Dict[str, Any] = {
+            "state": state.upper(),
+            "pagelen": max(1, min(int(limit), 50)),
+            "page": max(1, int(page)),
+            "sort": "-updated_on",
+        }
+        if source_branch:
+            escaped = str(source_branch).replace("\\", "\\\\").replace('"', '\\"')
+            params["q"] = f'source.branch.name = "{escaped}"'
         data = await self._get_json(
-            f"{self._repo(repo_full_name)}/pullrequests",
-            params={
-                "state": state.upper(),
-                "pagelen": max(1, min(int(limit), 50)),
-                "page": max(1, int(page)),
-                "sort": "-updated_on",
-            },
+            f"{self._repo(repo_full_name)}/pullrequests", params=params
         )
         items = [
             self._normalize_listed_pull_request(pr) for pr in data.get("values") or []
         ]
         return {"items": items, "has_more": bool(data.get("next"))}
+
+    async def list_open_pull_requests_by_source_branch(
+        self, branch: str
+    ) -> Dict[str, Any]:
+        """Open pull requests whose source is ``branch``, in the shared shape."""
+        return await self.list_pull_requests(
+            state="open", limit=5, page=1, source_branch=branch
+        )
+
+    async def create_pull_request(
+        self,
+        title: str,
+        source_branch: str,
+        target_branch: str,
+        description: Optional[str] = None,
+        draft: bool = False,
+        assignees: Optional[List[str]] = None,
+        reviewers: Optional[List[str]] = None,
+        labels: Optional[List[str]] = None,
+        milestone: Optional[str] = None,
+        close_source_branch: bool = False,
+        repo_full_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a pull request and return the shared normalized PR object.
+
+        Reviewers are applied with a follow-up update so an unknown reviewer
+        cannot fail a creation that already succeeded; a failure is logged.
+        Assignees, labels and milestones have no Bitbucket Cloud equivalent
+        and are ignored with a log line.
+
+        Args:
+            title: Pull request title.
+            source_branch: Branch containing the changes.
+            target_branch: Branch to merge into.
+            description: Markdown description.
+            draft: Create as a draft pull request.
+            assignees: Ignored on Bitbucket Cloud.
+            reviewers: Reviewer UUIDs or Atlassian account ids.
+            labels: Ignored on Bitbucket Cloud.
+            milestone: Ignored on Bitbucket Cloud.
+            close_source_branch: Delete the source branch after the merge.
+            repo_full_name: ``workspace/repo``; defaults to the bound one.
+
+        Returns:
+            Dict with ``id``, ``number``, ``title``, ``description``,
+            ``state``, ``url``, ``is_draft``, ``source_branch`` and
+            ``target_branch``, like the other trackers.
+        """
+        payload: Dict[str, Any] = {
+            "title": title,
+            "description": description or "",
+            "source": {"branch": {"name": source_branch}},
+            "destination": {"branch": {"name": target_branch}},
+            "close_source_branch": bool(close_source_branch),
+        }
+        if draft:
+            payload["draft"] = True
+        response = await self._request(
+            "POST", f"{self._repo(repo_full_name)}/pullrequests", json=payload
+        )
+        pr = response.json()
+        pr_id = int(pr.get("id") or 0)
+        logger.info("Created Bitbucket pull request #%s: %s", pr_id, title)
+
+        for name, value in (("assignees", assignees), ("labels", labels)):
+            if value:
+                logger.info(
+                    "Bitbucket pull requests have no %s; ignoring %s entries",
+                    name,
+                    len(value),
+                )
+        if milestone:
+            logger.info("Bitbucket pull requests have no milestones; ignoring")
+
+        if reviewers:
+            entries = [
+                {"uuid": "{" + normalize_uuid(reviewer) + "}"}
+                if looks_like_uuid(reviewer)
+                else {"account_id": str(reviewer)}
+                for reviewer in reviewers
+            ]
+            try:
+                response = await self._request(
+                    "PUT",
+                    self._pr(pr_id, repo_full_name),
+                    json={"title": title, "reviewers": entries},
+                )
+                pr = response.json()
+            except (TrackerResponseError, TrackerPermissionError) as exc:
+                logger.warning(
+                    "Failed to add reviewers to Bitbucket PR #%s: %s", pr_id, exc
+                )
+
+        return self._normalize_created_pull_request(pr)
+
+    def _normalize_created_pull_request(self, pr: Dict[str, Any]) -> Dict[str, Any]:
+        """Map a created or updated PR onto the shape GitHub creation returns."""
+        attributes = build_object_attributes(pr)
+        return {
+            "id": str(pr.get("id") or 0),
+            "number": int(pr.get("id") or 0),
+            "title": attributes["title"] or "",
+            "description": attributes["description"],
+            "state": attributes["state"] or "open",
+            "url": attributes["url"] or "",
+            "is_draft": attributes["draft"],
+            "source_branch": attributes["source_branch"] or "",
+            "target_branch": attributes["target_branch"] or "",
+        }
+
+    async def pull_request_merge_status(
+        self, pr_id: int | str, repo_full_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Return the merge state of a pull request.
+
+        Returns:
+            ``{"state", "merged", "merge_commit", "url"}`` where ``state`` is
+            the lowercase Bitbucket state (``open``, ``merged``, ``declined``
+            or ``superseded``).
+        """
+        pr = await self.get_pull_request(pr_id, repo_full_name)
+        state = str(pr.get("state") or "").lower() or "open"
+        merge_commit = (pr.get("merge_commit") or {}).get("hash")
+        return {
+            "state": state,
+            "merged": state == "merged",
+            "merge_commit": merge_commit,
+            "url": ((pr.get("links") or {}).get("html") or {}).get("href", ""),
+        }
+
+    async def branch_exists(
+        self, branch: str, repo_full_name: Optional[str] = None
+    ) -> bool:
+        """Whether ``branch`` exists on the repository.
+
+        Raises on anything other than a clean found / not-found answer so a
+        caller can tell "absent" from "could not check".
+        """
+        response = await self._request(
+            "GET",
+            f"{self._repo(repo_full_name)}/refs/branches/{quote(branch, safe='')}",
+            allow_status=(404,),
+        )
+        return response.status_code == 200
+
+    async def create_commit_status(
+        self,
+        sha: str,
+        state: str,
+        context: str = "preloop",
+        description: Optional[str] = None,
+        target_url: Optional[str] = None,
+        repo_full_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create or refresh a commit build status.
+
+        Maps the shared ``pending``/``success``/``failure``/``error`` states
+        onto Bitbucket build states. A second post with the same key updates
+        the existing status in place (Bitbucket answers the duplicate POST
+        with an error, which is retried as a PUT on the keyed status).
+
+        Args:
+            sha: Commit hash.
+            state: ``pending``, ``success``, ``failure`` or ``error``.
+            context: Status key (Bitbucket ``key``, at most 40 characters).
+            description: Short description.
+            target_url: Absolute link shown next to the status. Bitbucket
+                requires one; the repository web page is used when missing.
+            repo_full_name: ``workspace/repo``; defaults to the bound one.
+
+        Returns:
+            Dict with ``key``, ``state``, ``description`` and ``url``.
+        """
+        bitbucket_state = COMMIT_STATUS_STATES.get(str(state).lower())
+        if bitbucket_state is None:
+            raise ValueError(f"Unsupported commit status state: {state}")
+        key = (context or "preloop")[:40]
+        full_name = repo_full_name or self.repo_full_name or ""
+        url = target_url
+        if not url or not str(url).startswith(("http://", "https://")):
+            # Bitbucket rejects a build status without an absolute URL.
+            url = f"https://bitbucket.org/{full_name}"
+        payload: Dict[str, Any] = {
+            "key": key,
+            "state": bitbucket_state,
+            "url": url,
+        }
+        if description:
+            payload["description"] = description[:140]
+        base = f"{self._repo(repo_full_name)}/commit/{quote(sha, safe='')}/statuses"
+        response = await self._request(
+            "POST", f"{base}/build", json=payload, allow_status=(400, 409)
+        )
+        if response.status_code in (400, 409):
+            # The key already has a status on this commit: update it.
+            response = await self._request(
+                "PUT", f"{base}/build/{quote(key, safe='')}", json=payload
+            )
+        data = response.json()
+        logger.info(
+            "Posted Bitbucket build status '%s' (%s) on %s", key, state, sha[:8]
+        )
+        return {
+            "key": data.get("key") or key,
+            "state": data.get("state") or bitbucket_state,
+            "description": data.get("description"),
+            "url": data.get("url") or url,
+        }
 
     @staticmethod
     def _normalize_listed_pull_request(pr: Dict[str, Any]) -> Dict[str, Any]:

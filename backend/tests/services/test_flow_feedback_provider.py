@@ -1161,3 +1161,208 @@ def test_reviewer_slug_matches_app_bot_and_not_a_sibling() -> None:
         {"trusted_reviewer_ids": ["256972239"]},
         {"id": 256972239, "login": "preloop-staging[bot]", "type": "Bot"},
     )
+
+
+# ----------------------------------------------------------------------
+# Bitbucket Cloud
+# ----------------------------------------------------------------------
+
+BB_REPO_UUID = "22222222-2222-2222-2222-222222222222"
+BB_REVIEWER_UUID = "9f4620ba-cf24-4b18-b9d1-12ff9ff9ff9f"
+BB_IMPLEMENTER_UUID = "11111111-1111-1111-1111-111111111111"
+BB_APPROVER_UUID = "33333333-3333-3333-3333-333333333333"
+
+
+def bitbucket_binding() -> SimpleNamespace:
+    return SimpleNamespace(
+        provider="bitbucket",
+        repository_id=f"ws/{BB_REPO_UUID}",
+        pr_number="7",
+        policy={
+            "required_checks": ["ci/tests"],
+            # Braces and case must not matter for a configured reviewer UUID.
+            "trusted_reviewer_ids": ["{" + BB_REVIEWER_UUID.upper() + "}"],
+            "implementer_actor_ids": [BB_IMPLEMENTER_UUID],
+            "required_approvals": 1,
+        },
+    )
+
+
+def _bb_pr() -> dict[str, Any]:
+    return {
+        "state": "OPEN",
+        "source": {"commit": {"hash": "head"}, "branch": {"name": "feat"}},
+        "destination": {
+            "branch": {"name": "main"},
+            "repository": {
+                "uuid": "{" + BB_REPO_UUID + "}",
+                "full_name": "ws/repo",
+            },
+        },
+        "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/7"}},
+        "participants": [
+            {
+                "user": {"uuid": "{" + BB_APPROVER_UUID + "}", "nickname": "ok"},
+                "approved": True,
+                "state": "approved",
+            },
+            {
+                "user": {"uuid": "{" + BB_REVIEWER_UUID + "}", "nickname": "rev"},
+                "approved": False,
+                "state": "changes_requested",
+                "participated_on": "2026-09-26",
+            },
+        ],
+    }
+
+
+def bitbucket_fixture(
+    *,
+    changed_head: bool = False,
+    closed: bool = False,
+    statuses_next: bool = False,
+    wrong_repo: bool = False,
+) -> tuple[FeedbackProvider, list[str]]:
+    paths: list[str] = []
+    reads = 0
+
+    async def request(method: str, path: str, params: Any = None) -> Any:
+        nonlocal reads
+        paths.append(path)
+        if path.endswith("/pullrequests/7"):
+            reads += 1
+            pr = deepcopy(_bb_pr())
+            if closed:
+                pr["state"] = "MERGED"
+            if wrong_repo:
+                pr["destination"]["repository"] = {
+                    "uuid": "{99999999-9999-9999-9999-999999999999}",
+                    "full_name": "ws/other",
+                }
+            if changed_head and reads > 1:
+                pr["source"]["commit"]["hash"] = "new-head"
+            return SimpleNamespace(json=lambda pr=pr: pr)
+        if "/statuses" in path:
+            data = {
+                "values": [
+                    {
+                        "uuid": "{s-1}",
+                        "key": "ci/tests",
+                        "state": "FAILED",
+                        "updated_on": "2026-09-26",
+                        "url": "https://ci.example/build/1",
+                    }
+                ]
+            }
+            if statuses_next:
+                data["next"] = "https://api.bitbucket.org/next"
+            return SimpleNamespace(json=lambda data=data: data)
+        if path.endswith("/comments"):
+            data = {
+                "values": [
+                    {
+                        "id": 1,
+                        "content": {"raw": "please fix the parser"},
+                        "inline": {"path": "a.py", "to": 3},
+                        "user": {
+                            "uuid": "{" + BB_REVIEWER_UUID + "}",
+                            "nickname": "rev",
+                        },
+                        "links": {"html": {"href": "https://bitbucket.org/c/1"}},
+                    },
+                    {"id": 2, "content": {"raw": "gone"}, "deleted": True},
+                    {
+                        "id": 3,
+                        "content": {"raw": "old feedback"},
+                        "inline": {"path": "a.py", "to": 4},
+                        "resolution": {"type": "resolved"},
+                        "user": {"uuid": "{" + BB_REVIEWER_UUID + "}"},
+                    },
+                    {
+                        "id": 4,
+                        "content": {"raw": "implementation self-comment"},
+                        "user": {"uuid": "{" + BB_IMPLEMENTER_UUID + "}"},
+                    },
+                ]
+            }
+            return SimpleNamespace(json=lambda data=data: data)
+        raise AssertionError(path)
+
+    return (
+        FeedbackProvider(
+            SimpleNamespace(_request=AsyncMock(side_effect=request)),
+            bitbucket_binding(),
+        ),
+        paths,
+    )
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_reconciles_comments_participants_and_statuses() -> None:
+    provider, paths = bitbucket_fixture()
+    state = await provider.read()
+    assert state.head_sha == "head"
+    assert not state.closed
+    # The failed required build status blocks readiness and produces a receipt.
+    assert not state.checks_passed
+    assert not state.checks_pending
+    # A changes-requested participant fails the review gate despite an approval.
+    assert not state.reviews_passed
+    # Deleted (id 2), resolved (id 3) and implementer (id 4) comments are
+    # dropped; what remains is the reviewer's inline comment, the
+    # changes-requested review and the failed-check receipt.
+    kinds = sorted(item["kind"] for item in state.feedback)
+    assert kinds == ["ci", "inline_comment", "review"]
+    inline = next(i for i in state.feedback if i["kind"] == "inline_comment")
+    assert inline["payload"]["body"] == "please fix the parser"
+    review = next(i for i in state.feedback if i["kind"] == "review")
+    assert review["payload"]["url"] == ("https://bitbucket.org/ws/repo/pull-requests/7")
+    # The API path wraps the repository UUID in braces.
+    assert paths[0].startswith("repositories/ws/%7B22222222")
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_closed_pr_stops_after_one_read() -> None:
+    provider, paths = bitbucket_fixture(closed=True)
+    state = await provider.read()
+    assert state.closed
+    assert len(paths) == 1
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_head_change_during_reconciliation_blocks() -> None:
+    provider, _ = bitbucket_fixture(changed_head=True)
+    state = await provider.read()
+    assert state.head_sha == "new-head"
+    assert state.checks_pending
+    assert state.blocked_reason == "head_changed_during_reconciliation"
+    assert state.feedback == []
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_repository_identity_mismatch_raises() -> None:
+    provider, _ = bitbucket_fixture(wrong_repo=True)
+    with pytest.raises(ValueError, match="repository identity mismatch"):
+        await provider.read()
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_status_page_limit_blocks_readiness() -> None:
+    provider, _ = bitbucket_fixture(statuses_next=True)
+    state = await provider.read()
+    assert state.blocked_reason == "provider_page_limit"
+
+
+def test_bitbucket_trusted_reviewer_identities() -> None:
+    policy = {
+        "trusted_reviewer_ids": [
+            "{" + BB_REVIEWER_UUID.upper() + "}",
+            "712020:abcd1234",
+        ]
+    }
+    braced_actor = {"id": BB_REVIEWER_UUID, "login": "rev", "bot": True}
+    assert reviewer_is_trusted(policy, braced_actor)
+    account_actor = {"id": "other", "account_id": "712020:ABCD1234", "bot": True}
+    assert reviewer_is_trusted(policy, account_actor)
+    stranger = {"id": "44444444-4444-4444-4444-444444444444", "bot": True}
+    assert not reviewer_is_trusted(policy, stranger)

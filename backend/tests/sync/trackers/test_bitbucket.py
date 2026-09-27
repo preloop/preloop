@@ -368,3 +368,205 @@ async def test_is_webhook_registered_for_project() -> None:
     assert not await tracker.is_webhook_registered_for_project(
         project, "https://other.test/hook"
     )
+
+
+# ----------------------------------------------------------------------
+# Pull request creation, merge status, branches and commit build statuses
+# ----------------------------------------------------------------------
+
+CREATED_PR = {
+    "id": 7,
+    "title": "Add feature",
+    "description": "Body text",
+    "state": "OPEN",
+    "draft": False,
+    "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/7"}},
+    "source": {"branch": {"name": "feat/x"}, "commit": {"hash": "abc123"}},
+    "destination": {"branch": {"name": "main"}},
+    "author": {"display_name": "Dev"},
+}
+
+
+async def test_create_pull_request_payload_and_normalized_shape() -> None:
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(lambda r: ok(CREATED_PR, 201), requests)
+    result = await tracker.create_pull_request(
+        title="Add feature",
+        source_branch="feat/x",
+        target_branch="main",
+        description="Body text",
+        close_source_branch=True,
+    )
+    assert len(requests) == 1
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/2.0/repositories/ws/repo/pullrequests"
+    payload = json.loads(requests[0].content)
+    assert payload == {
+        "title": "Add feature",
+        "description": "Body text",
+        "source": {"branch": {"name": "feat/x"}},
+        "destination": {"branch": {"name": "main"}},
+        "close_source_branch": True,
+    }
+    assert result == {
+        "id": "7",
+        "number": 7,
+        "title": "Add feature",
+        "description": "Body text",
+        "state": "open",
+        "url": "https://bitbucket.org/ws/repo/pull-requests/7",
+        "is_draft": False,
+        "source_branch": "feat/x",
+        "target_branch": "main",
+    }
+
+
+async def test_create_pull_request_draft_and_ignored_fields() -> None:
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(lambda r: ok({**CREATED_PR, "draft": True}, 201), requests)
+    result = await tracker.create_pull_request(
+        title="Add feature",
+        source_branch="feat/x",
+        target_branch="main",
+        draft=True,
+        assignees=["someone"],
+        labels=["bug"],
+        milestone="v1",
+    )
+    payload = json.loads(requests[0].content)
+    assert payload["draft"] is True
+    assert result["is_draft"] is True
+    # Assignees, labels and milestone never reach the API.
+    assert "assignees" not in payload
+    assert "labels" not in payload
+    assert "milestone" not in payload
+
+
+async def test_create_pull_request_adds_reviewers_with_follow_up_put() -> None:
+    requests: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok(CREATED_PR, 201)
+        return ok({**CREATED_PR, "title": "Add feature"})
+
+    tracker = make_tracker(handler, requests)
+    uuid = "9f4620ba-cf24-4b18-b9d1-12ff9ff9ff9f"
+    await tracker.create_pull_request(
+        title="Add feature",
+        source_branch="feat/x",
+        target_branch="main",
+        reviewers=["{" + uuid + "}", "712020:abcd"],
+    )
+    assert [r.method for r in requests] == ["POST", "PUT"]
+    assert requests[1].url.path == "/2.0/repositories/ws/repo/pullrequests/7"
+    put = json.loads(requests[1].content)
+    assert put["reviewers"] == [
+        {"uuid": "{" + uuid + "}"},
+        {"account_id": "712020:abcd"},
+    ]
+
+
+async def test_create_pull_request_reviewer_failure_keeps_the_created_pr() -> None:
+    requests: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok(CREATED_PR, 201)
+        return ok({"error": {"message": "reviewer not found"}}, 400)
+
+    tracker = make_tracker(handler, requests)
+    result = await tracker.create_pull_request(
+        title="Add feature",
+        source_branch="feat/x",
+        target_branch="main",
+        reviewers=["712020:missing"],
+    )
+    assert result["number"] == 7
+    assert result["url"].endswith("/pull-requests/7")
+
+
+async def test_list_pull_requests_source_branch_filter_is_escaped() -> None:
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(lambda r: ok({"values": [CREATED_PR]}), requests)
+    listing = await tracker.list_open_pull_requests_by_source_branch('fe"at')
+    assert requests[0].url.params["q"] == 'source.branch.name = "fe\\"at"'
+    assert requests[0].url.params["state"] == "OPEN"
+    assert listing["items"][0]["source_branch"] == "feat/x"
+    assert listing["items"][0]["url"].endswith("/pull-requests/7")
+    assert listing["has_more"] is False
+
+
+async def test_pull_request_merge_status() -> None:
+    merged = {
+        **CREATED_PR,
+        "state": "MERGED",
+        "merge_commit": {"hash": "deadbee"},
+    }
+    tracker = make_tracker(lambda r: ok(merged), [])
+    status = await tracker.pull_request_merge_status(7)
+    assert status == {
+        "state": "merged",
+        "merged": True,
+        "merge_commit": "deadbee",
+        "url": "https://bitbucket.org/ws/repo/pull-requests/7",
+    }
+
+
+async def test_branch_exists_found_absent_and_error() -> None:
+    tracker = make_tracker(lambda r: ok({"name": "feat/x"}), [])
+    assert await tracker.branch_exists("feat/x") is True
+
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(lambda r: ok({}, 404), requests)
+    assert await tracker.branch_exists("feat/x") is False
+    assert requests[0].url.raw_path.endswith(b"/refs/branches/feat%2Fx")
+
+    tracker = make_tracker(lambda r: ok({}, 502), [])
+    with pytest.raises(TrackerResponseError):
+        await tracker.branch_exists("feat/x")
+
+
+async def test_create_commit_status_posts_build_state() -> None:
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(
+        lambda r: ok({"key": "preloop", "state": "SUCCESSFUL"}, 201), requests
+    )
+    result = await tracker.create_commit_status(
+        "abc123", "success", description="Approved", target_url="https://p.test/e/1"
+    )
+    assert requests[0].method == "POST"
+    assert (
+        requests[0].url.path == "/2.0/repositories/ws/repo/commit/abc123/statuses/build"
+    )
+    payload = json.loads(requests[0].content)
+    assert payload == {
+        "key": "preloop",
+        "state": "SUCCESSFUL",
+        "url": "https://p.test/e/1",
+        "description": "Approved",
+    }
+    assert result["state"] == "SUCCESSFUL"
+
+
+async def test_create_commit_status_retries_duplicate_key_as_put() -> None:
+    requests: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return ok({"error": {"message": "already exists"}}, 409)
+        return ok({"key": "preloop", "state": "FAILED"})
+
+    tracker = make_tracker(handler, requests)
+    result = await tracker.create_commit_status("abc123", "failure")
+    assert [r.method for r in requests] == ["POST", "PUT"]
+    assert requests[1].url.path.endswith("/commit/abc123/statuses/build/preloop")
+    # No absolute target URL was given: the repository page is used.
+    assert json.loads(requests[1].content)["url"] == "https://bitbucket.org/ws/repo"
+    assert result["state"] == "FAILED"
+
+
+async def test_create_commit_status_rejects_unknown_state() -> None:
+    tracker = make_tracker(lambda r: ok({}), [])
+    with pytest.raises(ValueError):
+        await tracker.create_commit_status("abc123", "not-a-state")

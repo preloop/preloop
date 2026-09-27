@@ -1582,14 +1582,24 @@ export class PreloopFlowForm extends LitElement {
         /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,37}[A-Za-z0-9])?(?:\[bot\])?$/.test(
           id
         );
+      // Bitbucket reviewer identities: a user UUID (braces optional) or an
+      // Atlassian account ID such as 712020:<uuid>.
+      const bitbucketActor = (id: unknown) =>
+        typeof id === 'string' &&
+        (/^\{?[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}?$/.test(
+          id
+        ) ||
+          /^[0-9]+:[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/.test(
+            id
+          ));
       const valid =
         key === 'trusted_reviewer_ids'
-          ? (id: unknown) => numeric(id) || login(id)
+          ? (id: unknown) => numeric(id) || login(id) || bitbucketActor(id)
           : numeric;
       if (!Array.isArray(ids) || ids.some((id) => !valid(id))) {
         throw new Error(
           key === 'trusted_reviewer_ids'
-            ? 'Follow-up: enter reviewer usernames or app slugs such as preloop, or numeric actor IDs.'
+            ? 'Follow-up: enter reviewer usernames or app slugs such as preloop, numeric actor IDs, or Bitbucket account IDs / user UUIDs.'
             : 'Follow-up: enter comma-separated numeric provider actor IDs, not usernames.'
         );
       }
@@ -1637,7 +1647,7 @@ export class PreloopFlowForm extends LitElement {
                     [
                       'trusted_reviewer_ids',
                       'Trusted reviewers',
-                      'Usernames or app slugs, for example preloop. preloop matches reviews posted by the preloop[bot] GitHub App. A staging app is preloop-staging. Numeric actor IDs still work. Unlisted bots are ignored.',
+                      'Usernames or app slugs, for example preloop. On GitHub, preloop matches reviews posted by the preloop[bot] App; a staging app is preloop-staging. On Bitbucket, use the reviewer username, account ID or user UUID (approvals and change requests count as reviews). Numeric actor IDs still work. Unlisted bots are ignored.',
                     ],
                     [
                       'implementer_actor_ids',
@@ -2812,7 +2822,8 @@ export class PreloopFlowForm extends LitElement {
                       ? html`
                           <sl-input
                             label="${
-                              tracker.tracker_type === 'gitlab'
+                              tracker.tracker_type === 'gitlab' ||
+                              tracker.tracker_type === 'bitbucket'
                                 ? 'Reviewer (username)'
                                 : 'Requested reviewer (username)'
                             }"

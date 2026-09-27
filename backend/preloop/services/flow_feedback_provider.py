@@ -59,10 +59,12 @@ def _login_matches(token: str, login: str) -> bool:
 def reviewer_is_trusted(policy: Mapping[str, Any], actor: Mapping[str, Any]) -> bool:
     """Return whether a bot actor is an explicitly trusted reviewer.
 
-    Entries may be numeric provider actor ids or user/app names. Humans are
-    not decided here; callers still accept a non-bot author with an empty list.
+    Entries may be numeric provider actor ids, user/app names, or Bitbucket
+    account ids and user UUIDs (with or without braces). Humans are not
+    decided here; callers still accept a non-bot author with an empty list.
     """
-    actor_id = str(actor.get("id") or "")
+    actor_id = str(actor.get("id") or "").strip().strip("{}").lower()
+    account_id = str(actor.get("account_id") or "").strip().lower()
     login = str(actor.get("login") or actor.get("username") or "").strip().lower()
     for raw in policy.get("trusted_reviewer_ids") or []:
         token = str(raw).strip()
@@ -73,6 +75,9 @@ def reviewer_is_trusted(policy: Mapping[str, Any], actor: Mapping[str, Any]) -> 
                 return True
             continue
         if _login_matches(token.lower(), login):
+            return True
+        normalized = token.lower().strip("{}")
+        if normalized and normalized in {actor_id, account_id}:
             return True
     return False
 
@@ -495,6 +500,8 @@ class FeedbackProvider:
             return await self._github()
         if self.thread.provider == "gitlab":
             return await self._gitlab()
+        if self.thread.provider == "bitbucket":
+            return await self._bitbucket()
         raise ValueError("unsupported feedback provider")
 
     def _comments(
@@ -821,6 +828,157 @@ class FeedbackProvider:
         if current["sha"] != sha:
             return FeedbackState(
                 current["sha"],
+                closed=state.closed,
+                checks_pending=True,
+                blocked_reason="head_changed_during_reconciliation",
+            )
+        return state
+
+    @staticmethod
+    def _bitbucket_actor(user: dict[str, Any] | None) -> dict[str, Any]:
+        """Map a Bitbucket user onto the actor shape ``_comments`` filters."""
+        from preloop.utils.bitbucket import normalize_uuid
+
+        user = user or {}
+        return {
+            "id": normalize_uuid(user.get("uuid")),
+            "login": user.get("nickname") or user.get("display_name"),
+            "account_id": user.get("account_id"),
+        }
+
+    async def _bitbucket(self) -> FeedbackState:
+        """Reconcile a Bitbucket Cloud pull request.
+
+        Reviews are participant flips (approve, request changes), checks are
+        commit build statuses posted by external CI, and required checks come
+        from the thread policy only: Bitbucket branch restrictions have no
+        readable required-checks API shape shared with the other providers.
+        Approvals carry no commit binding on Bitbucket; a stale approval is
+        whatever the repository's reset-on-push setting left in place.
+        """
+        from preloop.utils.bitbucket import (
+            BUILD_STATUS_OUTCOMES,
+            looks_like_uuid,
+            normalize_uuid,
+            repository_api_path,
+        )
+
+        async def get(path: str, params: dict[str, Any] | None = None) -> Any:
+            response = await self.client._request("GET", path, params=params)
+            return response.json()
+
+        closed_states = {"MERGED", "DECLINED", "SUPERSEDED"}
+        repo = repository_api_path(self.thread.repository_id)
+        base = f"{repo}/pullrequests/{int(self.thread.pr_number)}"
+        pr = await get(base)
+        destination = (pr.get("destination") or {}).get("repository") or {}
+        expected = self.thread.repository_id.split("/", 1)[-1]
+        if looks_like_uuid(expected):
+            matches = normalize_uuid(destination.get("uuid")) == normalize_uuid(
+                expected
+            )
+        else:
+            matches = str(destination.get("full_name") or "") == str(
+                self.thread.repository_id
+            )
+        if not matches:
+            raise ValueError("provider repository identity mismatch")
+        sha = ((pr.get("source") or {}).get("commit") or {}).get("hash")
+        if not sha:
+            raise ValueError("provider head commit unavailable")
+        pr_url = ((pr.get("links") or {}).get("html") or {}).get("href")
+        state = FeedbackState(
+            sha, closed=str(pr.get("state") or "").upper() in closed_states
+        )
+        if state.closed:
+            return state
+        page = {"pagelen": PROVIDER_PAGE_SIZE}
+        statuses_data = await get(f"{repo}/commit/{sha}/statuses", params=page)
+        statuses = statuses_data.get("values") or []
+        checks = [
+            {
+                "id": item.get("uuid") or item.get("key"),
+                "name": str(item.get("key") or item.get("name") or ""),
+                "state": BUILD_STATUS_OUTCOMES.get(
+                    str(item.get("state") or "").upper()
+                ),
+                "updated_at": item.get("updated_on"),
+                "target_url": item.get("url"),
+            }
+            for item in statuses
+        ]
+        (
+            state.checks_pending,
+            state.checks_passed,
+            state.blocked_reason,
+            failed,
+            state.infra_failures,
+        ) = classify_checks(checks, self.thread.policy.get("required_checks", []))
+        comments_data = await get(f"{base}/comments", params=page)
+        raw_comments = comments_data.get("values") or []
+        inline: list[dict[str, Any]] = []
+        general: list[dict[str, Any]] = []
+        for comment in raw_comments:
+            if comment.get("deleted"):
+                continue
+            mapped = {
+                "id": comment.get("id"),
+                "body": (comment.get("content") or {}).get("raw") or "",
+                "html_url": ((comment.get("links") or {}).get("html") or {}).get(
+                    "href"
+                ),
+                "created_at": comment.get("created_on"),
+                "updated_at": comment.get("updated_on"),
+                "resolvable": bool(comment.get("inline")),
+                "resolved": bool(comment.get("resolution")),
+                "user": self._bitbucket_actor(comment.get("user")),
+            }
+            (inline if comment.get("inline") else general).append(mapped)
+        participants = pr.get("participants") or []
+        approved_by = {
+            normalize_uuid((item.get("user") or {}).get("uuid"))
+            for item in participants
+            if item.get("approved")
+        }
+        changes_requested = [
+            item
+            for item in participants
+            if str(item.get("state") or "").lower() == "changes_requested"
+        ]
+        state.reviews_passed = (
+            len(approved_by) >= int(self.thread.policy.get("required_approvals", 1))
+            and not changes_requested
+        )
+        reviews = [
+            {
+                "id": normalize_uuid((item.get("user") or {}).get("uuid")),
+                "state": "changes_requested",
+                "updated_at": item.get("participated_on"),
+                "body": "",
+                "html_url": pr_url,
+                "user": self._bitbucket_actor(item.get("user")),
+            }
+            for item in changes_requested
+        ]
+        if (
+            len(statuses) >= PROVIDER_PAGE_SIZE
+            or statuses_data.get("next")
+            or len(raw_comments) >= PROVIDER_PAGE_SIZE
+            or comments_data.get("next")
+        ):
+            state.blocked_reason = "provider_page_limit"
+        state.feedback = (
+            self._comments(inline, "inline_comment", sha)
+            + self._comments(general, "comment", sha)
+            + self._comments(reviews, "review", sha)
+        )
+        state.feedback += [receipt("ci", item, head_sha=sha) for item in failed]
+        current = await get(base)
+        state.closed = str(current.get("state") or "").upper() in closed_states
+        current_sha = ((current.get("source") or {}).get("commit") or {}).get("hash")
+        if current_sha != sha:
+            return FeedbackState(
+                str(current_sha or ""),
                 closed=state.closed,
                 checks_pending=True,
                 blocked_reason="head_changed_during_reconciliation",

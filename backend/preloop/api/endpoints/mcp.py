@@ -2848,8 +2848,8 @@ async def create_pull_request(
     """
     Handles the 'create_pull_request' tool call.
 
-    Creates a GitHub pull request or GitLab merge request.
-    Auto-detects the platform from the project configuration.
+    Creates a GitHub pull request, GitLab merge request or Bitbucket pull
+    request. Auto-detects the platform from the project configuration.
 
     Args:
         project: Project identifier (slug like "owner/repo", full path, or URL).
@@ -2883,7 +2883,7 @@ async def create_pull_request(
             platform = None
         parsed_project = urlparse(project)
         path_parts = [p for p in parsed_project.path.split("/") if p]
-        if platform == "github" and len(path_parts) >= 2:
+        if platform in {"github", "bitbucket"} and len(path_parts) >= 2:
             project_path = f"{path_parts[0]}/{path_parts[1]}"
         elif platform == "gitlab" and path_parts:
             project_path = "/".join(path_parts).rstrip("/")
@@ -2927,11 +2927,29 @@ async def create_pull_request(
         platform = tracker_client.tracker_type.lower()
 
     if platform == "bitbucket":
-        raise HTTPException(
-            status_code=501,
-            detail="Creating pull requests is not supported for Bitbucket "
-            "trackers yet.",
+        logger.info(
+            f"Creating Bitbucket PR: {title} ({source_branch} -> {target_branch})"
         )
+        response = await _run_bitbucket(
+            "create pull request",
+            mcp_bitbucket.create_pull_request(
+                tracker_client,
+                title=title,
+                source_branch=source_branch,
+                target_branch=target_branch,
+                description=description,
+                draft=draft,
+                assignees=assignees,
+                reviewers=reviewers,
+                labels=labels,
+                milestone=milestone,
+                extra_options=extra_options,
+            ),
+        )
+        _record_opened_pr_on_execution(
+            db, url=response.url, source_branch=source_branch
+        )
+        return response
 
     try:
         if platform == "github":

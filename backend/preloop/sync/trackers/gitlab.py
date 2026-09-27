@@ -1627,6 +1627,14 @@ class GitLabTracker(BaseTracker):
         items = [self._normalize_listed_merge_request(mr) for mr in rows]
         return {"items": items, "has_more": has_more}
 
+    async def list_open_pull_requests_by_source_branch(
+        self, branch: str
+    ) -> Dict[str, Any]:
+        """Open merge requests from ``branch``, in the shared PR list shape."""
+        return await self.list_merge_requests(
+            state="open", limit=5, page=1, source_branch=branch
+        )
+
     async def branch_exists(self, branch: str) -> bool:
         """Whether ``branch`` exists on the connected project.
 
