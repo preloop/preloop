@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+<<<<<<< HEAD
 - A Jira project can be bound to a GitHub or GitLab repository
   (`git_clone_config.repository_bindings` on a flow, or
   `settings.repository_bindings` on the Jira project). A Jira-triggered flow
@@ -24,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and status edits, and their `labels` condition still reads the issue's
   labels.
 
+=======
+- Flows can run GitHub Copilot CLI on a private runner as a host execution
+  profile (agent type `copilot`, profile `"executable": "copilot"`). The run
+  uses the runner user's Copilot login and seat, keeps the profile's
+  `allow_tools` / `deny_tools` rules, requires the Preloop approval hook for
+  `allow_all_tools`, and succeeds only on one Copilot `result` event with exit
+  code 0. Host runs are marked "Not gateway metered" on the execution page.
+  Missing login and a model the seat does not offer fail with named errors.
+>>>>>>> origin/main
 - The Pull Request Reviewer reads `.preloop/review-policy.md` in full and
   treats it as blocking rules. The same text can live on the flow as
   `review_instructions` when the repository cannot commit that file

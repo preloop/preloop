@@ -1525,6 +1525,60 @@ def test_private_cursor_does_not_enable_rules_or_matrices(
         )
 
 
+def test_private_copilot_default_pins_owned_model_without_cloud_credentials(
+    db_session: Session, test_user: User
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    model.api_key = None
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="copilot",
+        ai_model_id=model.id,
+        extra_config={"host_exec_profile": "copilot-seat"},
+    )
+    flow.runner_pool = "private"
+    details = prepare_execution_routing(db_session, flow, {})
+    assert details[ROUTING_RECORD_KEY]["agent_type"] == "copilot"
+    assert details[ROUTING_RECORD_KEY]["ai_model_id"] == str(model.id)
+
+
+@pytest.mark.parametrize("pool", ["server", None])
+def test_copilot_default_rejects_hosted_or_unpinned_pool(
+    db_session: Session, test_user: User, pool: str | None
+) -> None:
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="copilot",
+        extra_config={"host_exec_profile": "copilot-seat"},
+    )
+    flow.runner_pool = pool
+    with pytest.raises(ModelRoutingError, match="Copilot CLI defaults require"):
+        prepare_execution_routing(db_session, flow, {})
+
+
+def test_private_copilot_does_not_enable_rules(
+    db_session: Session, test_user: User
+) -> None:
+    model = _usable_model(db_session, test_user.account_id)
+    flow = _flow(
+        db_session,
+        test_user,
+        agent_type="copilot",
+        ai_model_id=model.id,
+        extra_config={"host_exec_profile": "copilot-seat"},
+        routing=_policy(
+            _rule(
+                "native", any_labels=["native"], model_id=model.id, agent_type="copilot"
+            )
+        ),
+    )
+    flow.runner_pool = "private"
+    with pytest.raises(ModelRoutingError, match="cannot select agent_type 'copilot'"):
+        prepare_execution_routing(db_session, flow, {"payload": {"labels": ["native"]}})
+
+
 def test_stored_routing_rejects_cursor_rules_with_host_profile_guidance(
     db_session: Session, test_user: User
 ) -> None:

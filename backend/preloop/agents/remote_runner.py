@@ -26,6 +26,7 @@ from preloop.services.host_exec import (
     ISOLATED_PUBLICATION_UNAVAILABLE,
     host_exec_profile_name,
     host_exec_unavailable_reason,
+    is_host_exec_agent_type,
 )
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
@@ -357,9 +358,9 @@ class RemoteRunnerExecutor(AgentExecutor):
         )
         profile = host_exec_profile_name(agent_config, context)
         kind = str(agent_type or "").strip().lower() if agent_type else ""
-        if kind == HOST_EXEC_AGENT_TYPE and not profile:
+        if is_host_exec_agent_type(kind) and not profile:
             raise ValueError(
-                "agent type cursor requires agent_config.host_exec_profile "
+                f"agent type {kind} requires agent_config.host_exec_profile "
                 "on a private runner"
             )
         if not profile and not agent_config_has_image(agent_config):

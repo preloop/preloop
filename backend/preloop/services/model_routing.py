@@ -280,15 +280,16 @@ def _model_uuid(value: Any) -> str:
 
 
 def _require_hosted_routing_harness(agent_type: str) -> str:
-    """Reject native Cursor in rules/matrices; it is a flow-default runtime."""
+    """Reject native host CLIs in rules/matrices; they are flow-default runtimes."""
     from preloop.agents.factory import SUPPORTED_AGENT_TYPES
+    from preloop.services.host_exec import is_host_exec_agent_type
 
     harness = (agent_type or "").strip().lower()
-    if harness == "cursor":
+    if is_host_exec_agent_type(harness):
         raise ModelRoutingError(
             "Routing rules and eval matrices cannot select agent_type "
-            "'cursor'; native Cursor is the flow default with a named host "
-            "profile on a private runner"
+            f"'{harness}'; native {harness} is the flow default with a named "
+            "host profile on a private runner"
         )
     if harness not in SUPPORTED_AGENT_TYPES:
         raise ModelRoutingError(
@@ -348,16 +349,18 @@ def validate_default_selection(
 ) -> None:
     """Validate defaults/pinned identity without widening rule or matrix targets.
 
-    A named private Cursor profile uses the runner's local credentials and
-    model map. The pool check matches ``resolve_runner_pool`` for the
+    A named private Cursor or Copilot CLI profile uses the runner's local
+    credentials and model map. The pool check matches ``resolve_runner_pool`` for the
     flow-level and account-default steps (not the "any online runner" auto
     fallback): ``flow.runner_pool``, then ``account.default_runner_pool``.
     The runtime still owns native capability checks and rejection of
     unsupported resume/publication paths. This forward-compatible boundary has
     no dependency on the optional native-runner implementation.
     """
+    from preloop.services.host_exec import is_host_exec_agent_type
+
     harness = (agent_type or "").strip().lower()
-    if harness != "cursor":
+    if not is_host_exec_agent_type(harness):
         if ai_model_id is not None:
             load_usable_model(
                 db,
@@ -377,8 +380,9 @@ def validate_default_selection(
         or pool is None
         or _is_server_pool(pool)
     ):
+        label = "Cursor" if harness == "cursor" else "Copilot CLI"
         raise ModelRoutingError(
-            "Cursor defaults require a named host profile and a private "
+            f"{label} defaults require a named host profile and a private "
             "runner pool (flow.runner_pool or account.default_runner_pool)"
         )
     if ai_model_id is None:
@@ -387,7 +391,7 @@ def validate_default_selection(
     if not _account_can_use_model(model, flow.account_id):
         raise ModelRoutingError(f"ai_model_id '{ai_model_id}' not found")
     if getattr(model, "model_kind", "llm") != "llm":
-        raise ModelRoutingError("Private Cursor defaults require an LLM model")
+        raise ModelRoutingError("Private host profile defaults require an LLM model")
 
 
 def validate_stored_model_routing(
@@ -542,8 +546,10 @@ def is_model_usable_and_gateway_enabled(
     gateway = meta_data.get("gateway")
     if isinstance(gateway, dict) and gateway.get("enabled") is False:
         return False
+    from preloop.services.host_exec import is_host_exec_agent_type
+
     harness = (agent_type or "").strip().lower()
-    if harness != "cursor":
+    if not is_host_exec_agent_type(harness):
         return model_usable_for_agent(model, harness)
     return getattr(model, "model_kind", "llm") == "llm"
 
@@ -657,7 +663,11 @@ def resolve_routing_record(
 
     default_type = (flow.agent_type or "").strip().lower() or None
     default_model_id = flow.ai_model_id
-    if default_type == "cursor" or (ordered_rules and default_model_id is not None):
+    from preloop.services.host_exec import is_host_exec_agent_type
+
+    if is_host_exec_agent_type(default_type) or (
+        ordered_rules and default_model_id is not None
+    ):
         validate_default_selection(
             db, flow, ai_model_id=default_model_id, agent_type=default_type or "codex"
         )
