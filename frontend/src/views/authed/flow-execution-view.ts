@@ -3219,11 +3219,6 @@ ${execution.resolved_input_prompt}</pre>
   }
 
   /**
-   * One hairline row instead of five cards: what ran, how long, on which
-   * model, what it cost and where to find the session. Values are the
-   * loudest thing in the row; the labels stay in the meta register.
-   */
-  /**
    * CLI sessions the runner's usage hook linked to this host run. Hidden for
    * container runs and for host runs whose hook reported nothing.
    */
@@ -3261,6 +3256,11 @@ ${execution.resolved_input_prompt}</pre>
     </div>`;
   }
 
+  /**
+   * One hairline row instead of five cards: what ran, how long, on which
+   * model, what it cost and where to find the session. Values are the
+   * loudest thing in the row; the labels stay in the meta register.
+   */
   private renderSummaryStrip(execution: FlowExecution) {
     const toolEntries = this.getToolActivityEntries();
     const failedTools = toolEntries.filter(
