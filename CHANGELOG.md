@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MCP firewall derives a `browser_step` activity from each proxied
+  Playwright MCP (`@playwright/mcp`) `browser_*` tool call on a runtime
+  session, with no adapter on the agent side. The step joins the
+  `tool_call` row through the correlation id, the image returned by
+  `browser_take_screenshot` becomes the step's screenshot artifact under
+  the API's size, type and budget rules, and typed text, pressed keys and
+  selected values are never copied. What the agent receives does not
+  change. `MCP_PLAYWRIGHT_DERIVE_BROWSER_STEPS=false` turns it off. (#885)
 - Persistent runners can be deleted and have their token rotated.
   `DELETE /api/v1/runners/{runner_id}` refuses with 409 while the runner holds
   an execution; `?force=true` halts those executions and deletes it anyway.
