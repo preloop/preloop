@@ -84,6 +84,11 @@ describe('PreloopFlowForm event filters section', () => {
     expect(source).to.include('trigger_config.issue_type');
   });
 
+  it('renders the moved-to-status filter for Jira trackers', () => {
+    expect(source).to.include('trigger_config.status_to');
+    expect(source).to.include('Moved to status');
+  });
+
   it('renders merged and draft checkbox filters for PR/MR events', () => {
     expect(source).to.include('trigger_config.merged');
     expect(source).to.include('trigger_config.draft');
@@ -133,6 +138,11 @@ const GITLAB_TRACKER = {
   name: 'GitLab',
   tracker_type: 'gitlab',
 };
+const JIRA_TRACKER = {
+  id: 'tracker-jira',
+  name: 'Jira',
+  tracker_type: 'jira',
+};
 const ORGANIZATION = {
   id: 'org-1',
   name: 'Acme',
@@ -170,7 +180,9 @@ describe('PreloopFlowForm event filters behaviour', () => {
     sandbox.stub(window, 'fetch').callsFake(async (url: any) => {
       const target = String(url);
       if (target.includes('/api/v1/trackers')) {
-        return new Response(JSON.stringify([GITHUB_TRACKER, GITLAB_TRACKER]));
+        return new Response(
+          JSON.stringify([GITHUB_TRACKER, GITLAB_TRACKER, JIRA_TRACKER])
+        );
       }
       if (target.includes('/api/v1/organizations')) {
         return new Response(JSON.stringify({ items: [ORGANIZATION] }));
@@ -299,5 +311,33 @@ describe('PreloopFlowForm event filters behaviour', () => {
     await element.updateComplete;
 
     expect(element.flow.trigger_config).to.deep.equal({ author: 'octocat' });
+  });
+
+  it('records the Jira moved-to-status filter as status_to', async () => {
+    const element = await mount({
+      ...trackerFlow(),
+      trigger_event_source: JIRA_TRACKER.id,
+      trigger_event_types: ['issue_status_changed'],
+    });
+    (element as any).filtersExpanded = true;
+    await element.updateComplete;
+
+    const status = filterInput(element, 'Moved to status');
+    expect(status).to.exist;
+    status.value = ' Ready for Dev ';
+    status.dispatchEvent(new CustomEvent('sl-input'));
+
+    const payload = await submit(element);
+    expect(payload.trigger_config).to.deep.equal({
+      status_to: 'Ready for Dev',
+    });
+  });
+
+  it('does not offer the moved-to-status filter for code hosts', async () => {
+    const element = await mount(trackerFlow());
+    (element as any).filtersExpanded = true;
+    await element.updateComplete;
+
+    expect(filterInput(element, 'Moved to status')).to.equal(null);
   });
 });
