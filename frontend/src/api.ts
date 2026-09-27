@@ -78,6 +78,9 @@ import type {
   AIModel,
   CostAnalyticsSummaryResponse,
   CostReconciliationResponse,
+  CopilotConnection,
+  CopilotConnectionUpsert,
+  CopilotUsageSummary,
   ProviderBillingConnection,
   RepriceResponse,
   RepriceJobStatus,
@@ -1542,6 +1545,64 @@ export async function getCostReconciliation(params: {
     throw new Error('Failed to fetch cost reconciliation');
   }
   return response.json();
+}
+
+export async function getCopilotUsage(params: {
+  startDate?: string;
+  endDate?: string;
+}): Promise<CopilotUsageSummary> {
+  const query = new URLSearchParams();
+  if (params.startDate) query.set('start_date', params.startDate);
+  if (params.endDate) query.set('end_date', params.endDate);
+  const suffix = query.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/cost/copilot${suffix ? `?${suffix}` : ''}`
+  );
+  if (response.status === 403) {
+    throw await permissionErrorFromResponse(response);
+  }
+  if (!response.ok) {
+    throw new Error('Failed to fetch Copilot usage');
+  }
+  return response.json();
+}
+
+export async function saveCopilotConnection(
+  payload: CopilotConnectionUpsert
+): Promise<CopilotConnection> {
+  const response = await fetchWithAuth('/api/v1/cost/copilot/connection', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to save the Copilot connection')
+    );
+  }
+  return response.json();
+}
+
+export async function deleteCopilotConnection(): Promise<void> {
+  const response = await fetchWithAuth('/api/v1/cost/copilot/connection', {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to remove the Copilot connection');
+  }
+}
+
+export async function syncCopilotConnection(): Promise<void> {
+  const response = await fetchWithAuth('/api/v1/cost/copilot/connection/sync', {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to queue the Copilot import')
+    );
+  }
 }
 
 /**

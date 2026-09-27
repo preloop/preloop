@@ -512,6 +512,13 @@ PRESET_COMPLETION_MARKERS = {
     "017-portfolio-review.yaml": '"status": "success" | "error"',
 }
 
+# Presets that run no agent, so there is no result.json to confirm. Their
+# control plane decides the terminal status itself; each entry must enable
+# the block that makes the orchestrator skip the agent (issue #961).
+CONTROL_PLANE_PRESETS = {
+    "018-release-backport.yaml": "backport",
+}
+
 
 def _parse_completion_marker(marker: str) -> tuple[str, list[str]]:
     """Split a marker line into its result.json field and value vocabulary.
@@ -539,7 +546,7 @@ class TestShippedPresetCompletionContracts:
     def test_every_shipped_preset_has_a_known_completion_marker(self):
         """New presets must register their completion vocabulary here."""
         names = [path.name for path in self._shipped_preset_files()]
-        assert names == sorted(PRESET_COMPLETION_MARKERS), (
+        assert names == sorted([*PRESET_COMPLETION_MARKERS, *CONTROL_PLANE_PRESETS]), (
             "shipped presets and PRESET_COMPLETION_MARKERS out of sync — "
             "every shipped preset needs an explicit result.json completion "
             "contract and a marker entry in this test"
@@ -560,6 +567,19 @@ class TestShippedPresetCompletionContracts:
         assert PRESET_COMPLETION_MARKERS[filename] in norm, (
             f"{filename} prompt must document its completion status vocabulary"
         )
+
+    @pytest.mark.parametrize("filename", sorted(CONTROL_PLANE_PRESETS))
+    def test_control_plane_presets_really_skip_the_agent(self, filename):
+        """An exempt preset must enable the block that replaces the agent."""
+        from preloop.flow_presets import DEFAULT_PRESETS_DIR
+        from preloop.services.backport import resolve_backport_plan
+
+        path = DEFAULT_PRESETS_DIR / filename
+        if not path.exists():
+            pytest.skip(f"{filename} not shipped in this layout")
+        data = yaml.safe_load(path.read_text())
+        assert CONTROL_PLANE_PRESETS[filename] == "backport"
+        assert resolve_backport_plan(data["git_clone_config"]) is not None
 
     @pytest.mark.parametrize(
         "filename",

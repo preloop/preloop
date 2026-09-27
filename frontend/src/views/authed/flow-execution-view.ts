@@ -3188,11 +3188,23 @@ ${execution.resolved_input_prompt}</pre>
     const toolCount = this.getTotalToolCallCount();
     const sessionReference = execution.agent_session_reference;
 
-    const costText = this.hasPricing
-      ? formatEstimatedCost(this.budgetUsed)
-      : this.totalTokens > 0
-        ? 'Not priced'
-        : '—';
+    // Host CLI runs bill the runner user's own subscription. The server sets
+    // gateway_metered=false on those completions; there is no gateway spend
+    // to estimate, so say so instead of printing a dash or $0.
+    const hostMetering = hostExecMetering(execution.result);
+    const costText = hostMetering
+      ? html`<sl-badge
+          variant="neutral"
+          pill
+          data-testid="strip-not-metered"
+          title=${hostMetering.title}
+          >Not gateway metered</sl-badge
+        >`
+      : this.hasPricing
+        ? formatEstimatedCost(this.budgetUsed)
+        : this.totalTokens > 0
+          ? 'Not priced'
+          : '—';
 
     const limits = this.executionLimits;
     const tokenLimit = limits?.max_total_tokens;
@@ -3901,4 +3913,34 @@ ${log.payload.content}</pre>
   getStatusVariant(status: string) {
     return executionStatusVariant(status);
   }
+}
+
+/**
+ * Metering note for a host-exec run that bypassed the model gateway.
+ *
+ * Only the server-set marker on a Cursor or Copilot host completion counts;
+ * container runs never show it.
+ */
+export function hostExecMetering(
+  result: Record<string, unknown> | null | undefined
+): { title: string } | null {
+  if (!result || result.gateway_metered !== false) {
+    return null;
+  }
+  const harness = result.harness;
+  if (harness !== 'cursor_cli' && harness !== 'copilot_cli') {
+    return null;
+  }
+  const subscription =
+    harness === 'copilot_cli'
+      ? "the runner user's GitHub Copilot seat"
+      : "the runner user's Cursor plan";
+  const premium = result.premium_requests;
+  const spend =
+    typeof premium === 'number' && Number.isFinite(premium) && premium >= 0
+      ? ` Copilot reported ${premium} premium request${premium === 1 ? '' : 's'}.`
+      : '';
+  return {
+    title: `Model spend for this run is billed to ${subscription}, not the Preloop gateway.${spend}`,
+  };
 }

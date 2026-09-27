@@ -477,3 +477,62 @@ def test_execution_runner_preserves_known_destinations() -> None:
     )
     assert queued["kind"] == "private"
     assert queued["pool"] == "office"
+
+
+def test_lease_job_matches_copilot_lease_to_copilot_profile_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    same_name_cursor = SimpleNamespace(
+        id=uuid4(),
+        status="online",
+        free_slots=1,
+        capabilities={
+            "host_exec_profiles": [
+                {"name": "seat", "capabilities": ["host_exec", "cursor_cli"]}
+            ]
+        },
+    )
+    copilot = SimpleNamespace(
+        id=uuid4(),
+        status="online",
+        free_slots=1,
+        capabilities={
+            "host_exec_profiles": [
+                {
+                    "name": "seat",
+                    "capabilities": ["host_exec", "copilot_cli"],
+                    "models": ["team-default"],
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "find_matching",
+        lambda db, **kwargs: [same_name_cursor, copilot],
+    )
+
+    def _claim_free_slot(db, *, runner_id):
+        if runner_id == copilot.id:
+            return copilot
+        raise AssertionError("must not claim a Cursor profile for a Copilot lease")
+
+    monkeypatch.setattr(crud_flow_runner, "claim_free_slot", _claim_free_slot)
+    monkeypatch.setattr(
+        crud_flow_runner,
+        "create_assignment",
+        lambda db, **kwargs: SimpleNamespace(reported_status=None, **kwargs),
+    )
+    result = lease_job(
+        MagicMock(),
+        account_id=uuid4(),
+        pool="local",
+        execution_id=uuid4(),
+        payload={
+            "agent_type": "copilot",
+            "host_exec_profile": "seat",
+            "model_identifier": "team-default",
+            "prompt": "review",
+        },
+    )
+    assert result is copilot

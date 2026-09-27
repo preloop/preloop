@@ -427,7 +427,6 @@ export class ConsoleHeader extends LitElement {
     this.connectToNotificationUpdates();
     this.loadRunningExecutions();
     this.loadPendingApprovals();
-    this.loadUserNotifications();
     // Request desktop notification permission when console loads.
     // Browsers may require a user gesture; if so, user can click the bell icon.
     this.requestNotificationPermission();
@@ -557,17 +556,6 @@ export class ConsoleHeader extends LitElement {
     }
   }
 
-  private async loadUserNotifications() {
-    // TODO: Implement when backend API is available
-    // For now, notifications will only come through WebSocket
-    try {
-      // const notifications = await api.getUserNotifications();
-      // this._userNotifications = notifications;
-    } catch (error) {
-      console.error('Failed to load user notifications:', error);
-    }
-  }
-
   private async handleApprove(approvalId: string, event: Event) {
     event.stopPropagation();
     this._processingApproval = approvalId;
@@ -639,8 +627,9 @@ export class ConsoleHeader extends LitElement {
     this._userNotifications = this._userNotifications.map((n) =>
       n.id === notificationId ? { ...n, read: true } : n
     );
-    // TODO: Call API to mark as read when backend supports it
-    // api.markNotificationRead(notificationId);
+    // Read state lives in this tab only. Bell notifications are delivered
+    // over the WebSocket for the current session and the backend keeps no
+    // notification store, so there is nothing server-side to update.
   }
 
   /**
@@ -801,13 +790,17 @@ export class ConsoleHeader extends LitElement {
     );
   }
 
+  /**
+   * Feed the bell from account events on the 'system' channel.
+   *
+   * These notifications are session-only: there is no endpoint that lists
+   * past ones, so the bell starts empty on every page load and fills as
+   * events arrive.
+   */
   private connectToNotificationUpdates() {
-    // TODO: Subscribe to 'notifications' WebSocket channel when backend supports it
     this.unsubscribeNotifications = unifiedWebSocketManager.subscribe(
       'system',
       (message) => {
-        console.log('Console header received system message:', message);
-
         // Handle notification-type messages
         if (
           message.type === 'team_member_added' ||
