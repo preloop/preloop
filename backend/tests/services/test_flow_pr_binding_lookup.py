@@ -203,7 +203,9 @@ class TestLookupBinding:
         from preloop.sync.trackers.jira import JiraTracker
 
         client = JiraTracker.__new__(JiraTracker)
-        assert await client.find_open_pull_request_for_branch(BRANCH) is None
+        client.tracker_type = "jira"
+        orchestrator = _bare_orchestrator()
+        assert await orchestrator._lookup_published_pr(client, BRANCH) is None
 
     def test_listing_guard_ignores_other_branches_and_urlless_items(self):
         from preloop.sync.trackers.base import BaseTracker

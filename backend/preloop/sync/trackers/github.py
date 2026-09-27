@@ -2096,6 +2096,14 @@ class GitHubTracker(BaseTracker):
             ),
         }
 
+    async def list_open_pull_requests_by_source_branch(
+        self, branch: str
+    ) -> Dict[str, Any]:
+        """Open pull requests whose head is ``branch``, in the shared shape."""
+        return await self.list_pull_requests(
+            state="open", limit=5, page=1, head_branch=branch
+        )
+
     async def branch_exists(self, branch: str) -> bool:
         """Whether ``branch`` exists on the connected repository.
 
@@ -2137,22 +2145,6 @@ class GitHubTracker(BaseTracker):
             "created_at": pr_data.get("created_at"),
             "updated_at": pr_data.get("updated_at"),
         }
-
-    async def find_open_pull_request_for_branch(
-        self, branch: str
-    ) -> Optional[Dict[str, Any]]:
-        """The open pull request whose head is ``branch`` of this repository.
-
-        Args:
-            branch: Head branch name.
-
-        Returns:
-            The pull request in the shared list shape, or None.
-        """
-        listing = await self.list_pull_requests(
-            state="open", limit=5, page=1, head_branch=branch
-        )
-        return self._first_listed_for_branch(listing, branch)
 
     async def find_pull_requests_by_branch(
         self, source_branch: str, target_branch: str
@@ -3686,6 +3678,7 @@ class GitHubTracker(BaseTracker):
         context: str = "preloop",
         description: Optional[str] = None,
         target_url: Optional[str] = None,
+        refname: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a commit status (check) on a specific commit.
 
@@ -3698,10 +3691,13 @@ class GitHubTracker(BaseTracker):
                      Default is "preloop".
             description: A short description of the status (max 140 chars).
             target_url: URL to link to for more details (e.g., flow execution page).
+            refname: Pull request source branch. Unused: GitHub associates a
+                status with every pull request whose head is ``sha``.
 
         Returns:
             Dictionary with status details.
         """
+        del refname
         owner = self.connection_details.get("owner")
         repo = self.connection_details.get("repo")
 

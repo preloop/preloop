@@ -1628,21 +1628,13 @@ class GitLabTracker(BaseTracker):
         items = [self._normalize_listed_merge_request(mr) for mr in rows]
         return {"items": items, "has_more": has_more}
 
-    async def find_open_pull_request_for_branch(
+    async def list_open_pull_requests_by_source_branch(
         self, branch: str
-    ) -> Optional[Dict[str, Any]]:
-        """The open merge request whose source is ``branch``.
-
-        Args:
-            branch: Source branch name.
-
-        Returns:
-            The merge request in the shared list shape, or None.
-        """
-        listing = await self.list_merge_requests(
+    ) -> Dict[str, Any]:
+        """Open merge requests from ``branch``, in the shared PR list shape."""
+        return await self.list_merge_requests(
             state="open", limit=5, page=1, source_branch=branch
         )
-        return self._first_listed_for_branch(listing, branch)
 
     async def branch_exists(self, branch: str) -> bool:
         """Whether ``branch`` exists on the connected project.
@@ -2495,6 +2487,7 @@ class GitLabTracker(BaseTracker):
         context: str = "preloop",
         description: Optional[str] = None,
         target_url: Optional[str] = None,
+        refname: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a commit status (pipeline status) on a specific commit.
 
@@ -2508,10 +2501,13 @@ class GitLabTracker(BaseTracker):
                      this status from others. Default is "preloop".
             description: A short description of the status.
             target_url: URL to link to for more details.
+            refname: Merge request source branch. Unused: GitLab shows a
+                status on every merge request whose head is ``sha``.
 
         Returns:
             Dictionary with status details.
         """
+        del refname
         project_id = self._get_project_id()
 
         # Map common state names to GitLab's expected values

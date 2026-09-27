@@ -82,7 +82,7 @@ page is unchanged.
     and never fails its caller.
 *   **PR opened time:** `issue_cost_pull_request.opened_at_source` says where
     `opened_at` came from. `forge` is the pull request's own `created_at`,
-    read through `BaseTracker.find_open_pull_request_for_branch` on the
+    read through the tracker's `list_open_pull_requests_by_source_branch` on the
     branch lookup bind path (GitHub, GitLab and Bitbucket) or from any later
     pull request webhook; it replaces a Preloop time even when that is
     earlier. `bind` is the time Preloop bound the pull request to the run and

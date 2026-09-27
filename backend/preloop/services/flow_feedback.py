@@ -23,6 +23,7 @@ from preloop.services.flow_feedback_provider import (
     bounded_text,
     classify_failure,
 )
+from preloop.utils.bitbucket import repository_identity
 
 logger = logging.getLogger(__name__)
 FEEDBACK_TYPES = frozenset(
@@ -43,8 +44,25 @@ FEEDBACK_TYPES = frozenset(
         "merge_request_updated",
         "merge_request_closed",
         "merge_request_merged",
+        # Bitbucket review verdicts are participant flips, not reviews.
+        "pull_request_approved",
+        "pull_request_unapproved",
+        "pull_request_changes_requested",
+        "pull_request_changes_request_removed",
     }
 )
+
+
+def _repository_identity(provider: Any, repository: dict[str, Any]) -> Any:
+    """The stable per-provider repository key threads are found by.
+
+    GitHub and GitLab have numeric repository ids. Bitbucket has none, so its
+    identity is ``workspace_slug/repo_uuid``, which both webhook payloads and
+    manual-run payloads can produce.
+    """
+    if provider == "bitbucket":
+        return repository_identity(repository)
+    return repository.get("id")
 
 
 def feedback_policy(flow: Any) -> dict[str, Any] | None:
@@ -79,9 +97,9 @@ def register_thread(
         return None
     payload = details.get("payload") or {}
     repository = payload.get("repository") or payload.get("project") or {}
-    repository_id = repository.get("id")
     tracker_id = details.get("tracker_id") or flow.trigger_event_source
     provider = details.get("source")
+    repository_id = _repository_identity(provider, repository)
     parsed = urlparse(pr_url)
     parts = parsed.path.rstrip("/").split("/")
     try:
@@ -97,7 +115,7 @@ def register_thread(
     if (
         not repository_id
         or tracker_uuid is None
-        or provider not in {"github", "gitlab"}
+        or provider not in {"github", "gitlab", "bitbucket"}
         or not parts[-1].isdigit()
     ):
         logger.warning("Cannot bind feedback: missing provider repository identity")
@@ -284,15 +302,21 @@ def ingest_feedback(db: Session, event: dict[str, Any]) -> bool:
         return False
     payload = event.get("payload") or {}
     repo = payload.get("repository") or payload.get("project") or {}
-    if not repo.get("id") or not event.get("account_id") or not event.get("tracker_id"):
+    provider = str(event.get("source") or "").lower()
+    repo_id = _repository_identity(provider, repo)
+    if not repo_id or not event.get("account_id") or not event.get("tracker_id"):
         return False
     pr = (
         payload.get("pull_request")
         or payload.get("merge_request")
+        or payload.get("pullrequest")
         or payload.get("issue")
         or {}
     )
     number = pr.get("number") or pr.get("iid")
+    if not number and provider == "bitbucket":
+        # Bitbucket pull request payloads carry the number as ``id``.
+        number = pr.get("id")
     if not number:
         # Commit-level check_run/status payloads omit a PR. Finding without a
         # number would wake every thread on the repository.
@@ -301,7 +325,7 @@ def ingest_feedback(db: Session, event: dict[str, Any]) -> bool:
         db,
         account_id=uuid.UUID(str(event["account_id"])),
         tracker_id=uuid.UUID(str(event["tracker_id"])),
-        repository_id=str(repo["id"]),
+        repository_id=str(repo_id),
         pr_number=str(number),
     )
     now = datetime.now(UTC).replace(tzinfo=None)
@@ -631,9 +655,9 @@ async def _reconcile(
         "_resume": resume,
         "payload": {
             "object_attributes": thread.context.get("original_issue", {}),
-            "repository"
-            if thread.provider == "github"
-            else "project": thread.context.get(
+            "project"
+            if thread.provider == "gitlab"
+            else "repository": thread.context.get(
                 "repository", {"id": thread.repository_id}
             ),
             "issue": {

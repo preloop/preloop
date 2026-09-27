@@ -13389,8 +13389,16 @@ components:
             type: object
           - type: 'null'
           title: Credential Payload
-          description: Optional inline credential payload for non-API-key auth, stored
-            encrypted when provided
+          description: 'Inline credential payload for non-API-key auth, stored encrypted.
+            Validated per credential_type at write time; an invalid payload returns
+            422 and nothing is stored. For ''oauth_openai_codex'' send {access, refresh,
+            account_id, expires}: access, refresh and account_id are non-empty strings
+            and expires is the access-token expiry as an integer in epoch milliseconds.
+            For ''oauth_anthropic_claude_code'' send {access} plus optional refresh
+            (non-empty string) and expires (epoch milliseconds). The key names from
+            the tools'' own auth files (access_token, refresh_token, expires_at) are
+            rejected. This is the same shape POST /ai-models/{model_id}/credentials/export
+            returns.'
         credentials_backend_type:
           anyOf:
           - type: string
@@ -14027,6 +14035,16 @@ components:
             type: object
           - type: 'null'
           title: Credential Payload
+          description: 'Inline credential payload for non-API-key auth, stored encrypted.
+            Validated per credential_type at write time; an invalid payload returns
+            422 and nothing is stored. For ''oauth_openai_codex'' send {access, refresh,
+            account_id, expires}: access, refresh and account_id are non-empty strings
+            and expires is the access-token expiry as an integer in epoch milliseconds.
+            For ''oauth_anthropic_claude_code'' send {access} plus optional refresh
+            (non-empty string) and expires (epoch milliseconds). The key names from
+            the tools'' own auth files (access_token, refresh_token, expires_at) are
+            rejected. This is the same shape POST /ai-models/{model_id}/credentials/export
+            returns.'
         credentials_backend_type:
           anyOf:
           - type: string

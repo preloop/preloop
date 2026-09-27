@@ -245,25 +245,6 @@ class BaseTracker(ABC):
             "created_at": comment_data.get("created_at"),
         }
 
-    async def find_open_pull_request_for_branch(
-        self, branch: str
-    ) -> Optional[Dict[str, Any]]:
-        """The open pull or merge request whose head is ``branch``.
-
-        Used to bind a pull request that deterministic publication code
-        opened when its log marker was lost, and to read the forge's own
-        ``created_at`` for it. Trackers without a pull request API return
-        None; a forge adapter overrides this.
-
-        Args:
-            branch: Head (source) branch name.
-
-        Returns:
-            The pull request in the shared list shape (``url``,
-            ``source_branch``, ``created_at``, ...), or None.
-        """
-        return None
-
     @staticmethod
     def _first_listed_for_branch(listing: Any, branch: str) -> Optional[Dict[str, Any]]:
         """First listed pull request whose head really is ``branch``.

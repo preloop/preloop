@@ -20,6 +20,7 @@
     "gap_register",
     "evidence_storage",
     "checks",
+    "limitations",
     "assessments",
     "artifacts",
     "disclaimer"
@@ -53,6 +54,7 @@
     "gap_register": {},
     "evidence_storage": {},
     "checks": {},
+    "limitations": {},
     "assessments": {},
     "artifacts": {},
     "disclaimer": {
