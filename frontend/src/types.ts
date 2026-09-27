@@ -107,9 +107,17 @@ export interface Flow {
   /**
    * Blocking review rules for the Pull Request Reviewer. Same markdown as
    * `.preloop/review-policy.md`. Null or absent means the repository file
-   * is the only source.
+   * is the only source. The reviewer prompt keeps the first 16,384
+   * characters. The API accepts up to 32,768.
    */
   review_instructions?: string | null;
+  /**
+   * Catalog identity for a built-in preset. Null on an account flow, whose
+   * name can be edited and is not identity.
+   */
+  slug?: string | null;
+  /** Preset this flow was created from, when it was created from one. */
+  source_preset_id?: string | null;
   agent_type?: string;
   agent_config?: Record<string, unknown>;
   ai_model_id?: string;

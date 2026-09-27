@@ -7,6 +7,9 @@ PR actually does what the issue it references asked for.
 The preset ships as `backend/presets/002-pull-request-reviewer.yaml`
 (slug `pull-request-reviewer`).
 
+Operators set blocking review policy on the flow form's Review instructions
+field when the repository cannot hold `.preloop/review-policy.md`.
+
 The review is **stateful**. One summary comment carries HTML markers
 (`<!-- preloop-review:flow-id:pr-reviewer -->`,
 `<!-- preloop-review:reviewed-sha:SHA -->`) and is rewritten in place on each
