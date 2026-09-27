@@ -112,7 +112,7 @@ async def score_screened_content(
             verdict.score,
             ",".join(verdict.matched_rules),
             payload.hook,
-            auth_context.user.account_id,
+            auth_context.account_id,
             metadata.get("qm"),
         )
     return SecurityScreenResponse(

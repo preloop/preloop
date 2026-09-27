@@ -191,6 +191,7 @@ class TestGetCurrentUser:
 
         mock_api_key = MagicMock()
         mock_api_key.user_id = mock_user.id
+        mock_api_key.account_id = mock_user.account_id
         mock_api_key.is_expired = False
 
         with patch.object(jwt_module, "get_db_session") as mock_get_db:
@@ -215,6 +216,7 @@ class TestGetCurrentUser:
 
         mock_api_key = MagicMock()
         mock_api_key.user_id = mock_user.id
+        mock_api_key.account_id = mock_user.account_id
         mock_api_key.is_expired = True
         mock_api_key.expires_at = datetime.now(UTC) - timedelta(days=1)
 
@@ -461,6 +463,7 @@ class TestApiKeyFallback:
 
         mock_api_key = MagicMock()
         mock_api_key.user_id = mock_user.id
+        mock_api_key.account_id = mock_user.account_id
         mock_api_key.name = "test_key"
         mock_api_key.is_expired = False
         mock_api_key.expires_at = None
