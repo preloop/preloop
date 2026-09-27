@@ -1,10 +1,13 @@
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
+  CliSession,
   changePassword,
   fetchWithAuth,
   getFeatures,
+  listCliSessions,
   performLocalSignOut,
+  revokeCliSession,
 } from '../../../api';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import {
@@ -44,9 +47,101 @@ export class SecurityView extends LitElement {
   @state()
   private passkeyBusy = false;
 
+  @state()
+  private cliSessions: CliSession[] = [];
+
+  @state()
+  private cliSessionsLoaded = false;
+
+  @state()
+  private cliSessionMessage = '';
+
   connectedCallback() {
     super.connectedCallback();
     void this.loadPasskeys();
+    void this.loadCliSessions();
+  }
+
+  private async loadCliSessions() {
+    try {
+      this.cliSessions = await listCliSessions();
+      this.cliSessionsLoaded = true;
+    } catch {
+      // A failed list must not break the security page; hide the card.
+      this.cliSessionsLoaded = false;
+    }
+  }
+
+  private async handleRevokeCliSession(id: string) {
+    this.cliSessionMessage = '';
+    try {
+      await revokeCliSession(id);
+      this.cliSessions = this.cliSessions.filter((s) => s.id !== id);
+      this.cliSessionMessage = 'CLI login revoked.';
+    } catch (error) {
+      this.cliSessionMessage =
+        error instanceof Error ? error.message : 'Failed to revoke CLI login.';
+    }
+  }
+
+  private renderCliSessions() {
+    if (!this.cliSessionsLoaded) {
+      return '';
+    }
+    return html`
+      <div class="card" data-testid="cli-sessions">
+        <div class="card-header">
+          <h3>CLI logins</h3>
+        </div>
+        <div class="card-body">
+          <p>
+            Each <code>preloop auth login</code> is listed here. Revoking one
+            signs that CLI out on its next request; the others stay signed in.
+          </p>
+          ${
+            this.cliSessions.length > 0
+              ? html`
+                  <ul class="passkey-list">
+                    ${this.cliSessions.map(
+                      (session) => html`
+                        <li
+                          class="passkey-item"
+                          data-session-id="${session.id}"
+                        >
+                          <span>
+                            ${session.hostname || 'Unknown host'}
+                            <small>
+                              ${session.user_agent || 'unknown client'}, last
+                              used
+                              ${
+                                session.last_seen_at
+                                  ? new Date(
+                                      session.last_seen_at
+                                    ).toLocaleString()
+                                  : 'never'
+                              }
+                            </small>
+                          </span>
+                          <sl-button
+                            size="small"
+                            variant="danger"
+                            outline
+                            data-testid="revoke-cli-session"
+                            @click="${() =>
+                              this.handleRevokeCliSession(session.id)}"
+                            >Revoke</sl-button
+                          >
+                        </li>
+                      `
+                    )}
+                  </ul>
+                `
+              : html`<p><em>No active CLI logins.</em></p>`
+          }
+          ${this.cliSessionMessage ? html`<p>${this.cliSessionMessage}</p>` : ''}
+        </div>
+      </div>
+    `;
   }
 
   private async loadPasskeys() {
@@ -265,6 +360,7 @@ export class SecurityView extends LitElement {
                 `
               : ''
           }
+          ${this.renderCliSessions()}
           <div class="sign-out-everywhere">
             <sl-button
               variant="danger"

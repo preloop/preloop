@@ -9,7 +9,28 @@ import type { SecurityView } from './security-view';
 describe('SecurityView', () => {
   let fetchStub: sinon.SinonStub;
 
-  function createFetchStub(opts: { changeFails?: boolean } = {}) {
+  const cliSessions = [
+    {
+      id: 'aaaaaaaa-0000-0000-0000-000000000001',
+      created_at: '2026-09-01T10:00:00',
+      last_seen_at: '2026-09-27T08:00:00+00:00',
+      user_agent: 'preloop-cli/0.17.0',
+      hostname: 'laptop.example.com',
+      current: false,
+    },
+    {
+      id: 'aaaaaaaa-0000-0000-0000-000000000002',
+      created_at: '2026-09-02T10:00:00',
+      last_seen_at: null,
+      user_agent: null,
+      hostname: 'build-host',
+      current: false,
+    },
+  ];
+
+  function createFetchStub(
+    opts: { changeFails?: boolean; withCliSessions?: boolean } = {}
+  ) {
     return sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -24,6 +45,25 @@ describe('SecurityView', () => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
+        }
+
+        if (
+          opts.withCliSessions &&
+          url.endsWith('/api/v1/auth/sessions/cli') &&
+          method === 'GET'
+        ) {
+          return new Response(JSON.stringify(cliSessions), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (
+          opts.withCliSessions &&
+          url.includes('/api/v1/auth/sessions/cli/') &&
+          method === 'DELETE'
+        ) {
+          return new Response(null, { status: 204 });
         }
 
         if (
@@ -178,5 +218,58 @@ describe('SecurityView', () => {
     expect(localStorage.getItem('accessToken')).to.equal(null);
     expect(localStorage.getItem('refreshToken')).to.equal(null);
     expect(navigate).to.have.been.calledWith('/');
+  });
+
+  it('hides the CLI logins card when the list cannot be loaded', async () => {
+    fetchStub = createFetchStub();
+    const element = (await fixture(
+      html`<security-view></security-view>`
+    )) as SecurityView;
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector('[data-testid="cli-sessions"]')).to
+      .not.exist;
+  });
+
+  it('lists CLI logins and revokes one', async () => {
+    fetchStub = createFetchStub({ withCliSessions: true });
+    const element = (await fixture(
+      html`<security-view></security-view>`
+    )) as SecurityView;
+    await waitUntil(
+      () => element.shadowRoot?.querySelector('[data-testid="cli-sessions"]'),
+      'CLI logins card'
+    );
+
+    const card = element.shadowRoot!.querySelector(
+      '[data-testid="cli-sessions"]'
+    )!;
+    expect(card.textContent).to.contain('laptop.example.com');
+    expect(card.textContent).to.contain('build-host');
+
+    const buttons = card.querySelectorAll('[data-testid="revoke-cli-session"]');
+    expect(buttons.length).to.equal(2);
+    (buttons[1] as HTMLElement).click();
+
+    await waitUntil(
+      () =>
+        !element.shadowRoot
+          ?.querySelector('[data-testid="cli-sessions"]')
+          ?.textContent?.includes('build-host'),
+      'revoked row removed'
+    );
+    const call = fetchStub
+      .getCalls()
+      .find(
+        (c) =>
+          String(c.args[0]).includes(
+            '/api/v1/auth/sessions/cli/aaaaaaaa-0000-0000-0000-000000000002'
+          ) && (c.args[1]?.method || '').toUpperCase() === 'DELETE'
+      );
+    expect(call, 'expected DELETE for the revoked session').to.exist;
+    expect(
+      element.shadowRoot?.querySelector('[data-testid="cli-sessions"]')
+        ?.textContent
+    ).to.contain('laptop.example.com');
   });
 });
