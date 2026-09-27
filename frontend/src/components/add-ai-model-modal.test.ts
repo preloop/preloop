@@ -1539,3 +1539,150 @@ describe('AddAIModelModal dialog copy and state (D7)', () => {
     expect(fetchButton?.getAttribute('style') || '').to.not.contain('width');
   });
 });
+
+describe('AddAIModelModal Azure OpenAI provider', () => {
+  let element: AddAIModelModal;
+  let sandbox: SinonSandbox;
+  let fetchStub: SinonStub;
+
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    sandbox = sinon.createSandbox();
+    fetchStub = sandbox.stub(window, 'fetch');
+    fetchStub.callsFake(async (url: any, init: any) => {
+      if (String(url).includes('/api/v1/ai-models') && init?.method) {
+        const body = init.body ? JSON.parse(String(init.body)) : {};
+        return new Response(JSON.stringify({ id: 'azure-id', ...body }), {
+          status: 201,
+        });
+      }
+      return new Response(JSON.stringify([]));
+    });
+    element = await fixture(html`<add-ai-model-modal></add-ai-model-modal>`);
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  it('offers Azure OpenAI for LLMs only', async () => {
+    const llm = (element as any)._availableProviders.map(
+      (p: { value: string }) => p.value
+    );
+    expect(llm).to.contain('azure');
+    (element as any)._currentModel = { model_kind: 'stt' };
+    const stt = (element as any)._availableProviders.map(
+      (p: { value: string }) => p.value
+    );
+    expect(stt).to.not.contain('azure');
+  });
+
+  it('asks for the deployment name instead of fetching models', async () => {
+    element.open = true;
+    await element.updateComplete;
+    await (element as any)._handleProviderChange({
+      target: { value: 'azure' },
+    } as unknown as Event);
+    await element.updateComplete;
+
+    const root = element.shadowRoot!;
+    const deployment = root.querySelector(
+      'sl-input[data-field="model_identifier"]'
+    );
+    expect(deployment?.getAttribute('label')).to.equal('Deployment name');
+    expect(root.querySelector('sl-input[data-field="azure_api_version"]')).to
+      .exist;
+    expect(root.querySelector('sl-input[data-field="azure_base_model"]')).to
+      .exist;
+    const fetchButtonWrapper = Array.from(
+      root.querySelectorAll('div.full-width')
+    ).find((el) => el.querySelector('sl-button'));
+    expect(fetchButtonWrapper?.hasAttribute('hidden')).to.equal(true);
+  });
+
+  it('submits api-version and base model in provider_runtime', async () => {
+    (element as any)._currentModel = {
+      name: 'Chat on Azure',
+      provider_name: 'azure',
+      model_identifier: 'team-chat-prod',
+      model_kind: 'llm',
+      api_endpoint: 'https://example-resource.openai.azure.com',
+      api_key: 'azure-key',
+    };
+    (element as any)._azureApiVersion = ' 2024-10-21 ';
+    (element as any)._azureBaseModel = 'gpt-4o-mini';
+    (element as any)._syncFormFromDom = () => {};
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    expect((element as any)._formError).to.equal(null);
+    const payload = createdModelPayloads(fetchStub)[0];
+    expect(payload.provider_name).to.equal('azure');
+    expect(payload.api_key).to.equal('azure-key');
+    expect(payload.api_endpoint).to.equal(
+      'https://example-resource.openai.azure.com'
+    );
+    expect(payload.meta_data.provider_runtime).to.deep.equal({
+      api_version: '2024-10-21',
+      base_model: 'gpt-4o-mini',
+    });
+    expect(payload.meta_data.gateway.model_alias).to.equal(
+      'azure/team-chat-prod'
+    );
+  });
+
+  it('omits blank Azure fields so the server defaults apply', async () => {
+    (element as any)._currentModel = {
+      name: 'Chat on Azure',
+      provider_name: 'azure',
+      model_identifier: 'gpt-4o-mini',
+      model_kind: 'llm',
+      api_endpoint: 'https://example-resource.openai.azure.com',
+      api_key: 'azure-key',
+    };
+    (element as any)._syncFormFromDom = () => {};
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    const payload = createdModelPayloads(fetchStub)[0];
+    expect(payload.meta_data.provider_runtime).to.deep.equal({});
+  });
+
+  it('keeps the stored api-version and base model when editing', async () => {
+    element.model = {
+      id: 'azure-id',
+      name: 'Chat on Azure',
+      provider_name: 'azure',
+      model_identifier: 'team-chat-prod',
+      model_kind: 'llm',
+      api_endpoint: 'https://example-resource.openai.azure.com',
+      has_api_key: true,
+      meta_data: {
+        provider_runtime: { api_version: 'v1', base_model: 'gpt-4o' },
+      },
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+    expect((element as any)._azureApiVersion).to.equal('v1');
+    expect((element as any)._azureBaseModel).to.equal('gpt-4o');
+
+    (element as any)._syncFormFromDom = () => {};
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    const putCall = fetchStub
+      .getCalls()
+      .find(
+        (call) =>
+          String(call.args[0]).includes('/api/v1/ai-models/azure-id') &&
+          call.args[1]?.method === 'PUT'
+      );
+    const body = JSON.parse(String(putCall!.args[1].body));
+    expect(body.meta_data.provider_runtime).to.deep.equal({
+      api_version: 'v1',
+      base_model: 'gpt-4o',
+    });
+    expect(body.api_key).to.be.undefined;
+  });
+});

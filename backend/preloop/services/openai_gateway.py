@@ -164,7 +164,9 @@ from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
+from preloop.services.azure_openai import azure_request_kwargs
 from preloop.services.litellm_routing import (
+    BEDROCK_PROVIDERS,
     apply_preloop_client_headers,
     is_openrouter_model,
     model_api_base,
@@ -473,8 +475,14 @@ def _submit_gateway_started_emit(event: Dict[str, Any]) -> None:
 
 
 def _supports_ambient_provider_credentials(ai_model: GatewayModel) -> bool:
+    """Whether the model's provider can authenticate from the AWS chain.
+
+    Uses the same provider set as routing (``BEDROCK_PROVIDERS``): a model
+    routed to Bedrock must also get its stored AWS JSON credential unpacked
+    into ``aws_*`` kwargs, or the blob would be sent as an ``api_key``.
+    """
     provider = (ai_model.provider_name or "").strip().lower()
-    return provider in {"bedrock", "amazon-bedrock"}
+    return provider in BEDROCK_PROVIDERS
 
 
 def _openrouter_usage_accounting_enabled() -> bool:
@@ -1023,6 +1031,10 @@ class OpenAIGatewayService:
         # (``GatewayStreamingResponse.on_complete``). None when the generator
         # is still mid-stream or recording already ran.
         self._deferred_stream_record: Optional[Callable[[], None]] = None
+        # Id of the usage row written for the current request. Non-streaming
+        # endpoints return it as ``X-Preloop-Usage-Id`` so an operator smoke
+        # check can point at the exact row the Cost page counts.
+        self.last_usage_id: Optional[str] = None
 
     @property
     def db(self) -> Session:
@@ -1089,6 +1101,7 @@ class OpenAIGatewayService:
         """
         self._last_upstream_retry_count = 0
         self._last_alibaba_cache_mode = None
+        self.last_usage_id = None
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -6976,6 +6989,9 @@ class OpenAIGatewayService:
             }
         if api_base := model_api_base(ai_model):
             kwargs["api_base"] = api_base
+        # Azure needs the resource root (not the pasted deployment URL) and
+        # an api-version; both come from the stored model.
+        kwargs.update(azure_request_kwargs(ai_model))
         if alibaba_pricing.is_alibaba(ai_model):
             cache_markers = 0
             for message in messages:
@@ -7367,6 +7383,9 @@ class OpenAIGatewayService:
             kwargs.setdefault("aws_region_name", region)
         if api_base := model_api_base(ai_model):
             kwargs["api_base"] = api_base
+        # Azure needs the resource root (not the pasted deployment URL) and
+        # an api-version; both come from the stored model.
+        kwargs.update(azure_request_kwargs(ai_model))
         for field in ("dimensions", "encoding_format", "user"):
             if payload.get(field) is not None:
                 kwargs[field] = payload[field]
@@ -9516,6 +9535,7 @@ class OpenAIGatewayService:
                 ),
             },
         )
+        self.last_usage_id = str(usage_row.id)
         observed_at = usage_row.timestamp
 
         if cost_source == "unpriced" and (prompt_tokens or completion_tokens):

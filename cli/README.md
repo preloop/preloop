@@ -359,9 +359,12 @@ needs the `view_runtime_sessions` permission.
 preloop models sync                     # Pull newly released provider models into the catalog
 preloop models sync --provider anthropic
 preloop models sync --dry-run           # Report what would be added without writing
+preloop models smoke azure/chat-prod    # Send one tiny chat completion through the gateway
 ```
 
 `preloop models sync` calls `POST /api/v1/ai-models/sync` so newly released provider models enter the account catalog from credentials already stored on existing models. Then run `preloop agents refresh` to push those models into onboarded agent configs.
+
+`preloop models smoke <model-alias>` sends one small chat completion to `/openai/v1/chat/completions` and prints the HTTP status, latency, prompt/completion/total tokens and the usage row id the Cost page counts (from the `X-Preloop-Usage-Id` response header). It exits non-zero on an error status. Flags: `--prompt`, `--max-tokens`, `--timeout`, `--json`. Provider setup guides: [Amazon Bedrock](../docs/guide/providers/bedrock.md), [Azure OpenAI](../docs/guide/providers/azure-openai.md).
 
 ### Flows
 
