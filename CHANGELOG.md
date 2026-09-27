@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Persistent runners can be deleted and have their token rotated.
+  `DELETE /api/v1/runners/{runner_id}` refuses with 409 while the runner holds
+  an execution; `?force=true` halts those executions and deletes it anyway.
+  `POST /api/v1/runners/{runner_id}/token` returns a new token once and the
+  old one is rejected at once. Both disconnect the live runner. The CLI adds
+  `preloop runner rotate-token` and `preloop runner disable --delete
+  [--force]`, and the Runners console page has Rotate token and Delete
+  actions.
+
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
   the first event to PR opened, PR opened to approved, and approved to merged
