@@ -395,6 +395,29 @@ prompt_template: |
   cases are covered (empty, null, boundary values); error conditions are
   tested; bug fixes come with a regression test.
 
+  **Running tests** *(skip in FAST_PATH and in clone_less mode)*. Reading
+  the tests stays the main check; a run confirms it. Run tests only when
+  the working copy holds the PR branch from this repository, never code
+  from a fork (this sandbox holds your credentials). Never install
+  packages to run them (no pip, uv or npm install).
+  - When `preloop-pytest` is on PATH (the Preloop environment image, with
+    the backend lock preinstalled and its own disposable database), run
+    the backend test files the diff adds or edits, plus the test files of
+    the modules it changes: `preloop-pytest -q -m "not integration" <files>`.
+    Run it from the repository root. A warning that the lock differs means
+    a dependency this PR adds may be missing: an ImportError for it is not
+    a finding.
+  - When `preloop-frontend-deps` is on PATH, run it once, then
+    `cd frontend && npx web-test-runner <test files>`. Exit 65 means the
+    PR changed the frontend lock: skip the frontend run.
+  - Otherwise use the repository's documented test command only if its
+    dependencies are already installed.
+  Never run the whole suite (CI shards it); keep test runs under about 5
+  minutes in total. Quote the command and its pass/fail line in the
+  summary. A test that fails on this head is a finding: HIGH when the diff
+  causes it. When nothing could run, write "tests not run in this sandbox"
+  in the summary and name the CI jobs to confirm.
+
   **Step 2.5: Performance Analysis**
 
   Look for: N+1 query patterns, inefficient algorithms (O(n²) when O(n) is
