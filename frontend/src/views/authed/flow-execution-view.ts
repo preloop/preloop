@@ -32,6 +32,7 @@ import {
   canRetryExecution,
   confirmRetryExecution,
 } from '../../actions/flow-execution-actions';
+import { showToast } from '../../components/confirm-dialog';
 import '../../components/resource-actions.ts';
 import '../../components/operator-note-composer.ts';
 import {
@@ -3863,7 +3864,11 @@ ${log.payload.content}</pre>
       this.requestUpdate();
     } catch (error) {
       console.error('Failed to stop execution:', error);
-      // TODO: Show error notification to user
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to stop the run.';
+      showToast(detail, 'danger');
     }
   }
 

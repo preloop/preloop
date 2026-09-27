@@ -1634,11 +1634,6 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     this.requestUpdate();
   }
 
-  openFilterModal() {
-    // TODO: Implement the filter modal
-    alert('Filter modal not yet implemented');
-  }
-
   getDefaultSelectedTools(): { server_name: string; tool_name: string }[] {
     return [];
   }

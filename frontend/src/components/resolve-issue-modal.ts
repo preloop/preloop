@@ -20,6 +20,7 @@ import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 
 import consoleStyles from '../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import { showToast } from './confirm-dialog';
 
 type ResolutionStep = 'initial' | 'close' | 'merge' | 'deconflict';
 
@@ -202,7 +203,11 @@ export class ResolveIssueModal extends LitElement {
       this.handleClose();
     } catch (error) {
       console.error('Failed to resolve duplicate:', error);
-      // TODO: Add a user-facing error notification (e.g., a toast)
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to resolve these issues.';
+      showToast(detail, 'danger');
     } finally {
       this._isSubmitting = false;
     }
