@@ -496,6 +496,13 @@ def create_refresh_token(
     )
 
 
+def _optional_claim(value: Any) -> Optional[str]:
+    """Return a string claim, or None when it is missing or not a string."""
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def decode_token(token: str) -> TokenData:
     """Decode a JWT token.
 
@@ -538,6 +545,8 @@ def decode_token(token: str) -> TokenData:
             refresh=refresh,
             session_started_at=(datetime.fromtimestamp(sat, tz=UTC) if sat else None),
             gen=gen,
+            sid=_optional_claim(payload.get("sid")),
+            jti=_optional_claim(payload.get("jti")),
         )
     except PyJWTError:
         raise HTTPException(
@@ -624,6 +633,50 @@ def reject_stale_token_generation(user: User, token_data: TokenData) -> None:
             detail=SESSION_REVOKED_DETAIL,
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def reject_revoked_cli_session(db: Any, user: User, token_data: TokenData) -> None:
+    """Reject a CLI JWT whose ``cli_session`` row is revoked or missing.
+
+    Tokens without a ``sid`` claim (console logins, CLI logins from before
+    the claim existed) are not tied to a row and pass; the generation check
+    still applies to them.
+
+    Args:
+        db: Database session.
+        user: The user loaded for this token.
+        token_data: Decoded token claims.
+
+    Raises:
+        HTTPException: 401 when the session is revoked, missing, or belongs
+            to another user.
+    """
+    if token_data.sid is None:
+        return
+    from preloop.models.crud import crud_cli_session
+
+    try:
+        session_id = uuid.UUID(token_data.sid)
+    except ValueError:
+        session_id = None
+    if session_id is None or not crud_cli_session.is_active(
+        db, session_id=session_id, user_id=user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=SESSION_REVOKED_DETAIL,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def reject_revoked_token(db: Any, user: User, token_data: TokenData) -> None:
+    """Apply every JWT revocation check: generation, then CLI session.
+
+    Raises:
+        HTTPException: 401 when the token was revoked either way.
+    """
+    reject_stale_token_generation(user, token_data)
+    reject_revoked_cli_session(db, user, token_data)
 
 
 def get_current_user(
@@ -737,7 +790,7 @@ def get_current_user(
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            reject_stale_token_generation(user, token_data)
+            reject_revoked_token(db, user, token_data)
 
             return user  # Return the full User object
         except (HTTPException, SQLAlchemyPoolTimeout):
@@ -923,7 +976,7 @@ def get_user_from_token_if_valid_sync(
 
         user = crud_user.get(db_session, id=user_id)
         if user and user.is_active:
-            reject_stale_token_generation(user, token_data)
+            reject_revoked_token(db_session, user, token_data)
             return user
 
     except SQLAlchemyPoolTimeout:

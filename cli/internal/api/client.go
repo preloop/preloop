@@ -489,6 +489,9 @@ func (c *Client) RefreshAccessToken() error {
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", c.refreshToken)
+	if host := version.DeviceName(); host != "" {
+		form.Set("device_name", host)
+	}
 
 	statusCode, responseBody, _, err := c.executeRequest(
 		http.MethodPost,

@@ -30,6 +30,25 @@ class TokenData(BaseModel):
     # Per-user token generation ("gen" claim). None when the token was minted
     # before the claim existed; enforcement treats that as generation 0.
     gen: Optional[int] = None
+    # CLI login session id ("sid" claim, a cli_session row). Only CLI JWTs
+    # minted by /oauth/token carry it; the row can be revoked on its own.
+    sid: Optional[str] = None
+    # Refresh token id ("jti" claim). A CLI refresh token rotates only while
+    # its jti is the one recorded on the cli_session row.
+    jti: Optional[str] = None
+
+
+class CliSessionResponse(BaseModel):
+    """One CLI login session (``preloop auth login``) of the signed-in user."""
+
+    id: UUID
+    created_at: datetime
+    last_seen_at: Optional[datetime] = None
+    user_agent: Optional[str] = None
+    hostname: Optional[str] = None
+    current: bool = Field(
+        False, description="True for the session the request's own token belongs to"
+    )
 
 
 class User(BaseModel):

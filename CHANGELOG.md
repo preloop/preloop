@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Revoke one CLI login.** Each `preloop auth login` records a
+  `cli_session` row and its JWTs carry the row id (`sid`); the refresh
+  token also carries a `jti` that rotates with the row, so a refresh token
+  that was already used is rejected. `POST /oauth/revoke` with a CLI access
+  or refresh token now revokes that login (both tokens stop working) and
+  returns `revoked` truthfully. `preloop auth logout` calls it before
+  clearing local credentials. `GET /api/v1/auth/sessions/cli` and
+  `DELETE /api/v1/auth/sessions/cli/{id}` (CLI: `preloop auth sessions
+  list` and `revoke <id>`) list and revoke logins. `POST /auth/refresh` no
+  longer accepts a CLI session refresh token. CLI tokens from before this
+  change move onto a session the next time they refresh (#839).
 - Provider onboarding guides for Amazon Bedrock and Azure OpenAI
   (`docs/guide/providers/`): console steps, credential fields, minimum IAM
   policy or Azure role, a first gateway request, Cost page pricing, and common

@@ -569,10 +569,17 @@ func TestRunAuthLogoutClearsLocallyAndMentionsAll(t *testing.T) {
 	defer restore()
 	logoutAll = false
 
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"revoked"}`))
+	}))
+	defer server.Close()
+	setFlagURL(t, server.URL)
+
 	if err := config.Save(&config.Config{
 		AccessToken:  "access-token",
 		RefreshToken: "refresh-token",
-		APIURL:       "http://example.test",
+		APIURL:       server.URL,
 	}); err != nil {
 		t.Fatalf("failed to save config: %v", err)
 	}
