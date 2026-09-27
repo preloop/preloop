@@ -111,9 +111,16 @@ describe('PreloopFlowForm review instructions', () => {
     });
     expect(field(element)).to.exist;
     expect(textarea(element).value).to.equal('Keep the declared runtime.');
-    const help = textarea(element).getAttribute('help-text') || '';
+    const control = textarea(element);
+    const help =
+      (control as unknown as { helpText?: string }).helpText ||
+      control.getAttribute('help-text') ||
+      '';
+    const capLabel = REVIEW_INSTRUCTIONS_PROMPT_CAP.toLocaleString('en-US');
     expect(help).to.include('Blocking policy');
-    expect(help).to.include('16 KiB');
+    expect(help).to.include(
+      `${REVIEW_INSTRUCTIONS_PROMPT_CAP / 1024} KiB (${capLabel} characters)`
+    );
     const docs = element.shadowRoot!.querySelector(
       '[data-review-instructions-docs]'
     );
@@ -204,7 +211,10 @@ describe('PreloopFlowForm review instructions', () => {
       '[data-review-instructions-cap]'
     );
     expect(warning).to.exist;
-    expect(warning!.textContent).to.include('16 KiB');
-    expect(warning!.textContent).to.include('16,384');
+    const capLabel = REVIEW_INSTRUCTIONS_PROMPT_CAP.toLocaleString('en-US');
+    expect(warning!.textContent).to.include(
+      `${REVIEW_INSTRUCTIONS_PROMPT_CAP / 1024} KiB`
+    );
+    expect(warning!.textContent).to.include(capLabel);
   });
 });

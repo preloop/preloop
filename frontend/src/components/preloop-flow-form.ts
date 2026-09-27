@@ -3217,6 +3217,10 @@ export class PreloopFlowForm extends LitElement {
       typeof this.flow.review_instructions === 'string'
         ? this.flow.review_instructions
         : '';
+    const capKib = REVIEW_INSTRUCTIONS_PROMPT_CAP / 1024;
+    const capLabel = REVIEW_INSTRUCTIONS_PROMPT_CAP.toLocaleString('en-US');
+    const helpText = `Blocking policy for the reviewer. The prompt keeps the first ${capKib} KiB (${capLabel} characters). Leave blank when the repository file is enough.`;
+    const capWarning = `The reviewer prompt keeps the first ${capKib} KiB. Text after ${capLabel} characters is dropped when the review runs.`;
     return html`
       <div data-review-instructions>
         <sl-textarea
@@ -3224,7 +3228,7 @@ export class PreloopFlowForm extends LitElement {
           data-review-instructions-input
           rows="6"
           .value=${value}
-          help-text="Blocking policy for the reviewer. The prompt keeps the first 16 KiB (16,384 characters). Leave blank when the repository file is enough."
+          help-text=${helpText}
           @sl-input=${(e: Event) =>
             this.handleInputChange('review_instructions', e)}
         ></sl-textarea>
@@ -3246,8 +3250,7 @@ export class PreloopFlowForm extends LitElement {
                 data-review-instructions-cap
               >
                 <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                The reviewer prompt keeps the first 16 KiB. Text after 16,384
-                characters is dropped when the review runs.
+                ${capWarning}
               </sl-alert>`
             : nothing
         }
