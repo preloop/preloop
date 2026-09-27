@@ -175,7 +175,6 @@ async def test_backport_is_bounded_by_the_flow_timeout_budget() -> None:
     import asyncio
 
     subject = orchestrator(event())
-    subject.flow.timeout_seconds = 60
 
     async def slow(_plan: BackportPlan) -> Dict[str, Any]:
         await asyncio.sleep(3600)

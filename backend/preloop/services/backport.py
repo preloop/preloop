@@ -547,44 +547,58 @@ async def run_backport(
         The report. Per-target failures are recorded in it, never raised.
     """
     report = BackportReport(change=change, source_branch=plan.source_branch, targets=[])
-    with tempfile.TemporaryDirectory(prefix="preloop-backport-") as directory:
+    # Cleanup must never replace the real outcome: after a cancellation the
+    # worker thread may still be unwinding inside the directory.
+    with tempfile.TemporaryDirectory(
+        prefix="preloop-backport-", ignore_cleanup_errors=True
+    ) as directory:
+        opened: Optional[BackportWorkspace] = None
         try:
-            workspace = BackportWorkspace(
-                Path(directory),
-                repository_url=change.repository_url,
-                token=token,
-                auth_username=host.git_auth_username,
-                committer_name=committer_name,
-                committer_email=committer_email,
-                allow_file_protocol=allow_file_protocol,
-            )
-            await asyncio.to_thread(workspace.init)
-            await asyncio.to_thread(
-                lambda: workspace.fetch_commit(
-                    change.merge_commit_sha, fallback_branch=change.base_branch
+            try:
+                workspace = BackportWorkspace(
+                    Path(directory),
+                    repository_url=change.repository_url,
+                    token=token,
+                    auth_username=host.git_auth_username,
+                    committer_name=committer_name,
+                    committer_email=committer_email,
+                    allow_file_protocol=allow_file_protocol,
                 )
-            )
-            parents = await asyncio.to_thread(
-                workspace.parent_count, change.merge_commit_sha
-            )
-        except BackportGitError as error:
-            report.targets = [
-                TargetResult(
-                    target_branch=target,
-                    branch=backport_branch_name(change.number, target),
-                    status=STATUS_FAILED,
-                    detail=str(error),
+                opened = workspace
+                await asyncio.to_thread(workspace.init)
+                await asyncio.to_thread(
+                    lambda: workspace.fetch_commit(
+                        change.merge_commit_sha, fallback_branch=change.base_branch
+                    )
                 )
-                for target in plan.target_branches
-            ]
-        else:
-            # A merge commit is replayed against its first parent, the branch
-            # it merged into, which is exactly the change the pull request made.
-            mainline = 1 if parents > 1 else None
-            for target in plan.target_branches:
-                report.targets.append(
-                    await _backport_one(workspace, host, plan, change, target, mainline)
+                parents = await asyncio.to_thread(
+                    workspace.parent_count, change.merge_commit_sha
                 )
+            except BackportGitError as error:
+                report.targets = [
+                    TargetResult(
+                        target_branch=target,
+                        branch=backport_branch_name(change.number, target),
+                        status=STATUS_FAILED,
+                        detail=str(error),
+                    )
+                    for target in plan.target_branches
+                ]
+            else:
+                # A merge commit is replayed against its first parent, the
+                # branch it merged into: exactly the change the PR made.
+                mainline = 1 if parents > 1 else None
+                for target in plan.target_branches:
+                    report.targets.append(
+                        await _backport_one(
+                            workspace, host, plan, change, target, mainline
+                        )
+                    )
+        finally:
+            # On cancellation (the flow's timeout budget) the worker thread
+            # keeps running; stop its Git child so nothing is pushed late.
+            if opened is not None:
+                opened.close()
 
     if plan.comment_on_original:
         try:

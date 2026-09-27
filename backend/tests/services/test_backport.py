@@ -561,3 +561,121 @@ def test_git_errors_never_carry_git_output(tmp_path: Path) -> None:
     assert message == "Git ls-remote failed"
     assert "no-such-remote" not in message
     assert "s3cr3t" not in message
+
+
+def hanging_git(tmp_path: Path) -> Tuple[Path, Path]:
+    """A stand-in Git binary that records its pid and then hangs."""
+    pid_file = tmp_path / "git.pid"
+    script = tmp_path / "hanging-git"
+    script.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n")
+    script.chmod(0o755)
+    return script, pid_file
+
+
+def wait_for(predicate, seconds: float = 10.0) -> None:
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not predicate():
+        assert time.monotonic() < deadline, "condition never became true"
+        time.sleep(0.02)
+
+
+def process_is_gone(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    # A killed child that was already reaped by communicate() is gone; one
+    # still listed here must at least be a zombie, never a running process.
+    status = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True
+    ).stdout.strip()
+    return status == "" or status.startswith("Z")
+
+
+def test_closing_the_workspace_kills_a_running_git_and_refuses_new_ones(
+    tmp_path: Path,
+) -> None:
+    import threading
+
+    from preloop.services.backport_git import BackportGitError, BackportWorkspace
+
+    script, pid_file = hanging_git(tmp_path)
+    (tmp_path / "scratch").mkdir()
+    workspace = BackportWorkspace(
+        tmp_path / "scratch",
+        repository_url="https://github.example/acme/widgets.git",
+        token=None,
+        auth_username="x-access-token",
+        committer_name="Preloop",
+        committer_email="bot@example.com",
+    )
+    workspace._git = str(script)
+    errors: List[BaseException] = []
+
+    def run() -> None:
+        try:
+            workspace.init()
+        except BaseException as error:  # noqa: BLE001 - recorded for the assert
+            errors.append(error)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    wait_for(pid_file.exists)
+    wait_for(lambda: pid_file.read_text().strip() != "")
+    workspace.close()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert [str(e) for e in errors] == ["Backport workspace was closed"]
+    assert process_is_gone(int(pid_file.read_text()))
+    with pytest.raises(BackportGitError, match="closed"):
+        workspace.init()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_stops_git_and_surfaces_the_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flow's timeout budget cancels the run mid-Git; cleanup never masks it."""
+    import asyncio
+
+    script, pid_file = hanging_git(tmp_path)
+    monkeypatch.setattr(
+        "preloop.services.backport_git._git_binary", lambda: str(script)
+    )
+    change = MergedChange(
+        host="github",
+        number=812,
+        url="https://github.example/acme/widgets/pull/812",
+        title="Fix the widget",
+        description="",
+        base_branch="release/1.0",
+        merge_commit_sha="a" * 40,
+        repository_url="https://github.example/acme/widgets.git",
+    )
+    host = FakeHost()
+
+    async def started() -> None:
+        while not (pid_file.exists() and pid_file.read_text().strip()):
+            await asyncio.sleep(0.02)
+
+    task = asyncio.create_task(
+        run_backport(
+            PLAN,
+            change,
+            host,
+            token="s3cr3t",
+            committer_name="Preloop",
+            committer_email="bot@example.com",
+        )
+    )
+    await asyncio.wait_for(started(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    pid = int(pid_file.read_text())
+    wait_for(lambda: process_is_gone(pid))
+    assert host.comments == []

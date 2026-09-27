@@ -19,6 +19,7 @@ import base64
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Optional
@@ -150,6 +151,24 @@ class BackportWorkspace:
                     "GIT_CONFIG_VALUE_0": f"Authorization: Basic {header}",
                 }
             )
+        self._lock = threading.Lock()
+        self._closed = False
+        self._process: Optional[subprocess.Popen[bytes]] = None
+
+    def close(self) -> None:
+        """Stop the workspace: kill a running Git child and refuse new ones.
+
+        Safe to call from another thread. The async runner calls it when it is
+        cancelled (for example by the flow's timeout budget), because
+        cancelling ``asyncio.to_thread`` does not stop the worker thread and
+        its Git child would otherwise keep running, and possibly push, after
+        the execution was already recorded as failed.
+        """
+        with self._lock:
+            self._closed = True
+            process = self._process
+        if process is not None and process.poll() is None:
+            process.kill()
 
     def _run(self, *args: str, check: bool = True) -> tuple[int, str]:
         """Run one Git command authored by this module.
@@ -189,24 +208,37 @@ class BackportWorkspace:
             str(self.directory),
             *args,
         ]
+        with self._lock:
+            if self._closed:
+                raise BackportGitError("Backport workspace was closed")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    env=self._environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    # Git's stderr can include the remote URL and auth failures.
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as exc:
+                raise BackportGitError(f"Git {args[0]} could not run") from exc
+            self._process = process
         try:
-            result = subprocess.run(
-                command,
-                env=self._environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                # Git's stderr can include the remote URL and auth failures.
-                stderr=subprocess.DEVNULL,
-                timeout=GIT_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise BackportGitError(f"Git {args[0]} could not run or timed out") from exc
-        if len(result.stdout) > MAX_GIT_OUTPUT_BYTES:
+            stdout, _ = process.communicate(timeout=GIT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            process.communicate()
+            raise BackportGitError(f"Git {args[0]} timed out") from exc
+        finally:
+            with self._lock:
+                self._process = None
+        if self._closed:
+            raise BackportGitError("Backport workspace was closed")
+        if len(stdout) > MAX_GIT_OUTPUT_BYTES:
             raise BackportGitError(f"Git {args[0]} produced too much output")
-        if check and result.returncode:
+        if check and process.returncode:
             raise BackportGitError(f"Git {args[0]} failed")
-        return result.returncode, result.stdout.decode("utf-8", "replace").strip()
+        return process.returncode, stdout.decode("utf-8", "replace").strip()
 
     def init(self) -> None:
         """Create an empty repository with no template (so no sample hooks)."""
