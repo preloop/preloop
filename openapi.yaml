@@ -10737,6 +10737,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/executions/{execution_id}/host-sessions:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Execution Host Sessions
+      description: "Hook sessions and seat usage of a run on a host-exec profile.\n\
+        \nArgs:\n    execution_id: ID of the execution.\n\nReturns:\n    Sessions\
+        \ observed by the runner's usage hook, their event counts,\n    and the Copilot\
+        \ premium requests the CLI reported. None of it is\n    gateway traffic."
+      operationId: get_flow_execution_host_sessions_api_v1_flows_executions__execution_id__host_sessions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostExecSessionsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows/executions/{execution_id}/gateway-events:
     get:
       tags:
@@ -21961,6 +21994,88 @@ components:
       - name
       title: HostExecProfileAdvertisement
       description: Name and capability flags a runner advertises. No executable path.
+    HostExecSession:
+      properties:
+        conversation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Conversation Id
+          description: CLI session id reported by the hook.
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+          description: Ingest source label, e.g. copilot_cli.
+        runtime_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
+        event_count:
+          type: integer
+          title: Event Count
+          default: 0
+        event_types:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Event Types
+        first_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: First Event At
+        last_event_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Event At
+        models:
+          items:
+            type: string
+          type: array
+          title: Models
+      type: object
+      title: HostExecSession
+      description: One CLI session the usage hook observed during a host-exec run.
+    HostExecSessionsResponse:
+      properties:
+        execution_id:
+          type: string
+          format: uuid
+          title: Execution Id
+        sessions:
+          items:
+            $ref: '#/components/schemas/HostExecSession'
+          type: array
+          title: Sessions
+        event_count:
+          type: integer
+          title: Event Count
+          description: Hook events linked to the execution.
+          default: 0
+        premium_requests:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Premium Requests
+          description: Copilot premium requests the CLI reported for the run. Billed
+            to the seat, not metered by the gateway.
+        gateway_metered:
+          type: boolean
+          title: Gateway Metered
+          description: 'Always false: these rows never pass the model gateway.'
+          default: false
+      type: object
+      required:
+      - execution_id
+      title: HostExecSessionsResponse
+      description: Hook sessions and subscription usage linked to one flow execution.
     ImportedUsageByConversation:
       properties:
         conversation_id:
@@ -31662,6 +31777,16 @@ components:
           type: string
           format: date-time
           title: Timestamp
+        flow_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Execution Id
+          description: Flow execution a host-exec runner started this session for.
+            The runner exports it to the CLI and the usage hook forwards it. It is
+            honoured only for executions of this account whose flow runs on a host
+            profile; otherwise the record is stored unlinked.
         event_type:
           type: string
           enum:
