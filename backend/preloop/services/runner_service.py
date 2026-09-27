@@ -17,6 +17,7 @@ from preloop.models.crud.user import crud_user
 from preloop.models.models.flow import Flow
 from preloop.models.models.flow_runner import FlowRunner
 from preloop.services.host_exec import (
+    HOST_EXEC_AGENT_TYPE,
     host_exec_profile_name,
     runner_has_host_exec_profile,
 )
@@ -421,7 +422,10 @@ def lease_job(
     stored = persistable_job_payload(payload)
     for candidate in available:
         if required_profile and not runner_has_host_exec_profile(
-            candidate, required_profile, payload.get("model_identifier")
+            candidate,
+            required_profile,
+            payload.get("model_identifier"),
+            payload.get("agent_type") or HOST_EXEC_AGENT_TYPE,
         ):
             continue
         runner = crud_flow_runner.claim_free_slot(db, runner_id=candidate.id)

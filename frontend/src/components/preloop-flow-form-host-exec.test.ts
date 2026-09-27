@@ -27,6 +27,11 @@ describe('PreloopFlowForm host execution profile', () => {
     expect(source).to.include('renderHostExecProfileField()');
     expect(source).to.include('composedAgentConfig()');
   });
+
+  it('offers Copilot CLI as a private-runner host profile', () => {
+    expect(source).to.include('value="copilot"');
+    expect(source).to.include('Copilot CLI (private runner host profile)');
+  });
 });
 
 describe('PreloopFlowForm host execution submit', () => {
@@ -51,6 +56,10 @@ describe('PreloopFlowForm host execution submit', () => {
                   {
                     name: 'cursor-ask',
                     capabilities: ['host_exec', 'cursor_cli'],
+                  },
+                  {
+                    name: 'copilot-review',
+                    capabilities: ['host_exec', 'copilot_cli'],
                   },
                 ],
               },
@@ -176,6 +185,71 @@ describe('PreloopFlowForm host execution submit', () => {
     );
     expect(event.detail.flow.agent_config.image).to.equal(
       'registry.example.com/team/project:release'
+    );
+  });
+
+  it('saves a Copilot host profile with copilot_model only', async () => {
+    const element = await mount({
+      name: 'Review locally',
+      prompt_template: 'review',
+      agent_type: 'copilot',
+      runner_pool: 'office-mac',
+      agent_config: { cursor_model: 'composer-2.5' },
+    });
+    const input = element.shadowRoot?.querySelector(
+      'sl-input[label="Host execution profile"]'
+    ) as SlInput;
+    expect(input).to.exist;
+    // Only profiles that advertise the Copilot harness are suggested.
+    expect(input.placeholder).to.equal('copilot-review');
+    input.value = 'copilot-review';
+    input.dispatchEvent(new CustomEvent('sl-input'));
+    const model = element.shadowRoot?.querySelector(
+      '[data-copilot-model]'
+    ) as HTMLInputElement;
+    expect(model).to.exist;
+    model.value = ' team-default ';
+    model.dispatchEvent(new CustomEvent('sl-input'));
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector('sl-select[label="AI model"]')
+    ).to.equal(null);
+    const text = element.shadowRoot?.textContent || '';
+    expect(text).to.include('not metered by the Preloop gateway');
+    expect(text).to.include(
+      "Copilot profiles use the runner user's local Copilot MCP configuration."
+    );
+
+    const submitted = oneEvent(element, 'flow-submit');
+    void (element as any).handleFormSubmit(new Event('submit'));
+    const event = await submitted;
+    expect(event.detail.flow.agent_type).to.equal('copilot');
+    expect(event.detail.flow.ai_model_id ?? '').to.equal('');
+    expect(event.detail.flow.agent_config.host_exec_profile).to.equal(
+      'copilot-review'
+    );
+    expect(event.detail.flow.agent_config.copilot_model).to.equal(
+      'team-default'
+    );
+    expect(event.detail.flow.agent_config.cursor_model).to.equal(undefined);
+  });
+
+  it('drops copilot_model when the flow switches to a Docker harness', async () => {
+    const element = await mount({
+      name: 'Review',
+      prompt_template: 'review',
+      agent_type: 'codex',
+      agent_config: {
+        host_exec_profile: 'copilot-review',
+        copilot_model: 'team-default',
+      },
+    });
+    const submitted = oneEvent(element, 'flow-submit');
+    void (element as any).handleFormSubmit(new Event('submit'));
+    const event = await submitted;
+    expect(event.detail.flow.agent_config.copilot_model).to.equal(undefined);
+    expect(event.detail.flow.agent_config.host_exec_profile).to.equal(
+      undefined
     );
   });
 });

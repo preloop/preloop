@@ -45,6 +45,10 @@ class Flow(Base):
     # Legacy rows may lack "type" and use {"cron": ..., "timezone": ...}.
     schedule_config = Column(JSON, nullable=True, default=None)
     prompt_template = Column(Text, nullable=False)
+    # Blocking review rules for the Pull Request Reviewer. Same content as
+    # .preloop/review-policy.md, for a repository that cannot commit that
+    # file. Injected as {{flow.review_instructions}}. NULL means unset.
+    review_instructions = Column(Text, nullable=True)
     ai_model_id = Column(
         UUID(as_uuid=True),
         ForeignKey("ai_model.id"),

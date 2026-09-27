@@ -89,6 +89,7 @@ from preloop.services.prompt_resolvers import (
     ProjectResolver,
     AccountResolver,
     ExecutionResolver,
+    FlowResolver,
 )
 from preloop.services.prompt_resolvers.execution import resume_rebase_conflict_hint
 from preloop.services.flow_execution_logger import FlowExecutionLogger
@@ -1508,6 +1509,8 @@ class FlowExecutionOrchestrator:
             resolver_registry.register(AccountResolver())
         if not resolver_registry.get("execution"):
             resolver_registry.register(ExecutionResolver())
+        if not resolver_registry.get("flow"):
+            resolver_registry.register(FlowResolver())
         if not resolver_registry.get("workspace"):
             from preloop.services.prompt_resolvers.workspace import WorkspaceResolver
 
@@ -2332,16 +2335,20 @@ class FlowExecutionOrchestrator:
                 [seed.path for seed in workspace_files],
             )
 
-        # Native profiles use only the operator's local Cursor login/config.
-        # Do not mint model/MCP tokens or resolve cloud provider secrets here.
+        # Native profiles use only the operator's local Cursor or Copilot
+        # login/config. Do not mint model/MCP tokens or resolve cloud provider
+        # secrets here.
         from preloop.services.host_exec import (
-            host_exec_profile_name,
+            HOST_EXEC_AGENT_TYPE,
             host_exec_flow_error,
+            host_exec_model_identifier,
+            host_exec_profile_name,
             host_exec_unavailable_reason,
+            is_host_exec_agent_type,
         )
 
         profile = host_exec_profile_name(self.flow.agent_config)
-        if effective_agent_type == "cursor" or profile:
+        if is_host_exec_agent_type(effective_agent_type) or profile:
             clone_config = self.flow.git_clone_config
             if isinstance(clone_config, dict):
                 publication_mode = clone_config.get("publication_mode")
@@ -2362,25 +2369,27 @@ class FlowExecutionOrchestrator:
                 raise ValueError(
                     "Host profiles do not support remote workspace seeds or native resume"
                 )
-            config = (
-                self.flow.agent_config
-                if isinstance(self.flow.agent_config, dict)
-                else {}
+            host_agent_type = (
+                effective_agent_type.strip().lower()
+                if isinstance(effective_agent_type, str)
+                else HOST_EXEC_AGENT_TYPE
+            ) or HOST_EXEC_AGENT_TYPE
+            host_model = host_exec_model_identifier(
+                host_agent_type, self.flow.agent_config
             )
-            requested = config.get("cursor_model")
-            cursor_model = requested.strip() if isinstance(requested, str) else ""
             return {
                 "flow_id": str(self.flow_id),
                 "flow_name": self.flow.name,
                 "execution_id": str(self.execution_log.id),
                 "prompt": resolved_prompt,
-                "agent_type": "cursor",
+                "agent_type": host_agent_type,
                 "agent_config": {"host_exec_profile": profile},
                 "account_id": self.flow.account_id,
-                # cursor_model is a Cursor model id. A catalog model remains the
-                # fallback for a saved flow. Neither value is the model Cursor
-                # reports, and an empty value leaves --model unset (Cursor Auto).
-                "model_identifier": cursor_model
+                # cursor_model / copilot_model is a local model alias. A
+                # catalog model remains the fallback for a saved flow. Neither
+                # value is the model the CLI reports, and an empty value leaves
+                # --model unset (the CLI's own default).
+                "model_identifier": host_model
                 or (self.ai_model.model_identifier if self.ai_model else None),
             }
 

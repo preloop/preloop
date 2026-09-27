@@ -328,8 +328,8 @@ recorded only when Cursor reports it, never inferred from the request.
 
 The lease supplies the prompt as one argument after `--`, plus the profile,
 requested model and deadline. It cannot inject an executable, extra argv,
-environment, API key or session id. Only `cursor-agent` and `agent` executables
-are accepted. Local argv cannot override runner-managed workspace, model,
+environment, API key or session id. Only `cursor-agent`, `agent` and
+`copilot` executables are accepted. Local argv cannot override runner-managed workspace, model,
 resume or credential controls. The profile should retain `stream-json` output
 so the runner can validate structured completion. `force_writes` defaults to false; enable it only for
 a profile whose operator intends to permit writes.
@@ -356,6 +356,18 @@ seeds, native CLI session resume and isolated PR publication are rejected.
 Isolated publication mode is rejected before execution.
 The workspace starts empty. Use the Docker harness for repository
 implementation flows that need the managed checkout/test/publication pipeline.
+
+### Copilot CLI profiles
+
+Set `"executable": "copilot"` to run GitHub Copilot CLI under the runner
+user's Copilot login. Choose agent type `copilot` on the flow and set the
+optional `copilot_model` to a `model_map` alias. Copilot profiles take
+`allow_tools`, `deny_tools` and `allow_all_tools` instead of
+`force_writes`; `allow_all_tools` requires the Preloop approval hook. The
+completion must carry exactly one Copilot `result` event with exit code 0.
+The rest of this section applies unchanged. See
+[Copilot CLI](../copilot-cli.md#run-copilot-cli-from-flows-private-runner-host-profile)
+for the profile format and named errors.
 
 ## Trusted runner options
 

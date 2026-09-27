@@ -792,6 +792,45 @@ describe('FlowExecutionView', () => {
     });
   });
 
+  describe('host execution metering', () => {
+    const withResult = async (result: Record<string, unknown>) => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        result,
+      };
+      element.requestUpdate();
+      await element.updateComplete;
+      return element;
+    };
+
+    it('says a Copilot host run is not gateway metered', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'copilot_cli',
+        gateway_metered: false,
+        premium_requests: 2,
+      });
+      expect(stripValue(element, 'strip-cost')).to.equal('Not gateway metered');
+      const badge = element.shadowRoot!.querySelector(
+        '[data-testid="strip-not-metered"]'
+      )!;
+      expect(badge.getAttribute('title')).to.contain('GitHub Copilot seat');
+      expect(badge.getAttribute('title')).to.contain('2 premium requests');
+    });
+
+    it('ignores the marker on container results', async () => {
+      const element = await withResult({
+        status: 'success',
+        harness: 'codex',
+        gateway_metered: false,
+      });
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="strip-not-metered"]')
+      ).to.equal(null);
+    });
+  });
+
   describe('wave 7 execution page', () => {
     it('replaces the five stat cards with one hairline summary strip', async () => {
       const element = await load('exec-1');

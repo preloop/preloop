@@ -13,13 +13,75 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID
 
 HOST_EXEC_AGENT_TYPE = "cursor"
+#: Agent types that run only as a named host profile, mapped to the harness
+#: capability the runner advertises and reports in its completion result.
+HOST_EXEC_HARNESSES: Mapping[str, str] = {
+    "cursor": "cursor_cli",
+    "copilot": "copilot_cli",
+}
+HOST_EXEC_AGENT_TYPES = frozenset(HOST_EXEC_HARNESSES)
+_HOST_EXEC_LABELS = {"cursor": "Cursor", "copilot": "Copilot CLI"}
+#: Agent config key holding the per-flow model alias for each host harness.
+HOST_EXEC_MODEL_KEYS: Mapping[str, str] = {
+    "cursor": "cursor_model",
+    "copilot": "copilot_model",
+}
 HOST_EXEC_COMPLETION_PROTOCOL = "host_exec"
 HOST_EXEC_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-HOST_EXEC_CAPABILITIES = frozenset({"host_exec", "cursor_cli", "stdout", "cancel"})
+HOST_EXEC_CAPABILITIES = frozenset(
+    {"host_exec", "cursor_cli", "copilot_cli", "stdout", "cancel"}
+)
 HOST_EXEC_MAX_RESULT_BYTES = 256 * 1024
 _HOST_EXEC_TERMINAL = frozenset(
     {"SUCCEEDED", "FAILED", "STOPPED", "TIMEOUT", "CANCELLED"}
 )
+
+
+def _normalized_agent_type(agent_type: Any) -> str:
+    return agent_type.strip().lower() if isinstance(agent_type, str) else ""
+
+
+def is_host_exec_agent_type(agent_type: Any) -> bool:
+    """Return True for agent types that only run as a named host profile.
+
+    Args:
+        agent_type: Flow or lease agent type.
+
+    Returns:
+        True for ``cursor`` and ``copilot``.
+    """
+    return _normalized_agent_type(agent_type) in HOST_EXEC_AGENT_TYPES
+
+
+def host_exec_harness(agent_type: Any) -> Optional[str]:
+    """Return the runner harness capability for a host-exec agent type.
+
+    Args:
+        agent_type: Flow or lease agent type.
+
+    Returns:
+        ``cursor_cli`` or ``copilot_cli``, or None for other agent types.
+    """
+    return HOST_EXEC_HARNESSES.get(_normalized_agent_type(agent_type))
+
+
+def host_exec_model_identifier(agent_type: Any, agent_config: Any) -> Optional[str]:
+    """Return the per-flow host model alias from agent_config, if set.
+
+    Args:
+        agent_type: Host-exec agent type.
+        agent_config: Flow agent configuration.
+
+    Returns:
+        The stripped alias, or None when unset. The runner maps it through
+        its local profile ``model_map``.
+    """
+    key = HOST_EXEC_MODEL_KEYS.get(_normalized_agent_type(agent_type))
+    if not key or not isinstance(agent_config, Mapping):
+        return None
+    raw = agent_config.get(key)
+    value = raw.strip() if isinstance(raw, str) else ""
+    return value or None
 
 
 def host_exec_profile_name(
@@ -118,11 +180,26 @@ def normalize_host_exec_advertisements(raw: Any) -> Dict[str, Any]:
 
 
 def runner_has_host_exec_profile(
-    runner: Any, name: str, model_identifier: Optional[str] = None
+    runner: Any,
+    name: str,
+    model_identifier: Optional[str] = None,
+    agent_type: Any = HOST_EXEC_AGENT_TYPE,
 ) -> bool:
-    """True when the runner advertised this host execution profile."""
+    """True when the runner advertised this profile for the leased harness.
+
+    Args:
+        runner: Runner row with ``capabilities``.
+        name: Profile name from the flow.
+        model_identifier: Model alias the profile must advertise, if set.
+        agent_type: Host-exec agent type. The profile must advertise the
+            matching harness capability (``cursor_cli`` or ``copilot_cli``).
+
+    Returns:
+        True when the runner can run this lease.
+    """
     want = (name or "").strip().lower()
-    if not want:
+    harness = host_exec_harness(agent_type)
+    if not want or harness is None:
         return False
     capabilities = getattr(runner, "capabilities", None) or {}
     if not isinstance(capabilities, Mapping):
@@ -136,9 +213,7 @@ def runner_has_host_exec_profile(
         item_name = item.get("name")
         if isinstance(item_name, str) and item_name.strip().lower() == want:
             caps = item.get("capabilities") or []
-            if not isinstance(caps, list) or not {"host_exec", "cursor_cli"}.issubset(
-                caps
-            ):
+            if not isinstance(caps, list) or not {"host_exec", harness}.issubset(caps):
                 return False
             models = item.get("models") or []
             return not model_identifier or (
@@ -155,21 +230,21 @@ def host_exec_flow_error(
 ) -> Optional[str]:
     """Return a validation error for invalid host-exec / hosted combinations."""
     profile = host_exec_profile_name(agent_config)
-    kind = (agent_type or "").strip().lower() if isinstance(agent_type, str) else ""
+    kind = _normalized_agent_type(agent_type)
     pool = (runner_pool or "").strip().lower() if isinstance(runner_pool, str) else ""
     if profile is None and isinstance(agent_config, Mapping):
         raw = agent_config.get("host_exec_profile")
         if isinstance(raw, str) and raw.strip() and not _validated_profile_name(raw):
             return "host_exec_profile is not a valid profile name"
-    if kind == HOST_EXEC_AGENT_TYPE and not profile:
+    if kind in HOST_EXEC_AGENT_TYPES and not profile:
         return (
-            "agent type cursor requires agent_config.host_exec_profile on a "
+            f"agent type {kind} requires agent_config.host_exec_profile on a "
             "private runner"
         )
-    if profile and kind and kind != HOST_EXEC_AGENT_TYPE:
+    if profile and kind and kind not in HOST_EXEC_AGENT_TYPES:
         return (
-            "host_exec_profile requires agent_type cursor; Docker harnesses "
-            f"cannot use a host execution profile (got {kind})"
+            "host_exec_profile requires agent_type cursor or copilot; Docker "
+            f"harnesses cannot use a host execution profile (got {kind})"
         )
     if profile and pool == "server":
         return "host execution profiles cannot run on hosted compute"
@@ -305,9 +380,12 @@ def finalize_runner_completion(
     pending = pending_job if isinstance(pending_job, Mapping) else {}
     profile = host_exec_profile_name(pending)
     if pending.get("completion_protocol") == HOST_EXEC_COMPLETION_PROTOCOL:
+        agent_type = pending.get("agent_type")
+        harness = host_exec_harness(agent_type)
         if (
             not profile
-            or pending.get("agent_type") != HOST_EXEC_AGENT_TYPE
+            or harness is None
+            or agent_type not in HOST_EXEC_AGENT_TYPES
             or pending.get("launch_version") is not None
         ):
             return "FAILED", "Invalid durable host execution lease", None
@@ -322,18 +400,33 @@ def finalize_runner_completion(
                 None,
             )
         status, error, result = validate_host_exec_completion(message)
-        if status == "SUCCEEDED" and (result or {}).get("harness") != "cursor_cli":
+        if status == "SUCCEEDED" and (result or {}).get("harness") != harness:
             return (
                 "FAILED",
-                "Completion does not identify the leased Cursor harness",
+                "Completion does not identify the leased "
+                f"{_HOST_EXEC_LABELS[agent_type]} harness",
                 result,
             )
-        return status, error, result
+        return status, error, _mark_not_gateway_metered(result)
     # Protocol selection comes only from persisted lease metadata. A message
     # cannot opt into a weaker/legacy validator by naming another protocol.
     if profile:
         return "FAILED", "Invalid durable runner lease protocol", None
     return validate_runner_completion(dict(message), leased_job=dict(pending))
+
+
+def _mark_not_gateway_metered(
+    result: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Record that a host run bypassed the gateway, overriding agent JSON.
+
+    Host profiles use the runner user's own CLI login, so no gateway row
+    exists for the model spend. The UI reads this server-set marker instead
+    of implying a cost estimate.
+    """
+    if result is None:
+        return None
+    return {**result, "gateway_metered": False}
 
 
 def apply_runner_completion_to_execution(
