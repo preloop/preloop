@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stamp manufacturer metadata onto CycloneDX SBOMs and measure their quality.
 
-Two jobs, both driven by the NTIA minimum elements:
+Three jobs. The first two are driven by the NTIA minimum elements:
 
 1. Fill the fields the generators leave empty. syft and the CycloneDX
    generators emit ``metadata.authors: null`` and no ``metadata.supplier``,
@@ -16,6 +16,14 @@ Two jobs, both driven by the NTIA minimum elements:
    only, the same rule as ``python -m preloop.cra measure``. Author and
    publisher do not count.
 
+3. Mark declaration-only npm packages. An ``@types/*`` package, or a
+   package whose name ends in ``-types``, gets ``preloop:types_only``
+   set to ``true`` when its installed directory contains no runtime
+   file. The release security audit may use that property as evidence
+   that a git-range match through the package ``vcs_url`` does not
+   describe code in the component. The property does not suppress a
+   finding. A VEX statement does.
+
 Usage:
     python scripts/sbom_metadata.py sbom/*.cdx.json
     python scripts/sbom_metadata.py --python-root /path/to/venv \\
@@ -26,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import tomllib
@@ -45,6 +54,22 @@ SUPPLIER = {
 }
 
 SUPPLIER_SOURCE_PROPERTY = "preloop:supplier_source"
+TYPES_ONLY_PROPERTY = "preloop:types_only"
+_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+_RUNTIME_SUFFIXES = frozenset(
+    {
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".jsx",
+        ".wasm",
+        ".node",
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+    }
+)
 SOURCE_AUTHOR = "package_metadata_author"
 SOURCE_MAINTAINER = "package_metadata_maintainer"
 SOURCE_NPM_SCOPE = "npm_scope"
@@ -350,17 +375,137 @@ def supplier_source(component: dict[str, Any]) -> str | None:
     return None
 
 
-def set_supplier_source(component: dict[str, Any], source: str) -> None:
-    """Record how ``supplier`` was chosen. Replace a previous stamp of ours."""
+def set_component_property(component: dict[str, Any], name: str, value: str) -> None:
+    """Set one CycloneDX property, replacing a previous value of the same name."""
     properties = component.get("properties")
     if not isinstance(properties, list):
         properties = []
         component["properties"] = properties
     for prop in properties:
-        if isinstance(prop, dict) and prop.get("name") == SUPPLIER_SOURCE_PROPERTY:
-            prop["value"] = source
+        if isinstance(prop, dict) and prop.get("name") == name:
+            prop["value"] = value
             return
-    properties.append({"name": SUPPLIER_SOURCE_PROPERTY, "value": source})
+    properties.append({"name": name, "value": value})
+
+
+def set_supplier_source(component: dict[str, Any], source: str) -> None:
+    """Record how ``supplier`` was chosen. Replace a previous stamp of ours."""
+    set_component_property(component, SUPPLIER_SOURCE_PROPERTY, source)
+
+
+def is_types_package_name(name: str) -> bool:
+    """True for ``@types/*`` and for a package whose own name ends in ``-types``.
+
+    Args:
+        name: npm package name, including an optional scope.
+
+    Returns:
+        Whether the name is a declaration-package name. A scoped package
+        matches on its own name (``@scope/widget-types``), not on the scope.
+    """
+    if name.startswith("@types/") and name != "@types/":
+        return True
+    leaf = name.rsplit("/", 1)[-1]
+    return len(leaf) > len("-types") and leaf.endswith("-types")
+
+
+def _is_runtime_file(path: Path) -> bool:
+    """True when ``path`` can carry executable or runtime code.
+
+    Declaration files are ignored. A known runtime suffix, an executable
+    bit, or a ``#!`` prefix all count. An unreadable file counts too, so a
+    types-only stamp is never a guess.
+    """
+    lowered = path.name.lower()
+    if lowered.endswith(_DECLARATION_SUFFIXES):
+        return False
+    if path.suffix.lower() in _RUNTIME_SUFFIXES:
+        return True
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return True
+    if mode & 0o111:
+        return True
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(2)
+    except OSError:
+        return True
+    return prefix == b"#!"
+
+
+def directory_has_runtime_file(root: Path) -> bool:
+    """True when ``root`` contains a file other than a TypeScript declaration.
+
+    Nested ``node_modules`` are ignored. A missing directory is treated as
+    having runtime files so a types-only stamp is never a guess. Extensionless
+    files count when they are executable or start with a shebang.
+
+    Args:
+        root: Installed package directory.
+
+    Returns:
+        Whether a runtime file was found, or the directory could not be read.
+    """
+    if not root.is_dir():
+        return True
+    for _current, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name != "node_modules"]
+        for filename in filenames:
+            if _is_runtime_file(Path(_current) / filename):
+                return True
+    return False
+
+
+def manifest_version(manifest: Path) -> str | None:
+    """Return the ``version`` field of a ``package.json``, if it is a string."""
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    version = data.get("version") if isinstance(data, dict) else None
+    if isinstance(version, str) and version.strip():
+        return version.strip()
+    return None
+
+
+def stamp_types_only(document: dict[str, Any], index: MetadataIndex) -> None:
+    """Mark npm declaration packages that contain no runtime files.
+
+    The property is ``preloop:types_only`` = ``true``. It is set only when
+    the purl names an ``@types/*`` or ``*-types`` package, the installed
+    directory has no runtime file, and the installed ``package.json``
+    version matches the component version when both are present. A package
+    that is not on disk, or whose installed version differs, is left unmarked.
+
+    Args:
+        document: CycloneDX document being stamped.
+        index: Offline npm metadata collected from the build roots.
+    """
+    for component in iter_components(document):
+        purl = component.get("purl")
+        parsed = parse_purl(purl) if isinstance(purl, str) else None
+        if parsed is None or parsed[0] != "npm":
+            continue
+        purl_name = parsed[1]
+        if not is_types_package_name(purl_name):
+            continue
+        manifest = index.npm_manifest(purl_name)
+        if manifest is None:
+            continue
+        installed = manifest_version(manifest)
+        component_version = component.get("version")
+        if (
+            isinstance(component_version, str)
+            and component_version.strip()
+            and installed is not None
+            and installed != component_version.strip()
+        ):
+            continue
+        if directory_has_runtime_file(manifest.parent):
+            continue
+        set_component_property(component, TYPES_ONLY_PROPERTY, "true")
 
 
 class MetadataIndex:
@@ -725,6 +870,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             stamp(document, authors)
             fill_component_suppliers(document, index)
+            stamp_types_only(document, index)
             path.write_text(
                 json.dumps(document, indent=2, sort_keys=False) + "\n",
                 encoding="utf-8",

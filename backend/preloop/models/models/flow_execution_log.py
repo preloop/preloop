@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -18,6 +18,16 @@ class FlowExecutionLog(Base):
     """
 
     __tablename__ = "flow_execution_log"
+    __table_args__ = (
+        # The execution page reads one run's newest rows of a given type
+        # (model calls) without walking the run's agent log lines.
+        Index(
+            "ix_flow_execution_log_execution_type_ts",
+            "execution_id",
+            "log_type",
+            "timestamp",
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     execution_id = Column(
