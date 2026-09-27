@@ -6,8 +6,15 @@ Preloop vendors a filtered snapshot of litellm's public price map at
 pricing deterministic per release instead of depending on whichever litellm
 version happens to be installed.
 
-The snapshot is deliberately small (current chat models only), so a model can
-legitimately be missing from it. When the gateway records an ``unpriced``
+The snapshot only changes on deploy, so every serving process also refreshes
+the upstream map in the background (:class:`PriceMapRefresher`): once on
+startup and again every ``_REMOTE_TTL_SECONDS``, merging new and changed
+upstream prices over the snapshot. Operator-reviewed prices (the reviewed
+feed's ``preloop_price_provenance`` entries) and the snapshot's first-party
+overlays (``moonshot/``, ``zai/``) are never overwritten by upstream.
+
+The on-miss lookup below stays as the fallback for anything the eager refresh
+has not priced yet. When the gateway records an ``unpriced``
 usage row, :func:`schedule_price_lookup` is given the model id (never a
 credential-bearing snapshot), re-reads the row through CRUD on a worker
 Session, fetches the model's price from the live upstream map ONCE via a
@@ -19,10 +26,16 @@ triggering row. Lookups are throttled hard:
 - model names that the upstream map does not contain enter a negative cache
   for ``_NEGATIVE_TTL_SECONDS`` so the same unknown model never triggers
   repeated work.
+
+Every fetch logs exactly one line (INFO on success, WARNING on failure) and
+every negative-cache insertion logs one WARNING, so a miss can be diagnosed
+from the logs after the fact. :func:`price_map_status` feeds the health
+endpoint.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -30,10 +43,11 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, FrozenSet, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +87,26 @@ _OPENROUTER_PREFIX = "openrouter/"
 # GET /api/v1/pricing -> HTTP 200 {code: 500, success: false,
 # msg: "404 NOT_FOUND"}. Do not invent a live z.ai price fetch.
 
+# First-party overlay rows in the vendored snapshot are sourced from vendor
+# pages, not litellm (see scripts/update_model_prices.py), so the runtime
+# merge must not replace them with litellm's numbers.
+_OVERLAY_KEY_PREFIXES = ("moonshot/", "zai/")
+_OVERLAY_PROVIDERS = frozenset({"moonshot", "zai"})
+
 _lock = threading.Lock()
 _loaded = False
 _metadata: Optional[Dict[str, Any]] = None
+_vendored_overlay_keys: FrozenSet[str] = frozenset()
+
+
+def _monotonic() -> float:
+    """Return the monotonic clock every cache window is measured against.
+
+    A module-level seam so tests can drive TTL, backoff and negative-cache
+    windows with a fake clock instead of sleeping.
+    """
+    return time.monotonic()
+
 
 # Live-lookup state (per process). All guarded by _lookup_lock.
 _lookup_lock = threading.Lock()
@@ -100,6 +131,9 @@ class _PriceMapCache:
     _map: Optional[Dict[str, Any]] = field(default=None, repr=False)
     _fetched_at: float = field(default=0.0, repr=False)
     _failed_at: float = field(default=0.0, repr=False)
+    # Bumped on every successful download so the eager refresher can tell a
+    # new map from the one it already merged (timestamps can repeat).
+    _generation: int = field(default=0, repr=False)
 
     def get(
         self, fetch: Callable[[], Optional[Dict[str, Any]]]
@@ -115,7 +149,7 @@ class _PriceMapCache:
             The cached or freshly downloaded map, or None when a backoff is in
             effect or the download failed.
         """
-        now = time.monotonic()
+        now = _monotonic()
         with _lookup_lock:
             if self._map is not None and now - self._fetched_at < _REMOTE_TTL_SECONDS:
                 return self._map
@@ -135,13 +169,14 @@ class _PriceMapCache:
         """Store a freshly downloaded map and clear any failure backoff."""
         with _lookup_lock:
             self._map = price_map
-            self._fetched_at = time.monotonic()
+            self._fetched_at = _monotonic()
             self._failed_at = 0.0
+            self._generation += 1
 
     def mark_failed(self) -> None:
         """Start the failure backoff window after a failed download."""
         with _lookup_lock:
-            self._failed_at = time.monotonic()
+            self._failed_at = _monotonic()
 
     def reset(self) -> None:
         """Drop the cached map and any backoff state (test isolation only)."""
@@ -149,6 +184,23 @@ class _PriceMapCache:
             self._map = None
             self._fetched_at = 0.0
             self._failed_at = 0.0
+            self._generation = 0
+
+    def seconds_until_due(self) -> float:
+        """Return how long until ``get`` would download again (0 when due).
+
+        Used by the eager refresher to sleep exactly until the cached map
+        goes stale or the failure backoff ends, whichever applies.
+        """
+        now = _monotonic()
+        with _lookup_lock:
+            if self._failed_at and now - self._failed_at < (
+                _REMOTE_FAILURE_BACKOFF_SECONDS
+            ):
+                return _REMOTE_FAILURE_BACKOFF_SECONDS - (now - self._failed_at)
+            if self._map is not None and now - self._fetched_at < _REMOTE_TTL_SECONDS:
+                return _REMOTE_TTL_SECONDS - (now - self._fetched_at)
+            return 0.0
 
     def snapshot(self) -> Dict[str, Any]:
         """Return the cache's current state for tests and diagnostics."""
@@ -157,6 +209,7 @@ class _PriceMapCache:
                 "map": self._map,
                 "fetched_at": self._fetched_at,
                 "failed_at": self._failed_at,
+                "generation": self._generation,
             }
 
 
@@ -182,9 +235,39 @@ def _model_log_token(model_name: str) -> str:
     return f"model#{digest[:12]}"
 
 
-def _remember_negative_lookup(key: str, stamp: Optional[float] = None) -> None:
-    """Record a failed lookup. Caller must hold ``_lookup_lock``."""
-    now = stamp if stamp is not None else time.monotonic()
+def _log_namespace(key: str) -> str:
+    """Return the public price-map namespace of a key, for log lines.
+
+    Namespaces (``gemini``, ``openrouter``, ``alibaba``) come from Preloop's
+    own provider mapping, so naming them leaks nothing; the model part of the
+    key stays hashed by :func:`_model_log_token`.
+    """
+    head, separator, _ = key.partition("/")
+    if not separator:
+        head, separator, _ = key.partition(":")
+    return head.lower() if separator and head.isascii() and len(head) <= 32 else "-"
+
+
+def _remember_negative_lookup(
+    key: str, stamp: Optional[float] = None, *, reason: Optional[str] = None
+) -> None:
+    """Record a failed lookup. Caller must hold ``_lookup_lock``.
+
+    A key that is already negative-cached keeps its original stamp, so the
+    window cannot be extended by overlapping lookups and the WARNING below
+    fires once per ``_NEGATIVE_TTL_SECONDS`` window per alias.
+
+    Args:
+        key: Candidate alias (or native catalog dedupe key) that missed.
+        stamp: Monotonic time of the miss; defaults to now.
+        reason: Why the key is being cached. When given, the insertion is
+            logged as a WARNING naming the alias by namespace and log token
+            (the raw model name is never logged).
+    """
+    now = stamp if stamp is not None else _monotonic()
+    cached_at = _negative_cache.get(key)
+    if cached_at is not None and now - cached_at < _NEGATIVE_TTL_SECONDS:
+        return
     if len(_negative_cache) >= _MAX_NEGATIVE_CACHE_ENTRIES:
         expired = [
             cached_key
@@ -197,6 +280,15 @@ def _remember_negative_lookup(key: str, stamp: Optional[float] = None) -> None:
             oldest = min(_negative_cache, key=_negative_cache.get)  # type: ignore[arg-type]
             _negative_cache.pop(oldest, None)
     _negative_cache[key] = now
+    if reason is not None:
+        logger.warning(
+            "Model price negative-cached: alias=%s namespace=%s reason=%s "
+            "ttl_seconds=%s",
+            _model_log_token(key),
+            _log_namespace(key),
+            reason,
+            _NEGATIVE_TTL_SECONDS,
+        )
 
 
 def load_catalog(path: Optional[Path] = None, *, force: bool = False) -> bool:
@@ -213,7 +305,7 @@ def load_catalog(path: Optional[Path] = None, *, force: bool = False) -> bool:
     Returns:
         True when the catalog was (re)loaded, False when skipped or failed.
     """
-    global _loaded, _metadata
+    global _loaded, _metadata, _vendored_overlay_keys
     catalog_path = path or CATALOG_PATH
     with _lock:
         if _loaded and not force:
@@ -254,6 +346,15 @@ def load_catalog(path: Optional[Path] = None, *, force: bool = False) -> bool:
 
         _loaded = True
         _metadata = metadata if isinstance(metadata, dict) else None
+        _vendored_overlay_keys = frozenset(
+            key
+            for key, entry in raw.items()
+            if key.startswith(_OVERLAY_KEY_PREFIXES)
+            or (
+                isinstance(entry, dict)
+                and entry.get("litellm_provider") in _OVERLAY_PROVIDERS
+            )
+        )
         logger.info(
             "Loaded model price catalog: %s models (fetched_at=%s)",
             len(raw),
@@ -285,6 +386,45 @@ def catalog_metadata() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+# Last-fetch bookkeeping for the litellm map, surfaced on the health
+# endpoint. Wall-clock times (not monotonic) because operators read them.
+_price_map_status: Dict[str, Any] = {
+    "source": "litellm",
+    "last_attempt_at": None,
+    "last_success_at": None,
+    "last_outcome": None,
+    "last_failure_reason": None,
+    "entry_count": None,
+    "registered_count": None,
+    "sha256": None,
+}
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _record_fetch(**fields: Any) -> None:
+    """Merge fields into the fetch status (thread-safe)."""
+    with _lookup_lock:
+        _price_map_status.update(fields)
+
+
+def _fetch_failure_reason(exc: BaseException) -> str:
+    """Return a short, secret-free reason for a failed download.
+
+    The configured URL and the response body are never included: an operator
+    URL can carry an access token in its query string.
+    """
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return f"http_{status_code}"
+    if isinstance(exc, ValueError) and "SHA-256" in str(exc):
+        return "sha256_mismatch"
+    return type(exc).__name__
+
+
 def _download_remote_price_map() -> Optional[Dict[str, Any]]:
     """Download litellm's published price map.
 
@@ -292,39 +432,85 @@ def _download_remote_price_map() -> Optional[Dict[str, Any]]:
     digest or the fetch is rejected, so a compromised upstream revision cannot
     silently change pricing.
 
+    Logs exactly one line per call, whatever the number of attempts: INFO
+    with the entry count and body digest on success, WARNING with the reason
+    on failure. Individual attempts log at DEBUG.
+
     Returns:
         The decoded map, or None on any failure (the caller starts the
         failure backoff).
     """
+    started_at = _utc_now_iso()
     try:
         import httpx
     except ImportError:
         # Optional dependency for live lookups; do not retry a missing module.
-        logger.warning("httpx is unavailable; skipping live model price lookup")
+        _record_fetch(
+            last_attempt_at=started_at,
+            last_outcome="failed",
+            last_failure_reason="httpx_unavailable",
+        )
+        logger.warning(
+            "Model price map fetch: source=litellm outcome=failed "
+            "reason=httpx_unavailable attempts=0"
+        )
         return None
 
     attempts = max(1, _REMOTE_FETCH_RETRIES + 1)
+    reason = "unknown"
     for attempt in range(attempts):
         try:
             response = httpx.get(REMOTE_PRICE_MAP_URL, timeout=30.0)
             response.raise_for_status()
             body = response.content
-            if REMOTE_PRICE_MAP_SHA256:
-                digest = hashlib.sha256(body).hexdigest()
-                if digest != REMOTE_PRICE_MAP_SHA256:
-                    raise ValueError(
-                        "Remote price map SHA-256 mismatch "
-                        f"(expected {REMOTE_PRICE_MAP_SHA256}, got {digest})"
-                    )
+            digest = hashlib.sha256(body).hexdigest()
+            if REMOTE_PRICE_MAP_SHA256 and digest != REMOTE_PRICE_MAP_SHA256:
+                raise ValueError(
+                    "Remote price map SHA-256 mismatch "
+                    f"(expected {REMOTE_PRICE_MAP_SHA256}, got {digest})"
+                )
             fetched = response.json()
-            return fetched if isinstance(fetched, dict) else None
-        except Exception:  # noqa: BLE001 - network is best-effort here
-            logger.warning(
-                "Live model price map download failed (attempt %s/%s)",
+            if not isinstance(fetched, dict) or not fetched:
+                # An empty map would negative-cache every model for a day.
+                raise ValueError("Remote price map is not a non-empty JSON object")
+        except Exception as exc:  # noqa: BLE001 - network is best-effort here
+            reason = _fetch_failure_reason(exc)
+            logger.debug(
+                "Model price map download attempt %s/%s failed: %s",
                 attempt + 1,
                 attempts,
+                reason,
                 exc_info=True,
             )
+            continue
+        _record_fetch(
+            last_attempt_at=started_at,
+            last_success_at=_utc_now_iso(),
+            last_outcome="ok",
+            last_failure_reason=None,
+            entry_count=len(fetched),
+            sha256=digest,
+        )
+        logger.info(
+            "Model price map fetch: source=litellm outcome=ok entries=%s "
+            "attempts=%s sha256=%s pinned=%s",
+            len(fetched),
+            attempt + 1,
+            digest,
+            bool(REMOTE_PRICE_MAP_SHA256),
+        )
+        return fetched
+
+    _record_fetch(
+        last_attempt_at=started_at, last_outcome="failed", last_failure_reason=reason
+    )
+    logger.warning(
+        "Model price map fetch: source=litellm outcome=failed reason=%s "
+        "attempts=%s retry_in_seconds=%s",
+        reason,
+        attempts,
+        _REMOTE_FAILURE_BACKOFF_SECONDS,
+    )
     return None
 
 
@@ -336,6 +522,256 @@ def _fetch_remote_price_map() -> Optional[Dict[str, Any]]:
         effect or the download fails.
     """
     return _remote_cache.get(_download_remote_price_map)
+
+
+def price_map_status() -> Dict[str, Any]:
+    """Return the last upstream fetch for the health/diagnostics endpoint.
+
+    Contains no URL and no model names: ``last_attempt_at`` and
+    ``last_success_at`` (UTC ISO-8601), ``last_outcome`` (``ok`` or
+    ``failed``), ``last_failure_reason``, ``entry_count`` (entries in the
+    last good map), ``registered_count`` (entries the last merge added or
+    changed), ``sha256`` of the last good body, and the snapshot's own
+    ``snapshot_fetched_at``.
+    """
+    with _lookup_lock:
+        status = dict(_price_map_status)
+    meta = catalog_metadata() or {}
+    status["snapshot_fetched_at"] = meta.get("fetched_at")
+    status["refresh_interval_seconds"] = _REMOTE_TTL_SECONDS
+    return status
+
+
+# ---------------------------------------------------------------------------
+# Eager refresh: merge the upstream map over the snapshot
+# ---------------------------------------------------------------------------
+
+# Non-cost fields carried from an upstream row. Mirrors KEEP_FIELDS_EXACT in
+# scripts/update_model_prices.py (deprecation_date aside: a deprecated model
+# that still receives traffic should stay priced). register_model merges
+# per key, so litellm's bundled capability flags survive.
+_MERGE_METADATA_FIELDS = frozenset(
+    {"litellm_provider", "mode", "max_tokens", "max_input_tokens", "max_output_tokens"}
+)
+# LiteLLM memoizes model info; a changed price must not be served stale.
+_LITELLM_MODEL_INFO_CACHES = (
+    "get_model_info",
+    "_cached_get_model_info",
+    "_cached_get_model_info_helper",
+)
+_merged_generation = 0
+
+
+def _flatten_tiered_prices(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Lift the lowest ``tiered_pricing`` tier onto missing top-level prices.
+
+    Same rule as ``_flatten_tiered_pricing`` in
+    ``scripts/update_model_prices.py`` (a parity test keeps them aligned):
+    a flat price the row publishes wins, a missing or null field takes the
+    lowest tier's value, so a tier-only row is not merged priceless.
+    """
+    tiers = entry.get("tiered_pricing")
+    if not isinstance(tiers, list):
+        return entry
+    candidates = [tier for tier in tiers if isinstance(tier, dict)]
+    if not candidates:
+        return entry
+
+    def tier_start(tier: Dict[str, Any]) -> float:
+        bounds = tier.get("range")
+        if isinstance(bounds, list) and bounds and isinstance(bounds[0], (int, float)):
+            return float(bounds[0])
+        return 0.0
+
+    lowest = min(candidates, key=tier_start)
+    merged = dict(entry)
+    for name, value in lowest.items():
+        if "cost" in name and isinstance(value, (int, float)):
+            if merged.get(name) is None:
+                merged[name] = value
+    return merged
+
+
+def _normalize_upstream_entry(entry: Any) -> Optional[Dict[str, Any]]:
+    """Reduce one upstream row to the fields pricing needs, or None.
+
+    Null fields are dropped so an upstream ``null`` never erases a price the
+    snapshot holds. Rows without a numeric input or output price are
+    skipped (they would only make the model look priced), as are embedding
+    rows without a per-token input price, which the token ledger could only
+    bill as $0.
+    """
+    if not isinstance(entry, dict):
+        return None
+    flattened = _flatten_tiered_prices(entry)
+    normalized = {
+        name: value
+        for name, value in flattened.items()
+        if value is not None and (name in _MERGE_METADATA_FIELDS or "cost" in name)
+    }
+    input_cost = normalized.get("input_cost_per_token")
+    output_cost = normalized.get("output_cost_per_token")
+    has_input = isinstance(input_cost, (int, float))
+    if not has_input and not isinstance(output_cost, (int, float)):
+        return None
+    if normalized.get("mode") == "embedding" and not has_input:
+        return None
+    return normalized
+
+
+def _is_protected_price(key: str, current: Any) -> bool:
+    """True when the key's current price outranks upstream.
+
+    Operator-reviewed prices (applied by the reviewed feed, which stamps
+    ``preloop_price_provenance``/``preloop_price_policy``) and first-party
+    overlay rows from the snapshot are Preloop decisions, not litellm data.
+    """
+    if key in _vendored_overlay_keys:
+        return True
+    return isinstance(current, dict) and bool(
+        current.get("preloop_price_provenance") or current.get("preloop_price_policy")
+    )
+
+
+def _clear_litellm_model_info_caches() -> None:
+    """Best-effort clear of LiteLLM's memoized model info after a price change."""
+    try:
+        from litellm import utils as litellm_utils
+    except ImportError:  # pragma: no cover - litellm is a core dependency
+        return
+    for name in _LITELLM_MODEL_INFO_CACHES:
+        clear = getattr(getattr(litellm_utils, name, None), "cache_clear", None)
+        if callable(clear):
+            with suppress(Exception):
+                clear()
+
+
+def merge_upstream_prices(price_map: Dict[str, Any]) -> int:
+    """Register new and changed upstream prices with litellm.
+
+    Only rows that are missing from ``litellm.model_cost`` or whose cost
+    fields differ are registered, so a steady-state refresh is a cheap diff
+    rather than thousands of ``register_model`` calls. Holds the catalog
+    lock so it serializes with the snapshot load and the reviewed feed.
+
+    Args:
+        price_map: Decoded upstream map (litellm's
+            ``model_prices_and_context_window.json`` shape).
+
+    Returns:
+        Number of entries registered.
+    """
+    import litellm
+
+    with _lock:
+        changes: Dict[str, Dict[str, Any]] = {}
+        replaced_existing = False
+        for key, raw_entry in price_map.items():
+            if not isinstance(key, str) or key == "sample_spec":
+                continue
+            entry = _normalize_upstream_entry(raw_entry)
+            if entry is None:
+                continue
+            current = litellm.model_cost.get(key)
+            if _is_protected_price(key, current):
+                continue
+            if isinstance(current, dict) and all(
+                current.get(name) == value
+                for name, value in entry.items()
+                if "cost" in name
+            ):
+                continue
+            replaced_existing = replaced_existing or current is not None
+            changes[key] = entry
+        if changes:
+            litellm.register_model(changes)
+            if replaced_existing:
+                _clear_litellm_model_info_caches()
+    return len(changes)
+
+
+def refresh_price_map_once() -> float:
+    """Run one eager refresh cycle and return seconds until the next one.
+
+    Downloads the upstream map when the shared cache is stale (the on-miss
+    path uses the same cache, so a map it already fetched is merged without
+    a second download), merges it over the snapshot, and respects the
+    failure backoff. Never raises.
+    """
+    global _merged_generation
+    price_map = _fetch_remote_price_map()
+    generation = _remote_cache.snapshot()["generation"]
+    if price_map is not None and generation != _merged_generation:
+        try:
+            registered = merge_upstream_prices(price_map)
+        except Exception:  # noqa: BLE001 - keep serving the snapshot
+            logger.exception("Merging the upstream model price map failed")
+        else:
+            _merged_generation = generation
+            _record_fetch(registered_count=registered)
+            logger.info(
+                "Model price map merged: source=litellm registered=%s", registered
+            )
+    return _remote_cache.seconds_until_due()
+
+
+class PriceMapRefresher:
+    """Lifecycle-owned task that keeps the upstream price map merged.
+
+    Runs :func:`refresh_price_map_once` in a worker thread (download and
+    ``register_model`` are blocking) on start and then whenever the cache is
+    due: every ``_REMOTE_TTL_SECONDS`` after a success, or once the failure
+    backoff has elapsed after a failure.
+    """
+
+    # Lower bound between cycles so a zero delay cannot spin the loop.
+    MIN_DELAY_SECONDS = 1.0
+
+    def __init__(self) -> None:
+        self.task: Optional[asyncio.Task[None]] = None
+        self.first_cycle_done = asyncio.Event()
+
+    async def run(self) -> None:
+        """Refresh until cancelled."""
+        while True:
+            try:
+                delay = await asyncio.to_thread(refresh_price_map_once)
+            except Exception:  # noqa: BLE001 - never let the loop die
+                logger.exception("Model price map refresh cycle failed")
+                delay = float(_REMOTE_FAILURE_BACKOFF_SECONDS)
+            self.first_cycle_done.set()
+            await asyncio.sleep(max(self.MIN_DELAY_SECONDS, delay))
+
+    def start(self) -> None:
+        """Start at most one task for this lifecycle owner."""
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self.run(), name="model-price-map-refresh")
+
+    async def stop(self) -> None:
+        """Cancel the task and wait for it to finish."""
+        if self.task is not None:
+            self.task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.task
+            self.task = None
+
+
+def start_price_map_refresh() -> Optional[PriceMapRefresher]:
+    """Start the eager refresh unless live lookups are off or under tests.
+
+    Gated by ``model_price_live_lookup_enabled`` (the same switch as the
+    on-miss lookup) so an air-gapped deployment turns off every upstream
+    price fetch with one setting. Must be called from a running event loop.
+    """
+    from preloop.config import settings
+
+    if os.getenv("TESTING") == "true" or not getattr(
+        settings, "model_price_live_lookup_enabled", True
+    ):
+        return None
+    refresher = PriceMapRefresher()
+    refresher.start()
+    return refresher
 
 
 def _positive_price(value: Any) -> Optional[float]:
@@ -419,18 +855,38 @@ def _download_openrouter_price_map() -> Optional[Dict[str, Any]]:
     try:
         import httpx
     except ImportError:
-        logger.warning("httpx is unavailable; skipping OpenRouter price lookup")
+        logger.warning(
+            "Model price map fetch: source=openrouter outcome=failed "
+            "reason=httpx_unavailable"
+        )
         return None
 
     try:
         response = httpx.get(OPENROUTER_MODELS_URL, timeout=30.0)
         response.raise_for_status()
         entries = _openrouter_entries_from_payload(response.json())
-    except Exception:  # noqa: BLE001 - network is best-effort here
-        logger.warning("OpenRouter price list download failed", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - network is best-effort here
+        logger.debug("OpenRouter price list download failed", exc_info=True)
+        logger.warning(
+            "Model price map fetch: source=openrouter outcome=failed reason=%s "
+            "retry_in_seconds=%s",
+            _fetch_failure_reason(exc),
+            _REMOTE_FAILURE_BACKOFF_SECONDS,
+        )
         return None
 
-    return entries or None
+    if not entries:
+        logger.warning(
+            "Model price map fetch: source=openrouter outcome=failed "
+            "reason=no_priced_models retry_in_seconds=%s",
+            _REMOTE_FAILURE_BACKOFF_SECONDS,
+        )
+        return None
+    logger.info(
+        "Model price map fetch: source=openrouter outcome=ok entries=%s",
+        len(entries),
+    )
+    return entries
 
 
 def _fetch_openrouter_price_map() -> Optional[Dict[str, Any]]:
@@ -469,7 +925,7 @@ def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
     Returns:
         The matched upstream key, or None when nothing matched.
     """
-    now = time.monotonic()
+    now = _monotonic()
     with _lookup_lock:
         fresh = [
             candidate
@@ -520,10 +976,15 @@ def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
                 return None
 
     with _lookup_lock:
-        stamp = time.monotonic()
+        stamp = _monotonic()
         for candidate in fresh:
             if candidate != matched_key:
-                _remember_negative_lookup(candidate, stamp)
+                _remember_negative_lookup(
+                    candidate,
+                    stamp,
+                    # A sibling alias matched: this is bookkeeping, not a miss.
+                    reason=None if matched_key else "not_in_map",
+                )
     return matched_key
 
 
@@ -594,7 +1055,7 @@ def schedule_price_lookup(
             return False
         dedupe_key = candidates[0]
         negative_keys = candidates
-    now = time.monotonic()
+    now = _monotonic()
     with _lookup_lock:
         if dedupe_key in _pending_lookups:
             queued = _pending_usage.setdefault(dedupe_key, [])
@@ -641,7 +1102,10 @@ def schedule_price_lookup(
                 # rate. Repeating the same regional download on every next
                 # unpriced request cannot repair that billing dimension.
                 with _lookup_lock:
-                    _remember_negative_lookup(dedupe_key)
+                    _remember_negative_lookup(
+                        dedupe_key,
+                        reason=None if matched else f"native_catalog_{status}",
+                    )
             else:
                 matched = bool(lookup_model_price_now(candidates))
                 status = "ingested" if matched else "unavailable"
@@ -706,12 +1170,17 @@ def _reprice_usage_row(api_usage_id: str) -> None:
 
 def reset_lookup_state_for_tests() -> None:
     """Clear all live-lookup caches (test isolation only)."""
+    global _merged_generation
     _remote_cache.reset()
     _openrouter_cache.reset()
     with _lookup_lock:
         _negative_cache.clear()
         _pending_lookups.clear()
         _pending_usage.clear()
+        for key in _price_map_status:
+            if key != "source":
+                _price_map_status[key] = None
+        _merged_generation = 0
 
 
 def _module_state_for_tests() -> dict[str, Any]:
