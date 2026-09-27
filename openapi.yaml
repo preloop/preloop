@@ -31270,7 +31270,8 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Updated connection details
+          description: Updated connection details. The legacy key 'config' is still
+            accepted. When both are sent, connection_details wins.
         meta_data:
           anyOf:
           - additionalProperties: true

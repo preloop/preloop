@@ -124,6 +124,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Saving a tracker from the console persists connection details such as a
+  Jira username. The update accepts `connection_details` and the legacy
+  `config` key. When both are sent, `connection_details` wins.
+- Tracker registration no longer rewrites an HTTP error raised while reading
+  the request, including a 401 from the connection test, as "Invalid request
+  format".
+- API usage counts `create_issue` only for `POST /api/v1/issues`. Other POSTs
+  whose path contains `/issues` are not counted as issue creation.
+
 - A flow execution dispatched in process (no execution worker) whose run
   raises before the runner records an outcome is marked `FAILED` with the
   error and a failure category, instead of staying `PENDING` with the

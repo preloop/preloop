@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import event, inspect as sa_inspect
 from sqlalchemy.engine import Engine
@@ -783,3 +784,89 @@ def test_tracker_create_response_unlocked_field_is_additive():
         id="abc", warnings=["w"], unlocked_tool_names=["get_issue"]
     )
     assert with_field.unlocked_tool_names == ["get_issue"]
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+async def test_update_jira_username_round_trips(
+    mock_publish_task, client: TestClient, db_session, test_user
+):
+    """A Jira username edit persists from config and from connection_details."""
+    tracker = Tracker(
+        name="Jira username edit",
+        tracker_type="jira",
+        url="https://jira.example.com",
+        account_id=test_user.account_id,
+        api_key="jira_key",
+        connection_details={"username": "old-user"},
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    legacy = client.put(
+        f"/api/v1/trackers/{tracker.id}",
+        json={"config": {"username": "edited-user"}},
+    )
+    assert legacy.status_code == 200
+    assert legacy.json()["connection_details"]["username"] == "edited-user"
+    db_session.refresh(tracker)
+    assert tracker.connection_details["username"] == "edited-user"
+
+    both = client.put(
+        f"/api/v1/trackers/{tracker.id}",
+        json={
+            "config": {"username": "from-config"},
+            "connection_details": {"username": "from-details"},
+        },
+    )
+    assert both.status_code == 200
+    assert both.json()["connection_details"]["username"] == "from-details"
+    db_session.refresh(tracker)
+    assert tracker.connection_details["username"] == "from-details"
+
+    fetched = client.get(f"/api/v1/trackers/{tracker.id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["connection_details"]["username"] == "from-details"
+    mock_publish_task.assert_called()
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.create_tracker_client")
+async def test_register_tracker_reraises_test_connection_http_exception(
+    mock_create_tracker_client, client: TestClient, db_session, test_user
+):
+    """A 401 from test_connection reaches the client with its own message."""
+    mock_tracker_client = AsyncMock()
+    mock_tracker_client.test_connection.side_effect = HTTPException(
+        status_code=401,
+        detail="Token rejected: missing scope",
+    )
+    mock_create_tracker_client.return_value = mock_tracker_client
+
+    response = client.post(
+        "/api/v1/trackers",
+        json={
+            "name": "Jira rejected",
+            "type": "jira",
+            "url": "https://jira.example.com",
+            "api_key": "token-value",
+            "connection_details": {"username": "someone"},
+        },
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Token rejected: missing scope"
+    assert "Invalid request format" not in response.json()["detail"]
+
+
+def test_register_tracker_keeps_missing_field_error(
+    client: TestClient, db_session, test_user
+):
+    """Validation HTTP errors are not rewritten as an invalid request."""
+    response = client.post(
+        "/api/v1/trackers",
+        json={"name": "Jira", "type": "jira"},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail.startswith("Missing required field: api_key")
+    assert "Invalid request format" not in detail
