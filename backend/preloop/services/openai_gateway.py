@@ -1178,14 +1178,14 @@ class OpenAIGatewayService:
         try:
             parent = crud_runtime_session.get_by_source(
                 self.db,
-                account_id=str(self.auth_context.user.account_id),
+                account_id=str(self.auth_context.account_id),
                 session_source_type=session_source_type,
                 session_source_id=parent_source_id,
             )
             if parent is None:
                 parent = crud_runtime_session.upsert_by_source(
                     self.db,
-                    account_id=str(self.auth_context.user.account_id),
+                    account_id=str(self.auth_context.account_id),
                     session_source_type=session_source_type,
                     session_source_id=parent_source_id,
                     runtime_principal_type=session_source_type,
@@ -1250,7 +1250,7 @@ class OpenAIGatewayService:
                 try:
                     latest_run = crud_runtime_session.get_latest_by_principal(
                         self.db,
-                        account_id=str(self.auth_context.user.account_id),
+                        account_id=str(self.auth_context.account_id),
                         principal_type=session_source_type,
                         principal_id=session_source_id,
                     )
@@ -1275,7 +1275,7 @@ class OpenAIGatewayService:
                         # its own id and correctly reattaches to its own row.
                         rs = crud_runtime_session.get_by_source(
                             self.db,
-                            account_id=str(self.auth_context.user.account_id),
+                            account_id=str(self.auth_context.account_id),
                             session_source_type=session_source_type,
                             session_source_id=session_source_id,
                         )
@@ -1283,7 +1283,7 @@ class OpenAIGatewayService:
                         # Signal-less: only the clock can bound this session.
                         rs = crud_runtime_session.get_latest_idle_generation(
                             self.db,
-                            account_id=str(self.auth_context.user.account_id),
+                            account_id=str(self.auth_context.account_id),
                             session_source_type=session_source_type,
                             session_source_id=session_source_id,
                         )
@@ -1303,7 +1303,7 @@ class OpenAIGatewayService:
                         observed_at = datetime.now(timezone.utc)
                         rs = crud_runtime_session.upsert_by_source(
                             self.db,
-                            account_id=str(self.auth_context.user.account_id),
+                            account_id=str(self.auth_context.account_id),
                             session_source_type=session_source_type,
                             session_source_id=session_source_id,
                             runtime_principal_type=session_source_type,
@@ -1336,7 +1336,7 @@ class OpenAIGatewayService:
                         if parent_session_id is not None:
                             rs = crud_runtime_session.upsert_by_source(
                                 self.db,
-                                account_id=str(self.auth_context.user.account_id),
+                                account_id=str(self.auth_context.account_id),
                                 session_source_type=session_source_type,
                                 session_source_id=session_source_id,
                                 parent_session_id=parent_session_id,
@@ -1381,14 +1381,14 @@ class OpenAIGatewayService:
             try:
                 rs = crud_runtime_session.get_by_source(
                     self.db,
-                    account_id=str(self.auth_context.user.account_id),
+                    account_id=str(self.auth_context.account_id),
                     session_source_type="api_key",
                     session_source_id=session_source_id,
                 )
                 if rs is None or rs.ended_at is not None:
                     rs = crud_runtime_session.upsert_by_source(
                         self.db,
-                        account_id=str(self.auth_context.user.account_id),
+                        account_id=str(self.auth_context.account_id),
                         session_source_type="api_key",
                         session_source_id=session_source_id,
                         runtime_principal_type="api_key",
@@ -1407,7 +1407,7 @@ class OpenAIGatewayService:
                 try:
                     rs = crud_runtime_session.get_by_source(
                         self.db,
-                        account_id=str(self.auth_context.user.account_id),
+                        account_id=str(self.auth_context.account_id),
                         session_source_type="api_key",
                         session_source_id=session_source_id,
                     )
@@ -1462,7 +1462,7 @@ class OpenAIGatewayService:
         """
         operator_notes.deliver_gateway_notes(
             self.db,
-            account_id=str(self.auth_context.user.account_id),
+            account_id=str(self.auth_context.account_id),
             managed_agent_id=self._resolve_managed_agent_id(),
             runtime_session_id=self._resolve_runtime_session(),
             protocol=protocol,
@@ -1486,7 +1486,7 @@ class OpenAIGatewayService:
 
         _emit_account_event_nonblocking(
             build_account_event(
-                account_id=str(self.auth_context.user.account_id),
+                account_id=str(self.auth_context.account_id),
                 topic=ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
                 event_type="model_gateway_request_started",
                 payload={
@@ -1543,7 +1543,7 @@ class OpenAIGatewayService:
 
             emit_list_models(
                 account_id=(
-                    str(self.auth_context.user.account_id)
+                    str(self.auth_context.account_id)
                     if self.auth_context.user
                     else None
                 )
@@ -3136,7 +3136,7 @@ class OpenAIGatewayService:
             output_items: List[Dict[str, Any]] = []
             tool_call_states: Dict[int, Dict[str, Any]] = {}
             reasoning_bridge = DeepSeekResponsesReasoning.for_model(
-                model, self.auth_context.user.account_id
+                model, self.auth_context.account_id
             )
             reasoning_buffer = StringIO()
             reasoning_bytes = 0
@@ -3595,7 +3595,7 @@ class OpenAIGatewayService:
         )
 
     def _get_account_models(self) -> List[models.AIModel]:
-        account_id = self.auth_context.user.account_id
+        account_id = self.auth_context.account_id
         from preloop.models.crud.ai_model import ai_model as crud_ai_model
 
         return crud_ai_model.get_all_for_account(self.db, account_id=account_id)
@@ -3717,7 +3717,7 @@ class OpenAIGatewayService:
                 logger.warning(
                     "gateway_alias_collision account=%s requested=%r "
                     "chosen=%s chosen_name=%r shadowed=%s",
-                    self.auth_context.user.account_id,
+                    self.auth_context.account_id,
                     requested_model,
                     chosen.id,
                     chosen.name,
@@ -4012,7 +4012,7 @@ class OpenAIGatewayService:
             # unauthorized for this credential on the very next request.
             return None
 
-        account_id = self.auth_context.user.account_id
+        account_id = self.auth_context.account_id
         for model in crud_ai_model.get_by_account(self.db, account_id=account_id):
             if (
                 (model.model_identifier or "").strip() == identifier
@@ -5353,7 +5353,7 @@ class OpenAIGatewayService:
     ) -> Dict[str, Any]:
         output_items = self._build_response_output_items(response_dict)
         reasoning_bridge = DeepSeekResponsesReasoning.for_model(
-            ai_model, self.auth_context.user.account_id
+            ai_model, self.auth_context.account_id
         )
         choices = response_dict.get("choices") or []
         message = (choices[0].get("message") or {}) if choices else {}
@@ -5497,7 +5497,7 @@ class OpenAIGatewayService:
             if not isinstance(raw_tools, list) or not raw_tools:
                 return payload
             meta_data = get_cached_account_meta_data(
-                self.db, str(self.auth_context.user.account_id)
+                self.db, str(self.auth_context.account_id)
             )
             if meta_data is None:
                 return payload
@@ -6158,7 +6158,7 @@ class OpenAIGatewayService:
             if not isinstance(raw_tools, list) or not raw_tools:
                 return payload
             meta_data = get_cached_account_meta_data(
-                self.db, str(self.auth_context.user.account_id)
+                self.db, str(self.auth_context.account_id)
             )
             if meta_data is None:
                 return payload
@@ -6358,7 +6358,7 @@ class OpenAIGatewayService:
             call = (
                 meter.prepare_native(
                     self.db,
-                    account_id=self.auth_context.user.account_id,
+                    account_id=self.auth_context.account_id,
                     model=ai_model,
                     body=body,
                     url=url,
@@ -6448,7 +6448,7 @@ class OpenAIGatewayService:
             call = (
                 meter.prepare_native(
                     self.db,
-                    account_id=self.auth_context.user.account_id,
+                    account_id=self.auth_context.account_id,
                     model=ai_model,
                     body=body,
                     url=url,
@@ -7071,7 +7071,7 @@ class OpenAIGatewayService:
             reservation = (
                 meter.prepare(
                     self.db,
-                    account_id=self.auth_context.user.account_id,
+                    account_id=self.auth_context.account_id,
                     model=ai_model,
                     kwargs=kwargs,
                     owns_session=self._owns_db_session,
@@ -7212,7 +7212,7 @@ class OpenAIGatewayService:
             reservation = (
                 meter.prepare(
                     self.db,
-                    account_id=self.auth_context.user.account_id,
+                    account_id=self.auth_context.account_id,
                     model=ai_model,
                     kwargs=kwargs,
                     owns_session=self._owns_db_session,
@@ -7610,7 +7610,7 @@ class OpenAIGatewayService:
             return messages, payload
         try:
             meta_data = get_cached_account_meta_data(
-                self.db, str(self.auth_context.user.account_id)
+                self.db, str(self.auth_context.account_id)
             )
             if meta_data is None:
                 return messages, payload
@@ -7667,9 +7667,7 @@ class OpenAIGatewayService:
     ) -> List[Dict[str, Any]]:
         messages: List[Dict[str, Any]] = []
         reasoning_bridge = (
-            DeepSeekResponsesReasoning.for_model(
-                ai_model, self.auth_context.user.account_id
-            )
+            DeepSeekResponsesReasoning.for_model(ai_model, self.auth_context.account_id)
             if ai_model is not None
             else None
         )
@@ -8687,7 +8685,7 @@ class OpenAIGatewayService:
         """Resolve account-scoped pricing metadata for a gateway usage row."""
         return resolve_pricing_override(
             self.db,
-            account_id=self.auth_context.user.account_id,
+            account_id=self.auth_context.account_id,
             ai_model=ai_model,
             requested_alias=model_alias,
         )
@@ -9182,7 +9180,7 @@ class OpenAIGatewayService:
         )
         attempt_summary = crud_api_usage.get_gateway_attempt_summary(
             self.db,
-            account_id=str(self.auth_context.user.account_id),
+            account_id=str(self.auth_context.account_id),
             runtime_session_id=runtime_session_id,
             request_fingerprint=request_fingerprint,
         )
@@ -9251,7 +9249,7 @@ class OpenAIGatewayService:
             status_code=status_code,
             duration=duration,
             user_id=str(self.auth_context.user.id),
-            account_id=str(self.auth_context.user.account_id),
+            account_id=str(self.auth_context.account_id),
             api_key_id=(
                 str(self.auth_context.api_key.id) if self.auth_context.api_key else None
             ),
@@ -9360,7 +9358,7 @@ class OpenAIGatewayService:
                 try:
                     notify_unpriced_model(
                         self.db,
-                        account_id=str(self.auth_context.user.account_id),
+                        account_id=str(self.auth_context.account_id),
                         model_alias=model_alias,
                         provider_name=ai_model.provider_name,
                         total_tokens=int(total_tokens or 0),
@@ -9374,7 +9372,7 @@ class OpenAIGatewayService:
 
         log_model_gateway_request(
             self.db,
-            account_id=self.auth_context.user.account_id,
+            account_id=self.auth_context.account_id,
             user_id=self.auth_context.user.id,
             api_usage_id=str(usage_row.id),
             endpoint=endpoint,
@@ -9487,7 +9485,7 @@ class OpenAIGatewayService:
             if usage_row.runtime_session_id:
                 runtime_session = crud_runtime_session.touch_activity(
                     self.db,
-                    account_id=self.auth_context.user.account_id,
+                    account_id=self.auth_context.account_id,
                     runtime_session_id=usage_row.runtime_session_id,
                     observed_at=observed_at,
                     min_update_interval=_RUNTIME_SESSION_ACTIVITY_TOUCH_MIN_INTERVAL,
@@ -9503,7 +9501,7 @@ class OpenAIGatewayService:
                     )
                     emit_account_event(
                         build_account_event(
-                            account_id=str(self.auth_context.user.account_id),
+                            account_id=str(self.auth_context.account_id),
                             topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
                             event_type="runtime_session_updated",
                             payload={
@@ -9536,7 +9534,7 @@ class OpenAIGatewayService:
             if usage_row.runtime_principal_type and usage_row.runtime_principal_id:
                 managed_agent = crud_managed_agent.touch_last_seen_for_principal(
                     self.db,
-                    account_id=self.auth_context.user.account_id,
+                    account_id=self.auth_context.account_id,
                     session_source_type=usage_row.runtime_principal_type,
                     session_source_id=usage_row.runtime_principal_id,
                     runtime_session_id=usage_row.runtime_session_id,
@@ -9546,7 +9544,7 @@ class OpenAIGatewayService:
                 if managed_agent is not None:
                     emit_account_event(
                         build_account_event(
-                            account_id=str(self.auth_context.user.account_id),
+                            account_id=str(self.auth_context.account_id),
                             topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
                             event_type="managed_agent_updated",
                             payload={
@@ -9607,7 +9605,7 @@ class OpenAIGatewayService:
         existing_summary = summary_state.get("summary")
         request_count = crud_api_usage.count_successful_gateway_calls_for_session(
             self.db,
-            account_id=self.auth_context.user.account_id,
+            account_id=self.auth_context.account_id,
             runtime_session_id=runtime_session.id,
         )
         if not isinstance(request_count, int) or request_count < 1:
@@ -9620,7 +9618,7 @@ class OpenAIGatewayService:
 
         default_model = crud_ai_model.get_default_active_model(
             self.db,
-            account_id=self.auth_context.user.account_id,
+            account_id=self.auth_context.account_id,
         )
         if default_model is None:
             return
@@ -9636,7 +9634,7 @@ class OpenAIGatewayService:
                 response_payload=response_payload,
                 recent_interactions=crud_runtime_session_activity.list_recent_model_gateway_call_payloads_for_session(
                     self.db,
-                    account_id=self.auth_context.user.account_id,
+                    account_id=self.auth_context.account_id,
                     runtime_session_id=runtime_session.id,
                     limit=_RUNTIME_SESSION_SUMMARY_REFRESH_EVERY_REQUESTS,
                 ),
@@ -9684,7 +9682,7 @@ class OpenAIGatewayService:
         try:
             index_session_summary(
                 self.db,
-                account_id=self.auth_context.user.account_id,
+                account_id=self.auth_context.account_id,
                 runtime_session_id=runtime_session.id,
                 title=getattr(runtime_session, "title", None),
                 summary=stored_summary,
@@ -9882,7 +9880,7 @@ class OpenAIGatewayService:
         blocked request stays attributable to the halt, then raised as a 403
         carrying the distinct ``preloop_account_halted`` error code.
         """
-        account_id = self.auth_context.user.account_id
+        account_id = self.auth_context.account_id
         if not kill_switch_service.gateway_halted(self.db, account_id):
             return
         reason = kill_switch_service.halt_reason(self.db, account_id, "gateway")

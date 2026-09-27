@@ -828,7 +828,7 @@ def _apply_decision(
         approved = _await_model_io_hold(
             hold_for_model_io_approval(
                 db=gateway.db,
-                account_id=gateway.auth_context.user.account_id,
+                account_id=gateway.auth_context.account_id,
                 target=target,
                 decision=decision,
                 release_after_lookup=getattr(gateway, "release_db_for_wait", None),
@@ -848,7 +848,7 @@ def _load_gateway_policy_rules(
     """Finish the policy read before waits, and fail closed on database errors."""
     try:
         try:
-            return load_model_io_rules(gateway.db, gateway.auth_context.user.account_id)
+            return load_model_io_rules(gateway.db, gateway.auth_context.account_id)
         finally:
             release = getattr(gateway, "release_db_for_wait", None)
             if release is not None:
@@ -872,7 +872,7 @@ def enforce_request_policy(
     provider: str,
 ) -> None:
     """Evaluate model.request rules before the provider call."""
-    account_id = gateway.auth_context.user.account_id
+    account_id = gateway.auth_context.account_id
     rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.request" for rule in rules):
         return
@@ -904,7 +904,7 @@ def enforce_response_policy(
     provider: str,
 ) -> None:
     """Evaluate model.response rules before bytes reach the client."""
-    account_id = gateway.auth_context.user.account_id
+    account_id = gateway.auth_context.account_id
     rules = _load_gateway_policy_rules(gateway, ai_model=ai_model, provider=provider)
     if not any(rule.enabled and str(rule.target) == "model.response" for rule in rules):
         return

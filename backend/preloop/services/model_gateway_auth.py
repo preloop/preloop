@@ -50,7 +50,14 @@ class ModelGatewayAuthContext:
 
     @property
     def account_id(self) -> Any:
-        """Account the credential belongs to."""
+        """Account the credential belongs to.
+
+        An API key is bound to one account for life, so a key-authenticated
+        request is attributed to the key's account. User sessions (JWT) and
+        OAuth MCP tokens carry no key and fall back to the user's account.
+        """
+        if self.api_key is not None:
+            return self.api_key.account_id
         return self.user.account_id
 
     @property
@@ -157,6 +164,28 @@ async def authenticate_bearer_token(
     return await run_db_off_loop(authenticate)
 
 
+def _key_matches_user_account(api_key: Any, user: Any) -> bool:
+    """Return whether a key is bound to its owner's account, logging if not.
+
+    ``_authenticate_with_api_key`` enforces the same rule for bearer tokens.
+    Context builders that resolve the key row themselves repeat it so no
+    gateway path attributes a key's traffic to a foreign account.
+    """
+    if str(api_key.account_id) == str(user.account_id):
+        return True
+    logger.warning(
+        "Model gateway rejected API key: key account does not match its user's account",
+        extra={
+            "event": "api_key_account_mismatch",
+            "api_key_id": str(api_key.id),
+            "user_id": str(user.id),
+            "key_account_id": str(api_key.account_id),
+            "user_account_id": str(user.account_id),
+        },
+    )
+    return False
+
+
 def _resolve_bearer_context(
     token: str,
     db: Session,
@@ -178,6 +207,8 @@ def _resolve_bearer_context(
         api_key = crud_api_key.get_by_key(db, key=token)
         if api_key is not None:
             if not api_key.is_active or api_key.is_expired:
+                return None
+            if not _key_matches_user_account(api_key, user):
                 return None
             context_data = (
                 api_key.context_data if isinstance(api_key.context_data, dict) else {}
@@ -275,6 +306,8 @@ def build_runtime_key_auth_context(
     user = crud_user.get(db, id=str(api_key.user_id))
     if user is None or not user.is_active:
         return None
+    if not _key_matches_user_account(api_key, user):
+        return None
 
     return ModelGatewayAuthContext(token=token, user=user, api_key=api_key)
 
@@ -311,7 +344,7 @@ def resolve_managed_agent_id_for_context(
 
     managed_agent = crud_managed_agent.get_by_source(
         db,
-        account_id=str(auth_context.user.account_id),
+        account_id=str(auth_context.account_id),
         session_source_type=session_source_type,
         session_source_id=session_source_id,
     )
@@ -369,7 +402,7 @@ def compute_authorized_model_ids(
 
     bindings = crud_managed_agent_ai_model_binding.list_for_agent(
         db,
-        account_id=str(auth_context.user.account_id),
+        account_id=str(auth_context.account_id),
         agent_id=managed_agent_id,
     )
     for binding in bindings:
