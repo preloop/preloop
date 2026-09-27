@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Spend outlier alerts on the Attention page: a developer whose UTC-day spend
+  is a multiple of their 28-day median, whose spend is mostly one top-tier
+  model two days running, or a session over a cost threshold. Each alert fires
+  once, is dismissable with the existing dismissals, and comes back on a new
+  day that still matches. Thresholds are per account
+  (`/api/v1/attention/spend-outliers/settings`), and the weekly digest can
+  list the week's findings with dismissed ones marked.
+
 - The Cost page has a Copilot tab that imports GitHub Copilot seats, daily
   premium-request spend per developer and model, and per-user usage metrics
   from GitHub once a day. The operator enters the seat price. The figures are
