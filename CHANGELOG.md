@@ -132,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   format".
 - API usage counts `create_issue` only for `POST /api/v1/issues`. Other POSTs
   whose path contains `/issues` are not counted as issue creation.
+- Notify-only response evaluation reads the account id from the gateway auth
+  context, the same place as the rest of the gateway.
 
 - A flow execution dispatched in process (no execution worker) whose run
   raises before the runner records an outcome is marked `FAILED` with the
