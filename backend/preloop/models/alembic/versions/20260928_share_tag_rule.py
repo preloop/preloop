@@ -1,10 +1,10 @@
 """Add resource sharing, resource tags, tag key policies and access rules.
 
 Revision ID: 20260928_share_tag_rule
-Revises: 20260928_person_membership
+Revises: 20260928_person_constraints
 Create Date: 2026-09-28
 
-Last of four revisions for the account hierarchy (#986). Tables only, no
+Last of six revisions for the account hierarchy (#986). Tables only, no
 rows. ``resource_share_recipient`` is the materialized table hot paths read,
 through ``(recipient_account_id, resource_type)``; two triggers keep it free
 of revoked shares. Tags are separate from
@@ -19,7 +19,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 revision = "20260928_share_tag_rule"
-down_revision = "20260928_person_membership"
+down_revision = "20260928_person_constraints"
 branch_labels = None
 depends_on = None
 

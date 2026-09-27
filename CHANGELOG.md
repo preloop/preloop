@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Schema for account hierarchies (#986): accounts carry a parent, root,
+  materialized path and depth (every existing account becomes a root, depth
+  is capped at 1 for now); a `person` table links the `user` rows (one per
+  account membership) of one human; plus account access grants, resource
+  shares with a materialized recipient table, resource tags, tag key policies
+  and access rules. Tables and columns only, no endpoints yet. Existing users
+  are backfilled onto persons: rows with the same verified email share one,
+  every other row gets its own. Upgrade note: revision
+  `20260928_person_constraints` holds an exclusive lock on `user` for a
+  full-table scan and a unique index build, about one second per million
+  `user` rows, and every request waits while it runs. On a very large `user`
+  table, or where that stall is not acceptable, drain the API first (see
+  "When to drain the API first" in `docs/operations/schema-migrations.md`).
+
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
   the first event to PR opened, PR opened to approved, and approved to merged

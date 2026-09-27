@@ -2,7 +2,7 @@
 
 Seeds two accounts, a user in each holding the same verified address, a user
 holding an unverified duplicate of it, teams, roles and a budget. Then walks
-the four revisions down and up again (twice up, for idempotency) inside the
+the six revisions down and up again (twice up, for idempotency) inside the
 test transaction and checks the backfill.
 """
 
@@ -26,6 +26,8 @@ REVISIONS = (
     "20260928_account_hierarchy",
     "20260928_access_grants",
     "20260928_person_membership",
+    "20260928_person_backfill",
+    "20260928_person_constraints",
     "20260928_share_tag_rule",
 )
 NEW_TABLES = {
@@ -302,3 +304,63 @@ def test_verified_duplicates_in_one_account_keep_separate_persons(db_session):
     verified_at = dict(verified)
     assert verified_at[recent["person_id"]] is not None
     assert verified_at[stale["person_id"]] is None
+
+
+def _upgrade(connection, names) -> None:
+    with Operations.context(MigrationContext.configure(connection)):
+        for name in names:
+            _load(name).upgrade()
+
+
+def _person_id_nullable(connection) -> bool:
+    columns = inspect(connection).get_columns("user")
+    return next(c["nullable"] for c in columns if c["name"] == "person_id")
+
+
+def test_rows_written_between_backfill_and_constraints_are_linked(db_session):
+    """The backfill commits without NOT NULL; old pods may still insert rows.
+
+    The constraints revision links those stragglers to provisional persons
+    before it sets NOT NULL, so the upgrade does not fail on them.
+    """
+    seeded = _seed(db_session)
+    connection = db_session.connection()
+    _downgrade_all(connection)
+    split = REVISIONS.index("20260928_person_backfill") + 1
+    _upgrade(connection, REVISIONS[:split])
+
+    assert _person_id_nullable(connection)
+    straggler = uuid.uuid4()
+    connection.execute(
+        text(
+            'INSERT INTO "user" (id, account_id, username, email, email_verified,'
+            " user_source, is_active, created_at, updated_at)"
+            " VALUES (:id, :account, :username, 'alice@example.com', TRUE,"
+            " 'local', TRUE, now(), now())"
+        ),
+        {
+            "id": straggler,
+            "account": seeded["acme"],
+            "username": f"late-{straggler.hex[:8]}",
+        },
+    )
+
+    _upgrade(connection, REVISIONS[split:])
+
+    assert not _person_id_nullable(connection)
+    person = (
+        connection.execute(
+            text(
+                "SELECT p.id, p.email_verified_at, p.primary_user_id FROM person p"
+                ' JOIN "user" u ON u.person_id = p.id WHERE u.id = :id'
+            ),
+            {"id": straggler},
+        )
+        .mappings()
+        .one()
+    )
+    # Provisional, never merged into the verified alice person.
+    assert person["email_verified_at"] is None
+    assert person["primary_user_id"] == straggler
+    shared = _users(connection, [seeded["older"]])[seeded["older"]]["person_id"]
+    assert person["id"] != shared

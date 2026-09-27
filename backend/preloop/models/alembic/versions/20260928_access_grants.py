@@ -4,7 +4,7 @@ Revision ID: 20260928_access_grants
 Revises: 20260928_account_hierarchy
 Create Date: 2026-09-28
 
-Second of four revisions for the account hierarchy (#986).
+Second of six revisions for the account hierarchy (#986).
 ``account_access_grant`` records access a parent account gives its user or
 team in all or selected subaccounts; ``account_access_grant_target`` lists the
 selected ones. ``user_role.access_grant_id`` marks the roles a grant created,

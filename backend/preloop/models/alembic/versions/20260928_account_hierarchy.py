@@ -4,7 +4,7 @@ Revision ID: 20260928_account_hierarchy
 Revises: 20260927_policy_notice_hit
 Create Date: 2026-09-28
 
-First of four revisions for the account hierarchy (#986). Every existing
+First of six revisions for the account hierarchy (#986). Every existing
 account becomes a root: ``root_account_id = id``, ``hierarchy_path = [id]``,
 depth 0. ``ck_account_hierarchy_depth_max`` is the only place the depth is
 limited (one level below the root at launch).

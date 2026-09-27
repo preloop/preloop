@@ -260,6 +260,10 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert access_grants.down_revision == "20260928_account_hierarchy"
     person_membership = script.get_revision("20260928_person_membership")
     assert person_membership.down_revision == "20260928_access_grants"
+    person_backfill = script.get_revision("20260928_person_backfill")
+    assert person_backfill.down_revision == "20260928_person_membership"
+    person_constraints = script.get_revision("20260928_person_constraints")
+    assert person_constraints.down_revision == "20260928_person_backfill"
     share_tag_rule = script.get_revision("20260928_share_tag_rule")
-    assert share_tag_rule.down_revision == "20260928_person_membership"
+    assert share_tag_rule.down_revision == "20260928_person_constraints"
     assert script.get_heads() == ["20260928_share_tag_rule"]

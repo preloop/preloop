@@ -45,7 +45,7 @@ class Person(Base):
         String(255),
         nullable=False,
         index=True,
-        comment="lower(btrim(email)) of the membership rows this person holds",
+        comment="Lowercased, trimmed address of the membership rows this person holds",
     )
     email_verified_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
