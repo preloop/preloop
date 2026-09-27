@@ -1,0 +1,116 @@
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import sinon from 'sinon';
+import './console-shell';
+import type { ConsoleShell } from './console-shell';
+import { mockApi, type MockApi } from '../../test-helpers/capability-api';
+import type { Capability } from '../../capabilities';
+
+const GATED_LINKS = [
+  '/console/settings/subaccounts',
+  '/console/settings/access-grants',
+];
+
+describe('ConsoleShell capability gating', () => {
+  let api: MockApi | undefined;
+  let matchMediaStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    (window as any).BRAND_CONFIG = {
+      name: 'Preloop',
+      domain: 'preloop.ai',
+      company: { legal_name: 'Preloop', address: '', city: '' },
+      branding: {
+        logo_light: '/logo.svg',
+        logo_dark: '/logo-dark.svg',
+        favicon: '/favicon.ico',
+        primary_color: '#000',
+        gradient_product: '',
+        gradient_ai: '',
+      },
+      social: { twitter: '', linkedin: '', instagram: '' },
+    };
+    localStorage.setItem('accessToken', 'test-access-token');
+    matchMediaStub = sinon.stub(window, 'matchMedia').callsFake(
+      () =>
+        ({
+          matches: false,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList
+    );
+  });
+
+  afterEach(() => {
+    api?.restore();
+    api = undefined;
+    matchMediaStub.restore();
+    localStorage.clear();
+    delete (window as any).BRAND_CONFIG;
+  });
+
+  async function renderShell(capabilities: Capability[]) {
+    api = mockApi({
+      capabilities,
+      fallback: { status: 200, body: [] },
+    });
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('console-header') !== null,
+      'Header did not render'
+    );
+    await waitUntil(
+      () => api!.callsTo('/api/v1/features').length > 0,
+      'Features were not read'
+    );
+    await el.updateComplete;
+    return el;
+  }
+
+  it('renders no gated nav item or header slot without capabilities', async () => {
+    const el = await renderShell([]);
+    const root = el.shadowRoot!;
+    for (const href of GATED_LINKS) {
+      expect(root.querySelector(`a[href="${href}"]`), href).to.equal(null);
+    }
+    expect(root.querySelector('capability-extension')).to.equal(null);
+    expect(customElements.get('account-switcher')).to.equal(undefined);
+    expect(api!.callsTo('/api/v1/me/memberships')).to.have.length(0);
+  });
+
+  it('shows the Settings items with account_hierarchy', async () => {
+    const el = await renderShell(['account_hierarchy']);
+    await waitUntil(
+      () =>
+        el.shadowRoot!.querySelector(`a[href="${GATED_LINKS[0]}"]`) !== null,
+      'Subaccounts link did not render'
+    );
+    for (const href of GATED_LINKS) {
+      expect(el.shadowRoot!.querySelector(`a[href="${href}"]`), href).to.exist;
+    }
+    expect(
+      el.shadowRoot!.querySelector(
+        'capability-extension[name="account-switcher"]'
+      )
+    ).to.equal(null);
+  });
+
+  it('mounts the header account switcher with multi_account', async () => {
+    const el = await renderShell(['multi_account']);
+    await waitUntil(
+      () =>
+        el.shadowRoot!.querySelector(
+          'capability-extension[name="account-switcher"]'
+        ) !== null,
+      'Switcher slot did not render'
+    );
+    const slot = el.shadowRoot!.querySelector(
+      'capability-extension[name="account-switcher"]'
+    )!;
+    expect(slot.getAttribute('slot')).to.equal('account-switcher');
+    expect(
+      el.shadowRoot!.querySelector(`a[href="${GATED_LINKS[0]}"]`)
+    ).to.equal(null);
+  });
+});

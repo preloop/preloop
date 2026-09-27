@@ -2374,6 +2374,84 @@ class FlowExecutionOrchestrator:
             logger.error(f"Error executing custom commands: {e}", exc_info=True)
             return False
 
+    async def _attach_git_credentials(self, execution_context: Dict[str, Any]) -> None:
+        """Resolve clone credentials for the flow's repositories.
+
+        Adds ``git_credentials_map`` (keyed by tracker id) for the effective
+        clone config's repositories (the bound repository when a repository
+        binding applies), then the triggering project's tracker credentials
+        unless a binding applies.
+
+        Args:
+            execution_context: Context to extend in place.
+        """
+        repositories = (self._effective_git_clone_config() or {}).get(
+            "repositories", []
+        )
+        if repositories:
+            logger.info(
+                f"Preparing git credentials for {len(repositories)} configured repositories"
+            )
+            # Get unique tracker IDs from repositories
+            tracker_ids = set(
+                repo.get("tracker_id")
+                for repo in repositories
+                if repo.get("tracker_id")
+            )
+
+            # Fetch credentials for each tracker
+            credentials_map = {}
+            for tracker_id in tracker_ids:
+                creds = await self._get_tracker_credentials_by_id(tracker_id)
+                if creds:
+                    credentials_map[tracker_id] = creds
+
+            if credentials_map:
+                execution_context["git_credentials_map"] = credentials_map
+                logger.info(
+                    f"Prepared git credentials for {len(credentials_map)} tracker(s)"
+                )
+            else:
+                logger.warning(
+                    "Git clone enabled but could not get tracker credentials"
+                )
+
+        # Repositories declared without a tracker_id (and the trigger-project
+        # fallback used when none are declared at all) resolved their token
+        # inside the agent container, which reads the stored key only and
+        # therefore finds nothing for a GitHub App tracker. Resolve it here,
+        # where minting an installation token is possible, and hand it over
+        # with the rest of the credentials. A bound execution skips this: the
+        # triggering tracker is the issue tracker, and its token must never
+        # reach the code host.
+        if getattr(self, "_repository_binding", None) is None:
+            await self._attach_trigger_tracker_credentials(execution_context)
+
+    async def prepare_host_exec_checkout_context(self) -> Optional[Dict[str, Any]]:
+        """Build the clone inputs a host-exec runner needs, with credentials.
+
+        Host profiles never receive the full execution context. This returns
+        only what the checkout resolvers read, so the delivery path can turn
+        it into a validated, per-repository checkout plan.
+
+        Returns:
+            The checkout context, or None when the flow does not clone.
+        """
+        clone = self.flow.git_clone_config
+        if not isinstance(clone, dict) or not clone.get("enabled"):
+            return None
+        context: Dict[str, Any] = {
+            "flow_id": str(self.flow_id),
+            "flow_name": self.flow.name,
+            "execution_id": str(self.execution_log.id),
+            "account_id": self.flow.account_id,
+            "git_clone_config": clone,
+            "trigger_event_data": self.trigger_event_data,
+            "trigger_project_id": self._resolve_trigger_project_id(),
+        }
+        await self._attach_git_credentials(context)
+        return context
+
     async def _prepare_execution_context(
         self, *, resolved_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -2599,45 +2677,7 @@ class FlowExecutionOrchestrator:
         # Isolated mode never resolves the existing broad tracker token.
         effective_git_config = self._effective_git_clone_config()
         if effective_git_config and self._isolated_publication_policy is None:
-            repositories = effective_git_config.get("repositories", [])
-            if repositories:
-                logger.info(
-                    f"Preparing git credentials for {len(repositories)} configured repositories"
-                )
-                # Get unique tracker IDs from repositories
-                tracker_ids = set(
-                    repo.get("tracker_id")
-                    for repo in repositories
-                    if repo.get("tracker_id")
-                )
-
-                # Fetch credentials for each tracker
-                credentials_map = {}
-                for tracker_id in tracker_ids:
-                    creds = await self._get_tracker_credentials_by_id(tracker_id)
-                    if creds:
-                        credentials_map[tracker_id] = creds
-
-                if credentials_map:
-                    execution_context["git_credentials_map"] = credentials_map
-                    logger.info(
-                        f"Prepared git credentials for {len(credentials_map)} tracker(s)"
-                    )
-                else:
-                    logger.warning(
-                        "Git clone enabled but could not get tracker credentials"
-                    )
-
-            # Repositories declared without a tracker_id (and the
-            # trigger-project fallback used when none are declared at all)
-            # resolved their token inside the agent container, which reads the
-            # stored key only and therefore finds nothing for a GitHub App
-            # tracker. Resolve it here, where minting an installation token is
-            # possible, and hand it over with the rest of the credentials.
-            # A bound execution skips this: the triggering tracker is the
-            # issue tracker, and its token must never reach the code host.
-            if binding is None:
-                await self._attach_trigger_tracker_credentials(execution_context)
+            await self._attach_git_credentials(execution_context)
 
         # Add AI model details if available
         if self.ai_model:
