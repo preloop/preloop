@@ -48,7 +48,9 @@ there) when it is newer than the stamp in the local enrollment state. About
 every two minutes it also reads Preloop's rotation marker, which carries no
 tokens, and when Preloop's copy is newer it writes that bundle back into the
 same place Codex reads it. When both copies changed since the last sync, the
-one with the later `last_refresh` wins and replaces the other. A failed push
+one with the later `last_refresh` wins and replaces the other. A pull only
+happens when the local login and Preloop's copy name the same ChatGPT
+account. A failed push
 or pull is logged once, leaves the local login and the stamp as they were,
 and does not change the permission decision. A host with no local login
 never gets one written back. When the hook is not installed, run

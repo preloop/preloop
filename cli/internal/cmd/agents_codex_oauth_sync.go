@@ -75,7 +75,8 @@ var logCodexOAuthSyncFailure = func(err error) {
 var readCodexKeychainOAuthForSync = defaultReadCodexKeychainOAuthForSync
 
 // readCodexKeychainBlobForSync returns the raw Keychain blob so a pull keeps
-// the fields Preloop does not store (id_token, auth_mode). Tests replace it.
+// the fields Preloop does not store (id_token, auth_mode). A read error aborts
+// the pull rather than rebuilding the entry from nothing. Tests replace it.
 var readCodexKeychainBlobForSync = defaultReadCodexKeychainBlobForSync
 
 // writeCodexKeychainBlobForSync replaces the Keychain blob Codex reads.
@@ -390,8 +391,9 @@ func readCodexOAuthMarkers(
 
 // newestCodexOAuthMarker returns the usable marker with the latest expiry.
 // Rows whose last server-side refresh failed are skipped (a dead copy must
-// never overwrite a working login), and so are rows that hold a different
-// ChatGPT account than the local login.
+// never overwrite a working login), and so are rows that name a ChatGPT
+// account the local login does not provably hold, including when the local
+// login carries no account id at all.
 func newestCodexOAuthMarker(markers []codexOAuthServerMarker, localAccountID string) *codexOAuthServerMarker {
 	localAccountID = strings.TrimSpace(localAccountID)
 	var best *codexOAuthServerMarker
@@ -407,7 +409,7 @@ func newestCodexOAuthMarker(markers []codexOAuthServerMarker, localAccountID str
 			continue
 		}
 		remoteAccount := strings.TrimSpace(marker.AccountID)
-		if localAccountID != "" && remoteAccount != "" && remoteAccount != localAccountID {
+		if remoteAccount != "" && remoteAccount != localAccountID {
 			continue
 		}
 		if best == nil || marker.Expires > best.Expires {
@@ -471,7 +473,10 @@ func pullCodexOAuthBundle(
 	}
 	localAccount := strings.TrimSpace(bundle.Credential.AccountID)
 	remoteAccount := strings.TrimSpace(exported.AccountID)
-	if localAccount != "" && remoteAccount != "" && localAccount != remoteAccount {
+	if remoteAccount == "" {
+		remoteAccount = decodeCodexAccountID(exported.Access)
+	}
+	if localAccount != remoteAccount {
 		return codexOAuthSyncOutcome{}, fmt.Errorf(
 			"codex oauth sync: model %s holds a different ChatGPT account than the local login",
 			modelID,
@@ -489,7 +494,11 @@ func pullCodexOAuthBundle(
 	mtimeNS := bundle.MtimeNS
 	switch bundle.Source {
 	case codexOAuthSourceKeychain:
-		data, err := mergeCodexAuthDocument([]byte(readCodexKeychainBlobForSync()), exported, lastRefresh)
+		existing, err := readCodexKeychainBlobForSync()
+		if err != nil {
+			return codexOAuthSyncOutcome{}, fmt.Errorf("codex oauth sync: read Keychain login: %w", err)
+		}
+		data, err := mergeCodexAuthDocument([]byte(existing), exported, lastRefresh)
 		if err != nil {
 			return codexOAuthSyncOutcome{}, fmt.Errorf("codex oauth sync: encode Keychain login: %w", err)
 		}
@@ -792,15 +801,11 @@ func defaultReadCodexKeychainOAuthForSync() (*codexOAuthCredential, string) {
 	return readCodexKeychainOAuthBundle()
 }
 
-func defaultReadCodexKeychainBlobForSync() string {
+func defaultReadCodexKeychainBlobForSync() (string, error) {
 	if runtime.GOOS != "darwin" {
-		return ""
+		return "", errors.New("the Keychain is only available on macOS")
 	}
-	secret, err := keyring.Get(codexKeychainService, computeCodexKeychainAccount(resolveCodexHomePath()))
-	if err != nil {
-		return ""
-	}
-	return secret
+	return keyring.Get(codexKeychainService, computeCodexKeychainAccount(resolveCodexHomePath()))
 }
 
 func defaultWriteCodexKeychainBlobForSync(blob string) error {

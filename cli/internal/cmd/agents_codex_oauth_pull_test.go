@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -464,7 +465,7 @@ func TestCodexOAuthPullWritesKeychainWhenCodexUsesIt(t *testing.T) {
 		cred := parseCodexOAuthCredentialBlob([]byte(keychainBlob), time.Now().Add(time.Hour).UnixMilli())
 		return cred, codexOAuthLastRefreshFromJSON([]byte(keychainBlob))
 	}
-	readCodexKeychainBlobForSync = func() string { return keychainBlob }
+	readCodexKeychainBlobForSync = func() (string, error) { return keychainBlob, nil }
 	var written []string
 	writeCodexKeychainBlobForSync = func(blob string) error {
 		written = append(written, blob)
@@ -558,6 +559,14 @@ func TestCodexOAuthPullFailuresLeaveFileAndStampUntouched(t *testing.T) {
 			setup:    func(f *codexPullFixture) { f.marker["account_id"] = "acct-other" },
 			wantLogs: 0,
 		},
+		{
+			name: "marker has no account and export is another account",
+			setup: func(f *codexPullFixture) {
+				delete(f.marker, "account_id")
+				f.export["account_id"] = "acct-other"
+			},
+			wantLogs: 1,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCodexPullFixture(t)
@@ -623,6 +632,125 @@ func TestCodexOAuthPullFailuresLeaveFileAndStampUntouched(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewestCodexOAuthMarkerRequiresProvableAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		local    string
+		remote   string
+		wantPick bool
+	}{
+		{name: "same account", local: "acct-example", remote: "acct-example", wantPick: true},
+		{name: "different account", local: "acct-example", remote: "acct-other", wantPick: false},
+		{name: "local unknown, remote known", local: "", remote: "acct-example", wantPick: false},
+		// The export step decodes the account from the exported token and
+		// refuses a mismatch, so an unnamed row is not ruled out here.
+		{name: "remote unknown", local: "acct-example", remote: "", wantPick: true},
+		{name: "both unknown", local: "", remote: "", wantPick: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			markers := []codexOAuthServerMarker{{
+				ModelID:           "model-alpha",
+				CredentialType:    openaiCodexOAuthCredentialType,
+				Expires:           codexPullServerExpSeconds * 1000,
+				CredentialsStatus: "active",
+				AccountID:         tc.remote,
+			}}
+			got := newestCodexOAuthMarker(markers, tc.local)
+			if (got != nil) != tc.wantPick {
+				t.Fatalf("picked = %v, want %v", got != nil, tc.wantPick)
+			}
+		})
+	}
+}
+
+func TestCodexOAuthPullRefusesWhenLocalLoginHasNoAccountID(t *testing.T) {
+	f := newCodexPullFixture(t)
+	document := readJSONDocument(t, mustReadFile(t, f.authPath))
+	tokens, _ := document["tokens"].(map[string]interface{})
+	delete(tokens, "account_id")
+	data, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.authPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.saveState(codexPullLocalLastRefresh, codexPullLocalExpSeconds*1000, "")
+
+	outcome, err := syncCodexOAuthCredentials(f.agent, f.reload(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Direction == codexOAuthDirectionPull || f.exportsServed != 0 {
+		t.Fatalf("pulled into a login with no account id: outcome=%+v exports=%d", outcome, f.exportsServed)
+	}
+	if !bytes.Equal(mustReadFile(t, f.authPath), data) {
+		t.Fatal("auth.json changed")
+	}
+}
+
+func TestCodexOAuthPullKeychainReadFailureWritesNothing(t *testing.T) {
+	f := newCodexPullFixture(t)
+	if err := os.Remove(f.authPath); err != nil {
+		t.Fatal(err)
+	}
+	keychainBlob := fmt.Sprintf(
+		`{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":%q,"access_token":%q,"refresh_token":%q,"account_id":"acct-example"},"last_refresh":%q}`,
+		codexPullIDToken, f.localAccess, codexPullLocalRefresh, codexPullLocalLastRefresh,
+	)
+	prevRead := readCodexKeychainOAuthForSync
+	prevBlob := readCodexKeychainBlobForSync
+	prevWrite := writeCodexKeychainBlobForSync
+	readCodexKeychainOAuthForSync = func() (*codexOAuthCredential, string) {
+		cred := parseCodexOAuthCredentialBlob([]byte(keychainBlob), time.Now().Add(time.Hour).UnixMilli())
+		return cred, codexOAuthLastRefreshFromJSON([]byte(keychainBlob))
+	}
+	readCodexKeychainBlobForSync = func() (string, error) {
+		return "", errors.New("keychain temporarily unavailable")
+	}
+	writes := 0
+	writeCodexKeychainBlobForSync = func(string) error {
+		writes++
+		return nil
+	}
+	t.Cleanup(func() {
+		readCodexKeychainOAuthForSync = prevRead
+		readCodexKeychainBlobForSync = prevBlob
+		writeCodexKeychainBlobForSync = prevWrite
+	})
+	state := &localEnrollmentState{
+		AgentName:                       f.agent.Name,
+		ConfigPath:                      f.agent.ConfigPath,
+		CodexOAuthSyncedLastRefresh:     codexPullLocalLastRefresh,
+		CodexOAuthSyncedServerExpiresMS: codexPullLocalExpSeconds * 1000,
+	}
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := syncCodexOAuthCredentials(f.agent, f.reload(), false)
+	if err == nil || !strings.Contains(err.Error(), "read Keychain login") {
+		t.Fatalf("err = %v, want a Keychain read failure", err)
+	}
+	if writes != 0 {
+		t.Fatalf("Keychain writes = %d after a failed read", writes)
+	}
+	reloaded := f.reload()
+	if reloaded.CodexOAuthSyncedLastRefresh != codexPullLocalLastRefresh ||
+		reloaded.CodexOAuthSyncedServerExpiresMS != codexPullLocalExpSeconds*1000 {
+		t.Fatalf("stamp moved: %+v", reloaded)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestCodexOAuthPullSkipsSingleHolderHost(t *testing.T) {
