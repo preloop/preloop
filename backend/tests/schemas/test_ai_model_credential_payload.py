@@ -127,6 +127,8 @@ def test_codex_string_keys_must_be_non_empty_strings(key: str, value: Any) -> No
     ("value", "message"),
     [
         (1789000000, "expires looks like epoch seconds"),
+        (1789000000000000, "expires is too large for epoch milliseconds"),
+        (1789000000000000000, "expires is too large for epoch milliseconds"),
         (0, "expires must be a positive integer"),
         (-5, "expires must be a positive integer"),
         ("1789000000000", "expires must be an integer"),
@@ -139,6 +141,13 @@ def test_codex_expires_must_be_epoch_millis(value: Any, message: str) -> None:
     payload = dict(CODEX_PAYLOAD, expires=value)
     text = _error_text(AIModelUpdate, OPENAI_CODEX_OAUTH_TYPE, payload)
     assert message in text
+
+
+@pytest.mark.parametrize("value", [10**12, 10**14])
+def test_codex_expires_bounds_are_inclusive(value: int) -> None:
+    payload = dict(CODEX_PAYLOAD, expires=value)
+    model = _build(AIModelUpdate, OPENAI_CODEX_OAUTH_TYPE, payload)
+    assert model.credential_payload["expires"] == value
 
 
 def test_unknown_extra_keys_are_ignored() -> None:
@@ -180,6 +189,7 @@ def test_claude_missing_access_is_rejected() -> None:
         ({"refresh": ""}, "refresh must be a non-empty string"),
         ({"expires": 1789000000}, "expires looks like epoch seconds"),
         ({"expires": "soon"}, "expires must be an integer"),
+        ({"expires": 1789000000000000}, "expires is too large"),
     ],
 )
 def test_claude_optional_keys_are_validated_when_present(

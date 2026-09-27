@@ -37,6 +37,9 @@ _OAUTH_PAYLOAD_KEY_ALIASES: Dict[str, str] = {
 # 10**12 ms is 2001-09-09. Any smaller positive expiry is almost certainly
 # epoch seconds, which the resolver would read as an already-expired token.
 _MIN_EPOCH_MILLIS = 10**12
+# 10**14 ms is the year 5138. A larger value is epoch micro- or nanoseconds,
+# which the resolver would read as a far-future expiry and never refresh.
+_MAX_EPOCH_MILLIS = 10**14
 
 CREDENTIAL_PAYLOAD_DESCRIPTION = (
     "Inline credential payload for non-API-key auth, stored encrypted. "
@@ -71,6 +74,11 @@ def _oauth_payload_value_error(key: str, value: Any) -> Optional[str]:
             return (
                 "expires looks like epoch seconds; send epoch milliseconds "
                 "(seconds * 1000)"
+            )
+        if value > _MAX_EPOCH_MILLIS:
+            return (
+                "expires is too large for epoch milliseconds (microseconds or "
+                "nanoseconds?)"
             )
         return None
     if not isinstance(value, str) or not value.strip():

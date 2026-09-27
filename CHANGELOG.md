@@ -161,6 +161,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `POST` and `PUT /api/v1/ai-models` check `credential_payload` against
+  `credential_type` when it is written. A Codex subscription payload needs
+  `access`, `refresh`, `account_id` and `expires` (integer epoch
+  milliseconds); a Claude Code payload needs `access`, with optional
+  `refresh` and `expires`. A payload that breaks this now gets 422 listing
+  the missing or invalid keys, and nothing is stored. Before, it got 200, the
+  model showed as active, and the first completion failed with "credentials
+  are incomplete". `access_token`, `refresh_token` and `expires_at` get a
+  hint naming the expected key. The CLI converts an expiry given in seconds
+  to milliseconds before pushing (#1026).
+
 - Managed agent config files (`writeJSONDocument`) are written atomically, so
   a concurrent reader never sees a partial file; a symlinked config keeps its
   link. The host execution cleanup test no longer races its fake CLI's pid

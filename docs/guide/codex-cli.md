@@ -65,5 +65,5 @@ the access-token expiry as an integer in epoch milliseconds. The server checks
 the payload when you write it and answers 422 with the missing or invalid keys,
 without storing anything. `access_token`, `refresh_token`, and `expires_at` are
 rejected with a hint that names the expected key, and an `expires` in epoch
-seconds is rejected too. This is the same shape
+seconds or microseconds is rejected too. This is the same shape
 `POST /api/v1/ai-models/{id}/credentials/export` returns.

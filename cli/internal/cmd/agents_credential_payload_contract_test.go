@@ -27,6 +27,10 @@ var serverOAuthPayloadContract = map[string]struct {
 	},
 }
 
+// maxServerOAuthPayloadEpochMillis mirrors the server's _MAX_EPOCH_MILLIS
+// (year 5138): larger values are micro- or nanoseconds and are rejected.
+const maxServerOAuthPayloadEpochMillis int64 = 100_000_000_000_000
+
 var serverOAuthPayloadAliases = []string{"access_token", "refresh_token", "expires_at"}
 
 // serverOAuthPayloadProblems mirrors the server rule on the JSON wire form of
@@ -70,7 +74,7 @@ func serverOAuthPayloadProblems(t *testing.T, credentialType string, payload map
 			switch {
 			case !isNumber || intErr != nil:
 				problems = append(problems, "expires not an integer")
-			case parsed < minOAuthPayloadEpochMillis:
+			case parsed < minOAuthPayloadEpochMillis || parsed > maxServerOAuthPayloadEpochMillis:
 				problems = append(problems, fmt.Sprintf("expires %d not epoch millis", parsed))
 			}
 			continue
@@ -180,6 +184,19 @@ func TestClaudeOAuthPayloadScalesSecondsExpiresAt(t *testing.T) {
 	}
 	if payload["expires"] != int64(1_893_456_000_000) {
 		t.Fatalf("expires = %v, want seconds scaled to millis", payload["expires"])
+	}
+}
+
+func TestServerContractMirrorRejectsImplausibleExpiry(t *testing.T) {
+	for name, expires := range map[string]int64{
+		"seconds":      1_893_456_000,
+		"microseconds": 1_893_456_000_000_000,
+	} {
+		payload := map[string]interface{}{"access": "sk-ant-oat01-live", "expires": expires}
+		problems := serverOAuthPayloadProblems(t, "oauth_anthropic_claude_code", payload)
+		if len(problems) != 1 || !strings.Contains(problems[0], "not epoch millis") {
+			t.Fatalf("%s: problems = %v, want one expiry problem", name, problems)
+		}
 	}
 }
 
