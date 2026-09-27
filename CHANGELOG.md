@@ -67,6 +67,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/openai/v1` URL is reduced to the resource root), and a deployment or a
   Bedrock inference profile ARN is priced from
   `meta_data.provider_runtime.base_model` when set.
+- The Codex permission hook now pulls Preloop's rotated ChatGPT login back
+  into the local `auth.json` (atomic write) or the macOS Keychain, so a laptop
+  and Preloop sharing one Codex OAuth grant stop revoking each other. A
+  token-free `GET /api/v1/ai-models/{model_id}/credentials/marker` reports
+  when Preloop's copy is newer; the export response gains `last_refresh`.
+  When both copies changed, the later `last_refresh` wins. `preloop agents
+  sync-credentials "Codex CLI"` reconciles in both directions and prints which
+  direction ran. A pull is refused unless the local login and Preloop's copy
+  name the same ChatGPT account. A single holder stays the recommendation for
+  headless hosts.
 
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
   a login row selector, a revoke fan-out for "sign out everywhere", a

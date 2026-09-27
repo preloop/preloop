@@ -24,6 +24,7 @@ from preloop.schemas.ai_model import (
     AIModelCatalogSyncResponse,
     AIModelCreate,
     AIModelCredentialExportResponse,
+    AIModelCredentialMarkerResponse,
     AIModelGatewayUsageSummaryResponse,
     AIModelOverviewItem,
     AIModelRead,
@@ -682,6 +683,103 @@ async def sync_ai_model_catalog(
     )
 
 
+def _credential_last_refresh(ai_model: AIModel) -> Optional[datetime]:
+    """Return when Preloop last wrote the model's credential bundle.
+
+    The secret row's ``last_verified_at`` is set on import, on every CLI push,
+    and on every server-side refresh. The column is stored without a zone and
+    holds UTC, so a naive value is tagged as UTC.
+
+    Args:
+        ai_model: Account AI model whose credential secret is inspected.
+
+    Returns:
+        The timestamp in UTC, or None when the model has no secret row or the
+        row was never written with a timestamp.
+    """
+    secret = getattr(ai_model, "credentials_secret", None)
+    value = getattr(secret, "last_verified_at", None) if secret else None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _coerce_expires_ms(payload: Dict) -> Optional[int]:
+    """Return the bundle's ``expires`` epoch milliseconds when it is usable.
+
+    Args:
+        payload: Decoded structured credential payload.
+
+    Returns:
+        A positive integer, or None when the field is absent or malformed.
+    """
+    expires_raw = payload.get("expires")
+    if isinstance(expires_raw, bool):
+        return None
+    if isinstance(expires_raw, (int, float)) and expires_raw > 0:
+        return int(expires_raw)
+    return None
+
+
+@router.get(
+    "/ai-models/{model_id}/credentials/marker",
+    response_model=AIModelCredentialMarkerResponse,
+    summary="Read Subscription OAuth Rotation Marker",
+    tags=["AI Models"],
+)
+@require_permission("view_ai_models")
+def read_ai_model_credential_marker(
+    model_id: uuid.UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> AIModelCredentialMarkerResponse:
+    """Return the rotation marker of a stored subscription-OAuth bundle.
+
+    Subscription OAuth grants (Claude Code, Codex) use single-use refresh
+    tokens. When both the operator's laptop and Preloop hold a copy, the CLI
+    keeps them on one lineage: it pushes a newer local bundle, and pulls
+    Preloop's bundle through ``POST /ai-models/{model_id}/credentials/export``
+    when Preloop's copy is newer. This read tells the CLI which side is newer
+    without downloading tokens on every Codex permission-hook call.
+
+    The response carries no token material: ``expires`` is the stored
+    access-token expiry in epoch milliseconds and moves forward on every
+    rotation, ``last_refresh`` is when Preloop last wrote the bundle (import,
+    CLI push, or server-side refresh), ``credentials_status`` is ``error``
+    when the last server-side refresh failed, and ``account_id`` names the
+    provider account the bundle belongs to. This read never refreshes the
+    bundle, so it cannot rotate the grant by itself. API-key credentials are
+    refused with 400.
+    """
+    db_model = _get_account_ai_model(
+        db=db, model_id=model_id, current_user=current_user
+    )
+    service = get_secret_service()
+    resolved = service.resolve_ai_model_credentials(
+        db_model, db=db, allow_refresh=False
+    )
+    if (
+        resolved is None
+        or resolved.credential_type not in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only subscription OAuth credentials have a rotation marker",
+        )
+    payload = resolved.payload or {}
+    secret = getattr(db_model, "credentials_secret", None)
+    status_raw = getattr(secret, "status", None) if secret else None
+    return AIModelCredentialMarkerResponse(
+        credential_type=resolved.credential_type,
+        expires=_coerce_expires_ms(payload),
+        last_refresh=_credential_last_refresh(db_model),
+        credentials_status=status_raw if isinstance(status_raw, str) else None,
+        account_id=str(payload.get("account_id") or "").strip() or None,
+    )
+
+
 @router.post(
     "/ai-models/{model_id}/credentials/export",
     response_model=AIModelCredentialExportResponse,
@@ -700,8 +798,14 @@ def export_ai_model_credentials(
     are exportable: their provider refresh tokens are single-use and rotate on
     every server-side refresh, so once imported the Preloop copy is the only
     live lineage. The CLI calls this at offboard time to restore the agent's
-    local login before the Preloop-held credential is removed. API-key
-    credentials are never exportable.
+    local login before the Preloop-held credential is removed, and from the
+    Codex permission hook and ``preloop agents sync-credentials`` to pull
+    Preloop's copy back into the local login when
+    ``GET /ai-models/{model_id}/credentials/marker`` shows it is newer. A
+    stored bundle that is about to expire is refreshed before it is returned.
+    ``last_refresh`` is when Preloop last wrote the bundle. Every export is
+    written to the audit log without token material. API-key credentials are
+    never exportable.
     """
     db_model = _get_account_ai_model(
         db=db, model_id=model_id, current_user=current_user
@@ -731,10 +835,7 @@ def export_ai_model_credentials(
             status_code=status.HTTP_409_CONFLICT,
             detail="Stored credential has no access token",
         )
-    expires: Optional[int] = None
-    expires_raw = payload.get("expires")
-    if isinstance(expires_raw, (int, float)) and expires_raw > 0:
-        expires = int(expires_raw)
+    expires = _coerce_expires_ms(payload)
     logger.info(
         "Exported subscription OAuth credential: model=%s type=%s account=%s user=%s",
         model_id,
@@ -750,6 +851,7 @@ def export_ai_model_credentials(
         refresh=refresh,
         expires=expires,
         account_id=account_id,
+        last_refresh=_credential_last_refresh(db_model),
     )
 
 

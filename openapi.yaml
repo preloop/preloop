@@ -8536,6 +8536,67 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/ai-models/{model_id}/credentials/marker:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Read Subscription OAuth Rotation Marker
+      description: 'Return the rotation marker of a stored subscription-OAuth bundle.
+
+
+        Subscription OAuth grants (Claude Code, Codex) use single-use refresh
+
+        tokens. When both the operator''s laptop and Preloop hold a copy, the CLI
+
+        keeps them on one lineage: it pushes a newer local bundle, and pulls
+
+        Preloop''s bundle through ``POST /ai-models/{model_id}/credentials/export``
+
+        when Preloop''s copy is newer. This read tells the CLI which side is newer
+
+        without downloading tokens on every Codex permission-hook call.
+
+
+        The response carries no token material: ``expires`` is the stored
+
+        access-token expiry in epoch milliseconds and moves forward on every
+
+        rotation, ``last_refresh`` is when Preloop last wrote the bundle (import,
+
+        CLI push, or server-side refresh), ``credentials_status`` is ``error``
+
+        when the last server-side refresh failed, and ``account_id`` names the
+
+        provider account the bundle belongs to. This read never refreshes the
+
+        bundle, so it cannot rotate the grant by itself. API-key credentials are
+
+        refused with 400.'
+      operationId: read_ai_model_credential_marker_api_v1_ai_models__model_id__credentials_marker_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCredentialMarkerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/{model_id}/credentials/export:
     post:
       tags:
@@ -8553,9 +8614,21 @@ paths:
 
         live lineage. The CLI calls this at offboard time to restore the agent''s
 
-        local login before the Preloop-held credential is removed. API-key
+        local login before the Preloop-held credential is removed, and from the
 
-        credentials are never exportable.'
+        Codex permission hook and ``preloop agents sync-credentials`` to pull
+
+        Preloop''s copy back into the local login when
+
+        ``GET /ai-models/{model_id}/credentials/marker`` shows it is newer. A
+
+        stored bundle that is about to expire is refreshed before it is returned.
+
+        ``last_refresh`` is when Preloop last wrote the bundle. Every export is
+
+        written to the audit log without token material. API-key credentials are
+
+        never exportable.'
       operationId: export_ai_model_credentials_api_v1_ai_models__model_id__credentials_export_post
       security:
       - bearerAuth: []
@@ -13496,6 +13569,14 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        last_refresh:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Refresh
+          description: When Preloop last wrote this bundle (import, CLI push, or server-side
+            refresh), in UTC
       type: object
       required:
       - credential_type
@@ -13511,6 +13592,52 @@ components:
         single-use, so the Preloop-held copy is the only live lineage after a
 
         server-side refresh). Token material must never be logged.'
+    AIModelCredentialMarkerResponse:
+      properties:
+        credential_type:
+          type: string
+          title: Credential Type
+          description: Logical credential type stored for the model
+        expires:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expires
+          description: Access-token expiry of the stored bundle in epoch milliseconds.
+            It moves forward every time the bundle is rotated.
+        last_refresh:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Refresh
+          description: When Preloop last wrote this bundle (import, CLI push, or server-side
+            refresh), in UTC
+        credentials_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credentials Status
+          description: Status of the model's credential secret
+        account_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Account Id
+          description: Provider account the bundle belongs to (the ChatGPT account
+            id for Codex), so the CLI never pulls another account's login
+      type: object
+      required:
+      - credential_type
+      title: AIModelCredentialMarkerResponse
+      description: 'Rotation marker for a stored subscription-OAuth bundle.
+
+
+        Carries no token material. The CLI reads it on the Codex permission hook
+
+        to decide whether Preloop''s copy is newer than the local login before it
+
+        downloads the bundle through the export endpoint.'
     AIModelGatewayUsageSummaryResponse:
       properties:
         ai_model_id:
