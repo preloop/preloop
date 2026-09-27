@@ -56,7 +56,7 @@ def _is_tracker_api_url(url: str) -> bool:
     path = parsed.path or ""
     if "/api/v4/" in path:
         return True
-    if host == "api.github.com":
+    if host in {"api.github.com", "api.bitbucket.org"}:
         return True
     return False
 
@@ -120,6 +120,13 @@ def extract_pr_url_from_comment_event(event_data: Dict[str, Any]) -> Optional[st
         # create_merge_request persists mr.web_url. Webhook notes expose both
         # an API ``url`` and a browser ``web_url``; prefer the HTML form.
         found = _first_html_pr_url(mr.get("web_url"), mr.get("url"))
+        if found:
+            return found
+
+    bitbucket_pr = payload.get("pullrequest")
+    if isinstance(bitbucket_pr, dict):
+        links = bitbucket_pr.get("links") or {}
+        found = _first_html_pr_url((links.get("html") or {}).get("href"))
         if found:
             return found
 
@@ -646,9 +653,10 @@ def is_bound_implementation_comment(
     if execution is None or execution.flow_id != flow.id:
         return False
     source = execution.trigger_event_details or {}
+    provider = source.get("source")
     if (
-        source.get("source") not in {"github", "gitlab"}
-        or source.get("source") != event.get("source")
+        provider not in {"github", "gitlab", "bitbucket"}
+        or provider != event.get("source")
         or str(source.get("account_id")) != str(account_id)
         or str(source.get("tracker_id")) != str(tracker_id)
     ):
@@ -657,10 +665,15 @@ def is_bound_implementation_comment(
     original = source.get("payload") or {}
     repository = payload.get("repository") or payload.get("project") or {}
     original_repository = original.get("repository") or original.get("project") or {}
-    repository_id = repository.get("id")
-    return bool(repository_id) and str(repository_id) == str(
-        original_repository.get("id")
-    )
+    if provider == "bitbucket":
+        from preloop.utils.bitbucket import repository_identity
+
+        repository_id = repository_identity(repository)
+        original_id = repository_identity(original_repository)
+    else:
+        repository_id = repository.get("id")
+        original_id = original_repository.get("id")
+    return bool(repository_id) and str(repository_id) == str(original_id)
 
 
 def record_runner_handoff_markers(

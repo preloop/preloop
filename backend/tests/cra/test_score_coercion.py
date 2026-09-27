@@ -185,6 +185,27 @@ class TestEpssNumericStrings:
         assert len(score_rows) == 25
         assert score_rows[0]["submitted"] == REPORTED_EPSS
 
+    def test_coercion_and_derived_facts_are_recorded_together(
+        self, releaseaudit_result: dict[str, Any]
+    ) -> None:
+        payload = _string_epss_batch(releaseaudit_result)
+        payload["vuln_scan"]["closed_by_vex"] = 7
+        decision = apply_cra_persist_boundary(payload)
+
+        assert not decision.invalid
+        artifact = decision.artifact
+        assert artifact is not None
+        assert artifact["vuln_scan"]["findings"][0]["epss"] == STORED_EPSS
+        assert artifact["vuln_scan"]["closed_by_vex"] == 0
+        assert artifact["limitations"] == []
+        paths = [item["path"] for item in artifact[VERDICT_CORRECTED_FIELD]]
+        assert len(_score_records(artifact)) == 25
+        assert "result.vuln_scan.closed_by_vex" in paths
+        assert payload["vuln_scan"]["closed_by_vex"] == 7
+        advisory = "; ".join(decision.validation.advisories)
+        assert "result.vuln_scan.findings[0].epss" in advisory
+        assert "result.vuln_scan.closed_by_vex" in advisory
+
 
 class TestCvssNumericStrings:
     def test_in_range_string_is_coerced(
