@@ -34,6 +34,7 @@ from preloop.models.models.user import User
 from preloop.utils.tokens import (
     TokenError,
     create_onboarding_claim_token,
+    UserTokenClaims,
     hash_onboarding_claim_token,
 )
 
@@ -688,7 +689,7 @@ class TestRegistrationFlows:
             mock_user_obj.created_at = datetime.now(timezone.utc)
             mock_user_crud.create.return_value = mock_user_obj
             mock_user_crud.get_by_username.return_value = None
-            mock_user_crud.get_by_email.return_value = None
+            mock_user_crud.email_exists.return_value = False
 
             mock_role_obj = MagicMock()
             mock_role_obj.id = uuid.uuid4()
@@ -796,7 +797,7 @@ class TestRegistrationFlows:
             mock_user_obj.created_at = datetime.now(timezone.utc)
 
             mock_user_crud.get_by_username.return_value = None
-            mock_user_crud.get_by_email.return_value = None
+            mock_user_crud.email_exists.return_value = False
             mock_user_crud.create.return_value = mock_user_obj
 
             mock_role.get_by_name.return_value = MagicMock(id=uuid.uuid4())
@@ -844,7 +845,7 @@ class TestRegistrationFlows:
             mock_user_obj.created_at = datetime.now(timezone.utc)
             mock_user_crud.create.return_value = mock_user_obj
             mock_user_crud.get_by_username.return_value = None
-            mock_user_crud.get_by_email.return_value = None
+            mock_user_crud.email_exists.return_value = False
 
             # Owner role not found
             mock_role.get_by_name.return_value = None
@@ -920,6 +921,36 @@ class TestOnboardingFlows:
         assert "access_token" in data
         assert "refresh_token" in data
         assert data["token_type"] == "bearer"
+        # The address can sit on rows in several accounts, so the lookup is
+        # scoped to the account the claim names.
+        assert mock_crud.get_by_email.call_args.kwargs == {
+            "email": "test@example.com",
+            "account_id": str(self.ACCOUNT_ID),
+        }
+
+    def test_complete_onboarding_refuses_when_the_account_holds_the_address_twice(
+        self, db_session_mock
+    ):
+        """An ambiguous lookup inside the claimed account claims nothing."""
+        from preloop.models.crud.user import AmbiguousEmailError
+
+        _mock_user, token = self._pending_user()
+
+        with patch("preloop.api.auth.router.crud_user") as mock_crud:
+            mock_crud.get_by_email.side_effect = AmbiguousEmailError("test@example.com")
+
+            response = client.post(
+                "/auth/complete-onboarding",
+                json={
+                    "email": "test@example.com",
+                    "username": "newusername",
+                    "password": "newsecurepassword123",
+                    "claim_token": token,
+                },
+            )
+
+        assert response.status_code == 400
+        mock_crud.update.assert_not_called()
 
     def test_complete_onboarding_refuses_without_a_claim_token(self, db_session_mock):
         """The whole point: an address alone claims nothing.
@@ -1293,15 +1324,18 @@ class TestEmailVerification:
     def test_verify_email_success(self, db_session_mock):
         """Test successful email verification."""
         mock_user = MagicMock(spec=User)
+        mock_user.id = uuid.uuid4()
         mock_user.email = "test@example.com"
         mock_user.email_verified = False
 
         with (
-            patch("preloop.api.auth.router.verify_token") as mock_verify_token,
+            patch("preloop.api.auth.router.verify_user_token") as mock_verify_token,
             patch("preloop.api.auth.router.crud_user") as mock_crud,
         ):
-            mock_verify_token.return_value = "test@example.com"
-            mock_crud.get_by_email.return_value = mock_user
+            mock_verify_token.return_value = UserTokenClaims(
+                user_id=mock_user.id, email="test@example.com"
+            )
+            mock_crud.get.return_value = mock_user
 
             response = client.post(
                 "/auth/verify-email",
@@ -1316,7 +1350,7 @@ class TestEmailVerification:
 
     def test_verify_email_invalid_token(self, db_session_mock):
         """Test email verification with invalid token."""
-        with patch("preloop.api.auth.router.verify_token") as mock_verify_token:
+        with patch("preloop.api.auth.router.verify_user_token") as mock_verify_token:
             mock_verify_token.side_effect = TokenError("Invalid token")
 
             response = client.post(
@@ -1335,11 +1369,13 @@ class TestEmailVerification:
         results in a 500 error. This test verifies the current behavior.
         """
         with (
-            patch("preloop.api.auth.router.verify_token") as mock_verify_token,
+            patch("preloop.api.auth.router.verify_user_token") as mock_verify_token,
             patch("preloop.api.auth.router.crud_user") as mock_crud,
         ):
-            mock_verify_token.return_value = "nonexistent@example.com"
-            mock_crud.get_by_email.return_value = None
+            mock_verify_token.return_value = UserTokenClaims(
+                user_id=uuid.uuid4(), email="nonexistent@example.com"
+            )
+            mock_crud.get.return_value = None
 
             response = client.post(
                 "/auth/verify-email",
@@ -1362,6 +1398,7 @@ class TestPasswordReset:
     def test_forgot_password_existing_user(self, db_session_mock):
         """Test forgot password with existing user."""
         mock_user = MagicMock(spec=User)
+        mock_user.id = uuid.uuid4()
         mock_user.email = "test@example.com"
 
         with (
@@ -1373,7 +1410,8 @@ class TestPasswordReset:
                 "preloop.api.auth.router.send_password_reset_email"
             ) as mock_send_email,
         ):
-            mock_crud.get_by_email.return_value = mock_user
+            mock_user.username = "testuser"
+            mock_crud.list_by_email.return_value = [mock_user]
             mock_create_token.return_value = "reset_token"
 
             response = client.post(
@@ -1382,13 +1420,25 @@ class TestPasswordReset:
             )
 
         assert response.status_code == 200
+        # The link is bound to the row, and the message names it.
+        mock_create_token.assert_called_once_with(
+            "test@example.com", user_id=mock_user.id
+        )
+        mock_send_email.assert_called_once_with(
+            user_email="test@example.com", token="reset_token", username="testuser"
+        )
         # Always returns success message for security
         assert "password reset link" in response.json()["message"].lower()
 
     def test_forgot_password_nonexistent_user(self, db_session_mock):
         """Test forgot password with nonexistent user returns same message."""
-        with patch("preloop.api.auth.router.crud_user") as mock_crud:
-            mock_crud.get_by_email.return_value = None
+        with (
+            patch("preloop.api.auth.router.crud_user") as mock_crud,
+            patch(
+                "preloop.api.auth.router.send_password_reset_email"
+            ) as mock_send_email,
+        ):
+            mock_crud.list_by_email.return_value = []
 
             response = client.post(
                 "/auth/forgot-password",
@@ -1397,19 +1447,23 @@ class TestPasswordReset:
 
         # Should return success to prevent email enumeration
         assert response.status_code == 200
+        mock_send_email.assert_not_called()
         assert "password reset link" in response.json()["message"].lower()
 
     def test_reset_password_success(self, db_session_mock):
         """Test successful password reset."""
         mock_user = MagicMock(spec=User)
+        mock_user.id = uuid.uuid4()
         mock_user.email = "test@example.com"
 
         with (
-            patch("preloop.api.auth.router.verify_token") as mock_verify_token,
+            patch("preloop.api.auth.router.verify_user_token") as mock_verify_token,
             patch("preloop.api.auth.router.crud_user") as mock_crud,
         ):
-            mock_verify_token.return_value = "test@example.com"
-            mock_crud.get_by_email.return_value = mock_user
+            mock_verify_token.return_value = UserTokenClaims(
+                user_id=mock_user.id, email="test@example.com"
+            )
+            mock_crud.get.return_value = mock_user
 
             response = client.post(
                 "/auth/reset-password",
@@ -1424,7 +1478,7 @@ class TestPasswordReset:
 
     def test_reset_password_invalid_token(self, db_session_mock):
         """Test password reset with invalid token."""
-        with patch("preloop.api.auth.router.verify_token") as mock_verify_token:
+        with patch("preloop.api.auth.router.verify_user_token") as mock_verify_token:
             mock_verify_token.side_effect = TokenError("Invalid or expired token")
 
             response = client.post(
@@ -1445,11 +1499,13 @@ class TestPasswordReset:
         results in a 500 error. This test verifies the current behavior.
         """
         with (
-            patch("preloop.api.auth.router.verify_token") as mock_verify_token,
+            patch("preloop.api.auth.router.verify_user_token") as mock_verify_token,
             patch("preloop.api.auth.router.crud_user") as mock_crud,
         ):
-            mock_verify_token.return_value = "nonexistent@example.com"
-            mock_crud.get_by_email.return_value = None
+            mock_verify_token.return_value = UserTokenClaims(
+                user_id=uuid.uuid4(), email="nonexistent@example.com"
+            )
+            mock_crud.get.return_value = None
 
             response = client.post(
                 "/auth/reset-password",

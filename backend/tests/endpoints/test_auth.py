@@ -52,7 +52,7 @@ def test_register_user_success(db_session_mock):
     ):
         mock_account.create.return_value = MagicMock(id=account_id)
         mock_user_crud.get_by_username.return_value = None
-        mock_user_crud.get_by_email.return_value = None
+        mock_user_crud.email_exists.return_value = False
         mock_user_crud.create.return_value = MagicMock(
             id=user_id,
             account_id=account_id,

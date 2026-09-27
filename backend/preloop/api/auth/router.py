@@ -74,7 +74,7 @@ from preloop.utils.tokens import (
     create_password_reset_token,
     hash_onboarding_claim_token,
     verify_onboarding_claim_token,
-    verify_token,
+    verify_user_token,
 )
 from preloop.models.crud import (
     crud_account,
@@ -90,6 +90,7 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_user_role,
 )
+from preloop.models.crud.user import AmbiguousEmailError
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User as UserModel
 from preloop.models.models.api_key import ApiKey
@@ -571,11 +572,9 @@ async def register(
 
     # Check if email exists using CRUD layer
     logger.info("[REGISTER] Checking if email exists")
-    existing_email = crud_user.get_by_email(session, email=user_data.email)
-    logger.info(
-        f"[REGISTER] Email check complete, exists: {existing_email is not None}"
-    )
-    if existing_email is not None:
+    email_taken = crud_user.email_exists(session, email=user_data.email)
+    logger.info(f"[REGISTER] Email check complete, exists: {email_taken}")
+    if email_taken:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered",
@@ -701,6 +700,40 @@ async def register(
         )
 
 
+def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
+    """The exact user row a verification or reset token was issued for.
+
+    The token names the row by id, never by address: one address can hold a
+    row in several accounts. It also carries the address it was mailed to,
+    and a row whose address has since changed does not honour it, so an old
+    link cannot verify or reset whatever address the row holds now.
+
+    Args:
+        session: Database session.
+        token: The token from the link.
+        token_type: "email_verification" or "password_reset".
+
+    Returns:
+        The user row the token names.
+
+    Raises:
+        TokenError: If the token is invalid or no longer matches its row.
+        HTTPException: 404 if the row no longer exists.
+    """
+    claims = verify_user_token(token, token_type)
+    user = crud_user.get(session, id=claims.user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    if (user.email or "").lower() != claims.email.lower():
+        raise TokenError(
+            "This link is no longer valid. Request a new one and use that instead."
+        )
+    return user
+
+
 @router.post("/verify-email", status_code=status.HTTP_200_OK)
 async def verify_email(
     verification_data: EmailVerificationRequest,
@@ -725,20 +758,8 @@ async def verify_email(
         HTTPException: If the token is invalid or the user does not exist.
     """
     try:
-        # Verify the token
-        email = verify_token(verification_data.token, "email_verification")
-
-        # Find and update the user
         session = db
-
-        # Find the user using CRUD layer
-        user = crud_user.get_by_email(session, email=email)
-
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found",
-            )
+        user = _user_for_token(session, verification_data.token, "email_verification")
 
         # Update email verification status
         if not user.email_verified:
@@ -818,11 +839,17 @@ def resend_verification(
     email = (verification_data.email or "").strip()
     check_resend_rate_limit(get_client_ip(request) or "", email.lower())
 
-    user = crud_user.get_by_email(db, email=email)
-    if user and not user.email_verified:
+    # One address can hold a row in several accounts. Each unverified row
+    # gets its own link, bound to that row, so following one never verifies
+    # another.
+    for user in crud_user.list_by_email(db, email=email):
+        if user.email_verified:
+            continue
         background_tasks.add_task(
             _send_verification_email_task,
             user_email=user.email,
+            user_id=user.id,
+            username=user.username,
         )
     return {
         "message": (
@@ -831,15 +858,19 @@ def resend_verification(
     }
 
 
-def _send_verification_email_task(user_email: str) -> None:
+def _send_verification_email_task(
+    user_email: str, user_id: UUID, username: Optional[str] = None
+) -> None:
     """Mint a verification token and mail it, swallowing sender failures.
 
     Args:
         user_email: Address to verify.
+        user_id: The row the link verifies.
+        username: That row's username, named in the message.
     """
     try:
-        token = create_email_verification_token(user_email)
-        send_verification_email(user_email=user_email, token=token)
+        token = create_email_verification_token(user_email, user_id=user_id)
+        send_verification_email(user_email=user_email, token=token, username=username)
     except Exception as error:
         logger.error("Failed to resend verification email: %s", error)
 
@@ -850,29 +881,30 @@ async def forgot_password(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
-    """Send a password reset email.
+    """Send a password reset email for every user row holding the address.
+
+    ``user.email`` is not unique: an address invited into a second account
+    holds a second row there, with its own password. This never chooses one
+    of them. Every row holding the address gets its own message, whose link
+    is bound to that row and names its username, so the person resets the
+    account they mean by following that account's link. Each link goes to
+    the address its own row holds, the inbox that row already trusts for a
+    reset, so no row is reachable from an inbox it does not name.
 
     Args:
         reset_data: Password reset request with email.
         background_tasks: Background tasks for sending emails.
 
     Returns:
-        Success message.
+        The same neutral message whether or not the address is registered.
     """
-    # Always return success even if email doesn't exist (security best practice)
-    # But only send email if user exists
-    session = db
-
-    # Find user using CRUD layer
-    user = crud_user.get_by_email(session, email=reset_data.email)
-
-    if user:
-        # Generate password reset token
-        token = create_password_reset_token(reset_data.email)
-
-        # Send password reset email as a background task
+    for user in crud_user.list_by_email(db, email=reset_data.email):
+        token = create_password_reset_token(user.email, user_id=user.id)
         background_tasks.add_task(
-            send_password_reset_email, user_email=reset_data.email, token=token
+            send_password_reset_email,
+            user_email=user.email,
+            token=token,
+            username=user.username,
         )
     return {
         "message": "If your email is registered, you will receive a password reset link"
@@ -896,20 +928,8 @@ async def reset_password(
         HTTPException: If the token is invalid or the user does not exist.
     """
     try:
-        # Verify the token
-        email = verify_token(reset_data.token, "password_reset")
-
-        # Find and update the user
         session = db
-
-        # Find user using CRUD layer
-        user = crud_user.get_by_email(session, email=email)
-
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found",
-            )
+        user = _user_for_token(session, reset_data.token, "password_reset")
 
         # Update password
         user.hashed_password = get_password_hash(reset_data.new_password)
@@ -1933,7 +1953,14 @@ async def complete_onboarding(
     except TokenError:
         raise _refuse_claim()
 
-    user = crud_user.get_by_email(session, email=request.email)
+    # The address alone can match a row in several accounts; the claim names
+    # the account, so the lookup is scoped to it and never picks a row.
+    try:
+        user = crud_user.get_by_email(
+            session, email=request.email, account_id=claims["account_id"]
+        )
+    except AmbiguousEmailError:
+        raise _refuse_claim()
     if not user:
         raise _refuse_claim()
     # The token names the account it opens, so one customer's link cannot

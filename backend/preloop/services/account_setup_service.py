@@ -321,8 +321,10 @@ def complete_new_account_setup(
     # 1. Send verification email
     if send_verification:
         try:
-            token = create_email_verification_token(user_email)
-            send_verification_email(user_email=user_email, token=token)
+            token = create_email_verification_token(user_email, user_id=user_id)
+            send_verification_email(
+                user_email=user_email, token=token, username=username
+            )
             logger.info(f"Verification email sent to {user_email}")
         except Exception as e:
             logger.error(f"Failed to send verification email to {user_email}: {e}")

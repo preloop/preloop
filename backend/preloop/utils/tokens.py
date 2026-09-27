@@ -3,7 +3,9 @@
 import hashlib
 import os
 import secrets
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import jwt
 from jwt import PyJWTError
@@ -27,32 +29,91 @@ class TokenError(Exception):
     pass
 
 
-def create_email_verification_token(email: str) -> str:
-    """Create an email verification token.
+def _create_user_token(
+    email: str, user_id: UUID | str, token_type: str, expire_minutes: int
+) -> str:
+    """Mint a token bound to one user row and the address it was sent to.
+
+    ``user.email`` is not unique (one address can hold a row in several
+    accounts), so the address alone does not name a user. The ``uid`` claim
+    does, and the ``sub`` claim keeps the address so the link stops working
+    if that row's address changes before it is followed.
+    """
+    expire = datetime.now(UTC) + timedelta(minutes=expire_minutes)
+    to_encode = {
+        "sub": email,
+        "uid": str(user_id),
+        "exp": expire,
+        "type": token_type,
+    }
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_email_verification_token(email: str, *, user_id: UUID | str) -> str:
+    """Create an email verification token for one user row.
 
     Args:
         email: The email address to verify.
+        user_id: The id of the user row the address belongs to.
 
     Returns:
         A JWT token.
     """
-    expire = datetime.now(UTC) + timedelta(minutes=EMAIL_TOKEN_EXPIRE_MINUTES)
-    to_encode = {"sub": email, "exp": expire, "type": "email_verification"}
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return _create_user_token(
+        email, user_id, "email_verification", EMAIL_TOKEN_EXPIRE_MINUTES
+    )
 
 
-def create_password_reset_token(email: str) -> str:
-    """Create a password reset token.
+def create_password_reset_token(email: str, *, user_id: UUID | str) -> str:
+    """Create a password reset token for one user row.
 
     Args:
-        email: The email address of the user.
+        email: The email address the reset link is sent to.
+        user_id: The id of the user row whose password the link resets.
 
     Returns:
         A JWT token.
     """
-    expire = datetime.now(UTC) + timedelta(minutes=PASSWORD_RESET_TOKEN_EXPIRE_MINUTES)
-    to_encode = {"sub": email, "exp": expire, "type": "password_reset"}
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return _create_user_token(
+        email, user_id, "password_reset", PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
+    )
+
+
+@dataclass(frozen=True)
+class UserTokenClaims:
+    """What a user-bound token names: one row, and the address it was sent to."""
+
+    user_id: UUID
+    email: str
+
+
+def verify_user_token(token: str, token_type: str) -> UserTokenClaims:
+    """Verify a user-bound token and return the row and address it names.
+
+    A token without a ``uid`` claim is refused: it names an address, and an
+    address can belong to more than one row.
+
+    Args:
+        token: The JWT token to verify.
+        token_type: The expected token type ("email_verification" or
+            "password_reset").
+
+    Returns:
+        The user id and email address from the token.
+
+    Raises:
+        TokenError: If the token is invalid, expired, of the wrong type, or
+            not bound to a user row.
+    """
+    email = verify_token(token, token_type)
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = UUID(str(payload.get("uid") or ""))
+    except (PyJWTError, ValueError):
+        raise TokenError(
+            "This link is no longer valid. Request a new one and use that instead."
+        )
+    return UserTokenClaims(user_id=user_id, email=email)
 
 
 def verify_token(token: str, token_type: str) -> str:

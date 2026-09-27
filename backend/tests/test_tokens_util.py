@@ -1,6 +1,7 @@
 """Tests for token generation and validation utilities."""
 
 import os
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -15,7 +16,10 @@ from preloop.utils.tokens import (
     create_password_reset_token,
     create_token,
     verify_token,
+    verify_user_token,
 )
+
+USER_ID = uuid.uuid4()
 
 
 class TestTokenCreation:
@@ -24,7 +28,7 @@ class TestTokenCreation:
     def test_create_email_verification_token(self):
         """Test creating email verification token."""
         email = "test@example.com"
-        token = create_email_verification_token(email)
+        token = create_email_verification_token(email, user_id=USER_ID)
 
         assert isinstance(token, str)
         assert len(token) > 0
@@ -38,7 +42,7 @@ class TestTokenCreation:
     def test_create_password_reset_token(self):
         """Test creating password reset token."""
         email = "user@example.com"
-        token = create_password_reset_token(email)
+        token = create_password_reset_token(email, user_id=USER_ID)
 
         assert isinstance(token, str)
         assert len(token) > 0
@@ -52,7 +56,7 @@ class TestTokenCreation:
     def test_email_verification_token_has_correct_expiry(self):
         """Test that email verification token has correct expiration."""
         email = "test@example.com"
-        token = create_email_verification_token(email)
+        token = create_email_verification_token(email, user_id=USER_ID)
 
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         exp_timestamp = payload["exp"]
@@ -68,7 +72,7 @@ class TestTokenCreation:
     def test_password_reset_token_has_correct_expiry(self):
         """Test that password reset token has correct expiration."""
         email = "test@example.com"
-        token = create_password_reset_token(email)
+        token = create_password_reset_token(email, user_id=USER_ID)
 
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         exp_timestamp = payload["exp"]
@@ -88,7 +92,7 @@ class TestTokenVerification:
     def test_verify_valid_email_verification_token(self):
         """Test verifying a valid email verification token."""
         email = "test@example.com"
-        token = create_email_verification_token(email)
+        token = create_email_verification_token(email, user_id=USER_ID)
 
         verified_email = verify_token(token, "email_verification")
 
@@ -97,7 +101,7 @@ class TestTokenVerification:
     def test_verify_valid_password_reset_token(self):
         """Test verifying a valid password reset token."""
         email = "user@example.com"
-        token = create_password_reset_token(email)
+        token = create_password_reset_token(email, user_id=USER_ID)
 
         verified_email = verify_token(token, "password_reset")
 
@@ -106,7 +110,7 @@ class TestTokenVerification:
     def test_verify_token_with_wrong_type(self):
         """Test that verifying token with wrong type raises error."""
         email = "test@example.com"
-        token = create_email_verification_token(email)
+        token = create_email_verification_token(email, user_id=USER_ID)
 
         with pytest.raises(TokenError) as exc_info:
             verify_token(token, "password_reset")
@@ -169,6 +173,60 @@ class TestTokenVerification:
             verify_token(malformed_token, "email_verification")
 
         assert "Invalid or expired token" in str(exc_info.value)
+
+
+class TestUserBoundTokens:
+    """Verification and reset tokens name one user row, not just an address."""
+
+    @pytest.mark.parametrize(
+        "mint,token_type",
+        [
+            (create_email_verification_token, "email_verification"),
+            (create_password_reset_token, "password_reset"),
+        ],
+    )
+    def test_token_carries_the_user_id(self, mint, token_type):
+        token = mint("shared@example.com", user_id=USER_ID)
+
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        assert payload["uid"] == str(USER_ID)
+
+        claims = verify_user_token(token, token_type)
+        assert claims.user_id == USER_ID
+        assert claims.email == "shared@example.com"
+
+    def test_minting_requires_a_user_id(self):
+        with pytest.raises(TypeError):
+            create_password_reset_token("shared@example.com")  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize("token_type", ["email_verification", "password_reset"])
+    def test_an_address_only_token_is_refused(self, token_type):
+        token = create_token("shared@example.com", token_type)
+
+        with pytest.raises(TokenError, match="no longer valid"):
+            verify_user_token(token, token_type)
+
+    def test_a_malformed_user_id_is_refused(self):
+        expire = datetime.now(UTC) + timedelta(hours=1)
+        token = jwt.encode(
+            {
+                "sub": "shared@example.com",
+                "uid": "not-a-uuid",
+                "exp": expire,
+                "type": "password_reset",
+            },
+            SECRET_KEY,
+            algorithm=ALGORITHM,
+        )
+
+        with pytest.raises(TokenError):
+            verify_user_token(token, "password_reset")
+
+    def test_the_type_is_still_checked(self):
+        token = create_email_verification_token("a@example.com", user_id=USER_ID)
+
+        with pytest.raises(TokenError, match="Expected password_reset"):
+            verify_user_token(token, "password_reset")
 
 
 class TestCreateToken:

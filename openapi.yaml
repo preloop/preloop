@@ -120,9 +120,17 @@ paths:
       tags:
       - Auth
       summary: Forgot Password
-      description: "Send a password reset email.\n\nArgs:\n    reset_data: Password\
-        \ reset request with email.\n    background_tasks: Background tasks for sending\
-        \ emails.\n\nReturns:\n    Success message."
+      description: "Send a password reset email for every user row holding the address.\n\
+        \n``user.email`` is not unique: an address invited into a second account\n\
+        holds a second row there, with its own password. This never chooses one\n\
+        of them. Every row holding the address gets its own message, whose link\n\
+        is bound to that row and names its username, so the person resets the\naccount\
+        \ they mean by following that account's link. Each link goes to\nthe address\
+        \ its own row holds, the inbox that row already trusts for a\nreset, so no\
+        \ row is reachable from an inbox it does not name.\n\nArgs:\n    reset_data:\
+        \ Password reset request with email.\n    background_tasks: Background tasks\
+        \ for sending emails.\n\nReturns:\n    The same neutral message whether or\
+        \ not the address is registered."
       operationId: forgot_password_api_v1_auth_forgot_password_post
       requestBody:
         content:
