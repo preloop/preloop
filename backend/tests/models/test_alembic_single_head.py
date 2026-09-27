@@ -242,6 +242,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert browser_step_idx.down_revision == "20260924_session_artifact"
     usage_principal_ts = script.get_revision("20260924_usage_principal_ts")
     assert usage_principal_ts.down_revision == "20260924_browser_step_idx"
+    exec_log_type_ts = script.get_revision("20260927_exec_log_type_ts")
+    assert exec_log_type_ts.down_revision == "20260924_usage_principal_ts"
     spend_outliers = script.get_revision("20260927_spend_outliers")
-    assert spend_outliers.down_revision == "20260924_usage_principal_ts"
+    assert spend_outliers.down_revision == "20260927_exec_log_type_ts"
     assert script.get_heads() == ["20260927_spend_outliers"]

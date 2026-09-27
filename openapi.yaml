@@ -10408,7 +10408,15 @@ paths:
       tags:
       - Flows
       summary: Get Flow Execution Gateway Events
-      description: Get normalized model gateway events for a flow execution.
+      description: "Get normalized model gateway events for a flow execution.\n\n\
+        Args:\n    execution_id: ID of the execution.\n    tail: Most recent rows\
+        \ to return (default 5000).\n    metadata_only: Drop the large payload fields\
+        \ (conversation preview,\n        tools, result, stream events).\n    model_calls_only:\
+        \ Return only ``model_gateway_call`` rows. Without it\n        every log row\
+        \ of the execution is returned, including the agent\n        log lines the\
+        \ logs endpoint already serves, and on a long run\n        those crowd the\
+        \ model calls out of ``tail``.\n\nReturns:\n    ``logs`` (newest first), ``source``,\
+        \ and ``has_more``: whether rows\n    older than the returned ``tail`` exist."
       operationId: get_flow_execution_gateway_events_api_v1_flows_executions__execution_id__gateway_events_get
       security:
       - bearerAuth: []
@@ -10426,6 +10434,7 @@ paths:
         schema:
           anyOf:
           - type: integer
+            minimum: 1
           - type: 'null'
           title: Tail
       - name: metadata_only
@@ -10435,6 +10444,13 @@ paths:
           type: boolean
           default: false
           title: Metadata Only
+      - name: model_calls_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Model Calls Only
       responses:
         '200':
           description: Successful Response

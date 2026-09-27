@@ -19,6 +19,17 @@ sbom_metadata = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sbom_metadata)
 
 
+def _property(component: dict) -> str | None:
+    properties = component.get("properties")
+    if not isinstance(properties, list):
+        return None
+    for prop in properties:
+        if isinstance(prop, dict) and prop.get("name") == "preloop:types_only":
+            value = prop.get("value")
+            return value if isinstance(value, str) else None
+    return None
+
+
 def _component(name: str, purl: str, *, author: str | None = None) -> dict:
     body: dict = {
         "type": "library",
@@ -337,6 +348,109 @@ class SupplierDerivationTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(probe.returncode, 0, probe.stderr)
+
+    def test_types_only_when_the_package_has_no_runtime_files(self) -> None:
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(modules / "@types" / "node", "@types/node")
+        (modules / "@types" / "node" / "index.d.ts").write_text(
+            "export {}", encoding="utf-8"
+        )
+        self._write_npm(modules / "undici-types", "undici-types")
+        (modules / "undici-types" / "index.d.ts").write_text(
+            "export {}", encoding="utf-8"
+        )
+        self._write_npm(modules / "@widgets" / "button-types", "@widgets/button-types")
+        (modules / "@widgets" / "button-types" / "index.d.ts").write_text(
+            "export {}", encoding="utf-8"
+        )
+        self._write_npm(modules / "runtime-types", "runtime-types")
+        (modules / "runtime-types" / "index.js").write_text(
+            "module.exports = {}", encoding="utf-8"
+        )
+        self._write_npm(modules / "left-pad", "left-pad")
+        (modules / "left-pad" / "index.js").write_text(
+            "module.exports = {}", encoding="utf-8"
+        )
+        index = sbom_metadata.MetadataIndex([], [modules])
+        document = {
+            "components": [
+                _component("@types/node", "pkg:npm/%40types/node@1.2.3"),
+                _component("undici-types", "pkg:npm/undici-types@1.2.3"),
+                _component(
+                    "@widgets/button-types",
+                    "pkg:npm/%40widgets/button-types@1.2.3",
+                ),
+                _component("runtime-types", "pkg:npm/runtime-types@1.2.3"),
+                _component("left-pad", "pkg:npm/left-pad@1.2.3"),
+                _component("missing-types", "pkg:npm/missing-types@1.2.3"),
+            ]
+        }
+        sbom_metadata.stamp_types_only(document, index)
+        self.assertEqual(_property(document["components"][0]), "true")
+        self.assertEqual(_property(document["components"][1]), "true")
+        self.assertEqual(_property(document["components"][2]), "true")
+        self.assertIsNone(_property(document["components"][3]))
+        self.assertIsNone(_property(document["components"][4]))
+        self.assertIsNone(_property(document["components"][5]))
+        self._assert_cyclonedx_1_6(
+            {
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.6",
+                "version": 1,
+                "metadata": {
+                    "component": {
+                        "type": "application",
+                        "name": "example",
+                        "bom-ref": "example",
+                    }
+                },
+                "components": document["components"],
+                "dependencies": [
+                    {"ref": "example", "dependsOn": []},
+                    *[
+                        {"ref": item["bom-ref"], "dependsOn": []}
+                        for item in document["components"]
+                    ],
+                ],
+            }
+        )
+
+    def test_types_only_skips_a_different_installed_version(self) -> None:
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(modules / "undici-types", "undici-types")
+        manifest = modules / "undici-types" / "package.json"
+        body = json.loads(manifest.read_text(encoding="utf-8"))
+        body["version"] = "9.9.9"
+        manifest.write_text(json.dumps(body), encoding="utf-8")
+        (modules / "undici-types" / "index.d.ts").write_text(
+            "export {}", encoding="utf-8"
+        )
+        index = sbom_metadata.MetadataIndex([], [modules])
+        component = _component("undici-types", "pkg:npm/undici-types@1.2.3")
+        sbom_metadata.stamp_types_only({"components": [component]}, index)
+        self.assertIsNone(_property(component))
+
+    def test_types_only_skips_shebang_and_executable_files(self) -> None:
+        root = self._tmp()
+        modules = root / "node_modules"
+        self._write_npm(modules / "shebang-types", "shebang-types")
+        cli = modules / "shebang-types" / "cli"
+        cli.write_text("#!/usr/bin/env node\nconsole.log(1)\n", encoding="utf-8")
+        self._write_npm(modules / "mode-types", "mode-types")
+        tool = modules / "mode-types" / "tool"
+        tool.write_text("echo hi\n", encoding="utf-8")
+        tool.chmod(0o755)
+        index = sbom_metadata.MetadataIndex([], [modules])
+        shebang = _component("shebang-types", "pkg:npm/shebang-types@1.2.3")
+        executable = _component("mode-types", "pkg:npm/mode-types@1.2.3")
+        sbom_metadata.stamp_types_only(
+            {"components": [shebang, executable]},
+            index,
+        )
+        self.assertIsNone(_property(shebang))
+        self.assertIsNone(_property(executable))
 
     def _tmp(self) -> Path:
         from tempfile import TemporaryDirectory
