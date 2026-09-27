@@ -58,6 +58,35 @@ response cache.
 *   **Plugin Boundary:** Backend features beyond OSS summaries and budget-health tracking must live in Enterprise plugins under `./plugins/`, likely extending `plugins/billing/` for budget policy enforcement, pricing overrides, FinOps, credits, promotions, forecasting, exports, and value-review jobs. The shared frontend should gate those panels with feature flags.
 *   **Budget Actions:** Core enforcement should continue to block or warn before upstream dispatch. Enterprise plugins can add escalations, Slack/mobile notifications, approval requirements for expensive calls, and post-hoc anomaly workflows.
 
+## Cost and cycle time per tracker issue
+
+`preloop.services.issue_cost_rollup` rolls execution cost, tokens and pull
+request cycle times up to the tracker issue, across flows. The per-flow Cost
+page is unchanged.
+
+*   **Tables:** `issue_cost_rollup` (one row per account, tracker and issue
+    key), `issue_cost_execution` (one fact per execution id, so a replay or a
+    rebuild upserts instead of double counting) and `issue_cost_pull_request`
+    (publication, approval and merge times, the claiming issue and an
+    ambiguity flag). Row sums are always recomputed from the facts.
+*   **Attribution:** first match wins: issue lifecycle, resume lineage,
+    delegated parent, retry parent, an issue trigger subject, a pull request
+    already claimed by one issue, exactly one closing reference. Anything else
+    is unassigned. A pull request claimed by two issues is marked ambiguous,
+    and executions linked only through it move to the unassigned bucket.
+*   **Write hooks:** the orchestrator terminal hook, `record_opened_pr`
+    (publication time), `process_webhook_event` (approval and merge times,
+    never creating rows) and `sync_execution_cost_rollup` (repricing). Each
+    runs in a savepoint and never fails its caller.
+*   **Rebuild:** `POST /api/v1/cost/by-issue/rebuild` records finished
+    executions of a window of at most 92 days that have no fact yet, each in
+    its own savepoint. It is the recovery path for executions that ended
+    outside the orchestrator or whose hook failed.
+*   **Report:** `GET /api/v1/cost/by-issue` filters issues by first event
+    time and shows their lifetime totals. The per-project and per-flow
+    summaries are sums of the rows. `/export` returns CSV (issue grain plus
+    one unassigned row) or JSON (with execution ids).
+
 ## Reviewed price publication
 
 After an initial rollout and explicit configuration, each API, dedicated gateway,
