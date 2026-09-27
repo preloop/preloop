@@ -225,7 +225,7 @@ class TestCvssNumericStrings:
 
 class TestScoreCoercionUnit:
     def test_vulnscan_path_and_boundaries(self) -> None:
-        payload = {
+        payload: dict[str, Any] = {
             "schema": SCHEMA_VULNSCAN_V1,
             "findings": [
                 {"epss": "0", "cvss": "10"},
@@ -251,7 +251,7 @@ class TestScoreCoercionUnit:
         assert payload["findings"][0]["epss"] == "0"
 
     def test_one_unparseable_string_blocks_every_coercion(self) -> None:
-        payload = {
+        payload: dict[str, Any] = {
             "schema": SCHEMA_VULNSCAN_V1,
             "findings": [
                 {"epss": REPORTED_EPSS, "cvss": 4.0},
