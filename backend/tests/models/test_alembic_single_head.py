@@ -254,4 +254,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert issue_cost_rollup.down_revision == "20260927_spend_outliers"
     policy_notice_hit = script.get_revision("20260927_policy_notice_hit")
     assert policy_notice_hit.down_revision == "20260927_issue_cost_rollup"
-    assert script.get_heads() == ["20260927_policy_notice_hit"]
+    cli_login_session = script.get_revision("20260928_cli_session")
+    assert cli_login_session.down_revision == "20260927_policy_notice_hit"
+    assert script.get_heads() == ["20260928_cli_session"]

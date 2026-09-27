@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/config"
@@ -41,6 +42,17 @@ func UserAgent() string {
 // ClientVersionHeader is the HTTP header that carries the bare CLI version
 // string (e.g. "0.10.0") alongside User-Agent.
 const ClientVersionHeader = "X-Client-Version"
+
+// DeviceName returns this machine's host name, sent as device_name when the
+// CLI signs in so the login can be told apart in 'preloop auth sessions
+// list'. Empty when the name is unavailable.
+func DeviceName() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(name)
+}
 
 // SetClientIdentityHeaders sets User-Agent and X-Client-Version on every
 // outbound Preloop request so servers can attribute traffic by CLI build.
