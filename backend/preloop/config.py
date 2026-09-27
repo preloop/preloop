@@ -660,6 +660,23 @@ class Settings(BaseSettings):
             "subject-scoped allowed_models checks still apply afterwards."
         ),
     )
+    model_gateway_claude_family_autoregister_verify_upstream: bool = Field(
+        True,
+        description=(
+            "Before the Claude family autoregister mints a catalog row for an "
+            "unknown claude-* identifier, verify that Anthropic actually "
+            "serves it (GET /v1/models/{identifier} with the template model's "
+            "subscription-OAuth access token). A 404 means the id is not "
+            "registered: the row is not created and the gateway answers 404 "
+            "instead of advertising a typo or a guessed snapshot date as a "
+            "real model. A 200 proceeds as today; any other status or a "
+            "transport error is 'unknown' and also proceeds as today, so an "
+            "Anthropic outage never blocks a model that used to work. Results "
+            "are cached in process (positive 24h, negative 10min). Disable "
+            "this to keep the previous behaviour and skip the extra call when "
+            "an egress policy forbids it."
+        ),
+    )
     model_gateway_codex_family_autoregister_enabled: bool = Field(
         True,
         description=(

@@ -106,6 +106,9 @@ from preloop.services.account_governance_cache import (
     invalidate_account_governance_cache,
 )
 from preloop.services.event_webhooks.emitters import emit_session_ended
+from preloop.services.spend_outliers import (
+    record_dismissal as record_spend_outlier_dismissal,
+)
 from preloop.services.cache_accounting import (
     build_request_cache_accounting,
     summarize_session_cache,
@@ -3394,6 +3397,15 @@ async def upsert_attention_dismissal(
         snooze_until=snooze_until,
         dismissed_by_user_id=current_user.id,
     )
+    # Spend outlier cards (#960): remember which day's finding was dismissed,
+    # for the weekly digest. A no-op for every other kind.
+    record_spend_outlier_dismissal(
+        db,
+        account_id=account.id,
+        item_id=item_id,
+        fingerprint=payload.fingerprint,
+        dismissed_at=dismissal.created_at.replace(tzinfo=UTC),
+    )
     usernames = _resolve_dismissal_usernames(db, [dismissal])
     return _dismissal_response(dismissal, usernames)
 
@@ -3410,9 +3422,23 @@ async def delete_attention_dismissal(
     db: Session = Depends(get_db_session),
 ) -> None:
     """Restore a silenced item so it shows in the inbox again."""
+    # Read before the delete commits: the row's attributes expire with it.
+    existing = crud_attention_dismissal.get_by_item(
+        db, account_id=account.id, item_id=item_id
+    )
+    restored_fingerprint = existing.fingerprint if existing is not None else None
     removed = crud_attention_dismissal.delete_by_item(
         db, account_id=account.id, item_id=item_id
     )
+    if restored_fingerprint is not None:
+        # Spend outlier cards (#960): the digest no longer lists it dismissed.
+        record_spend_outlier_dismissal(
+            db,
+            account_id=account.id,
+            item_id=item_id,
+            fingerprint=restored_fingerprint,
+            dismissed_at=None,
+        )
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
