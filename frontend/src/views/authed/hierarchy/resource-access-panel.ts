@@ -50,6 +50,26 @@ type Section = 'loading' | 'on' | 'off';
  * not offered). Each section hides on its own when its endpoint is missing,
  * and the panel reports `capability-off` when both are.
  */
+/**
+ * Whether two share targets reach the same subaccounts. Selected targets
+ * compare as id sets, since names need not be unique and order is not
+ * meaningful.
+ */
+function sameTarget(a: ShareTarget, b: ShareTarget): boolean {
+  if (a.type === 'all' || b.type === 'all') return a.type === b.type;
+  if (a.type === 'tag' || b.type === 'tag') {
+    return (
+      a.type === 'tag' &&
+      b.type === 'tag' &&
+      a.key === b.key &&
+      a.value === b.value
+    );
+  }
+  const x = new Set(a.subaccount_ids);
+  const y = new Set(b.subaccount_ids);
+  return x.size === y.size && [...x].every((id) => y.has(id));
+}
+
 @customElement('resource-access-panel')
 export class ResourceAccessPanel extends LitElement {
   static styles = css`
@@ -236,9 +256,8 @@ export class ResourceAccessPanel extends LitElement {
       this.error = target;
       return;
     }
-    const label = this.targetLabel(target);
-    if (this.shares.some((share) => this.targetLabel(share.target) === label)) {
-      this.error = `Already shared with ${label}.`;
+    if (this.shares.some((share) => sameTarget(share.target, target))) {
+      this.error = `Already shared with ${this.targetLabel(target)}.`;
       return;
     }
     await this.changeShares(async () => {

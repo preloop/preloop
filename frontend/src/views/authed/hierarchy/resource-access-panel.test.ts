@@ -111,6 +111,60 @@ describe('resource-access-panel', () => {
     });
   });
 
+  it('compares selected share targets by id set, not by name', async () => {
+    api = mockApi({
+      capabilities: ['account_hierarchy'],
+      routes: [
+        { method: 'POST', path: SHARES, status: 201, body: { id: 'sh-new' } },
+        {
+          path: SHARES,
+          body: {
+            items: [
+              {
+                id: 'sh-sel',
+                resource_type: 'ai_model',
+                resource_id: 'model-1',
+                target: {
+                  type: 'selected',
+                  subaccount_ids: ['sub-b', 'sub-a'],
+                },
+              },
+            ],
+          },
+        },
+        {
+          path: SUBS,
+          body: {
+            items: [
+              { id: 'sub-a', name: 'Alpha' },
+              { id: 'sub-b', name: 'Beta' },
+              { id: 'sub-c', name: 'Alpha' },
+            ],
+          },
+        },
+      ],
+    });
+    const el = await mount(['account_hierarchy']);
+    await waitUntil(() => q(el, 'share-list'));
+    const draft = el as unknown as {
+      draftTarget: string;
+      draftSelected: Set<string>;
+    };
+    draft.draftTarget = 'selected';
+    draft.draftSelected = new Set(['sub-a', 'sub-b']);
+    await el.updateComplete;
+    (q(el, 'share-save') as HTMLElement).click();
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('Already shared with')
+    );
+    expect(api.callsTo(SHARES, 'POST')).to.have.length(0);
+
+    draft.draftSelected = new Set(['sub-c', 'sub-b']);
+    await el.updateComplete;
+    (q(el, 'share-save') as HTMLElement).click();
+    await waitUntil(() => api.callsTo(SHARES, 'POST').length === 1);
+  });
+
   describe('with several shares on one resource', () => {
     const TWO = [
       {
