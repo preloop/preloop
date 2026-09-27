@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Semantic search settings on the Sessions page: a card to opt the account in
+  to embedding its session content, name the model and endpoint, choose
+  `summaries_only` or `full` (with the storage cost of each), and set the
+  daily cap, with corpus progress and the last degraded reason shown. A viewer
+  sees it read-only; saving needs `manage_budgets`. The `semantic_not_enabled`
+  search notice links to it. `PUT /api/v1/runtime-sessions/settings/embedding`
+  now takes `enabled`, `daily_cap_usd`, `provider`, `model_identifier` and
+  `base_url` alongside `scope`, and its read carries the deployment default
+  cap, the kill switch state and corpus progress.
+
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
   the first event to PR opened, PR opened to approved, and approved to merged
