@@ -440,3 +440,101 @@ class TestBindResumeCarriesCliSession:
         execution.cli_session = None
         resume = self._bind(execution)
         assert "cli_session" not in resume
+
+
+class TestBitbucketCommentBinding:
+    BB_REPO = {
+        "full_name": "ws/repo",
+        "uuid": "{22222222-2222-2222-2222-222222222222}",
+    }
+
+    def test_extract_pr_url_from_bitbucket_comment_event(self):
+        event = {
+            "payload": {
+                "pullrequest": {
+                    "id": 7,
+                    "links": {
+                        "html": {
+                            "href": "https://bitbucket.org/ws/repo/pull-requests/7"
+                        }
+                    },
+                }
+            }
+        }
+        assert (
+            extract_pr_url_from_comment_event(event)
+            == "https://bitbucket.org/ws/repo/pull-requests/7"
+        )
+
+    def test_bitbucket_api_url_is_rejected(self):
+        assert (
+            normalize_pr_url(
+                "https://api.bitbucket.org/2.0/repositories/ws/repo/pullrequests/7"
+            )
+            == ""
+        )
+
+    def _event_and_flow(self, *, repository=None):
+        from preloop.services.flow_pr_binding import is_bound_implementation_comment
+
+        account_id, tracker_id, flow_id = uuid4(), uuid4(), uuid4()
+        flow = SimpleNamespace(
+            id=flow_id,
+            account_id=account_id,
+            trigger_event_source=str(tracker_id),
+            trigger_event_types=["issue_labeled", "comment_created"],
+            trigger_config={"issue_label": "agent-ready"},
+        )
+        pr_url = "https://bitbucket.org/ws/repo/pull-requests/7"
+        event = {
+            "type": "comment_created",
+            "source": "bitbucket",
+            "account_id": str(account_id),
+            "tracker_id": str(tracker_id),
+            "payload": {
+                "pullrequest": {"id": 7, "links": {"html": {"href": pr_url}}},
+                "repository": repository or self.BB_REPO,
+            },
+        }
+        execution = SimpleNamespace(
+            flow_id=flow_id,
+            trigger_event_details={
+                "source": "bitbucket",
+                "account_id": str(account_id),
+                "tracker_id": str(tracker_id),
+                "payload": {"repository": self.BB_REPO},
+            },
+        )
+        return is_bound_implementation_comment, flow, event, execution
+
+    def test_bound_bitbucket_comment_matches_repository_identity(self):
+        check, flow, event, execution = self._event_and_flow()
+        with patch(
+            "preloop.services.flow_pr_binding.find_bound_execution",
+            return_value=execution,
+        ):
+            assert check(MagicMock(), flow, event) is True
+
+    def test_renamed_repository_still_matches_by_uuid(self):
+        renamed = {
+            "full_name": "ws/renamed",
+            "uuid": "{22222222-2222-2222-2222-222222222222}",
+        }
+        check, flow, event, execution = self._event_and_flow(repository=renamed)
+        with patch(
+            "preloop.services.flow_pr_binding.find_bound_execution",
+            return_value=execution,
+        ):
+            assert check(MagicMock(), flow, event) is True
+
+    def test_other_repository_does_not_bind(self):
+        other = {
+            "full_name": "ws/other",
+            "uuid": "{99999999-9999-9999-9999-999999999999}",
+        }
+        check, flow, event, execution = self._event_and_flow(repository=other)
+        with patch(
+            "preloop.services.flow_pr_binding.find_bound_execution",
+            return_value=execution,
+        ):
+            assert check(MagicMock(), flow, event) is False

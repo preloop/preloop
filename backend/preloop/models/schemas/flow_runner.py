@@ -85,6 +85,15 @@ class RunnerRegisterResponse(RunnerResponse):
     token: str
 
 
+class RunnerDeleteResponse(BaseModel):
+    """Outcome of deleting a runner; its token is rejected from now on."""
+
+    id: UUID
+    deleted: bool = True
+    #: Executions the runner held that a forced delete stopped.
+    halted_execution_ids: List[UUID] = Field(default_factory=list)
+
+
 class RunnerConcurrencyUpdate(BaseModel):
     """Edit one runner's slot ceiling from the console."""
 

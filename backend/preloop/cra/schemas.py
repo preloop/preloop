@@ -135,6 +135,40 @@ VEX_NON_SUPPRESSING_STATUSES: FrozenSet[str] = frozenset(
 # Why the gate would have failed on a suppressed finding. Recorded so the
 # suppression can be audited against the policy it displaced.
 VEX_SUPPRESSION_REASONS: FrozenSet[str] = frozenset({"kev", "cvss", "unscored"})
+# A finding is CLOSED by VEX (it stays in the ledger but no longer holds a
+# release audit below "pass") only for these statuses. "false_positive"
+# still leaves the gate population, but it is an analyst call rather than a
+# supplier statement about the product, so it does not close a finding.
+VEX_CLOSING_STATUSES: FrozenSet[str] = frozenset({"not_affected", "fixed"})
+# Machine-readable not_affected justifications: the OpenVEX / CSAF
+# vocabulary and the CycloneDX analysis.justification vocabulary. Free text
+# still takes a finding out of the gate, but it does not close it.
+VEX_RECOGNISED_JUSTIFICATIONS: FrozenSet[str] = frozenset(
+    {
+        # OpenVEX and CSAF
+        "component_not_present",
+        "vulnerable_code_not_present",
+        "vulnerable_code_not_in_execute_path",
+        "vulnerable_code_cannot_be_controlled_by_adversary",
+        "inline_mitigations_already_exist",
+        # CycloneDX analysis.justification
+        "code_not_present",
+        "code_not_reachable",
+        "requires_configuration",
+        "requires_dependency",
+        "requires_environment",
+        "protected_by_compiler",
+        "protected_at_runtime",
+        "protected_at_perimeter",
+        "protected_by_mitigating_control",
+    }
+)
+# Platform-derived verdict facts on a release audit. Both are recomputed at
+# persist from the document itself; an agent-written value is only a claim.
+CLOSED_BY_VEX_FIELD = "closed_by_vex"
+LIMITATIONS_FIELD = "limitations"
+# On a skipped check: the input whose absence caused the skip.
+MISSING_INPUT_FIELD = "missing_input"
 # --- CRA Article 14 reporting -------------------------------------------
 # The obligation (report an actively exploited vulnerability: early warning
 # in 24 h, notification in 72 h, final report in 14 d) applies from

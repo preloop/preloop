@@ -6,8 +6,18 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from sqlalchemy import Boolean, DateTime, Integer, func, String, ForeignKey
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    SmallInteger,
+    String,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -57,6 +67,11 @@ class Account(Base):
         is_superuser: Whether this is a platform admin account.
         meta_data: Generic metadata field for extensibility.
         stripe_customer_id: Stripe customer ID for billing.
+        parent_account_id: Parent account (NULL for a root account).
+        root_account_id: Root of this account's tree (``id`` for a root).
+        hierarchy_path: Account ids from the root down to this account,
+            both included.
+        hierarchy_depth: Number of levels below the root (0 for a root).
         created: When the account was created.
         last_updated: When the account was last updated.
     """
@@ -114,6 +129,75 @@ class Account(Base):
             "Account default runner pool: a runner id, name, or label; "
             "the literal 'server' for Preloop hosted; NULL means any "
             "online private runner."
+        ),
+    )
+
+    # Account hierarchy (#986). Walk the tree only through ``ancestors`` and
+    # ``descendants`` in preloop.models.models.hierarchy, never through
+    # ``parent_account_id``: those helpers read ``hierarchy_path`` and do not
+    # care how deep the tree is, so the depth limit lives in exactly one
+    # place, the ``ck_account_hierarchy_depth_max`` CHECK below (see the note
+    # there for what relaxing it takes).
+    parent_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("account.id", ondelete="RESTRICT", name="fk_account_parent"),
+        nullable=True,
+        index=True,
+        comment="Parent account; NULL for a root account",
+    )
+    root_account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("account.id", name="fk_account_root"),
+        nullable=False,
+        index=True,
+        comment="Root of this account's tree; equals id for a root account",
+    )
+    hierarchy_path: Mapped[List[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)),
+        nullable=False,
+        comment="Account ids from the root to this account, both included",
+    )
+    hierarchy_depth: Mapped[int] = mapped_column(
+        SmallInteger,
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Levels below the root; 0 for a root account",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(parent_account_id IS NULL) = (hierarchy_depth = 0)",
+            name="ck_account_parent_iff_nonroot",
+        ),
+        # The only place tree depth is limited. At depth 1 the path shape
+        # CHECK forces hierarchy_path = [parent, self]. Relaxing this also
+        # needs a trigger on INSERT or UPDATE OF hierarchy_path asserting
+        # hierarchy_path[1:hierarchy_depth] equals the parent's own path:
+        # no CHECK can read the parent row, and without it a child can claim
+        # a root its parent is not under. The helpers need no change.
+        CheckConstraint(
+            "hierarchy_depth <= 1",
+            name="ck_account_hierarchy_depth_max",
+        ),
+        CheckConstraint(
+            "hierarchy_depth >= 0"
+            " AND cardinality(hierarchy_path) = hierarchy_depth + 1"
+            " AND hierarchy_path[1] = root_account_id"
+            " AND hierarchy_path[cardinality(hierarchy_path)] = id",
+            name="ck_account_hierarchy_path_shape",
+        ),
+        # parent_account_id and hierarchy_path encode the same edge: keep
+        # them equal so the FK that guards deletes and the helpers agree.
+        CheckConstraint(
+            "hierarchy_depth = 0"
+            " OR parent_account_id = hierarchy_path[hierarchy_depth]",
+            name="ck_account_parent_is_path_tail",
+        ),
+        Index(
+            "ix_account_hierarchy_path",
+            "hierarchy_path",
+            postgresql_using="gin",
         ),
     )
 

@@ -184,6 +184,7 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
     from preloop.services.flow_runtime_token import create_flow_runtime_token
     from preloop.services.host_exec import host_exec_unavailable_reason
+    from preloop.services.repository_binding import RepositoryBindingError
 
     try:
         execution_id = UUID(str(job.get("execution_id")))
@@ -229,7 +230,12 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
         )
         orchestrator.execution_log = execution
         orchestrator._get_flow_details(refresh=True)
-        context = await orchestrator.prepare_host_exec_checkout_context()
+        try:
+            context = await orchestrator.prepare_host_exec_checkout_context()
+        except RepositoryBindingError as exc:
+            raise HostExecDeliveryError(
+                f"Repository binding cannot be applied: {exc}"
+            ) from exc
         checkout = build_host_exec_checkout(context) if context else None
         if checkout:
             hydrated["host_exec_checkout"] = checkout

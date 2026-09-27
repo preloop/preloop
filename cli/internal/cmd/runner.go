@@ -59,15 +59,32 @@ var runnerFgCmd = &cobra.Command{
 }
 
 var runnerEnableCmd = &cobra.Command{
-	Use:   "enable",
-	Short: "Install a system service for preloop runner fg",
-	RunE:  runRunnerEnable,
+	Use:     "enable",
+	Aliases: []string{"install"},
+	Short:   "Install a system service for preloop runner fg",
+	RunE:    runRunnerEnable,
 }
 
 var runnerDisableCmd = &cobra.Command{
-	Use:   "disable",
-	Short: "Remove the runner system service",
-	RunE:  runRunnerDisable,
+	Use:     "disable",
+	Aliases: []string{"uninstall"},
+	Short:   "Remove the runner system service",
+	Long: `Stop and remove the runner system service.
+
+With --delete the runner is also deleted on the server once the service has
+stopped: its token stops working and the local runner state is removed. The
+server refuses while the runner still holds an execution; --force halts those
+executions and deletes the runner anyway.`,
+	RunE: runRunnerDisable,
+}
+
+var runnerRotateTokenCmd = &cobra.Command{
+	Use:   "rotate-token",
+	Short: "Issue a new token for this runner and restart the service",
+	Long: `Ask the server for a new runner token, write it to the local runner
+state and restart the installed service so it reconnects with it. The old
+token is rejected from the moment the server answers.`,
+	RunE: runRunnerRotateToken,
 }
 
 var runnerStartCmd = &cobra.Command{
@@ -102,6 +119,15 @@ func init() {
 	runnerCmd.AddCommand(runnerStopCmd)
 	runnerCmd.AddCommand(runnerRestartCmd)
 	runnerCmd.AddCommand(runnerStatusCmd)
+	runnerCmd.AddCommand(runnerRotateTokenCmd)
+	runnerDisableCmd.Flags().Bool(
+		"delete", false,
+		"also delete the runner on the server and forget its local state",
+	)
+	runnerDisableCmd.Flags().Bool(
+		"force", false,
+		"with --delete, halt executions the runner still holds instead of refusing",
+	)
 	runnerFgCmd.Flags().StringSlice("labels", nil, "labels used to match runner pools")
 	runnerFgCmd.Flags().String("name", "", "runner display name (default: hostname)")
 	runnerFgCmd.Flags().Bool("once", false, "exit after the first leased execution finishes")
@@ -1257,18 +1283,181 @@ func runRunnerEnable(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// Service hooks. Variables so tests can drive disable and rotate-token
+// without touching launchd, systemd or the Windows task scheduler.
+var (
+	runnerServiceAction    = runnerServiceControl
+	runnerServiceInstalled = runnerServiceIsInstalled
+	runnerServiceRemove    = removeRunnerService
+)
+
 func runRunnerDisable(cmd *cobra.Command, args []string) error {
-	_ = runnerServiceControl("stop")
+	deleteRunner, _ := cmd.Flags().GetBool("delete")
+	force, _ := cmd.Flags().GetBool("force")
+	if force && !deleteRunner {
+		return errors.New("--force only applies together with --delete")
+	}
+	// Asked before the removal, which is what makes it false on macOS and
+	// Linux. On Windows a missing task is a generic schtasks exit error, not
+	// ErrNotExist, so the removal error alone cannot tell the two apart.
+	installed := runnerServiceInstalled()
+	// Stop first: a service still running would reconnect, or take a new
+	// lease, between the delete and its removal.
+	_ = runnerServiceAction("stop")
+	removeErr := runnerServiceRemove()
+	if !deleteRunner {
+		return removeErr
+	}
+	if removeErr != nil && (!installed || errors.Is(removeErr, os.ErrNotExist)) {
+		// No service was installed (a runner started with fg). Deleting the
+		// server row is still what was asked for.
+		removeErr = nil
+	}
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return errors.Join(removeErr, err)
+	}
+	return errors.Join(removeErr, deleteRegisteredRunner(client, force, cmd.OutOrStdout()))
+}
+
+func removeRunnerService() error {
 	switch runtime.GOOS {
 	case "darwin":
 		return os.Remove(launchdPlistPath())
 	case "linux":
 		return os.Remove(systemdUserUnitPath())
 	case "windows":
-		return exec.Command("schtasks", "/Delete", "/TN", "PreloopRunner", "/F").Run()
+		if err := exec.Command("schtasks", "/Delete", "/TN", "PreloopRunner", "/F").Run(); err != nil {
+			return err
+		}
+		if scriptPath, pathErr := windowsRunnerTaskScriptPath(); pathErr == nil {
+			if err := os.Remove(scriptPath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
 	default:
 		return fmt.Errorf("service install is not implemented on %s", runtime.GOOS)
 	}
+}
+
+func runnerServiceIsInstalled() bool {
+	switch runtime.GOOS {
+	case "darwin":
+		_, err := os.Stat(launchdPlistPath())
+		return err == nil
+	case "linux":
+		_, err := os.Stat(systemdUserUnitPath())
+		return err == nil
+	case "windows":
+		return exec.Command("schtasks", "/Query", "/TN", "PreloopRunner").Run() == nil
+	default:
+		return false
+	}
+}
+
+type runnerDeleteResponse struct {
+	ID                 string   `json:"id"`
+	Deleted            bool     `json:"deleted"`
+	HaltedExecutionIDs []string `json:"halted_execution_ids"`
+}
+
+// deleteRegisteredRunner deletes the runner in the local state on the
+// server and then forgets it locally. A runner the server no longer knows
+// counts as deleted, so a retry after a partial failure converges.
+func deleteRegisteredRunner(client *api.Client, force bool, out io.Writer) error {
+	state, err := readRunnerState()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("no registered runner on this machine (runner.json not found)")
+		}
+		return fmt.Errorf("read runner state: %w", err)
+	}
+	if state.ID == "" {
+		return errors.New("runner state has no runner id")
+	}
+	path := "/api/v1/runners/" + url.PathEscape(state.ID)
+	if force {
+		path += "?force=true"
+	}
+	var response runnerDeleteResponse
+	err = client.Delete(path, &response)
+	switch {
+	case err == nil:
+	case api.IsStatus(err, http.StatusNotFound):
+		fmt.Fprintf(out, "Runner %s was already gone on the server\n", state.ID)
+	case api.IsStatus(err, http.StatusConflict):
+		return fmt.Errorf(
+			"%w\nThe service is stopped. Re-run with --delete --force to halt those executions and delete the runner",
+			err,
+		)
+	default:
+		return fmt.Errorf("delete runner %s: %w", state.ID, err)
+	}
+	if statePath, pathErr := runnerStatePath(); pathErr == nil {
+		if removeErr := os.Remove(statePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("runner deleted, but removing %s failed: %w", statePath, removeErr)
+		}
+	}
+	if err == nil {
+		fmt.Fprintf(out, "Deleted runner %s\n", state.ID)
+	}
+	for _, executionID := range response.HaltedExecutionIDs {
+		fmt.Fprintf(out, "Halted execution %s\n", executionID)
+	}
+	return nil
+}
+
+func runRunnerRotateToken(cmd *cobra.Command, args []string) error {
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return err
+	}
+	return rotateRunnerToken(client, cmd.OutOrStdout())
+}
+
+// rotateRunnerToken swaps the runner token and restarts the service so
+// the running process picks it up. The token itself is never printed: it
+// only ever lives in runner.json.
+func rotateRunnerToken(client *api.Client, out io.Writer) error {
+	state, err := readRunnerState()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("no registered runner on this machine (runner.json not found)")
+		}
+		return fmt.Errorf("read runner state: %w", err)
+	}
+	if state.ID == "" {
+		return errors.New("runner state has no runner id")
+	}
+	var rotated runnerAPIRecord
+	if err := client.Post(
+		"/api/v1/runners/"+url.PathEscape(state.ID)+"/token", nil, &rotated,
+	); err != nil {
+		return fmt.Errorf("rotate runner token: %w", err)
+	}
+	if rotated.Token == "" {
+		return errors.New("rotate runner token: the server returned no token")
+	}
+	state.Token = rotated.Token
+	if err := writeRunnerState(state); err != nil {
+		// The old token is already dead, so say where the new one went.
+		return fmt.Errorf(
+			"the server rotated the token but writing runner.json failed: %w. "+
+				"Delete runner.json and start the runner again to register afresh",
+			err,
+		)
+	}
+	fmt.Fprintf(out, "Rotated the token for runner %s\n", state.ID)
+	if !runnerServiceInstalled() {
+		fmt.Fprintln(out, "No runner service is installed. Restart preloop runner fg to use the new token")
+		return nil
+	}
+	if err := runnerServiceAction("restart"); err != nil {
+		return fmt.Errorf("token rotated, but restarting the runner service failed: %w", err)
+	}
+	fmt.Fprintln(out, "Restarted the runner service")
+	return nil
 }
 
 func runRunnerStatus(cmd *cobra.Command, args []string) error {
@@ -1320,12 +1509,40 @@ func systemdUserUnitPath() string {
 	return filepath.Join(home, ".config", "systemd", "user", "preloop-runner.service")
 }
 
-func writeLaunchdPlist(bin string, out io.Writer) error {
-	path := launchdPlistPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+// runnerServiceLogPath is where the managed macOS and Windows services write
+// runner output. systemd captures output in the journal, so Linux has no file.
+func runnerServiceLogPath() (string, error) {
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
 	}
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "runner.log"), nil
+}
+
+// xmlEscape escapes a value for embedding in the launchd property list.
+func xmlEscape(value string) string {
+	return strings.NewReplacer(
+		"&", "&amp;", "<", "&lt;", ">", "&gt;",
+	).Replace(value)
+}
+
+// launchdPlistBody renders the LaunchAgent. The agent runs in the user's
+// login session so the operator's local agent CLI logins stay visible.
+// launchd starts agents with a minimal PATH, so the common Homebrew and
+// local-bin locations are appended for the runner's child processes.
+func launchdPlistBody(bin, logPath, home string) string {
+	// The plist targets macOS, so the PATH is joined with "/" regardless of
+	// the OS this code compiles on (the unit test runs everywhere).
+	path := strings.Join([]string{
+		strings.TrimRight(home, "/") + "/.local/bin",
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin", "/bin", "/usr/sbin", "/sbin",
+	}, ":")
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -1334,14 +1551,34 @@ func writeLaunchdPlist(bin string, out io.Writer) error {
   <array><string>%s</string><string>runner</string><string>fg</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>%s</string>
+  </dict>
 </dict>
 </plist>
-`, bin)
+`, xmlEscape(bin), xmlEscape(logPath), xmlEscape(logPath), xmlEscape(path))
+}
+
+func writeLaunchdPlist(bin string, out io.Writer) error {
+	path := launchdPlistPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	logPath, err := runnerServiceLogPath()
+	if err != nil {
+		return err
+	}
+	home, _ := os.UserHomeDir()
+	body := launchdPlistBody(bin, logPath, home)
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return err
 	}
 	_ = exec.Command("launchctl", "load", path).Run()
-	fmt.Fprintf(out, "Installed %s\n", path)
+	fmt.Fprintf(out, "Installed %s (logs: %s)\n", path, logPath)
 	return nil
 }
 
@@ -1371,20 +1608,62 @@ WantedBy=default.target
 	return nil
 }
 
+// windowsRunnerTaskScriptPath is the PowerShell launcher the scheduled task
+// runs. A script file sidesteps schtasks /TR quoting limits and captures the
+// runner's output to a log file, which a headless task otherwise discards.
+func windowsRunnerTaskScriptPath() (string, error) {
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "runner-task.ps1"), nil
+}
+
+// windowsRunnerTaskScript renders the launcher. Paths are single-quoted for
+// PowerShell (embedded single quotes doubled), and *>> appends every output
+// stream to the log.
+func windowsRunnerTaskScript(bin, logPath string) string {
+	quote := func(s string) string {
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	}
+	return "& " + quote(bin) + " runner fg *>> " + quote(logPath) + "\n"
+}
+
+// writeWindowsScheduledTask registers a logon task for the current user.
+// Running as the user (not SYSTEM) keeps the operator's agent CLI logins
+// visible to host execution profiles.
 func writeWindowsScheduledTask(bin string, out io.Writer) error {
+	scriptPath, err := windowsRunnerTaskScriptPath()
+	if err != nil {
+		return err
+	}
+	logPath, err := runnerServiceLogPath()
+	if err != nil {
+		return err
+	}
+	script := windowsRunnerTaskScript(bin, logPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		return err
+	}
 	cmd := exec.Command(
 		"schtasks",
 		"/Create",
 		"/TN", "PreloopRunner",
-		"/TR", fmt.Sprintf(`"%s" runner fg`, bin),
+		"/TR", fmt.Sprintf(
+			`powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s"`,
+			scriptPath,
+		),
 		"/SC", "ONLOGON",
 		"/RL", "LIMITED",
 		"/F",
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("schtasks: %w (%s)", err, strings.TrimSpace(string(out)))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf(
+			"schtasks: %w (%s); creating a logon task may require an elevated prompt",
+			err, strings.TrimSpace(string(output)),
+		)
 	}
-	fmt.Fprintln(out, "Installed scheduled task PreloopRunner")
+	fmt.Fprintf(out, "Installed scheduled task PreloopRunner (logs: %s)\n", logPath)
 	return nil
 }
 
