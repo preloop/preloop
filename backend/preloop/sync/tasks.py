@@ -249,6 +249,14 @@ async def process_webhook_event(
         trigger_service = FlowTriggerService(db)
         await trigger_service.process_event(event_data)
 
+        # Approval and merge times for the per-issue cost rollup. Best
+        # effort and replay safe: the earliest timestamp per PR wins.
+        from preloop.services.issue_cost_rollup import (
+            record_pull_request_event_safely,
+        )
+
+        record_pull_request_event_safely(db, event_data)
+
         # Executions for this delivery are committed. Ack now so a drain,
         # crash, or ack_wait expiry later in this handler cannot replay a
         # delivery that already did its durable work. The delivery-key guard
