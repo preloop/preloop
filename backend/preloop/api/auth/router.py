@@ -92,6 +92,11 @@ from preloop.models.crud import (
     crud_user_role,
 )
 from preloop.models.db.session import get_db_session
+from preloop.plugins.account_hooks import (
+    get_login_row_selector,
+    select_email_rows,
+    select_login_row,
+)
 from preloop.models.models.user import User as UserModel
 from preloop.models.models.api_key import ApiKey
 from pydantic import BaseModel
@@ -731,7 +736,8 @@ def _user_for_token(session: Session, token: str, token_type: str) -> UserModel:
         raise TokenError(
             "This link is no longer valid. Request a new one and use that instead."
         )
-    return user
+    purpose = "verify_email" if token_type == "email_verification" else "reset_password"
+    return select_login_row(session, user, purpose=purpose)
 
 
 @router.post("/verify-email", status_code=status.HTTP_200_OK)
@@ -846,7 +852,13 @@ def resend_verification(
     # One address can hold a row in several accounts. Each unverified row
     # gets its own link, bound to that row, so following one never verifies
     # another.
-    for user in crud_user.list_by_email(db, email=email):
+    rows = select_email_rows(
+        db,
+        email,
+        crud_user.list_by_email(db, email=email),
+        purpose="resend_verification",
+    )
+    for user in rows:
         if user.email_verified:
             continue
         background_tasks.add_task(
@@ -902,7 +914,13 @@ async def forgot_password(
     Returns:
         The same neutral message whether or not the address is registered.
     """
-    for user in crud_user.list_by_email(db, email=reset_data.email):
+    rows = select_email_rows(
+        db,
+        reset_data.email,
+        crud_user.list_by_email(db, email=reset_data.email),
+        purpose="forgot_password",
+    )
+    for user in rows:
         token = create_password_reset_token(user.email, user_id=user.id)
         background_tasks.add_task(
             send_password_reset_email,
@@ -957,6 +975,19 @@ async def reset_password(
         )
 
 
+async def _landing_row(user: UserModel, db: Session) -> UserModel:
+    """The row a password sign-in lands on (the checked row unless H1 says).
+
+    Without a registered login row selector this returns ``user`` without
+    leaving the event loop or touching the database.
+    """
+    if get_login_row_selector() is None:
+        return user
+    from preloop.api.loop_safety import run_db_off_loop
+
+    return await run_db_off_loop(lambda: select_login_row(db, user, purpose="login"))
+
+
 @router.post("/token", response_model=Token)
 async def login_form(
     request: Request,
@@ -987,6 +1018,7 @@ async def login_form(
             headers={"WWW-Authenticate": "Bearer"},
         )
     enforce_verified_email(user)
+    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1043,6 +1075,7 @@ async def login_json(
             headers={"WWW-Authenticate": "Bearer"},
         )
     enforce_verified_email(user)
+    user = await _landing_row(user, db)
 
     # Create access token with user information
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
