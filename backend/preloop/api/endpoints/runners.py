@@ -15,6 +15,7 @@ from string import ascii_letters, digits
 from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID, uuid4, uuid5
 
+from anyio import from_thread
 from fastapi import (
     APIRouter,
     Depends,
@@ -151,6 +152,29 @@ async def _evict_live_runner(
     except Exception:
         logger.debug("runner %s: socket already closed", runner_key)
     return True
+
+
+def _evict_live_runner_from_worker(
+    runner_key: str,
+    error: str,
+    halted_execution_ids: Optional[List[str]] = None,
+) -> None:
+    """Evict a live runner socket from a sync handler's worker thread.
+
+    The delete and rotate handlers are sync so their database work stays on
+    the threadpool; the socket belongs to the event loop, so the eviction is
+    handed back to it. If that is not possible the socket still ends on its
+    next frame, like one on another replica.
+    """
+    try:
+        from_thread.run(_evict_live_runner, runner_key, error, halted_execution_ids)
+    except RuntimeError:
+        logger.warning(
+            "Could not close the live socket for runner %s from this thread; "
+            "it ends on its next frame",
+            runner_key,
+            exc_info=True,
+        )
 
 
 def _to_response(
@@ -297,7 +321,7 @@ def update_runner_concurrency(
 # action: POST /flows/executions/{id}/command with "stop" is account scoped,
 # not owner scoped. Force delete stops those same executions and is audited.
 @require_permission("execute_flows")
-async def delete_runner(
+def delete_runner(
     runner_id: UUID,
     force: bool = False,
     db: Session = Depends(get_db),
@@ -314,29 +338,10 @@ async def delete_runner(
     see one runner fewer and fall back to their configured behaviour.
     """
     account_id = current_user.account_id
-
-    def delete() -> Optional[List[UUID]]:
+    try:
         halted = crud_flow_runner.delete_runner(
             db, runner_id=runner_id, account_id=account_id, force=force
         )
-        if halted is not None:
-            crud_audit_log.log_action(
-                db,
-                account_id=account_id,
-                user_id=current_user.id,
-                action="runner_deleted",
-                resource_type="flow_runner",
-                resource_id=str(runner_id),
-                status="success",
-                details={
-                    "force": force,
-                    "halted_execution_ids": [str(value) for value in halted],
-                },
-            )
-        return halted
-
-    try:
-        halted = await run_in_threadpool(delete)
     except RunnerHasLeasesError as exc:
         raise HTTPException(
             status_code=409,
@@ -348,8 +353,21 @@ async def delete_runner(
         ) from exc
     if halted is None:
         raise HTTPException(status_code=404, detail="Runner not found")
+    crud_audit_log.log_action(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        action="runner_deleted",
+        resource_type="flow_runner",
+        resource_id=str(runner_id),
+        status="success",
+        details={
+            "force": force,
+            "halted_execution_ids": [str(value) for value in halted],
+        },
+    )
     emit_runner_deleted(account_id, runner_id)
-    await _evict_live_runner(
+    _evict_live_runner_from_worker(
         str(runner_id), RUNNER_DELETED_ERROR, [str(value) for value in halted]
     )
     return schemas.RunnerDeleteResponse(
@@ -361,7 +379,7 @@ async def delete_runner(
     "/runners/{runner_id}/token", response_model=schemas.RunnerRegisterResponse
 )
 @require_permission("execute_flows")
-async def rotate_runner_token(
+def rotate_runner_token(
     runner_id: UUID,
     response: Response,
     db: Session = Depends(get_db),
@@ -375,31 +393,25 @@ async def rotate_runner_token(
     """
     account_id = current_user.account_id
     token = mint_runner_token()
-
-    def rotate() -> Optional[schemas.RunnerResponse]:
-        row = crud_flow_runner.rotate_token(
-            db,
-            runner_id=runner_id,
-            account_id=account_id,
-            token_hash=hash_runner_token(token),
-        )
-        if row is None:
-            return None
-        crud_audit_log.log_action(
-            db,
-            account_id=account_id,
-            user_id=current_user.id,
-            action="runner_token_rotated",
-            resource_type="flow_runner",
-            resource_id=str(runner_id),
-            status="success",
-        )
-        return _to_response(row, db)
-
-    rotated = await run_in_threadpool(rotate)
-    if rotated is None:
+    row = crud_flow_runner.rotate_token(
+        db,
+        runner_id=runner_id,
+        account_id=account_id,
+        token_hash=hash_runner_token(token),
+    )
+    if row is None:
         raise HTTPException(status_code=404, detail="Runner not found")
-    await _evict_live_runner(str(runner_id), RUNNER_TOKEN_ROTATED_ERROR)
+    crud_audit_log.log_action(
+        db,
+        account_id=account_id,
+        user_id=current_user.id,
+        action="runner_token_rotated",
+        resource_type="flow_runner",
+        resource_id=str(runner_id),
+        status="success",
+    )
+    rotated = _to_response(row, db)
+    _evict_live_runner_from_worker(str(runner_id), RUNNER_TOKEN_ROTATED_ERROR)
     response.headers["Cache-Control"] = "no-store"
     return schemas.RunnerRegisterResponse(**rotated.model_dump(), token=token)
 
