@@ -83,9 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   managed agent credentials) are limited to MCP and the runtime routes that
   check their own credentials. Other REST routes answer 403 with
   `detail.code` `api_key_scope_denied`, and console WebSockets refuse them. A
-  flow execution key also stops authenticating once its execution has
-  finished. `API_KEY_SCOPE_ENFORCEMENT=audit` logs instead of refusing, and
-  `off` turns the check off. Personal API keys are unchanged.
+  flow execution key also stops authenticating on REST, MCP and the model
+  gateway once its execution has finished (the browser-step flush and the
+  agent control, permission check and note pull routes keep accepting it
+  until revocation or expiry). `API_KEY_SCOPE_ENFORCEMENT=audit` logs
+  instead of refusing, and `off` turns the check off. Personal API keys are
+  unchanged.
 
 - `aiosmtplib` is no longer a core dependency (nothing imported it).
   `maxminddb` and `user-agents` moved from the core dependency list to a new

@@ -199,10 +199,15 @@ The limits worth knowing:
   WebSockets refuse it (`backend/preloop/api/auth/key_scopes.py`).
   `API_KEY_SCOPE_ENFORCEMENT` switches this to `audit` (log and allow) or
   `off`; the default is `enforce`.
-- **The key dies with its execution.** Beside the revocation above, the
-  authentication path refuses a flow execution key once its execution has
-  reached a terminal status, so a missed revocation does not leave a live
-  key for the rest of the two hours. Parked executions keep their key.
+- **The key dies with its execution, on most routes.** Beside the
+  revocation above, the generic REST dependency, the MCP endpoint and the
+  model gateway refuse a flow execution key once its execution has reached
+  a terminal status, so a missed revocation does not leave a live key there.
+  Parked executions keep their key. Two surfaces skip this check by design
+  and accept the key until revocation or expiry: the browser-step flush
+  (adapters finish flushing after the run ends) and the runtime routes that
+  also serve durable managed-agent credentials (agent control WebSocket,
+  permission check, operator note pull).
 - **The tool allow list is checked on every call.** `allowed_mcp_tools`
   limits both the tools the MCP layer lists and the tools it will run for
   the key (`backend/preloop/services/dynamic_fastmcp.py`).
