@@ -61,6 +61,32 @@ def matching_event_types(event_type: str) -> Tuple[str, ...]:
     return (event_type, *extra)
 
 
+def secondary_event_types(
+    source: Optional[str], event_type: Optional[str], payload: Optional[dict]
+) -> Tuple[str, ...]:
+    """Extra event types a single delivery should also start flows for.
+
+    A Jira ``jira:issue_updated`` that adds a label and moves the status in
+    the same edit normalizes to ``issue_labeled`` (added wins). Its status
+    delta is still recorded as ``status_to``, and flows subscribed to
+    ``issue_status_changed`` must still see the transition, so the trigger
+    service queries those flows as well.
+
+    Args:
+        source: Event source (tracker type).
+        event_type: Normalized event type.
+        payload: Enriched payload (raw payload merged with filter fields).
+
+    Returns:
+        Additional normalized event types, possibly empty.
+    """
+    if (source or "").lower() != "jira" or not isinstance(payload, dict):
+        return ()
+    if event_type != "issue_status_changed" and payload.get("status_to"):
+        return ("issue_status_changed",)
+    return ()
+
+
 def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:
     """Return (added, removed) label titles from a GitLab issue/MR webhook.
 
@@ -400,7 +426,8 @@ def normalize_event_type(
             # transition is issue_labeled. A transition beats a removal, and
             # an edit touching neither stays issue_updated. All deltas still
             # land in filter_fields (added_labels, removed_labels,
-            # status_from, status_to).
+            # status_from, status_to), and secondary_event_types() lets
+            # issue_status_changed flows see the transition of a mixed edit.
             added, removed = jira_label_delta(payload)
             if added:
                 normalized = "issue_labeled"

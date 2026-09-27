@@ -1463,6 +1463,55 @@ class FlowTriggerService:
         expiry = _triage_timestamp(expires_at)
         return expiry is not None and expiry > datetime.now(timezone.utc)
 
+    def _add_secondary_event_flows(
+        self,
+        event_data: Dict[str, Any],
+        matching_flows: List[Flow],
+        *,
+        query_source: Any,
+        project_id: Optional[str],
+        account_id: Any,
+    ) -> List[Flow]:
+        """Append flows subscribed to a secondary type of this delivery.
+
+        See ``secondary_event_types``: a Jira edit that adds a label and
+        changes the status is ``issue_labeled``, and flows waiting for the
+        status change must still be considered. Each flow appears once.
+
+        Args:
+            event_data: The event being processed.
+            matching_flows: Flows matched on the primary event type.
+            query_source: Tracker id or source used for the primary lookup.
+            project_id: Project used for the primary lookup.
+            account_id: Account scope.
+
+        Returns:
+            The primary flows followed by any additional ones.
+        """
+        from preloop.sync.event_normalizer import secondary_event_types
+
+        extra_types = secondary_event_types(
+            event_data.get("source"),
+            event_data.get("type"),
+            event_data.get("payload"),
+        )
+        if not extra_types:
+            return matching_flows
+        flows = list(matching_flows)
+        seen = {flow.id for flow in flows}
+        for extra_type in extra_types:
+            for flow in crud_flow.get_by_trigger(
+                self.db,
+                event_source=query_source,
+                event_type=extra_type,
+                project_id=project_id,
+                account_id=account_id,
+            ):
+                if flow.id not in seen:
+                    seen.add(flow.id)
+                    flows.append(flow)
+        return flows
+
     async def process_event(self, event_data: Dict[str, Any]):
         """
         Process an incoming event and trigger any matching flows.
@@ -1524,6 +1573,13 @@ class FlowTriggerService:
                 self.db,
                 event_source=query_source,
                 event_type=event_type,
+                project_id=project_id,
+                account_id=account_id,
+            )
+            matching_flows = self._add_secondary_event_flows(
+                event_data,
+                matching_flows,
+                query_source=query_source,
                 project_id=project_id,
                 account_id=account_id,
             )

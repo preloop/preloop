@@ -8,7 +8,7 @@ moves to a status, instead of on every edit.
 import copy
 import uuid
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from preloop.sync.event_normalizer import (
     jira_label_delta,
     jira_status_change,
     normalize_event_type,
+    secondary_event_types,
 )
 
 
@@ -274,3 +275,60 @@ class TestJiraTriggerMatching:
         flow = flow_with({"filter_conditions": {"status_to": "Ready for Dev"}})
         edit = enriched_event(jira_updated([summary_item()], status="Ready for Dev"))
         assert service._matches_trigger_config(flow, edit) is False
+
+
+class TestMixedEditReachesStatusFlows:
+    def test_secondary_type_for_a_mixed_edit(self) -> None:
+        event = enriched_event(
+            jira_updated(
+                [status_item("To Do", "In Progress"), labels_item("", "agent-ready")]
+            )
+        )
+        assert event["type"] == "issue_labeled"
+        assert secondary_event_types("jira", event["type"], event["payload"]) == (
+            "issue_status_changed",
+        )
+
+    def test_no_secondary_type_otherwise(self) -> None:
+        labeled = enriched_event(jira_updated([labels_item("", "agent-ready")]))
+        moved = enriched_event(jira_updated([status_item("To Do", "Done")]))
+        assert secondary_event_types("jira", labeled["type"], labeled["payload"]) == ()
+        assert secondary_event_types("jira", moved["type"], moved["payload"]) == ()
+        assert (
+            secondary_event_types("github", "issue_labeled", {"status_to": "x"}) == ()
+        )
+        assert secondary_event_types("jira", "issue_labeled", None) == ()
+
+    def test_status_flows_are_added_once(self, service) -> None:
+        event = enriched_event(
+            jira_updated(
+                [status_item("To Do", "In Progress"), labels_item("", "agent-ready")]
+            )
+        )
+        label_flow = flow_with({"labels": ["agent-ready"]})
+        status_flow = flow_with({"status_to": "In Progress"})
+        with patch(
+            "preloop.services.flow_trigger_service.crud_flow.get_by_trigger",
+            return_value=[label_flow, status_flow],
+        ) as lookup:
+            flows = service._add_secondary_event_flows(
+                event,
+                [label_flow],
+                query_source="tracker-1",
+                project_id=None,
+                account_id=event["account_id"],
+            )
+        assert flows == [label_flow, status_flow]
+        assert lookup.call_args.kwargs["event_type"] == "issue_status_changed"
+        assert service._matches_trigger_config(status_flow, event) is True
+
+    def test_plain_events_do_not_query_again(self, service) -> None:
+        event = enriched_event(jira_updated([labels_item("", "agent-ready")]))
+        with patch(
+            "preloop.services.flow_trigger_service.crud_flow.get_by_trigger"
+        ) as lookup:
+            flows = service._add_secondary_event_flows(
+                event, [], query_source="t", project_id=None, account_id=None
+            )
+        assert flows == []
+        lookup.assert_not_called()
