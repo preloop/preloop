@@ -21,9 +21,21 @@ jobs:
         run: |
           curl -fsSL https://preloop.ai/install/cli | sh
           export PATH="${HOME}/.local/bin:${PATH}"
-          preloop flow trigger pull-request-reviewer \
-            --payload '{"pull_request":{"url":"https://github.com/example/repo/pull/1"}}'
+          jq '{source: "github", type: "pull_request_opened",
+               payload: {pull_request: .pull_request, repository: .repository}}' \
+            "$GITHUB_EVENT_PATH" \
+            | preloop flow trigger pull-request-reviewer --payload -
 ```
+
+The request body becomes the flow's trigger event as is. Flow inputs go under
+`payload`: the Pull Request Reviewer prompt reads
+`trigger_event.payload.object_attributes.*`, which Preloop builds from a
+GitHub-shaped `payload.pull_request` (title, body, `html_url`, `user.login`,
+`head.ref`, `base.ref`) when `source` is `github`. A pull request placed at the
+top level of the body, next to `payload` instead of inside it, renders every
+one of those fields empty. `type` is what the prompt sees as the trigger; use
+`pull_request_updated` for later pushes so the reviewer can do an incremental
+pass.
 
 `PRELOOP_TOKEN` is an account API token. OIDC exchange is not part of this
 command yet. Use `--payload -` to pipe a JSON event file from a previous step.
