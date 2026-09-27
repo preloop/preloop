@@ -723,10 +723,12 @@ class Settings(BaseSettings):
     model_price_live_lookup_enabled: bool = Field(
         True,
         description=(
-            "When a gateway request records an unpriced model, fetch its "
-            "price from the live upstream price map once in the background "
-            "and re-price the row. Unknown models are negative-cached for a "
-            "day so repeated traffic never re-triggers lookups."
+            "Fetch the live upstream price map: on startup and every "
+            "MODEL_PRICE_MAP_TTL_SECONDS in the background (merged over the "
+            "vendored snapshot), and once when a gateway request records an "
+            "unpriced model, re-pricing that row. Unknown models are "
+            "negative-cached for a day so repeated traffic never re-triggers "
+            "lookups. Disable for air-gapped deployments."
         ),
     )
     model_price_refresh_url: str = Field(
