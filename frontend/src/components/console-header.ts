@@ -1281,6 +1281,9 @@ export class ConsoleHeader extends LitElement {
           <slot name="nav-toggle"></slot>
         </div>
         <div class="user-menu">
+          <!-- The account switcher, when the deployment reports the
+               multi_account capability (the console shell fills it). -->
+          <slot name="account-switcher"></slot>
           <!-- Open talk windows, left of the bell: they belong to the
                operator's current work, not to the notification history. -->
           <talking-indicator></talking-indicator>

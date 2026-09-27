@@ -28,6 +28,11 @@ import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '../../../components/add-ai-model-modal';
+import {
+  sharedFrom,
+  sharedFromBadge,
+  sharedResourceHref,
+} from '../hierarchy/shared-badge';
 import '../../../components/list-toolbar';
 import '../../../components/resource-actions';
 import '../../../components/token-figures';
@@ -1244,7 +1249,22 @@ export class AIModelsView extends LitElement {
     );
   }
 
+  /**
+   * A model a parent account shared opens read-only on the shared page; the
+   * account's own models keep their detail page.
+   */
+  private modelHref(model: AIModel): string {
+    return sharedFrom(model)
+      ? sharedResourceHref('ai_model', model.id)
+      : `/console/ai-models/${model.id}`;
+  }
+
   private modelActions(model: AIModel): ResourceAction[] {
+    if (sharedFrom(model)) {
+      return [
+        { id: 'view', label: 'View', icon: 'eye', href: this.modelHref(model) },
+      ];
+    }
     const actions: ResourceAction[] = [
       {
         id: 'view',
@@ -1347,9 +1367,8 @@ export class AIModelsView extends LitElement {
     const alias = this.getGatewayAlias(model);
     return html`
       <div class="cell-stack">
-        <a class="model-link" href=${`/console/ai-models/${model.id}`}>
-          ${model.name}
-        </a>
+        <a class="model-link" href=${this.modelHref(model)}> ${model.name} </a>
+        ${sharedFromBadge(model)}
         <div class="model-identifier" title=${alias || model.model_identifier}>
           ${alias || model.model_identifier}
         </div>
@@ -1706,10 +1725,10 @@ export class AIModelsView extends LitElement {
         <div class="model-card-body">
           <div class="model-card-header">
             ${this.renderSelectCheckbox(model)}
-            <a class="model-link" href=${`/console/ai-models/${model.id}`}>
+            <a class="model-link" href=${this.modelHref(model)}>
               ${model.name}
             </a>
-            ${this.renderDefaultControl(model)}
+            ${sharedFromBadge(model)} ${this.renderDefaultControl(model)}
           </div>
           <div class="model-identifier">
             ${this.getGatewayAlias(model) || model.model_identifier}

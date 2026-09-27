@@ -18,6 +18,7 @@ import { unifiedWebSocketManager } from '../../services/unified-websocket-manage
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 import { AUTO_RUNNER_POOL } from '../../utils/runner-pool';
 import '../../components/preloop-runner-pool-select';
+import '../../components/capability-extension';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 @customElement('runners-view')
@@ -536,6 +537,19 @@ export class RunnersView extends LitElement {
                   </table>
                 `
       }
+      <capability-extension
+        name="runner-pools"
+        .context=${{ pools: this.poolNames().join(',') }}
+      ></capability-extension>
     `;
+  }
+
+  /** Pool names are runner labels; the same label on two runners is one pool. */
+  private poolNames(): string[] {
+    const names = new Set<string>();
+    for (const row of this.runners) {
+      for (const label of row.labels || []) names.add(label);
+    }
+    return [...names].sort();
   }
 }
