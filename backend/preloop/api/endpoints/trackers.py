@@ -55,6 +55,44 @@ router = APIRouter()
 OAUTH_AUTH_TYPES = ("github_app", "oauth_app")
 
 
+def _connection_details_from_body(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve tracker connection details from a registration body.
+
+    Registration historically read ``config``. The console now also sends
+    ``connection_details``, which is what updates persist. Both keys are
+    accepted during the deprecation window. A null ``connection_details``
+    is absent and falls back to ``config``, matching tracker updates.
+    When ``connection_details`` is an object, that object wins.
+
+    Args:
+        data: Parsed JSON body.
+
+    Returns:
+        The connection details mapping. Missing keys yield an empty dict.
+
+    Raises:
+        HTTPException: If the chosen value is present and not an object.
+    """
+    if "connection_details" in data and data["connection_details"] is not None:
+        details = data["connection_details"]
+        if not isinstance(details, dict):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="connection_details must be an object",
+            )
+        return details
+    config = data.get("config")
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="config must be an object (deprecated; send connection_details)",
+        )
+    logger.info("Tracker payload used deprecated 'config'; send 'connection_details'")
+    return config
+
+
 def _apply_tracker_auth(
     tracker: Tracker, request_data: TrackerTestRequest
 ) -> Dict[str, Any]:
@@ -192,7 +230,7 @@ async def register_tracker(
         tracker_type_str = data.get("type")
         url_str = data.get("url")
         api_key = data.get("api_key")
-        config = data.get("config")
+        config = _connection_details_from_body(data)
         scope_rules_data = data.get("scope_rules") or []
         auth_type = data.get("auth_type", "api_token")
         github_installation_id = data.get("github_installation_id")
@@ -217,6 +255,8 @@ async def register_tracker(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Missing required field: github_installation_id (required for OAuth authentication)",
             )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error parsing request data: {str(e)}")
         raise HTTPException(

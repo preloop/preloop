@@ -258,9 +258,10 @@ class FlowExecutionBase(BaseModel):
             "succeed: one of runner_conflict, runner_error, model_transient, "
             "model_auth, provider_billing, model_quota (legacy, superseded "
             "by provider_billing), budget_exceeded, model_config, "
-            "no_confirmation, "
-            "agent_no_progress, setup_failed, tool_error, agent_error, "
-            "timeout, cancelled, "
+            "no_confirmation, agent_no_progress, setup_failed, "
+            "verification_failed, verification_blocked, tool_error, "
+            "agent_error, model_stream_idle (timed out while the model "
+            "stream was silent), timeout, cancelled, "
             "unknown. Null for successful or still-running executions, and "
             "for executions that predate this field."
         ),

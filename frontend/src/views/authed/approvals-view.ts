@@ -63,6 +63,7 @@ import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { debugLog } from '../../utils/debug';
 
 /**
  * Ids the operator has already had on screen, so a request that arrived since
@@ -670,7 +671,7 @@ export class ApprovalsView extends AuthedElement {
   }
 
   private handleWebSocketMessage(message: any) {
-    console.log('Approvals view received update:', message);
+    debugLog('Approvals view received update:', message);
 
     // Handle new approval request
     if (message.type === 'approval_created') {

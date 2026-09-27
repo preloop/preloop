@@ -759,10 +759,10 @@ export function buildSoftwareApplicationSchema(
       'Python 3.11+, PostgreSQL 14+ with PGVector, Docker (optional)',
   };
 
-  // TODO(seo): add `aggregateRating` here once real user-review data is
-  // available (for example from G2, Capterra, or verified first-party
-  // reviews). Per Google's structured-data policy, aggregate ratings must
-  // correspond to genuine reviews and must not be fabricated.
+  // aggregateRating stays off this object until real review data exists
+  // (a review site, or verified first-party reviews). Google's structured
+  // data policy requires the rating to match genuine reviews. Do not
+  // invent one. The software application test pins that the field is absent.
 
   return schema;
 }

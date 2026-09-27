@@ -74,6 +74,7 @@ import {
   type TimeRangeKey,
 } from '../../../utils/time-range';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
+import '../../../components/capability-extension';
 
 // The one range control, with the same vocabulary as the Overview, Cost and
 // API usage, and the window resolved by the same shared math so "30d" means
@@ -2802,6 +2803,11 @@ export class AIModelDetailView extends LitElement {
                     `
               }
             </sl-card>
+
+            <capability-extension
+              name="resource-access"
+              .context=${{ kind: 'ai_model', resourceId: this.modelId }}
+            ></capability-extension>
 
             <sl-card>
               <div slot="header" class="model-title">Budget Management</div>

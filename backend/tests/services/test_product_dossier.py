@@ -14,6 +14,7 @@ from preloop.services.product_dossier import (
     build_dossier_manifest,
     content_digest,
     platform_approvals_from_records,
+    strip_control_plane_result,
 )
 from preloop.services.product_provenance import (
     PRODUCT_PROVENANCE_SCHEMA,
@@ -178,3 +179,17 @@ def test_manifest_copies_verified_evidence_receipt_not_placeholders() -> None:
     assert manifest["evidence"]["integrity_verified"] is True
     assert "evidence_workstream" not in str(manifest)
     assert manifest["evidence"]["object_lock"] is False
+
+
+def test_agent_authored_stream_stall_is_stripped_as_control_plane() -> None:
+    """Only the orchestrator writes result.stream_stall (#872).
+
+    An agent that puts its own stream_stall into result.json must not have it
+    read as the platform's evidence of a silent model stream.
+    """
+    agent_result = {
+        "summary": "reviewed the diff",
+        "stream_stall": {"reason": "model_stream_idle", "idle_reconnects": 9},
+    }
+
+    assert strip_control_plane_result(agent_result) == {"summary": "reviewed the diff"}

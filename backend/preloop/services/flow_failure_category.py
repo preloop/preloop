@@ -80,6 +80,12 @@ it*, not about severity:
     refuses further model requests once the ceiling is reached and the run
     ends here. Unlike ``provider_billing`` (the upstream says "pay us"), this
     is the account's own per-run cap doing its job.
+``model_stream_idle``
+    The execution exceeded its wall-clock budget while the model stream was
+    silent: the harness hit its stream idle timeout, reconnected, and the
+    model had produced nothing since (issue #872). Distinct from ``timeout``
+    because the fix is a shorter ``agent_config.stream_idle_timeout_seconds``
+    or another model or provider, not a larger budget.
 ``timeout``
     The execution exceeded its wall-clock budget.
 ``cancelled``
@@ -94,6 +100,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping, Optional
 
+from preloop.services.stream_stall import STALL_MESSAGE_MARKER
 from preloop.services.upstream_errors import (
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     ERROR_CLASS_NETWORK,
@@ -120,6 +127,7 @@ FAILURE_CATEGORY_VERIFICATION_FAILED = "verification_failed"
 FAILURE_CATEGORY_VERIFICATION_BLOCKED = "verification_blocked"
 FAILURE_CATEGORY_TOOL_ERROR = "tool_error"
 FAILURE_CATEGORY_AGENT_ERROR = "agent_error"
+FAILURE_CATEGORY_MODEL_STREAM_IDLE = "model_stream_idle"
 FAILURE_CATEGORY_TIMEOUT = "timeout"
 FAILURE_CATEGORY_CANCELLED = "cancelled"
 FAILURE_CATEGORY_UNKNOWN = "unknown"
@@ -140,6 +148,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_VERIFICATION_BLOCKED,
     FAILURE_CATEGORY_TOOL_ERROR,
     FAILURE_CATEGORY_AGENT_ERROR,
+    FAILURE_CATEGORY_MODEL_STREAM_IDLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_CANCELLED,
     FAILURE_CATEGORY_UNKNOWN,
@@ -196,6 +205,15 @@ _RUNNER_ERROR_RE = re.compile(
     r"|argument list too long"
     r"|launch payload exceeds"
     r"|imagepullbackoff|errimagepull|createcontainerconfigerror",
+    re.IGNORECASE,
+)
+# "Execution timed out after 900 seconds (this flow's timeout budget) while
+# waiting on a silent model stream." Preloop's own sentence, written only when
+# the timed-out run's log shows the stream was still idle (see
+# preloop.services.stream_stall). Matched before the plain timeout rule. Built
+# from the marker the message is written with, so the two cannot drift.
+_MODEL_STREAM_IDLE_RE = re.compile(
+    r"timed out after \d+ seconds[^\n]{0,80}" + re.escape(STALL_MESSAGE_MARKER),
     re.IGNORECASE,
 )
 # "Execution timed out after 3600 seconds"
@@ -364,6 +382,7 @@ _STRUCTURAL_MESSAGE_RULES = (
     (_VERIFICATION_FAILED_RE, FAILURE_CATEGORY_VERIFICATION_FAILED),
     (_RUNNER_CONFLICT_RE, FAILURE_CATEGORY_RUNNER_CONFLICT),
     (_RUNNER_ERROR_RE, FAILURE_CATEGORY_RUNNER_ERROR),
+    (_MODEL_STREAM_IDLE_RE, FAILURE_CATEGORY_MODEL_STREAM_IDLE),
     (_TIMEOUT_RE, FAILURE_CATEGORY_TIMEOUT),
     (_CANCELLED_RE, FAILURE_CATEGORY_CANCELLED),
     (_NO_CONFIRMATION_RE, FAILURE_CATEGORY_NO_CONFIRMATION),
