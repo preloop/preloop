@@ -106,7 +106,7 @@ def _run_async(factory: Callable[[], Awaitable[T]]) -> T:
     def _target() -> None:
         try:
             box["value"] = asyncio.run(factory())
-        except BaseException as exc:  # noqa: BLE001 - re-raised below
+        except Exception as exc:  # re-raised on the calling thread below
             box["error"] = exc
 
     worker = threading.Thread(target=_target, daemon=True)
@@ -114,6 +114,8 @@ def _run_async(factory: Callable[[], Awaitable[T]]) -> T:
     worker.join()
     if "error" in box:
         raise box["error"]
+    if "value" not in box:
+        raise RuntimeError("policy notice delivery helper thread did not finish")
     return box["value"]
 
 

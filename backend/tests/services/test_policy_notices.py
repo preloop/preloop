@@ -480,3 +480,25 @@ def test_no_webhook_for_email_workflow(db_session: Session, test_user: User) -> 
     with patch("preloop.utils.email.send_email"):
         result = delivery.deliver_policy_notice(db_session, hit)
     assert result["webhook"] is False
+
+
+def test_run_async_uses_a_helper_thread_inside_a_running_loop() -> None:
+    import asyncio
+
+    from preloop.services.policy_notice_delivery import _run_async
+
+    async def value() -> str:
+        return "sent"
+
+    async def boom() -> str:
+        raise ValueError("transport down")
+
+    async def caller() -> None:
+        # A loop is running here, so the helper thread path is taken.
+        assert _run_async(value) == "sent"
+        with pytest.raises(ValueError, match="transport down"):
+            _run_async(boom)
+
+    asyncio.run(caller())
+    # No running loop: the direct asyncio.run path.
+    assert _run_async(value) == "sent"
