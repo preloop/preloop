@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`preloop flow trigger --stop-on-interrupt`.** When `--wait` is
+  interrupted by SIGINT or SIGTERM, the CLI stops the execution on the
+  server (one stop request), prints the execution id and final status, and
+  exits 130 or 143. On by default when stdin is not a TTY, so a cancelled
+  CI job no longer leaves its run going; off in a terminal. See
+  `docs/guide/flows/ci-trigger.md` (#1032).
 - **Revoke one CLI login.** Each `preloop auth login` records a
   `cli_session` row and its JWTs carry the row id (`sid`); the refresh
   token also carries a `jti` that rotates with the row, so a refresh token
