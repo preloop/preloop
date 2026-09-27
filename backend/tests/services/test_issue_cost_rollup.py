@@ -1496,9 +1496,7 @@ def test_scheduled_rebuild_reads_each_tracker_config_once_per_pass(
 ) -> None:
     _configure_estimates(world, {"points_label_prefix": "sp:"})
     for number in (12, 13):
-        world.run(
-            world.triage, world.issue_details(number), start=T0, record=False
-        )
+        world.run(world.triage, world.issue_details(number), start=T0, record=False)
     world.run(world.review, world.issue_details(12), start=T0, record=False)
 
     reads: list[uuid.UUID] = []
