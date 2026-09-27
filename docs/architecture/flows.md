@@ -19,6 +19,13 @@ The default private-runner job is still `docker run` of the flow image (or a cus
 
 `POST /api/v1/flows/run-preset` runs a catalog preset on a GitHub or GitLab issue without waiting for a tracker webhook. `confirm_create=false` only resolves the account flow (409 `flow_missing` when none exists). `confirm_create=true` clones the preset on first use, then triggers it. The auto-created flow has empty `trigger_event_types` and no `trigger_event_source`, so tracker events do not start extra runs until the operator edits the flow. Other tracker types (for example Jira) return 400.
 
+## Jira repository binding
+
+A Jira-triggered flow with git clone enabled and no repositories of its own
+clones the code-host repository bound on the flow or the Jira project, and
+writes the opened pull request back to the issue as a comment and a remote
+link. See [Jira project repository binding](../guide/flows/jira-repository-binding.md).
+
 ## Prompt placeholders
 
 Flow `prompt_template` strings are resolved before the agent starts. Besides `{{project.*}}`, `{{account.*}}`, and `{{trigger_event.*}}`, an execution resolver provides:

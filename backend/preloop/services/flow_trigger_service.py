@@ -625,6 +625,9 @@ class FlowTriggerService:
             repo_identifier = project.get("path_with_namespace") or project.get("name")
             repo_external_id = str(project.get("id", "")) if project.get("id") else None
 
+        elif source == "jira":
+            return self._extract_jira_project_id(payload, tracker_id)
+
         if not repo_identifier:
             return None
 
@@ -662,6 +665,52 @@ class FlowTriggerService:
         logger.debug(
             f"Could not match repo '{repo_identifier}' (external_id={repo_external_id}) "
             f"to any of {len(projects)} projects for tracker {tracker_id}"
+        )
+        return None
+
+    def _extract_jira_project_id(
+        self, payload: Dict[str, Any], tracker_id: str
+    ) -> Optional[str]:
+        """Resolve the synced Jira project an issue webhook belongs to.
+
+        Jira sync stores the project key as the slug (older rows used it as
+        the identifier). Only the key and the numeric project id are
+        compared: matching a Jira key against project display names could
+        pick an unrelated project.
+
+        Args:
+            payload: Jira webhook payload.
+            tracker_id: Jira tracker the webhook arrived on.
+
+        Returns:
+            Internal project UUID as a string, or None.
+        """
+        from preloop.models.crud import crud_project
+
+        issue = payload.get("issue") if isinstance(payload, dict) else None
+        fields = issue.get("fields") if isinstance(issue, dict) else None
+        project = fields.get("project") if isinstance(fields, dict) else None
+        if not isinstance(project, dict):
+            return None
+        key = str(project.get("key") or "").strip()
+        external_id = str(project.get("id") or "").strip()
+        if not key and not external_id:
+            return None
+        for proj in crud_project.get_for_tracker(
+            self.db, tracker_id=tracker_id, limit=1000
+        ):
+            if key and key.upper() in {
+                (proj.slug or "").upper(),
+                (proj.identifier or "").upper(),
+            }:
+                return str(proj.id)
+            if external_id and proj.identifier == external_id:
+                return str(proj.id)
+        logger.debug(
+            "Could not match Jira project %s (id=%s) for tracker %s",
+            key,
+            external_id,
+            tracker_id,
         )
         return None
 

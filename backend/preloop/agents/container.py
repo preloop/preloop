@@ -280,7 +280,8 @@ COMMIT_PR_LIST_FILE = "/tmp/preloop-commit-pr-list.txt"
 # ``object_attributes.*`` paths, so those names alias onto the GitHub shape.
 _GIT_CONFIG_PLACEHOLDER_RE = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
 _GIT_CONFIG_PATH_ALIASES = {
-    "object_attributes.title": ("issue.title",),
+    # issue.fields.summary: Jira issue webhooks (repository binding, #957).
+    "object_attributes.title": ("issue.title", "issue.fields.summary"),
     "object_attributes.description": ("issue.body", "issue.description"),
     "object_attributes.number": ("issue.number",),
     "object_attributes.iid": ("issue.number",),
@@ -4354,6 +4355,19 @@ fi
             return credential.get("token"), credential.get("tracker_type")
 
         git_credentials_map = execution_context.get("git_credentials_map") or {}
+
+        if execution_context.get("repository_binding"):
+            # A bound execution was triggered by an issue tracker (Jira). Its
+            # token is not a git credential, and sending it to the code host
+            # would leak it, so only the bound code-host tracker counts.
+            tracker_id = repo_config.get("tracker_id")
+            tracker_creds = (
+                (git_credentials_map.get(tracker_id) or {}) if tracker_id else {}
+            )
+            return (
+                tracker_creds.get("token") or None,
+                tracker_creds.get("tracker_type"),
+            )
 
         candidate_ids = [
             repo_config.get("tracker_id"),

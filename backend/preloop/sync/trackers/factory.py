@@ -1,7 +1,7 @@
 """Factory for creating tracker clients."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Type
 
 from .base import BaseTracker
 from .github import GitHubTracker
@@ -9,6 +9,41 @@ from .gitlab import GitLabTracker
 from .jira import JiraTracker
 
 logger = logging.getLogger(__name__)
+
+# Tracker type to client class. create_tracker_client builds instances; this
+# map answers class-level questions (such as hosts_repositories) without
+# credentials or network access. A new provider registers here once.
+TRACKER_CLASSES: Dict[str, Type[BaseTracker]] = {
+    "github": GitHubTracker,
+    "gitlab": GitLabTracker,
+    "jira": JiraTracker,
+}
+
+
+def tracker_class_for_type(tracker_type: Optional[str]) -> Optional[Type[BaseTracker]]:
+    """Return the client class for ``tracker_type``, or None if unsupported.
+
+    Args:
+        tracker_type: Tracker type string, case-insensitive.
+
+    Returns:
+        The ``BaseTracker`` subclass implementing that provider.
+    """
+    return TRACKER_CLASSES.get((tracker_type or "").lower())
+
+
+def tracker_hosts_repositories(tracker_type: Optional[str]) -> bool:
+    """Whether trackers of ``tracker_type`` host git repositories.
+
+    Args:
+        tracker_type: Tracker type string, case-insensitive.
+
+    Returns:
+        True for code hosts (GitHub, GitLab), False for issue-only or
+        unknown providers.
+    """
+    tracker_class = tracker_class_for_type(tracker_type)
+    return bool(tracker_class and tracker_class.hosts_repositories)
 
 
 async def create_tracker_client(
