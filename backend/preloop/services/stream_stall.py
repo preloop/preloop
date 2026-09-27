@@ -64,10 +64,23 @@ STREAM_IDLE_TIMEOUT_LOG_PREFIX = "PRELOOP_STREAM_IDLE_TIMEOUT_SECONDS="
 STALL_MESSAGE_MARKER = "while waiting on a silent model stream"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-_IDLE_REASON_RE = re.compile(
-    r"idle timeout waiting for (?:sse|websocket)", re.IGNORECASE
+# Both matchers are anchored to the line shapes Codex itself prints, so tool
+# output or model prose that merely quotes the phrase (a diff of these tests,
+# a grep of a log) is not read as the run's own stream going silent.
+_IDLE_REASON = r"idle timeout waiting for (?:sse|websocket)"
+# "2026-09-27T03:34:41.594867Z  WARN codex_core::responses_retry: stream
+# disconnected - retrying sampling request (1/2 in 187ms)... sampling_error=
+# stream disconnected before completion: idle timeout waiting for SSE"
+_IDLE_RETRY_LINE_RE = re.compile(
+    r"^(?:\S+\s+)?WARN\s+codex_core::responses_retry:\s.*retrying sampling "
+    r"request.*" + _IDLE_REASON,
+    re.IGNORECASE,
 )
-_RETRY_LINE_RE = re.compile(r"retrying sampling request", re.IGNORECASE)
+# "ERROR: stream disconnected before completion: idle timeout waiting for SSE"
+_IDLE_GAVE_UP_LINE_RE = re.compile(
+    r"^ERROR:\s+stream disconnected before completion:\s+" + _IDLE_REASON,
+    re.IGNORECASE,
+)
 # Headers codex exec prints when the model actually produced something: an
 # agent message, a command, reasoning, or the per-turn usage footer. One of
 # these after the last idle signal means the stream recovered.
@@ -248,8 +261,9 @@ def detect_stream_stall(lines: Iterable[Any]) -> Optional[StreamStall]:
         if bound_match:
             bound = int(bound_match.group(1))
             continue
-        if _IDLE_REASON_RE.search(line):
-            if _RETRY_LINE_RE.search(line):
+        is_retry = bool(_IDLE_RETRY_LINE_RE.match(line))
+        if is_retry or _IDLE_GAVE_UP_LINE_RE.match(line):
+            if is_retry:
                 idle_reconnects += 1
             else:
                 retries_exhausted = True

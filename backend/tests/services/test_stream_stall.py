@@ -120,9 +120,45 @@ class TestDetectStreamStall:
         assert "gave up" in message
 
     def test_websocket_idle_is_a_stall(self):
-        stall = detect_stream_stall(["idle timeout waiting for websocket"])
+        stall = detect_stream_stall(
+            [
+                "ERROR: stream disconnected before completion: idle timeout "
+                "waiting for websocket"
+            ]
+        )
 
         assert stall is not None
+
+    def test_quoted_idle_phrases_are_not_the_runs_own_stall(self):
+        """Tool output or prose quoting the phrase is not a silent stream.
+
+        A run that timed out while reading a diff of these very tests, or
+        grepping an old Codex log, must stay a plain timeout.
+        """
+        quoted = [
+            "exec",
+            "gh pr diff 1015",
+            '+GAVE_UP = "ERROR: stream disconnected before completion: idle '
+            'timeout waiting for SSE"',
+            '+    "sampling_error=stream disconnected before completion: idle '
+            'timeout "',
+            f"+WARN_1 = ({WARN_1!r})",
+            "old.log:12: " + GAVE_UP,
+            "The provider hit an idle timeout waiting for SSE earlier, so I "
+            "retried the sampling request by hand.",
+            "  " + "idle timeout waiting for websocket",
+        ]
+
+        assert detect_stream_stall(HEADER + quoted) is None
+
+    def test_quoted_phrases_do_not_mask_a_real_stall(self):
+        stall = detect_stream_stall(
+            HEADER + ["+GAVE_UP = " + repr(GAVE_UP), WARN_1, RECONNECT_1]
+        )
+
+        assert stall is not None
+        assert stall.idle_reconnects == 1
+        assert stall.retries_exhausted is False
 
     def test_ansi_and_padding_are_ignored(self):
         assert detect_stream_stall(["\x1b[31m" + WARN_1 + "\x1b[0m"]) is not None
