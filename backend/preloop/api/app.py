@@ -393,6 +393,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             service_role,
         )
 
+    # Start the scheduled issue cost rebuild (skip in testing mode). It records
+    # finished executions that no terminal hook recorded and refreshes issue
+    # estimates. Idempotent, additive and per-account locked, so several API
+    # replicas running it at once is safe.
+    issue_cost_rebuild_sweeper = None
+    if not is_testing and is_api_role and settings.issue_cost_rebuild_enabled:
+        from preloop.services.issue_cost_rebuild_sweeper import (
+            get_issue_cost_rebuild_sweeper,
+        )
+
+        issue_cost_rebuild_sweeper = get_issue_cost_rebuild_sweeper()
+        await issue_cost_rebuild_sweeper.start()
+    else:
+        logger.info(
+            "Issue cost rebuild sweeper not started (enabled=%s, role=%s).",
+            settings.issue_cost_rebuild_enabled,
+            service_role,
+        )
+
     # Start the session search backfill sweeper (skip in testing mode). It
     # walks existing session history into the search corpus, newest first,
     # inside a row and wall-clock budget. Disabled unless
@@ -712,6 +731,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(
                 f"Error stopping session search backfill sweeper: {e}", exc_info=True
+            )
+
+    if not is_testing and issue_cost_rebuild_sweeper:
+        try:
+            await issue_cost_rebuild_sweeper.stop()
+            logger.info("Issue cost rebuild sweeper stopped.")
+        except Exception as e:
+            logger.error(
+                f"Error stopping issue cost rebuild sweeper: {e}", exc_info=True
             )
 
     # Stop the retention purge sweeper. A pass in flight finishes its current

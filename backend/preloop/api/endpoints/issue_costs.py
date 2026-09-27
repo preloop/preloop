@@ -111,6 +111,35 @@ def export_issue_costs(
     )
 
 
+# Declared before ``/{rollup_id}/executions`` so "unassigned" is not read as
+# a rollup id.
+@router.get("/unassigned/executions", response_model=list[IssueCostExecutionRow])
+@require_permission("view_cost")
+def list_unassigned_issue_cost_executions(
+    start_date: Optional[datetime] = Query(
+        None, description="Executions that started at or after this time."
+    ),
+    end_date: Optional[datetime] = Query(
+        None, description="Executions that started before this time."
+    ),
+    project_id: Optional[UUID] = Query(None),
+    flow_id: Optional[UUID] = Query(None),
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> list[IssueCostExecutionRow]:
+    """Executions in the unassigned bucket, for the report's drill-down."""
+    account = get_account_or_404(db, current_user)
+    _validate_period(start_date, end_date)
+    return issue_cost_rollup.list_unassigned_executions(
+        db,
+        account_id=account.id,
+        start=start_date,
+        end=end_date,
+        project_id=project_id,
+        flow_id=flow_id,
+    )
+
+
 @router.get("/{rollup_id}/executions", response_model=list[IssueCostExecutionRow])
 @require_permission("view_cost")
 def list_issue_cost_executions(

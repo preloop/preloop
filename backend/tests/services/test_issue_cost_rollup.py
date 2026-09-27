@@ -1101,3 +1101,544 @@ def test_gateway_cost_sync_carries_into_the_issue_row(
     world.db.commit()
 
     assert world.rollup().estimated_cost == Decimal("3.8750")
+
+
+# --- forge "PR opened" time -------------------------------------------------
+
+
+def _pull(world: World, url: str = PR_URL) -> models.IssueCostPullRequest:
+    pull = crud_issue_cost.get_pull_request(
+        world.db, account_id=world.account.id, pr_key=url
+    )
+    assert pull is not None
+    world.db.refresh(pull)
+    return pull
+
+
+def test_parse_forge_time_accepts_forge_formats_and_rejects_the_rest() -> None:
+    now = T0 + timedelta(days=1)
+    assert rollup_service.parse_forge_time("2026-09-01T08:00:00Z", now=now) == T0
+    assert rollup_service.parse_forge_time("2026-09-01 08:00:00 UTC", now=now) == T0
+    assert rollup_service.parse_forge_time("2026-09-01T10:00:00+02:00", now=now) == T0
+    assert rollup_service.parse_forge_time(T0.replace(tzinfo=None), now=now) == T0
+    assert rollup_service.parse_forge_time(None, now=now) is None
+    assert rollup_service.parse_forge_time("yesterday", now=now) is None
+    assert rollup_service.parse_forge_time("2026-09-09T08:00:00Z", now=now) is None
+
+
+def test_forge_created_at_beats_the_bind_time(world: World) -> None:
+    implementation = world.run(
+        world.implement, world.issue_details(), start=T0, record=False
+    )
+    rollup_service.record_publication(
+        world.db,
+        implementation,
+        PR_URL,
+        now=T0 + timedelta(hours=3),
+        forge_opened_at="2026-09-01T09:15:00Z",
+    )
+    world.db.commit()
+    world.record(implementation)
+
+    pull = _pull(world)
+    assert pull.opened_at == T0 + timedelta(hours=1, minutes=15)
+    assert pull.opened_at_source == rollup_service.OPENED_FORGE
+    row = world.report().issues[0]
+    assert row.pr_opened_at_source == "forge"
+    assert row.first_event_to_pr_opened_hours == 1.25
+
+
+def test_bind_time_is_used_and_labelled_when_the_forge_time_is_unknown(
+    world: World,
+) -> None:
+    implementation = world.run(
+        world.implement, world.issue_details(), start=T0, record=False
+    )
+    bound = T0 + timedelta(hours=2)
+    rollup_service.record_publication(
+        world.db,
+        implementation,
+        PR_URL,
+        now=bound,
+        forge_opened_at="2027-01-01T00:00:00Z",  # in the future: not a forge time
+    )
+    world.db.commit()
+    pull = _pull(world)
+    assert (pull.opened_at, pull.opened_at_source) == (bound, "bind")
+
+    # A replayed bind never moves the time.
+    rollup_service.record_publication(
+        world.db, implementation, PR_URL, now=bound + timedelta(hours=1)
+    )
+    world.db.commit()
+    assert _pull(world).opened_at == bound
+
+
+def test_webhook_created_at_replaces_a_bind_time(world: World) -> None:
+    _issue_lifecycle(world)
+    assert _pull(world).opened_at_source == "bind"
+    details = world.pr_details(event_type="pull_request_synchronize")
+    details["payload"]["pull_request"]["created_at"] = "2026-09-01T09:30:00Z"
+    world.webhook(details, now=T0 + timedelta(days=1))
+
+    pull = _pull(world)
+    assert pull.opened_at == T0 + timedelta(hours=1, minutes=30)
+    assert pull.opened_at_source == "forge"
+    row = world.rollup()
+    assert row.pr_opened_at == T0 + timedelta(hours=1, minutes=30)
+    assert row.pr_opened_at_source == "forge"
+
+
+def test_pr_event_for_an_unknown_pr_creates_nothing(world: World) -> None:
+    other = f"https://github.com/{REPO}/pull/99"
+    details = world.pr_details(event_type="pull_request_opened", url=other)
+    details["payload"]["pull_request"]["created_at"] = "2026-09-01T09:30:00Z"
+    world.webhook(details, now=T0 + timedelta(days=1))
+    assert (
+        crud_issue_cost.get_pull_request(
+            world.db, account_id=world.account.id, pr_key=other
+        )
+        is None
+    )
+
+
+def test_run_end_fallback_is_labelled(world: World) -> None:
+    world.run(
+        world.implement,
+        world.issue_details(),
+        start=T0,
+        minutes=45,
+        result={"pr_url": PR_URL},
+    )
+    assert _pull(world).opened_at_source == "run_end"
+    assert world.rollup().pr_opened_at_source == "run_end"
+
+
+def test_record_opened_pr_passes_the_forge_time(world: World) -> None:
+    from preloop.services.flow_pr_binding import record_opened_pr
+
+    implementation = world.run(
+        world.implement,
+        world.issue_details(),
+        start=T0,
+        status="RUNNING",
+        record=False,
+    )
+    record_opened_pr(
+        world.db, implementation.id, PR_URL, opened_at="2026-09-01T08:40:00Z"
+    )
+    pull = _pull(world)
+    assert pull.opened_at == T0 + timedelta(minutes=40)
+    assert pull.opened_at_source == "forge"
+
+
+# --- terminal paths that bypass the orchestrator hook ---------------------------
+
+
+def test_stale_execution_monitor_records_the_issue_fact(world: World) -> None:
+    from preloop.services.execution_monitor import ExecutionMonitor
+
+    execution = world.run(
+        world.triage, world.issue_details(), start=T0, status="FAILED", record=False
+    )
+    assert crud_issue_cost.get_fact(world.db, execution_id=execution.id) is None
+
+    ExecutionMonitor._record_issue_costs(world.db, [execution.id])
+
+    assert world.fact(execution).status == "FAILED"
+    assert world.rollup().failed_run_count == 1
+
+
+class _KeepOpen:
+    """The test session, with ``close`` disabled for code that closes it."""
+
+    def __init__(self, db: Session) -> None:
+        self._db = db
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._db, name)
+
+    def close(self) -> None:
+        return None
+
+
+def test_crashed_local_dispatch_records_the_issue_fact(world: World) -> None:
+    from preloop.services.flow_trigger_service import _record_local_run_failure
+
+    execution = world.run(
+        world.triage, world.issue_details(), start=T0, status="RUNNING", record=False
+    )
+    execution.agent_session_reference = None
+    world.db.commit()
+
+    marked = _record_local_run_failure(
+        lambda: _KeepOpen(world.db), execution.id, RuntimeError("boom")
+    )
+
+    assert marked is True
+    assert world.fact(execution).status == "FAILED"
+    assert world.rollup().run_count == 1
+
+
+# --- estimates ----------------------------------------------------------------
+
+
+def _configure_estimates(world: World, config: dict[str, Any]) -> None:
+    world.tracker.meta_data = {"issue_estimate": config}
+    world.db.commit()
+
+
+def test_estimate_comes_from_the_trigger_payload_labels(world: World) -> None:
+    _configure_estimates(
+        world, {"hours_label_prefix": "estimate:", "points_label_prefix": "sp:"}
+    )
+    details = world.issue_details()
+    details["payload"]["issue"]["labels"] = [
+        {"name": "estimate:6h"},
+        {"name": "sp:3"},
+    ]
+    world.run(world.triage, details, start=T0)
+
+    row = world.rollup()
+    assert (row.estimate_hours, row.estimate_hours_source) == (
+        Decimal("6.00"),
+        "label:estimate:",
+    )
+    assert (row.estimate_points, row.estimate_points_source) == (
+        Decimal("3.00"),
+        "label:sp:",
+    )
+    issue_row = world.report().issues[0]
+    assert issue_row.estimate_hours == 6.0
+    assert issue_row.estimate_points_source == "label:sp:"
+
+
+def test_no_estimate_stays_empty(world: World) -> None:
+    details = world.issue_details()
+    details["payload"]["issue"]["labels"] = [{"name": "estimate:6h"}]
+    world.run(world.triage, details, start=T0)  # no prefix configured
+
+    row = world.rollup()
+    assert row.estimate_hours is None and row.estimate_points is None
+    issue_row = world.report().issues[0]
+    assert issue_row.estimate_hours is None
+    assert issue_row.estimate_hours_source is None
+
+
+def test_estimate_is_not_cleared_by_a_later_payload_without_one(
+    world: World,
+) -> None:
+    _configure_estimates(world, {"points_label_prefix": "sp:"})
+    details = world.issue_details()
+    details["payload"]["issue"]["labels"] = [{"name": "sp:5"}]
+    world.run(world.triage, details, start=T0)
+    world.run(world.review, world.issue_details(), start=T0 + timedelta(hours=1))
+    assert world.rollup().estimate_points == Decimal("5.00")
+
+
+def test_a_pr_payload_does_not_set_the_issue_estimate(world: World) -> None:
+    _configure_estimates(world, {"points_label_prefix": "sp:"})
+    world.run(world.triage, world.issue_details(), start=T0)
+    details = world.pr_details(extra={})
+    details["payload"]["pull_request"]["labels"] = [{"name": "sp:8"}]
+    world.run(world.review, details, start=T0 + timedelta(hours=1))
+    assert world.rollup().estimate_points is None
+
+
+def test_synced_issue_row_estimate_wins_over_the_payload(world: World) -> None:
+    _configure_estimates(world, {"points_label_prefix": "sp:"})
+    world.issue.meta_data = {"labels": ["sp:8"], "estimate_fields": {}}
+    world.db.commit()
+    details = world.issue_details()
+    details["payload"]["issue"]["labels"] = [{"name": "sp:5"}]
+    world.run(world.triage, details, start=T0)
+
+    row = world.rollup()
+    assert row.estimate_points == Decimal("8.00")
+    assert row.estimate_points_source == "label:sp:"
+
+
+def test_jira_original_estimate_is_read_from_the_synced_issue(
+    db_session: Session,
+) -> None:
+    world = World(db_session, name="jira-estimate")
+    world.tracker.tracker_type = "jira"
+    world.tracker.url = "https://jira.example.com"
+    world.issue.key = "PROJ-12"
+    world.issue.meta_data = {"estimate_fields": {"timeoriginalestimate": 14400}}
+    db_session.commit()
+    details = {
+        "source": "jira",
+        "tracker_id": str(world.tracker.id),
+        "account_id": str(world.account.id),
+        "type": "issue_updated",
+        "project_id": str(world.project.id),
+        "payload": {
+            "issue": {
+                "key": "PROJ-12",
+                "self": "https://jira.example.com/rest/api/2/issue/1012",
+                "fields": {"summary": "Add the export button"},
+            }
+        },
+    }
+    world.run(world.triage, details, start=T0)
+
+    rows = world.rollups()
+    assert len(rows) == 1
+    assert rows[0].estimate_hours == Decimal("4.00")
+    assert rows[0].estimate_hours_source == "jira:timeoriginalestimate"
+    assert rows[0].estimate_points is None
+
+
+def test_estimate_columns_in_csv_and_json(world: World) -> None:
+    _configure_estimates(world, {"hours_label_prefix": "estimate:"})
+    details = world.issue_details()
+    details["payload"]["issue"]["labels"] = [{"name": "estimate:2.5h"}]
+    world.run(world.triage, details, start=T0)
+    world.run(
+        world.audit, {"source": "schedule", "payload": {}}, start=T0, cost="0.0400"
+    )
+    report = world.report(include_execution_ids=True)
+
+    rows = list(csv.DictReader(io.StringIO(rollup_service.report_to_csv(report))))
+    assert list(rows[0].keys()) == list(rollup_service.CSV_COLUMNS)
+    assert rows[0]["estimate_hours"] == "2.5"
+    assert rows[0]["estimate_hours_source"] == "label:estimate:"
+    assert rows[0]["estimate_points"] == ""
+    assert rows[0]["pr_opened_at_source"] == ""
+    assert rows[-1]["issue_key"] == rollup_service.UNASSIGNED_ISSUE_KEY
+    assert rows[-1]["estimate_hours"] == ""
+
+    document = json.loads(rollup_service.report_to_json(report))
+    issue = document["issues"][0]
+    assert issue["estimate_hours"] == 2.5
+    assert issue["estimate_hours_source"] == "label:estimate:"
+    assert issue["estimate_points"] is None
+    assert issue["pr_opened_at_source"] is None
+
+
+# --- scheduled rebuild --------------------------------------------------------
+
+
+def test_scheduled_rebuild_records_what_the_hooks_missed(world: World) -> None:
+    missed = world.run(world.triage, world.issue_details(), start=T0, record=False)
+    world.run(world.review, world.issue_details(), start=T0 + timedelta(hours=1))
+    old = world.run(
+        world.audit,
+        {"source": "schedule", "payload": {}},
+        start=T0 - timedelta(days=10),
+        record=False,
+    )
+
+    summary = rollup_service.scheduled_rebuild(
+        world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+    )
+
+    assert summary.recorded >= 1 and summary.failed == 0
+    assert world.fact(missed).rollup_id == world.rollup().id
+    assert world.rollup().run_count == 2
+    # Outside the lookback: left for the rebuild endpoint.
+    assert crud_issue_cost.get_fact(world.db, execution_id=old.id) is None
+
+    again = rollup_service.scheduled_rebuild(
+        world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+    )
+    assert world.rollup().run_count == 2
+    assert again.accounts_skipped == 0
+    assert crud_issue_cost.get_fact(world.db, execution_id=missed.id) is not None
+
+
+def test_scheduled_rebuild_skips_an_account_another_replica_holds(
+    world: World, db_engine: Any
+) -> None:
+    from sqlalchemy import text
+
+    missed = world.run(world.triage, world.issue_details(), start=T0, record=False)
+    key = rollup_service.rebuild_lock_key(world.account.id)
+    with db_engine.connect() as other:
+        other.execute(
+            text("SELECT pg_advisory_lock(hashtextextended(:key, 0))"), {"key": key}
+        )
+        try:
+            summary = rollup_service.scheduled_rebuild(
+                world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+            )
+        finally:
+            other.execute(
+                text("SELECT pg_advisory_unlock(hashtextextended(:key, 0))"),
+                {"key": key},
+            )
+
+    assert summary.accounts_skipped >= 1
+    assert crud_issue_cost.get_fact(world.db, execution_id=missed.id) is None
+
+
+def test_scheduled_rebuild_refreshes_estimates_from_synced_issues(
+    world: World,
+) -> None:
+    _configure_estimates(world, {"points_label_prefix": "sp:"})
+    world.run(world.triage, world.issue_details(), start=T0)
+    assert world.rollup().estimate_points is None
+
+    # The tracker sync later stores the estimate label on the issue row.
+    world.issue.meta_data = {"labels": ["sp:13"]}
+    world.db.commit()
+    summary = rollup_service.scheduled_rebuild(
+        world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+    )
+
+    assert summary.estimates_changed >= 1
+    assert world.rollup().estimate_points == Decimal("13.00")
+
+
+def test_scheduled_rebuild_reads_each_tracker_config_once_per_pass(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_estimates(world, {"points_label_prefix": "sp:"})
+    for number in (12, 13):
+        world.run(world.triage, world.issue_details(number), start=T0, record=False)
+    world.run(world.review, world.issue_details(12), start=T0, record=False)
+
+    reads: list[uuid.UUID] = []
+    original = crud_issue_cost.tracker_estimate_settings
+
+    def counting(db: Any, *, tracker_id: uuid.UUID) -> Any:
+        reads.append(tracker_id)
+        return original(db, tracker_id=tracker_id)
+
+    monkeypatch.setattr(crud_issue_cost, "tracker_estimate_settings", counting)
+    summary = rollup_service.scheduled_rebuild(
+        world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+    )
+
+    assert summary.recorded >= 3 and summary.estimates_checked >= 2
+    # One tracker, one read for the whole pass.
+    assert reads == [world.tracker.id]
+    # The cache lives only for the pass.
+    assert rollup_service._TRACKER_SETTINGS_CACHE not in world.db.info
+    rollup_service.observe_estimate(world.db, rollup=world.rollup(12))
+    assert len(reads) == 2
+
+
+def test_scheduled_rebuild_counts_a_failed_account_apart_from_a_locked_one(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, record=False)
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("rebuild failed")
+
+    monkeypatch.setattr(rollup_service, "rebuild", boom)
+    summary = rollup_service.scheduled_rebuild(
+        world.db, lookback=timedelta(hours=72), now=T0 + timedelta(days=1)
+    )
+
+    assert summary.accounts_failed >= 1
+    assert summary.accounts_skipped == 0
+    assert summary.as_dict()["accounts_failed"] == summary.accounts_failed
+
+
+def test_scheduled_rebuild_sweeper_pass_uses_the_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services import issue_cost_rebuild_sweeper as sweeper_module
+
+    seen: dict[str, Any] = {}
+
+    class _Session:
+        def close(self) -> None:
+            seen["closed"] = True
+
+    monkeypatch.setattr(sweeper_module, "get_db_session", lambda: iter([_Session()]))
+    monkeypatch.setattr(sweeper_module.settings, "issue_cost_rebuild_lookback_hours", 5)
+    monkeypatch.setattr(
+        sweeper_module.settings, "issue_cost_rebuild_max_executions_per_account", 7
+    )
+
+    def fake(db: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return rollup_service.ScheduledRebuildSummary()
+
+    monkeypatch.setattr(sweeper_module.issue_cost_rollup, "scheduled_rebuild", fake)
+
+    sweeper_module.run_scheduled_rebuild_once()
+
+    assert seen == {
+        "lookback": timedelta(hours=5),
+        "per_account_limit": 7,
+        "closed": True,
+    }
+
+
+# --- unassigned drill-down ----------------------------------------------------
+
+
+def test_unassigned_executions_add_up_to_the_bucket(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0)
+    first = world.run(
+        world.audit, {"source": "schedule", "payload": {}}, start=T0, cost="0.0400"
+    )
+    second = world.run(
+        world.audit,
+        {"source": "schedule", "payload": {}},
+        start=T0 + timedelta(hours=1),
+        cost="0.0600",
+    )
+    report = world.report()
+    rows = rollup_service.list_unassigned_executions(
+        world.db, account_id=world.account.id
+    )
+    assert [row.execution_id for row in rows] == [first.id, second.id]
+    assert sum(row.estimated_cost or 0 for row in rows) == pytest.approx(
+        report.unassigned.estimated_cost
+    )
+    assert {row.link for row in rows} == {"unassigned"}
+    assert (
+        rollup_service.list_unassigned_executions(
+            world.db, account_id=world.account.id, start=T0 + timedelta(minutes=30)
+        )[0].execution_id
+        == second.id
+    )
+    assert (
+        rollup_service.list_unassigned_executions(
+            world.db, account_id=world.account.id, flow_id=world.triage.id
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_rebuild_sweeper_runs_passes_and_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from preloop.services import issue_cost_rebuild_sweeper as sweeper_module
+
+    passes: list[int] = []
+    monkeypatch.setattr(sweeper_module, "background_passes_allowed", lambda: True)
+    monkeypatch.setattr(
+        sweeper_module, "run_scheduled_rebuild_once", lambda: passes.append(1)
+    )
+    sweeper = sweeper_module.IssueCostRebuildSweeper(check_interval_seconds=0)
+
+    await sweeper.start()
+    for _ in range(50):
+        if passes:
+            break
+        await asyncio.sleep(0.01)
+    await sweeper.stop()
+
+    assert passes and not sweeper.running
+
+
+@pytest.mark.asyncio
+async def test_rebuild_sweeper_does_not_start_on_a_role_without_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services import issue_cost_rebuild_sweeper as sweeper_module
+
+    monkeypatch.setattr(sweeper_module, "background_passes_allowed", lambda: False)
+    sweeper = sweeper_module.IssueCostRebuildSweeper(check_interval_seconds=60)
+    await sweeper.start()
+    assert not sweeper.running

@@ -534,8 +534,20 @@ def record_opened_pr(
     source_branch: Optional[str] = None,
     *,
     raise_errors: bool = False,
+    opened_at: Any = None,
 ) -> None:
-    """Merge the PR URL; best effort except when the runner awaits acknowledgment."""
+    """Merge the PR URL; best effort except when the runner awaits acknowledgment.
+
+    Args:
+        db: Database session.
+        execution_id: The execution that opened the pull request.
+        pr_url: The pull request URL.
+        source_branch: Its head branch, when known.
+        raise_errors: Re-raise a failed write (the runner waits for it).
+        opened_at: The forge's ``created_at`` for the pull request, when the
+            caller read it from the forge. The issue cost rollup then reports
+            that time as "PR opened" instead of the bind time.
+    """
 
     try:
         if not execution_id or not pr_url:
@@ -557,7 +569,9 @@ def record_opened_pr(
         logger.info("Recorded opened PR on execution %s", execution_id)
         from preloop.services.issue_cost_rollup import record_publication_safely
 
-        record_publication_safely(db, execution.id, stored_url)
+        record_publication_safely(
+            db, execution.id, stored_url, forge_opened_at=opened_at
+        )
         if source_branch:
             from preloop.services.flow_feedback import register_thread
 

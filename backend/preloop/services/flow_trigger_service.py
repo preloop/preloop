@@ -299,6 +299,14 @@ def _record_local_run_failure(
             ),
         )
         db.commit()
+        # The dispatch died before the orchestrator's terminal hook, so record
+        # the issue cost fact here. Never raises; a failure is picked up by
+        # the scheduled rebuild.
+        from preloop.services.issue_cost_rollup import (
+            record_execution_finished_safely,
+        )
+
+        record_execution_finished_safely(db, execution_id)
         return True
     except Exception:
         logger.exception(

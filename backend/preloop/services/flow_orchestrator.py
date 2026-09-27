@@ -136,6 +136,7 @@ from preloop.services.tracker_git_token import (
     resolve_tracker_git_username,
 )
 from preloop.sync.event_normalizer import attach_trigger_subject
+from preloop.sync.trackers.base import BaseTracker
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
     GitCredential,
@@ -4617,21 +4618,25 @@ class FlowExecutionOrchestrator:
     async def _lookup_published_pr(
         self, client: Any, branch: str
     ) -> Optional[Dict[str, str]]:
-        """The open PR/MR whose head is ``branch`` on ``client``'s repo."""
+        """The open PR/MR whose head is ``branch`` on ``client``'s repo.
+
+        The forge's ``created_at`` is carried along, so "PR opened" is the
+        forge's time, not the bind time.
+        """
         kind = self._tracker_kind(client)
         lookup = getattr(client, "list_open_pull_requests_by_source_branch", None)
         if kind is None or lookup is None:
             return None
-        listing = await lookup(branch)
-        for item in (listing or {}).get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            # The provider filter is authoritative; this guards a tracker
-            # that ignored it and returned unrelated PRs.
-            if item.get("source_branch") != branch or not item.get("url"):
-                continue
-            return {"url": str(item["url"]), "branch": branch, "provider": kind}
-        return None
+        # The provider filter is authoritative; the guard skips anything a
+        # tracker returned for another branch or without a URL.
+        item = BaseTracker._first_listed_for_branch(await lookup(branch), branch)
+        if item is None:
+            return None
+        found = {"url": str(item["url"]), "branch": branch, "provider": kind}
+        created_at = item.get("created_at")
+        if created_at:
+            found["created_at"] = str(created_at)
+        return found
 
     def _execution_already_bound(self) -> bool:
         """True when another path (MCP create_pull_request) bound a PR."""
@@ -4682,6 +4687,7 @@ class FlowExecutionOrchestrator:
                 self.execution_log.id,
                 found["url"],
                 source_branch=found["branch"],
+                opened_at=found.get("created_at"),
             )
             self._opened_pr_bound = True
             logger.info("Bound the published pull request by head branch lookup")

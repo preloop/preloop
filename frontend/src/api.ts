@@ -1361,6 +1361,13 @@ export interface IssueCostRow {
   first_event_to_pr_opened_hours: number | null;
   pr_opened_to_approved_hours: number | null;
   approved_to_merged_hours: number | null;
+  /** forge (the PR's own created_at), bind or run_end; null without a PR. */
+  pr_opened_at_source: string | null;
+  /** The tracker's estimate; null when the tracker states none. */
+  estimate_hours: number | null;
+  estimate_hours_source: string | null;
+  estimate_points: number | null;
+  estimate_points_source: string | null;
 }
 
 export interface IssueCostSummary {
@@ -1433,6 +1440,20 @@ export async function getIssueCostExecutions(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch the executions of this issue');
+  }
+  return response.json();
+}
+
+/** Executions in the unassigned bucket of the current filter. */
+export async function getUnassignedIssueCostExecutions(
+  filter: IssueCostFilter = {}
+): Promise<IssueCostExecution[]> {
+  const query = issueCostQuery(filter).toString();
+  const response = await fetchWithAuth(
+    `/api/v1/cost/by-issue/unassigned/executions${query ? `?${query}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch the unassigned executions');
   }
   return response.json();
 }

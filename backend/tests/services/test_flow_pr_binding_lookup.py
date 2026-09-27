@@ -119,8 +119,8 @@ class TestLookupBinding:
         calls = []
         monkeypatch.setattr(
             "preloop.services.flow_orchestrator.record_opened_pr",
-            lambda db, execution_id, url, source_branch=None: calls.append(
-                (execution_id, url, source_branch)
+            lambda db, execution_id, url, source_branch=None, opened_at=None: (
+                calls.append((execution_id, url, source_branch, opened_at))
             ),
         )
         client = _github_client(prs=[_listed()])
@@ -133,9 +133,93 @@ class TestLookupBinding:
         bound = await orchestrator._bind_published_pr_by_branch()
 
         assert bound == {"url": PR_URL, "branch": BRANCH, "provider": "github"}
-        assert calls == [(orchestrator.execution_log.id, PR_URL, BRANCH)]
+        assert calls == [(orchestrator.execution_log.id, PR_URL, BRANCH, None)]
         assert client.list_pull_requests.await_args.kwargs["head_branch"] == BRANCH
         assert orchestrator._opened_pr_bound is True
+
+    @pytest.mark.asyncio
+    async def test_lookup_carries_the_forge_created_at(self, monkeypatch):
+        orchestrator = _bare_orchestrator()
+        calls = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_opened_pr",
+            lambda db, execution_id, url, source_branch=None, opened_at=None: (
+                calls.append(opened_at)
+            ),
+        )
+        listed = {**_listed(), "created_at": "2026-09-20T08:00:00Z"}
+        client = _github_client(prs=[listed])
+        monkeypatch.setattr(
+            orchestrator,
+            "_publication_tracker_clients",
+            AsyncMock(return_value=[client]),
+        )
+
+        bound = await orchestrator._bind_published_pr_by_branch()
+
+        assert bound["created_at"] == "2026-09-20T08:00:00Z"
+        assert calls == ["2026-09-20T08:00:00Z"]
+
+    @pytest.mark.asyncio
+    async def test_bitbucket_lookup_goes_through_the_tracker_interface(
+        self, monkeypatch
+    ):
+        from preloop.sync.trackers.bitbucket import BitbucketTracker
+
+        orchestrator = _bare_orchestrator()
+        calls = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_opened_pr",
+            lambda db, execution_id, url, source_branch=None, opened_at=None: (
+                calls.append((url, opened_at))
+            ),
+        )
+        client = BitbucketTracker.__new__(BitbucketTracker)
+        pr_url = "https://bitbucket.org/acme/app/pull-requests/7"
+        client.list_pull_requests = AsyncMock(
+            return_value={
+                "items": [
+                    _listed(
+                        url="https://bitbucket.org/acme/app/pull-requests/6",
+                        branch="other",
+                    ),
+                    {**_listed(url=pr_url), "created_at": "2026-09-20T08:00:00Z"},
+                ]
+            }
+        )
+        monkeypatch.setattr(
+            orchestrator,
+            "_publication_tracker_clients",
+            AsyncMock(return_value=[client]),
+        )
+
+        bound = await orchestrator._bind_published_pr_by_branch()
+
+        assert bound["url"] == pr_url and bound["provider"] == "bitbucket"
+        assert calls == [(pr_url, "2026-09-20T08:00:00Z")]
+
+    @pytest.mark.asyncio
+    async def test_tracker_without_pull_requests_finds_nothing(self):
+        from preloop.sync.trackers.jira import JiraTracker
+
+        client = JiraTracker.__new__(JiraTracker)
+        client.tracker_type = "jira"
+        orchestrator = _bare_orchestrator()
+        assert await orchestrator._lookup_published_pr(client, BRANCH) is None
+
+    def test_listing_guard_ignores_other_branches_and_urlless_items(self):
+        from preloop.sync.trackers.base import BaseTracker
+
+        listing = {
+            "items": [
+                "garbage",
+                _listed(branch="other"),
+                {**_listed(), "url": ""},
+                _listed(),
+            ]
+        }
+        assert BaseTracker._first_listed_for_branch(listing, BRANCH) == _listed()
+        assert BaseTracker._first_listed_for_branch(None, BRANCH) is None
 
     @pytest.mark.asyncio
     async def test_gitlab_lookup_filters_by_source_branch(self, monkeypatch):
