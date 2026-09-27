@@ -42,15 +42,6 @@ const SHAREABLE: readonly ShareableKind[] = [
 type Section = 'loading' | 'on' | 'off';
 
 /**
- * Sharing and tags for one resource, mounted on its detail page through
- * `<capability-extension name="resource-access">`.
- *
- * Context: `kind` (resource type), `resourceId`, and `sharedFrom` when the
- * resource belongs to a parent (then nothing here is editable and sharing is
- * not offered). Each section hides on its own when its endpoint is missing,
- * and the panel reports `capability-off` when both are.
- */
-/**
  * Whether two share targets reach the same subaccounts. Selected targets
  * compare as id sets, since names need not be unique and order is not
  * meaningful.
@@ -70,6 +61,15 @@ function sameTarget(a: ShareTarget, b: ShareTarget): boolean {
   return x.size === y.size && [...x].every((id) => y.has(id));
 }
 
+/**
+ * Sharing and tags for one resource, mounted on its detail page through
+ * `<capability-extension name="resource-access">`.
+ *
+ * Context: `kind` (resource type), `resourceId`, and `sharedFrom` when the
+ * resource belongs to a parent (then nothing here is editable and sharing is
+ * not offered). Each section hides on its own when its endpoint is missing,
+ * and the panel reports `capability-off` when both are.
+ */
 @customElement('resource-access-panel')
 export class ResourceAccessPanel extends LitElement {
   static styles = css`
