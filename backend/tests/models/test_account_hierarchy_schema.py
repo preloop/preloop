@@ -575,3 +575,167 @@ def test_normalize_email_matches_the_backfill_expression(db_session, email):
         text("SELECT " + backfill.normalized_email(":email")), {"email": email}
     ).scalar()
     assert normalize_email(email) == in_sql
+
+
+def test_tags_and_rules_reach_kinds_that_are_never_shared(db_session):
+    """Account tags select subaccounts; rules gate MCP tools and runners."""
+    account = _account(db_session, "vendor")
+    for resource_type in ("account", "mcp_tool", "runner", "policy", "tracker"):
+        tag = _tag(account, "customer")
+        tag.resource_type = resource_type
+        tag.value = "x"
+        db_session.add(tag)
+    for resource_type, action in (
+        ("mcp_tool", "tool:call"),
+        ("runner", "runner:accept"),
+    ):
+        db_session.add(
+            models.AccessRule(
+                account_id=account.id,
+                name=f"forbid {resource_type}",
+                effect="forbid",
+                actions=[action],
+                resource_type=resource_type,
+                scope="self_and_subaccounts",
+            )
+        )
+    db_session.flush()
+
+    # Shares keep the narrower set: an MCP tool travels with its server.
+    savepoint = db_session.begin_nested()
+    db_session.add(
+        models.ResourceShare(
+            owner_account_id=account.id,
+            resource_type="mcp_tool",
+            resource_id=uuid.uuid4(),
+            target_mode="all",
+        )
+    )
+    with pytest.raises(IntegrityError, match="ck_resource_share_resource_type"):
+        db_session.flush()
+    savepoint.rollback()
+
+
+def test_verifying_a_row_verifies_its_provisional_person(db_session):
+    """Signup, verify later, then an invite elsewhere: the first row keeps it."""
+    first_account = _account(db_session, "first")
+    first = _user(db_session, first_account, "gina@example.com", verified=False)
+    assert first.person.email_verified_at is None
+
+    first.email_verified = True
+    db_session.flush()
+    assert first.person.email_verified_at is not None
+
+    second = _user(
+        db_session, _account(db_session, "second"), "gina@example.com", verified=True
+    )
+    assert second.person_id != first.person_id
+    assert second.person.email_verified_at is None
+
+
+def test_verifying_a_row_never_takes_a_claimed_address(db_session):
+    verified = _user(
+        db_session, _account(db_session, "one"), "hal@example.com", verified=True
+    )
+    late = _user(
+        db_session, _account(db_session, "two"), "hal@example.com", verified=False
+    )
+
+    late.email_verified = True
+    db_session.flush()
+
+    assert verified.person.email_verified_at is not None
+    assert late.person.email_verified_at is None
+    assert late.person_id != verified.person_id
+
+
+def test_deleting_the_last_row_deletes_its_person(db_session):
+    """Delete, then sign up again: the new row can hold the verified claim."""
+    from preloop.models.crud import crud_user
+
+    account = _account(db_session, "acme")
+    gone = _user(db_session, account, "ivy@example.com", verified=True)
+    person_id = gone.person_id
+    crud_user.hard_delete(db_session, user_id=gone.id, commit=False)
+    db_session.expire_all()
+    assert db_session.get(models.Person, person_id) is None
+
+    again = _user(db_session, account, "ivy@example.com", verified=True)
+    assert again.person.email_verified_at is not None
+
+
+def test_a_person_with_rows_left_survives_a_delete(db_session):
+    from preloop.models.crud import crud_user
+
+    home = _user(
+        db_session, _account(db_session, "home"), "jo@example.com", verified=True
+    )
+    other = models.User(
+        account_id=_account(db_session, "other").id,
+        username=f"u-{uuid.uuid4().hex[:12]}",
+        email="jo@example.com",
+        email_verified=True,
+        user_source="local",
+    )
+    other.person = home.person
+    db_session.add(other)
+    db_session.flush()
+
+    crud_user.hard_delete(db_session, user_id=other.id, commit=False)
+    db_session.expire_all()
+    assert db_session.get(models.Person, home.person_id) is not None
+
+
+def _grant(
+    db_session, parent, subject_type: str, subject_id
+) -> models.AccountAccessGrant:
+    grant = models.AccountAccessGrant(
+        parent_account_id=parent.id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        access_level="read",
+        target_mode="all",
+    )
+    db_session.add(grant)
+    db_session.flush()
+    return grant
+
+
+def test_deleting_a_grant_subject_deletes_the_grant(db_session):
+    from preloop.models.crud import crud_user
+
+    parent = _account(db_session, "parent")
+    admin = _user(db_session, parent, "kim@example.com", verified=True)
+    team = models.Team(account_id=parent.id, name="platform")
+    db_session.add(team)
+    db_session.flush()
+    user_grant = _grant(db_session, parent, "user", admin.id).id
+    team_grant = _grant(db_session, parent, "team", team.id).id
+
+    crud_user.hard_delete(db_session, user_id=admin.id, commit=False)
+    db_session.delete(team)
+    db_session.flush()
+    db_session.expire_all()
+
+    assert db_session.get(models.AccountAccessGrant, user_grant) is None
+    assert db_session.get(models.AccountAccessGrant, team_grant) is None
+
+
+def test_a_subject_whose_grant_has_inherited_rows_cannot_be_deleted(db_session):
+    """Revoke first: deleting the subject must not leave the inherited rows."""
+    from preloop.models.crud import crud_user
+
+    parent = _account(db_session, "parent")
+    child = place_under(models.Account(organization_name="child"), parent)
+    db_session.add(child)
+    admin = _user(db_session, parent, "lee@example.com", verified=True)
+    grant = _grant(db_session, parent, "user", admin.id)
+    inherited = _user(db_session, child, "lee@example.com", verified=True)
+    inherited.membership_kind = "inherited"
+    inherited.access_grant_id = grant.id
+    db_session.flush()
+
+    savepoint = db_session.begin_nested()
+    with pytest.raises(IntegrityError, match="fk_user_access_grant"):
+        crud_user.hard_delete(db_session, user_id=admin.id, commit=False)
+    savepoint.rollback()

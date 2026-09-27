@@ -22,6 +22,15 @@ previous release, have no person yet. They are linked first, under the lock,
 each to a provisional person of its own (``email_verified_at`` NULL), which is
 the same thing the ORM hook does for a new row whose address is taken.
 
+Deleting a ``"user"`` row (trigger ``trg_user_deleted``) also deletes the
+account access grants whose subject it was, and its person once no row is
+left in it. Without the first, a grant would outlive its subject and keep the
+inherited rows it created; ``fk_user_access_grant`` is RESTRICT, so a subject
+whose grant still has inherited rows cannot be deleted until the grant is
+revoked. Without the second, an orphan verified person would keep the
+address's verified claim, so a new signup with that address could never get
+it.
+
 Idempotent: every step checks for what it creates.
 """
 
@@ -65,6 +74,21 @@ UPDATE "user" u
 SET person_id = s.person_id
 FROM stragglers s
 WHERE u.id = s.id
+"""
+
+
+_USER_DELETED_FUNCTION = """
+CREATE OR REPLACE FUNCTION preloop_user_deleted() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    DELETE FROM account_access_grant
+    WHERE subject_type = 'user' AND subject_id = OLD.id;
+    DELETE FROM person p
+    WHERE p.id = OLD.person_id
+      AND NOT EXISTS (SELECT 1 FROM "user" u WHERE u.person_id = OLD.person_id);
+    RETURN NULL;
+END
+$$
 """
 
 
@@ -126,10 +150,18 @@ def upgrade() -> None:
     op.execute(
         'CREATE INDEX IF NOT EXISTS ix_user_access_grant_id ON "user" (access_grant_id)'
     )
+    op.execute(_USER_DELETED_FUNCTION)
+    op.execute('DROP TRIGGER IF EXISTS trg_user_deleted ON "user"')
+    op.execute(
+        'CREATE TRIGGER trg_user_deleted AFTER DELETE ON "user"'
+        " FOR EACH ROW EXECUTE FUNCTION preloop_user_deleted()"
+    )
 
 
 def downgrade() -> None:
-    """Drop the constraints and make person_id nullable again."""
+    """Drop the trigger and constraints, and make person_id nullable again."""
+    op.execute('DROP TRIGGER IF EXISTS trg_user_deleted ON "user"')
+    op.execute("DROP FUNCTION IF EXISTS preloop_user_deleted()")
     op.execute("DROP INDEX IF EXISTS ix_user_access_grant_id")
     for name in _USER_CONSTRAINTS:
         op.execute(f'ALTER TABLE "user" DROP CONSTRAINT IF EXISTS {name}')

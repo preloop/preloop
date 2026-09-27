@@ -32,6 +32,14 @@ _RESOURCE_TYPES = (
     "resource_type IN ('ai_model', 'mcp_server', 'managed_agent', 'flow',"
     " 'runner_pool', 'policy_baseline')"
 )
+# Tags and rules also reach kinds that are never shared on their own: MCP tools
+# and runners (``tool:call``, ``runner:accept``), policies, trackers, and
+# accounts (a ``customer:<x>`` tag selects subaccounts).
+_TAGGABLE_RESOURCE_TYPES = (
+    "resource_type IN ('ai_model', 'mcp_server', 'managed_agent', 'flow',"
+    " 'runner_pool', 'policy_baseline', 'account', 'mcp_tool', 'runner',"
+    " 'policy', 'tracker')"
+)
 _TAG_KEY = "key ~ '^[a-z0-9._/-]{1,63}$'"
 _ACTIONS = (
     "cardinality(actions) >= 1 AND actions <@ ARRAY['model:invoke', 'tool:call',"
@@ -92,7 +100,7 @@ def _create_access_rule() -> None:
             "resource_type",
             sa.String(32),
             nullable=True,
-            comment="One of the shareable resource types; NULL matches every type",
+            comment="One of the taggable resource types; NULL matches every type",
         ),
         sa.Column(
             "resource_selector",
@@ -125,7 +133,7 @@ def _create_access_rule() -> None:
             name="ck_access_rule_scope",
         ),
         sa.CheckConstraint(
-            "resource_type IS NULL OR " + _RESOURCE_TYPES,
+            "resource_type IS NULL OR " + _TAGGABLE_RESOURCE_TYPES,
             name="ck_access_rule_resource_type",
         ),
         sa.CheckConstraint(_ACTIONS, name="ck_access_rule_actions"),
@@ -247,7 +255,9 @@ def _create_resource_tag() -> None:
         sa.Column("value", sa.String(128), nullable=False),
         _user_fk("created_by"),
         sa.CheckConstraint(_TAG_KEY, name="ck_resource_tag_key"),
-        sa.CheckConstraint(_RESOURCE_TYPES, name="ck_resource_tag_resource_type"),
+        sa.CheckConstraint(
+            _TAGGABLE_RESOURCE_TYPES, name="ck_resource_tag_resource_type"
+        ),
         sa.UniqueConstraint(
             "resource_type", "resource_id", "key", name="uq_resource_tag_key"
         ),

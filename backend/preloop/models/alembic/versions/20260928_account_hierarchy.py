@@ -7,7 +7,9 @@ Create Date: 2026-09-28
 First of six revisions for the account hierarchy (#986). Every existing
 account becomes a root: ``root_account_id = id``, ``hierarchy_path = [id]``,
 depth 0. ``ck_account_hierarchy_depth_max`` is the only place the depth is
-limited (one level below the root at launch).
+limited (one level below the root at launch). Relaxing it also needs a
+trigger asserting that a child's path prefix is its parent's path; at depth 1
+``ck_account_hierarchy_path_shape`` already forces ``[parent, self]``.
 
 Only ``account`` is touched here. The person backfill on ``user`` runs in its
 own revision, so no transaction holds ACCESS EXCLUSIVE on both tables.
@@ -119,8 +121,25 @@ def upgrade() -> None:
     )
 
 
+# Dropping the tree would turn every subaccount into an unrelated root without
+# a word, so a downgrade refuses while one exists.
+_REFUSE_WITH_SUBACCOUNTS = """
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'account'
+          AND column_name = 'hierarchy_depth'
+    ) AND EXISTS (SELECT 1 FROM account WHERE hierarchy_depth > 0) THEN
+        RAISE EXCEPTION 'subaccounts exist: detach every subaccount from its'
+            ' parent before downgrading below 20260928_account_hierarchy';
+    END IF;
+END $$
+"""
+
+
 def downgrade() -> None:
     """Drop the hierarchy columns (and with them their indexes and checks)."""
+    op.execute(_REFUSE_WITH_SUBACCOUNTS)
     for name in (*_CHECKS, "fk_account_root", "fk_account_parent"):
         op.execute(f"ALTER TABLE account DROP CONSTRAINT IF EXISTS {name}")
     op.execute("DROP INDEX IF EXISTS ix_account_hierarchy_path")

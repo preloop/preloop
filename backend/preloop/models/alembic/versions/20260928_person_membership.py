@@ -128,8 +128,25 @@ def upgrade() -> None:
     )
 
 
+# Dropping membership_kind would turn rows a grant created into ordinary
+# members that keep their roles, so a downgrade refuses while one exists.
+_REFUSE_WITH_INHERITED = """
+DO $$ BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'user'
+          AND column_name = 'membership_kind'
+    ) AND EXISTS (SELECT 1 FROM "user" WHERE membership_kind = 'inherited') THEN
+        RAISE EXCEPTION 'inherited memberships exist: revoke every account'
+            ' access grant before downgrading below 20260928_person_membership';
+    END IF;
+END $$
+"""
+
+
 def downgrade() -> None:
     """Drop the membership columns and the person table."""
+    op.execute(_REFUSE_WITH_INHERITED)
     op.execute(
         'ALTER TABLE "user"'
         " DROP COLUMN IF EXISTS access_grant_id,"

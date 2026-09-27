@@ -11,9 +11,7 @@ GRANT_SUBJECT_TYPES = ("user", "team")
 GRANT_ACCESS_LEVELS = ("read", "operate", "admin")
 GRANT_TARGET_MODES = ("all", "selected")
 
-# Also the closed set for ``resource_tag.resource_type`` and
-# ``access_rule.resource_type``: a tag or rule on any other type could never
-# match a share, so a typo there fails instead of silently matching nothing.
+# The resource kinds a ``resource_share`` can carry.
 SHARE_RESOURCE_TYPES = (
     "ai_model",
     "mcp_server",
@@ -21,6 +19,19 @@ SHARE_RESOURCE_TYPES = (
     "flow",
     "runner_pool",
     "policy_baseline",
+)
+# The closed set for ``resource_tag.resource_type`` and
+# ``access_rule.resource_type``. Wider than the shareable kinds: rules gate
+# ``tool:call`` and ``runner:accept`` on MCP tools and runners, which are never
+# shared on their own, and account tags (``customer:<x>``) select subaccounts.
+# Closed so that a typo in a ``forbid`` rule fails instead of matching nothing.
+TAGGABLE_RESOURCE_TYPES = (
+    *SHARE_RESOURCE_TYPES,
+    "account",
+    "mcp_tool",
+    "runner",
+    "policy",
+    "tracker",
 )
 SHARE_TARGET_MODES = ("all", "selected", "rule")
 

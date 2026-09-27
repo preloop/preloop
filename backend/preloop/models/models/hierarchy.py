@@ -5,6 +5,8 @@ account tree. They read ``hierarchy_path`` (root-to-node ids, self included)
 and ``root_account_id``, never ``parent_account_id``, and nothing in them
 depends on how deep the tree is: the depth limit is the
 ``ck_account_hierarchy_depth_max`` CHECK on ``account`` and nothing else.
+Relaxing that CHECK needs one schema addition, a trigger that ties a child's
+path prefix to its parent's path (see the note next to the CHECK).
 
 The ``before_flush`` hook fills the hierarchy columns that the schema makes
 NOT NULL, so existing code that creates accounts and users keeps working
@@ -17,7 +19,11 @@ without knowing about the tree or about persons:
   verified only when the row's email is verified and no verified person holds
   that address yet; otherwise it is provisional. The hook never links a new
   row to an existing person: merging memberships is a decision for the
-  membership service, which has to prove the address first.
+  membership service, which has to prove the address first;
+* a user row whose ``email_verified`` turns true verifies its provisional
+  person, on the same terms: only when no verified person holds the address
+  yet. If one does, the row stays provisional for the membership service to
+  merge.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, List
 
-from sqlalchemy import event, select
+from sqlalchemy import event, inspect, select
 from sqlalchemy.orm import Session
 
 from .account import Account
@@ -160,12 +166,34 @@ def _fill_person(session: Session, user: User, claimed: set[str]) -> None:
     session.add(person)
 
 
+def _verify_person(session: Session, user: User, claimed: set[str]) -> None:
+    if True not in inspect(user).attrs.email_verified.history.added:
+        return
+    with session.no_autoflush:
+        person = user.person
+    if person is None or person.email_verified_at is not None:
+        return
+    email = normalize_email(user.email)
+    if email in claimed or _verified_person_exists(session, email):
+        return
+    claimed.add(email)
+    # A provisional person holds exactly this one row, so its address follows
+    # the row's current email.
+    person.email_normalized = email
+    person.email_verified_at = datetime.now(timezone.utc)
+
+
 @event.listens_for(Session, "before_flush")
 def _fill_hierarchy_defaults(
     session: Session, flush_context: Any, instances: Any
 ) -> None:
     """Give new accounts and users the hierarchy columns they must carry."""
     claimed: set[str] = set()
+    # Rows that already exist claim their address before new rows do, so the
+    # older, first-verified membership keeps the verified person.
+    for obj in list(session.dirty):
+        if isinstance(obj, User):
+            _verify_person(session, obj, claimed)
     for obj in list(session.new):
         if isinstance(obj, Account):
             _fill_account(obj)

@@ -71,6 +71,10 @@ class AccountAccessGrant(Base):
     subject_type: Mapped[str] = mapped_column(
         String(16), nullable=False, comment="user | team"
     )
+    # Polymorphic, so no foreign key: triggers trg_user_deleted and
+    # trg_team_deleted delete a grant with its subject. A subject whose grant
+    # still has inherited rows cannot be deleted (fk_user_access_grant is
+    # RESTRICT); revoke the grant first.
     subject_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         nullable=False,

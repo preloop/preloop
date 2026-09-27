@@ -28,7 +28,7 @@ from .access_values import (
     RULE_ACTIONS,
     RULE_EFFECTS,
     RULE_SCOPES,
-    SHARE_RESOURCE_TYPES,
+    TAGGABLE_RESOURCE_TYPES,
     in_list_check,
 )
 from .base import Base
@@ -57,7 +57,7 @@ class AccessRule(Base):
     resource_type: Mapped[Optional[str]] = mapped_column(
         String(32),
         nullable=True,
-        comment="One of the shareable resource types; NULL matches every type",
+        comment="One of the taggable resource types; NULL matches every type",
     )
     resource_selector: Mapped[Dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
@@ -94,7 +94,7 @@ class AccessRule(Base):
         ),
         CheckConstraint(
             "resource_type IS NULL OR "
-            + in_list_check("resource_type", SHARE_RESOURCE_TYPES),
+            + in_list_check("resource_type", TAGGABLE_RESOURCE_TYPES),
             name="ck_access_rule_resource_type",
         ),
         CheckConstraint(

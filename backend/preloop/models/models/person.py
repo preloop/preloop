@@ -9,6 +9,10 @@ A person whose ``email_verified_at`` is NULL is provisional. It holds exactly
 one row and is never merged into another person before its email is verified,
 so pre-registering an unverified address cannot capture somebody else's
 memberships. The partial unique index keeps one verified person per address.
+
+A person lives as long as it has a row: deleting its last ``user`` row deletes
+it (trigger ``trg_user_deleted``), so an orphan never keeps an address's
+verified claim.
 """
 
 from __future__ import annotations

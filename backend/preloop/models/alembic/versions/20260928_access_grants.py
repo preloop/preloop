@@ -27,6 +27,18 @@ _ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
 assert _ALEMBIC_IDENTIFIERS, "Alembic revision metadata must be defined"
 
 
+_TEAM_DELETED_FUNCTION = """
+CREATE OR REPLACE FUNCTION preloop_team_deleted() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    DELETE FROM account_access_grant
+    WHERE subject_type = 'team' AND subject_id = OLD.id;
+    RETURN NULL;
+END
+$$
+"""
+
+
 def _has_table(name: str) -> bool:
     return sa.inspect(op.get_bind()).has_table(name)
 
@@ -164,10 +176,21 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS ix_user_role_access_grant_id"
         " ON user_role (access_grant_id)"
     )
+    # subject_id is polymorphic (user or team), so no foreign key can cascade.
+    # Deleting a team deletes its grants here; 20260928_person_constraints does
+    # the same for users.
+    op.execute(_TEAM_DELETED_FUNCTION)
+    op.execute("DROP TRIGGER IF EXISTS trg_team_deleted ON team")
+    op.execute(
+        "CREATE TRIGGER trg_team_deleted AFTER DELETE ON team"
+        " FOR EACH ROW EXECUTE FUNCTION preloop_team_deleted()"
+    )
 
 
 def downgrade() -> None:
-    """Drop user_role.access_grant_id and the grant tables."""
+    """Drop the team trigger, user_role.access_grant_id and the grant tables."""
+    op.execute("DROP TRIGGER IF EXISTS trg_team_deleted ON team")
+    op.execute("DROP FUNCTION IF EXISTS preloop_team_deleted()")
     op.execute("DROP INDEX IF EXISTS ix_user_role_access_grant_id")
     op.execute("ALTER TABLE user_role DROP COLUMN IF EXISTS access_grant_id")
     op.execute("DROP TABLE IF EXISTS account_access_grant_target")

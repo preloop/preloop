@@ -23,7 +23,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .access_values import (
-    SHARE_RESOURCE_TYPES,
+    TAGGABLE_RESOURCE_TYPES,
     TAG_GOVERNED_BY,
     TAG_KEY_PATTERN,
     TAG_VALUE_MAX_LENGTH,
@@ -61,7 +61,7 @@ class ResourceTag(Base):
     __table_args__ = (
         CheckConstraint(_KEY_CHECK, name="ck_resource_tag_key"),
         CheckConstraint(
-            in_list_check("resource_type", SHARE_RESOURCE_TYPES),
+            in_list_check("resource_type", TAGGABLE_RESOURCE_TYPES),
             name="ck_resource_tag_resource_type",
         ),
         UniqueConstraint(

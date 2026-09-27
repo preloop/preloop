@@ -136,7 +136,8 @@ class Account(Base):
     # ``descendants`` in preloop.models.models.hierarchy, never through
     # ``parent_account_id``: those helpers read ``hierarchy_path`` and do not
     # care how deep the tree is, so the depth limit lives in exactly one
-    # place, the ``ck_account_hierarchy_depth_max`` CHECK below.
+    # place, the ``ck_account_hierarchy_depth_max`` CHECK below (see the note
+    # there for what relaxing it takes).
     parent_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("account.id", ondelete="RESTRICT", name="fk_account_parent"),
@@ -169,8 +170,12 @@ class Account(Base):
             "(parent_account_id IS NULL) = (hierarchy_depth = 0)",
             name="ck_account_parent_iff_nonroot",
         ),
-        # The only place tree depth is limited. Relaxing it needs no other
-        # change to schema or helpers.
+        # The only place tree depth is limited. At depth 1 the path shape
+        # CHECK forces hierarchy_path = [parent, self]. Relaxing this also
+        # needs a trigger on INSERT or UPDATE OF hierarchy_path asserting
+        # hierarchy_path[1:hierarchy_depth] equals the parent's own path:
+        # no CHECK can read the parent row, and without it a child can claim
+        # a root its parent is not under. The helpers need no change.
         CheckConstraint(
             "hierarchy_depth <= 1",
             name="ck_account_hierarchy_depth_max",

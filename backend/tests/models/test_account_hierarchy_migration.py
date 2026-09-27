@@ -16,6 +16,7 @@ from pathlib import Path
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import DBAPIError
 
 from preloop.models import models
 from preloop.models.models.person import normalize_email
@@ -378,3 +379,51 @@ def test_rows_written_between_backfill_and_constraints_are_linked(db_session):
     assert person["primary_user_id"] == straggler
     shared = _users(connection, [seeded["older"]])[seeded["older"]]["person_id"]
     assert person["id"] != shared
+
+
+def _downgrade_error(db_session) -> str:
+    connection = db_session.connection()
+    savepoint = connection.begin_nested()
+    try:
+        _downgrade_all(connection)
+    except DBAPIError as error:
+        return str(error)
+    finally:
+        savepoint.rollback()
+    raise AssertionError("the downgrade went through")
+
+
+def test_downgrade_refuses_while_subaccounts_exist(db_session):
+    """Dropping the tree would silently turn subaccounts into roots."""
+    from preloop.models.models.hierarchy import place_under
+
+    parent = models.Account(organization_name="parent")
+    db_session.add(parent)
+    db_session.flush()
+    db_session.add(place_under(models.Account(organization_name="child"), parent))
+    db_session.flush()
+
+    assert "detach every subaccount" in _downgrade_error(db_session)
+
+
+def test_downgrade_refuses_while_inherited_memberships_exist(db_session):
+    """Dropping membership_kind would turn grant-created rows into members."""
+    seeded = _seed(db_session)
+    grant = models.AccountAccessGrant(
+        parent_account_id=seeded["acme"],
+        subject_type="user",
+        subject_id=seeded["older"],
+        access_level="read",
+        target_mode="all",
+    )
+    db_session.add(grant)
+    db_session.flush()
+    db_session.execute(
+        text(
+            "UPDATE \"user\" SET membership_kind = 'inherited', access_grant_id = :g"
+            " WHERE id = :id"
+        ),
+        {"g": grant.id, "id": seeded["newer"]},
+    )
+
+    assert "revoke every account access grant" in _downgrade_error(db_session)
