@@ -408,7 +408,9 @@ release.
 preloop runner fg --labels local     # Foreground: register, heartbeat, lease jobs
 preloop runner fg --concurrency 4    # Hold four executions at once (default 2)
 preloop runner enable                # Install launchd / systemd / scheduled task
-preloop runner disable
+preloop runner disable                  # Remove the service
+preloop runner disable --delete [--force]   # ...and delete the runner on the server
+preloop runner rotate-token             # New runner token, service restarted
 preloop runner start|stop|restart|status
 ```
 

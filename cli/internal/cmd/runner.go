@@ -67,7 +67,22 @@ var runnerEnableCmd = &cobra.Command{
 var runnerDisableCmd = &cobra.Command{
 	Use:   "disable",
 	Short: "Remove the runner system service",
-	RunE:  runRunnerDisable,
+	Long: `Stop and remove the runner system service.
+
+With --delete the runner is also deleted on the server once the service has
+stopped: its token stops working and the local runner state is removed. The
+server refuses while the runner still holds an execution; --force halts those
+executions and deletes the runner anyway.`,
+	RunE: runRunnerDisable,
+}
+
+var runnerRotateTokenCmd = &cobra.Command{
+	Use:   "rotate-token",
+	Short: "Issue a new token for this runner and restart the service",
+	Long: `Ask the server for a new runner token, write it to the local runner
+state and restart the installed service so it reconnects with it. The old
+token is rejected from the moment the server answers.`,
+	RunE: runRunnerRotateToken,
 }
 
 var runnerStartCmd = &cobra.Command{
@@ -102,6 +117,15 @@ func init() {
 	runnerCmd.AddCommand(runnerStopCmd)
 	runnerCmd.AddCommand(runnerRestartCmd)
 	runnerCmd.AddCommand(runnerStatusCmd)
+	runnerCmd.AddCommand(runnerRotateTokenCmd)
+	runnerDisableCmd.Flags().Bool(
+		"delete", false,
+		"also delete the runner on the server and forget its local state",
+	)
+	runnerDisableCmd.Flags().Bool(
+		"force", false,
+		"with --delete, halt executions the runner still holds instead of refusing",
+	)
 	runnerFgCmd.Flags().StringSlice("labels", nil, "labels used to match runner pools")
 	runnerFgCmd.Flags().String("name", "", "runner display name (default: hostname)")
 	runnerFgCmd.Flags().Bool("once", false, "exit after the first leased execution finishes")
@@ -1257,8 +1281,40 @@ func runRunnerEnable(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// Service hooks. Variables so tests can drive disable and rotate-token
+// without touching launchd, systemd or the Windows task scheduler.
+var (
+	runnerServiceAction    = runnerServiceControl
+	runnerServiceInstalled = runnerServiceIsInstalled
+	runnerServiceRemove    = removeRunnerService
+)
+
 func runRunnerDisable(cmd *cobra.Command, args []string) error {
-	_ = runnerServiceControl("stop")
+	deleteRunner, _ := cmd.Flags().GetBool("delete")
+	force, _ := cmd.Flags().GetBool("force")
+	if force && !deleteRunner {
+		return errors.New("--force only applies together with --delete")
+	}
+	// Stop first: a service still running would reconnect, or take a new
+	// lease, between the delete and its removal.
+	_ = runnerServiceAction("stop")
+	removeErr := runnerServiceRemove()
+	if !deleteRunner {
+		return removeErr
+	}
+	if removeErr != nil && errors.Is(removeErr, os.ErrNotExist) {
+		// No service was installed (a runner started with fg). Deleting the
+		// server row is still what was asked for.
+		removeErr = nil
+	}
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return errors.Join(removeErr, err)
+	}
+	return errors.Join(removeErr, deleteRegisteredRunner(client, force, cmd.OutOrStdout()))
+}
+
+func removeRunnerService() error {
 	switch runtime.GOOS {
 	case "darwin":
 		return os.Remove(launchdPlistPath())
@@ -1269,6 +1325,125 @@ func runRunnerDisable(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("service install is not implemented on %s", runtime.GOOS)
 	}
+}
+
+func runnerServiceIsInstalled() bool {
+	switch runtime.GOOS {
+	case "darwin":
+		_, err := os.Stat(launchdPlistPath())
+		return err == nil
+	case "linux":
+		_, err := os.Stat(systemdUserUnitPath())
+		return err == nil
+	case "windows":
+		return exec.Command("schtasks", "/Query", "/TN", "PreloopRunner").Run() == nil
+	default:
+		return false
+	}
+}
+
+type runnerDeleteResponse struct {
+	ID                 string   `json:"id"`
+	Deleted            bool     `json:"deleted"`
+	HaltedExecutionIDs []string `json:"halted_execution_ids"`
+}
+
+// deleteRegisteredRunner deletes the runner in the local state on the
+// server and then forgets it locally. A runner the server no longer knows
+// counts as deleted, so a retry after a partial failure converges.
+func deleteRegisteredRunner(client *api.Client, force bool, out io.Writer) error {
+	state, err := readRunnerState()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("no registered runner on this machine (runner.json not found)")
+		}
+		return fmt.Errorf("read runner state: %w", err)
+	}
+	if state.ID == "" {
+		return errors.New("runner state has no runner id")
+	}
+	path := "/api/v1/runners/" + url.PathEscape(state.ID)
+	if force {
+		path += "?force=true"
+	}
+	var response runnerDeleteResponse
+	err = client.Delete(path, &response)
+	switch {
+	case err == nil:
+	case api.IsStatus(err, http.StatusNotFound):
+		fmt.Fprintf(out, "Runner %s was already gone on the server\n", state.ID)
+	case api.IsStatus(err, http.StatusConflict):
+		return fmt.Errorf(
+			"%w\nThe service is stopped. Re-run with --delete --force to halt those executions and delete the runner",
+			err,
+		)
+	default:
+		return fmt.Errorf("delete runner %s: %w", state.ID, err)
+	}
+	if statePath, pathErr := runnerStatePath(); pathErr == nil {
+		if removeErr := os.Remove(statePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("runner deleted, but removing %s failed: %w", statePath, removeErr)
+		}
+	}
+	if err == nil {
+		fmt.Fprintf(out, "Deleted runner %s\n", state.ID)
+	}
+	for _, executionID := range response.HaltedExecutionIDs {
+		fmt.Fprintf(out, "Halted execution %s\n", executionID)
+	}
+	return nil
+}
+
+func runRunnerRotateToken(cmd *cobra.Command, args []string) error {
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return err
+	}
+	return rotateRunnerToken(client, cmd.OutOrStdout())
+}
+
+// rotateRunnerToken swaps the runner token and restarts the service so
+// the running process picks it up. The token itself is never printed: it
+// only ever lives in runner.json.
+func rotateRunnerToken(client *api.Client, out io.Writer) error {
+	state, err := readRunnerState()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("no registered runner on this machine (runner.json not found)")
+		}
+		return fmt.Errorf("read runner state: %w", err)
+	}
+	if state.ID == "" {
+		return errors.New("runner state has no runner id")
+	}
+	var rotated runnerAPIRecord
+	if err := client.Post(
+		"/api/v1/runners/"+url.PathEscape(state.ID)+"/token", nil, &rotated,
+	); err != nil {
+		return fmt.Errorf("rotate runner token: %w", err)
+	}
+	if rotated.Token == "" {
+		return errors.New("rotate runner token: the server returned no token")
+	}
+	state.Token = rotated.Token
+	if err := writeRunnerState(state); err != nil {
+		// The old token is already dead, so say where the new one went.
+		return fmt.Errorf(
+			"the server rotated the token but writing runner.json failed: %w. "+
+				"Delete runner.json and start the runner again to register afresh",
+			err,
+		)
+	}
+	fmt.Fprintf(out, "Rotated the token for runner %s\n", state.ID)
+	if !runnerServiceInstalled() {
+		fmt.Fprintln(out, "No runner service is installed. Restart preloop runner fg to use the new token")
+		return nil
+	}
+	if err := runnerServiceAction("restart"); err != nil {
+		return fmt.Errorf("token rotated, but restarting the runner service failed: %w", err)
+	}
+	fmt.Fprintln(out, "Restarted the runner service")
+	return nil
 }
 
 func runRunnerStatus(cmd *cobra.Command, args []string) error {
