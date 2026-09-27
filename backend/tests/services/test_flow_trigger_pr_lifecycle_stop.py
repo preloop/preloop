@@ -282,6 +282,73 @@ async def test_github_close_stops_every_run_bound_to_the_pr(
     assert {row.event_data["stop_source"] for row in audit} == {stop_source}
 
 
+async def test_merge_stops_a_run_parked_on_its_children_with_the_source(
+    db_session: Session, test_user
+) -> None:
+    """The park close writes the terminal row; it carries the cause too."""
+    from datetime import datetime, timedelta, timezone
+
+    from preloop.models.crud import crud_flow_execution
+
+    account = test_user.account_id
+    reviewer = make_flow(db_session, account)
+    workers = make_flow(db_session, account, name="Shard worker")
+    parent = make_execution(
+        db_session,
+        reviewer,
+        source="github",
+        event_type="pull_request_opened",
+        payload=github_pr_payload(),
+    )
+    child = models.FlowExecution(
+        flow_id=workers.id,
+        status="RUNNING",
+        parent_execution_id=parent.id,
+        root_execution_id=parent.id,
+        delegation_depth=1,
+        trigger_event_details={
+            "source": "flow_delegation",
+            "payload": {},
+            "delegation": {"parent_execution_id": str(parent.id), "depth": 1},
+        },
+    )
+    db_session.add(child)
+    db_session.flush()
+    crud_flow_execution.request_park(
+        db_session,
+        execution_id=parent.id,
+        approval_request_id=uuid.uuid4(),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        kind="children",
+    )
+    crud_flow_execution.confirm_park(
+        db_session, execution_id=parent.id, compute_seconds=60, kind="children"
+    )
+    db_session.commit()
+    db_session.refresh(parent)
+    assert parent.status == "WAITING_FOR_CHILDREN"
+
+    await deliver(
+        db_session,
+        event(
+            "github",
+            "pull_request_merged",
+            github_pr_payload(action="closed", merged=True),
+            account,
+        ),
+        flows=[],
+    )
+
+    db_session.expire_all()
+    db_session.refresh(parent)
+    assert parent.status == "STOPPED"
+    assert parent.stop_source == PR_STOP_SOURCE_MERGED
+    assert parent.stop_reason == f"Stopped because pull request {REPO}#12 was merged"
+    assert parent.park_expires_at is None
+    db_session.refresh(child)
+    assert child.status == "STOPPED"
+
+
 @pytest.mark.parametrize(
     ("action", "event_type", "stop_source"),
     [

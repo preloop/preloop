@@ -2030,8 +2030,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         reason: str,
         now: Optional[datetime] = None,
         commit: bool = True,
+        stop_source: Optional[str] = None,
     ) -> bool:
-        """Close a park on children because an operator stopped the parent.
+        """Close a park on children because the parent was stopped.
 
         One conditional UPDATE, and it is the whole race: it matches a row
         still sitting on ``WAITING_FOR_CHILDREN``, or a still-live row that
@@ -2043,12 +2044,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         The park row is closed rather than left claimable: the expiry is
         cleared so no sweep looks at it again, while ``park_request_id`` and
-        ``park_kind`` stay for the audit trail. ``stop_source`` stays NULL
-        on this row: the operator stopped the parent, which is the same
-        provenance as a plain stop. ``parent_stop`` is reserved for
-        children this stop ends.
+        ``park_kind`` stay for the audit trail. ``stop_source`` is the
+        automatic cause when there is one (``pr_merged`` and the like, #1032)
+        and stays NULL for an operator's stop, which is the same provenance
+        as a plain stop. ``parent_stop`` is reserved for children this stop
+        ends.
         """
         moment = now or datetime.now(timezone.utc)
+        values = {
+            models.FlowExecution.status: "STOPPED",
+            models.FlowExecution.end_time: moment,
+            models.FlowExecution.error_message: reason,
+            models.FlowExecution.park_expires_at: None,
+            models.FlowExecution.stop_requested_at: func.coalesce(
+                models.FlowExecution.stop_requested_at, moment
+            ),
+            models.FlowExecution.stop_reason: reason[:500],
+            models.FlowExecution.orchestrator_worker_id: None,
+            models.FlowExecution.orchestrator_claimed_at: None,
+            models.FlowExecution.orchestrator_heartbeat_at: None,
+        }
+        if stop_source:
+            values[models.FlowExecution.stop_source] = stop_source
         count = (
             db.query(models.FlowExecution)
             .filter(
@@ -2063,22 +2080,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     ),
                 ),
             )
-            .update(
-                {
-                    models.FlowExecution.status: "STOPPED",
-                    models.FlowExecution.end_time: moment,
-                    models.FlowExecution.error_message: reason,
-                    models.FlowExecution.park_expires_at: None,
-                    models.FlowExecution.stop_requested_at: func.coalesce(
-                        models.FlowExecution.stop_requested_at, moment
-                    ),
-                    models.FlowExecution.stop_reason: reason[:500],
-                    models.FlowExecution.orchestrator_worker_id: None,
-                    models.FlowExecution.orchestrator_claimed_at: None,
-                    models.FlowExecution.orchestrator_heartbeat_at: None,
-                },
-                synchronize_session=False,
-            )
+            .update(values, synchronize_session=False)
         )
         if commit:
             db.commit()

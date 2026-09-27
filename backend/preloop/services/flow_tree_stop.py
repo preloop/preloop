@@ -510,6 +510,7 @@ def close_children_park(
     parent: Any,
     now: Optional[datetime] = None,
     reason: str = "Manually stopped by user",
+    stop_source: Optional[str] = None,
 ) -> bool:
     """Take a parent parked on children out of the park, terminally.
 
@@ -526,6 +527,7 @@ def close_children_park(
         execution_id=parent.id,
         reason=reason,
         now=now or datetime.now(UTC),
+        stop_source=stop_source,
     )
     if closed:
         try:

@@ -232,7 +232,10 @@ async def stop_execution(
     closed_park = False
     if stops_a_tree:
         closed_park = flow_tree_stop.close_children_park(
-            db, parent=execution, reason=stop_reason or error_message
+            db,
+            parent=execution,
+            reason=stop_reason or error_message,
+            stop_source=stop_source,
         )
 
     if _status(execution) in RUNTIME_STATUSES:
