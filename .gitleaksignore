@@ -17,6 +17,9 @@
 # Regenerate the fingerprint for a new finding with:
 #   gitleaks git . --config .gitleaks.toml --redact --report-format json \
 #     --report-path /tmp/gl.json && jq -r '.[].Fingerprint' /tmp/gl.json
+#
+# Disposition (rotated / never live / not recorded) for every entry lives in
+# docs/security/secrets-history.md. Update both files together.
 
 # --- assume compromised, rotate if not already done ---------------------
 # Stripe access token in the spacebridge config, 2025-08-08.
