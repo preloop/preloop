@@ -544,3 +544,36 @@ def test_no_response_body_changes_without_hooks(
     allowed = {path: client.get(path).json() for path in paths}
 
     assert allowed == unset
+
+
+def test_query_budget_attributes_a_hook_query_to_the_hooks(
+    app, client: TestClient, db_session: Session, test_user
+) -> None:
+    # Positive control for ``statements.from_hooks`` in the query budget
+    # tests: a registered hook that queries is seen there, so the empty list
+    # those tests assert for unset hooks means something.
+    from sqlalchemy import text
+
+    from tests.endpoints.test_hot_path_query_budget import _count_statements
+
+    _gateway_model(db_session, test_user.account_id, "own-secret")
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="runtime-token", user=test_user)
+    )
+
+    def querying_authorizer(ctx, action, resource):
+        ctx.db.execute(text("SELECT 1 AS hook_probe"))
+        return Decision("allow")
+
+    with _count_statements(db_session) as unset:
+        response, _ = _chat(client)
+    assert response.status_code == 200, response.text
+    assert unset.from_hooks == []
+
+    account_hooks.register_authorizer(querying_authorizer)
+    with _count_statements(db_session) as registered:
+        response, _ = _chat(client)
+
+    assert response.status_code == 200, response.text
+    assert registered.from_hooks
+    assert all("hook_probe" in statement for statement in registered.from_hooks)

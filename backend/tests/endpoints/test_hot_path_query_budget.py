@@ -4,7 +4,9 @@ The account hierarchy hooks (``preloop.plugins.account_hooks``) sit on both
 paths. With no hook registered they must not cost a query, so these tests
 pin the number of statements each path issues. The numbers were measured on
 the code before the hooks existed; a change here means a path got more
-expensive and has to be justified, not just re-pinned.
+expensive and has to be justified, not just re-pinned. Each test also
+asserts that no statement was issued from inside the hooks module, which
+holds whatever the pinned number is.
 
 This module deliberately does not import the hooks module, so it runs
 unchanged against code without it.
@@ -12,6 +14,7 @@ unchanged against code without it.
 
 from __future__ import annotations
 
+import traceback
 import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
@@ -31,18 +34,35 @@ PASSWORD = "query-budget-pass-1"
 #: Statements issued by one password sign in (``/token/json``).
 LOGIN_STATEMENTS = 6
 #: Statements issued by one warm, priced chat completion without policies.
-GATEWAY_STATEMENTS = 23
+#: 24 on the base without the hooks (main at 179298d7): the three price
+#: override lookups each start with a ``has_table`` check.
+GATEWAY_STATEMENTS = 24
+#: Source file of the hooks module, matched by name so this module still
+#: does not import it.
+HOOKS_FILE = "account_hooks.py"
+
+
+class _Statements(list):
+    """Captured statements, plus those issued from inside the hooks module."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.from_hooks: list[str] = []
 
 
 @contextmanager
-def _count_statements(db: Session) -> Iterator[list[str]]:
-    statements: list[str] = []
+def _count_statements(db: Session) -> Iterator[_Statements]:
+    statements = _Statements()
 
     def capture(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
         text = statement.lstrip().upper()
         if text.startswith("SAVEPOINT") or text.startswith("RELEASE SAVEPOINT"):
             return
         statements.append(statement)
+        if any(
+            frame.filename.endswith(HOOKS_FILE) for frame in traceback.extract_stack()
+        ):
+            statements.from_hooks.append(statement)
 
     engine = db.get_bind()
     event.listen(engine, "before_cursor_execute", capture)
@@ -91,6 +111,7 @@ def test_password_sign_in_query_count(
         )
 
     assert response.status_code == 200, response.text
+    assert statements.from_hooks == []
     assert len(statements) == LOGIN_STATEMENTS, statements
 
 
@@ -139,4 +160,5 @@ def test_gateway_chat_completion_query_count(
             response = client.post("/openai/v1/chat/completions", json=body)
 
     assert response.status_code == 200, response.text
+    assert statements.from_hooks == []
     assert len(statements) == GATEWAY_STATEMENTS, statements
