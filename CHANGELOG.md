@@ -26,6 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [--force]`, and the Runners console page has Rotate token and Delete
   actions.
 
+- Schema for account hierarchies (#986): accounts carry a parent, root,
+  materialized path and depth (every existing account becomes a root, depth
+  is capped at 1 for now); a `person` table links the `user` rows (one per
+  account membership) of one human; plus account access grants, resource
+  shares with a materialized recipient table, resource tags, tag key policies
+  and access rules. Tables and columns only, no endpoints yet. Existing users
+  are backfilled onto persons: rows with the same verified email share one
+  (at most one row per account), every other row gets its own. Upgrade note:
+  two revisions touch every `user` row. `20260928_person_backfill` links rows
+  with row locks only, so reads and new sign-ups continue, but an update to an
+  existing `user` row (a login records `last_login`) waits until it commits.
+  `20260928_person_constraints` then holds an exclusive lock on `user` across
+  the NOT NULL scan, two foreign key and two check validations and two index
+  builds, and every query on `user` waits while it runs. Measured on one
+  million `user` rows (local Postgres 16): the backfill took 40 to 57 s, the
+  locked revision 2 to 3 s. Both grow with the row count. On a large `user`
+  table, or where those stalls are not acceptable, drain the API first (see
+  "When to drain the API first" in `docs/operations/schema-migrations.md`).
 - **Revoke one CLI login.** Each `preloop auth login` records a
   `cli_session` row and its JWTs carry the row id (`sid`); the refresh
   token also carries a `jti` that rotates with the row, so a refresh token
@@ -205,6 +223,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
 ### Changed
+
+- Release security audit verdicts: pass means: minimum elements passed, gate
+  passed, no open (non-VEX-closed) findings, no failed cross-checks, no
+  gap/partial register items. A finding closed by a valid VEX statement
+  (`not_affected` with a recognised justification, or `fixed`, plus a
+  statement id) stays in the findings ledger and the evidence pack, is counted
+  in `vuln_scan.closed_by_vex`, and no longer holds a clean audit at
+  `pass_with_findings`. A cross-check skipped because its input was not
+  delivered names that input in `missing_input` and is listed in
+  `limitations[]` instead of holding the verdict; a check that ran and failed
+  still holds it. `gap` and `partial` register items hold it, `declared` items
+  do not. The platform derives `closed_by_vex` and `limitations` at persist,
+  stamps them on `drift`, and recomputes the overall verdict with a recorded
+  correction in either direction: down by one step at most, and never away
+  from `fail` when the gate, SBOM validity or minimum elements failed.
 
 - API keys whose scopes are all `mcp:*` (flow execution, runtime session and
   managed agent credentials) are limited to MCP and the runtime routes that

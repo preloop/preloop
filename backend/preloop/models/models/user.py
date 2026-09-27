@@ -4,7 +4,15 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean
@@ -21,6 +29,7 @@ if TYPE_CHECKING:
     from .notification_preferences import NotificationPreferences
     from .event import Event
     from .github_oauth_token import OAuthToken
+    from .person import Person
 
 
 class UserSource(str):
@@ -31,6 +40,11 @@ class UserSource(str):
     AD = "ad"
     SAML = "saml"
     OAUTH = "oauth"
+
+
+MEMBERSHIP_DIRECT = "direct"
+MEMBERSHIP_INHERITED = "inherited"
+MEMBERSHIP_KINDS = (MEMBERSHIP_DIRECT, MEMBERSHIP_INHERITED)
 
 
 class User(Base):
@@ -62,6 +76,12 @@ class User(Base):
             outstanding).
         auth_generation: Integer carried in JWT ``gen`` claims. Bumping it
             rejects every outstanding access and refresh token for this user.
+        person_id: The person this membership row belongs to. One person may
+            hold one row per account (UNIQUE ``(person_id, account_id)``).
+        membership_kind: ``direct`` for an ordinary member, ``inherited`` for
+            a row created by an account access grant from a parent account.
+        access_grant_id: The grant that created an ``inherited`` row (NULL
+            exactly when the row is ``direct``).
         created_at: When the user was created.
         updated_at: When the user was last updated.
     """
@@ -178,9 +198,42 @@ class User(Base):
         comment="Incremented to revoke all outstanding JWT sessions",
     )
 
+    # Account hierarchy (#986). One membership is one user row; a person
+    # links the rows of one human. Rows created without a person get one in
+    # the session hook (preloop.models.models.hierarchy), so no caller has to
+    # know about persons yet.
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("person.id", ondelete="RESTRICT", name="fk_user_person"),
+        nullable=False,
+        comment="The person this membership row belongs to",
+    )
+    membership_kind: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=MEMBERSHIP_DIRECT,
+        server_default=MEMBERSHIP_DIRECT,
+        comment="direct | inherited (created by an account access grant)",
+    )
+    access_grant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "account_access_grant.id",
+            ondelete="RESTRICT",
+            name="fk_user_access_grant",
+            use_alter=True,
+        ),
+        nullable=True,
+        index=True,
+        comment="Grant that created an inherited membership",
+    )
+
     # Relationships
     account: Mapped["Account"] = relationship(
         "Account", back_populates="users", foreign_keys="[User.account_id]"
+    )
+    person: Mapped["Person"] = relationship(
+        "Person", back_populates="memberships", foreign_keys="[User.person_id]"
     )
     api_keys: Mapped[List["ApiKey"]] = relationship(
         "ApiKey", back_populates="creator", cascade="all, delete-orphan"
@@ -225,6 +278,18 @@ class User(Base):
     )
     oauth_tokens: Mapped[List["OAuthToken"]] = relationship(
         "OAuthToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("person_id", "account_id", name="uq_user_person_account"),
+        CheckConstraint(
+            "membership_kind IN ('direct', 'inherited')",
+            name="ck_user_membership_kind",
+        ),
+        CheckConstraint(
+            "(membership_kind = 'inherited') = (access_grant_id IS NOT NULL)",
+            name="ck_user_inherited_has_grant",
+        ),
     )
 
     def __repr__(self) -> str:

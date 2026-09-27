@@ -162,6 +162,7 @@
       "details": "skipped: no build evidence delivered"
     }
   ],
+  "limitations": [],
   "assessments": [
     {
       "topic": "inventory",

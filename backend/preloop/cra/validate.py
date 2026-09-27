@@ -51,10 +51,13 @@ from preloop.cra.schemas import (
     INCOMPLETE_FIELD,
     INCOMPLETE_REQUIRED,
     INCOMPLETE_SIGNALS,
+    CLOSED_BY_VEX_FIELD,
     INVALID_ERROR,
     LICENSE_FLAGS,
+    LIMITATIONS_FIELD,
     MATCH_KINDS,
     MISSING_ERROR,
+    MISSING_INPUT_FIELD,
     REGIME_PROFILE,
     RELEASEAUDIT_REQUIRED,
     RUNNER_KINDS,
@@ -81,6 +84,10 @@ from preloop.cra.schemas import (
     expected_cra_schema_from_prompt,
     is_cra_schema_id,
     is_known_cra_result_schema,
+)
+from preloop.cra.verdict import (
+    limitation_names,
+    release_verdict_basis,
 )
 from preloop.security.gap_register import validate_gap_register
 from preloop.security.waivers import (
@@ -509,6 +516,9 @@ def _check_check_item(item: Any, *, path: str) -> list[str]:
             failures.append(
                 f"{path}.{flag} must be a boolean, not {type(item.get(flag)).__name__}"
             )
+    missing = item.get(MISSING_INPUT_FIELD)
+    if missing is not None and not isinstance(missing, str):
+        failures.append(f"{path}.{MISSING_INPUT_FIELD} must be a string or null")
     return failures
 
 
@@ -1988,11 +1998,16 @@ def _validate_vulnscan(
 def _reconcile_release_verdict(
     obj: Mapping[str, Any],
 ) -> list[str]:
+    """Hold the overall label to :func:`preloop.cra.verdict.release_verdict_basis`.
+
+    ``pass`` needs every holding fact cleared. VEX-closed findings and
+    skips that name an undelivered input do not hold it. A stricter
+    ``pass_with_findings`` is accepted here (the persist boundary corrects
+    it); a ``fail`` the facts do not support is not.
+    """
     failures: list[str] = []
     overall = obj.get("verdict")
-    if not json_in(overall, AUDIT_VERDICTS) and overall != AUDIT_INCOMPLETE_VERDICT:
-        return failures
-    if overall == AUDIT_INCOMPLETE_VERDICT:
+    if not json_in(overall, AUDIT_VERDICTS):
         return failures
     sbom = obj.get("sbom_audit") if isinstance(obj.get("sbom_audit"), Mapping) else {}
     vuln = obj.get("vuln_scan") if isinstance(obj.get("vuln_scan"), Mapping) else {}
@@ -2012,21 +2027,12 @@ def _reconcile_release_verdict(
             "result.verdict cannot be pass when waivers were applied; "
             "the ceiling is pass_with_findings"
         )
-    findings = vuln.get("findings") if isinstance(vuln, Mapping) else []
-    skipped_checks = [
-        item
-        for item in (obj.get("checks") or [])
-        if isinstance(item, Mapping) and item.get("skipped") is True
-    ]
-    has_findings = (
-        (isinstance(findings, list) and len(findings) > 0)
-        or has_waivers
-        or bool(skipped_checks)
-    )
-    if overall == "pass" and has_findings:
+    basis = release_verdict_basis(obj)
+    if overall == "pass" and basis.verdict != "pass":
         failures.append(
-            "result.verdict is pass but findings, waivers, or skipped checks "
-            "are present; use pass_with_findings"
+            "result.verdict is pass but "
+            + "; ".join(basis.reasons)
+            + "; use pass_with_findings"
         )
     if (
         overall == "fail"
@@ -2037,6 +2043,58 @@ def _reconcile_release_verdict(
             "result.verdict is fail but sbom_audit did not fail and the "
             "severity gate passed; do not fabricate an overall fail"
         )
+    return failures
+
+
+def _check_derived_verdict_facts(obj: Mapping[str, Any]) -> list[str]:
+    """``closed_by_vex`` and ``limitations`` must be what the document says.
+
+    Both are optional (results written before they existed stay valid) and
+    derived when present: the platform stamps them at persist, so a stored
+    value that disagrees with the findings and the checks is a defect.
+    """
+    failures: list[str] = []
+    basis = release_verdict_basis(obj)
+    vuln = obj.get("vuln_scan")
+    if isinstance(vuln, Mapping) and CLOSED_BY_VEX_FIELD in vuln:
+        value = vuln.get(CLOSED_BY_VEX_FIELD)
+        if not _is_int(value) or value != basis.closed_by_vex:
+            failures.append(
+                f"result.vuln_scan.{CLOSED_BY_VEX_FIELD} is {value!r} but "
+                f"{basis.closed_by_vex} findings are closed by a valid VEX "
+                "statement (derived, never declared)"
+            )
+    if LIMITATIONS_FIELD in obj and obj.get(LIMITATIONS_FIELD) != basis.limitations:
+        failures.append(
+            f"result.{LIMITATIONS_FIELD} does not match the skipped checks that "
+            f"name an undelivered input: expected {basis.limitations!r}"
+        )
+    drift = obj.get("drift")
+    if not isinstance(drift, Mapping):
+        return failures
+    expected_current: dict[str, Any] = {
+        CLOSED_BY_VEX_FIELD: basis.closed_by_vex,
+        LIMITATIONS_FIELD: limitation_names(basis.limitations),
+    }
+    for key, current in expected_current.items():
+        if key not in drift:
+            continue
+        block = drift.get(key)
+        path = f"result.drift.{key}"
+        if not isinstance(block, Mapping):
+            failures.append(f"{path} must be an object with previous and current")
+            continue
+        if block.get("current") != current:
+            failures.append(f"{path}.current must be {current!r}")
+        previous = block.get("previous")
+        if key == CLOSED_BY_VEX_FIELD:
+            if previous is not None and not _is_int(previous):
+                failures.append(f"{path}.previous must be an integer or null")
+        elif previous is not None and (
+            not isinstance(previous, list)
+            or not all(isinstance(item, str) for item in previous)
+        ):
+            failures.append(f"{path}.previous must be a list of check names or null")
     return failures
 
 
@@ -2416,6 +2474,7 @@ def _validate_releaseaudit(
             f"result.verdict must be pass|pass_with_findings|fail, got {verdict!r}"
         )
     failures.extend(_reconcile_release_verdict(obj))
+    failures.extend(_check_derived_verdict_facts(obj))
     incomplete = verdict == AUDIT_INCOMPLETE_VERDICT
     completed = json_in(verdict, AUDIT_VERDICTS)
     return failures, advisories, completed, incomplete
