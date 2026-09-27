@@ -6521,6 +6521,14 @@ class FlowExecutionOrchestrator:
             except Exception:
                 logger.exception("Issue lifecycle completion needs reconciliation")
             try:
+                from preloop.services.issue_cost_rollup import (
+                    record_execution_finished_safely,
+                )
+
+                record_execution_finished_safely(self.db, self.execution_log.id)
+            except Exception:
+                logger.exception("Issue cost rollup needs a rebuild")
+            try:
                 from preloop.services.security_maintenance_runtime import (
                     maintenance_execution_finished,
                 )

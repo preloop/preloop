@@ -121,6 +121,7 @@ from .budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
 from .billing_operation import BillingOperation
 from .hosted_spend import HostedSpendAccount, HostedSpendMonth, HostedSpendReservation
 
+from .issue_cost import IssueCostExecution, IssueCostPullRequest, IssueCostRollup
 from .issue_lifecycle import IssueLifecycle
 from .security_maintenance import (
     SecurityMaintenanceBaseline,
@@ -137,6 +138,9 @@ __all__ = [
     "HostedSpendReservation",
     "FlowFeedback",
     "FlowThread",
+    "IssueCostExecution",
+    "IssueCostPullRequest",
+    "IssueCostRollup",
     "IssueLifecycle",
     "SecurityMaintenanceRelease",
     "SecurityMaintenanceItem",

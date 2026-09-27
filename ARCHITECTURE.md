@@ -45,6 +45,8 @@ Cloud analytics history is resolved through a billing plugin service at reportin
 The Cost console loads totals independently of settings and tab breakdowns.
 Selective reporting queries and per-section loading states are described in
 [Progressive reporting](docs/architecture/cost.md#progressive-reporting).
+Cost and cycle time per tracker issue are rolled up across flows into their own
+tables; see [Cost per issue](docs/architecture/cost.md#cost-and-cycle-time-per-tracker-issue).
 
 ## High-Level Architecture
 
