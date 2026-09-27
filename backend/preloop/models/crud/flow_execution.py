@@ -2022,6 +2022,97 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     #: the same event to whoever is reading the run afterwards.
     STOP_SOURCE_PARENT_STOP = "parent_stop"
 
+    #: ``stop_source`` written on an execution stopped because an operator
+    #: force-deleted the runner that held it (#841).
+    STOP_SOURCE_RUNNER_DELETED = "runner_deleted"
+
+    def stop_for_runner_removal(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        reason: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Stop and settle one execution whose runner is being deleted.
+
+        The stop intent is written the way an account halt writes it, with
+        its own ``stop_source``. It is also confirmed here: termination is
+        normally confirmed only by the owning runner's completion frame, and
+        the runner is losing its credential in the same transaction, so no
+        such frame can arrive. Leaving the stop unconfirmed would keep the
+        execution monitor waiting on a runner that can no longer connect.
+
+        A row that is already terminal keeps its status, result and cost;
+        only a pending stop request on it is settled.
+
+        An isolated publication that has not completed is marked failed, as
+        an abandoned controller phase is, so its writer lease cannot be
+        completed later.
+
+        Args:
+            db: Database session. The caller owns the transaction.
+            execution_id: Execution held by the runner.
+            reason: Operator-visible stop reason.
+            now: Stop timestamp; defaults to ``datetime.now(UTC)``.
+
+        Returns:
+            True when this call moved the execution to ``STOPPED``.
+        """
+        moment = now or datetime.now(timezone.utc)
+        stopped = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status.notin_(
+                    sorted(self.TERMINAL_EXECUTION_STATUSES)
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "STOPPED",
+                    models.FlowExecution.end_time: moment,
+                    models.FlowExecution.error_message: reason,
+                    models.FlowExecution.park_expires_at: None,
+                    models.FlowExecution.stop_requested_at: func.coalesce(
+                        models.FlowExecution.stop_requested_at, moment
+                    ),
+                    models.FlowExecution.stop_reason: reason[:500],
+                    models.FlowExecution.stop_source: self.STOP_SOURCE_RUNNER_DELETED,
+                },
+                synchronize_session=False,
+            )
+        )
+        self.confirm_stop(db, execution_id=execution_id, commit=False)
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .first()
+        )
+        state = (
+            (execution.result or {}).get("_private_publication") if execution else None
+        )
+        if isinstance(state, dict) and state.get("phase") not in {
+            "complete",
+            "failed",
+        }:
+            execution.result = {
+                **(execution.result or {}),
+                "_private_publication": {**state, "phase": "failed"},
+            }
+            db.add(execution)
+        if stopped:
+            self.close_parked_parent_for_resume(
+                db,
+                resume_execution_id=execution_id,
+                status="STOPPED",
+                end_time=moment,
+                commit=False,
+            )
+        db.flush()
+        return bool(stopped)
+
     def close_children_park_for_stop(
         self,
         db: Session,

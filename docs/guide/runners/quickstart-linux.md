@@ -120,6 +120,34 @@ The service reads credentials the same way the CLI does; make sure
 `~/.preloop/config.yaml` exists (via `preloop login`) for the user that
 runs the service, since the unit does not inherit your shell exports.
 
+### Rotate the token or retire the runner
+
+```sh
+preloop runner rotate-token        # new token in runner.json, service restarted
+preloop runner disable --delete    # stop the service, then delete the runner
+preloop runner disable --delete --force   # also halt executions it still holds
+```
+
+`rotate-token` asks the server for a new runner token. The old token is
+rejected from that moment, and a runner still connected with it is
+disconnected. The new token is written to `~/.preloop/runner.json` and never
+printed.
+
+`disable --delete` stops and removes the service, then deletes the runner on
+the server and removes `runner.json`. The server refuses while the runner
+still holds an execution; `--force` halts those executions the way the kill
+switch does and deletes the runner anyway. Flows routed to the runner's
+labels fall back to their configured runner pool behaviour.
+
+The console offers the same two actions on the Runners page. Rotating from
+the console does not show the new token: run `preloop runner restart` on the
+machine and the service reconnects with a fresh one.
+
+The API behind both is `DELETE /api/v1/runners/{runner_id}` (with
+`?force=true` to halt held executions) and
+`POST /api/v1/runners/{runner_id}/token`. Both need the same permission as
+registering a runner.
+
 ## Ephemeral (CI) mode: one job, then gone
 
 A CI job is not a machine. It appears, runs one execution, and is deleted,

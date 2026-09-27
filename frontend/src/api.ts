@@ -4582,6 +4582,65 @@ export async function updateRunnerConcurrency(
   return response.json();
 }
 
+/** Raised when the server refuses to delete a runner that holds leases. */
+export class RunnerHasLeasesError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunnerHasLeasesError';
+  }
+}
+
+export interface RunnerDeleteResult {
+  id: string;
+  deleted: boolean;
+  halted_execution_ids: string[];
+}
+
+/**
+ * Delete a persistent runner. Without ``force`` the server answers 409
+ * while the runner holds an execution; with it those executions are halted.
+ */
+export async function deleteRunner(
+  runnerId: string,
+  force = false
+): Promise<RunnerDeleteResult> {
+  const query = force ? '?force=true' : '';
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}${query}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const message = extractErrorMessage(errorData, 'Failed to delete runner');
+    if (response.status === 409) {
+      throw new RunnerHasLeasesError(message);
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+/**
+ * Issue a new token for a runner. The old token stops working at once and
+ * the connected runner is disconnected. The response carries the new token
+ * a single time.
+ */
+export async function rotateRunnerToken(
+  runnerId: string
+): Promise<RunnerRecord & { token: string }> {
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}/token`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to rotate runner token')
+    );
+  }
+  return response.json();
+}
+
 export async function sendCommandToExecution(
   executionId: string,
   command: string,

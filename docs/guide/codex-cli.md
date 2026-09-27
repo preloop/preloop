@@ -39,13 +39,27 @@ Offboard removes `~/.codex/preloop-control.json` and the sidecar service.
 rewritten by Agent Control.
 
 Codex refreshes its ChatGPT login on its own, even when model traffic goes
-through Preloop. That login uses a single-use refresh token, so the copy on
-the laptop and the copy Preloop stored at onboarding can invalidate each
-other. The Codex permission hook compares `~/.codex/auth.json` (and the macOS
-Keychain entry Codex prefers) with a stamp in the local enrollment state, and
-pushes the local bundle when it is newer. A failed push is logged and does
-not change the permission decision. When the hook is not installed, run
-`preloop agents sync-credentials "Codex CLI"`.
+through Preloop, and the Preloop gateway refreshes the copy it stores. That
+login uses a single-use refresh token, so two holders of one grant revoke
+each other when either refreshes with a stale token. The Codex permission
+hook keeps both copies on the same lineage. It pushes the local bundle
+(`~/.codex/auth.json`, or the macOS Keychain entry when Codex keeps its login
+there) when it is newer than the stamp in the local enrollment state. About
+every two minutes it also reads Preloop's rotation marker, which carries no
+tokens, and when Preloop's copy is newer it writes that bundle back into the
+same place Codex reads it. When both copies changed since the last sync, the
+one with the later `last_refresh` wins and replaces the other. A pull only
+happens when the local login and Preloop's copy name the same ChatGPT
+account. A failed push or pull is logged once, leaves the local login and the
+stamp as they were, and does not change the permission decision. A host with
+no local login never gets one written back. When the hook is not installed, run
+`preloop agents sync-credentials "Codex CLI"`; it reconciles in both
+directions and prints which one ran.
+
+For headless hosts, a single holder is still the recommendation: import the
+login into Preloop, delete the local `auth.json`, and keep
+`requires_openai_auth = false` (the default) on the Preloop model provider in
+`~/.codex/config.toml`, so only Preloop refreshes the grant.
 
 To push a Codex login through the API yourself, send `PUT /api/v1/ai-models/{id}`
 with `credential_type: "oauth_openai_codex"` and a `credential_payload` in

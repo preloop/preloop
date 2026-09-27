@@ -32,6 +32,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`stop_source` `pr_superseded`) before the run for the new head starts.
   The Pull Request Reviewer preset sets it. Existing flows cloned from the
   preset keep their current behaviour until the flag is set on them (#1032).
+- The MCP firewall derives a `browser_step` activity from each proxied
+  Playwright MCP (`@playwright/mcp`) `browser_*` tool call on a runtime
+  session, with no adapter on the agent side. The step joins the
+  `tool_call` row through the correlation id, the image returned by
+  `browser_take_screenshot` becomes the step's screenshot artifact under
+  the API's size, type and budget rules, and typed text, pressed keys and
+  selected values are never copied. What the agent receives does not
+  change. `MCP_PLAYWRIGHT_DERIVE_BROWSER_STEPS=false` turns it off. (#885)
+- Persistent runners can be deleted and have their token rotated.
+  `DELETE /api/v1/runners/{runner_id}` refuses with 409 while the runner holds
+  an execution; `?force=true` halts those executions and deletes it anyway.
+  `POST /api/v1/runners/{runner_id}/token` returns a new token once and the
+  old one is rejected at once. Both disconnect the live runner. The CLI adds
+  `preloop runner rotate-token` and `preloop runner disable --delete
+  [--force]`, and the Runners console page has Rotate token and Delete
+  actions.
+
+- Schema for account hierarchies (#986): accounts carry a parent, root,
+  materialized path and depth (every existing account becomes a root, depth
+  is capped at 1 for now); a `person` table links the `user` rows (one per
+  account membership) of one human; plus account access grants, resource
+  shares with a materialized recipient table, resource tags, tag key policies
+  and access rules. Tables and columns only, no endpoints yet. Existing users
+  are backfilled onto persons: rows with the same verified email share one
+  (at most one row per account), every other row gets its own. Upgrade note:
+  two revisions touch every `user` row. `20260928_person_backfill` links rows
+  with row locks only, so reads and new sign-ups continue, but an update to an
+  existing `user` row (a login records `last_login`) waits until it commits.
+  `20260928_person_constraints` then holds an exclusive lock on `user` across
+  the NOT NULL scan, two foreign key and two check validations and two index
+  builds, and every query on `user` waits while it runs. Measured on one
+  million `user` rows (local Postgres 16): the backfill took 40 to 57 s, the
+  locked revision 2 to 3 s. Both grow with the row count. On a large `user`
+  table, or where those stalls are not acceptable, drain the API first (see
+  "When to drain the API first" in `docs/operations/schema-migrations.md`).
 - **Revoke one CLI login.** Each `preloop auth login` records a
   `cli_session` row and its JWTs carry the row id (`sid`); the refresh
   token also carries a `jti` that rotates with the row, so a refresh token
@@ -55,6 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/openai/v1` URL is reduced to the resource root), and a deployment or a
   Bedrock inference profile ARN is priced from
   `meta_data.provider_runtime.base_model` when set.
+- The Codex permission hook now pulls Preloop's rotated ChatGPT login back
+  into the local `auth.json` (atomic write) or the macOS Keychain, so a laptop
+  and Preloop sharing one Codex OAuth grant stop revoking each other. A
+  token-free `GET /api/v1/ai-models/{model_id}/credentials/marker` reports
+  when Preloop's copy is newer; the export response gains `last_refresh`.
+  When both copies changed, the later `last_refresh` wins. `preloop agents
+  sync-credentials "Codex CLI"` reconciles in both directions and prints which
+  direction ran. A pull is refused unless the local login and Preloop's copy
+  name the same ChatGPT account. A single holder stays the recommendation for
+  headless hosts.
 
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:
   a login row selector, a revoke fan-out for "sign out everywhere", a
@@ -285,6 +330,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- A Jira-triggered flow bound to a code-host repository now clones that
+  repository on Copilot and Cursor host execution profiles too, with the
+  code-host tracker's credential only. Before, the host checkout ignored the
+  binding and failed the lease with "no repository URL". A binding that
+  cannot be applied fails the lease with a launch error that names it.
 
 - `POST` and `PUT /api/v1/ai-models` check `credential_payload` against
   `credential_type` when it is written. A Codex subscription payload needs
