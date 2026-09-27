@@ -57,6 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The console execution page paints as soon as the execution row loads.
+  Logs, flow, metrics and model calls then load side by side into their own
+  sections, and a failed one no longer holds up the rest. The first
+  model-call read asks for the newest 500 calls only. The run totals still
+  come from the execution row and metrics, and the timeline offers the
+  earlier calls. `GET /api/v1/flows/executions/{id}/gateway-events` accepts
+  `model_calls_only` and returns `has_more`. The execution detail response
+  now carries `flow_name`. A new index on `flow_execution_log`
+  (`execution_id`, `log_type`, `timestamp`) serves the filtered read.
+
 - At persist, a `minimum_elements.passed: true` claim is replaced when the
   delivered SBOM bytes are missing elements, and the agent's claim is kept
   on `verdict_corrected`. The verdict floor then moves the label to `fail`.
@@ -72,6 +82,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release OpenVEX states that `undici-types` 7.16.0 is not affected by
+  undici runtime advisories matched through its repository URL, because
+  the package ships only TypeScript declarations. `lodash.camelcase`
+  4.3.0 stays a dev dependency of the test runner (its parents have no
+  release that dropped it) and is recorded as not on the shipped
+  frontend execute path. Frontend SBOMs mark declaration-only packages
+  with `preloop:types_only`.
 - A workspace checkpoint that exceeds the storage cap logs
   `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
   The last completed checkpoint stays the resume point. Other checkpoint

@@ -1,7 +1,7 @@
 """Add GitHub Copilot usage import storage.
 
 Revision ID: 20260927_copilot_import
-Revises: 20260924_usage_principal_ts
+Revises: 20260927_exec_log_type_ts
 Create Date: 2026-09-27
 
 Adds a per-user dimension and imported-usage markers to
@@ -20,7 +20,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20260927_copilot_import"
-down_revision: Union[str, None] = "20260924_usage_principal_ts"
+down_revision: Union[str, None] = "20260927_exec_log_type_ts"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
