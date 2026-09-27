@@ -294,7 +294,7 @@ class TestConsentPagePost:
             mock_db = MagicMock()
             mock_gen.return_value = iter([mock_db])
             mock_crud_user.get_by_username.return_value = None
-            mock_crud_user.get_by_email.return_value = None
+            mock_crud_user.list_by_email.return_value = []
 
             response = client.post(
                 "/mcp/authorize/consent",
@@ -424,3 +424,78 @@ class TestValidateClientAndRedirect:
             )
 
         assert response.status_code == 200
+
+
+class TestSignInByASharedEmail:
+    """An address on rows in two accounts never signs in a guessed row."""
+
+    def _row(self, hashed_password: str):
+        user = MagicMock()
+        user.id = uuid4()
+        user.account_id = uuid4()
+        user.username = f"user-{hashed_password}"
+        user.hashed_password = hashed_password
+        user.is_active = True
+        return user
+
+    def _post(self, client, rows, password_ok):
+        mock_provider = MagicMock()
+        mock_provider.create_authorization_code_for_user.return_value = "code_xyz"
+        with (
+            patch(
+                "preloop.api.endpoints.oauth_consent._validate_client_and_redirect",
+                return_value={"error": None, "client_name": "Test Client"},
+            ),
+            patch("preloop.api.endpoints.oauth_consent.get_db_session") as mock_gen,
+            patch("preloop.models.crud.crud_user") as mock_crud_user,
+            patch(
+                "preloop.api.auth.jwt.verify_password",
+                side_effect=lambda _plain, hashed: hashed in password_ok,
+            ),
+            patch(
+                "preloop.api.endpoints.oauth_consent._get_oauth_provider",
+                return_value=mock_provider,
+            ),
+            patch(
+                "preloop.api.endpoints.oauth_consent.construct_redirect_uri",
+                return_value="http://localhost/cb?code=code_xyz",
+            ),
+            patch(
+                "preloop.api.endpoints.oauth_consent._render_template",
+                return_value="<html>error</html>",
+            ),
+        ):
+            mock_gen.return_value = iter([MagicMock()])
+            mock_crud_user.get_by_username.return_value = None
+            mock_crud_user.list_by_email.return_value = rows
+            response = client.post(
+                "/mcp/authorize/consent",
+                data={
+                    "client_id": "c1",
+                    "redirect_uri": "http://localhost/cb",
+                    "code_challenge": "ch",
+                    "username": "shared@example.com",
+                    "password": "pw",
+                },
+                follow_redirects=False,
+            )
+        mock_crud_user.get_by_email.assert_not_called()
+        return response, mock_provider
+
+    def test_the_password_picks_the_row(self, client):
+        first, second = self._row("hash-a"), self._row("hash-b")
+
+        response, provider = self._post(client, [first, second], {"hash-b"})
+
+        assert response.status_code == 302
+        kwargs = provider.create_authorization_code_for_user.call_args.kwargs
+        assert kwargs["user_id"] == second.id
+        assert kwargs["account_id"] == second.account_id
+
+    def test_a_password_that_opens_both_rows_signs_in_neither(self, client):
+        first, second = self._row("hash-a"), self._row("hash-b")
+
+        response, provider = self._post(client, [first, second], {"hash-a", "hash-b"})
+
+        assert response.status_code == 200
+        provider.create_authorization_code_for_user.assert_not_called()
