@@ -5944,13 +5944,16 @@ func writeJSONDocument(path string, doc map[string]interface{}) error {
 	}
 	data = append(data, '\n')
 	// 0600: the managed config embeds the durable runtime bearer token, so it
-	// must not be world-readable. Chmod after write enforces the mode even when
-	// the file already existed (os.WriteFile only sets mode on creation).
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("failed to write managed config: %w", err)
+	// must not be world-readable. The document is written to a sibling temp
+	// file and renamed into place, so a concurrent reader (a CLI starting up,
+	// or a second writer) never observes a truncated or half-written file.
+	// A symlinked config is replaced at its target so dotfile links survive.
+	target := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		target = resolved
 	}
-	if err := os.Chmod(path, 0600); err != nil {
-		return fmt.Errorf("failed to secure managed config permissions: %w", err)
+	if err := writeFileAtomic(target, data, 0600); err != nil {
+		return fmt.Errorf("failed to write managed config: %w", err)
 	}
 	return nil
 }
