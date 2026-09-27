@@ -20,6 +20,8 @@ import {
   normalizePolicyDiff,
   normalizePolicyRollback,
 } from '../../api';
+import '../../components/capability-extension';
+import { hasCapability } from '../../capabilities';
 import type {
   AccessRule,
   ModelIORule,
@@ -2470,7 +2472,25 @@ export class PoliciesView extends LitElement {
       this.loadVersions();
     }
 
+    // The shareable baseline is the active version, else the newest one.
+    const baseline =
+      this._versions.find((version) => version.is_active) ??
+      this._versions.reduce<PolicyVersion | null>(
+        (best, version) =>
+          !best || version.version_number > best.version_number
+            ? version
+            : best,
+        null
+      );
     return html`
+      ${
+        baseline
+          ? html`<capability-extension
+              name="resource-access"
+              .context=${{ kind: 'policy', resourceId: baseline.id }}
+            ></capability-extension>`
+          : ''
+      }
       <div class="policy-files-container">
         <div class="yaml-editor-header">
           <div class="yaml-editor-intro">
@@ -3435,6 +3455,19 @@ defaults:
                     >
                       YAML
                     </sl-tab>
+                    ${
+                      // Tag based access rules come from an extension plugin;
+                      // the tab exists only where /features reports them.
+                      hasCapability(this._features, 'abac_rules')
+                        ? html`<sl-tab
+                            slot="nav"
+                            panel="access-rules"
+                            ?active=${this._activeTab === 'access-rules'}
+                          >
+                            Access rules
+                          </sl-tab>`
+                        : ''
+                    }
 
                     <sl-tab-panel name="rules">
                       ${this.renderRulesTab()}
@@ -3442,6 +3475,19 @@ defaults:
                     <sl-tab-panel name="files">
                       ${this.renderPolicyFilesTab()}
                     </sl-tab-panel>
+                    ${
+                      hasCapability(this._features, 'abac_rules')
+                        ? html`<sl-tab-panel name="access-rules">
+                            ${
+                              this._activeTab === 'access-rules'
+                                ? html`<capability-extension
+                                    name="access-rules"
+                                  ></capability-extension>`
+                                : ''
+                            }
+                          </sl-tab-panel>`
+                        : ''
+                    }
                   </sl-tab-group>
                   ${this.renderModelIODialog()}
                   <policy-generate-dialog

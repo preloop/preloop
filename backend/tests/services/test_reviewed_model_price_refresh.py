@@ -4,7 +4,7 @@ import asyncio
 import copy
 import importlib.util
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -913,19 +913,49 @@ def test_alibaba_apply_rejects_flattening_seed_time_bands(payload: dict) -> None
         reset_live_state_for_tests()
 
 
-def test_alibaba_time_bands_feed_estimates_idle_and_busy(payload: dict) -> None:
+class _FrozenDatetime(datetime):
+    """``datetime`` whose ``now()`` is pinned, for modules that read the clock."""
+
+    frozen: datetime
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:  # type: ignore[override]
+        """Return the pinned instant, converted to ``tz`` when one is given."""
+        return cls.frozen.astimezone(tz) if tz is not None else cls.frozen
+
+
+def _freeze_alibaba_pricing_clock(
+    monkeypatch: pytest.MonkeyPatch, frozen: datetime
+) -> None:
+    """Pin every clock the reviewed feed and Alibaba overlay read to ``frozen``."""
+    from preloop.services import alibaba_price_catalog, reviewed_model_price_refresh
+
+    clock = type("FrozenClock", (_FrozenDatetime,), {"frozen": frozen})
+    monkeypatch.setattr(reviewed_model_price_refresh, "datetime", clock)
+    monkeypatch.setattr(alibaba_price_catalog, "_utcnow", lambda: frozen)
+
+
+def test_alibaba_time_bands_feed_estimates_idle_and_busy(
+    payload: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from types import SimpleNamespace
 
     from preloop.services.alibaba_price_catalog import reset_live_state_for_tests
     from preloop.services.alibaba_pricing import estimate
 
+    # Every date here is fixed and the clock is frozen, so the result cannot
+    # depend on when or where the suite runs. Feed validation needs
+    # published_at <= now < expires_at and effective_from <= verified_at, and
+    # the estimate fails closed for an observation before effective_from.
+    frozen_now = datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc)
+    _freeze_alibaba_pricing_clock(monkeypatch, frozen_now)
+    payload["published_at"] = "2026-09-02T23:59:00+00:00"
+    payload["expires_at"] = "2026-09-10T00:00:00+00:00"
+    payload["models"]["example/model"]["verified_at"] = "2026-09-02T23:58:00+00:00"
+    payload["models"]["example/model"]["effective_from"] = "2026-09-01T00:00:00+00:00"
+
     reset_live_state_for_tests()
     entry = _alibaba_entry(payload)
-    # Pin effectiveness before the frozen idle/busy timestamps. The payload
-    # fixture uses now-1 day, which is later than 2026-09-19 04:00 UTC
-    # once the clock passes that time the following day, and
-    # live_tariff then fail-closes as "before effective".
-    entry["effective_from"] = "2026-09-01T00:00:00+00:00"
     entry["alibaba_policy"].pop("tiers")
     entry["alibaba_policy"]["model_identifier"] = "banded-chat"
     entry["alibaba_policy"]["time_bands"] = {
@@ -944,22 +974,13 @@ def test_alibaba_time_bands_feed_estimates_idle_and_busy(payload: dict) -> None:
         allowed_models=[key],
         interval_seconds=60,
     )
+    # Both observations sit after effective_from and well inside a band, away
+    # from the 08:00 and 22:00 UTC+8 edges: 04:00 UTC is 12:00 UTC+8 (busy)
+    # and 16:00 UTC is 00:00 UTC+8 (idle).
+    busy_at = datetime(2026, 9, 2, 4, 0, tzinfo=timezone.utc)
+    idle_at = datetime(2026, 9, 2, 16, 0, tzinfo=timezone.utc)
     try:
         assert updater.apply(payload) == 1
-        # Estimates fail closed before effective_from. The fixture stamps
-        # that as now-1d, so a calendar-fixed 2026-09-19 04:00 UTC is in
-        # the past for the rest of this day. Pick the next 04:00/16:00 UTC
-        # after the stamp: 04:00 is 12:00 UTC+8 (busy), 16:00 is midnight
-        # UTC+8 (idle).
-        effective = datetime.fromisoformat(
-            str(entry["effective_from"]).replace("Z", "+00:00")
-        )
-        if effective.tzinfo is None:
-            effective = effective.replace(tzinfo=timezone.utc)
-        busy_at = (effective + timedelta(days=1)).replace(
-            hour=4, minute=0, second=0, microsecond=0
-        )
-        idle_at = busy_at.replace(hour=16)
         busy = estimate(
             model,
             prompt_tokens=10_000,

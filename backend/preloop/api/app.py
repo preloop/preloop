@@ -620,8 +620,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     from preloop.services.model_content_policy import set_model_io_approval_loop
+    from preloop.services.model_price_catalog import start_price_map_refresh
 
     price_refresher = start_reviewed_price_refresh()
+    # Merge the upstream price map on startup and every TTL so a model the
+    # vendored snapshot lacks is priced without waiting for a miss (#801).
+    price_map_refresher = start_price_map_refresh()
     set_model_io_approval_loop(asyncio.get_running_loop())
     try:
         yield
@@ -629,6 +633,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         set_model_io_approval_loop(None)
         if price_refresher is not None:
             await price_refresher.stop()
+        if price_map_refresher is not None:
+            await price_map_refresher.stop()
 
     # Shutdown logic
 
