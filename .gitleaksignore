@@ -8,11 +8,12 @@
 # History cannot be edited without rewriting every downstream clone, so they
 # are recorded here instead.
 #
-# IMPORTANT: "baselined" is not "harmless". Four of these are credential
-# shapes with high entropy in a repository that is now public. They must be
-# treated as compromised and rotated if that has not already happened. They
-# are listed under "assume compromised" below and were reported privately
-# under SECURITY.md rather than in a public issue.
+# IMPORTANT: "baselined" is not "harmless". The five fingerprints under
+# "assume compromised" below are three distinct high-entropy credentials in a
+# repository that is now public (one payment-provider token, and two API keys
+# that appear in two commits, hence four fingerprints). They must be treated
+# as compromised and rotated if that has not already happened. They were
+# reported privately under SECURITY.md rather than in a public issue.
 #
 # Regenerate the fingerprint for a new finding with:
 #   gitleaks git . --config .gitleaks.toml --redact --report-format json \
@@ -33,12 +34,12 @@ fb032be5def2256ea3e5982bc20164ff23e888bb:docs/index.md:generic-api-key:214
 
 # --- superseded defaults, no longer in the tree -------------------------
 # Hardcoded fallback API token in the manual agent test script. Removed in
-# the working tree by this change; the default is now empty and the script
-# already exits when it is unset.
+# the working tree by #508; the default is now empty and the script exits
+# when it is unset.
 8fdb45ddc204b2b7880af359b23f097c9de01b13:scripts/test_agent_api.py:generic-api-key:34
 32227f41686e2f0e1fbeacbea64ec14c3b6d2d17:scripts/test_agent_api.py:generic-api-key:34
 # jwtSecret default in the retired helm/spacebridge chart, 2025-03-27. The
-# equivalent default in helm/preloop is replaced by this change.
+# helm/preloop chart now refuses to install with an empty or placeholder key.
 9924b0e3448437e64f70a806977cbb98d378a409:helm/spacebridge/values.yaml:generic-api-key:86
 
 # --- fixtures in trees that no longer exist -----------------------------

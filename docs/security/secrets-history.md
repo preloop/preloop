@@ -17,12 +17,17 @@ from the release audit's independent history scan, matching the audit's
 freeze floor: no row has been dropped. It also covers the two scanner
 false-positive fingerprints that exist only in `.gitleaksignore`, so every
 entry in that file has a disposition row here. One commit-and-path row below
-can stand for several `.gitleaksignore` fingerprints (a fingerprint is per
-line and per rule); the fingerprints named in each section keep the two
-files reconcilable. Any new finding must be added to both files in the same
-change.
+can stand for several `.gitleaksignore` fingerprints (a fingerprint is
+commit, path, rule and line). To keep the two files reconcilable, each
+section below names the `.gitleaksignore` section it pairs with and that
+section's fingerprint count, and every fingerprint's commit and path appear
+as a row in the paired section here (13 fingerprints in total).
+`backend/tests/test_secrets_history_parity.py` checks this pairing. Any new
+finding must be added to both files in the same change.
 
 ## Assume compromised: reported privately, rotation not recorded here
+
+Pairs with `.gitleaksignore` section: `assume compromised, rotate if not already done` (5 fingerprints).
 
 Three credentials over five ignore-file fingerprints: a payment-provider
 access token, and two API keys pasted into a docs example (the same two keys
@@ -49,6 +54,8 @@ record the date here in place of this sentence.
 
 ## Superseded defaults: published by design, removed at HEAD
 
+Pairs with `.gitleaksignore` section: `superseded defaults, no longer in the tree` (3 fingerprints).
+
 | Commit | Path | Disposition |
 | --- | --- | --- |
 | `8fdb45ddc204b2b7880af359b23f097c9de01b13` | `scripts/test_agent_api.py` | hardcoded fallback API token in a manual test script |
@@ -68,6 +75,8 @@ action lives with the operator, not in this repository.
 
 ## Test fixtures and demo values: never live
 
+Pairs with `.gitleaksignore` section: `fixtures in trees that no longer exist` (3 fingerprints).
+
 | Commit | Path | Disposition |
 | --- | --- | --- |
 | `e71706cd13436b34ea22a3d4d71ac3da715d1114` | `lib/preloop-sync/test_search.py` | sample key in a test file, removed tree |
@@ -78,6 +87,9 @@ Synthetic values in fixtures and demos under the long-removed `lib/` tree.
 Never credentials for any live system; nothing to rotate.
 
 ## Hardening commits: the finding is the fix, no committed value
+
+No `.gitleaksignore` counterpart (0 fingerprints): these two rows come from
+the audit's history pickaxe, and gitleaks does not flag either commit.
 
 | Commit | Path | Disposition |
 | --- | --- | --- |
@@ -93,6 +105,8 @@ deployments that predate these fixes rotate on their side;
 is the rotation guide for the second one.
 
 ## Scanner false positives: baselined so the history scan stays green
+
+Pairs with `.gitleaksignore` section: `false positive on an unmerged feature branch` (2 fingerprints).
 
 These two fingerprints exist only in `.gitleaksignore` (they are not among
 the audit's 11 classified findings) and involve no credential at all:
