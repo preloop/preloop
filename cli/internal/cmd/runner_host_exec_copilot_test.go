@@ -416,6 +416,12 @@ func TestCopilotHostExecHooksAreIdempotentAndReplacedAtomically(t *testing.T) {
 		t.Fatal("unchanged hooks file was rewritten")
 	}
 
+	if runtime.GOOS == "windows" {
+		// Host execution is Unix-only (Windows rejects profiles before hooks
+		// are touched), and Windows cannot rename over a file a reader holds
+		// open, so the concurrent replacement check below is Unix-only.
+		return
+	}
 	// Concurrent jobs racing with a reader: every read parses in full.
 	stale := []byte(`{"version":1,"hooks":{"preToolUse":[{"type":"command","bash":"preloop agents permission-hook --source copilot_cli"}]}}` + "\n")
 	var wg sync.WaitGroup
