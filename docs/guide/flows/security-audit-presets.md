@@ -671,7 +671,9 @@ fields) next to this run's value (`current`, stamped by the platform).
 Gap-register `gap` and `partial` items appear in `checks[]` as
 `passed: false`, named `gap_register_<item id>`, and move a clean run to
 `pass_with_findings`. They never flip the severity gate or
-`sbom_audit.verdict`. `not_checkable` is required.
+`sbom_audit.verdict`. A failed check named after an item whose status is
+`met` is a contradiction, not a mirror, and it holds the verdict like any
+other failed cross-check. `not_checkable` is required.
 `secrets_findings_count` must equal the SHA+path **finding** row count
 (not the gitleaks count). A previous run's SHA+path set is a freeze
 floor: dropping a row without `resolved` plus a reason fails platform

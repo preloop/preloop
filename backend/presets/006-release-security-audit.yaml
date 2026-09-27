@@ -870,7 +870,8 @@ prompt_template: |
   secrets finding, moves a clean run to "pass_with_findings" and
   nothing more. A "declared" item does not hold the verdict: it is
   recorded, and it keeps gap_register.ready false, but it is not an
-  open gap. State this explicitly in audit-report.md so nobody
+  open gap. A met item has no failed mirror check: a failed check named
+  after a met item holds the verdict like any other failed cross-check. State this explicitly in audit-report.md so nobody
   reads a green gate as a clean gap register.
   gap_register.ready is a summary flag with one meaning: true only when
   no item is a gap or partial and secrets_findings_count is 0. A

@@ -180,6 +180,44 @@ class TestEmptyGapRegister:
         basis = release_verdict_basis(payload)
         assert basis.reasons == ["checks ran and failed: zizmor_workflow_audit"]
 
+    @pytest.mark.parametrize("name", ["cvd_policy", "gap_register_cvd_policy"])
+    def test_a_met_item_does_not_excuse_its_failed_check(self, name: str) -> None:
+        payload = attested_release_audit(with_gaps=False)
+        item = next(
+            entry
+            for entry in payload["gap_register"]["items"]
+            if entry["id"] == "cvd_policy"
+        )
+        assert item["status"] == "met"
+        payload["checks"].append(
+            {"name": name, "passed": False, "skipped": False, "details": "absent"}
+        )
+
+        basis = release_verdict_basis(payload)
+
+        assert basis.reasons == [f"checks ran and failed: {name}"]
+
+    @pytest.mark.parametrize("name", ["support_window", "gap_register_support_window"])
+    def test_a_declared_item_excuses_its_mirror_check(self, name: str) -> None:
+        payload = attested_release_audit(with_gaps=False)
+        payload["checks"].append(
+            {"name": name, "passed": False, "skipped": False, "details": "declared"}
+        )
+        assert release_verdict_basis(payload).verdict == "pass"
+
+    def test_an_id_listed_as_met_and_declared_does_not_excuse(self) -> None:
+        payload = attested_release_audit(with_gaps=False)
+        payload["gap_register"]["items"].append(
+            {
+                "id": "support_window",
+                "title": "Support window",
+                "status": "met",
+                "evidence": "SECURITY.md:1",
+            }
+        )
+        basis = release_verdict_basis(payload)
+        assert basis.reasons == ["checks ran and failed: gap_register_support_window"]
+
     def test_the_sbom_license_findings_stay_on_the_nested_verdict(self) -> None:
         artifact = _persist(attested_release_audit(with_gaps=False))
         assert artifact["verdict"] == "pass"

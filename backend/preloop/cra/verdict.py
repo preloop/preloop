@@ -53,6 +53,11 @@ PASS_DEFINITION = (
 )
 
 GAP_HOLDING_STATUSES = frozenset({"gap", "partial"})
+# Register statuses that explain a failed mirror check. gap and partial hold
+# the verdict through the register itself; declared is recorded but does not
+# hold. "met" explains nothing: a failed check next to a "met" claim is a
+# contradiction, and the failure holds.
+GAP_EXPLAINING_STATUSES = GAP_HOLDING_STATUSES | frozenset({"declared"})
 GAP_CHECK_PREFIX = "gap_register_"
 
 #: ``inputs_declared`` values that say an input was not delivered.
@@ -151,24 +156,36 @@ class CheckClassification:
     failed: list[str] = field(default_factory=list)
 
 
-def _gap_item_ids(obj: Mapping[str, Any]) -> set[str]:
+def _gap_item_statuses(obj: Mapping[str, Any]) -> dict[str, set[str]]:
+    """Every status each register item id carries, lower-cased."""
     register = _mapping(obj.get("gap_register"))
     items = register.get("items")
+    statuses: dict[str, set[str]] = {}
     if not isinstance(items, list):
-        return set()
-    return {
-        _text(item.get("id"))
-        for item in items
-        if isinstance(item, Mapping) and _text(item.get("id"))
-    }
+        return statuses
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        item_id = _text(item.get("id"))
+        if item_id:
+            status = _text(item.get("status")).lower()
+            statuses.setdefault(item_id, set()).add(status)
+    return statuses
 
 
-def _governed_by_register(name: str, gap_ids: set[str]) -> bool:
-    if name in gap_ids:
-        return True
-    return name.startswith(GAP_CHECK_PREFIX) and (
-        name[len(GAP_CHECK_PREFIX) :] in gap_ids
-    )
+def _explained_by_register(name: str, statuses: Mapping[str, set[str]]) -> bool:
+    """True when a failed check mirrors a register item that explains it.
+
+    The check is named after the item (``gap_register_<id>``, or the bare id
+    older results used), and every item with that id is ``gap``,
+    ``partial`` or ``declared``. A ``met`` item, or a status outside the
+    register vocabulary, explains nothing, so the failure still holds.
+    """
+    item_id = name
+    if item_id not in statuses and name.startswith(GAP_CHECK_PREFIX):
+        item_id = name[len(GAP_CHECK_PREFIX) :]
+    found = statuses.get(item_id)
+    return bool(found) and found <= GAP_EXPLAINING_STATUSES
 
 
 def classify_checks(obj: Mapping[str, Any]) -> CheckClassification:
@@ -186,7 +203,7 @@ def classify_checks(obj: Mapping[str, Any]) -> CheckClassification:
     if not isinstance(checks, list):
         return result
     inputs = obj.get("inputs_declared")
-    gap_ids = _gap_item_ids(obj)
+    register_statuses = _gap_item_statuses(obj)
     for idx, item in enumerate(checks):
         if not isinstance(item, Mapping):
             continue
@@ -198,7 +215,9 @@ def classify_checks(obj: Mapping[str, Any]) -> CheckClassification:
             else:
                 result.unexplained_skips.append(name)
             continue
-        if item.get("passed") is False and not _governed_by_register(name, gap_ids):
+        if item.get("passed") is False and not _explained_by_register(
+            name, register_statuses
+        ):
             result.failed.append(name)
     return result
 
