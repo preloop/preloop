@@ -12,7 +12,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import pytest
 
@@ -564,15 +564,28 @@ def test_git_errors_never_carry_git_output(tmp_path: Path) -> None:
 
 
 def hanging_git(tmp_path: Path) -> Tuple[Path, Path]:
-    """A stand-in Git binary that records its pid and then hangs."""
+    """A stand-in Git binary that starts a helper, records both pids, hangs.
+
+    The pid file holds ``<git pid> <helper pid>`` once both are running, like
+    a real ``git fetch`` waiting on its ``git remote-https`` helper.
+    """
     pid_file = tmp_path / "git.pid"
     script = tmp_path / "hanging-git"
-    script.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 60\n")
+    script.write_text(
+        "#!/bin/sh\n"
+        "sleep 60 &\n"
+        f"echo $$ $! > {pid_file}.tmp && mv {pid_file}.tmp {pid_file}\n"
+        "wait\n"
+    )
     script.chmod(0o755)
     return script, pid_file
 
 
-def wait_for(predicate, seconds: float = 10.0) -> None:
+def recorded_pids(pid_file: Path) -> List[int]:
+    return [int(pid) for pid in pid_file.read_text().split()]
+
+
+def wait_for(predicate: Callable[[], bool], seconds: float = 10.0) -> None:
     import time
 
     deadline = time.monotonic() + seconds
@@ -612,24 +625,24 @@ def test_closing_the_workspace_kills_a_running_git_and_refuses_new_ones(
         committer_email="bot@example.com",
     )
     workspace._git = str(script)
-    errors: List[BaseException] = []
+    errors: List[BackportGitError] = []
 
     def run() -> None:
         try:
             workspace.init()
-        except BaseException as error:  # noqa: BLE001 - recorded for the assert
+        except BackportGitError as error:
             errors.append(error)
 
     worker = threading.Thread(target=run)
     worker.start()
     wait_for(pid_file.exists)
-    wait_for(lambda: pid_file.read_text().strip() != "")
     workspace.close()
     worker.join(timeout=10)
 
     assert not worker.is_alive()
     assert [str(e) for e in errors] == ["Backport workspace was closed"]
-    assert process_is_gone(int(pid_file.read_text()))
+    for pid in recorded_pids(pid_file):
+        wait_for(lambda pid=pid: process_is_gone(pid))
     with pytest.raises(BackportGitError, match="closed"):
         workspace.init()
 
@@ -658,7 +671,7 @@ async def test_cancelled_run_stops_git_and_surfaces_the_cancellation(
     host = FakeHost()
 
     async def started() -> None:
-        while not (pid_file.exists() and pid_file.read_text().strip()):
+        while not pid_file.exists():
             await asyncio.sleep(0.02)
 
     task = asyncio.create_task(
@@ -673,9 +686,9 @@ async def test_cancelled_run_stops_git_and_surfaces_the_cancellation(
     )
     await asyncio.wait_for(started(), timeout=10)
     task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    outcome = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(outcome[0], asyncio.CancelledError)
 
-    pid = int(pid_file.read_text())
-    wait_for(lambda: process_is_gone(pid))
+    for pid in recorded_pids(pid_file):
+        wait_for(lambda pid=pid: process_is_gone(pid))
     assert host.comments == []

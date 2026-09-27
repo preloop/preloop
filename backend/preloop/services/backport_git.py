@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import os
 import shutil
+import signal
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -35,6 +36,26 @@ MERGE_COMMIT_FETCH_DEPTH = 2
 SOURCE_BRANCH_FETCH_DEPTH = 100
 
 CherryPickStatus = Literal["applied", "conflict", "empty"]
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Kill a Git child and every helper it started.
+
+    The child was started with ``start_new_session=True``, so its pid is also
+    its process group id. Falls back to killing the child alone when the group
+    is already gone or group signals are unavailable.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None:
+        try:
+            killpg(process.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
 
 
 class BackportGitError(RuntimeError):
@@ -162,13 +183,14 @@ class BackportWorkspace:
         cancelled (for example by the flow's timeout budget), because
         cancelling ``asyncio.to_thread`` does not stop the worker thread and
         its Git child would otherwise keep running, and possibly push, after
-        the execution was already recorded as failed.
+        the execution was already recorded as failed. Git runs in its own
+        process group, so its transport and pack helpers are killed with it.
         """
         with self._lock:
             self._closed = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.kill()
+            _kill_process_group(process)
 
     def _run(self, *args: str, check: bool = True) -> tuple[int, str]:
         """Run one Git command authored by this module.
@@ -219,6 +241,9 @@ class BackportWorkspace:
                     stdout=subprocess.PIPE,
                     # Git's stderr can include the remote URL and auth failures.
                     stderr=subprocess.DEVNULL,
+                    # Own process group, so close() and the timeout also stop
+                    # remote-https, fetch-pack and pack-objects helpers.
+                    start_new_session=True,
                 )
             except OSError as exc:
                 raise BackportGitError(f"Git {args[0]} could not run") from exc
@@ -226,7 +251,7 @@ class BackportWorkspace:
         try:
             stdout, _ = process.communicate(timeout=GIT_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as exc:
-            process.kill()
+            _kill_process_group(process)
             process.communicate()
             raise BackportGitError(f"Git {args[0]} timed out") from exc
         finally:
