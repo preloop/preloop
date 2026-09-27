@@ -155,6 +155,25 @@ EMPTY_CACHE_SPLIT: Dict[str, int] = {
 _MAX_GET_BY_IDS = 100
 
 
+def _usage_account_clause(
+    column: Any, account_id: Any, account_ids: Optional[Sequence[Any]]
+) -> Any:
+    """``account_id`` equality, or membership in ``account_ids`` when given.
+
+    ``account_ids`` is account hook H8: a plugin rolls up several accounts
+    (for example a parent and its children) in one aggregate. ``None`` keeps
+    the single-account filter unchanged; an empty list matches nothing.
+    """
+    if account_ids is None:
+        return column == account_id
+    return column.in_(
+        [
+            value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+            for value in account_ids
+        ]
+    )
+
+
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
 
@@ -956,10 +975,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ai_model_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
         exclude_retries: bool = False,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Get aggregated gateway usage totals for an account or flow.
 
         Args:
+            account_ids: When given, aggregate over these accounts instead of
+                ``account_id`` alone (account hook H8, for example a parent
+                and its children). The caller decides who may read them.
             exclude_retries: When True, rows marked as retries of an earlier
                 identical request are excluded. Default False — retried calls
                 consume real provider tokens, so they count as spend unless
@@ -1014,7 +1037,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             *cache_split_columns(),
         ).filter(
             ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
+            _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
             exclude_replay_usage_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
@@ -1335,12 +1358,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ai_model_ids: Optional[Sequence[str]] = None,
         failed_since: Optional[Mapping[str, datetime]] = None,
         limit: Optional[int] = 20,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Group gateway usage by model.
 
         Args:
             db: Database session.
             account_id: Account whose gateway usage is aggregated.
+            account_ids: When given, aggregate over these accounts instead of
+                ``account_id`` alone (account hook H8).
             start_date: Inclusive lower bound on usage timestamp.
             end_date: Exclusive upper bound on usage timestamp.
             flow_id: Restrict to a single flow.
@@ -1445,7 +1471,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             # appear as separate groups when model_alias differs (intentional —
             # callers often filter/sort by the client-visible alias).
             ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
+            _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
             exclude_replay_usage_condition(),
         )
         if start_date:
@@ -1950,8 +1976,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ai_model_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
         runtime_principal_id: Optional[str] = None,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Group gateway usage by UTC day.
+
+        ``account_ids``, when given, aggregates over those accounts instead of
+        ``account_id`` alone (account hook H8).
 
         The day bucket is aggregated in a materialized CTE with no
         ``ORDER BY``. Materializing stops the planner from pulling the
@@ -1973,7 +2003,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             *cache_split_columns(),
         ).filter(
             ApiUsage.action_type == "model_gateway",
-            ApiUsage.account_id == account_id,
+            _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
             exclude_replay_usage_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
@@ -2257,12 +2287,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         model_alias: Optional[str] = None,
         purpose: Optional[str] = None,
+        account_ids: Optional[Sequence[str]] = None,
     ) -> float:
         """Sum estimated gateway spend for an account since a timestamp.
 
         Args:
             db: Database session.
             account_id: Owning account id.
+            account_ids: When given, sum over these accounts instead of
+                ``account_id`` alone (account hook H8).
             start: Inclusive lower bound on ``timestamp``.
             flow_id: Optional flow id filter.
             api_key_id: Optional API key id filter.
@@ -2279,7 +2312,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(func.sum(self.model.estimated_cost), 0.0)
         ).filter(
             self.model.action_type == "model_gateway",
-            self.model.account_id == account_id,
+            _usage_account_clause(self.model.account_id, account_id, account_ids),
             self.model.timestamp >= start,
         )
         if flow_id:
