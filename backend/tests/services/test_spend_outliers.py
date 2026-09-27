@@ -199,6 +199,62 @@ def test_daily_multiple_is_configurable(db_session, test_user):
     assert len(evaluate_daily_rules(db_session, test_user.account_id, NOW)) == 1
 
 
+def test_replay_only_account_is_not_evaluated(db_session, test_user):
+    """The account list reads the same replay-excluded spend as the rules."""
+    _spend(db_session, test_user, YESTERDAY, 40.0, purpose="replay_validation")
+    db_session.flush()
+
+    assert (
+        crud_spend_outlier_finding.list_account_ids_with_gateway_spend(
+            db_session, day=YESTERDAY
+        )
+        == []
+    )
+
+    _spend(db_session, test_user, YESTERDAY, 1.0)
+    db_session.flush()
+    assert crud_spend_outlier_finding.list_account_ids_with_gateway_spend(
+        db_session, day=YESTERDAY
+    ) == [test_user.account_id]
+
+
+def test_settings_upsert_is_one_statement_that_tolerates_a_raced_insert(
+    db_session, test_user
+):
+    """A row another writer inserted first is updated, not a unique error.
+
+    The row is written with a plain INSERT the ORM never saw, which is what a
+    concurrent first save looks like from this session.
+    """
+    db_session.execute(
+        models.SpendOutlierSettings.__table__.insert().values(
+            id=uuid.uuid4(),
+            account_id=test_user.account_id,
+            daily_multiple=5.0,
+            min_history_days=7,
+            top_tier_model_prefixes=["premium-"],
+            top_tier_share=0.5,
+        )
+    )
+
+    row = crud_spend_outlier_settings.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        values={"session_cost_threshold_usd": 25.0},
+        commit=False,
+    )
+
+    assert row.session_cost_threshold_usd == 25.0
+    assert row.daily_multiple == 5.0
+    assert row.top_tier_model_prefixes == ["premium-"]
+    assert (
+        db_session.query(models.SpendOutlierSettings)
+        .filter_by(account_id=test_user.account_id)
+        .count()
+        == 1
+    )
+
+
 def test_replay_validation_spend_is_not_counted(db_session, test_user):
     """Preloop's own replay traffic is not the developer's spend."""
     _history(db_session, test_user, range(1, 11), 10.0)

@@ -65,7 +65,11 @@ class CRUDSpendOutlierSettings(CRUDBase[SpendOutlierSettings]):
         values: Dict[str, Any],
         commit: bool = True,
     ) -> SpendOutlierSettings:
-        """Create or update the account's settings row.
+        """Create or update the account's settings row in one statement.
+
+        ``INSERT ... ON CONFLICT DO UPDATE`` on the account's unique key, so
+        two first-time saves racing each other both succeed (the later write
+        wins) instead of one failing on the constraint.
 
         Args:
             db: Database session.
@@ -77,16 +81,25 @@ class CRUDSpendOutlierSettings(CRUDBase[SpendOutlierSettings]):
         Returns:
             The stored settings row.
         """
-        row = self.get_for_account(db, account_id=account_id)
-        if row is None:
-            row = SpendOutlierSettings(account_id=account_id)
-            db.add(row)
-        for key, value in values.items():
-            setattr(row, key, value)
+        statement = pg_insert(SpendOutlierSettings).values(
+            account_id=account_id, **values
+        )
+        if values:
+            statement = statement.on_conflict_do_update(
+                constraint="uq_spend_outlier_settings_account",
+                set_={**values, "updated_at": func.now()},
+            )
+        else:
+            statement = statement.on_conflict_do_nothing(
+                constraint="uq_spend_outlier_settings_account"
+            )
+        db.execute(statement)
         if commit:
             db.commit()
         else:
             db.flush()
+        row = self.get_for_account(db, account_id=account_id)
+        assert row is not None  # the statement above guarantees the row
         db.refresh(row)
         return row
 
@@ -200,13 +213,19 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
     def list_account_ids_with_gateway_spend(
         self, db: Session, *, day: date
     ) -> List[UUID]:
-        """Accounts with any priced gateway spend on the given UTC day."""
+        """Accounts with any priced gateway spend on the given UTC day.
+
+        Uses the same filters as the spend queries the rules read, replay
+        validation excluded, so an account whose only traffic was replay
+        validation is not evaluated.
+        """
         rows = (
             db.query(ApiUsage.account_id)
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id.is_not(None),
                 ApiUsage.estimated_cost > 0,
+                exclude_replay_usage_condition(),
                 ApiUsage.timestamp >= _day_start(day),
                 ApiUsage.timestamp < _day_start(day + timedelta(days=1)),
             )
