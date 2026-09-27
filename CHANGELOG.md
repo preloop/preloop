@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls are metered, whether hooks record a session, and whether spend
   is gateway usage or the premium-request import.
 
+- Semantic search settings on the Sessions page: a card to opt the account in
+  to embedding its session content, name the model and endpoint, choose
+  `summaries_only` or `full` (with the storage cost of each), and set the
+  daily cap, with corpus progress and the last degraded reason shown. A viewer
+  sees it read-only; saving needs `manage_budgets`. The `semantic_not_enabled`
+  search notice links to it. `PUT /api/v1/runtime-sessions/settings/embedding`
+  now takes `enabled`, `daily_cap_usd`, `provider`, `model_identifier` and
+  `base_url` alongside `scope`, and its read carries the deployment default
+  cap, the kill switch state and corpus progress.
 - The environment image (`environments/preloop/Dockerfile`) installs the
   distro Perl toolchain: `perl`, `cpanminus`, `perlver`
   (`Perl::MinimumVersion`), `perlcritic`, and `prove`. The default hosted
