@@ -8,7 +8,7 @@ session behaves like a direct `copilot` launch.
 Model traffic goes through Preloop. GitHub-hosted models are not used for
 that path. Missing `copilot` on `PATH`, a missing Preloop credential, or a
 missing model alias exits with a named error and does **not** start
-Copilot — launching without the BYOK variables would fall through to
+Copilot, because launching without the BYOK variables would fall through to
 GitHub-hosted models.
 
 MCP onboarding for Copilot CLI (`~/.copilot/mcp-config.json`) is separate.
@@ -38,8 +38,11 @@ preloop --url https://preloop.example.com --token "$PRELOOP_TOKEN" \
 ```
 
 Arguments after Preloop's own flags are passed through to `copilot`. Global
-Preloop flags (`--token`, `--url`) belong **before** the `copilot`
-subcommand, same as `preloop cursor`.
+Preloop flags (`--token`, `--url`, `--config`, `-v`) belong **before** the
+`copilot` subcommand. Preloop reads them there and does not forward them to
+`copilot`, so a `--token` value never appears in the Copilot process
+arguments. Anything after `copilot` (other than `--model` and `--provider`)
+is passed through unchanged, even if it looks like a Preloop flag.
 
 ### `--model`
 
@@ -162,4 +165,4 @@ one seat across automated flows for several people.
 
 ## Related
 
-- [`preloop cursor`](cursor-cli.md) — Cursor Agent launcher pattern
+- [`preloop cursor`](cursor-cli.md): Cursor Agent launcher pattern
