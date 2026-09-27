@@ -4,7 +4,7 @@ import uuid
 from typing import Any, List, Optional
 
 from sqlalchemy import text, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from preloop.models import models
 from .base import CRUDBase
@@ -101,7 +101,9 @@ class CRUDUser(CRUDBase[models.User]):
         """
         return db.query(models.User).filter(models.User.username == username).first()
 
-    def _email_query(self, db: Session, *, email: str, account_id: Any = None):
+    def _email_query(
+        self, db: Session, *, email: str, account_id: Any = None
+    ) -> Query[models.User]:
         """Rows holding ``email``, optionally within one account, in a stable order."""
         query = db.query(models.User).filter(models.User.email == email)
         if account_id:
@@ -138,9 +140,11 @@ class CRUDUser(CRUDBase[models.User]):
         Returns:
             True when at least one row holds the address.
         """
-        return db.query(
-            self._email_query(db, email=email, account_id=account_id).exists()
-        ).scalar()
+        return bool(
+            db.query(
+                self._email_query(db, email=email, account_id=account_id).exists()
+            ).scalar()
+        )
 
     def get_by_email(
         self, db: Session, *, email: str, account_id: Any = None

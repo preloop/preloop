@@ -77,6 +77,7 @@ from preloop.utils.tokens import (
     verify_user_token,
 )
 from preloop.models.crud import (
+    AmbiguousEmailError,
     crud_account,
     crud_audit_log,
     crud_team,
@@ -90,7 +91,6 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_user_role,
 )
-from preloop.models.crud.user import AmbiguousEmailError
 from preloop.models.db.session import get_db_session
 from preloop.models.models.user import User as UserModel
 from preloop.models.models.api_key import ApiKey

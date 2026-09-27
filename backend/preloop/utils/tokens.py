@@ -87,6 +87,32 @@ class UserTokenClaims:
     email: str
 
 
+def _decode_typed_token(token: str, token_type: str) -> dict:
+    """Decode a token once and check its signature, expiry, subject and type.
+
+    Shared by ``verify_token`` and ``verify_user_token`` so the two cannot
+    drift apart.
+
+    Raises:
+        TokenError: If the token is invalid, expired, has no subject, or is
+            of the wrong type.
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except PyJWTError:
+        raise TokenError("Invalid or expired token")
+
+    if not payload.get("sub"):
+        raise TokenError("Invalid token: Missing email")
+
+    token_purpose = payload.get("type")
+    if token_purpose != token_type:
+        raise TokenError(
+            f"Invalid token: Expected {token_type} token, got {token_purpose}"
+        )
+    return payload
+
+
 def verify_user_token(token: str, token_type: str) -> UserTokenClaims:
     """Verify a user-bound token and return the row and address it names.
 
@@ -105,15 +131,14 @@ def verify_user_token(token: str, token_type: str) -> UserTokenClaims:
         TokenError: If the token is invalid, expired, of the wrong type, or
             not bound to a user row.
     """
-    email = verify_token(token, token_type)
+    payload = _decode_typed_token(token, token_type)
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = UUID(str(payload.get("uid") or ""))
-    except (PyJWTError, ValueError):
+    except ValueError:
         raise TokenError(
             "This link is no longer valid. Request a new one and use that instead."
         )
-    return UserTokenClaims(user_id=user_id, email=email)
+    return UserTokenClaims(user_id=user_id, email=str(payload["sub"]))
 
 
 def verify_token(token: str, token_type: str) -> str:
@@ -129,22 +154,7 @@ def verify_token(token: str, token_type: str) -> str:
     Raises:
         TokenError: If the token is invalid, expired, or has the wrong type.
     """
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        token_purpose: str = payload.get("type")
-
-        if not email:
-            raise TokenError("Invalid token: Missing email")
-
-        if token_purpose != token_type:
-            raise TokenError(
-                f"Invalid token: Expected {token_type} token, got {token_purpose}"
-            )
-
-        return email
-    except PyJWTError:
-        raise TokenError("Invalid or expired token")
+    return str(_decode_typed_token(token, token_type)["sub"])
 
 
 def create_token(
