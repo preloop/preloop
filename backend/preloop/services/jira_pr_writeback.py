@@ -65,9 +65,12 @@ def split_pull_request_url(pr_url: str) -> Tuple[str, str, Optional[str]]:
     path = parsed.path.strip("/")
     wrapped = f"/{path}/"
     for marker in _PR_PATH_MARKERS:
-        if marker in wrapped:
-            repository, _, rest = wrapped.partition(marker)
-            number = rest.strip("/").split("/")[0] or None
+        # The last occurrence: a repository may itself be named "pull".
+        repository, found, rest = wrapped.rpartition(marker)
+        if not found:
+            continue
+        number = rest.strip("/").split("/")[0]
+        if number.isdigit() and repository.strip("/"):
             return host, repository.strip("/"), number
     return host, path, None
 

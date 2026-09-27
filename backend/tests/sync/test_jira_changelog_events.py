@@ -277,29 +277,55 @@ class TestJiraTriggerMatching:
         assert service._matches_trigger_config(flow, edit) is False
 
 
-class TestMixedEditReachesStatusFlows:
-    def test_secondary_type_for_a_mixed_edit(self) -> None:
-        event = enriched_event(
-            jira_updated(
-                [status_item("To Do", "In Progress"), labels_item("", "agent-ready")]
-            )
-        )
-        assert event["type"] == "issue_labeled"
+class TestOneEditReachesEveryMatchingFlow:
+    """Jira folds every edit into one webhook; each carried delta counts."""
+
+    @pytest.mark.parametrize(
+        ("items", "primary", "extras"),
+        [
+            (
+                [status_item("To Do", "In Progress"), labels_item("", "agent-ready")],
+                "issue_labeled",
+                ("issue_status_changed", "issue_updated"),
+            ),
+            (
+                [status_item("To Do", "In Progress"), labels_item("old", "")],
+                "issue_status_changed",
+                ("issue_unlabeled", "issue_updated"),
+            ),
+            (
+                [labels_item("old", "new")],
+                "issue_labeled",
+                ("issue_unlabeled", "issue_updated"),
+            ),
+            ([labels_item("", "agent-ready")], "issue_labeled", ("issue_updated",)),
+            (
+                [status_item("To Do", "Done")],
+                "issue_status_changed",
+                ("issue_updated",),
+            ),
+            ([labels_item("old", "")], "issue_unlabeled", ("issue_updated",)),
+            ([summary_item()], "issue_updated", ()),
+        ],
+    )
+    def test_secondary_types(self, items, primary, extras) -> None:
+        event = enriched_event(jira_updated(items))
+        assert event["type"] == primary
         assert secondary_event_types("jira", event["type"], event["payload"]) == (
-            "issue_status_changed",
+            extras
         )
 
-    def test_no_secondary_type_otherwise(self) -> None:
-        labeled = enriched_event(jira_updated([labels_item("", "agent-ready")]))
-        moved = enriched_event(jira_updated([status_item("To Do", "Done")]))
-        assert secondary_event_types("jira", labeled["type"], labeled["payload"]) == ()
-        assert secondary_event_types("jira", moved["type"], moved["payload"]) == ()
+    def test_other_sources_and_types_have_none(self) -> None:
         assert (
             secondary_event_types("github", "issue_labeled", {"status_to": "x"}) == ()
         )
         assert secondary_event_types("jira", "issue_labeled", None) == ()
+        assert (
+            secondary_event_types("jira", "issue_created", {"added_labels": ["a"]})
+            == ()
+        )
 
-    def test_status_flows_are_added_once(self, service) -> None:
+    def test_flows_are_added_once_under_their_type(self, service) -> None:
         event = enriched_event(
             jira_updated(
                 [status_item("To Do", "In Progress"), labels_item("", "agent-ready")]
@@ -307,28 +333,109 @@ class TestMixedEditReachesStatusFlows:
         )
         label_flow = flow_with({"labels": ["agent-ready"]})
         status_flow = flow_with({"status_to": "In Progress"})
+        updated_flow = flow_with({})
+        by_type = {
+            "issue_status_changed": [label_flow, status_flow],
+            "issue_updated": [status_flow, updated_flow],
+        }
         with patch(
             "preloop.services.flow_trigger_service.crud_flow.get_by_trigger",
-            return_value=[label_flow, status_flow],
-        ) as lookup:
-            flows = service._add_secondary_event_flows(
+            side_effect=lambda db, **kw: by_type[kw["event_type"]],
+        ):
+            flows, types = service._add_secondary_event_flows(
                 event,
                 [label_flow],
                 query_source="tracker-1",
                 project_id=None,
                 account_id=event["account_id"],
             )
-        assert flows == [label_flow, status_flow]
-        assert lookup.call_args.kwargs["event_type"] == "issue_status_changed"
-        assert service._matches_trigger_config(status_flow, event) is True
+        assert flows == [label_flow, status_flow, updated_flow]
+        assert types == {
+            status_flow.id: "issue_status_changed",
+            updated_flow.id: "issue_updated",
+        }
 
-    def test_plain_events_do_not_query_again(self, service) -> None:
-        event = enriched_event(jira_updated([labels_item("", "agent-ready")]))
+    def test_bot_label_edit_is_not_expanded(self, service) -> None:
+        event = enriched_event(
+            jira_updated(
+                [status_item("To Do", "In Progress"), labels_item("", "agent-ready")]
+            )
+        )
+        with (
+            patch.object(
+                service,
+                "_is_preloop_triggered_event",
+                side_effect=lambda e: e["type"] != "issue_labeled",
+            ),
+            patch(
+                "preloop.services.flow_trigger_service.crud_flow.get_by_trigger"
+            ) as lookup,
+        ):
+            flows, types = service._add_secondary_event_flows(
+                event, [], query_source="t", project_id=None, account_id=None
+            )
+        assert (flows, types) == ([], {})
+        lookup.assert_not_called()
+
+    def test_plain_edit_does_not_query_again(self, service) -> None:
+        event = enriched_event(jira_updated([summary_item()]))
         with patch(
             "preloop.services.flow_trigger_service.crud_flow.get_by_trigger"
         ) as lookup:
-            flows = service._add_secondary_event_flows(
+            flows, types = service._add_secondary_event_flows(
                 event, [], query_source="t", project_id=None, account_id=None
             )
-        assert flows == []
+        assert (flows, types) == ([], {})
         lookup.assert_not_called()
+
+
+class TestProcessEventFiltersEachFlowAsItsType:
+    """An issue_updated flow keeps reading the issue's labels, not the delta."""
+
+    @pytest.mark.asyncio
+    async def test_label_edit_still_starts_issue_updated_flows(self, service) -> None:
+        event = enriched_event(
+            jira_updated(
+                [labels_item("backend", "agent-ready backend")],
+                labels=["agent-ready", "backend"],
+            )
+        )
+        event["tracker_id"] = "tracker-1"
+        # Subscribed to issue_labeled: "backend" was not added by this edit.
+        labeled_flow = flow_with({"labels": ["backend"]})
+        # Subscribed to issue_updated: the issue has "backend".
+        updated_flow = flow_with({"labels": ["backend"]})
+        for flow in (labeled_flow, updated_flow):
+            flow.is_enabled = True
+        by_type = {"issue_labeled": [labeled_flow], "issue_updated": [updated_flow]}
+        passed: List[Any] = []
+        real_match = service._matches_trigger_config
+
+        def spy(flow, flow_event):
+            matched = real_match(flow, flow_event)
+            if matched:
+                passed.append((flow, flow_event["type"]))
+            return matched
+
+        with (
+            patch(
+                "preloop.services.flow_trigger_service.crud_flow.get_by_trigger",
+                side_effect=lambda db, **kw: by_type.get(kw["event_type"], []),
+            ),
+            patch("preloop.services.flow_feedback.ingest_feedback"),
+            patch("preloop.services.flow_feedback.feedback_policy", return_value=None),
+            patch(
+                "preloop.services.flow_trigger_service.skip_triage_flow_for_event",
+                return_value=False,
+            ),
+            patch.object(service, "_extract_project_id", return_value=None),
+            patch.object(service, "_matches_trigger_config", side_effect=spy),
+            patch(
+                "preloop.services.flow_trigger_service.get_nats_client",
+                side_effect=RuntimeError("stop before dispatch"),
+            ),
+        ):
+            await service.process_event(event)
+
+        assert event["type"] == "issue_labeled"
+        assert passed == [(updated_flow, "issue_updated")]

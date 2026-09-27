@@ -696,16 +696,11 @@ class FlowTriggerService:
         external_id = str(project.get("id") or "").strip()
         if not key and not external_id:
             return None
-        for proj in crud_project.get_for_tracker(
-            self.db, tracker_id=tracker_id, limit=1000
-        ):
-            if key and key.upper() in {
-                (proj.slug or "").upper(),
-                (proj.identifier or "").upper(),
-            }:
-                return str(proj.id)
-            if external_id and proj.identifier == external_id:
-                return str(proj.id)
+        found = crud_project.get_for_tracker_by_key(
+            self.db, tracker_id=tracker_id, key=key, external_id=external_id
+        )
+        if found is not None:
+            return str(found.id)
         logger.debug(
             "Could not match Jira project %s (id=%s) for tracker %s",
             key,
@@ -1520,12 +1515,17 @@ class FlowTriggerService:
         query_source: Any,
         project_id: Optional[str],
         account_id: Any,
-    ) -> List[Flow]:
+    ) -> Tuple[List[Flow], Dict[Any, str]]:
         """Append flows subscribed to a secondary type of this delivery.
 
-        See ``secondary_event_types``: a Jira edit that adds a label and
-        changes the status is ``issue_labeled``, and flows waiting for the
-        status change must still be considered. Each flow appears once.
+        See ``secondary_event_types``: one Jira edit can add a label, change
+        the status and remove a label, and it is still an issue update.
+        Flows subscribed to any of those types are considered. Each flow
+        appears once, under the first type it matched (primary first).
+
+        A secondary type the loop guard would drop is not expanded: a label
+        edit by the bot passes the guard as ``issue_labeled``, but the same
+        edit must not start ``issue_updated`` or status flows.
 
         Args:
             event_data: The event being processed.
@@ -1535,7 +1535,8 @@ class FlowTriggerService:
             account_id: Account scope.
 
         Returns:
-            The primary flows followed by any additional ones.
+            The primary flows followed by any additional ones, and the event
+            type each secondary flow matched on (keyed by flow id).
         """
         from preloop.sync.event_normalizer import secondary_event_types
 
@@ -1544,11 +1545,19 @@ class FlowTriggerService:
             event_data.get("type"),
             event_data.get("payload"),
         )
-        if not extra_types:
-            return matching_flows
         flows = list(matching_flows)
+        matched_types: Dict[Any, str] = {}
+        if not extra_types:
+            return flows, matched_types
         seen = {flow.id for flow in flows}
         for extra_type in extra_types:
+            if self._is_preloop_triggered_event({**event_data, "type": extra_type}):
+                logger.info(
+                    "Not expanding %s delivery to %s: sent by the Preloop bot",
+                    event_data.get("type"),
+                    extra_type,
+                )
+                continue
             for flow in crud_flow.get_by_trigger(
                 self.db,
                 event_source=query_source,
@@ -1559,7 +1568,8 @@ class FlowTriggerService:
                 if flow.id not in seen:
                     seen.add(flow.id)
                     flows.append(flow)
-        return flows
+                    matched_types[flow.id] = extra_type
+        return flows, matched_types
 
     async def process_event(self, event_data: Dict[str, Any]):
         """
@@ -1625,7 +1635,7 @@ class FlowTriggerService:
                 project_id=project_id,
                 account_id=account_id,
             )
-            matching_flows = self._add_secondary_event_flows(
+            matching_flows, secondary_types = self._add_secondary_event_flows(
                 event_data,
                 matching_flows,
                 query_source=query_source,
@@ -1655,7 +1665,14 @@ class FlowTriggerService:
             # Filter flows by trigger_config and enabled status
             flows_to_trigger = []
             for flow in matching_flows:
-                if feedback_policy(flow) and event_type in FEEDBACK_TYPES:
+                # A flow found through a secondary type (Jira) is filtered as
+                # that type, so a "labels" condition on an issue_updated flow
+                # reads the issue's labels, not the delta.
+                flow_event = event_data
+                if flow.id in secondary_types:
+                    flow_event = {**event_data, "type": secondary_types[flow.id]}
+                flow_event_type = flow_event.get("type")
+                if feedback_policy(flow) and flow_event_type in FEEDBACK_TYPES:
                     # This flow's durable subscription owns follow-up routing.
                     # Independent reviewer and ordinary event flows still run.
                     continue
@@ -1676,7 +1693,7 @@ class FlowTriggerService:
                 if skip_triage_flow_for_event(
                     self.db,
                     flow,
-                    event_data,
+                    flow_event,
                     event_touches_content=triage_content_change,
                 ):
                     logger.info(
@@ -1687,7 +1704,7 @@ class FlowTriggerService:
                     )
                     continue
 
-                if not self._matches_trigger_config(flow, event_data):
+                if not self._matches_trigger_config(flow, flow_event):
                     logger.info(
                         f"Skipping flow '{flow.name}' ({flow.id}) - trigger_config does not match. "
                         f"Config: {flow.trigger_config}"

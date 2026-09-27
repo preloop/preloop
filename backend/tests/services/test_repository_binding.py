@@ -424,6 +424,25 @@ class TestJiraEventProject:
             env["jira_project"].id
         )
 
+    def test_inactive_project_is_not_matched(self, env: Dict[str, Any]) -> None:
+        from preloop.services.flow_trigger_service import FlowTriggerService
+
+        env["jira_project"].is_active = False
+        env["db"].flush()
+        service = FlowTriggerService(env["db"])
+        assert service._extract_project_id(self._event(env, {"key": "PROJ"})) is None
+
+    def test_legacy_key_identifier(self, env: Dict[str, Any]) -> None:
+        from preloop.services.flow_trigger_service import FlowTriggerService
+
+        legacy = _project(env["db"], env["jira"], "OLD", identifier="OLD")
+        legacy.slug = None
+        env["db"].flush()
+        service = FlowTriggerService(env["db"])
+        assert service._extract_project_id(self._event(env, {"key": "old"})) == str(
+            legacy.id
+        )
+
     def test_other_tracker_or_unknown_key(self, env: Dict[str, Any]) -> None:
         from preloop.services.flow_trigger_service import FlowTriggerService
 

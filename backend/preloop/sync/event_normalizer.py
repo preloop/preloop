@@ -61,16 +61,23 @@ def matching_event_types(event_type: str) -> Tuple[str, ...]:
     return (event_type, *extra)
 
 
+# Types a Jira ``jira:issue_updated`` delivery can normalize to.
+_JIRA_UPDATE_TYPES = frozenset(
+    {"issue_updated", "issue_labeled", "issue_unlabeled", "issue_status_changed"}
+)
+
+
 def secondary_event_types(
     source: Optional[str], event_type: Optional[str], payload: Optional[dict]
 ) -> Tuple[str, ...]:
     """Extra event types a single delivery should also start flows for.
 
-    A Jira ``jira:issue_updated`` that adds a label and moves the status in
-    the same edit normalizes to ``issue_labeled`` (added wins). Its status
-    delta is still recorded as ``status_to``, and flows subscribed to
-    ``issue_status_changed`` must still see the transition, so the trigger
-    service queries those flows as well.
+    Jira folds every edit into one ``jira:issue_updated`` webhook, which
+    normalizes to a single type (added label, then status change, then
+    removed label, then ``issue_updated``). Flows subscribed to the other
+    deltas the same edit carries must still see it, and flows subscribed to
+    ``issue_updated`` keep firing on every edit, as they did before label
+    and status changes had their own types.
 
     Args:
         source: Event source (tracker type).
@@ -82,9 +89,19 @@ def secondary_event_types(
     """
     if (source or "").lower() != "jira" or not isinstance(payload, dict):
         return ()
-    if event_type != "issue_status_changed" and payload.get("status_to"):
-        return ("issue_status_changed",)
-    return ()
+    if event_type not in _JIRA_UPDATE_TYPES:
+        return ()
+    extras: List[str] = []
+    carried = (
+        ("issue_labeled", payload.get("added_labels")),
+        ("issue_status_changed", payload.get("status_to")),
+        ("issue_unlabeled", payload.get("removed_labels")),
+        ("issue_updated", True),
+    )
+    for extra_type, present in carried:
+        if present and extra_type != event_type:
+            extras.append(extra_type)
+    return tuple(extras)
 
 
 def gitlab_label_delta(payload: Optional[dict]) -> Tuple[List[str], List[str]]:

@@ -80,10 +80,16 @@ Jira `jira:issue_updated` webhooks are classified from the changelog:
 | `labels` lost a value only | `issue_unlabeled` |
 | anything else | `issue_updated` |
 
-An edit that adds a label and changes the status is `issue_labeled`, and
-status flows still receive it. `trigger_config.labels` matches the added
-labels. `trigger_config.status_to` (the "Moved to status" field in the flow
-form) matches the new status name exactly.
+One edit can carry several of these. The delivery is classified by the
+first row that applies, and flows subscribed to any other row it carries
+also receive it. Flows subscribed to `issue_updated` receive every edit, as
+they did before label and status changes had their own types.
+
+Each flow's conditions are evaluated as the type it subscribed to. On
+`issue_labeled` and `issue_unlabeled`, `trigger_config.labels` matches the
+labels this edit added or removed. On `issue_updated` it matches the
+issue's current labels. `trigger_config.status_to` (the "Moved to status"
+field in the flow form) matches the new status name exactly.
 
 ## Known limits
 

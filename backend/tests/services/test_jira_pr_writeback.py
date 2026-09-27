@@ -128,6 +128,11 @@ class TestHelpers:
                 "https://bitbucket.org/ws/repo/pull-requests/5",
                 ("bitbucket.org", "ws/repo", "5"),
             ),
+            ("https://github.com/acme/pull/pull/7", ("github.com", "acme/pull", "7")),
+            (
+                "https://gitlab.com/g/pull/-/merge_requests/3",
+                ("gitlab.com", "g/pull", "3"),
+            ),
             ("https://example.com/other", ("example.com", "other", None)),
         ],
     )
