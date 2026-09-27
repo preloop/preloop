@@ -60,6 +60,10 @@ _MAX_REGEX_MATCHES = 1000
 #: Longest pattern re-run to locate the match (same cap as the evaluator).
 _MAX_PATTERN_LEN = 512
 
+#: How much of the end of the text is scanned for the newest regex match.
+#: Beyond it only the first match is looked for, which stops early.
+_REGEX_TAIL_CHARS = 16 * 1024
+
 _CONTAINS_CALL = re.compile(r"\.contains\s*\(\s*(['\"])(.+?)\1\s*\)")
 _MATCHES_CALL = re.compile(r"\.matches\s*\(\s*(['\"])((?:(?!\1)[^\\]|\\.)*)\1\s*\)")
 _STRING_LITERAL = re.compile(r"'((?:[^'\\]|\\.)*)'|\"((?:[^\"\\]|\\.)*)\"")
@@ -109,12 +113,20 @@ def _last_regex(text: str, pattern: str) -> Optional[Tuple[int, int]]:
         compiled = re.compile(pattern)
     except re.error:
         return None
+    # Look for the newest match in the tail only, so the request thread does
+    # not run an admin-supplied pattern to the end of a long text. A match
+    # that starts before the tail (or straddles its edge) falls back to the
+    # first match, which ``search`` finds without scanning further.
+    offset = max(0, len(text) - _REGEX_TAIL_CHARS)
     span: Optional[Tuple[int, int]] = None
-    for count, match in enumerate(compiled.finditer(text)):
+    for count, match in enumerate(compiled.finditer(text, offset)):
         span = match.span()
         if count >= _MAX_REGEX_MATCHES:
             break
-    return span
+    if span is not None or offset == 0:
+        return span
+    first = compiled.search(text)
+    return first.span() if first else None
 
 
 def locate_match(text: str, expression: Optional[str]) -> Optional[Tuple[int, int]]:

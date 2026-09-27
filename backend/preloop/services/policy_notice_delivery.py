@@ -31,6 +31,7 @@ from preloop.models import models
 from preloop.models.crud import (
     crud_account,
     crud_approval_workflow,
+    crud_policy_notice_hit,
     crud_user,
     notification_preferences,
 )
@@ -60,33 +61,31 @@ def attention_url() -> str:
     return urljoin(_base_url(), "console/attention")
 
 
-def policy_owners(db: Session, account_id: Any) -> List[models.User]:
+def policy_owners(
+    db: Session, account_id: Any, *, limit: int = _MAX_RECIPIENTS
+) -> List[models.User]:
     """Active users of the account who may manage its policies.
+
+    Owners are the primary user, superusers, and users holding
+    ``manage_policies`` directly or through a team. The filter runs in the
+    query, so plain members never take a recipient slot.
 
     Args:
         db: Database session.
         account_id: Account whose owners to list.
+        limit: Maximum number of recipients.
 
     Returns:
         The recipients, primary user first when present.
     """
-    from preloop.utils.permissions import user_holds_permission
-
     account = crud_account.get(db, id=account_id)
-    primary_id = getattr(account, "primary_user_id", None)
-    owners: List[models.User] = []
-    users = crud_user.get_active_by_account(
-        db, account_id=account_id, limit=_MAX_RECIPIENTS
+    return crud_policy_notice_hit.get_policy_owners(
+        db,
+        account_id=account_id,
+        primary_user_id=getattr(account, "primary_user_id", None),
+        permission_name="manage_policies",
+        limit=limit,
     )
-    for user in users:
-        if (
-            user.id == primary_id
-            or user.is_superuser
-            or user_holds_permission(db, user, "manage_policies")
-        ):
-            owners.append(user)
-    owners.sort(key=lambda user: user.id != primary_id)
-    return owners
 
 
 def _run_async(factory: Callable[[], Awaitable[T]]) -> T:
@@ -147,7 +146,7 @@ def build_message(db: Session, hit: models.PolicyNoticeHit) -> Dict[str, str]:
     link = attention_url()
     lines = [
         f"The notify rule '{hit.rule_id}' matched a model {label} from {who}.",
-        "The call was not blocked.",
+        "This notify rule did not block the call.",
     ]
     if hit.rule_description:
         lines.append(f"Rule: {hit.rule_description}")
@@ -168,7 +167,8 @@ def build_message(db: Session, hit: models.PolicyNoticeHit) -> Dict[str, str]:
     )
     body_html = (
         f"<p>The notify rule <strong>{html.escape(hit.rule_id)}</strong> matched "
-        f"a model {label} from {html.escape(who)}. The call was not blocked.</p>"
+        f"a model {label} from {html.escape(who)}. This notify rule did not block "
+        "the call.</p>"
         f"{description}"
         "<p>Excerpt (secrets redacted):</p>"
         f"<pre>{html.escape(excerpt)}</pre>"
@@ -321,7 +321,7 @@ def build_webhook_payload(
             f"**{message['headline']}**\n\n"
             f"The notify rule `{hit.rule_id}` matched a model "
             f"{_target_label(hit.target)} from {_who(hit, db)}. "
-            "The call was not blocked.\n\n"
+            "This notify rule did not block the call.\n\n"
             f"**Excerpt (secrets redacted):**\n```\n{excerpt}\n```\n\n"
             f"[See all notices]({attention_url()})\n"
         )
@@ -367,6 +367,10 @@ def send_webhook_notice(
         return False
     endpoint = sync_shim_endpoint(db, workflow)
     if endpoint is None:
+        # The workflow has no URL. Keep the shim's deactivation of a stale
+        # endpoint, as the approval path does, instead of losing it when the
+        # short-lived session closes.
+        db.commit()
         return False
     result = outbox.enqueue_raw_delivery(
         db,

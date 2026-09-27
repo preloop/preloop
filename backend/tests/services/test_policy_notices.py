@@ -66,6 +66,25 @@ def test_excerpt_uses_last_regex_match() -> None:
     assert text[span[0] : span[1]] == "AB-2"
 
 
+def test_regex_newest_match_is_found_in_the_tail_of_a_long_text() -> None:
+    from preloop.services.policy_notices import _REGEX_TAIL_CHARS
+
+    filler = "lorem ipsum " * (_REGEX_TAIL_CHARS // 6)
+    text = "old ticket PRJ-1 " + filler + " new ticket PRJ-2 at the end"
+    start, end = locate_match(text, "request.text.matches('PRJ-[0-9]+')")
+    assert text[start:end] == "PRJ-2"
+
+
+def test_regex_match_only_before_the_tail_falls_back_to_the_first() -> None:
+    from preloop.services.policy_notices import _REGEX_TAIL_CHARS
+
+    filler = "lorem ipsum " * (_REGEX_TAIL_CHARS // 6)
+    text = "ticket PRJ-7 early " + filler
+    assert len(text) > 2 * _REGEX_TAIL_CHARS
+    start, end = locate_match(text, "request.text.matches('PRJ-[0-9]+')")
+    assert (start, text[start:end]) == (7, "PRJ-7")
+
+
 def test_excerpt_without_locatable_literal_starts_at_the_beginning() -> None:
     text = "Contact me at someone@example.org please"
     assert locate_match(text, "pii.found == true") is None
@@ -344,6 +363,86 @@ def test_policy_owners_are_users_who_manage_policies(
     assert [owner.id for owner in owners] == [test_user.id]
 
 
+def _account_user(db_session: Session, account_id, name: str) -> User:
+    return crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": account_id,
+            "email": f"{name}@example.com",
+            "username": name,
+            "is_active": True,
+            "email_verified": True,
+            "hashed_password": "x",
+            "user_source": "local",
+        },
+    )
+
+
+def test_policy_owners_are_found_in_sql_not_in_a_capped_scan(
+    db_session: Session, test_user: User
+) -> None:
+    from preloop.models.crud import (
+        crud_role,
+        crud_team,
+        crud_team_role,
+        crud_user_role,
+    )
+    from preloop.models.models.team import TeamMembership
+
+    account_id = test_user.account_id
+    # Plain members sort before the owners by username, so a capped scan
+    # followed by a filter would return none of the owners below.
+    viewer_role = crud_role.get_by_name(db_session, name="viewer")
+    editor_role = crud_role.get_by_name(db_session, name="editor")
+    assert viewer_role is not None and editor_role is not None
+    for index in range(3):
+        member = _account_user(db_session, account_id, f"aa-member-{index}")
+        crud_user_role.create(
+            db_session, obj_in={"user_id": member.id, "role_id": viewer_role.id}
+        )
+    editor = _account_user(db_session, account_id, "zz-editor")
+    crud_user_role.create(
+        db_session, obj_in={"user_id": editor.id, "role_id": editor_role.id}
+    )
+    team_editor = _account_user(db_session, account_id, "zz-team-editor")
+    team = crud_team.create(
+        db_session, obj_in={"account_id": account_id, "name": "Policy team"}
+    )
+    db_session.add(TeamMembership(team_id=team.id, user_id=team_editor.id))
+    crud_team_role.create(
+        db_session, obj_in={"team_id": team.id, "role_id": editor_role.id}
+    )
+    inactive = _account_user(db_session, account_id, "zz-inactive-editor")
+    inactive.is_active = False
+    crud_user_role.create(
+        db_session, obj_in={"user_id": inactive.id, "role_id": editor_role.id}
+    )
+    db_session.flush()
+
+    owners = delivery.policy_owners(db_session, account_id, limit=3)
+
+    assert {owner.username for owner in owners} == {
+        test_user.username,
+        "zz-editor",
+        "zz-team-editor",
+    }
+
+    # Same answer as the per-user permission walk used elsewhere.
+    from preloop.utils.permissions import user_holds_permission
+
+    everyone = crud_user.get_active_by_account(
+        db_session, account_id=account_id, limit=100
+    )
+    expected = {
+        user.id
+        for user in everyone
+        if user.is_superuser
+        or user_holds_permission(db_session, user, "manage_policies")
+    }
+    uncapped = delivery.policy_owners(db_session, account_id)
+    assert {owner.id for owner in uncapped} == expected | {test_user.id}
+
+
 def test_email_goes_to_owners_and_has_no_approval_link(
     db_session: Session, test_user: User
 ) -> None:
@@ -356,7 +455,11 @@ def test_email_goes_to_owners_and_has_no_approval_link(
     assert to == test_user.email
     assert subject == "Policy notice: notify-codename"
     assert "the project-x plan" in body_text
-    assert "not blocked" in body_text
+    assert "This notify rule did not block the call." in body_text
+    # A denied call can also produce a notice, so never claim the call went
+    # through: only this rule's effect is known.
+    for body in (body_text, body_html):
+        assert "The call was not blocked" not in body
     for body in (body_text, body_html):
         assert "approve" not in body.lower()
         assert "deny" not in body.lower()
@@ -502,3 +605,30 @@ def test_run_async_uses_a_helper_thread_inside_a_running_loop() -> None:
     asyncio.run(caller())
     # No running loop: the direct asyncio.run path.
     assert _run_async(value) == "sent"
+
+
+def test_workflow_without_url_persists_endpoint_deactivation(
+    db_session: Session, test_user: User
+) -> None:
+    from preloop.models.crud import crud_approval_workflow
+
+    workflow = crud_approval_workflow.create(
+        db_session,
+        account_id=str(test_user.account_id),
+        obj_in={
+            "name": "chat-slack",
+            "approval_type": "slack",
+            "approval_config": {"webhook_url": "https://hooks.example.test/notice"},
+            "is_default": True,
+        },
+    )
+    db_session.flush()
+    hit = _hit(db_session, test_user)
+    assert delivery.send_webhook_notice(db_session, hit) is True
+
+    workflow.approval_config = {}
+    db_session.flush()
+    with patch.object(db_session, "commit", wraps=db_session.commit) as commit:
+        assert delivery.send_webhook_notice(db_session, hit) is False
+
+    commit.assert_called_once()

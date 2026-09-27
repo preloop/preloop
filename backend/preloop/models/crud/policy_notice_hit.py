@@ -7,10 +7,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from ..models.permission import Permission, Role, RolePermission, TeamRole, UserRole
 from ..models.policy_notice_hit import PolicyNoticeHit
+from ..models.team import Team, TeamMembership
 from ..models.user import User
 from .base import CRUDBase
 
@@ -213,6 +215,79 @@ class CRUDPolicyNoticeHit(CRUDBase[PolicyNoticeHit]):
             )
             for row in rows
         ]
+
+    def get_policy_owners(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        primary_user_id: Optional[Any] = None,
+        permission_name: str = "manage_policies",
+        limit: int = 500,
+    ) -> List[User]:
+        """Active users of an account who may manage its policies.
+
+        The predicate runs in SQL so the recipients do not depend on which
+        slice of a large account a capped user scan happens to return. It
+        mirrors ``preloop.utils.permissions.user_holds_permission``: a role
+        counts when it belongs to the account (or is global) and is either
+        the system ``owner`` role or grants ``permission_name``, whether it
+        is held directly or through a team of the same account. The primary
+        user and superusers always count.
+
+        Args:
+            db: Database session.
+            account_id: Account whose owners to list.
+            primary_user_id: The account's primary user, listed first.
+            permission_name: Permission that makes a user an owner.
+            limit: Maximum number of users returned.
+
+        Returns:
+            Owners, primary user first, then by username.
+        """
+        granting_roles = select(Role.id).where(
+            or_(Role.account_id.is_(None), Role.account_id == account_id),
+            or_(
+                (Role.name == "owner") & Role.is_system_role.is_(True),
+                Role.id.in_(
+                    select(RolePermission.role_id)
+                    .join(Permission, Permission.id == RolePermission.permission_id)
+                    .where(Permission.name == permission_name)
+                ),
+            ),
+        )
+        direct = select(UserRole.user_id).where(UserRole.role_id.in_(granting_roles))
+        via_team = (
+            select(TeamMembership.user_id)
+            .join(Team, Team.id == TeamMembership.team_id)
+            .join(TeamRole, TeamRole.team_id == TeamMembership.team_id)
+            .where(
+                Team.account_id == account_id,
+                TeamRole.role_id.in_(granting_roles),
+            )
+        )
+        conditions = [
+            User.is_superuser.is_(True),
+            User.id.in_(direct),
+            User.id.in_(via_team),
+        ]
+        order_by: List[Any] = []
+        if primary_user_id is not None:
+            conditions.append(User.id == primary_user_id)
+            order_by.append(case((User.id == primary_user_id, 0), else_=1))
+        order_by += [User.username, User.id]
+        return list(
+            db.scalars(
+                select(User)
+                .where(
+                    User.account_id == account_id,
+                    User.is_active.is_(True),
+                    or_(*conditions),
+                )
+                .order_by(*order_by)
+                .limit(limit)
+            ).all()
+        )
 
 
 crud_policy_notice_hit = CRUDPolicyNoticeHit(PolicyNoticeHit)
