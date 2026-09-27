@@ -2487,6 +2487,7 @@ class GitLabTracker(BaseTracker):
         context: str = "preloop",
         description: Optional[str] = None,
         target_url: Optional[str] = None,
+        refname: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a commit status (pipeline status) on a specific commit.
 
@@ -2500,10 +2501,13 @@ class GitLabTracker(BaseTracker):
                      this status from others. Default is "preloop".
             description: A short description of the status.
             target_url: URL to link to for more details.
+            refname: Merge request source branch. Unused: GitLab shows a
+                status on every merge request whose head is ``sha``.
 
         Returns:
             Dictionary with status details.
         """
+        del refname
         project_id = self._get_project_id()
 
         # Map common state names to GitLab's expected values

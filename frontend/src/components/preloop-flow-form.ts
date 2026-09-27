@@ -1658,7 +1658,10 @@ export class PreloopFlowForm extends LitElement {
           id
         );
       // Bitbucket reviewer identities: a user UUID (braces optional) or an
-      // Atlassian account ID such as 712020:<uuid>.
+      // Atlassian account ID such as 712020:<uuid>. Legacy 24-hex account IDs
+      // pass the username rule. Resource identifiers (ari:cloud:...) are
+      // rejected: Bitbucket never reports them as an actor's account_id, so
+      // a trusted-reviewer entry in that form could never match.
       const bitbucketActor = (id: unknown) =>
         typeof id === 'string' &&
         (/^\{?[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}?$/.test(

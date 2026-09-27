@@ -240,7 +240,9 @@ pull request's head commit
 (`POST /repositories/{workspace}/{repo}/commit/{sha}/statuses/build`):
 `SUCCESSFUL` for approve, `FAILED` for request changes, `INPROGRESS` while
 the review runs. The status key is `preloop`, so a later run updates the same
-status instead of stacking new ones. A Bitbucket merge check can then require
+status instead of stacking new ones. The status carries the pull request's
+source branch as `refname`, which is what makes Bitbucket show it on the pull
+request and not only on the commit. A Bitbucket merge check can then require
 the status before merge.
 
 ## Not supported yet

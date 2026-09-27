@@ -497,22 +497,6 @@ async def test_list_pull_requests_source_branch_filter_is_escaped() -> None:
     assert listing["has_more"] is False
 
 
-async def test_pull_request_merge_status() -> None:
-    merged = {
-        **CREATED_PR,
-        "state": "MERGED",
-        "merge_commit": {"hash": "deadbee"},
-    }
-    tracker = make_tracker(lambda r: ok(merged), [])
-    status = await tracker.pull_request_merge_status(7)
-    assert status == {
-        "state": "merged",
-        "merged": True,
-        "merge_commit": "deadbee",
-        "url": "https://bitbucket.org/ws/repo/pull-requests/7",
-    }
-
-
 async def test_branch_exists_found_absent_and_error() -> None:
     tracker = make_tracker(lambda r: ok({"name": "feat/x"}), [])
     assert await tracker.branch_exists("feat/x") is True
@@ -547,6 +531,15 @@ async def test_create_commit_status_posts_build_state() -> None:
         "description": "Approved",
     }
     assert result["state"] == "SUCCESSFUL"
+
+
+async def test_create_commit_status_sets_refname_for_the_pull_request() -> None:
+    # Bitbucket shows a build status on a pull request only when refname
+    # names the pull request's source branch.
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(lambda r: ok({"key": "preloop"}, 201), requests)
+    await tracker.create_commit_status("abc123", "pending", refname="feat/x")
+    assert json.loads(requests[0].content)["refname"] == "feat/x"
 
 
 async def test_create_commit_status_retries_duplicate_key_as_put() -> None:

@@ -609,26 +609,6 @@ class BitbucketTracker(BaseTracker):
             "target_branch": attributes["target_branch"] or "",
         }
 
-    async def pull_request_merge_status(
-        self, pr_id: int | str, repo_full_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Return the merge state of a pull request.
-
-        Returns:
-            ``{"state", "merged", "merge_commit", "url"}`` where ``state`` is
-            the lowercase Bitbucket state (``open``, ``merged``, ``declined``
-            or ``superseded``).
-        """
-        pr = await self.get_pull_request(pr_id, repo_full_name)
-        state = str(pr.get("state") or "").lower() or "open"
-        merge_commit = (pr.get("merge_commit") or {}).get("hash")
-        return {
-            "state": state,
-            "merged": state == "merged",
-            "merge_commit": merge_commit,
-            "url": ((pr.get("links") or {}).get("html") or {}).get("href", ""),
-        }
-
     async def branch_exists(
         self, branch: str, repo_full_name: Optional[str] = None
     ) -> bool:
@@ -652,6 +632,7 @@ class BitbucketTracker(BaseTracker):
         description: Optional[str] = None,
         target_url: Optional[str] = None,
         repo_full_name: Optional[str] = None,
+        refname: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create or refresh a commit build status.
 
@@ -668,6 +649,9 @@ class BitbucketTracker(BaseTracker):
             target_url: Absolute link shown next to the status. Bitbucket
                 requires one; the repository web page is used when missing.
             repo_full_name: ``workspace/repo``; defaults to the bound one.
+            refname: Source branch of the pull request. Bitbucket shows the
+                status on a pull request only when ``refname`` names its
+                source branch; without it the status is on the commit only.
 
         Returns:
             Dict with ``key``, ``state``, ``description`` and ``url``.
@@ -688,6 +672,8 @@ class BitbucketTracker(BaseTracker):
         }
         if description:
             payload["description"] = description[:140]
+        if refname:
+            payload["refname"] = refname
         base = f"{self._repo(repo_full_name)}/commit/{quote(sha, safe='')}/statuses"
         response = await self._request(
             "POST", f"{base}/build", json=payload, allow_status=(400, 409)

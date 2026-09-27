@@ -3678,6 +3678,7 @@ class GitHubTracker(BaseTracker):
         context: str = "preloop",
         description: Optional[str] = None,
         target_url: Optional[str] = None,
+        refname: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a commit status (check) on a specific commit.
 
@@ -3690,10 +3691,13 @@ class GitHubTracker(BaseTracker):
                      Default is "preloop".
             description: A short description of the status (max 140 chars).
             target_url: URL to link to for more details (e.g., flow execution page).
+            refname: Pull request source branch. Unused: GitHub associates a
+                status with every pull request whose head is ``sha``.
 
         Returns:
             Dictionary with status details.
         """
+        del refname
         owner = self.connection_details.get("owner")
         repo = self.connection_details.get("repo")
 

@@ -189,6 +189,24 @@ async def test_orchestrator_reads_bitbucket_payload(
     assert orchestrator._extract_pr_branch_from_trigger() == "feature"
 
 
+async def test_commit_status_names_the_pull_request_source_branch(
+    orchestrator: FlowExecutionOrchestrator,
+) -> None:
+    client = MagicMock()
+    client.connection_details = {"repository": "ws/repo"}
+    client.create_commit_status = AsyncMock(return_value={"state": "SUCCESSFUL"})
+    with patch.object(
+        orchestrator,
+        "_get_tracker_client_for_status",
+        AsyncMock(return_value=client),
+    ):
+        await orchestrator._update_commit_status("success", "Approved")
+    client.create_commit_status.assert_awaited_once()
+    kwargs = client.create_commit_status.await_args.kwargs
+    assert kwargs["sha"] == "abc123"
+    assert kwargs["refname"] == "feature"
+
+
 async def test_orchestrator_credentials_carry_bitbucket_username(
     orchestrator: FlowExecutionOrchestrator,
 ) -> None:

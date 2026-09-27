@@ -1095,6 +1095,9 @@ class FlowExecutionOrchestrator:
                 context=self._status_context,
                 description=description,
                 target_url=target_url,
+                # Bitbucket attaches a build status to a pull request only
+                # when refname names its source branch.
+                refname=self._extract_pr_branch_from_trigger(),
             )
 
             logger.info(
