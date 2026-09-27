@@ -14,6 +14,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '../../components/attribution-line.ts';
 import '../../components/budget-limits-dialog.ts';
+import '../../components/spend-outlier-settings-dialog.ts';
 import '../../components/view-header.ts';
 
 import {
@@ -53,6 +54,7 @@ import {
   type AttentionPriceOverride,
   type DismissedAttentionItem,
 } from '../../utils/attention';
+import type { SpendOutlierFinding } from '../../spend-outliers-api';
 import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
 import { loadAttentionInputs } from '../../utils/attention-data';
 import { publishAttentionSummary } from '../../utils/attention-summary';
@@ -99,6 +101,8 @@ export class AttentionView extends AuthedElement {
   @state() private gatewayFailures: GatewayUsageSearchResultItem[] = [];
   @state() private budgetPolicies: BudgetPolicy[] = [];
   @state() private priceOverrides: AttentionPriceOverride[] = [];
+  @state() private spendOutliers: SpendOutlierFinding[] = [];
+  @state() private showSpendSettings = false;
 
   @state() private usageSummary: AccountGatewayUsageSummaryResponse | null =
     null;
@@ -655,6 +659,7 @@ export class AttentionView extends AuthedElement {
     this.budgetPolicies = inputs.budgetPolicies || [];
     this.usageSummary = inputs.usageSummary || null;
     this.priceOverrides = inputs.priceOverrides || [];
+    this.spendOutliers = inputs.spendOutliers || [];
     this.dismissals = (inputs.dismissals || []) as AttentionDismissal[];
     this.dismissalsSupported = inputs.dismissalsSupported;
     this.permissions = profile?.permissions ?? null;
@@ -677,6 +682,7 @@ export class AttentionView extends AuthedElement {
       budgetPolicies: this.budgetPolicies,
       usageSummary: this.usageSummary,
       priceOverrides: this.priceOverrides,
+      spendOutliers: this.spendOutliers,
       dismissals: this.dismissals,
     });
   }
@@ -685,9 +691,12 @@ export class AttentionView extends AuthedElement {
     return this.derived.items;
   }
 
-  /** `approval` -> `approvals`, `pricing` -> `pricing`. */
+  /**
+   * `approval` -> `approvals`, `pricing` -> `pricing`,
+   * `spend` -> `spend-outliers` (an id cannot hold a space).
+   */
   private sectionId(kind: AttentionKind): string {
-    return ATTENTION_KIND_META[kind].plural.toLowerCase();
+    return ATTENTION_KIND_META[kind].plural.toLowerCase().replace(/\s+/g, '-');
   }
 
   private scrollToSection(kind: AttentionKind): void {
@@ -1373,6 +1382,89 @@ export class AttentionView extends AuthedElement {
     `;
   }
 
+  /** Settings writes need `manage_budgets`, as on the server. */
+  private get canEditSpendSettings(): boolean {
+    return hasPermission(this.permissions, 'manage_budgets');
+  }
+
+  private renderSpendEvidence(item: AttentionItem) {
+    const spend = item.evidence?.spendOutlier;
+    if (!spend) {
+      return nothing;
+    }
+    const money = (value: number | null) =>
+      value === null ? 'n/a' : `$${value.toFixed(2)}`;
+    const percent = (value: number | null) =>
+      value === null ? 'n/a' : `${Math.round(value * 100)}%`;
+    const rows: Array<[string, string]> = [
+      ['Developer', spend.userName],
+      ['Day (UTC)', spend.day],
+    ];
+    if (spend.rule === 'daily_spend') {
+      rows.push(
+        ['Spend that day', money(spend.spendUsd)],
+        ['28-day median', money(spend.medianUsd)],
+        [
+          'Multiple',
+          spend.multiple === null
+            ? 'n/a'
+            : `${spend.multiple.toFixed(1)}x (alert at ${
+                spend.thresholdMultiple ?? 'n/a'
+              }x)`,
+        ]
+      );
+    } else if (spend.rule === 'model_mix') {
+      rows.push(
+        ['Model', spend.model || 'n/a'],
+        ['Share that day', percent(spend.share)],
+        ['Share the day before', percent(spend.previousShare)],
+        ['Alert above', percent(spend.thresholdShare)],
+        ['Spend that day', money(spend.spendUsd)]
+      );
+    } else {
+      rows.push(
+        ['Session', spend.sessionTitle || spend.sessionId || 'n/a'],
+        ['Session cost', money(spend.spendUsd)],
+        ['Threshold', money(spend.thresholdUsd)]
+      );
+    }
+    if (spend.importedUsd > 0) {
+      rows.push([
+        'Imported spend',
+        `${money(spend.importedUsd)} from ${
+          spend.importedSources.join(', ') || 'another source'
+        }, not metered by the gateway`,
+      ]);
+    }
+    return html`
+      <table class="evidence-table">
+        <tbody>
+          ${rows.map(
+            ([label, value], index) =>
+              html`<tr>
+                <th style=${index === 0 ? 'width: 40%' : ''}>${label}</th>
+                <td>${value}</td>
+              </tr>`
+          )}
+        </tbody>
+      </table>
+      <div class="evidence-actions">
+        <sl-button size="small" href=${item.href}
+          >${spend.rule === 'session_cost' ? 'Open session' : 'Open cost'}</sl-button
+        >
+        ${
+          this.canEditSpendSettings
+            ? html`<sl-button
+                size="small"
+                @click=${() => (this.showSpendSettings = true)}
+                >Alert settings</sl-button
+              >`
+            : nothing
+        }
+      </div>
+    `;
+  }
+
   private renderEvidence(item: AttentionItem) {
     switch (item.kind) {
       case 'flow':
@@ -1385,6 +1477,8 @@ export class AttentionView extends AuthedElement {
         return this.renderPricingEvidence(item);
       case 'budget':
         return this.renderBudgetEvidence(item);
+      case 'spend':
+        return this.renderSpendEvidence(item);
       default:
         return nothing;
     }
@@ -1400,7 +1494,8 @@ export class AttentionView extends AuthedElement {
       evidence.unpricedModels?.length ||
       evidence.zeroPricedModels?.length ||
       evidence.catalogMissing ||
-      evidence.budget
+      evidence.budget ||
+      evidence.spendOutlier
     );
   }
 
@@ -1613,9 +1708,23 @@ export class AttentionView extends AuthedElement {
 
     return html`
       <view-header headerText="Needs attention" width="wide">
+        ${
+          // The session rule is off until someone sets a threshold, so the
+          // settings need an entry point even when no spend card is open.
+          this.canEditSpendSettings
+            ? html`<div slot="main-column">
+                <sl-button
+                  size="small"
+                  class="spend-settings-button"
+                  @click=${() => (this.showSpendSettings = true)}
+                  >Spend alerts</sl-button
+                >
+              </div>`
+            : nothing
+        }
         <div slot="description">
           Everything waiting on you or degraded right now: approvals, agents,
-          flows, models, and budgets.
+          flows, models, budgets, and spend outliers.
           ${
             this.lastUpdatedAt
               ? html`<span class="updated-at"
@@ -1663,6 +1772,11 @@ export class AttentionView extends AuthedElement {
         @budget-limits-hide=${() => (this.showLimitsDialog = false)}
         @budget-policies-changed=${() => void this.fetchAll()}
       ></budget-limits-dialog>
+
+      <spend-outlier-settings-dialog
+        ?open=${this.showSpendSettings}
+        @spend-outlier-settings-hide=${() => (this.showSpendSettings = false)}
+      ></spend-outlier-settings-dialog>
     `;
   }
 }

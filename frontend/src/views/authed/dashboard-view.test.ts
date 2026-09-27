@@ -2242,7 +2242,9 @@ describe('DashboardView', () => {
             !url.startsWith('/api/v1/roles') &&
             !url.startsWith('/api/v1/users')
         );
-      expect(pageUrls.length, pageUrls.join('\n')).to.equal(27);
+      // 28 since the attention inputs gained the spend outlier findings
+      // (#960): one passive GET, shared with /console/attention.
+      expect(pageUrls.length, pageUrls.join('\n')).to.equal(28);
       expect(pageUrls.filter((url) => url === '/api/v1/flows').length).to.equal(
         1
       );

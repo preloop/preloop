@@ -281,7 +281,7 @@ Both flags default to `ask`. With `--yes` alone, the CLI skips the main offboard
 - MCP servers are kept if they are still referenced by another managed agent
 - Recently active shared resources are also skipped
 
-`preloop agents refresh` (alias `sync`) re-fetches the authorized model list and rewrites only the managed model sections of onboarded agent configs. Selection, credentials, MCP config, and local backups are preserved.
+`preloop agents refresh` (alias `sync`) re-fetches the authorized model list and rewrites only the managed model sections of onboarded agent configs. Selection, credentials, MCP config, and local backups are preserved. Claude Code family pins are only moved to a newer alias when the provider's live model list confirms it; when the list cannot be fetched, the current authorized pin is kept and the refresh diff explains why.
 
 ### Operator notes
 

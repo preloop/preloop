@@ -548,7 +548,7 @@ func TestRefreshHermesManagedModelDocumentFallsBackWhenPinUnauthorized(t *testin
 
 func TestRefreshManagedModelDocumentCodexIsNoop(t *testing.T) {
 	outcome, err := refreshAgentManagedModels(
-		nil, AgentConfig{Name: "Codex CLI"}, nil, nil,
+		nil, AgentConfig{Name: "Codex CLI"}, nil, claudeLiveModelList{}, nil,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
