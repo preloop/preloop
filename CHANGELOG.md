@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The flow form edits Review instructions for the Pull Request Reviewer, and
+  for any prompt that references `flow.review_instructions`. The flow page
+  shows the text when it is set. The reviewer prompt still keeps the first
+  16 KiB.
+
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
   the first event to PR opened, PR opened to approved, and approved to merged
