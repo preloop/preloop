@@ -288,3 +288,35 @@ def test_programming_error_is_not_mapped_to_502(
 
     with pytest.raises(TypeError, match="bug"):
         client.get(f"/api/v1/projects/{project.id}/pull-requests")
+
+
+@patch(
+    "preloop.api.endpoints.pull_requests.get_tracker_client",
+    new_callable=AsyncMock,
+)
+def test_bitbucket_tracker_lists_pull_requests(
+    mock_get_client: AsyncMock,
+    client: TestClient,
+    db_session: Session,
+    test_user: User,
+    pr_project_data: dict,
+) -> None:
+    """Bitbucket projects use the pull request listing like GitHub."""
+    del test_user
+    tracker = pr_project_data["tracker"]
+    tracker.tracker_type = "bitbucket"
+    db_session.flush()
+    tracker_client = MagicMock()
+    tracker_client.list_pull_requests = AsyncMock(
+        return_value={"items": [_listed_pr()], "has_more": False}
+    )
+    mock_get_client.return_value = tracker_client
+    project = pr_project_data["project"]
+
+    response = client.get(f"/api/v1/projects/{project.id}/pull-requests")
+
+    assert response.status_code == 200
+    assert response.json()["supported"] is True
+    tracker_client.list_pull_requests.assert_awaited_once_with(
+        state="open", limit=20, page=1
+    )

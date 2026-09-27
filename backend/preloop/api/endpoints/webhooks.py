@@ -24,6 +24,14 @@ from preloop.sync.scanner.core import TrackerClient
 
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
 
+from preloop.utils.bitbucket import (
+    BITBUCKET_DELIVERY_HEADER,
+    BITBUCKET_EVENT_HEADER,
+    BITBUCKET_SIGNATURE_HEADER,
+    BITBUCKET_WEBHOOK_EVENTS,
+    verify_signature as verify_bitbucket_signature,
+)
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -54,6 +62,7 @@ DEFAULT_GITLAB_SUBSCRIBED_EVENTS = [
     "Deployment Hook",
     "Release Hook",
 ]
+DEFAULT_BITBUCKET_SUBSCRIBED_EVENTS = list(BITBUCKET_WEBHOOK_EVENTS)
 DEFAULT_JIRA_SUBSCRIBED_EVENTS = [
     "jira:issue_created",
     "jira:issue_updated",
@@ -198,6 +207,9 @@ def _prepare_webhook(
         event_type_header_key = "X-Gitlab-Event"
     elif tracker_type.lower() == "jira":
         default_event_list_for_type = DEFAULT_JIRA_SUBSCRIBED_EVENTS
+    elif tracker_type.lower() == "bitbucket":
+        default_event_list_for_type = DEFAULT_BITBUCKET_SUBSCRIBED_EVENTS
+        event_type_header_key = BITBUCKET_EVENT_HEADER
     else:
         logger.error(f"Unsupported tracker_type for webhook: {tracker_type}")
         raise HTTPException(
@@ -438,6 +450,43 @@ def _prepare_webhook(
                     detail="Jira signature verification failed",
                 )
 
+    elif tracker_type.lower() == "bitbucket":
+        # Bitbucket Cloud signs the raw body with HMAC-SHA256 and sends
+        # 'X-Hub-Signature: sha256=<hex>'. Hooks are always created with a
+        # secret, so a missing header is rejected like a mismatch.
+        signature_header = headers.get(BITBUCKET_SIGNATURE_HEADER)
+        if not signature_header:
+            logger.warning(
+                f"Missing X-Hub-Signature header for Bitbucket webhook, tracker ID {resolved_tracker.id}"
+            )
+            plan.queue_task(
+                "notify_admins",
+                subject="Missing X-Hub-Signature header for Bitbucket webhook",
+                message=f"Missing X-Hub-Signature header for Bitbucket webhook, tracker ID {resolved_tracker.id}",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing Bitbucket signature",
+            )
+        if not verify_bitbucket_signature(
+            webhook_secret_to_use, raw_body, signature_header
+        ):
+            logger.warning(
+                f"Bitbucket webhook signature mismatch for tracker ID {resolved_tracker.id}"
+            )
+            plan.queue_task(
+                "notify_admins",
+                subject="Bitbucket webhook signature mismatch",
+                message=f"Bitbucket webhook signature mismatch for tracker ID {resolved_tracker.id}",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid Bitbucket signature",
+            )
+        logger.info(
+            f"Bitbucket webhook signature verified successfully for tracker ID {resolved_tracker.id}"
+        )
+
     # --- 4. Parse Payload & Determine Event Type ---
     actual_event_type: Optional[str] = None
     parsed_payload: Dict[str, Any]
@@ -458,7 +507,7 @@ def _prepare_webhook(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON payload"
         )
 
-    if tracker_type.lower() in ["github", "gitlab"]:
+    if tracker_type.lower() in ["github", "gitlab", "bitbucket"]:
         if not event_type_header_key:  # Should be set during tracker resolution
             logger.error(
                 f"Internal error: event_type_header_key not set for {tracker_type}"
@@ -843,7 +892,8 @@ def _prepare_webhook(
         tracker_type=tracker_type.lower(),
         event_type=actual_event_type,
         delivery_id=headers.get("X-GitHub-Delivery")
-        or headers.get("X-Gitlab-Event-UUID"),
+        or headers.get("X-Gitlab-Event-UUID")
+        or headers.get(BITBUCKET_DELIVERY_HEADER),
         payload=parsed_payload,
         tracker_id=str(plan.tracker_id),
         organization_id=str(plan.organization_id),

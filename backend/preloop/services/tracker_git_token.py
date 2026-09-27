@@ -93,3 +93,31 @@ async def resolve_tracker_git_token(tracker: Any) -> Optional[str]:
         getattr(tracker, "id", "unknown"),
     )
     return token
+
+
+def resolve_tracker_git_username(tracker: Any) -> Optional[str]:
+    """Return the git HTTPS username a tracker's token must be paired with.
+
+    Only Bitbucket needs a per-tracker answer: an API token authenticates git
+    with the account's Bitbucket username (or ``x-bitbucket-api-token-auth``),
+    while repository access tokens and OAuth tokens use ``x-token-auth``. The
+    account email, which Bitbucket REST accepts for Basic auth, is never
+    returned.
+
+    Args:
+        tracker: A ``Tracker`` ORM instance or a compatible object.
+
+    Returns:
+        The username, or None when the provider-wide default applies.
+    """
+    if tracker is None:
+        return None
+    tracker_type = str(getattr(tracker, "tracker_type", "") or "").lower()
+    if tracker_type != "bitbucket":
+        return None
+    from preloop.utils.bitbucket import git_username_for
+
+    return git_username_for(
+        auth_type=getattr(tracker, "auth_type", None),
+        connection_details=getattr(tracker, "connection_details", None) or {},
+    )
