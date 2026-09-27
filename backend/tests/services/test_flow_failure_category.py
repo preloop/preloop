@@ -390,8 +390,8 @@ class TestModelStreamIdle:
         """
         import importlib
 
-        import preloop.services.flow_failure_category as categories
-        import preloop.services.stream_stall as stream_stall
+        categories = importlib.import_module(derive_failure_category.__module__)
+        stream_stall = importlib.import_module("preloop.services.stream_stall")
 
         reworded = "while the model stream stayed silent"
         monkeypatch.setattr(stream_stall, "STALL_MESSAGE_MARKER", reworded)
