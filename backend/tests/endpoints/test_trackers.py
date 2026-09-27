@@ -870,3 +870,97 @@ def test_register_tracker_keeps_missing_field_error(
     detail = response.json()["detail"]
     assert detail.startswith("Missing required field: api_key")
     assert "Invalid request format" not in detail
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+async def test_update_non_object_config_keeps_stored_details(
+    mock_publish_task, client: TestClient, db_session, test_user
+):
+    """A non-object legacy config does not wipe stored connection details."""
+    tracker = Tracker(
+        name="Jira keep details",
+        tracker_type="jira",
+        url="https://jira.example.com",
+        account_id=test_user.account_id,
+        api_key="jira_key",
+        connection_details={"username": "kept-user"},
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    response = client.put(
+        f"/api/v1/trackers/{tracker.id}",
+        json={"config": "nope"},
+    )
+    assert response.status_code == 200
+    assert response.json()["connection_details"]["username"] == "kept-user"
+    db_session.refresh(tracker)
+    assert tracker.connection_details["username"] == "kept-user"
+
+
+@pytest.mark.asyncio
+@patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
+async def test_update_null_connection_details_falls_back_to_config(
+    mock_publish_task, client: TestClient, db_session, test_user
+):
+    """A null connection_details is absent, so config supplies the username."""
+    tracker = Tracker(
+        name="Jira null details",
+        tracker_type="jira",
+        url="https://jira.example.com",
+        account_id=test_user.account_id,
+        api_key="jira_key",
+        connection_details={"username": "old-user"},
+    )
+    db_session.add(tracker)
+    db_session.commit()
+
+    response = client.put(
+        f"/api/v1/trackers/{tracker.id}",
+        json={
+            "connection_details": None,
+            "config": {"username": "from-config"},
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["connection_details"]["username"] == "from-config"
+    db_session.refresh(tracker)
+    assert tracker.connection_details["username"] == "from-config"
+
+
+def test_register_rejects_non_object_connection_details(
+    client: TestClient, db_session, test_user
+):
+    """A non-object connection_details is a 400 that names that key."""
+    response = client.post(
+        "/api/v1/trackers",
+        json={
+            "name": "Jira bad details",
+            "type": "jira",
+            "url": "https://jira.example.com",
+            "api_key": "token-value",
+            "connection_details": "nope",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "connection_details must be an object"
+    assert "Invalid request format" not in response.json()["detail"]
+
+
+def test_register_rejects_non_object_config(client: TestClient, db_session, test_user):
+    """A non-object legacy config is a 400 that names config."""
+    response = client.post(
+        "/api/v1/trackers",
+        json={
+            "name": "Jira bad config",
+            "type": "jira",
+            "url": "https://jira.example.com",
+            "api_key": "token-value",
+            "config": "nope",
+        },
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail == ("config must be an object (deprecated; send connection_details)")
+    assert "Invalid request format" not in detail

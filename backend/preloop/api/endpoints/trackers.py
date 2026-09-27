@@ -60,8 +60,9 @@ def _connection_details_from_body(data: Dict[str, Any]) -> Dict[str, Any]:
 
     Registration historically read ``config``. The console now also sends
     ``connection_details``, which is what updates persist. Both keys are
-    accepted during the deprecation window. When both are present and
-    ``connection_details`` is an object, that object wins.
+    accepted during the deprecation window. A null ``connection_details``
+    is absent and falls back to ``config``, matching tracker updates.
+    When ``connection_details`` is an object, that object wins.
 
     Args:
         data: Parsed JSON body.
@@ -86,7 +87,7 @@ def _connection_details_from_body(data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="connection_details must be an object",
+            detail="config must be an object (deprecated; send connection_details)",
         )
     logger.info("Tracker payload used deprecated 'config'; send 'connection_details'")
     return config

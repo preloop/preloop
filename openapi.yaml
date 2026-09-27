@@ -31271,7 +31271,8 @@ components:
           - type: 'null'
           title: Connection Details
           description: Updated connection details. The legacy key 'config' is still
-            accepted. When both are sent, connection_details wins.
+            accepted. A null connection_details is treated as absent and falls back
+            to config. When both are objects, connection_details wins.
         meta_data:
           anyOf:
           - additionalProperties: true

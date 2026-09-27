@@ -115,7 +115,9 @@ class TrackerUpdate(BaseModel):
         None,
         description=(
             "Updated connection details. The legacy key 'config' is still "
-            "accepted. When both are sent, connection_details wins."
+            "accepted. A null connection_details is treated as absent and "
+            "falls back to config. When both are objects, connection_details "
+            "wins."
         ),
     )
 
@@ -140,9 +142,10 @@ class TrackerUpdate(BaseModel):
 
         The console used to send ``config``. Updates persist
         ``connection_details``. Both keys are accepted during the
-        deprecation window. When both are present, ``connection_details``
-        wins. A null or non-object ``config`` is left alone so it cannot
-        wipe stored details.
+        deprecation window. A null ``connection_details`` is absent and
+        falls back to ``config``, matching registration. When both values
+        are objects, ``connection_details`` wins. A non-object ``config``
+        is ignored so it cannot wipe stored details.
 
         Args:
             data: The raw update payload.
@@ -153,7 +156,14 @@ class TrackerUpdate(BaseModel):
         """
         if not isinstance(data, dict):
             return data
-        if "connection_details" in data or not isinstance(data.get("config"), dict):
+        # Null matches registration: the key is absent, so config can fill it.
+        if data.get("connection_details") is None and "connection_details" in data:
+            data = {
+                key: value for key, value in data.items() if key != "connection_details"
+            }
+        if data.get("connection_details") is not None:
+            return data
+        if not isinstance(data.get("config"), dict):
             return data
         logger.info(
             "Tracker update used deprecated 'config'; send 'connection_details'"
