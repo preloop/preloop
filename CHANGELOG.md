@@ -88,6 +88,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Release security audit verdicts: pass means: minimum elements passed, gate
+  passed, no open (non-VEX-closed) findings, no failed cross-checks, no
+  gap/partial register items. A finding closed by a valid VEX statement
+  (`not_affected` with a recognised justification, or `fixed`, plus a
+  statement id) stays in the findings ledger and the evidence pack, is counted
+  in `vuln_scan.closed_by_vex`, and no longer holds a clean audit at
+  `pass_with_findings`. A cross-check skipped because its input was not
+  delivered names that input in `missing_input` and is listed in
+  `limitations[]` instead of holding the verdict; a check that ran and failed
+  still holds it. `gap` and `partial` register items hold it, `declared` items
+  do not. The platform derives `closed_by_vex` and `limitations` at persist,
+  stamps them on `drift`, and recomputes the overall verdict with a recorded
+  correction in either direction: down by one step at most, and never away
+  from `fail` when the gate, SBOM validity or minimum elements failed.
+
 - `aiosmtplib` is no longer a core dependency (nothing imported it).
   `maxminddb` and `user-agents` moved from the core dependency list to a new
   `ee` extra, since only the Enterprise Edition growth plugin uses them. The

@@ -27,6 +27,7 @@ from preloop.cra.schemas import (
 )
 from preloop.cra.repair import (
     apply_derived_severity_counts,
+    apply_derived_verdict_facts,
     apply_measured_minimum_elements,
     corrections_summary,
     failures_are_only_counts,
@@ -342,28 +343,40 @@ def apply_cra_persist_boundary(
     if not validation.ok and failures_are_only_counts(validation.failures):
         candidate, count_corrections = apply_derived_severity_counts(candidate)
 
+    # closed_by_vex and limitations are platform facts on a release audit,
+    # derived from the findings and the checks, never taken from the agent.
+    candidate, fact_corrections, stamped = apply_derived_verdict_facts(candidate)
+
     verdict_list: list[Any] = []
     schema = payload.get("schema") if isinstance(payload, Mapping) else None
-    if schema in (SCHEMA_SBOMAUDIT_V1, SCHEMA_RELEASEAUDIT_V1) and (
-        not validation.ok or element_corrections or count_corrections
-    ):
+    if schema in (SCHEMA_SBOMAUDIT_V1, SCHEMA_RELEASEAUDIT_V1):
+        # Always: the release verdict is recomputed from the facts in both
+        # directions, so a label that validates can still be corrected.
         candidate, verdict_list = verdict_corrections(candidate)
 
-    corrections = [*element_corrections, *count_corrections, *verdict_list]
-    if corrections:
-        # Re-validated in full. The run is saved only when the whole contract
-        # then passes. Receipts and evidence packs are built from this object
+    corrections = [
+        *element_corrections,
+        *count_corrections,
+        *fact_corrections,
+        *verdict_list,
+    ]
+    if corrections or stamped:
+        # Re-validated in full, including when only derived facts were
+        # stamped. The run is saved only when the whole contract then
+        # passes. Receipts and evidence packs are built from this object
         # later, so they bind the corrected result.
         revalidated = _validate(candidate)
         if revalidated.ok:
-            revalidated.advisories.append(
-                "verdict corrected by the platform: " + corrections_summary(corrections)
-            )
-            logger.warning(
-                "CRA result %s corrected at persist: %s",
-                revalidated.schema_id,
-                corrections_summary(corrections),
-            )
+            if corrections:
+                revalidated.advisories.append(
+                    "verdict corrected by the platform: "
+                    + corrections_summary(corrections)
+                )
+                logger.warning(
+                    "CRA result %s corrected at persist: %s",
+                    revalidated.schema_id,
+                    corrections_summary(corrections),
+                )
             return CraPersistDecision(artifact=candidate, validation=revalidated)
         reported = revalidated
     elif validation.ok:
