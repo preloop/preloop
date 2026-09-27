@@ -66,17 +66,6 @@ export class RequestDemoView extends LitElement {
     this._error = null;
     this._success = false;
 
-    // In a real app, you would send this data to your backend.
-    console.log('Submitting demo request:', {
-      name: this._name,
-      email: this._email,
-      role: this._role,
-      organization: this._organization,
-      headcount: this._headcount,
-      trackers: this._trackers,
-      comments: this._comments,
-    });
-
     const response = await fetch('https://spacecode.ai/api/v1/leads', {
       method: 'POST',
       headers: {

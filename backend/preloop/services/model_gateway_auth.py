@@ -369,6 +369,50 @@ def compute_authorized_model_ids(
 ) -> frozenset[str]:
     """Compute the ids of ``account_models`` this gateway principal may use.
 
+    The principal-binding rules below decide first. A registered authorizer
+    (account hook H4) is then asked about each remaining model with the
+    ``model:invoke`` action and can only remove models. With no authorizer
+    this is exactly the principal-binding result.
+
+    Args:
+        db: Active database session.
+        auth_context: Authenticated model gateway request context.
+        account_models: Full account model inventory to authorize against.
+
+    Returns:
+        Frozen set of authorized ``AIModel`` id strings.
+    """
+    from preloop.plugins.account_hooks import (
+        ACTION_MODEL_INVOKE,
+        AuthorizationContext,
+        authorize,
+        get_authorizer,
+    )
+
+    authorized = _principal_authorized_model_ids(db, auth_context, account_models)
+    if get_authorizer() is None or not authorized:
+        return authorized
+    ctx = AuthorizationContext(
+        account_id=auth_context.account_id,
+        db=db,
+        user=auth_context.user,
+        principal=auth_context,
+    )
+    return frozenset(
+        str(ai_model.id)
+        for ai_model in account_models
+        if str(ai_model.id) in authorized
+        and authorize(ctx, ACTION_MODEL_INVOKE, ai_model).allowed
+    )
+
+
+def _principal_authorized_model_ids(
+    db: Session,
+    auth_context: ModelGatewayAuthContext,
+    account_models: Sequence[models.AIModel],
+) -> frozenset[str]:
+    """Ids of ``account_models`` the principal-binding rules allow.
+
     Authorization rules, in order:
 
     - BYOK / API-key-backed / ambient models are authorized for every

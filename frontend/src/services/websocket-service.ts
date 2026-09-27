@@ -26,6 +26,8 @@
  * unsubscribe(); // Clean up when done
  * ```
  */
+import { debugLog } from '../utils/debug';
+
 class WebSocketService {
   private connections: Map<string, WebSocket> = new Map();
   private heartbeatIntervals: Map<string, number> = new Map();
@@ -52,7 +54,7 @@ class WebSocketService {
     this.connections.set(key, ws);
 
     ws.onopen = () => {
-      console.log(`WebSocket connected: ${key}`);
+      debugLog(`WebSocket connected: ${key}`);
       this.startHeartbeat(key);
       if (onOpenCallback) {
         onOpenCallback();
@@ -74,7 +76,7 @@ class WebSocketService {
     };
 
     ws.onclose = () => {
-      console.log(`WebSocket disconnected: ${key}`);
+      debugLog(`WebSocket disconnected: ${key}`);
       this.stopHeartbeat(key);
       this.connections.delete(key);
       if (onCloseCallback) {

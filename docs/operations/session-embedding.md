@@ -37,9 +37,14 @@ so nothing becomes unfindable, and a semantic hit from a summaries-only
 account names its source in the result so it reads as a summary match.
 
 The setting is read and written at `GET` and `PUT
-/api/v1/runtime-sessions/settings/embedding`. Reading it takes
-`view_runtime_sessions`; changing the scope takes `manage_budgets`, because
-widening it is a spending decision. An unknown scope is a 422.
+/api/v1/runtime-sessions/settings/embedding`, and in the console under
+Sessions, Semantic search settings. Reading it takes `view_runtime_sessions`
+(a viewer sees the card with its controls disabled); changing it (turning
+embedding on, the scope, the cap) takes `manage_budgets`, because each is a
+spending decision. An unknown scope is a 422. The read also carries the
+deployment default cap, whether the kill switch is on, and corpus progress
+(`corpus.model_vectors`, `corpus.pending` within the current scope,
+`corpus.embedded_through`).
 
 ## Daily cap
 
