@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The support period stated in SECURITY.md (security updates without charge
+  until 31 December 2031, with the release-line table and the
+  never-shortened extension rules) is signed off by the release manager as
+  of 2026-09-27. The section previously carried a "proposed wording" notice;
+  the commitment is no longer a draft.
+
 ### Added
 
 - Extension hooks for account hierarchy in `preloop.plugins.account_hooks`:

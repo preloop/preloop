@@ -1267,6 +1267,12 @@ and the filing itself stay with the manufacturer, who signs it. What the
 platform does is tell you, in one place and in one sentence, that a clock is
 running and when it stops.
 
+The operational side (who files, the fill-in templates for the three reports,
+the decision points, and a rehearsal checklist) lives in the
+[Article 14 reporting runbooks](../../security/article-14-runbooks.md). This
+section documents the machine-readable `reporting` block those runbooks read
+from.
+
 ### The block
 
 `reporting` lives next to `art14_candidates`: at the top level in
