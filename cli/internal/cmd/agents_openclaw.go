@@ -4694,8 +4694,8 @@ func resolveRuntimeExecutable(command string) (string, error) {
 		return path, nil
 	}
 	for _, candidate := range runtimeExecutableFallbackPaths(command) {
-		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
-			if info.Mode().Perm()&0111 != 0 {
+		if info, statErr := os.Stat(candidate); statErr == nil {
+			if isExecutableFileInfo(candidate, info) {
 				return candidate, nil
 			}
 		}
@@ -4711,11 +4711,11 @@ func runtimeExecutableFallbackPaths(command string) []string {
 	if err != nil {
 		return nil
 	}
-	candidates := []string{
-		filepath.Join(homeDir, ".local", "bin", command),
-		filepath.Join(homeDir, ".npm-global", "bin", command),
-		filepath.Join(homeDir, ".openclaw", "bin", command),
-		filepath.Join(homeDir, "Library", "pnpm", command),
+	candidates := runtimeExecutableFallbackPathsFor(
+		runtime.GOOS, homeDir, os.Getenv("APPDATA"), command,
+	)
+	if runtime.GOOS == "windows" {
+		return candidates
 	}
 	if nvmMatches, globErr := filepath.Glob(
 		filepath.Join(homeDir, ".nvm", "versions", "node", "*", "bin", command),

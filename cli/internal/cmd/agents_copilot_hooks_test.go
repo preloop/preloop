@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -58,12 +59,25 @@ func TestInstallCopilotHooksWritesPreloopJSON(t *testing.T) {
 	if preTool[0]["type"] != "command" {
 		t.Errorf("preToolUse type=%v, want command", preTool[0]["type"])
 	}
-	bash, _ := preTool[0]["bash"].(string)
-	if !strings.Contains(bash, "permission-hook --source copilot_cli") || !filepath.IsAbs(strings.Fields(bash)[0]) {
-		t.Errorf("preToolUse bash wrong: %q", bash)
+	// POSIX hosts write the documented bash entry; Windows hosts write a
+	// powershell entry (Copilot never executes the bash key on Windows).
+	commandKey, unusedKey := "bash", "powershell"
+	if runtime.GOOS == "windows" {
+		commandKey, unusedKey = "powershell", "bash"
 	}
-	if _, hasPS := preTool[0]["powershell"]; hasPS {
-		t.Errorf("powershell should be omitted when existing writers do not set it")
+	command, _ := preTool[0][commandKey].(string)
+	if !strings.Contains(command, "permission-hook --source copilot_cli") {
+		t.Errorf("preToolUse %s wrong: %q", commandKey, command)
+	}
+	if runtime.GOOS == "windows" {
+		if !strings.HasPrefix(command, "& '") {
+			t.Errorf("preToolUse powershell must quote the executable: %q", command)
+		}
+	} else if !filepath.IsAbs(strings.Fields(command)[0]) {
+		t.Errorf("preToolUse bash must use an absolute executable: %q", command)
+	}
+	if _, hasOther := preTool[0][unusedKey]; hasOther {
+		t.Errorf("%s should be omitted on %s", unusedKey, runtime.GOOS)
 	}
 	timeout, _ := preTool[0]["timeoutSec"].(float64)
 	if timeout < float64(approvalHookProcessHeadroomSeconds) {
@@ -75,9 +89,9 @@ func TestInstallCopilotHooksWritesPreloopJSON(t *testing.T) {
 		if len(entries) != 1 {
 			t.Fatalf("expected one %s entry, got %d", key, len(entries))
 		}
-		command, _ := entries[0]["bash"].(string)
+		command, _ := entries[0][commandKey].(string)
 		if !strings.HasSuffix(command, " usage hook --from copilot") {
-			t.Errorf("%s bash wrong: %q", key, command)
+			t.Errorf("%s %s wrong: %q", key, commandKey, command)
 		}
 		if entries[0]["timeoutSec"] != float64(cursorUsageHookTimeoutSeconds) {
 			t.Errorf("%s timeoutSec=%v, want %d", key, entries[0]["timeoutSec"], cursorUsageHookTimeoutSeconds)
