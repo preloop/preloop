@@ -137,6 +137,24 @@ JIRA_EVENT_MAP: Dict[str, str] = {
     "comment_deleted": "comment_deleted",
 }
 
+# Mapping of Bitbucket Cloud webhook event keys (X-Event-Key) to normalized
+# event types. Bitbucket sends one key per action, so no payload refinement
+# is needed.
+BITBUCKET_EVENT_MAP: Dict[str, str] = {
+    "pullrequest:created": "pull_request_opened",
+    "pullrequest:updated": "pull_request_updated",
+    "pullrequest:fulfilled": "pull_request_merged",
+    "pullrequest:rejected": "pull_request_closed",
+    "pullrequest:approved": "pull_request_approved",
+    "pullrequest:unapproved": "pull_request_unapproved",
+    "pullrequest:changes_request_created": "pull_request_changes_requested",
+    "pullrequest:changes_request_removed": "pull_request_changes_request_removed",
+    "pullrequest:comment_created": "comment_created",
+    "pullrequest:comment_updated": "comment_updated",
+    "pullrequest:comment_deleted": "comment_deleted",
+    "repo:push": "push",
+}
+
 
 # Human-readable labels for normalized event types.
 # Mirrors frontend/src/constants/tracker-event-types.ts so the subject rendered
@@ -158,6 +176,10 @@ EVENT_TYPE_LABELS: Dict[str, str] = {
     "pull_request_reopened": "Pull Request Reopened",
     "pull_request_review_requested": "Pull Request Review Requested",
     "pull_request_ready_for_review": "Pull Request Ready for Review",
+    "pull_request_approved": "Pull Request Approved",
+    "pull_request_unapproved": "Pull Request Unapproved",
+    "pull_request_changes_requested": "Pull Request Changes Requested",
+    "pull_request_changes_request_removed": "Pull Request Changes Request Removed",
     "merge_request_opened": "Merge Request Opened",
     "merge_request_updated": "Merge Request Updated",
     "merge_request_closed": "Merge Request Closed",
@@ -327,6 +349,9 @@ def normalize_event_type(
         # Jira events - already normalized in webhook
         return JIRA_EVENT_MAP.get(raw_event_type, raw_event_type)
 
+    elif tracker_type_lower == "bitbucket":
+        return BITBUCKET_EVENT_MAP.get(raw_event_type, raw_event_type)
+
     # Unknown tracker type - return as-is
     return raw_event_type
 
@@ -440,6 +465,43 @@ def _gitlab_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
         parts["commit"] = _short_sha(
             payload.get("checkout_sha") or payload.get("after")
         )
+
+    return parts
+
+
+def _bitbucket_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract subject parts from a Bitbucket Cloud webhook payload."""
+    parts: Dict[str, Any] = {}
+
+    repo = payload.get("repository") or {}
+    if isinstance(repo, dict) and repo.get("full_name"):
+        parts["repo"] = repo["full_name"]
+
+    pr = payload.get("pullrequest")
+    if isinstance(pr, dict) and pr:
+        if pr.get("id"):
+            parts["reference"] = f"#{pr['id']}"
+        if pr.get("title"):
+            parts["title"] = pr["title"]
+        html = (pr.get("links") or {}).get("html") or {}
+        if isinstance(html, dict) and html.get("href"):
+            parts["url"] = html["href"]
+        commit = ((pr.get("source") or {}).get("commit")) or {}
+        if isinstance(commit, dict):
+            parts["commit"] = _short_sha(commit.get("hash"))
+        return parts
+
+    push = payload.get("push")
+    if isinstance(push, dict):
+        changes = push.get("changes") or []
+        last = changes[-1] if isinstance(changes, list) and changes else {}
+        new = (last or {}).get("new") or {}
+        if isinstance(new, dict):
+            if new.get("name"):
+                parts["reference"] = new["name"]
+            target = new.get("target") or {}
+            if isinstance(target, dict):
+                parts["commit"] = _short_sha(target.get("hash"))
 
     return parts
 
@@ -562,6 +624,8 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
         parts = _gitlab_subject(payload)
     elif source == "jira":
         parts = _jira_subject(payload)
+    elif source == "bitbucket":
+        parts = _bitbucket_subject(payload)
     else:
         parts = {}
 
@@ -884,4 +948,44 @@ def extract_filter_fields(
         # User who triggered the event
         filter_fields["event_user"] = user.get("displayName") or user.get("accountId")
 
+    elif tracker_type_lower == "bitbucket":
+        actor = payload.get("actor") or {}
+        filter_fields["sender"] = _bitbucket_user(actor)
+        filter_fields["action"] = raw_event_type.split(":", 1)[-1]
+        pr = payload.get("pullrequest")
+        if isinstance(pr, dict) and pr:
+            filter_fields["author"] = _bitbucket_user(pr.get("author"))
+            reviewers = [
+                _bitbucket_user(reviewer) for reviewer in pr.get("reviewers") or []
+            ]
+            reviewers = [name for name in reviewers if name]
+            if reviewers:
+                filter_fields["reviewer"] = reviewers
+            state = str(pr.get("state") or "").lower()
+            filter_fields["state"] = state or None
+            filter_fields["merged"] = state == "merged"
+            filter_fields["draft"] = bool(pr.get("draft", False))
+            source_branch = ((pr.get("source") or {}).get("branch") or {}).get("name")
+            target_branch = ((pr.get("destination") or {}).get("branch") or {}).get(
+                "name"
+            )
+            if source_branch:
+                filter_fields["source_branch"] = source_branch
+            if target_branch:
+                filter_fields["target_branch"] = target_branch
+        push = payload.get("push")
+        if isinstance(push, dict):
+            changes = push.get("changes") or []
+            last = changes[-1] if isinstance(changes, list) and changes else {}
+            new = (last or {}).get("new") or {}
+            if isinstance(new, dict) and new.get("name"):
+                filter_fields["ref"] = new["name"]
+
     return filter_fields
+
+
+def _bitbucket_user(user: Any) -> Optional[str]:
+    """Return the nickname (or display name) of a Bitbucket user object."""
+    if not isinstance(user, dict):
+        return None
+    return user.get("nickname") or user.get("display_name")

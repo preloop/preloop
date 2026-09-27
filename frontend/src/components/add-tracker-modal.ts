@@ -16,6 +16,9 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import type { Tracker } from './tracker-item.ts';
+import { groupProjectsByGroup } from '../utils/tracker-scope';
+
+const BITBUCKET_WEB_URL = 'https://bitbucket.org';
 
 @customElement('add-tracker-modal')
 export class AddTrackerModal extends LitElement {
@@ -55,6 +58,27 @@ export class AddTrackerModal extends LitElement {
 
   @state()
   private trackerUsername = '';
+
+  /** Bitbucket: `api_token` (API or access token) or `oauth_token`. */
+  @state()
+  private bitbucketAuthType: 'api_token' | 'oauth_token' = 'api_token';
+
+  /** Bitbucket: personal API token or repository access token. */
+  @state()
+  private bitbucketTokenKind: 'api_token' | 'access_token' = 'api_token';
+
+  @state()
+  private bitbucketWorkspace = '';
+
+  @state()
+  private bitbucketRepository = '';
+
+  @state()
+  private bitbucketEmail = '';
+
+  /** ISO date (YYYY-MM-DD) the token expires on, if known. */
+  @state()
+  private tokenExpiresAt = '';
 
   @state()
   private orgs: any[] = [];
@@ -123,6 +147,12 @@ export class AddTrackerModal extends LitElement {
         margin-left: 0.5rem;
         margin-top: 1rem;
       }
+      .project-group {
+        font-size: var(--sl-font-size-small);
+        font-weight: var(--sl-font-weight-semibold);
+        color: var(--sl-color-neutral-600);
+        margin: 0.5rem 0 0.25rem 1.5rem;
+      }
     `,
   ];
 
@@ -134,6 +164,19 @@ export class AddTrackerModal extends LitElement {
       this.trackerUrl = this.tracker.url;
       this.trackerToken = 'unchanged';
       this.trackerUsername = this.tracker.connection_details?.username;
+      if (this.tracker.tracker_type === 'bitbucket') {
+        const details = this.tracker.connection_details ?? {};
+        this.bitbucketAuthType =
+          this.tracker.auth_type === 'oauth_token'
+            ? 'oauth_token'
+            : 'api_token';
+        this.bitbucketTokenKind =
+          details.token_kind === 'access_token' ? 'access_token' : 'api_token';
+        this.bitbucketWorkspace = details.workspace ?? '';
+        this.bitbucketRepository = details.repository ?? '';
+        this.bitbucketEmail = details.email ?? '';
+        this.tokenExpiresAt = details.token_expires_at ?? '';
+      }
       this.authMethod = this.isOAuthAuthType(this.tracker.auth_type)
         ? 'github_app'
         : 'api_token';
@@ -379,7 +422,9 @@ export class AddTrackerModal extends LitElement {
           const urlInput = this.shadowRoot?.querySelector(
             'sl-input[name="url"]'
           ) as HTMLInputElement;
-          if (this.trackerType === 'gitlab') {
+          if (this.trackerType === 'bitbucket') {
+            this.trackerUrl = BITBUCKET_WEB_URL;
+          } else if (this.trackerType === 'gitlab') {
             this.trackerUrl = 'https://gitlab.com';
             if (urlInput) {
               urlInput.placeholder = 'e.g., https://gitlab.example.com';
@@ -401,14 +446,21 @@ export class AddTrackerModal extends LitElement {
         <sl-option value="github">GitHub</sl-option>
         <sl-option value="gitlab">GitLab</sl-option>
         <sl-option value="jira">Jira</sl-option>
+        <sl-option value="bitbucket">Bitbucket Cloud</sl-option>
       </sl-select>
-      <sl-input
-        label="URL"
-        name="url"
-        .value=${this.trackerUrl}
-        @sl-input=${(e: any) => (this.trackerUrl = e.target.value)}
-        placeholder="e.g., https://github.example.com"
-      ></sl-input>
+      ${
+        this.trackerType === 'bitbucket'
+          ? this.renderBitbucketFields()
+          : html`
+              <sl-input
+                label="URL"
+                name="url"
+                .value=${this.trackerUrl}
+                @sl-input=${(e: any) => (this.trackerUrl = e.target.value)}
+                placeholder="e.g., https://github.example.com"
+              ></sl-input>
+            `
+      }
       ${
         this.trackerType === 'jira'
           ? html`
@@ -519,6 +571,161 @@ export class AddTrackerModal extends LitElement {
     `;
   }
 
+  /** Bitbucket Cloud settings: workspace, token kind and git identity. */
+  renderBitbucketFields() {
+    const isAccessToken =
+      this.bitbucketAuthType === 'api_token' &&
+      this.bitbucketTokenKind === 'access_token';
+    return html`
+      <sl-input
+        label="Workspace"
+        name="bitbucket_workspace"
+        .value=${this.bitbucketWorkspace}
+        @sl-input=${(e: any) => (this.bitbucketWorkspace = e.target.value)}
+        help-text="The workspace ID from bitbucket.org/<workspace>."
+        required
+      ></sl-input>
+      <sl-select
+        label="Authentication"
+        name="bitbucket_auth_type"
+        .value=${this.bitbucketAuthType}
+        ?disabled=${!!this.tracker}
+        @sl-change=${(e: any) => (this.bitbucketAuthType = e.target.value)}
+      >
+        <sl-option value="api_token">API token or access token</sl-option>
+        <sl-option value="oauth_token">OAuth access token</sl-option>
+      </sl-select>
+      ${
+        this.bitbucketAuthType === 'api_token'
+          ? html`
+              <sl-select
+                label="Token kind"
+                name="bitbucket_token_kind"
+                .value=${this.bitbucketTokenKind}
+                @sl-change=${(e: any) =>
+                  (this.bitbucketTokenKind = e.target.value)}
+                help-text="App passwords are not accepted. Create an API token with Bitbucket scopes instead."
+              >
+                <sl-option value="api_token">Personal API token</sl-option>
+                <sl-option value="access_token"
+                  >Repository access token</sl-option
+                >
+              </sl-select>
+            `
+          : ''
+      }
+      <sl-input
+        label="Repository"
+        name="bitbucket_repository"
+        .value=${this.bitbucketRepository}
+        @sl-input=${(e: any) => (this.bitbucketRepository = e.target.value)}
+        help-text=${
+          isAccessToken
+            ? 'Required: a repository access token works on one repository.'
+            : 'Optional: limit the tracker to one repository slug.'
+        }
+        ?required=${isAccessToken}
+      ></sl-input>
+      ${
+        this.bitbucketAuthType === 'api_token' && !isAccessToken
+          ? html`
+              <sl-input
+                label="Atlassian account email"
+                name="bitbucket_email"
+                type="email"
+                .value=${this.bitbucketEmail}
+                @sl-input=${(e: any) => (this.bitbucketEmail = e.target.value)}
+                help-text="Used only for the REST API Basic auth fallback. Never used for git."
+              ></sl-input>
+              <sl-input
+                label="Bitbucket username"
+                name="bitbucket_username"
+                .value=${this.trackerUsername ?? ''}
+                @sl-input=${(e: any) => (this.trackerUsername = e.target.value)}
+                help-text="Used as the git username for clones and pushes. Leave empty to use x-bitbucket-api-token-auth."
+              ></sl-input>
+            `
+          : ''
+      }
+      <sl-input
+        label="Token expires on"
+        name="token_expires_at"
+        type="date"
+        .value=${this.tokenExpiresAt}
+        @sl-input=${(e: any) => (this.tokenExpiresAt = e.target.value)}
+        help-text="Optional. Preloop warns 14 days before the token expires."
+      ></sl-input>
+    `;
+  }
+
+  /** Connection details sent for a Bitbucket tracker. */
+  bitbucketConnectionDetails(): Record<string, string> {
+    const details: Record<string, string> = {
+      workspace: this.bitbucketWorkspace.trim(),
+    };
+    if (this.bitbucketAuthType === 'api_token') {
+      details.token_kind = this.bitbucketTokenKind;
+    }
+    if (this.bitbucketRepository.trim()) {
+      details.repository = this.bitbucketRepository.trim();
+    }
+    const usesPersonalToken =
+      this.bitbucketAuthType === 'api_token' &&
+      this.bitbucketTokenKind === 'api_token';
+    if (usesPersonalToken && this.bitbucketEmail.trim()) {
+      details.email = this.bitbucketEmail.trim();
+    }
+    if (usesPersonalToken && this.trackerUsername?.trim()) {
+      details.username = this.trackerUsername.trim();
+    }
+    if (this.tokenExpiresAt) {
+      details.token_expires_at = this.tokenExpiresAt;
+    }
+    return details;
+  }
+
+  /** Extra options for the test and project-listing endpoints. */
+  private connectionOptions(): api.TrackerConnectionOptions {
+    if (this.trackerType !== 'bitbucket') {
+      return {};
+    }
+    return {
+      connectionDetails: this.bitbucketConnectionDetails(),
+      authType: this.bitbucketAuthType,
+    };
+  }
+
+  /**
+   * Render the project items of one organization. Bitbucket repositories are
+   * grouped under their Bitbucket project; other trackers stay flat.
+   */
+  renderProjectItems(orgId: string, projects: any[]) {
+    const item = (proj: any) => html`
+      <sl-tree-item
+        value="${proj.id}"
+        ?selected=${this.selectedProjects[orgId]?.[proj.id]}
+      >
+        ${proj.name}
+      </sl-tree-item>
+    `;
+    const groups = groupProjectsByGroup(projects);
+    if (groups.length <= 1 && !groups[0]?.name) {
+      return projects.map(item);
+    }
+    return groups.map(
+      (group) => html`
+        <div
+          class="project-group"
+          slot="children"
+          data-group=${group.name || 'other'}
+        >
+          ${group.name || 'No project'}
+        </div>
+        ${group.projects.map(item)}
+      `
+    );
+  }
+
   renderStep2() {
     return html`
       <h2>Configure Project Scope</h2>
@@ -578,17 +785,8 @@ export class AddTrackerModal extends LitElement {
             >
               ${org.name}
               ${
-                !isGitHubApp
-                  ? this.projects[org.id]?.map(
-                      (proj: any) => html`
-                        <sl-tree-item
-                          value="${proj.id}"
-                          ?selected=${this.selectedProjects[org.id]?.[proj.id]}
-                        >
-                          ${proj.name}
-                        </sl-tree-item>
-                      `
-                    )
+                !isGitHubApp && this.projects[org.id]
+                  ? this.renderProjectItems(org.id, this.projects[org.id])
                   : ''
               }
             </sl-tree-item>
@@ -684,7 +882,8 @@ export class AddTrackerModal extends LitElement {
           this.trackerToken,
           this.trackerUrl,
           this.trackerUsername,
-          this.tracker?.id
+          this.tracker?.id,
+          this.connectionOptions()
         );
         if (!response.success) {
           this.errorMessage = response.message.split('\n')[0];
@@ -720,7 +919,8 @@ export class AddTrackerModal extends LitElement {
         orgId,
         this.trackerUrl,
         this.trackerUsername,
-        this.tracker?.id
+        this.tracker?.id,
+        this.connectionOptions()
       );
       this.projects = { ...this.projects, [orgId]: projects };
       if (this.selectedOrgs[orgId]) {
@@ -925,6 +1125,14 @@ export class AddTrackerModal extends LitElement {
     } else {
       trackerData.auth_type = 'api_token';
       trackerData.api_key = this.trackerToken;
+    }
+    if (this.trackerType === 'bitbucket') {
+      const details = this.bitbucketConnectionDetails();
+      trackerData.url = BITBUCKET_WEB_URL;
+      trackerData.auth_type = this.bitbucketAuthType;
+      trackerData.config = details;
+      // The update endpoint reads connection_details, not config.
+      trackerData.connection_details = details;
     }
 
     try {

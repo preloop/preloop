@@ -596,8 +596,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     from preloop.services.model_content_policy import set_model_io_approval_loop
+    from preloop.services.model_price_catalog import start_price_map_refresh
 
     price_refresher = start_reviewed_price_refresh()
+    # Merge the upstream price map on startup and every TTL so a model the
+    # vendored snapshot lacks is priced without waiting for a miss (#801).
+    price_map_refresher = start_price_map_refresh()
     set_model_io_approval_loop(asyncio.get_running_loop())
     try:
         yield
@@ -605,6 +609,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         set_model_io_approval_loop(None)
         if price_refresher is not None:
             await price_refresher.stop()
+        if price_map_refresher is not None:
+            await price_map_refresher.stop()
 
     # Shutdown logic
 
@@ -810,6 +816,7 @@ def _register_control_plane_routes(
         copilot_usage,
         cost,
         event_webhooks,
+        issue_costs,
         exports,
         features,
         issues,
@@ -1061,6 +1068,12 @@ def _register_control_plane_routes(
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(
+        issue_costs.router,
+        prefix="/api/v1",
+        tags=["Cost Analytics"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
         copilot_usage.router,
         prefix="/api/v1",
         tags=["Cost Analytics"],
@@ -1098,6 +1111,14 @@ def _register_control_plane_routes(
     # Policies router for policy-as-code YAML import/export
     app.include_router(
         policies.router,
+        prefix="/api/v1",
+        tags=["Policies"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    from preloop.api.endpoints import policy_notices
+
+    app.include_router(
+        policy_notices.router,
         prefix="/api/v1",
         tags=["Policies"],
         dependencies=[Depends(get_current_active_user)],

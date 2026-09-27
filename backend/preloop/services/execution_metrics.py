@@ -87,6 +87,13 @@ def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
         execution.estimated_cost = new_cost
         db.add(execution)
         db.flush()
+        from preloop.services.issue_cost_rollup import (
+            refresh_execution_cost_safely,
+        )
+
+        refresh_execution_cost_safely(
+            db, execution_id=execution.id, estimated_cost=new_cost
+        )
     return True
 
 

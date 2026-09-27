@@ -17,6 +17,7 @@ export const consoleRouteLoaders = {
   'assignments-view': () => import('../views/authed/issues/assignments-view'),
   'api-usage-view': () => import('../views/authed/api-usage-view'),
   'cost-view': () => import('../views/authed/cost-view'),
+  'issue-cost-view': () => import('../views/authed/issue-cost-view'),
   'api-keys-view': () => import('../views/authed/settings/api-keys-view'),
   'api-key-view': () => import('../views/authed/settings/api-key-view'),
   'ai-models-view': () => import('../views/authed/settings/ai-models-view'),

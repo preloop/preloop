@@ -230,7 +230,7 @@ class TestResendVerification:
         sent: list[str] = []
         monkeypatch.setattr(
             "preloop.api.auth.router.send_verification_email",
-            lambda user_email, token: sent.append(user_email),
+            lambda user_email, token, username=None: sent.append(user_email),
         )
         unverified = _user(db_session, verified=False)
         verified = _user(db_session, verified=True)
@@ -280,7 +280,7 @@ class TestVerifyLinkSignsIn:
         from preloop.utils.tokens import create_email_verification_token
 
         user = _user(db_session, verified=False)
-        token = create_email_verification_token(user.email)
+        token = create_email_verification_token(user.email, user_id=user.id)
 
         response = anon_client.post("/api/v1/auth/verify-email", json={"token": token})
 
@@ -301,7 +301,7 @@ class TestVerifyLinkSignsIn:
 
         user = _user(db_session, verified=False)
         crud_user.update(db_session, db_obj=user, obj_in={"is_active": False})
-        token = create_email_verification_token(user.email)
+        token = create_email_verification_token(user.email, user_id=user.id)
 
         response = anon_client.post("/api/v1/auth/verify-email", json={"token": token})
 

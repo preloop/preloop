@@ -10,6 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
+from preloop.utils.bitbucket import (
+    normalize_uuid as normalize_bitbucket_uuid,
+    payload_commit_hash as bitbucket_payload_commit_hash,
+)
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue
 from preloop.models.models import Flow
 from preloop.models.models.flow_execution import FlowExecution
@@ -512,6 +516,12 @@ class FlowTriggerService:
                 if project_path and tag:
                     return f"gitlab:{project_path}:release:{tag}"
 
+        elif source == "bitbucket":
+            pr = payload.get("pullrequest") or {}
+            repo_full_name = (payload.get("repository") or {}).get("full_name", "")
+            if isinstance(pr, dict) and pr.get("id") and repo_full_name:
+                return f"bitbucket:{repo_full_name}:pr:{pr['id']}"
+
         return None
 
     @staticmethod
@@ -788,6 +798,12 @@ class FlowTriggerService:
             if project_path:
                 return f"gitlab:{project_path}"
 
+        elif source == "bitbucket":
+            repo = payload.get("repository") or {}
+            repo_full_name = repo.get("full_name", "") if isinstance(repo, dict) else ""
+            if repo_full_name:
+                return f"bitbucket:{repo_full_name}"
+
         return None
 
     def _extract_project_id(self, event_data: Dict[str, Any]) -> Optional[str]:
@@ -835,6 +851,13 @@ class FlowTriggerService:
             # GitLab uses path_with_namespace like "group/project"
             repo_identifier = project.get("path_with_namespace") or project.get("name")
             repo_external_id = str(project.get("id", "")) if project.get("id") else None
+
+        elif source == "bitbucket":
+            repo = payload.get("repository", {})
+            # Bitbucket uses full_name like "workspace/repo"; projects store
+            # the repository UUID without braces as the identifier.
+            repo_identifier = repo.get("full_name") or repo.get("name")
+            repo_external_id = normalize_bitbucket_uuid(repo.get("uuid")) or None
 
         if not repo_identifier:
             return None
@@ -965,6 +988,11 @@ class FlowTriggerService:
                 sha = head.get("sha")
                 if sha:
                     return sha
+
+        # Bitbucket Cloud PR or repo:push
+        sha = bitbucket_payload_commit_hash(payload)
+        if sha:
+            return sha
 
         # Direct commit reference
         if "commit" in payload:
@@ -1587,6 +1615,17 @@ class FlowTriggerService:
                 author = obj_attrs.get("author", {})
                 if isinstance(author, dict):
                     sender = author.get("username", "").lower()
+        elif source == "bitbucket":
+            # Bitbucket names the acting user "actor"; filter_fields adds the
+            # nickname as "sender".
+            actor = payload.get("actor")
+            sender_obj = payload.get("sender")
+            if isinstance(sender_obj, str) and sender_obj:
+                sender = sender_obj.lower()
+            elif isinstance(actor, dict):
+                sender = str(
+                    actor.get("nickname") or actor.get("display_name") or ""
+                ).lower()
 
         if not sender:
             return False

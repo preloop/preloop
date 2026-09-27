@@ -250,4 +250,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert copilot_import.down_revision == "20260927_review_instructions"
     spend_outliers = script.get_revision("20260927_spend_outliers")
     assert spend_outliers.down_revision == "20260927_copilot_import"
-    assert script.get_heads() == ["20260927_spend_outliers"]
+    issue_cost_rollup = script.get_revision("20260927_issue_cost_rollup")
+    assert issue_cost_rollup.down_revision == "20260927_spend_outliers"
+    policy_notice_hit = script.get_revision("20260927_policy_notice_hit")
+    assert policy_notice_hit.down_revision == "20260927_issue_cost_rollup"
+    assert script.get_heads() == ["20260927_policy_notice_hit"]

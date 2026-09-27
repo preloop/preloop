@@ -174,7 +174,7 @@ def parse_review_marker(body: Optional[str]) -> Optional[str]:
 
 
 def extract_comment_body(event_data: Dict[str, Any]) -> str:
-    """Best-effort comment body for GitHub and GitLab comment events."""
+    """Best-effort comment body for GitHub, GitLab and Bitbucket comments."""
 
     payload = event_data.get("payload") or event_data
     if not isinstance(payload, dict):
@@ -185,6 +185,12 @@ def extract_comment_body(event_data: Dict[str, Any]) -> str:
             value = comment.get(key)
             if isinstance(value, str) and value:
                 return value
+        # Bitbucket Cloud: comment.content.raw
+        content = comment.get("content")
+        if isinstance(content, dict):
+            raw = content.get("raw")
+            if isinstance(raw, str) and raw:
+                return raw
     elif isinstance(comment, str) and comment:
         return comment
     obj_attrs = payload.get("object_attributes")
@@ -542,6 +548,9 @@ def record_opened_pr(
             )
             return
         logger.info("Recorded opened PR on execution %s", execution_id)
+        from preloop.services.issue_cost_rollup import record_publication_safely
+
+        record_publication_safely(db, execution.id, stored_url)
         if source_branch:
             from preloop.services.flow_feedback import register_thread
 

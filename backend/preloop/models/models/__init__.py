@@ -88,6 +88,7 @@ from .user_invitation import UserInvitation, UserInvitationStatus
 from .event import Event
 from .visitor import Visitor
 from .identity_link import IdentityLink
+from .policy_notice_hit import PolicyNoticeHit
 from .account_milestone import AccountMilestone
 from .attention_dismissal import AttentionDismissal
 from .spend_outlier import SpendOutlierFinding, SpendOutlierSettings
@@ -121,6 +122,7 @@ from .budget import BudgetPolicy, BudgetSpendActivity, BudgetPeriod
 from .billing_operation import BillingOperation
 from .hosted_spend import HostedSpendAccount, HostedSpendMonth, HostedSpendReservation
 
+from .issue_cost import IssueCostExecution, IssueCostPullRequest, IssueCostRollup
 from .issue_lifecycle import IssueLifecycle
 from .security_maintenance import (
     SecurityMaintenanceBaseline,
@@ -137,6 +139,9 @@ __all__ = [
     "HostedSpendReservation",
     "FlowFeedback",
     "FlowThread",
+    "IssueCostExecution",
+    "IssueCostPullRequest",
+    "IssueCostRollup",
     "IssueLifecycle",
     "SecurityMaintenanceRelease",
     "SecurityMaintenanceItem",
@@ -232,6 +237,7 @@ __all__ = [
     "Event",
     "Visitor",
     "IdentityLink",
+    "PolicyNoticeHit",
     "AccountMilestone",
     "AttentionDismissal",
     "SpendOutlierFinding",

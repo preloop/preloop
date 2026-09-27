@@ -297,10 +297,12 @@ class TestCompleteNewAccountSetup:
         )
 
         # Verify all tasks were called
-        mock_create_token.assert_called_once_with("test@test.com")
+        # The link is bound to the new row, not only to its address.
+        mock_create_token.assert_called_once_with("test@test.com", user_id=user_id)
         mock_send_email.assert_called_once_with(
             user_email="test@test.com",
             token="test_token",
+            username="testuser",
         )
         mock_ensure_presets.assert_called_once_with()
         mock_create_policy.assert_called_once_with(account_id, user_id)
