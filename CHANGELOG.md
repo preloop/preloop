@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The flow form edits Review instructions for the Pull Request Reviewer, and
+  for any prompt that references `flow.review_instructions`. The flow page
+  shows the text when it is set. The reviewer prompt still keeps the first
+  16 KiB.
 - A Copilot coverage matrix (`docs/guide/copilot.md`) states, for each
   Copilot surface, whether MCP tool calls are governed, whether model
   calls are metered, whether hooks record a session, and whether spend
