@@ -91,6 +91,7 @@ from .identity_link import IdentityLink
 from .policy_notice_hit import PolicyNoticeHit
 from .account_milestone import AccountMilestone
 from .attention_dismissal import AttentionDismissal
+from .spend_outlier import SpendOutlierFinding, SpendOutlierSettings
 from .instance import Instance
 from .cli_client import CliClient
 from .github_app_installation import OAuthAppInstallation, GitHubAppInstallation
@@ -235,6 +236,8 @@ __all__ = [
     "PolicyNoticeHit",
     "AccountMilestone",
     "AttentionDismissal",
+    "SpendOutlierFinding",
+    "SpendOutlierSettings",
     "Instance",
     "CliClient",
     "OAuthAppInstallation",

@@ -833,6 +833,7 @@ def _register_control_plane_routes(
         session_optimization,
         session_saved_searches,
         session_search,
+        spend_outliers,
         tools,
         trackers,
         usage_import,
@@ -1045,6 +1046,12 @@ def _register_control_plane_routes(
         budget.router,
         prefix="/api/v1",
         tags=["Budget"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        spend_outliers.router,
+        prefix="/api/v1",
+        tags=["Attention"],
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(

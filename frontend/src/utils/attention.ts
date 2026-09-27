@@ -13,6 +13,11 @@ import type {
 // Type only: the attention rules never render, they just carry the shape the
 // attribution line reads.
 import type { AttributionSource } from '../components/attribution-line';
+import type { SpendOutlierFinding } from '../spend-outliers-api';
+import {
+  spendOutlierItems,
+  type AttentionSpendEvidence,
+} from './attention-spend';
 import {
   formatDurationBetween,
   formatRelativeTime,
@@ -37,7 +42,14 @@ import {
  * Attention page can render the same list without a second source of truth.
  */
 export type AttentionKind =
-  'approval' | 'agent' | 'flow' | 'model' | 'budget' | 'pricing' | 'policy';
+  | 'approval'
+  | 'agent'
+  | 'flow'
+  | 'model'
+  | 'budget'
+  | 'spend'
+  | 'pricing'
+  | 'policy';
 
 /**
  * `low` is for things that are worth naming once and are usually fine: a model
@@ -130,6 +142,8 @@ export interface AttentionEvidence {
   catalogMissing?: boolean;
   unpricedRequests?: number;
   budget?: AttentionBudgetDetail;
+  /** The numbers behind a spend outlier card (#960). */
+  spendOutlier?: AttentionSpendEvidence;
   /** Notify rule hits behind a policy item (#959). */
   policyNotice?: AttentionPolicyNoticeEvidence;
 }
@@ -159,6 +173,13 @@ export interface AttentionItem {
    * costs one click instead of a menu.
    */
   quickDismiss?: { label: string; reason: 'expected' | 'snoozed' | 'fixed' };
+  /**
+   * When true, an unexpired snooze on this item id hides the item even after
+   * its fingerprint changed. Spend outliers set it: their fingerprint moves
+   * to a new day every day the problem persists, and a snooze is a promise
+   * of quiet until a date, not until tomorrow.
+   */
+  snoozeHidesNewFingerprints?: boolean;
   evidence?: AttentionEvidence;
   /**
    * Set on approval rows so the page can decide there instead of sending the
@@ -267,6 +288,8 @@ export interface AttentionInputs {
    * so a model that has one is priced whatever its spend adds up to.
    */
   priceOverrides?: AttentionPriceOverride[];
+  /** Open spend outlier findings (#960), evaluated on the server. */
+  spendOutliers?: SpendOutlierFinding[];
   /** Notify rule hits of the last seven days, one row per rule. */
   policyNotices?: AttentionPolicyNotice[];
   /**
@@ -311,6 +334,12 @@ export const ATTENTION_KIND_META: Record<
     icon: 'wallet2',
     sectionHref: '/console/cost',
   },
+  spend: {
+    label: 'Spend outlier',
+    plural: 'Spend outliers',
+    icon: 'graph-up-arrow',
+    sectionHref: '/console/cost',
+  },
   pricing: {
     label: 'Pricing',
     plural: 'Pricing',
@@ -332,6 +361,7 @@ export const ATTENTION_KIND_ORDER: AttentionKind[] = [
   'flow',
   'model',
   'budget',
+  'spend',
   'pricing',
   'policy',
 ];
@@ -1351,6 +1381,13 @@ function dismissalHides(
   item: AttentionItem,
   now: Date
 ): boolean {
+  if (
+    item.snoozeHidesNewFingerprints &&
+    dismissal.snooze_until &&
+    timestampOf(dismissal.snooze_until) > now.getTime()
+  ) {
+    return true;
+  }
   return dismissalHidesFingerprint(dismissal, item.fingerprint, now);
 }
 
@@ -1363,6 +1400,7 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
     ...flowItems(inputs.executions || [], now),
     ...modelItems(inputs.gatewayFailures || [], now),
     ...budgetItems(inputs.budgetPolicies || []),
+    ...spendOutlierItems(inputs.spendOutliers || []),
     ...pricingItems(
       inputs.usageSummary,
       inputs.priceOverrides,

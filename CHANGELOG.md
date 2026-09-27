@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Spend outlier alerts on the Attention page: a developer whose UTC-day spend
+  is a multiple of their 28-day median, whose spend is mostly one top-tier
+  model two days running, or a session over a cost threshold. Each alert fires
+  once, is dismissable with the existing dismissals, and comes back on a new
+  day that still matches. Thresholds are per account
+  (`/api/v1/attention/spend-outliers/settings`), and the weekly digest can
+  list the week's findings with dismissed ones marked.
+
 - The Cost page has a Copilot tab that imports GitHub Copilot seats, daily
   premium-request spend per developer and model, and per-user usage metrics
   from GitHub once a day. The operator enters the seat price. The figures are
@@ -126,6 +134,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release that dropped it) and is recorded as not on the shipped
   frontend execute path. Frontend SBOMs mark declaration-only packages
   with `preloop:types_only`.
+
+- The Claude family autoregister verifies an unknown `claude-*` identifier
+  against Anthropic's models endpoint before creating a catalog row
+  (`model_gateway_claude_family_autoregister_verify_upstream`, default on). A
+  404 no longer becomes a permanent model bound to the agent; an inconclusive
+  probe still registers as before and is marked `unverified`. Refs #950.
+
 - A workspace checkpoint that exceeds the storage cap logs
   `PRELOOP_CHECKPOINT skipped checkpoint_oversized` and lets the run finish.
   The last completed checkpoint stays the resume point. Other checkpoint

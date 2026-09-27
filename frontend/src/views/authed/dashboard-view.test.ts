@@ -2231,8 +2231,7 @@ describe('DashboardView', () => {
       // /teams /roles. The 30 includes three page audit-logs this
       // filter drops, so the measured set is 27. /ai-models is the
       // Inventory list once; preloop-deploy-wizard does not mount on
-      // an onboarded account. The Attention inputs also read
-      // /policies/notices/summary once (#959), so the set is 28.
+      // an onboarded account.
       const pageUrls = fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
@@ -2243,7 +2242,10 @@ describe('DashboardView', () => {
             !url.startsWith('/api/v1/roles') &&
             !url.startsWith('/api/v1/users')
         );
-      expect(pageUrls.length, pageUrls.join('\n')).to.equal(28);
+      // 28 since the attention inputs gained the spend outlier findings
+      // (#960): one passive GET, shared with /console/attention. 29 with the
+      // policy notice summary (#959), also shared with the Attention page.
+      expect(pageUrls.length, pageUrls.join('\n')).to.equal(29);
       expect(
         pageUrls.filter((url) =>
           url.startsWith('/api/v1/policies/notices/summary')
