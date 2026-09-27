@@ -295,6 +295,7 @@ const activeRouters = new Set<Router>();
 export class Router {
   #outlet: Element | null = null;
   #flat: CompiledRoute[] = [];
+  #routes: readonly Route[] = [];
   #chain: Route[] = [];
   /**
    * The rendered element per chain level, `null` where the route at that level
@@ -372,6 +373,7 @@ export class Router {
    * app's bootstrap both want to know when the first view exists.
    */
   async setRoutes(routes: readonly Route[], skipRender = false): Promise<void> {
+    this.#routes = routes;
     this.#flat = flattenRoutes(routes);
     this.#chain = [];
     this.#elements = [];
@@ -380,6 +382,24 @@ export class Router {
       const { pathname, search, hash } = window.location;
       await this.render({ pathname, search, hash }, { history: 'replace' });
     }
+  }
+
+  /**
+   * Re-read the installed route table after routes were added to it.
+   *
+   * Unlike `setRoutes` this keeps the rendered chain, so the shell around the
+   * current view is reused rather than rebuilt. With `render` the current URL
+   * is drawn again, but only when the table now resolves it to a different
+   * route (a path that rendered not-found before its route existed).
+   */
+  async refreshRoutes(options: { render?: boolean } = {}): Promise<void> {
+    const before = this.match(window.location.pathname)?.chain ?? [];
+    this.#flat = flattenRoutes(this.#routes);
+    if (!options.render || !this.#outlet) return;
+    const after = this.match(window.location.pathname)?.chain ?? [];
+    if (before[before.length - 1] === after[after.length - 1]) return;
+    const { pathname, search, hash } = window.location;
+    await this.render({ pathname, search, hash }, { history: 'replace' });
   }
 
   /**

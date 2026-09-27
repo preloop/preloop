@@ -37,6 +37,9 @@ workspace contents.
 
 ## Copilot CLI
 
+How this hook path sits next to MCP, gateway metering, and the
+premium-request import is in [Copilot coverage](copilot.md).
+
 `preloop agents onboard "Copilot CLI"` writes one Preloop-owned file,
 `~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks/preloop.json`).
 Re-onboard replaces that file's Preloop entries. Offboard deletes that

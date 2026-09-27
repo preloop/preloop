@@ -23,6 +23,8 @@ from preloop.api.auth import get_current_active_user
 from preloop.models.models.user import User
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
+from preloop.schemas.host_exec_usage import HostExecSessionsResponse
+from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.execution_metrics import (
     project_execution_totals,
     project_resume_lineage,
@@ -1652,6 +1654,39 @@ async def get_flow_execution_logs(
 
 # The row type the gateway writes for each model request of an execution.
 MODEL_GATEWAY_CALL_LOG_TYPE = "model_gateway_call"
+
+
+@router.get(
+    "/flows/executions/{execution_id}/host-sessions",
+    response_model=HostExecSessionsResponse,
+)
+@require_permission("view_flows")
+def get_flow_execution_host_sessions(
+    *,
+    db: Session = Depends(get_db),
+    execution_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+) -> HostExecSessionsResponse:
+    """Hook sessions and seat usage of a run on a host-exec profile.
+
+    Args:
+        execution_id: ID of the execution.
+
+    Returns:
+        Sessions observed by the runner's usage hook, their event counts,
+        and the Copilot premium requests the CLI reported. None of it is
+        gateway traffic.
+    """
+    execution = crud_flow_execution.get(
+        db=db, id=execution_id, account_id=current_user.account_id
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Flow execution not found")
+    return HostExecSessionsResponse.model_validate(
+        summarize_host_exec_usage(
+            db, account_id=current_user.account_id, execution_id=execution.id
+        )
+    )
 
 
 @router.get("/flows/executions/{execution_id}/gateway-events")

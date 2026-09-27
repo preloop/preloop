@@ -33,6 +33,7 @@ that silently drops the rows past a limit is worse than no export.
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -319,8 +320,11 @@ def _add(tar: tarfile.TarFile, name: str, body: bytes) -> None:
     info = tarfile.TarInfo(name)
     info.size = len(body)
     info.mode = 0o600
-    # Fixed mtime so the same rows produce the same archive bytes twice.
+    # Fixed mtime and ownership so the same rows produce the same archive
+    # bytes twice, whoever builds them.
     info.mtime = 0
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
     tar.addfile(info, io.BytesIO(body))
 
 
@@ -416,7 +420,15 @@ def build_period_export(
         )
 
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+    # tarfile's "w:gz" mode stamps the gzip header with the current time, so
+    # two builds straddling a second boundary would differ. Open the gzip
+    # stream ourselves with a fixed mtime (and no file name) instead.
+    with (
+        gzip.GzipFile(
+            filename="", mode="wb", compresslevel=9, fileobj=buffer, mtime=0
+        ) as gz,
+        tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar,
+    ):
         _add(tar, EXPORT_MANIFEST_NAME, manifest_body)
         for name, body in sorted(bodies.items()):
             _add(tar, name, body)

@@ -268,7 +268,10 @@ def host_exec_unavailable_reason(
     custom_commands: Any = None,
     publication_mode: Any = None,
 ) -> Optional[str]:
-    """Fail closed for publication and native resume in this first slice.
+    """Fail closed for publication, setup commands and native resume.
+
+    Cloning the flow's repositories is supported; the runner performs the
+    checkout only when its local profile sets ``allow_checkout``.
 
     Args:
         git_clone_config: Flow checkout config. ``create_pull_request`` and
@@ -306,10 +309,12 @@ def host_exec_unavailable_reason(
         isinstance(clone, Mapping) and clone.get("publication_mode") == "isolated"
     ):
         return ISOLATED_PUBLICATION_UNAVAILABLE
-    if isinstance(clone, Mapping) and (
-        clone.get("enabled") or clone.get("repositories") or clone.get("setup_commands")
-    ):
-        return "host execution does not support remote clone/setup commands in this version"
+    # A checkout itself is allowed: the runner clones into the execution
+    # directory when the local profile opts in (``allow_checkout``). Remote
+    # setup commands would run control-plane shell on the host, so they stay
+    # unavailable.
+    if isinstance(clone, Mapping) and clone.get("setup_commands"):
+        return "host execution does not run remote clone setup commands"
     commands = custom_commands
     if hasattr(commands, "model_dump"):
         commands = commands.model_dump()
@@ -469,4 +474,13 @@ def apply_runner_completion_to_execution(
         account_id=account_id,
         execution=execution,
         evidence_upload=upload,
+    )
+    from preloop.services.host_exec_usage import record_host_exec_completion_usage
+
+    record_host_exec_completion_usage(
+        db,
+        execution,
+        account_id=account_id,
+        result=cleaned,
+        pending_job=pending_job,
     )

@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"io"
@@ -28,6 +30,10 @@ const (
 	hostExecMaxPromptBytes     = 64 * 1024
 	hostExecDefaultTimeout     = 30 * time.Minute
 	hostExecCompletionProtocol = "host_exec"
+	// hostExecPromptPreambleKey marks a runner-local job copy whose prompt
+	// carries the checkout preamble. It is set only in memory, after
+	// jobRejectedHostExecInjection has run on the delivered job.
+	hostExecPromptPreambleKey = "runner_prompt_preamble"
 )
 
 var (
@@ -56,6 +62,10 @@ type hostExecProfile struct {
 	AllowTools    []string `json:"allow_tools,omitempty"`
 	DenyTools     []string `json:"deny_tools,omitempty"`
 	AllowAllTools bool     `json:"allow_all_tools,omitempty"`
+	// AllowCheckout is the operator's opt-in to cloning a flow's
+	// repositories into the execution directory. Repository content is
+	// untrusted input to the CLI, so a profile never clones by default.
+	AllowCheckout bool `json:"allow_checkout,omitempty"`
 }
 
 type hostExecProfilesFile struct {
@@ -262,6 +272,7 @@ func jobRejectedHostExecInjection(job map[string]any) string {
 		"executable", "argv", "env", "session_id", "cursor_api_key", "api_key",
 		"copilot_github_token", "github_token", "gh_token", "allow_tools", "deny_tools", "allow_all_tools",
 		"resume_from", "launch", "launch_version", "script", "environment", "account_api_token", "custom_commands",
+		hostExecPromptPreambleKey,
 	} {
 		if _, ok := job[key]; ok {
 			return "job must not supply " + key
@@ -422,7 +433,11 @@ func jobPromptText(job map[string]any) (string, error) {
 	if !utf8.ValidString(prompt) {
 		return "", fmt.Errorf("prompt is not valid UTF-8")
 	}
-	if len(prompt) > hostExecMaxPromptBytes {
+	limit := hostExecMaxPromptBytes
+	if prefixed, _ := job[hostExecPromptPreambleKey].(bool); prefixed {
+		limit += hostExecPreambleMaxBytes
+	}
+	if len(prompt) > limit {
 		return "", fmt.Errorf("prompt exceeds %d bytes", hostExecMaxPromptBytes)
 	}
 	return prompt, nil
@@ -469,12 +484,13 @@ func jobModelIdentifier(job map[string]any) string {
 	return value
 }
 
-func buildHostExecArgs(profile hostExecProfile, job map[string]any, workspace string) ([]string, error) {
+func buildHostExecArgs(profile hostExecProfile, job map[string]any, workspace string, extra ...string) ([]string, error) {
 	args := ensureCursorCaptureArgs(append([]string{}, profile.Argv...))
 	args = append(args, "--workspace", workspace)
 	if profile.ForceWrites {
 		args = append(args, "--force")
 	}
+	args = append(args, extra...)
 	if requested := jobModelIdentifier(job); requested != "" {
 		alias := profile.ModelMap[requested]
 		if alias == "" {
@@ -494,58 +510,142 @@ func buildHostExecArgs(profile hostExecProfile, job map[string]any, workspace st
 	return args, nil
 }
 
+// hostExecRun is a prepared host job: the CLI command plus the work that
+// must happen before it starts (checkout) and after it ends (cleanup).
+type hostExecRun struct {
+	cmd       *exec.Cmd
+	timeout   time.Duration
+	workspace string
+	checkout  *hostExecCheckout
+	cleanup   func()
+}
+
 func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, error) {
+	run, err := newHostExecJob(job)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return run.cmd, run.cmd.Path, run.timeout, nil
+}
+
+// newHostExecJob validates a host lease and prepares everything that does
+// not block: profile, fresh execution directory, MCP config and argv. The
+// checkout runs later on the job goroutine so the session loop keeps
+// heartbeating while git works.
+func newHostExecJob(job map[string]any) (*hostExecRun, error) {
+	if reason, ok := job["launch_error"].(string); ok && reason != "" {
+		if len(reason) > 512 {
+			reason = "control plane could not prepare the host execution"
+		}
+		return nil, fmt.Errorf("host execution launch: %s", reason)
+	}
 	if reason := jobRejectedHostExecInjection(job); reason != "" {
-		return nil, "", 0, fmt.Errorf("%s", reason)
+		return nil, fmt.Errorf("%s", reason)
 	}
 	agentType, _ := job["agent_type"].(string)
 	wantHarness := hostExecHarnessForAgentType(agentType)
 	if wantHarness == "" || job["completion_protocol"] != hostExecCompletionProtocol {
-		return nil, "", 0, fmt.Errorf("host job requires explicit Cursor or Copilot host_exec protocol")
+		return nil, fmt.Errorf("host job requires explicit Cursor or Copilot host_exec protocol")
 	}
 	name := jobHostExecProfileName(job)
 	profile, err := lookupHostExecProfile(name)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, err
 	}
 	if harness := hostExecProfileHarness(profile); harness != wantHarness {
-		return nil, "", 0, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"host execution profile %q runs %s, not the leased %s harness",
 			profile.Name, harness, wantHarness,
 		)
 	}
 	if err := enforceHostExecModel(profile, job); err != nil {
-		return nil, "", 0, err
+		return nil, err
+	}
+	mcpToken, err := jobHostExecMCPToken(job)
+	if err != nil {
+		return nil, err
+	}
+	checkout, err := jobHostExecCheckout(job)
+	if err != nil {
+		return nil, err
+	}
+	if checkout != nil && !profile.AllowCheckout {
+		return nil, fmt.Errorf(
+			"%s: the flow clones repositories but host profile %q does not set allow_checkout; set \"allow_checkout\": true in %s to let this profile clone flow repositories",
+			hostExecCheckoutNotAllows, profile.Name, hostExecProfilesFileName,
+		)
 	}
 	executionID, _ := job["execution_id"].(string)
 	workspace, err := boundHostExecWorkspace(profile.WorkspaceRoot, executionID)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, err
 	}
 	bin, err := resolveHostExecBinary(profile.Executable)
 	if err != nil {
-		return nil, "", 0, err
+		return nil, err
+	}
+	if preamble := hostExecCheckoutPreamble(workspace, checkout); preamble != "" {
+		prompt, err := jobPromptText(job)
+		if err != nil {
+			return nil, err
+		}
+		if len(preamble) > hostExecPreambleMaxBytes {
+			return nil, fmt.Errorf("host checkout paths exceed %d bytes", hostExecPreambleMaxBytes)
+		}
+		job = cloneJobWithPrompt(job, preamble+prompt)
+	}
+	var files []string
+	cleanup := func() {
+		for _, path := range files {
+			_ = os.Remove(path)
+		}
+	}
+	var mcpArgs []string
+	if mcpToken != "" {
+		mcpArgs, files, err = hostExecMCPConfig(wantHarness, workspace, mcpToken)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var args []string
-	env := os.Environ()
+	env := hostExecFlowEnv(os.Environ(), job)
 	if wantHarness == hostExecHarnessCopilot {
-		if err := prepareCopilotHostExecHooks(profile); err != nil {
-			return nil, "", 0, err
+		if err = prepareCopilotHostExecHooks(profile); err == nil {
+			args, err = buildCopilotHostExecArgs(profile, job, mcpArgs...)
 		}
-		args, err = buildCopilotHostExecArgs(profile, job)
 		env = copilotHostExecEnv(env)
 	} else {
-		args, err = buildHostExecArgs(profile, job, workspace)
+		args, err = buildHostExecArgs(profile, job, workspace, mcpArgs...)
 	}
 	if err != nil {
-		return nil, "", 0, err
+		cleanup()
+		return nil, err
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = workspace
 	cmd.Env = env
 	cmd.SysProcAttr = hostExecSysProcAttr()
 	cmd.WaitDelay = 250 * time.Millisecond
-	return cmd, bin, hostExecTimeout(profile, job), nil
+	return &hostExecRun{
+		cmd:       cmd,
+		timeout:   hostExecTimeout(profile, job),
+		workspace: workspace,
+		checkout:  checkout,
+		cleanup:   cleanup,
+	}, nil
+}
+
+// cloneJobWithPrompt returns a shallow copy with a replaced prompt so the
+// caller's job map (which may be retained for replay) is never modified.
+// The prompt bound applies to the flow prompt, not the runner preamble.
+func cloneJobWithPrompt(job map[string]any, prompt string) map[string]any {
+	out := make(map[string]any, len(job)+1)
+	for key, value := range job {
+		out[key] = value
+	}
+	out["prompt"] = prompt
+	out[hostExecPromptPreambleKey] = true
+	return out
 }
 
 // runnerHeartbeatMessage reports what this process can do, including how
@@ -631,24 +731,55 @@ func beginHostExecJob(
 	halted *atomic.Bool,
 	jobs *runnerJobs,
 ) error {
-	cmd, _, timeout, err := newHostExecJobCmd(job)
+	run, err := newHostExecJob(job)
 	profile := jobHostExecProfileName(job)
 	if err != nil {
 		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", hostExec: true, profile: profile, errMsg: err.Error(), exitCode: -1}
 		jobs.remember(outcome)
 		return writeJobOutcome(conn, outcome)
 	}
+	cmd, timeout := run.cmd, run.timeout
 	agentType, _ := job["agent_type"].(string)
 	buffer := &runnerLogBuffer{native: true, harness: hostExecHarnessForAgentType(agentType)}
 	cmd.Stdout, cmd.Stderr = buffer, buffer
-	if err := cmd.Start(); err != nil {
-		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", hostExec: true, profile: profile, errMsg: err.Error(), exitCode: -1}
-		jobs.remember(outcome)
-		return writeJobOutcome(conn, outcome)
-	}
-	jobs.start(&runnerJob{executionID: executionID, cmd: cmd, halted: halted})
+	gate := &hostExecGate{}
+	jobs.start(&runnerJob{executionID: executionID, cmd: cmd, halted: halted, hostGate: gate})
 	done := jobs.outcomes
 	go func() {
+		defer run.cleanup()
+		failed := func(status, msg string) {
+			buffer.finish()
+			done <- leasedJobOutcome{executionID: executionID, status: status, hostExec: true, profile: profile, errMsg: msg, exitCode: -1, logBuffer: buffer}
+		}
+		if run.checkout != nil {
+			checkoutTimeout := hostExecCheckoutTimeout
+			if timeout < checkoutTimeout {
+				checkoutTimeout = timeout
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), checkoutTimeout)
+			if !gate.setCancel(cancel) {
+				failed("STOPPED", "")
+				return
+			}
+			err := runHostExecCheckout(ctx, run.workspace, run.checkout, buffer.note)
+			cancel()
+			switch {
+			case halted.Load():
+				failed("STOPPED", "")
+				return
+			case err != nil:
+				failed("FAILED", err.Error())
+				return
+			}
+		}
+		if err := gate.start(cmd); err != nil {
+			if errors.Is(err, errHostExecHaltedBeforeStart) {
+				failed("STOPPED", "")
+			} else {
+				failed("FAILED", err.Error())
+			}
+			return
+		}
 		outcome := waitHostExecJob(cmd, executionID, buffer, halted, timeout, profile)
 		if buffer.harness == hostExecHarnessCopilot && outcome.status == "FAILED" {
 			outcome.errMsg = copilotHostExecFailure(buffer, profile, job, outcome.errMsg)

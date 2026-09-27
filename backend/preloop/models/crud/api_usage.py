@@ -2237,9 +2237,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         """Count API requests made during execution timeframe."""
         from preloop.models import models
 
+        # Imported rows (host-exec hooks, subscription seat usage) are linked
+        # to the execution for display but are not API requests.
         explicit_count = (
             db.query(ApiUsage)
-            .filter(ApiUsage.flow_execution_id == execution.id)
+            .filter(
+                ApiUsage.flow_execution_id == execution.id,
+                or_(
+                    ApiUsage.action_type.is_(None),
+                    ApiUsage.action_type != self.IMPORTED_USAGE_ACTION_TYPE,
+                ),
+            )
             .count()
         )
         if explicit_count:
@@ -3097,6 +3105,85 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 found[fingerprint] = row
         return found
 
+    def link_imported_rows_to_flow_execution(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        providers: List[str],
+        conversation_id: str,
+        flow_id: Any,
+        flow_execution_id: Any,
+    ) -> int:
+        """Attach hook rows of one host CLI session to its flow execution.
+
+        Rows the hook pushed without an execution id (an older CLI, or a
+        hook the operator configured by hand) are linked when the runner
+        reports the session id at completion. Rows already linked keep
+        their execution.
+
+        Args:
+            db: Database session (not committed).
+            account_id: Owning account id.
+            providers: Ingest source labels of the harness.
+            conversation_id: CLI session id the runner reported.
+            flow_id: Flow of the execution.
+            flow_execution_id: Execution to link to.
+
+        Returns:
+            Number of rows linked.
+        """
+        if not conversation_id or not providers:
+            return 0
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                ApiUsage.provider_name.in_(list(providers)),
+                ApiUsage.conversation_id == conversation_id,
+                ApiUsage.flow_execution_id.is_(None),
+            )
+            .update(
+                {
+                    ApiUsage.flow_id: flow_id,
+                    ApiUsage.flow_execution_id: flow_execution_id,
+                },
+                synchronize_session=False,
+            )
+        )
+
+    def list_imported_rows_for_flow_execution(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        flow_execution_id: Any,
+        limit: int = 2000,
+    ) -> List[ApiUsage]:
+        """Imported (non-gateway) rows linked to one flow execution.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            flow_execution_id: Execution id.
+            limit: Maximum rows returned, oldest first.
+
+        Returns:
+            Imported usage rows ordered by timestamp.
+        """
+        return (
+            db.query(ApiUsage)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.flow_execution_id == flow_execution_id,
+                ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+            )
+            .order_by(ApiUsage.timestamp.asc(), ApiUsage.id.asc())
+            .limit(limit)
+            .all()
+        )
+
     def log_imported_usage_event(
         self,
         db: Session,
@@ -3122,6 +3209,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         runtime_principal_id: Optional[str] = None,
         runtime_principal_name: Optional[str] = None,
         runtime_session_id: Optional[Any] = None,
+        flow_id: Optional[Any] = None,
+        flow_execution_id: Optional[Any] = None,
         import_fingerprint: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None,
         endpoint: Optional[str] = None,
@@ -3167,6 +3256,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_session_id: Runtime session the record's conversation
                 was registered as, so the row shows up in that session's
                 usage like gateway rows do.
+            flow_id: Flow the usage belongs to, for host-exec flow runs.
+            flow_execution_id: Flow execution the usage belongs to. Set only
+                after the caller verified the execution is a host-exec run of
+                this account.
             import_fingerprint: Stable dedupe key; when a row with the same
                 fingerprint already exists for the account, the event is
                 skipped and ``None`` is returned (re-importing the same CSV
@@ -3232,6 +3325,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,
             runtime_session_id=runtime_session_id,
+            flow_id=flow_id,
+            flow_execution_id=flow_execution_id,
             meta_data=merged_meta,
             timestamp=timestamp,
         )

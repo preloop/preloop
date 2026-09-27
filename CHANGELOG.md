@@ -18,6 +18,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buckets, inherited kill switch scopes, a billing account resolver, and an
   `account_ids` list on the gateway usage summaries. Every hook is a no-op
   until a plugin registers it, and adds no query when unset.
+- Copilot and Cursor host execution profiles can run review and
+  implementation flows. A profile that sets `allow_checkout` clones the
+  flow's repositories into the run directory at the pinned commit, with a
+  per-repository read credential that is sent only over https (or to a
+  loopback tracker) and never stored in the lease or the clone. Flows with MCP tools get a per-run `preloop-flow` MCP server whose
+  token is scoped to the execution and revoked at completion, so a PR
+  Reviewer can read the diff and post its review. The usage hook links the
+  CLI session and its events to the flow execution, Copilot premium
+  requests are stored as a subscription row, and the execution page shows
+  "N premium requests, not metered by the gateway" with the linked
+  sessions (`GET /api/v1/flows/executions/{id}/host-sessions`). Pull request
+  creation and clone setup commands stay refused on host profiles.
+
+- A Jira project can be bound to a GitHub or GitLab repository
+  (`git_clone_config.repository_bindings` on a flow, or
+  `settings.repository_bindings` on the Jira project). A Jira-triggered flow
+  with git clone enabled clones that repository with the code host's
+  credential and writes the opened pull request back to the issue as a
+  comment and a remote link. See
+  `docs/guide/flows/jira-repository-binding.md`.
+
+- Jira `jira:issue_updated` deliveries now also start flows subscribed to
+  Issue Labeled, Issue Unlabeled and Issue Status Changed, derived from the
+  changelog. `trigger_config.status_to` matches the new status. Flows
+  subscribed to Issue Updated keep firing on every edit, including label
+  and status edits, and their `labels` condition still reads the issue's
+  labels.
+
+- The flow form edits Review instructions for the Pull Request Reviewer, and
+  for any prompt that references `flow.review_instructions`. The flow page
+  shows the text when it is set. The reviewer prompt still keeps the first
+  16 KiB.
+- A Copilot coverage matrix (`docs/guide/copilot.md`) states, for each
+  Copilot surface, whether MCP tool calls are governed, whether model
+  calls are metered, whether hooks record a session, and whether spend
+  is gateway usage or the premium-request import.
 
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
   agent cost, tokens and run counts up to each tracker issue across flows, with
@@ -133,6 +169,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- Managed agent config files (`writeJSONDocument`) are written atomically, so
+  a concurrent reader never sees a partial file; a symlinked config keeps its
+  link. The host execution cleanup test no longer races its fake CLI's pid
+  file.
+- A vulnerability finding whose `epss` or `cvss` is a numeric string is
+  coerced to a number when the string is finite and in range (EPSS 0 to 1,
+  CVSS 0 to 10), recorded on `verdict_corrected`, and re-validated. A
+  string that does not parse stays a contract failure naming the finding
+  index and the value. The verdict and the gate the agent submitted are
+  not relaxed.
+
+- Model prices stay current between releases. Every API, gateway and worker
+  process now fetches the upstream litellm price map on startup and every
+  `MODEL_PRICE_MAP_TTL_SECONDS` (six hours by default) and merges new and
+  changed prices over the vendored snapshot, so a model released after the
+  snapshot is priced on its first request instead of waiting for a miss.
+  Operator-reviewed prices and the snapshot's first-party Moonshot and z.ai
+  rows are never overwritten. Each fetch logs one line (INFO on success with
+  the entry count and body sha256, WARNING on failure) and each
+  negative-cache entry logs one WARNING, and `/health` reports the last fetch
+  under `model_price_map`. A request denied because its model has no price
+  now also starts a price lookup; before, the denial never triggered one and
+  every retry was denied the same way. `model_price_live_lookup_enabled`
+  switches all of it off for air-gapped deployments (#801).
 
 - A flow execution dispatched in process (no execution worker) whose run
   raises before the runner records an outcome is marked `FAILED` with the
