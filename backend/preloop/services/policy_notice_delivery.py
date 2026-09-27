@@ -10,7 +10,8 @@ primary user, a superuser, or hold ``manage_policies``. Channels:
   (or the account default workflow) is of that type and has a URL. The body
   goes through the webhook outbox like approval messages do.
 
-A notice names the rule, says the call was not blocked, and carries the
+A notice names the rule, says this rule did not block the call (a later
+deny or approval rule in the same evaluation still can), and carries the
 redacted excerpt. It has no approve or deny link: there is nothing to decide.
 Debouncing happens before this module is called.
 """
