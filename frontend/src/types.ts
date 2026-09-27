@@ -104,6 +104,12 @@ export interface Flow {
   icon?: string;
   account_id?: string;
   prompt_template?: string;
+  /**
+   * Blocking review rules for the Pull Request Reviewer. Same markdown as
+   * `.preloop/review-policy.md`. Null or absent means the repository file
+   * is the only source.
+   */
+  review_instructions?: string | null;
   agent_type?: string;
   agent_config?: Record<string, unknown>;
   ai_model_id?: string;

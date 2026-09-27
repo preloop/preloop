@@ -70,6 +70,7 @@ number is fine and usually more useful than restating its background.
 - **Docstrings**: Google-style with type annotations, document params, returns, raises
 - **Async**: Use async for I/O-bound operations, run_async utility for sync contexts
 - **Testing**: All code changes should have corresponding tests. Use red/green TDD when possible.
+- **Dependencies**: `[project].dependencies` lists only packages a core module imports. Packages used only by Enterprise Edition plugins go in the `ee` extra (the EE image installs `".[ee]"`). After any `pyproject.toml` change, recompile the three hash-pinned locks with the `uv pip compile` command in each lock's header.
 - **Test telemetry**: ALL test scripts, rigs, and scripted runs must set `PRELOOP_DISABLE_TELEMETRY=true` (CLI, installers, and instance `.env`) so test traffic never pollutes funnel/adoption telemetry.
 
 ## Pre-commit Hooks
