@@ -74,6 +74,89 @@ key the permission hook uses), then the saved login token.
 Auth and API URL follow the rest of the CLI: `--token` / `PRELOOP_TOKEN`
 / config, and `--url` / `PRELOOP_URL` / config / `https://preloop.ai`.
 
+## Run Copilot CLI from flows (private runner host profile)
+
+A flow can run `copilot` directly on a private runner, using the GitHub
+Copilot login and seat of the OS user that runs `preloop runner fg`. This
+is a separate path from `preloop copilot`: model traffic goes to GitHub
+under that seat, not through the Preloop gateway, so it is billed as the
+seat's premium requests and is not gateway metered. The execution page
+shows "Not gateway metered" for these runs.
+
+1. Install Copilot CLI and sign in once as the runner user
+   (`copilot`, then `/login`, or set `COPILOT_GITHUB_TOKEN` in the runner's
+   environment).
+2. Add a profile to `~/.preloop/runner-host-profiles.json`:
+
+   ```json
+   {
+     "profiles": [
+       {
+         "name": "copilot-review",
+         "executable": "copilot",
+         "workspace_root": "/home/example/src",
+         "timeout_seconds": 1800,
+         "model_map": {"team-default": "claude-sonnet-4.6"},
+         "allow_tools": ["shell(git:*)"],
+         "deny_tools": ["shell(git push)"]
+       }
+     ]
+   }
+   ```
+
+3. Restart `preloop runner fg`. On the flow, choose **Copilot CLI (private
+   runner host profile)**, pick the private runner pool, and enter the
+   profile name. The optional **Copilot model** is an alias from the
+   profile's `model_map`; blank uses the Copilot default.
+
+The runner starts
+`copilot --prompt=<prompt> -s --no-ask-user --output-format=json` in a fresh
+per-run directory, adds `--model=<mapped model>` when a model is requested,
+and adds one `--allow-tool` / `--deny-tool` per profile rule. Success
+requires exit zero and exactly one Copilot `result` event with `exitCode`
+0. The result records the Copilot session id, the model Copilot reported
+and the premium request count.
+
+Tool permissions are local to the profile:
+
+- `allow_tools` and `deny_tools` take Copilot permission rules such as
+  `write`, `shell(git:*)` or `github(get_file_contents)`. With no rules,
+  any tool that needs permission, such as editing files or running shell
+  commands, is denied because the run cannot ask.
+- `allow_all_tools: true` passes `--allow-all-tools`. The runner refuses it
+  unless the Preloop approval hook is installed
+  (`preloop agents onboard "Copilot CLI" --approvals`), so every tool call
+  still goes through Preloop policy.
+- `force_writes`, `--allow-all`, `--yolo`, `--model`, `--agent`, prompt,
+  resume and MCP flags cannot be set in profile `argv`.
+
+The runner removes `COPILOT_PROVIDER_*`, `COPILOT_OFFLINE` and
+`COPILOT_ALLOW_ALL` from the Copilot environment so a host profile always
+uses the seat, never a BYOK endpoint. It also installs the Preloop usage
+hooks in `~/.copilot/hooks/preloop.json` (or `$COPILOT_HOME/hooks`) before
+each run, leaving other hook files untouched.
+
+Named errors:
+
+| Error | Meaning |
+| ----- | ------- |
+| `copilot_not_installed` | `copilot` is not on the runner's `PATH`. |
+| `copilot_not_logged_in` | The runner user has no Copilot login. |
+| `copilot_model_unavailable` | The seat does not offer the mapped model. The error lists the profile's `model_map` aliases; Copilot CLI has no non-interactive way to list the seat's models. |
+| `copilot_approval_hook_missing` | `allow_all_tools` is set but the approval hook is not installed. |
+
+Like Cursor host profiles, this path does not clone repositories, open
+pull requests, run custom commands or resume sessions, and flow MCP tool
+settings do not apply: Copilot uses the runner user's own
+`~/.copilot/mcp-config.json`. See
+[host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
+for the shared rules.
+
+Copilot plan terms govern how a seat may be used. A developer running
+flows on their own machine with their own seat is ordinary use. Check
+your organization's Copilot Business or Enterprise terms before sharing
+one seat across automated flows for several people.
+
 ## Related
 
 - [`preloop cursor`](cursor-cli.md) — Cursor Agent launcher pattern

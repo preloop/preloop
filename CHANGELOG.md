@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Flows can run GitHub Copilot CLI on a private runner as a host execution
+  profile (agent type `copilot`, profile `"executable": "copilot"`). The run
+  uses the runner user's Copilot login and seat, keeps the profile's
+  `allow_tools` / `deny_tools` rules, requires the Preloop approval hook for
+  `allow_all_tools`, and succeeds only on one Copilot `result` event with exit
+  code 0. Host runs are marked "Not gateway metered" on the execution page.
+  Missing login and a model the seat does not offer fail with named errors.
+
 - The execution page Report tab reads one evidence-pack member at a time
   (`GET /api/v1/flows/executions/{id}/evidence/members`) and shows the report,
   findings and register. A verdict or findings summary on the run appears in

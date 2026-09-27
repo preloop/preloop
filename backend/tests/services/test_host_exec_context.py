@@ -137,3 +137,95 @@ async def test_prepare_rejects_isolated_publication_mode(snapshot, monkeypatch):
     with pytest.raises(ValueError, match="isolated publication|pull request"):
         await orchestrator._prepare_execution_context(resolved_prompt="question")
     mint.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_copilot_context_and_lease_use_local_login_only(monkeypatch):
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.agent_type = "copilot"
+    orchestrator.flow_id = uuid4()
+    orchestrator.flow = SimpleNamespace(
+        agent_type="copilot",
+        agent_config={
+            "host_exec_profile": "copilot-seat",
+            # A Cursor alias must not leak into a Copilot lease.
+            "cursor_model": "composer-2.5",
+            "copilot_model": "team-default",
+        },
+        runner_pool="local",
+        git_clone_config=None,
+        custom_commands=None,
+        account_id=uuid4(),
+        name="Local review",
+    )
+    orchestrator.execution_log = SimpleNamespace(id=uuid4())
+    orchestrator.trigger_event_data = {}
+    orchestrator.ai_model = SimpleNamespace(model_identifier="catalog-model")
+    mint = MagicMock(side_effect=AssertionError("must not mint credentials"))
+    monkeypatch.setattr(orchestrator, "_create_temporary_api_token", mint)
+    context = await orchestrator._prepare_execution_context(resolved_prompt="review")
+    assert context["agent_type"] == "copilot"
+    assert context["model_identifier"] == "team-default"
+    assert context["agent_config"] == {"host_exec_profile": "copilot-seat"}
+    orchestrator.flow.agent_config = {"host_exec_profile": "copilot-seat"}
+    fallback = await orchestrator._prepare_execution_context(resolved_prompt="review")
+    assert fallback["model_identifier"] == "catalog-model"
+    executor = RemoteRunnerExecutor(
+        "copilot",
+        {},
+        db=MagicMock(),
+        pool="local",
+        account_id=orchestrator.flow.account_id,
+    )
+    context.update(
+        account_api_token="secret",
+        model_gateway_token="secret",
+        allowed_mcp_tools=[{"name": "write"}],
+    )
+    job = executor._lease_payload(
+        execution_id=orchestrator.execution_log.id,
+        flow_id=orchestrator.flow_id,
+        prompt=context["prompt"],
+        execution_context=context,
+    )
+    assert job["agent_type"] == "copilot"
+    assert job["completion_protocol"] == "host_exec"
+    assert job["host_exec_profile"] == "copilot-seat"
+    assert "secret" not in str(job)
+    assert "launch_version" not in job
+    hydrate = AsyncMock(side_effect=AssertionError("must not hydrate Docker"))
+    monkeypatch.setattr("preloop.agents.runner_launch.hydrate_runner_job", hydrate)
+    assert await prepare_runner_delivery(MagicMock(), job, context) == job
+    mint.assert_not_called()
+    hydrate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_copilot_without_profile_fails_before_credentials(monkeypatch):
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    orchestrator.agent_type = "copilot"
+    orchestrator.flow = SimpleNamespace(
+        agent_type="copilot",
+        agent_config={},
+        runner_pool="local",
+        git_clone_config=None,
+        custom_commands=None,
+    )
+    orchestrator.trigger_event_data = {}
+    mint = MagicMock(side_effect=AssertionError("must not mint credentials"))
+    monkeypatch.setattr(orchestrator, "_create_temporary_api_token", mint)
+    with pytest.raises(ValueError, match="copilot requires"):
+        await orchestrator._prepare_execution_context(resolved_prompt="review")
+    mint.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_prepare_runner_delivery_rejects_unknown_native_agent_type():
+    job = {
+        "completion_protocol": "host_exec",
+        "agent_type": "codex",
+        "host_exec_profile": "copilot-seat",
+        "execution_id": str(uuid4()),
+    }
+    delivered = await prepare_runner_delivery(MagicMock(), job, None)
+    assert "launch_error" in delivered

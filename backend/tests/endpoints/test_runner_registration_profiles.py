@@ -157,3 +157,65 @@ def test_register_one_valid_host_exec_profile_is_stored(
     )
     assert saved is not None
     assert saved.capabilities == {"host_exec_profiles": [profile]}
+
+
+def test_register_copilot_profile_leases_only_copilot_jobs(
+    db_session: Session, test_user: models.User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runners, "emit_runner_updated", lambda *args: None)
+    monkeypatch.setattr(
+        "preloop.services.runner_service.emit_runner_updated", lambda *args: None
+    )
+    profiles = [
+        {
+            "name": "copilot-seat",
+            "capabilities": ["host_exec", "copilot_cli", "stdout", "cancel"],
+            "models": ["team-default"],
+        }
+    ]
+    with _register_client(db_session, test_user) as client:
+        response = client.post(
+            "/api/v1/runners/register",
+            json={"name": "copilot-desk", "host_exec_profiles": profiles},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"] == {"host_exec_profiles": profiles}
+    runner_id = UUID(response.json()["id"])
+    flow = crud_flow.create(
+        db_session,
+        flow_in=schemas.FlowCreate(
+            name="Copilot review",
+            prompt_template="review",
+            agent_type="copilot",
+            agent_config={"host_exec_profile": "copilot-seat"},
+            runner_pool="copilot-desk",
+            account_id=test_user.account_id,
+        ),
+        account_id=test_user.account_id,
+    )
+    execution = crud_flow_execution.create(
+        db_session, obj_in=schemas.FlowExecutionCreate(flow_id=flow.id)
+    )
+    payload = {
+        "execution_id": str(execution.id),
+        "agent_type": "copilot",
+        "host_exec_profile": "copilot-seat",
+        "completion_protocol": "host_exec",
+        "model_identifier": "team-default",
+    }
+    as_cursor = lease_job(
+        db_session,
+        account_id=test_user.account_id,
+        pool="copilot-desk",
+        execution_id=execution.id,
+        payload={**payload, "agent_type": "cursor"},
+    )
+    assert as_cursor is None
+    leased = lease_job(
+        db_session,
+        account_id=test_user.account_id,
+        pool="copilot-desk",
+        execution_id=execution.id,
+        payload=payload,
+    )
+    assert leased is not None and leased.id == runner_id

@@ -95,8 +95,8 @@ def create_executor_for_execution(
     from preloop.agents.agent_control import AgentControlExecutor
     from preloop.agents.remote_runner import RemoteRunnerExecutor
     from preloop.services.host_exec import (
-        HOST_EXEC_AGENT_TYPE,
         host_exec_profile_name,
+        is_host_exec_agent_type,
     )
     from preloop.services.runner_service import resolve_runner_pool
 
@@ -195,7 +195,7 @@ def create_executor_for_execution(
             flow=flow,
             execution=execution,
         )
-    if profile or kind == HOST_EXEC_AGENT_TYPE:
+    if profile or is_host_exec_agent_type(kind):
         raise ValueError(
             "host execution profiles cannot run on hosted compute; "
             "pin the flow to a private runner that advertises the profile"

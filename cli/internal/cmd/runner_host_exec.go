@@ -50,6 +50,12 @@ type hostExecProfile struct {
 	ForceWrites    bool              `json:"force_writes"`
 	PassModel      bool              `json:"pass_model"`
 	ModelMap       map[string]string `json:"model_map"`
+	// Copilot CLI only. AllowTools and DenyTools become --allow-tool and
+	// --deny-tool; AllowAllTools is the operator's explicit opt-in to
+	// --allow-all-tools and requires the Preloop preToolUse approval hook.
+	AllowTools    []string `json:"allow_tools,omitempty"`
+	DenyTools     []string `json:"deny_tools,omitempty"`
+	AllowAllTools bool     `json:"allow_all_tools,omitempty"`
 }
 
 type hostExecProfilesFile struct {
@@ -148,8 +154,9 @@ func normalizeHostExecProfile(profile hostExecProfile) (hostExecProfile, error) 
 	if runtime.GOOS == "windows" {
 		return hostExecProfile{}, fmt.Errorf("host execution requires Unix process-group ownership")
 	}
-	if !hostExecIsCursorBinary(profile.Executable) {
-		return hostExecProfile{}, fmt.Errorf("host profile executable must be Cursor agent or cursor-agent")
+	harness := hostExecProfileHarness(profile)
+	if harness == "" {
+		return hostExecProfile{}, fmt.Errorf("host profile executable must be Cursor agent, cursor-agent or copilot")
 	}
 	if len(profile.ModelMap) > 64 {
 		return hostExecProfile{}, fmt.Errorf("model_map supports at most 64 entries")
@@ -158,6 +165,15 @@ func normalizeHostExecProfile(profile hostExecProfile) (hostExecProfile, error) 
 		if !hostExecModelRe.MatchString(requested) || !hostExecModelRe.MatchString(alias) {
 			return hostExecProfile{}, fmt.Errorf("invalid model_map entry")
 		}
+	}
+	if harness == hostExecHarnessCopilot {
+		if err := validateCopilotHostExecProfile(profile); err != nil {
+			return hostExecProfile{}, err
+		}
+		return profile, nil
+	}
+	if len(profile.AllowTools) > 0 || len(profile.DenyTools) > 0 || profile.AllowAllTools {
+		return hostExecProfile{}, fmt.Errorf("allow_tools, deny_tools and allow_all_tools apply only to copilot profiles")
 	}
 	for _, arg := range profile.Argv {
 		flag := strings.SplitN(arg, "=", 2)[0]
@@ -195,8 +211,8 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 	out := make([]hostExecAdvertisement, 0, len(profiles))
 	for _, profile := range profiles {
 		caps := []string{"host_exec", "stdout", "cancel"}
-		if hostExecIsCursorBinary(profile.Executable) {
-			caps = append(caps, "cursor_cli")
+		if harness := hostExecProfileHarness(profile); harness != "" {
+			caps = append(caps, harness)
 		}
 		models := make([]string, 0, len(profile.ModelMap))
 		for requested := range profile.ModelMap {
@@ -212,6 +228,20 @@ func hostExecIsCursorBinary(executable string) bool {
 	base := strings.ToLower(filepath.Base(strings.TrimSpace(executable)))
 	_, ok := hostExecCursorNames[base]
 	return ok
+}
+
+// hostExecProfileHarness names the local CLI a profile runs. The value is
+// also the capability the runner advertises and the result "harness" field
+// the control plane checks against the leased agent type.
+func hostExecProfileHarness(profile hostExecProfile) string {
+	switch {
+	case hostExecIsCursorBinary(profile.Executable):
+		return hostExecHarnessCursor
+	case hostExecIsCopilotBinary(profile.Executable):
+		return hostExecHarnessCopilot
+	default:
+		return ""
+	}
 }
 
 func jobHostExecProfileName(job map[string]any) string {
@@ -230,6 +260,7 @@ func jobRejectedHostExecInjection(job map[string]any) string {
 	}
 	for _, key := range []string{
 		"executable", "argv", "env", "session_id", "cursor_api_key", "api_key",
+		"copilot_github_token", "github_token", "gh_token", "allow_tools", "allow_all_tools",
 		"resume_from", "launch", "launch_version", "script", "environment", "account_api_token", "custom_commands",
 	} {
 		if _, ok := job[key]; ok {
@@ -272,6 +303,16 @@ func lookupHostExecProfile(name string) (hostExecProfile, error) {
 func resolveHostExecBinary(executable string) (string, error) {
 	cleaned := strings.TrimSpace(executable)
 	base := filepath.Base(cleaned)
+	if hostExecIsCopilotBinary(cleaned) && base == cleaned {
+		path, err := resolveRuntimeExecutable("copilot")
+		if err != nil {
+			return "", fmt.Errorf(
+				"copilot_not_installed: Copilot CLI (copilot) was not found on %s; install it with `npm install -g @github/copilot`",
+				runtimeExecutableSearchDescription("copilot"),
+			)
+		}
+		return path, nil
+	}
 	if hostExecIsCursorBinary(cleaned) && base == cleaned {
 		for _, name := range []string{"cursor-agent", "agent"} {
 			path, err := resolveRuntimeExecutable(name)
@@ -457,13 +498,21 @@ func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, er
 	if reason := jobRejectedHostExecInjection(job); reason != "" {
 		return nil, "", 0, fmt.Errorf("%s", reason)
 	}
-	if job["agent_type"] != "cursor" || job["completion_protocol"] != hostExecCompletionProtocol {
-		return nil, "", 0, fmt.Errorf("host job requires explicit Cursor host_exec protocol")
+	agentType, _ := job["agent_type"].(string)
+	wantHarness := hostExecHarnessForAgentType(agentType)
+	if wantHarness == "" || job["completion_protocol"] != hostExecCompletionProtocol {
+		return nil, "", 0, fmt.Errorf("host job requires explicit Cursor or Copilot host_exec protocol")
 	}
 	name := jobHostExecProfileName(job)
 	profile, err := lookupHostExecProfile(name)
 	if err != nil {
 		return nil, "", 0, err
+	}
+	if harness := hostExecProfileHarness(profile); harness != wantHarness {
+		return nil, "", 0, fmt.Errorf(
+			"host execution profile %q runs %s, not the leased %s harness",
+			profile.Name, harness, wantHarness,
+		)
 	}
 	if err := enforceHostExecModel(profile, job); err != nil {
 		return nil, "", 0, err
@@ -477,13 +526,23 @@ func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, er
 	if err != nil {
 		return nil, "", 0, err
 	}
-	args, err := buildHostExecArgs(profile, job, workspace)
+	var args []string
+	env := os.Environ()
+	if wantHarness == hostExecHarnessCopilot {
+		if err := prepareCopilotHostExecHooks(profile); err != nil {
+			return nil, "", 0, err
+		}
+		args, err = buildCopilotHostExecArgs(profile, job)
+		env = copilotHostExecEnv(env)
+	} else {
+		args, err = buildHostExecArgs(profile, job, workspace)
+	}
 	if err != nil {
 		return nil, "", 0, err
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = workspace
-	cmd.Env = os.Environ()
+	cmd.Env = env
 	cmd.SysProcAttr = hostExecSysProcAttr()
 	cmd.WaitDelay = 250 * time.Millisecond
 	return cmd, bin, hostExecTimeout(profile, job), nil
@@ -579,7 +638,8 @@ func beginHostExecJob(
 		jobs.remember(outcome)
 		return writeJobOutcome(conn, outcome)
 	}
-	buffer := &runnerLogBuffer{native: true}
+	agentType, _ := job["agent_type"].(string)
+	buffer := &runnerLogBuffer{native: true, harness: hostExecHarnessForAgentType(agentType)}
 	cmd.Stdout, cmd.Stderr = buffer, buffer
 	if err := cmd.Start(); err != nil {
 		outcome := leasedJobOutcome{executionID: executionID, status: "FAILED", hostExec: true, profile: profile, errMsg: err.Error(), exitCode: -1}
@@ -590,6 +650,9 @@ func beginHostExecJob(
 	done := jobs.outcomes
 	go func() {
 		outcome := waitHostExecJob(cmd, executionID, buffer, halted, timeout, profile)
+		if buffer.harness == hostExecHarnessCopilot && outcome.status == "FAILED" {
+			outcome.errMsg = copilotHostExecFailure(buffer, profile, job, outcome.errMsg)
+		}
 		if outcome.result != nil {
 			if requested := jobModelIdentifier(job); requested != "" {
 				outcome.result["requested_model"] = requested
