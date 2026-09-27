@@ -20,6 +20,9 @@ type runnerJob struct {
 	cmd         *exec.Cmd
 	halted      *atomic.Bool
 	publication *runnerPublication
+	// hostGate is set for host-exec jobs, whose CLI starts after a checkout
+	// on the job goroutine. Halts go through it so they cannot race Start.
+	hostGate *hostExecGate
 }
 
 // logBuffer returns the streaming buffer of a running job, or nil.
@@ -154,7 +157,12 @@ func (s *runnerJobs) haltOne(executionID string) bool {
 		}
 		return false
 	}
-	stopped := requestJobHalt(job.halted, job.cmd)
+	var stopped bool
+	if job.hostGate != nil {
+		stopped = job.hostGate.halt(job.cmd, job.halted)
+	} else {
+		stopped = requestJobHalt(job.halted, job.cmd)
+	}
 	if job.publication != nil {
 		job.publication.stopRequested.Store(true)
 		job.publication.abort()
