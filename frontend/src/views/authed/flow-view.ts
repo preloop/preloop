@@ -1292,7 +1292,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       );
     } catch (error) {
       console.error('Failed to toggle flow enabled state:', error);
-      alert('Failed to update flow. Please try again.');
+      const detail =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to update flow. Please try again.';
+      showToast(detail, 'danger');
     }
   }
 

@@ -126,7 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The flow page no longer writes websocket payloads or the enable and
   disable result to the browser console. Enabling or disabling a flow
-  shows a toast. Other `console.log` and `console.debug` calls in the
+  shows a toast, and a failed update shows the server reason in a toast.
+  Other `console.log` and `console.debug` calls in the
   console go through a helper that a production build drops. The
   frontend test run fails if a new call is added outside that helper.
 

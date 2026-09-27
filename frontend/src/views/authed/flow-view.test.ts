@@ -397,6 +397,44 @@ describe('FlowView production logging', () => {
     }
   });
 
+  it('toasts the server reason when enabling a flow fails', async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    const alertStub = sinon.stub(window, 'alert');
+    const fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input, init) => {
+        const url = String(input);
+        const method = (init?.method || 'GET').toUpperCase();
+        if (url.includes('/api/v1/flows/') && method === 'PUT') {
+          return new Response(
+            JSON.stringify({ detail: 'Schedule is invalid' }),
+            {
+              status: 400,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    const element = createElement() as any;
+    element.flowId = 'flow-1';
+    element.flow = { name: 'Test', is_enabled: false };
+
+    try {
+      await element.toggleFlowEnabled();
+      expect(alertStub.called).to.equal(false);
+      expect(element.flow.is_enabled).to.equal(false);
+      const toast = document.body.querySelector('sl-alert');
+      expect(toast?.textContent).to.contain('Schedule is invalid');
+    } finally {
+      alertStub.restore();
+      fetchStub.restore();
+    }
+  });
+
   it('keeps console.log and console.debug out of the flow view', async () => {
     const response = await fetch(new URL('./flow-view.ts', import.meta.url));
     const source = await response.text();
