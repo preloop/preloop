@@ -175,6 +175,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drops pip, setuptools and wheel after install. The frontend lockfile
   pins the `cookies` dev dependency to 0.9.2. OpenVEX files ship with the
   SBOM artifact.
+- Release SBOMs stamp a declared SPDX license on components that lack one,
+  when Python, npm, or Go package metadata names that license unambiguously.
+  The SBOM job's quality table prints license coverage before and after the
+  stamp.
 - Harness images pin Node and install Pi and DeepSeek from lockfiles, so
   Scorecard no longer reports floating image or npm dependencies. Empty
   `except` handlers that intentionally ignore an optional driver or an

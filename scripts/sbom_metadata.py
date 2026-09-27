@@ -11,10 +11,21 @@ Three jobs. The first two are driven by the NTIA minimum elements:
    local, offline source (installed ``METADATA``, ``package.json``, or the
    Go module path). ``author`` stays author. The property
    ``preloop:supplier_source`` records which derivation was used.
+   A component that still has no declared ``licenses`` entry gets one when
+   a local source names exactly one SPDX license or expression: Python
+   ``METADATA`` (``License-Expression``, then ``License``, then one mapped
+   ``Classifier``, then ``License-File``), npm ``package.json`` (``license``,
+   or a one-element ``licenses`` array), a Go module ``LICENSE`` file in the
+   module cache,
+   or ``BSD-3-Clause`` for the Go standard library. The property
+   ``preloop:license_source`` records which derivation was used. Anything
+   ambiguous is left blank.
 
 2. Print a quality table. The supplier column counts ``supplier.name``
    only, the same rule as ``python -m preloop.cra measure``. Author and
-   publisher do not count.
+   publisher do not count. ``lic0`` and ``lic1`` are the share of
+   components with a declared ``licenses`` entry before and after the
+   license stamp. ``evidence.licenses`` does not count in those columns.
 
 3. Mark declaration-only npm packages. An ``@types/*`` package, or a
    package whose name ends in ``-types``, gets ``preloop:types_only``
@@ -27,7 +38,8 @@ Three jobs. The first two are driven by the NTIA minimum elements:
 Usage:
     python scripts/sbom_metadata.py sbom/*.cdx.json
     python scripts/sbom_metadata.py --python-root /path/to/venv \\
-        --npm-root frontend/node_modules sbom/*.cdx.json
+        --npm-root frontend/node_modules \\
+        --go-mod-cache "$(go env GOMODCACHE)" sbom/*.cdx.json
 """
 
 from __future__ import annotations
@@ -54,7 +66,16 @@ SUPPLIER = {
 }
 
 SUPPLIER_SOURCE_PROPERTY = "preloop:supplier_source"
+LICENSE_SOURCE_PROPERTY = "preloop:license_source"
 TYPES_ONLY_PROPERTY = "preloop:types_only"
+SOURCE_PYPI_EXPRESSION = "pypi_license_expression"
+SOURCE_PYPI_LICENSE = "pypi_license"
+SOURCE_PYPI_CLASSIFIER = "pypi_classifier"
+SOURCE_PYPI_FILE = "pypi_license_file"
+SOURCE_NPM_LICENSE = "npm_license"
+SOURCE_NPM_LICENSES = "npm_licenses"
+SOURCE_GO_FILE = "go_module_license"
+SOURCE_GO_STDLIB = "go_stdlib"
 _DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
 _RUNTIME_SUFFIXES = frozenset(
     {
@@ -76,6 +97,187 @@ SOURCE_NPM_SCOPE = "npm_scope"
 SOURCE_MODULE_PATH = "module_path"
 SOURCE_UNRESOLVED = "unresolved"
 SOURCE_MANUAL = "manual_override"
+_GO_STDLIB = "BSD-3-Clause"
+_LICENSE_TEXT_LIMIT = 16_384
+_SPDX_TAG_RE = re.compile(
+    r"^.*?SPDX-License-Identifier:\s*(.+?)\s*$",
+    re.MULTILINE,
+)
+_SPDX_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]*$")
+_LICENSE_FILENAME_RE = re.compile(
+    r"^(?:license|licence|copying|unlicense)(?:[._-][a-z0-9]+)?$",
+    re.IGNORECASE,
+)
+
+
+def _load_id_file(filename: str) -> frozenset[str]:
+    """Load one identifier per line from a file next to this script."""
+    path = Path(__file__).resolve().parent / filename
+    found: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if text and not text.startswith("#"):
+            found.add(text)
+    return frozenset(found)
+
+
+SPDX_LICENSE_IDS = _load_id_file("spdx_license_ids.txt")
+SPDX_LICENSE_EXCEPTIONS = _load_id_file("spdx_license_exceptions.txt")
+
+# Trove classifiers that name exactly one SPDX id. Classifiers that only
+# say "BSD", "GPL", "LGPL", or "Artistic" are omitted on purpose.
+CLASSIFIER_TO_SPDX: dict[str, str] = {
+    "License :: Aladdin Free Public License (AFPL)": "Aladdin",
+    "License :: CC0 1.0 Universal (CC0 1.0) Public Domain Dedication": "CC0-1.0",
+    "License :: CeCILL-B Free Software License Agreement (CECILL-B)": "CECILL-B",
+    "License :: CeCILL-C Free Software License Agreement (CECILL-C)": "CECILL-C",
+    "License :: OSI Approved :: Apache Software License": "Apache-2.0",
+    "License :: OSI Approved :: Blue Oak Model License (BlueOak-1.0.0)": (
+        "BlueOak-1.0.0"
+    ),
+    "License :: OSI Approved :: Boost Software License 1.0 (BSL-1.0)": "BSL-1.0",
+    "License :: OSI Approved :: CEA CNRS Inria Logiciel Libre License, version 2.1 (CeCILL-2.1)": (
+        "CECILL-2.1"
+    ),
+    "License :: OSI Approved :: CMU License (MIT-CMU)": "MIT-CMU",
+    "License :: OSI Approved :: Common Development and Distribution License 1.0 (CDDL-1.0)": (
+        "CDDL-1.0"
+    ),
+    "License :: OSI Approved :: Common Public License": "CPL-1.0",
+    "License :: OSI Approved :: Eclipse Public License 1.0 (EPL-1.0)": "EPL-1.0",
+    "License :: OSI Approved :: Eclipse Public License 2.0 (EPL-2.0)": "EPL-2.0",
+    "License :: OSI Approved :: Educational Community License, Version 2.0 (ECL-2.0)": (
+        "ECL-2.0"
+    ),
+    "License :: OSI Approved :: European Union Public Licence 1.0 (EUPL 1.0)": (
+        "EUPL-1.0"
+    ),
+    "License :: OSI Approved :: European Union Public Licence 1.1 (EUPL 1.1)": (
+        "EUPL-1.1"
+    ),
+    "License :: OSI Approved :: European Union Public Licence 1.2 (EUPL 1.2)": (
+        "EUPL-1.2"
+    ),
+    "License :: OSI Approved :: GNU Affero General Public License v3": "AGPL-3.0-only",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)": (
+        "AGPL-3.0-or-later"
+    ),
+    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)": "GPL-2.0-only",
+    "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)": (
+        "GPL-2.0-or-later"
+    ),
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)": "GPL-3.0-only",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)": (
+        "GPL-3.0-or-later"
+    ),
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)": (
+        "LGPL-3.0-only"
+    ),
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)": (
+        "LGPL-3.0-or-later"
+    ),
+    "License :: OSI Approved :: Historical Permission Notice and Disclaimer (HPND)": (
+        "HPND"
+    ),
+    "License :: OSI Approved :: IBM Public License": "IPL-1.0",
+    "License :: OSI Approved :: ISC License (ISCL)": "ISC",
+    "License :: OSI Approved :: MIT License": "MIT",
+    "License :: OSI Approved :: MIT No Attribution License (MIT-0)": "MIT-0",
+    "License :: OSI Approved :: MirOS License (MirOS)": "MirOS",
+    "License :: OSI Approved :: Mozilla Public License 1.0 (MPL)": "MPL-1.0",
+    "License :: OSI Approved :: Mozilla Public License 1.1 (MPL 1.1)": "MPL-1.1",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)": "MPL-2.0",
+    "License :: OSI Approved :: Mulan Permissive Software License v2 (MulanPSL-2.0)": (
+        "MulanPSL-2.0"
+    ),
+    "License :: OSI Approved :: NASA Open Source Agreement v1.3 (NASA-1.3)": "NASA-1.3",
+    "License :: OSI Approved :: Open Software License 3.0 (OSL-3.0)": "OSL-3.0",
+    "License :: OSI Approved :: PostgreSQL License": "PostgreSQL",
+    "License :: OSI Approved :: Python License (CNRI Python License)": "CNRI-Python",
+    "License :: OSI Approved :: Python Software Foundation License": "PSF-2.0",
+    "License :: OSI Approved :: Qt Public License (QPL)": "QPL-1.0",
+    "License :: OSI Approved :: SIL Open Font License 1.1 (OFL-1.1)": "OFL-1.1",
+    "License :: OSI Approved :: The Unlicense (Unlicense)": "Unlicense",
+    "License :: OSI Approved :: Universal Permissive License (UPL)": "UPL-1.0",
+    "License :: OSI Approved :: University of Illinois/NCSA Open Source License": "NCSA",
+    "License :: OSI Approved :: Vovida Software License 1.0": "VSL-1.0",
+    "License :: OSI Approved :: W3C License": "W3C",
+    "License :: OSI Approved :: Zero-Clause BSD (0BSD)": "0BSD",
+    "License :: OSI Approved :: zlib/libpng License": "Zlib",
+}
+
+# Exact License-header prose that is one SPDX id and nothing else.
+# Matching is on the collapsed, case-folded string, never a substring.
+_LICENSE_ALIASES: dict[str, str] = {
+    "apache 2.0": "Apache-2.0",
+    "apache license 2.0": "Apache-2.0",
+    "apache license, version 2.0": "Apache-2.0",
+    "apache software license": "Apache-2.0",
+    "mit license": "MIT",
+    "the mit license": "MIT",
+    "the mit license (mit)": "MIT",
+    "3-clause bsd license": "BSD-3-Clause",
+    "bsd 3-clause license": "BSD-3-Clause",
+    "revised bsd license": "BSD-3-Clause",
+    "2-clause bsd license": "BSD-2-Clause",
+    "bsd 2-clause license": "BSD-2-Clause",
+    "isc license": "ISC",
+    "isc license (iscl)": "ISC",
+    "mozilla public license 2.0": "MPL-2.0",
+}
+
+# (id, phrases that must all occur, phrases that must not occur)
+_HEADER_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
+    (
+        "MIT",
+        (
+            "Permission is hereby granted, free of charge, to any person obtaining a copy",
+        ),
+        (),
+    ),
+    (
+        "Apache-2.0",
+        ("Apache License", "Version 2.0, January 2004"),
+        (),
+    ),
+    (
+        "Apache-2.0",
+        ("Licensed under the Apache License, Version 2.0",),
+        (),
+    ),
+    (
+        "BSD-3-Clause",
+        ("Redistribution and use in source and binary forms", "Neither the name"),
+        ("All advertising materials",),
+    ),
+    (
+        "BSD-2-Clause",
+        ("Redistribution and use in source and binary forms",),
+        ("Neither the name", "All advertising materials"),
+    ),
+    (
+        "ISC",
+        (
+            "Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted",
+            "appear in all copies",
+        ),
+        (),
+    ),
+    (
+        "0BSD",
+        (
+            "Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted",
+        ),
+        ("appear in all copies",),
+    ),
+    ("MPL-2.0", ("Mozilla Public License Version 2.0",), ()),
+    (
+        "Unlicense",
+        ("This is free and unencumbered software released into the public domain.",),
+        (),
+    ),
+    ("BSL-1.0", ("Boost Software License - Version 1.0",), ()),
+)
 
 # These distributions publish no author and no repository URL in the files
 # an offline scan can read. The names below are copied from text the package
@@ -163,6 +365,28 @@ def has_licence(component: dict[str, Any]) -> bool:
     if component.get("licenses"):
         return True
     return bool((component.get("evidence") or {}).get("licenses"))
+
+
+def has_declared_licence(component: dict[str, Any]) -> bool:
+    """True when CycloneDX ``licenses`` is set.
+
+    ``evidence.licenses`` is a detector's inference and does not count.
+    The license stamp only fills components this function rejects.
+    """
+    licenses = component.get("licenses")
+    if not isinstance(licenses, list):
+        return False
+    return any(isinstance(item, dict) and item for item in licenses)
+
+
+def declared_licence_stats(document: dict[str, Any]) -> tuple[int, str]:
+    """Return ``(count, percent)`` of components with a declared license."""
+    components = list(iter_components(document))
+    total = len(components)
+    count = sum(1 for component in components if has_declared_licence(component))
+    if not total:
+        return 0, "n/a"
+    return count, f"{(100.0 * count / total):.1f}%"
 
 
 def has_supplier(component: dict[str, Any]) -> bool:
@@ -362,17 +586,27 @@ def iter_components(document: dict[str, Any]) -> list[dict[str, Any]]:
     return found
 
 
-def supplier_source(component: dict[str, Any]) -> str | None:
-    """Return the ``preloop:supplier_source`` value, if this script set one."""
+def component_property(component: dict[str, Any], name: str) -> str | None:
+    """Return one CycloneDX property value, if this component has it."""
     properties = component.get("properties")
     if not isinstance(properties, list):
         return None
     for prop in properties:
-        if isinstance(prop, dict) and prop.get("name") == SUPPLIER_SOURCE_PROPERTY:
+        if isinstance(prop, dict) and prop.get("name") == name:
             value = prop.get("value")
             if isinstance(value, str):
                 return value
     return None
+
+
+def supplier_source(component: dict[str, Any]) -> str | None:
+    """Return the ``preloop:supplier_source`` value, if this script set one."""
+    return component_property(component, SUPPLIER_SOURCE_PROPERTY)
+
+
+def license_source(component: dict[str, Any]) -> str | None:
+    """Return the ``preloop:license_source`` value, if this script set one."""
+    return component_property(component, LICENSE_SOURCE_PROPERTY)
 
 
 def set_component_property(component: dict[str, Any], name: str, value: str) -> None:
@@ -509,11 +743,17 @@ def stamp_types_only(document: dict[str, Any], index: MetadataIndex) -> None:
 
 
 class MetadataIndex:
-    """Offline lookup of installed Python and npm package metadata."""
+    """Offline lookup of installed Python, npm, and Go module metadata."""
 
-    def __init__(self, python_roots: list[Path], npm_roots: list[Path]) -> None:
+    def __init__(
+        self,
+        python_roots: list[Path],
+        npm_roots: list[Path],
+        go_mod_cache: Path | None = None,
+    ) -> None:
         self._python: dict[str, list[Path]] = {}
         self._npm: dict[str, Path] = {}
+        self.go_mod_cache = go_mod_cache
         for root in python_roots:
             self._index_python(root)
         for root in npm_roots:
@@ -787,6 +1027,557 @@ def fill_component_suppliers(document: dict[str, Any], index: MetadataIndex) -> 
         set_supplier_source(component, source)
 
 
+def _id_choice(spdx_id: str) -> dict[str, Any]:
+    return {"license": {"id": spdx_id}}
+
+
+def _expression_choice(expression: str) -> dict[str, Any]:
+    return {"expression": expression}
+
+
+def _normalize_expression(tokens: list[str]) -> str:
+    parts: list[str] = []
+    for token in tokens:
+        if token == ")":
+            if parts:
+                parts[-1] = f"{parts[-1]})"
+            else:
+                parts.append(")")
+            continue
+        if token == "(":
+            parts.append("(")
+            continue
+        if parts and parts[-1].endswith("("):
+            parts[-1] = f"{parts[-1]}{token}"
+            continue
+        parts.append(token)
+    return " ".join(parts)
+
+
+def _tokenize_spdx(text: str) -> list[str] | None:
+    raw = text.replace("(", " ( ").replace(")", " ) ")
+    tokens = raw.split()
+    if not tokens:
+        return None
+    for token in tokens:
+        if token in {"(", ")", "AND", "OR", "WITH"}:
+            continue
+        ident = token[:-1] if token.endswith("+") else token
+        if _SPDX_ID_RE.fullmatch(ident) is None:
+            return None
+    return tokens
+
+
+class _SpdxParser:
+    """Recursive descent for a SPDX license expression."""
+
+    def __init__(self, tokens: list[str]) -> None:
+        self._tokens = tokens
+        self._index = 0
+        self.compound = False
+
+    def parse(self) -> bool:
+        """Return whether the tokens are one complete expression."""
+        if not self._parse_or():
+            return False
+        return self._index == len(self._tokens)
+
+    def _peek(self) -> str | None:
+        if self._index >= len(self._tokens):
+            return None
+        return self._tokens[self._index]
+
+    def _parse_or(self) -> bool:
+        if not self._parse_and():
+            return False
+        while self._peek() == "OR":
+            self.compound = True
+            self._index += 1
+            if not self._parse_and():
+                return False
+        return True
+
+    def _parse_and(self) -> bool:
+        if not self._parse_primary():
+            return False
+        while self._peek() == "AND":
+            self.compound = True
+            self._index += 1
+            if not self._parse_primary():
+                return False
+        return True
+
+    def _parse_primary(self) -> bool:
+        token = self._peek()
+        if token == "(":
+            self.compound = True
+            self._index += 1
+            if not self._parse_or():
+                return False
+            if self._peek() != ")":
+                return False
+            self._index += 1
+            return True
+        if token is None or token in {")", "AND", "OR", "WITH"}:
+            return False
+        ident = token[:-1] if token.endswith("+") else token
+        if token.endswith("+"):
+            self.compound = True
+        if ident not in SPDX_LICENSE_IDS:
+            return False
+        self._index += 1
+        if self._peek() == "WITH":
+            self.compound = True
+            self._index += 1
+            exception = self._peek()
+            if exception is None or exception not in SPDX_LICENSE_EXCEPTIONS:
+                return False
+            self._index += 1
+        return True
+
+
+def spdx_choice(text: str) -> dict[str, Any] | None:
+    """Return a CycloneDX license choice for one SPDX expression.
+
+    A single license id becomes ``{"license": {"id": ...}}``. ``AND``,
+    ``OR``, ``WITH``, parentheses, or a trailing ``+`` become
+    ``{"expression": ...}``. An id that is not on the SPDX list is refused.
+
+    Args:
+        text: A candidate SPDX license expression.
+
+    Returns:
+        The license choice, or ``None`` when ``text`` is not a valid
+        expression of known ids.
+    """
+    tokens = _tokenize_spdx(text.strip())
+    if tokens is None:
+        return None
+    parser = _SpdxParser(tokens)
+    if not parser.parse():
+        return None
+    if not parser.compound and len(tokens) == 1:
+        return _id_choice(tokens[0])
+    return _expression_choice(_normalize_expression(tokens))
+
+
+def _alias_choice(text: str) -> dict[str, Any] | None:
+    key = " ".join(text.split()).casefold()
+    spdx_id = _LICENSE_ALIASES.get(key)
+    if spdx_id is None or spdx_id not in SPDX_LICENSE_IDS:
+        return None
+    return _id_choice(spdx_id)
+
+
+def _clean_spdx_tag(value: str) -> str:
+    return re.sub(r"\s*\*/\s*$", "", value.strip()).strip()
+
+
+def detect_license_text(text: str) -> dict[str, Any] | None:
+    """Return one license choice from license-file text, or None.
+
+    An ``SPDX-License-Identifier`` tag wins. Otherwise every well-known
+    header that matches must name the same id. Dual-license wording and
+    two different matches are left unrecognized.
+
+    Args:
+        text: License file or ``License`` header body.
+
+    Returns:
+        The license choice, or ``None`` when the text is not unambiguous.
+    """
+    tags = [_clean_spdx_tag(tag) for tag in _SPDX_TAG_RE.findall(text)]
+    tags = [tag for tag in tags if tag]
+    if tags:
+        choices = [spdx_choice(tag) for tag in tags]
+        if any(choice is None for choice in choices):
+            return None
+        first = choices[0]
+        if any(choice != first for choice in choices):
+            return None
+        return first
+    folded = text.casefold()
+    if "dual licen" in folded or "two different licen" in folded:
+        return None
+    matched: set[str] = set()
+    for spdx_id, required, forbidden in _HEADER_RULES:
+        if all(phrase in text for phrase in required) and not any(
+            phrase in text for phrase in forbidden
+        ):
+            matched.add(spdx_id)
+    if len(matched) != 1:
+        return None
+    spdx_id = next(iter(matched))
+    if spdx_id not in SPDX_LICENSE_IDS:
+        return None
+    return _id_choice(spdx_id)
+
+
+def _header_values(message: Message, field: str) -> list[str]:
+    values: list[str] = []
+    for raw in message.get_all(field, []):
+        if isinstance(raw, str) and raw.strip():
+            values.append(raw.strip())
+    return values
+
+
+def _blocks_classifier_fallback(value: str) -> bool:
+    folded = " ".join(value.casefold().split())
+    if "dual licen" in folded or "two different licen" in folded:
+        return True
+    if len(folded) <= 160 and re.search(r"\b(?:or|and)\b|,|;", folded):
+        return True
+    return False
+
+
+def _classifier_choice(message: Message) -> tuple[dict[str, Any], str] | None:
+    mapped: list[str] = []
+    for value in _header_values(message, "Classifier"):
+        spdx_id = CLASSIFIER_TO_SPDX.get(value.strip())
+        if spdx_id and spdx_id in SPDX_LICENSE_IDS:
+            mapped.append(spdx_id)
+    unique = list(dict.fromkeys(mapped))
+    if len(unique) != 1:
+        return None
+    return _id_choice(unique[0]), SOURCE_PYPI_CLASSIFIER
+
+
+def license_from_metadata_text(text: str) -> tuple[dict[str, Any], str] | None:
+    """Return a license choice from a METADATA or PKG-INFO body.
+
+    ``License-Expression`` wins. A ``License`` value is used when it is an
+    SPDX expression, an exact known alias, or a well-known license text.
+    Classifiers are used only when they agree on one id and the ``License``
+    field did not already name something this function cannot interpret.
+
+    Args:
+        text: The METADATA file body.
+
+    Returns:
+        ``(license choice, source)`` or ``None``.
+    """
+    message = message_from_string(text, policy=policy.compat32)
+    expressions = _header_values(message, "License-Expression")
+    if expressions:
+        distinct = list(dict.fromkeys(expressions))
+        if len(distinct) != 1:
+            return None
+        choice = spdx_choice(distinct[0])
+        if choice is None:
+            return None
+        return choice, SOURCE_PYPI_EXPRESSION
+    declared = _header_values(message, "License")
+    distinct_declared = list(dict.fromkeys(declared))
+    if len(distinct_declared) > 1:
+        return None
+    if len(distinct_declared) == 1:
+        value = distinct_declared[0]
+        choice = (
+            spdx_choice(value) or _alias_choice(value) or detect_license_text(value)
+        )
+        if choice is not None:
+            return choice, SOURCE_PYPI_LICENSE
+        if len(" ".join(value.split())) > 160 or _blocks_classifier_fallback(value):
+            return None
+    return _classifier_choice(message)
+
+
+def _npm_license_choice(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        return spdx_choice(text)
+    if isinstance(value, dict):
+        kind = value.get("type")
+        if isinstance(kind, str) and kind.strip():
+            return spdx_choice(kind.strip())
+    return None
+
+
+def license_from_package_json(
+    data: dict[str, Any],
+) -> tuple[dict[str, Any], str] | None:
+    """Return a license choice from one package.json object.
+
+    The current ``license`` field wins. The deprecated ``licenses`` array
+    is used only when ``license`` is absent and the array has one entry.
+    """
+    if "license" in data and data.get("license") not in (None, ""):
+        choice = _npm_license_choice(data.get("license"))
+        if choice is None:
+            return None
+        return choice, SOURCE_NPM_LICENSE
+    entries = data.get("licenses")
+    if not isinstance(entries, list) or len(entries) != 1:
+        return None
+    choice = _npm_license_choice(entries[0])
+    if choice is None:
+        return None
+    return choice, SOURCE_NPM_LICENSES
+
+
+def _go_escape(value: str) -> str:
+    """Escape a module path or version the way the Go module cache does."""
+    return "".join(f"!{char.lower()}" if char.isupper() else char for char in value)
+
+
+def _is_go_stdlib(module_path: str) -> bool:
+    path = module_path.strip().strip("/")
+    return path in {"std", "stdlib"} or path.startswith(("std/", "stdlib/"))
+
+
+def purl_version(purl: str) -> str | None:
+    """Return the version from a Package URL, if it has one."""
+    if not purl.startswith("pkg:"):
+        return None
+    body = purl[4:].split("?", 1)[0].split("#", 1)[0]
+    _ecosystem, sep, remainder = body.partition("/")
+    if not sep:
+        return None
+    _name, at, version = remainder.rpartition("@")
+    if not at or not version:
+        return None
+    return unquote(version)
+
+
+def _go_module_dir(cache: Path, module_path: str, version: str) -> Path | None:
+    parts = [part for part in module_path.split("/") if part]
+    escaped_version = _go_escape(version)
+    for length in range(len(parts), 0, -1):
+        candidate = "/".join(parts[:length])
+        directory = cache / f"{_go_escape(candidate)}@{escaped_version}"
+        if directory.is_dir():
+            return directory
+    return None
+
+
+def _license_files(directory: Path) -> list[Path]:
+    found: list[Path] = []
+    try:
+        children = list(directory.iterdir())
+    except OSError:
+        return []
+    for child in children:
+        if child.is_file() and _LICENSE_FILENAME_RE.fullmatch(child.name):
+            found.append(child)
+    return sorted(found)
+
+
+def _read_license_head(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(_LICENSE_TEXT_LIMIT)
+    except OSError:
+        return None
+
+
+def _go_license_from_dir(directory: Path) -> dict[str, Any] | None:
+    files = _license_files(directory)
+    if not files:
+        return None
+    choices: list[dict[str, Any]] = []
+    for path in files:
+        text = _read_license_head(path)
+        if text is None:
+            return None
+        if not text.strip():
+            continue
+        choice = detect_license_text(text)
+        if choice is None:
+            return None
+        choices.append(choice)
+    if not choices:
+        return None
+    first = choices[0]
+    if any(choice != first for choice in choices):
+        return None
+    return first
+
+
+def _may_use_license_files(text: str) -> bool:
+    """True when METADATA did not already name a license we must not override."""
+    message = message_from_string(text, policy=policy.compat32)
+    if _header_values(message, "License-Expression"):
+        return False
+    declared = _header_values(message, "License")
+    if len(dict.fromkeys(declared)) > 1:
+        return False
+    if len(declared) == 1:
+        value = declared[0]
+        if (
+            spdx_choice(value) is not None
+            or _alias_choice(value) is not None
+            or detect_license_text(value) is not None
+        ):
+            return False
+        if len(" ".join(value.split())) > 160 or _blocks_classifier_fallback(value):
+            return False
+    mapped: list[str] = []
+    for value in _header_values(message, "Classifier"):
+        spdx_id = CLASSIFIER_TO_SPDX.get(value.strip())
+        if spdx_id and spdx_id in SPDX_LICENSE_IDS:
+            mapped.append(spdx_id)
+    if len(dict.fromkeys(mapped)) > 1:
+        return False
+    return True
+
+
+def _safe_license_file(dist_info: Path, declared: str) -> Path | None:
+    """Resolve one ``License-File`` path inside ``dist-info/licenses``."""
+    raw = declared.strip().replace("\\", "/")
+    if not raw or raw.startswith("/"):
+        return None
+    relative = Path(raw)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    candidate = (dist_info / "licenses" / relative).resolve()
+    try:
+        candidate.relative_to(dist_info.resolve())
+    except ValueError:
+        return None
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def _license_from_dist_info_files(
+    metadata: Path, text: str
+) -> tuple[dict[str, Any], str] | None:
+    """Use ``License-File`` when the license texts agree on one license.
+
+    A referenced file whose name is not a license filename (``NOTICE``,
+    ``AUTHORS``) and whose text is not a known license is skipped. A
+    license-named file that this stamp does not recognize fails the
+    distribution closed.
+    """
+    if not _may_use_license_files(text):
+        return None
+    message = message_from_string(text, policy=policy.compat32)
+    declared = _header_values(message, "License-File")
+    if not declared:
+        return None
+    choices: list[dict[str, Any]] = []
+    for value in declared:
+        path = _safe_license_file(metadata.parent, value)
+        if path is None:
+            return None
+        body = _read_license_head(path)
+        if body is None or not body.strip():
+            return None
+        choice = detect_license_text(body)
+        if choice is None:
+            if _LICENSE_FILENAME_RE.fullmatch(path.name):
+                return None
+            continue
+        choices.append(choice)
+    if not choices:
+        return None
+    first = choices[0]
+    if any(choice != first for choice in choices):
+        return None
+    return first, SOURCE_PYPI_FILE
+
+
+def _python_metadata_paths(
+    component: dict[str, Any], index: MetadataIndex, distribution: str
+) -> list[Path]:
+    """Return METADATA paths, preferring the component version when present."""
+    paths = index.python_metadata(distribution)
+    version = component.get("version")
+    if isinstance(version, str) and version:
+        matched = [path for path in paths if version in path.parent.name]
+        if matched:
+            return matched
+    return paths
+
+
+def derive_license(
+    component: dict[str, Any], index: MetadataIndex
+) -> tuple[dict[str, Any], str] | None:
+    """Derive one declared license. Never guess.
+
+    Args:
+        component: A CycloneDX component object.
+        index: Offline metadata collected from the build roots.
+
+    Returns:
+        ``(license choice, source property)`` or ``None`` when no local
+        source names exactly one SPDX license or expression. The choice is
+        either ``{"license": {"id": ...}}`` or ``{"expression": ...}``.
+    """
+    purl = component.get("purl")
+    parsed = parse_purl(purl) if isinstance(purl, str) else None
+    if parsed is None:
+        return None
+    ecosystem, purl_name = parsed
+    name = component.get("name") if isinstance(component.get("name"), str) else ""
+    if ecosystem == "pypi":
+        for metadata in _python_metadata_paths(component, index, purl_name or name):
+            try:
+                text = metadata.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            chosen = license_from_metadata_text(text)
+            if chosen is not None:
+                return chosen
+            filed = _license_from_dist_info_files(metadata, text)
+            if filed is not None:
+                return filed
+        return None
+    if ecosystem == "npm":
+        manifest = index.npm_manifest(purl_name or name)
+        if manifest is None:
+            return None
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        return license_from_package_json(data)
+    if ecosystem == "golang":
+        module_path = purl_name or name
+        if _is_go_stdlib(module_path):
+            return _id_choice(_GO_STDLIB), SOURCE_GO_STDLIB
+        cache = index.go_mod_cache
+        if cache is None or not isinstance(purl, str):
+            return None
+        version = purl_version(purl)
+        if not version:
+            return None
+        directory = _go_module_dir(cache, module_path, version)
+        if directory is None:
+            return None
+        choice = _go_license_from_dir(directory)
+        if choice is None:
+            return None
+        return choice, SOURCE_GO_FILE
+    return None
+
+
+def fill_component_licenses(document: dict[str, Any], index: MetadataIndex) -> None:
+    """Set ``licenses`` on components that do not already declare one.
+
+    Evidence-only detections are not a declaration and are filled when a
+    local source is unambiguous. An ambiguous source is left blank, with
+    no ``preloop:license_source`` property.
+
+    Args:
+        document: CycloneDX document being stamped.
+        index: Offline metadata collected from the build roots.
+    """
+    for component in iter_components(document):
+        if has_declared_licence(component):
+            continue
+        derived = derive_license(component, index)
+        if derived is None:
+            continue
+        choice, source = derived
+        component["licenses"] = [choice]
+        set_component_property(component, LICENSE_SOURCE_PROPERTY, source)
+
+
 def build_validator() -> Any:
     """Return a CycloneDX 1.6 strict validator, or exit with a clear message."""
     try:
@@ -827,6 +1618,12 @@ def main(argv: list[str] | None = None) -> int:
         help="node_modules directory to read package.json author metadata from",
     )
     parser.add_argument(
+        "--go-mod-cache",
+        type=Path,
+        default=None,
+        help="Go module cache used to read LICENSE files (go env GOMODCACHE)",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="do not write; fail if any file is missing supplier or authors",
@@ -846,10 +1643,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no [project].authors in {args.pyproject}", file=sys.stderr)
         return 1
 
-    index = MetadataIndex(args.python_root, args.npm_root)
+    index = MetadataIndex(args.python_root, args.npm_root, args.go_mod_cache)
     header = (
-        f"{'sbom':<44}{'comps':>7}{'ver':>8}{'purl':>8}{'lic':>8}"
-        f"{'suppl':>8}{'unres':>7}{'deps':>7}"
+        f"{'sbom':<44}{'comps':>7}{'ver':>8}{'purl':>8}{'lic0':>8}"
+        f"{'lic1':>8}{'suppl':>8}{'unres':>7}{'deps':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -859,6 +1656,7 @@ def main(argv: list[str] | None = None) -> int:
     failures = 0
     for path in args.sboms:
         document = json.loads(path.read_text(encoding="utf-8"))
+        before_count, before_pct = declared_licence_stats(document)
         if args.check:
             metadata = document.get("metadata", {})
             if not metadata.get("authors") or not metadata.get("supplier"):
@@ -870,11 +1668,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             stamp(document, authors)
             fill_component_suppliers(document, index)
+            fill_component_licenses(document, index)
             stamp_types_only(document, index)
             path.write_text(
                 json.dumps(document, indent=2, sort_keys=False) + "\n",
                 encoding="utf-8",
             )
+        after_count, after_pct = declared_licence_stats(document)
 
         if validator is not None:
             error = validator.validate_str(path.read_text(encoding="utf-8"))
@@ -885,8 +1685,13 @@ def main(argv: list[str] | None = None) -> int:
         stats = measure(document)
         print(
             f"{path.name:<44}{stats['components']:>7}{stats['version']:>8}"
-            f"{stats['purl']:>8}{stats['licence']:>8}{stats['supplier']:>8}"
+            f"{stats['purl']:>8}{before_pct:>8}{after_pct:>8}{stats['supplier']:>8}"
             f"{stats['unresolved']:>7}{stats['dependencies']:>7}"
+        )
+        print(
+            f"{path.name}: licence coverage {before_pct} -> {after_pct} "
+            f"({before_count}/{stats['components']} -> "
+            f"{after_count}/{stats['components']})"
         )
         if stats["unresolved"]:
             print(
