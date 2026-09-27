@@ -1685,4 +1685,68 @@ describe('AddAIModelModal Azure OpenAI provider', () => {
     });
     expect(body.api_key).to.be.undefined;
   });
+
+  function lastPutBody(): any {
+    const putCall = fetchStub
+      .getCalls()
+      .filter((call) => call.args[1]?.method === 'PUT')
+      .pop();
+    return JSON.parse(String(putCall!.args[1].body));
+  }
+
+  it('drops the Azure fields when an Azure model switches provider', async () => {
+    element.model = {
+      id: 'azure-id',
+      name: 'Chat on Azure',
+      provider_name: 'azure',
+      model_identifier: 'team-chat-prod',
+      model_kind: 'llm',
+      api_endpoint: 'https://example-resource.openai.azure.com',
+      has_api_key: true,
+      meta_data: {
+        provider_runtime: {
+          api_version: 'v1',
+          base_model: 'gpt-4o',
+          other: 'kept',
+        },
+      },
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+    (element as any)._currentModel = {
+      ...(element as any)._currentModel,
+      provider_name: 'openai',
+      model_identifier: 'gpt-4o-mini',
+      api_endpoint: 'https://api.openai.com/v1',
+    };
+    (element as any)._syncFormFromDom = () => {};
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    expect((element as any)._formError).to.equal(null);
+    // A stale base_model would price the OpenAI model at the old rate.
+    expect(lastPutBody().meta_data.provider_runtime).to.deep.equal({
+      other: 'kept',
+    });
+  });
+
+  it('keeps an API-set base model on a non-Azure model when editing', async () => {
+    element.model = {
+      id: 'openai-id',
+      name: 'Pinned',
+      provider_name: 'openai',
+      model_identifier: 'team-alias',
+      model_kind: 'llm',
+      api_endpoint: 'https://api.openai.com/v1',
+      has_api_key: true,
+      meta_data: { provider_runtime: { base_model: 'gpt-4o-mini' } },
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+    (element as any)._syncFormFromDom = () => {};
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    expect(lastPutBody().meta_data.provider_runtime).to.deep.equal({
+      base_model: 'gpt-4o-mini',
+    });
+  });
 });

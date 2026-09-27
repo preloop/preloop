@@ -57,6 +57,30 @@ def _azure_model(
             "https://example.cognitiveservices.azure.com/openai/deployments/x",
             ("https://example.cognitiveservices.azure.com", None),
         ),
+        # Proxy and API Management prefixes are kept; only the Azure suffix
+        # LiteLLM appends itself is removed.
+        (
+            "https://gw.example.com/tenants/openai/v1",
+            ("https://gw.example.com/tenants", "v1"),
+        ),
+        (
+            "https://gw.example.com/openai/openai/deployments/x/chat/completions",
+            ("https://gw.example.com/openai", None),
+        ),
+        # Not an Azure suffix: a lookalike segment and a bare proxy path.
+        (
+            "https://gw.example.com/openai-gw/tenant",
+            ("https://gw.example.com/openai-gw/tenant", None),
+        ),
+        (
+            "https://gw.example.com/openai/tenant",
+            ("https://gw.example.com/openai/tenant", None),
+        ),
+        # A deployment named "openai" does not move the cut.
+        (
+            f"{RESOURCE}/openai/deployments/openai/chat/completions",
+            (RESOURCE, None),
+        ),
         ("", (None, None)),
         (None, (None, None)),
     ],

@@ -462,6 +462,22 @@ export class AddAIModelModal extends LitElement {
       if (baseModel) runtime.base_model = baseModel;
       else delete runtime.base_model;
       baseMeta.provider_runtime = runtime;
+    } else if (
+      String(this.model?.provider_name || '').toLowerCase() === 'azure' &&
+      baseMeta.provider_runtime &&
+      typeof baseMeta.provider_runtime === 'object'
+    ) {
+      // An Azure model switched to another provider must not keep the
+      // Azure-form keys: pricing reads base_model for any provider and
+      // would price the new model from the old deployment's base model.
+      // Only a switch away from Azure strips them, so a base_model set
+      // through the API on, say, a Bedrock ARN survives an edit.
+      const {
+        api_version: _apiVersion,
+        base_model: _baseModel,
+        ...rest
+      } = baseMeta.provider_runtime as Record<string, unknown>;
+      baseMeta.provider_runtime = rest;
     }
     const gatewayEnabled =
       modelKind === 'llm' &&
