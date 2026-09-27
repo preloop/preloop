@@ -112,7 +112,7 @@ class TestFactory:
         assert tracker_hosts_repositories("github") is True
         assert tracker_hosts_repositories("GitLab") is True
         assert tracker_hosts_repositories("jira") is False
-        assert tracker_hosts_repositories("bitbucket") is False
+        assert tracker_hosts_repositories("bitbucket") is True
         assert tracker_hosts_repositories("webhook") is False
         assert tracker_class_for_type("bitbucket") is not None
         assert tracker_class_for_type(None) is None
@@ -258,17 +258,22 @@ class TestResolve:
                 },
             )
 
-    def test_bitbucket_is_not_a_binding_target_yet(self, env: Dict[str, Any]) -> None:
-        # The post-run pull request step only opens pull requests on GitHub
-        # and GitLab, so Bitbucket leaves hosts_repositories unset for now.
-        with pytest.raises(RepositoryBindingError, match="does not host"):
-            _resolve(
-                env,
-                {
-                    "enabled": True,
-                    "repository_bindings": [_binding(env["bitbucket"], "team/app")],
-                },
-            )
+    def test_flow_binding_to_bitbucket(self, env: Dict[str, Any]) -> None:
+        # The post-run pull request step opens Bitbucket pull requests, so a
+        # Jira project can bind to a Bitbucket repository.
+        applied = _resolve(
+            env,
+            {
+                "enabled": True,
+                "repository_bindings": [_binding(env["bitbucket"], "team/app")],
+            },
+        )
+        assert applied is not None
+        assert applied.tracker_type == "bitbucket"
+        assert applied.project_id == str(env["bb_repo"].id)
+        assert applied.git_clone_config["repositories"][0]["tracker_id"] == str(
+            env["bitbucket"].id
+        )
 
     def test_unsynced_repository_fails(self, env: Dict[str, Any]) -> None:
         with pytest.raises(RepositoryBindingError, match="not synced"):

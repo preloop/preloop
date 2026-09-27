@@ -60,6 +60,9 @@ class IsolatedPublicationTarget:
     expected_remote_sha: str | None
     base_sha: str
     previous_records: tuple[PublicationRecord, ...] = ()
+    # Isolated leases are minted for GitHub App trackers only today; the type
+    # is carried so the credentials map never hardcodes a provider.
+    tracker_type: str = "github"
 
     @property
     def slug(self) -> str:

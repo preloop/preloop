@@ -351,7 +351,7 @@ def test_jira_issue_payload_is_rejected():
     with pytest.raises(PresetRunnerError) as exc:
         build_issue_trigger_payload(issue, project, tracker)
     assert exc.value.status_code == 400
-    assert "GitHub and GitLab" in str(exc.value.detail)
+    assert "GitHub, GitLab and Bitbucket" in str(exc.value.detail)
 
 
 def test_jira_triage_payload_uses_object_attributes():

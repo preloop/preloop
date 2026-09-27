@@ -29,7 +29,7 @@ def validate_publication_tracker(tracker: models.Tracker) -> None:
         or not getattr(installation, "external_id", None)
     ):
         raise PublicationError(
-            "Isolated publication requires a GitHub App installation; PAT/GitLab credentials cannot yet be safely downscoped. Use an App tracker or explicitly retain legacy publication mode."
+            "Isolated publication requires a GitHub App installation; PAT, GitLab and Bitbucket credentials cannot yet be safely downscoped to one repository. Use an App tracker or explicitly retain legacy publication mode."
         )
     if not settings.github_app.app_id or not settings.github_app.private_key:
         raise PublicationError(

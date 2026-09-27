@@ -17,6 +17,7 @@ import subprocess
 import pytest
 
 from preloop.agents.container import (
+    build_bitbucket_pr_capture_shell,
     build_github_pr_capture_shell,
     build_gitlab_mr_capture_shell,
 )
@@ -36,6 +37,12 @@ GITLAB_201 = (
     '"web_url":"https://gitlab.com/acme/app/-/merge_requests/5"}'
 )
 BRANCH = "preloop/issue-951-0976028b"
+BITBUCKET_201 = (
+    '{"id":7,"title":"t","description":"d",'
+    '"links":{"html":{"href":"https://bitbucket.org/acme/app/pull-requests/7"}},'
+    '"source":{"branch":{"name":"' + BRANCH + '"}},'
+    '"destination":{"branch":{"name":"main"}}}'
+)
 
 
 def _github(**kwargs):
@@ -52,6 +59,14 @@ def _gitlab(**kwargs):
         branch=BRANCH,
         **kwargs,
     )
+
+
+def _bitbucket(**kwargs):
+    shell = build_bitbucket_pr_capture_shell(
+        repo_path="acme/app", branch=BRANCH, **kwargs
+    )
+    # The create shell exports the auth header before the capture block runs.
+    return 'PRELOOP_BB_AUTH="Authorization: Bearer ${TOKEN}"\n' + shell
 
 
 def _run(tmp_path, script, *, response, lookup="", flags=("-u",)):
@@ -113,8 +128,14 @@ def _markers(stdout):
             "https://gitlab.com/acme/app/-/merge_requests/5",
             "gitlab",
         ),
+        (
+            _bitbucket,
+            BITBUCKET_201,
+            "https://bitbucket.org/acme/app/pull-requests/7",
+            "bitbucket",
+        ),
     ],
-    ids=["github", "gitlab"],
+    ids=["github", "gitlab", "bitbucket"],
 )
 @pytest.mark.parametrize("flags", [("-u",), ("-euo", "pipefail")], ids=["u", "euo"])
 def test_capture_shell_201_prints_marker_under_nounset(
@@ -143,8 +164,14 @@ def test_capture_shell_201_prints_marker_under_nounset(
             f"[{GITLAB_201}]",
             "https://gitlab.com/acme/app/-/merge_requests/5",
         ),
+        (
+            _bitbucket,
+            '{"error":{"message":"There is already an open pull request"}}',
+            '{"values":[' + BITBUCKET_201 + "]}",
+            "https://bitbucket.org/acme/app/pull-requests/7",
+        ),
     ],
-    ids=["github", "gitlab"],
+    ids=["github", "gitlab", "bitbucket"],
 )
 @pytest.mark.parametrize("flags", [("-u",), ("-euo", "pipefail")], ids=["u", "euo"])
 def test_capture_shell_no_url_fallback_prints_marker_under_nounset(
@@ -158,7 +185,9 @@ def test_capture_shell_no_url_fallback_prints_marker_under_nounset(
     assert [m["url"] for m in _markers(completed.stdout)] == [url]
 
 
-@pytest.mark.parametrize("build", [_github, _gitlab], ids=["github", "gitlab"])
+@pytest.mark.parametrize(
+    "build", [_github, _gitlab, _bitbucket], ids=["github", "gitlab", "bitbucket"]
+)
 @pytest.mark.parametrize("flags", [("-u",), ("-euo", "pipefail")], ids=["u", "euo"])
 def test_capture_shell_nothing_resolved_runs_clean_under_nounset(
     tmp_path, build, flags
@@ -225,6 +254,28 @@ def test_fallback_body_update_then_marker_under_errexit(tmp_path):
     assert completed.returncode == 0, completed.stderr
     assert [m["url"] for m in _markers(completed.stdout)] == [
         "https://github.com/acme/app/pull/7"
+    ]
+
+
+def test_bitbucket_fallback_body_update_then_marker_under_errexit(tmp_path):
+    """The Bitbucket lookup unwraps ``{"values": [...]}`` and updates the
+    existing pull request's description before printing the marker."""
+    script = _bitbucket(
+        execution_link=(
+            "https://preloop.example/console/flows/executions/"
+            "0976028b-ee59-4fc6-a38a-a770cfdc800a"
+        )
+    )
+    completed = _run(
+        tmp_path,
+        script,
+        response='{"error":{"message":"There is already an open pull request"}}',
+        lookup='{"values":[' + BITBUCKET_201 + "]}",
+        flags=("-euo", "pipefail"),
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert [m["url"] for m in _markers(completed.stdout)] == [
+        "https://bitbucket.org/acme/app/pull-requests/7"
     ]
 
 
