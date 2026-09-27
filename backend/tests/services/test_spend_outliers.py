@@ -26,6 +26,7 @@ from preloop.services.spend_outliers import (
     evaluate_daily_rules,
     evaluate_session_rule,
     is_top_tier,
+    model_family,
     list_open_findings,
     register_imported_spend_source,
     run_daily_pass,
@@ -314,6 +315,43 @@ def test_model_mix_two_days_at_eighty_percent_fires_once(db_session, test_user):
     assert details["share"] == 0.8
     assert details["previous_share"] == 0.8
     assert found[0].fingerprint == f"model_mix|{test_user.id}|2026-09-26"
+
+
+def test_model_family_drops_provider_and_case():
+    """One model reached with and without a provider is one family."""
+    assert model_family("Vendor/Premium-Large") == "premium-large"
+    assert model_family("premium-large") == "premium-large"
+    assert model_family("a/b/premium-large") == "premium-large"
+
+
+def test_model_mix_matches_spellings_across_the_two_days(db_session, test_user):
+    """Bare on one day, provider-prefixed on the other: still two days."""
+    _mark_top_tier(db_session, test_user.account_id)
+    _spend(db_session, test_user, YESTERDAY - timedelta(days=1), 8.0, model="premium-x")
+    _spend(db_session, test_user, YESTERDAY - timedelta(days=1), 2.0)
+    _spend(db_session, test_user, YESTERDAY, 8.0, model="vendor/premium-x")
+    _spend(db_session, test_user, YESTERDAY, 2.0)
+
+    found = evaluate_daily_rules(db_session, test_user.account_id, NOW)
+
+    assert [finding.rule for finding in found] == ["model_mix"]
+    assert found[0].details["model"] == "vendor/premium-x"
+    assert found[0].details["previous_share"] == 0.8
+
+
+def test_model_mix_adds_up_spellings_on_the_same_day(db_session, test_user):
+    """40 percent under each of two spellings is 80 percent of one model."""
+    _mark_top_tier(db_session, test_user.account_id)
+    for day in (YESTERDAY - timedelta(days=1), YESTERDAY):
+        _spend(db_session, test_user, day, 4.0, model="premium-x")
+        _spend(db_session, test_user, day, 4.0, model="vendor/premium-x")
+        _spend(db_session, test_user, day, 2.0)
+
+    found = evaluate_daily_rules(db_session, test_user.account_id, NOW)
+
+    assert [finding.rule for finding in found] == ["model_mix"]
+    assert found[0].details["share"] == 0.8
+    assert found[0].details["model_usd"] == 8.0
 
 
 def test_model_mix_one_day_does_not_fire(db_session, test_user):

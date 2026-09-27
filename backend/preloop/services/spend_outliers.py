@@ -312,20 +312,53 @@ def daily_spend_candidate(
     )
 
 
+def model_family(model: str) -> str:
+    """The key the model mix rule groups by: lowercase, provider dropped.
+
+    ``anthropic/Model-X`` and ``model-x`` are the same model reached two
+    ways, so their spend is one share. Mirrors how :func:`is_top_tier`
+    matches a prefix with or without the provider segment.
+    """
+    name = (model or "").strip().lower()
+    slash = name.rfind("/")
+    return name[slash + 1 :] if slash >= 0 else name
+
+
+def _spend_by_family(
+    by_model: Mapping[str, float],
+) -> Dict[str, tuple[float, str]]:
+    """Group a day's spend by model family: family -> (cost, display name).
+
+    The display name is the spelling that carried the most spend that day.
+    """
+    grouped: Dict[str, tuple[float, str, float]] = {}
+    for model, cost in by_model.items():
+        family = model_family(model)
+        total, display, display_cost = grouped.get(family, (0.0, model, -1.0))
+        if cost > display_cost:
+            display, display_cost = model, cost
+        grouped[family] = (total + cost, display, display_cost)
+    return {family: (total, display) for family, (total, display, _) in grouped.items()}
+
+
 def _top_tier_leader(
-    by_model: Mapping[str, float], prefixes: Sequence[str]
-) -> Optional[tuple[str, float, float]]:
-    """The top-tier model with the largest share: (model, share, cost)."""
-    total = sum(by_model.values())
+    by_family: Mapping[str, tuple[float, str]], prefixes: Sequence[str]
+) -> Optional[tuple[str, str, float, float]]:
+    """The top-tier family with the largest share.
+
+    Returns:
+        ``(family, display name, share, cost)``, or None.
+    """
+    total = sum(cost for cost, _ in by_family.values())
     if total <= 0:
         return None
-    best: Optional[tuple[str, float, float]] = None
-    for model, cost in by_model.items():
-        if not is_top_tier(model, prefixes):
+    best: Optional[tuple[str, str, float, float]] = None
+    for family, (cost, display) in by_family.items():
+        if not is_top_tier(display, prefixes):
             continue
         share = cost / total
-        if best is None or share > best[1]:
-            best = (model, share, cost)
+        if best is None or share > best[2]:
+            best = (family, display, share, cost)
     return best
 
 
@@ -336,6 +369,10 @@ def model_mix_candidate(
     config: SpendOutlierConfig,
 ) -> Optional[OutlierCandidate]:
     """Rule 2: one top-tier model over the share threshold two days running.
+
+    Shares are per model family (see :func:`model_family`), so spend on
+    ``provider/model-x`` and on ``model-x`` counts as one model, on the same
+    day and across the two days.
 
     Args:
         user_id: The user evaluated.
@@ -349,20 +386,20 @@ def model_mix_candidate(
     prefixes = config.top_tier_model_prefixes
     if not prefixes:
         return None
-    today = spend.day_by_model(day)
+    today = _spend_by_family(spend.day_by_model(day))
     previous_day = day - timedelta(days=1)
-    previous = spend.day_by_model(previous_day)
+    previous = _spend_by_family(spend.day_by_model(previous_day))
     leader = _top_tier_leader(today, prefixes)
-    if leader is None or leader[1] <= config.top_tier_share:
+    if leader is None or leader[2] <= config.top_tier_share:
         return None
-    model, share, model_cost = leader
-    previous_total = sum(previous.values())
+    family, model, share, model_cost = leader
+    previous_total = sum(cost for cost, _ in previous.values())
     if previous_total <= 0:
         return None
-    previous_share = previous.get(model, 0.0) / previous_total
+    previous_share = previous.get(family, (0.0, model))[0] / previous_total
     if previous_share <= config.top_tier_share:
         return None
-    total = sum(today.values())
+    total = sum(cost for cost, _ in today.values())
     imported = sum(spend.imported.get(day, {}).values())
     return OutlierCandidate(
         rule=SPEND_OUTLIER_RULE_MODEL_MIX,
