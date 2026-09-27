@@ -113,7 +113,13 @@ class SessionEmbeddingSettingResponse(BaseModel):
 
 
 class SessionEmbeddingSettingUpdate(BaseModel):
-    """What the console's opt in card saves. Absent fields are left alone."""
+    """What the console's opt in card saves. Absent fields are left alone.
+
+    An explicit ``null`` is read as absent for every field except
+    ``daily_cap_usd``, where it is the documented way to clear the account
+    cap. A client that round trips nullable values must not turn embedding
+    off, or be refused for naming a provider, by sending ``null``.
+    """
 
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
@@ -156,9 +162,13 @@ class SessionEmbeddingSettingUpdate(BaseModel):
             raise ValueError("the update must change at least one field")
         return self
 
+    def given(self, name: str) -> bool:
+        """Whether ``name`` was sent with a value, not left out or null."""
+        return name in self.model_fields_set and getattr(self, name) is not None
+
     @property
     def names_provider(self) -> bool:
         """Whether this body carries any of the opt in's provider details."""
-        return bool(
-            {"provider", "model_identifier", "base_url"} & self.model_fields_set
+        return any(
+            self.given(name) for name in ("provider", "model_identifier", "base_url")
         )

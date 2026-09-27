@@ -355,6 +355,37 @@ describe('SessionEmbeddingSettings', () => {
       );
     });
 
+    it('sends an empty endpoint as typed so the server names the refusal', async () => {
+      install({
+        permissions: null,
+        put: () => ({
+          status: 422,
+          body: {
+            detail: {
+              code: 'base_url_required',
+              message: 'an OpenAI compatible provider must name its base url',
+            },
+          },
+        }),
+      });
+      const el = await render();
+
+      const toggle = q(el, 'embedding-enabled')!;
+      (toggle as any).checked = true;
+      toggle.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+      await el.updateComplete;
+      setValue(q(el, 'embedding-model')!, 'text-embedding-3-small', 'sl-input');
+      await el.updateComplete;
+
+      q(el, 'embedding-save')!.click();
+      await waitUntil(() => q(el, 'embedding-error'), 'no error shown');
+      const put = calls.find((call) => call.method === 'PUT')!;
+      expect(put.body.base_url).to.equal('');
+      expect(q(el, 'embedding-error')!.textContent).to.contain(
+        'must name its base url'
+      );
+    });
+
     it('refuses a negative cap before sending anything', async () => {
       install({ permissions: null });
       const el = await render();

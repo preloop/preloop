@@ -28752,7 +28752,17 @@ components:
       additionalProperties: false
       type: object
       title: SessionEmbeddingSettingUpdate
-      description: What the console's opt in card saves. Absent fields are left alone.
+      description: 'What the console''s opt in card saves. Absent fields are left
+        alone.
+
+
+        An explicit ``null`` is read as absent for every field except
+
+        ``daily_cap_usd``, where it is the documented way to clear the account
+
+        cap. A client that round trips nullable values must not turn embedding
+
+        off, or be refused for naming a provider, by sending ``null``.'
     SessionSavedSearchCreate:
       properties:
         name:

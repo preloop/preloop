@@ -41,7 +41,10 @@ export interface SessionEmbeddingSetting {
   corpus: SessionEmbeddingCorpus;
 }
 
-/** What a save sends. Fields left out are left alone by the server. */
+/**
+ * What a save sends. Fields left out are left alone by the server, and so
+ * is an explicit null on any field except `daily_cap_usd`.
+ */
 export interface SessionEmbeddingSettingUpdate {
   enabled?: boolean;
   scope?: SessionEmbeddingScope;
@@ -49,7 +52,8 @@ export interface SessionEmbeddingSettingUpdate {
   daily_cap_usd?: number | null;
   provider?: SessionEmbeddingProvider;
   model_identifier?: string;
-  base_url?: string | null;
+  /** Sent as typed; an empty string is refused as base_url_required. */
+  base_url?: string;
 }
 
 /** A refused read or save, with the HTTP status and the refusal code. */

@@ -200,7 +200,11 @@ export class SessionEmbeddingSettings extends LitElement {
       update.provider = this.draftProvider;
       update.model_identifier = model;
       if (this.draftProvider === 'openai_compatible') {
-        update.base_url = this.draftBaseUrl.trim() || null;
+        // Sent as typed, empty included: the server refuses an empty
+        // endpoint with base_url_required, where a null would be read as
+        // "leave the stored one" and quietly reuse an endpoint the user
+        // just cleared.
+        update.base_url = this.draftBaseUrl.trim();
       }
     }
     return update;

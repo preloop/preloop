@@ -367,3 +367,46 @@ def test_a_viewer_cannot_opt_the_account_in(db_session, test_viewer_user):
         db_session, account_id=test_viewer_user.account_id
     )
     assert stored is None or stored.enabled is False
+
+
+def test_an_explicit_null_enabled_leaves_the_opt_in_alone(
+    client, db_session, test_user
+):
+    """A client round tripping nulls must not switch embedding off."""
+    assert client.put(SETTING_URL, json=LOCAL_OPT_IN).status_code == 200
+
+    response = client.put(SETTING_URL, json={"enabled": None})
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is True
+    stored = crud_session_embedding_setting.get_for_account(
+        db_session, account_id=test_user.account_id
+    )
+    assert stored.enabled is True
+
+
+def test_null_provider_fields_on_a_disabled_setting_name_nothing(client):
+    """An explicit null is not naming a provider, so it is not refused."""
+    response = client.put(
+        SETTING_URL,
+        json={"base_url": None, "model_identifier": None, "provider": None},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
+
+
+def test_an_empty_endpoint_is_refused_when_opting_in(client, db_session, test_user):
+    """The console sends what was typed; an empty endpoint is base_url_required."""
+    response = client.put(
+        SETTING_URL,
+        json={
+            "enabled": True,
+            "provider": PROVIDER_OPENAI_COMPATIBLE,
+            "model_identifier": "text-embedding-3-small",
+            "base_url": "",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "base_url_required"

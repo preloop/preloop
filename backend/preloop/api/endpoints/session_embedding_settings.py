@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.api.common import get_account_for_user
-from preloop.config import settings
 from preloop.models.crud import (
     crud_session_embedding_setting,
     crud_session_search_document,
@@ -47,7 +46,10 @@ from preloop.schemas.session_embedding_setting import (
     SessionEmbeddingSettingResponse,
     SessionEmbeddingSettingUpdate,
 )
-from preloop.services.session_embedding import embedding_enabled
+from preloop.services.session_embedding import (
+    deployment_daily_cap_usd,
+    embedding_enabled,
+)
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 router = APIRouter()
@@ -56,11 +58,6 @@ router = APIRouter()
 #: is a route that already exists, and a one segment literal next to it would
 #: be read as a session id by whichever router FastAPI matched first.
 SETTING_PATH = "/runtime-sessions/settings/embedding"
-
-
-def _deployment_daily_cap() -> float:
-    """The cap an account without its own falls back to, as the worker reads it."""
-    return max(0.0, float(getattr(settings, "session_embedding_daily_cap_usd", 2.0)))
 
 
 def _corpus(db: Session, setting: SessionEmbeddingSetting) -> SessionEmbeddingCorpus:
@@ -100,7 +97,7 @@ def _to_response(
         base_url=setting.base_url,
         dimensions=int(setting.dimensions),
         daily_cap_usd=setting.daily_cap_usd,
-        deployment_daily_cap_usd=_deployment_daily_cap(),
+        deployment_daily_cap_usd=deployment_daily_cap_usd(),
         deployment_embedding_enabled=embedding_enabled(),
         degraded_reason=setting.degraded_reason,
         degraded_at=setting.degraded_at,
@@ -153,27 +150,27 @@ def _apply_update(
     fields = payload.model_fields_set
     setting = crud_session_embedding_setting.get_or_create(db, account_id=account_id)
     target_enabled = (
-        bool(payload.enabled) if "enabled" in fields else bool(setting.enabled)
+        bool(payload.enabled) if payload.given("enabled") else bool(setting.enabled)
     )
     if payload.names_provider and not target_enabled:
         raise SessionEmbeddingConfigError(
             "provider_requires_enable",
             "a provider and model are named when turning embedding on",
         )
+    # daily_cap_usd is the one field where an explicit null means something:
+    # clear the account cap back to the deployment default.
     cap = payload.daily_cap_usd if "daily_cap_usd" in fields else setting.daily_cap_usd
 
-    if "enabled" in fields and not target_enabled:
+    if payload.given("enabled") and not target_enabled:
         crud_session_embedding_setting.disable(db, account_id=account_id)
     elif target_enabled:
-        provider = (
-            payload.provider if payload.provider is not None else setting.provider
-        )
+        provider = payload.provider if payload.given("provider") else setting.provider
         model_identifier = (
             payload.model_identifier
-            if "model_identifier" in fields
+            if payload.given("model_identifier")
             else setting.model_identifier
         )
-        base_url = payload.base_url if "base_url" in fields else setting.base_url
+        base_url = payload.base_url if payload.given("base_url") else setting.base_url
         if _needs_enable(setting, provider, model_identifier, base_url):
             crud_session_embedding_setting.enable(
                 db,

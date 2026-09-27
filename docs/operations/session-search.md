@@ -137,7 +137,8 @@ curl -X PUT "$PRELOOP_URL/api/v1/runtime-sessions/settings/embedding" \
   -d '{"enabled": false}'
 ```
 
-Every field of the `PUT` is optional and a field left out is left alone.
+Every field of the `PUT` is optional and a field left out is left alone, as
+is a field sent as `null`, except `daily_cap_usd`.
 Enabling needs a model, either in the body or already on the setting from an
 earlier opt in; a refusal (no model, a non-https or loopback endpoint) is a
 422 whose `detail.code` names it. Provider details are only accepted when the
