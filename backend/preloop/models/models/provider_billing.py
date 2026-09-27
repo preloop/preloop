@@ -17,6 +17,7 @@ from typing import Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -94,6 +95,15 @@ class ProviderBillingSnapshot(Base):
         String(255), nullable=True
     )
     service_tier: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Per-user dimension (a provider-side login such as a GitHub handle).
+    # NULL for organization aggregates and for providers without users.
+    user_login: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # ``imported`` marks rows pulled from a provider that the gateway never
+    # metered (for example GitHub Copilot). NULL for reconciliation actuals.
+    usage_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # ``reconciled`` for provider-billed amounts; NULL when the row carries
+    # no dollar amount (seat or adoption rows).
+    cost_basis: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     cost_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
@@ -113,8 +123,8 @@ class ProviderBillingSnapshot(Base):
         DateTime(timezone=True), nullable=False
     )
     # Deterministic hash of (provider, granularity, bucket_start, model,
-    # line_item, provider_api_key_id, project_or_workspace_id, service_tier)
-    # making re-fetches idempotent.
+    # line_item, provider_api_key_id, project_or_workspace_id, service_tier,
+    # and user_login when set) making re-fetches idempotent.
     dedup_key: Mapped[str] = mapped_column(String(128), nullable=False)
 
     account = relationship("Account")
@@ -128,5 +138,13 @@ class ProviderBillingSnapshot(Base):
             "account_id",
             "provider",
             "bucket_start",
+        ),
+        CheckConstraint(
+            "usage_source IS NULL OR usage_source IN ('imported')",
+            name="ck_provider_billing_snapshot_usage_source",
+        ),
+        CheckConstraint(
+            "cost_basis IS NULL OR cost_basis IN ('estimated', 'reconciled')",
+            name="ck_provider_billing_snapshot_cost_basis",
         ),
     )
