@@ -262,9 +262,9 @@ describe('IssueCostView', () => {
     await el.updateComplete;
 
     expect(el.unassignedRuns).to.equal(null);
-    expect(el.shadowRoot!.querySelector('tr[data-execution="exec-9"]')).to.equal(
-      null
-    );
+    expect(
+      el.shadowRoot!.querySelector('tr[data-execution="exec-9"]')
+    ).to.equal(null);
   });
 
   it('exports with the current filter', async () => {
