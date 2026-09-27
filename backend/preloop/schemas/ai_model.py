@@ -391,6 +391,50 @@ class AIModelCredentialExportResponse(BaseModel):
     refresh: Optional[str] = None
     expires: Optional[int] = None
     account_id: Optional[str] = None
+    last_refresh: Optional[datetime] = Field(
+        None,
+        description=(
+            "When Preloop last wrote this bundle (import, CLI push, or "
+            "server-side refresh), in UTC"
+        ),
+    )
+
+
+class AIModelCredentialMarkerResponse(BaseModel):
+    """Rotation marker for a stored subscription-OAuth bundle.
+
+    Carries no token material. The CLI reads it on the Codex permission hook
+    to decide whether Preloop's copy is newer than the local login before it
+    downloads the bundle through the export endpoint.
+    """
+
+    credential_type: str = Field(
+        ..., description="Logical credential type stored for the model"
+    )
+    expires: Optional[int] = Field(
+        None,
+        description=(
+            "Access-token expiry of the stored bundle in epoch milliseconds. "
+            "It moves forward every time the bundle is rotated."
+        ),
+    )
+    last_refresh: Optional[datetime] = Field(
+        None,
+        description=(
+            "When Preloop last wrote this bundle (import, CLI push, or "
+            "server-side refresh), in UTC"
+        ),
+    )
+    credentials_status: Optional[str] = Field(
+        None, description="Status of the model's credential secret"
+    )
+    account_id: Optional[str] = Field(
+        None,
+        description=(
+            "Provider account the bundle belongs to (the ChatGPT account id "
+            "for Codex), so the CLI never pulls another account's login"
+        ),
+    )
 
 
 class AvailableModelsRequest(BaseModel):

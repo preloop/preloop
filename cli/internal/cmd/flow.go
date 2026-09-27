@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,6 +27,17 @@ const (
 	flowListMaxPages       = 10
 )
 
+// Interrupt handling budget. CI runners escalate a cancelled job to SIGKILL
+// within seconds (GitHub Actions sends SIGINT, then SIGTERM after 7.5s, then
+// SIGKILL 2.5s later), so everything the CLI does after the signal, from the
+// liveness check to the final status line, has to fit in one deadline.
+var (
+	flowStopTimeout       = 5 * time.Second
+	flowStopCheckTimeout  = time.Second
+	flowStopStatusReserve = time.Second
+	flowStopMinRequest    = 200 * time.Millisecond
+)
+
 var uuidPattern = regexp.MustCompile(
 	`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
 )
@@ -32,7 +45,17 @@ var uuidPattern = regexp.MustCompile(
 var (
 	flowSleep = time.Sleep
 	flowNow   = time.Now
+	flowAfter = time.After
+	// flowNotifyInterrupts subscribes to the signals that end a wait. Tests
+	// swap it for a channel they control.
+	flowNotifyInterrupts = defaultFlowNotifyInterrupts
 )
+
+func defaultFlowNotifyInterrupts() (<-chan os.Signal, func()) {
+	ch := make(chan os.Signal, 2)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	return ch, func() { signal.Stop(ch) }
+}
 
 var terminalFailureStatuses = map[string]bool{
 	"FAILED":  true,
@@ -57,6 +80,12 @@ In CI (stdin is not a TTY) the command waits for a terminal status by default
 and streams execution logs to stdout. The same logs remain visible in the
 console execution view. Exit status is non-zero on FAILED, STOPPED, or TIMEOUT.
 
+With --stop-on-interrupt (default on when stdin is not a TTY), SIGINT or
+SIGTERM during --wait stops the execution on the server, prints its id and
+final status, and exits non-zero. A cancelled CI job therefore does not leave
+the run going. Without it, an interrupt only ends the CLI and the execution
+keeps running.
+
 Examples:
   preloop flow trigger pull-request-reviewer
   preloop flow trigger 11111111-2222-4333-8444-555555555555 --payload '{"ref":"main"}'
@@ -71,6 +100,7 @@ func init() {
 	flowTriggerCmd.Flags().Bool("wait", false, "stream logs until the execution finishes (default on when stdin is not a TTY)")
 	flowTriggerCmd.Flags().String("runner", "", "pin the execution to a self-hosted runner id, name, or label")
 	flowTriggerCmd.Flags().Duration("timeout", defaultFlowWaitTimeout, "how long --wait will poll before exiting")
+	flowTriggerCmd.Flags().Bool("stop-on-interrupt", false, "stop the execution when --wait is interrupted by SIGINT or SIGTERM (default on when stdin is not a TTY)")
 }
 
 func runFlowTrigger(cmd *cobra.Command, args []string) error {
@@ -97,7 +127,13 @@ func runFlowTrigger(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	wait := shouldWaitDefault(cmd.Flags().Changed("wait"), waitFlag, stdinIsTerminal())
+	isTTY := stdinIsTerminal()
+	wait := shouldWaitDefault(cmd.Flags().Changed("wait"), waitFlag, isTTY)
+	stopFlag, err := cmd.Flags().GetBool("stop-on-interrupt")
+	if err != nil {
+		return err
+	}
+	stopOnInterrupt := shouldWaitDefault(cmd.Flags().Changed("stop-on-interrupt"), stopFlag, isTTY)
 	timeout, err := cmd.Flags().GetDuration("timeout")
 	if err != nil {
 		return err
@@ -127,13 +163,23 @@ func runFlowTrigger(cmd *cobra.Command, args []string) error {
 	if !wait {
 		return nil
 	}
-	return waitForExecution(client, result.ID, timeout, cmd.OutOrStdout())
+	if !stopOnInterrupt {
+		return waitForExecution(client, result.ID, timeout, cmd.OutOrStdout())
+	}
+	interrupts, release := flowNotifyInterrupts()
+	defer release()
+	return waitForExecutionUntil(client, result.ID, timeout, cmd.OutOrStdout(), interrupts)
 }
 
 type flowTriggerResult struct {
 	ID     string `json:"id"`
 	Status string `json:"status"`
 	FlowID string `json:"flow_id"`
+}
+
+type flowStopResult struct {
+	Status          string `json:"status"`
+	ExecutionStatus string `json:"execution_status"`
 }
 
 type flowExecutionStatus struct {
@@ -273,11 +319,28 @@ func drainExecutionLogs(client *api.Client, executionID string, printed int, out
 }
 
 func waitForExecution(client *api.Client, executionID string, timeout time.Duration, out io.Writer) error {
+	return waitForExecutionUntil(client, executionID, timeout, out, nil)
+}
+
+// waitForExecutionUntil polls like waitForExecution. When interrupts is not
+// nil, a signal on it stops the execution on the server (once) and ends the
+// wait with a non-zero exit instead of leaving the run going.
+func waitForExecutionUntil(
+	client *api.Client,
+	executionID string,
+	timeout time.Duration,
+	out io.Writer,
+	interrupts <-chan os.Signal,
+) error {
 	deadline := flowNow().Add(timeout)
 	printed := 0
 	backoff := flowPollInitial
 
 	for {
+		if sig := pendingInterrupt(interrupts); sig != nil {
+			return stopInterruptedExecution(client, executionID, sig, out)
+		}
+
 		var exec flowExecutionStatus
 		if err := client.Get("/api/v1/flows/executions/"+executionID, &exec); err != nil {
 			return fmt.Errorf("failed to read execution: %w", err)
@@ -300,7 +363,9 @@ func waitForExecution(client *api.Client, executionID string, timeout time.Durat
 			return fmt.Errorf("execution %s timed out after %s (last status %s)", executionID, timeout, exec.Status)
 		}
 
-		flowSleep(backoff)
+		if sig := sleepOrInterrupt(backoff, interrupts); sig != nil {
+			return stopInterruptedExecution(client, executionID, sig, out)
+		}
 		if backoff < flowPollMax {
 			backoff *= 2
 			if backoff > flowPollMax {
@@ -308,4 +373,101 @@ func waitForExecution(client *api.Client, executionID string, timeout time.Durat
 			}
 		}
 	}
+}
+
+func pendingInterrupt(interrupts <-chan os.Signal) os.Signal {
+	if interrupts == nil {
+		return nil
+	}
+	select {
+	case sig := <-interrupts:
+		return sig
+	default:
+		return nil
+	}
+}
+
+func sleepOrInterrupt(d time.Duration, interrupts <-chan os.Signal) os.Signal {
+	if interrupts == nil {
+		flowSleep(d)
+		return nil
+	}
+	select {
+	case sig := <-interrupts:
+		return sig
+	case <-flowAfter(d):
+		return nil
+	}
+}
+
+// stopInterruptedExecution stops executionID at most once, reports the final
+// status, and returns an error carrying the conventional exit code for the
+// signal (130 for SIGINT, 143 for SIGTERM).
+//
+// The last poll can be seconds old when the signal lands, so the execution is
+// read once more first: a run that finished in the meantime is reported, not
+// stopped (servers before #1034 overwrite a finished run with STOPPED). Further
+// signals that arrive meanwhile are ignored so a runner's SIGINT then SIGTERM
+// escalation does not cut the stop short. The whole sequence shares one
+// deadline, flowStopTimeout from the signal.
+func stopInterruptedExecution(client *api.Client, executionID string, sig os.Signal, out io.Writer) error {
+	code := 130
+	if sig == syscall.SIGTERM {
+		code = 143
+	}
+	deadline := time.Now().Add(flowStopTimeout)
+	budget := func(reserve time.Duration) time.Duration {
+		if d := time.Until(deadline) - reserve; d > flowStopMinRequest {
+			return d
+		}
+		return flowStopMinRequest
+	}
+	interrupted := func(final string) error {
+		return &processExitError{
+			code: code,
+			err:  fmt.Errorf("interrupted by %s; execution %s final status %s", sig, executionID, final),
+		}
+	}
+	executionPath := "/api/v1/flows/executions/" + executionID
+
+	client.SetTimeout(min(flowStopCheckTimeout, budget(flowStopStatusReserve)))
+	var current flowExecutionStatus
+	if err := client.Get(executionPath, &current); err == nil {
+		status := strings.ToUpper(strings.TrimSpace(current.Status))
+		if status == "SUCCEEDED" || terminalFailureStatuses[status] {
+			fmt.Fprintf(out, "Received %s; execution %s had already finished (final status %s)\n", sig, executionID, status)
+			return interrupted(status)
+		}
+	}
+
+	fmt.Fprintf(out, "Received %s, stopping execution %s\n", sig, executionID)
+	client.SetTimeout(budget(flowStopStatusReserve))
+	var stopped flowStopResult
+	if err := client.Post(executionPath+"/command", map[string]any{"command": "stop"}, &stopped); err != nil {
+		return &processExitError{
+			code: code,
+			err: fmt.Errorf(
+				"interrupted; failed to stop execution %s, it may still be running: %w",
+				executionID, err,
+			),
+		}
+	}
+
+	final := strings.ToUpper(strings.TrimSpace(stopped.ExecutionStatus))
+	if final == "" {
+		client.SetTimeout(budget(0))
+		var exec flowExecutionStatus
+		if err := client.Get(executionPath, &exec); err == nil {
+			final = strings.ToUpper(strings.TrimSpace(exec.Status))
+		}
+	}
+	if final == "" {
+		final = "UNKNOWN"
+	}
+	if stopped.Status == "not_running" {
+		fmt.Fprintf(out, "Execution %s had already finished (final status %s)\n", executionID, final)
+	} else {
+		fmt.Fprintf(out, "Stopped execution %s (final status %s)\n", executionID, final)
+	}
+	return interrupted(final)
 }

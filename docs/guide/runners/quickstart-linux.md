@@ -92,7 +92,9 @@ preloop flow trigger <flow-id-or-name> --runner local --wait
 
 When stdin is not a TTY (CI), `flow trigger` waits by default, streams
 execution logs to stdout, and exits non-zero on FAILED / STOPPED /
-TIMEOUT. If no runner in the chosen private pool has a free slot, the job queues
+TIMEOUT. If the CI job is cancelled, the CLI stops the execution
+before exiting (see [cancelled CI jobs](../flows/ci-trigger.md#cancelled-ci-jobs-stop-the-execution)).
+If no runner in the chosen private pool has a free slot, the job queues
 for 15 minutes and then fails. Hosted compute is used only when no
 private runner is online, or when the flow or account default is
 `server`.
@@ -119,6 +121,34 @@ sudo loginctl enable-linger $USER
 The service reads credentials the same way the CLI does; make sure
 `~/.preloop/config.yaml` exists (via `preloop login`) for the user that
 runs the service, since the unit does not inherit your shell exports.
+
+### Rotate the token or retire the runner
+
+```sh
+preloop runner rotate-token        # new token in runner.json, service restarted
+preloop runner disable --delete    # stop the service, then delete the runner
+preloop runner disable --delete --force   # also halt executions it still holds
+```
+
+`rotate-token` asks the server for a new runner token. The old token is
+rejected from that moment, and a runner still connected with it is
+disconnected. The new token is written to `~/.preloop/runner.json` and never
+printed.
+
+`disable --delete` stops and removes the service, then deletes the runner on
+the server and removes `runner.json`. The server refuses while the runner
+still holds an execution; `--force` halts those executions the way the kill
+switch does and deletes the runner anyway. Flows routed to the runner's
+labels fall back to their configured runner pool behaviour.
+
+The console offers the same two actions on the Runners page. Rotating from
+the console does not show the new token: run `preloop runner restart` on the
+machine and the service reconnects with a fresh one.
+
+The API behind both is `DELETE /api/v1/runners/{runner_id}` (with
+`?force=true` to halt held executions) and
+`POST /api/v1/runners/{runner_id}/token`. Both need the same permission as
+registering a runner.
 
 ## Ephemeral (CI) mode: one job, then gone
 

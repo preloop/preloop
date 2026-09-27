@@ -97,7 +97,22 @@ def seed(engine) -> dict[str, Any]:
                     "is_active": True,
                     "email_verified": False,
                     "is_superuser": False,
+                    "root_account_id": account_id,
+                    "hierarchy_path": [account_id],
+                    "hierarchy_depth": 0,
                 }
+            ],
+        )
+        # Core inserts skip the ORM hook that gives each new user a person.
+        persons = [uuid4() for _ in users]
+        db.execute(
+            insert(models.Person),
+            [
+                {
+                    "id": person_id,
+                    "email_normalized": f"synthetic-{i}@example.com",
+                }
+                for i, person_id in enumerate(persons)
             ],
         )
         db.execute(
@@ -111,6 +126,7 @@ def seed(engine) -> dict[str, Any]:
                     "is_active": True,
                     "email_verified": False,
                     "user_source": "local",
+                    "person_id": persons[i],
                 }
                 for i, user_id in enumerate(users)
             ],

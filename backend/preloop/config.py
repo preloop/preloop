@@ -871,6 +871,17 @@ class Settings(BaseSettings):
             "hold are not evicted."
         ),
     )
+    mcp_playwright_derive_browser_steps: bool = Field(
+        True,
+        description=(
+            "Whether the MCP firewall derives a browser_step activity from "
+            "each proxied Playwright MCP tool call (@playwright/mcp browser_* "
+            "tools) on a runtime session, attaching the output of "
+            "browser_take_screenshot as the step's screenshot. What is "
+            "returned to the agent does not change. Off records those calls "
+            "as plain tool_call rows only."
+        ),
+    )
     runtime_session_recording_max_bytes: int = Field(
         512 * 1024**2,
         ge=1,

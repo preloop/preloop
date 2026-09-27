@@ -256,6 +256,18 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert policy_notice_hit.down_revision == "20260927_issue_cost_rollup"
     cli_login_session = script.get_revision("20260928_cli_session")
     assert cli_login_session.down_revision == "20260927_policy_notice_hit"
+    account_hierarchy = script.get_revision("20260928_account_hierarchy")
+    assert account_hierarchy.down_revision == "20260928_cli_session"
+    access_grants = script.get_revision("20260928_access_grants")
+    assert access_grants.down_revision == "20260928_account_hierarchy"
+    person_membership = script.get_revision("20260928_person_membership")
+    assert person_membership.down_revision == "20260928_access_grants"
+    person_backfill = script.get_revision("20260928_person_backfill")
+    assert person_backfill.down_revision == "20260928_person_membership"
+    person_constraints = script.get_revision("20260928_person_constraints")
+    assert person_constraints.down_revision == "20260928_person_backfill"
+    share_tag_rule = script.get_revision("20260928_share_tag_rule")
+    assert share_tag_rule.down_revision == "20260928_person_constraints"
     issue_cost_accuracy = script.get_revision("20260927_issue_cost_accuracy")
-    assert issue_cost_accuracy.down_revision == "20260928_cli_session"
+    assert issue_cost_accuracy.down_revision == "20260928_share_tag_rule"
     assert script.get_heads() == ["20260927_issue_cost_accuracy"]

@@ -5,7 +5,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from sqlalchemy import ColumnElement, and_, func, or_
-from sqlalchemy.orm import Session, joinedload, load_only, with_expression
+from sqlalchemy.orm import (
+    Session,
+    contains_eager,
+    joinedload,
+    load_only,
+    with_expression,
+)
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.future import select
 
@@ -110,6 +116,10 @@ async def delete_flow_execution(
 # return 0 or 1; this only caps a malformed key or a filter miss.
 TRACKER_OBJECT_LOOKUP_LIMIT = 16
 
+# Row cap for ``get_active_for_pull_request``: every flow's active runs on
+# one pull request, which is a handful in practice.
+PR_LIFECYCLE_LOOKUP_LIMIT = 50
+
 
 def tracker_object_payload_match(object_key: str) -> Optional[ColumnElement[bool]]:
     """SQL filter that narrows trigger payloads to one tracker object.
@@ -150,6 +160,62 @@ def tracker_object_payload_match(object_key: str) -> Optional[ColumnElement[bool
             payload["object_kind"].astext == kind,
             payload["object_attributes"]["iid"].astext == ident,
         )
+    if source == "bitbucket" and kind == "pr":
+        return and_(
+            source_col == "bitbucket",
+            payload["repository"]["full_name"].astext == repo,
+            payload["pullrequest"]["id"].astext == ident,
+        )
+    return None
+
+
+def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]:
+    """SQL filter for trigger payloads about one pull or merge request.
+
+    Wider than :func:`tracker_object_payload_match`: it also matches the
+    comments on the request, whose payload names it differently (a GitHub
+    ``issue_comment`` carries the PR as ``issue`` with a ``pull_request``
+    link; a GitLab note carries it as ``merge_request``). A run resumed by a
+    comment on the request is working on the request too (#1032).
+    """
+    parts = object_key.split(":")
+    if len(parts) < 4:
+        return None
+    source = parts[0].lower()
+    ident = parts[-1]
+    kind = parts[-2]
+    repo = ":".join(parts[1:-2])
+    if not ident or not repo:
+        return None
+    details = FlowExecution.trigger_event_details
+    payload = details["payload"]
+    source_col = details["source"].astext
+    if source == "github" and kind == "pr":
+        return and_(
+            source_col == "github",
+            payload["repository"]["full_name"].astext == repo,
+            or_(
+                payload["pull_request"]["number"].astext == ident,
+                and_(
+                    payload["issue"]["number"].astext == ident,
+                    payload["issue"].has_key("pull_request"),
+                ),
+            ),
+        )
+    if source == "gitlab" and kind == "merge_request":
+        return and_(
+            source_col == "gitlab",
+            payload["project"]["path_with_namespace"].astext == repo,
+            or_(
+                and_(
+                    payload["object_kind"].astext == "merge_request",
+                    payload["object_attributes"]["iid"].astext == ident,
+                ),
+                payload["merge_request"]["iid"].astext == ident,
+            ),
+        )
+    if source == "bitbucket" and kind == "pr":
+        return tracker_object_payload_match(object_key)
     return None
 
 
@@ -1010,6 +1076,101 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             return query.limit(max(1, int(limit))).all()
         return query.all()
 
+    def get_active_for_pull_request(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        tracker_object_key: str,
+        statuses: Iterable[str],
+        limit: int = PR_LIFECYCLE_LOOKUP_LIMIT,
+    ) -> List[FlowExecution]:
+        """Executions of any flow in the account still working on one PR.
+
+        Used when the pull or merge request goes away (merged or closed,
+        #1032): every flow's run on it is stale, not only one flow's, and so
+        is a run a comment on it started.
+        The JSONB match narrows the read; callers re-check each row with the
+        Python extractor, which stays the source of truth. A key the SQL
+        filter cannot express returns nothing rather than every active row in
+        the account.
+
+        Args:
+            db: Database session.
+            account_id: Account the executions' flows belong to.
+            tracker_object_key: ``source:repo:pr:N`` or
+                ``gitlab:path:merge_request:iid`` key of the request.
+            statuses: Statuses that count as still working on it.
+            limit: Row cap. More active runs than this on one pull request is
+                not a shape any flow produces; the extra rows are ignored.
+
+        Returns:
+            Matching executions, oldest first, with their flow loaded.
+        """
+        payload_match = pull_request_payload_match(tracker_object_key)
+        if payload_match is None:
+            return []
+        return (
+            db.query(FlowExecution)
+            .join(Flow)
+            .options(contains_eager(FlowExecution.flow))
+            .filter(
+                Flow.account_id == account_id,
+                FlowExecution.status.in_(list(statuses)),
+                payload_match,
+            )
+            .order_by(FlowExecution.start_time.asc(), FlowExecution.id.asc())
+            .limit(max(1, int(limit)))
+            .all()
+        )
+
+    def mark_stopped(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        error_message: str,
+        stop_reason: Optional[str] = None,
+        stop_source: Optional[str] = None,
+        now: Optional[datetime] = None,
+        commit: bool = True,
+    ) -> bool:
+        """Record that an execution was stopped, unless it already ended.
+
+        The status write of ``preloop.services.flow_execution_stop``, which
+        both an operator's stop and an automatic stop (#1032) go through.
+        Conditional on the row not being terminal, so a run that finished
+        while its runtime was being torn down keeps its own status, result
+        and cost, and a second stop changes nothing. ``stop_reason`` and
+        ``stop_source`` are only written when given: an operator's stop
+        leaves them as they were.
+
+        Returns:
+            True when this call moved the row to ``STOPPED``.
+        """
+        values: Dict[Any, Any] = {
+            models.FlowExecution.status: "STOPPED",
+            models.FlowExecution.end_time: now or datetime.now(timezone.utc),
+            models.FlowExecution.error_message: error_message,
+        }
+        if stop_reason is not None:
+            values[models.FlowExecution.stop_reason] = stop_reason[:500]
+        if stop_source is not None:
+            values[models.FlowExecution.stop_source] = stop_source[:32]
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status.notin_(
+                    sorted(self.TERMINAL_EXECUTION_STATUSES)
+                ),
+            )
+            .update(values, synchronize_session=False)
+        )
+        if commit:
+            db.commit()
+        return bool(count)
+
     def get_multi(
         self,
         db: Session,
@@ -1861,6 +2022,97 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     #: the same event to whoever is reading the run afterwards.
     STOP_SOURCE_PARENT_STOP = "parent_stop"
 
+    #: ``stop_source`` written on an execution stopped because an operator
+    #: force-deleted the runner that held it (#841).
+    STOP_SOURCE_RUNNER_DELETED = "runner_deleted"
+
+    def stop_for_runner_removal(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        reason: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Stop and settle one execution whose runner is being deleted.
+
+        The stop intent is written the way an account halt writes it, with
+        its own ``stop_source``. It is also confirmed here: termination is
+        normally confirmed only by the owning runner's completion frame, and
+        the runner is losing its credential in the same transaction, so no
+        such frame can arrive. Leaving the stop unconfirmed would keep the
+        execution monitor waiting on a runner that can no longer connect.
+
+        A row that is already terminal keeps its status, result and cost;
+        only a pending stop request on it is settled.
+
+        An isolated publication that has not completed is marked failed, as
+        an abandoned controller phase is, so its writer lease cannot be
+        completed later.
+
+        Args:
+            db: Database session. The caller owns the transaction.
+            execution_id: Execution held by the runner.
+            reason: Operator-visible stop reason.
+            now: Stop timestamp; defaults to ``datetime.now(UTC)``.
+
+        Returns:
+            True when this call moved the execution to ``STOPPED``.
+        """
+        moment = now or datetime.now(timezone.utc)
+        stopped = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status.notin_(
+                    sorted(self.TERMINAL_EXECUTION_STATUSES)
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.status: "STOPPED",
+                    models.FlowExecution.end_time: moment,
+                    models.FlowExecution.error_message: reason,
+                    models.FlowExecution.park_expires_at: None,
+                    models.FlowExecution.stop_requested_at: func.coalesce(
+                        models.FlowExecution.stop_requested_at, moment
+                    ),
+                    models.FlowExecution.stop_reason: reason[:500],
+                    models.FlowExecution.stop_source: self.STOP_SOURCE_RUNNER_DELETED,
+                },
+                synchronize_session=False,
+            )
+        )
+        self.confirm_stop(db, execution_id=execution_id, commit=False)
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .first()
+        )
+        state = (
+            (execution.result or {}).get("_private_publication") if execution else None
+        )
+        if isinstance(state, dict) and state.get("phase") not in {
+            "complete",
+            "failed",
+        }:
+            execution.result = {
+                **(execution.result or {}),
+                "_private_publication": {**state, "phase": "failed"},
+            }
+            db.add(execution)
+        if stopped:
+            self.close_parked_parent_for_resume(
+                db,
+                resume_execution_id=execution_id,
+                status="STOPPED",
+                end_time=moment,
+                commit=False,
+            )
+        db.flush()
+        return bool(stopped)
+
     def close_children_park_for_stop(
         self,
         db: Session,
@@ -1869,8 +2121,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         reason: str,
         now: Optional[datetime] = None,
         commit: bool = True,
+        stop_source: Optional[str] = None,
     ) -> bool:
-        """Close a park on children because an operator stopped the parent.
+        """Close a park on children because the parent was stopped.
 
         One conditional UPDATE, and it is the whole race: it matches a row
         still sitting on ``WAITING_FOR_CHILDREN``, or a still-live row that
@@ -1882,12 +2135,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         The park row is closed rather than left claimable: the expiry is
         cleared so no sweep looks at it again, while ``park_request_id`` and
-        ``park_kind`` stay for the audit trail. ``stop_source`` stays NULL
-        on this row: the operator stopped the parent, which is the same
-        provenance as a plain stop. ``parent_stop`` is reserved for
-        children this stop ends.
+        ``park_kind`` stay for the audit trail. ``stop_source`` is the
+        automatic cause when there is one (``pr_merged`` and the like, #1032)
+        and stays NULL for an operator's stop, which is the same provenance
+        as a plain stop. ``parent_stop`` is reserved for children this stop
+        ends.
         """
         moment = now or datetime.now(timezone.utc)
+        values = {
+            models.FlowExecution.status: "STOPPED",
+            models.FlowExecution.end_time: moment,
+            models.FlowExecution.error_message: reason,
+            models.FlowExecution.park_expires_at: None,
+            models.FlowExecution.stop_requested_at: func.coalesce(
+                models.FlowExecution.stop_requested_at, moment
+            ),
+            models.FlowExecution.stop_reason: reason[:500],
+            models.FlowExecution.orchestrator_worker_id: None,
+            models.FlowExecution.orchestrator_claimed_at: None,
+            models.FlowExecution.orchestrator_heartbeat_at: None,
+        }
+        if stop_source:
+            values[models.FlowExecution.stop_source] = stop_source
         count = (
             db.query(models.FlowExecution)
             .filter(
@@ -1902,22 +2171,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     ),
                 ),
             )
-            .update(
-                {
-                    models.FlowExecution.status: "STOPPED",
-                    models.FlowExecution.end_time: moment,
-                    models.FlowExecution.error_message: reason,
-                    models.FlowExecution.park_expires_at: None,
-                    models.FlowExecution.stop_requested_at: func.coalesce(
-                        models.FlowExecution.stop_requested_at, moment
-                    ),
-                    models.FlowExecution.stop_reason: reason[:500],
-                    models.FlowExecution.orchestrator_worker_id: None,
-                    models.FlowExecution.orchestrator_claimed_at: None,
-                    models.FlowExecution.orchestrator_heartbeat_at: None,
-                },
-                synchronize_session=False,
-            )
+            .update(values, synchronize_session=False)
         )
         if commit:
             db.commit()

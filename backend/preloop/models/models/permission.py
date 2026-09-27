@@ -214,6 +214,8 @@ class UserRole(Base):
         role_id: Reference to the role.
         granted_by: User who granted this role (optional).
         granted_at: When the role was granted.
+        access_grant_id: The account access grant that created this role, so
+            revoking the grant removes exactly the roles it created.
     """
 
     __tablename__ = "user_role"
@@ -246,6 +248,18 @@ class UserRole(Base):
         server_default=func.now(),
         nullable=False,
         comment="When the role was granted",
+    )
+
+    access_grant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "account_access_grant.id",
+            ondelete="CASCADE",
+            name="fk_user_role_access_grant",
+        ),
+        nullable=True,
+        index=True,
+        comment="Grant that created this role; NULL for a role assigned directly",
     )
 
     # Relationships

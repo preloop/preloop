@@ -125,6 +125,49 @@ artifact is not in the caller's account, or the artifact belongs to
 another session, and 410 with `{"availability": "evicted"}` or
 `{"availability": "expired"}` when the bytes are gone.
 
+## Playwright MCP through the firewall
+
+An agent that drives a browser through a Playwright MCP server
+(`@playwright/mcp`) registered in Preloop needs no adapter. When the MCP
+firewall proxies one of its `browser_*` tools on a runtime session, the
+call is recorded as a `tool_call` activity as before and, in addition, as
+a `browser_step` with `source: "playwright_mcp"`. The step's
+`source_step_id` is the tool call's correlation id, so the two rows join
+and a repeated derivation is a duplicate rather than a second step.
+`step_index` continues from the highest index already stored on the
+session, whichever source wrote it.
+
+The mapping follows `@playwright/mcp@0.0.82`, the package pinned in the
+browser environment profile:
+
+| Tool | Action | Copied into the step |
+| --- | --- | --- |
+| `browser_navigate`, `browser_navigate_back` | `navigate` | `url` |
+| `browser_click` | `click` | `element` (or `ref`) as `target` |
+| `browser_type` | `type` | `element`/`ref` as `target`; `extra.typed_chars` |
+| `browser_press_key` | `type` | nothing |
+| `browser_select_option` | `select` | `element`/`ref` as `target` |
+| `browser_hover` | `other` | `element`/`ref` as `target` |
+| `browser_take_screenshot` | `screenshot` | the returned image, as the screenshot |
+| `browser_snapshot` | `extract` | nothing |
+| `browser_wait_for` | `wait` | nothing |
+| `browser_close` | `done` | nothing |
+
+`extra.tool` names the tool that was called. The typed `text`, the pressed
+`key` and the selected `values` are never stored; `browser_type` records
+only the length of what was typed. A call the firewall refused (policy,
+approval, kill switch) never reached the browser and derives no step. A
+failed call derives a step with `status: "failed"`.
+
+The image `browser_take_screenshot` returns is stored as the step's
+screenshot under the same size, type and budget rules as an image posted
+to the API. An image the rules refuse is dropped and the step is kept.
+What the agent receives from the tool does not change.
+
+Set `MCP_PLAYWRIGHT_DERIVE_BROWSER_STEPS=false` to record those calls as
+plain `tool_call` rows only. Other browser MCP servers are not derived;
+post their steps through the API above.
+
 ## What is stored
 
 Each accepted step is a `browser_step` activity on the session. It shows

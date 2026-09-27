@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-from typing import Any
+from typing import Any, get_args
 from uuid import UUID
 
 from sqlalchemy import func
@@ -26,6 +26,7 @@ from preloop.schemas.browser_step import (
     ERROR_SCREENSHOT_INVALID,
     ERROR_SCREENSHOT_TOO_LARGE,
     ERROR_STORAGE_BUDGET_EXHAUSTED,
+    BrowserScreenshotContentType,
     BrowserScreenshotIn,
     BrowserStepBatchIn,
     BrowserStepBatchOut,
@@ -85,11 +86,37 @@ def decode_screenshot(
         data = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError):
         return None, ERROR_SCREENSHOT_INVALID
-    if len(data) > max_bytes:
-        return None, ERROR_SCREENSHOT_TOO_LARGE
-    if not data or not _is_declared_image(screenshot.content_type, data):
-        return None, ERROR_SCREENSHOT_INVALID
+    error = screenshot_bytes_error(screenshot.content_type, data)
+    if error is not None:
+        return None, error
     return data, None
+
+
+def screenshot_bytes_error(content_type: str, data: bytes) -> str | None:
+    """Return the row error code for already-decoded screenshot bytes.
+
+    Shared by the API path (after base64 decoding) and the firewall path,
+    which receives decoded bytes from an MCP image item and must not
+    re-encode them just to reuse :func:`decode_screenshot`.
+
+    Args:
+        content_type: Declared media type.
+        data: Decoded image bytes.
+
+    Returns:
+        ``screenshot_too_large`` when ``data`` exceeds
+        ``runtime_session_screenshot_max_bytes``, ``screenshot_invalid``
+        when it is empty, the media type is not one the API accepts, or the
+        bytes do not start with that type's signature. ``None`` when the
+        image is acceptable.
+    """
+    if len(data) > int(settings.runtime_session_screenshot_max_bytes):
+        return ERROR_SCREENSHOT_TOO_LARGE
+    if content_type not in get_args(BrowserScreenshotContentType):
+        return ERROR_SCREENSHOT_INVALID
+    if not data or not _is_declared_image(content_type, data):
+        return ERROR_SCREENSHOT_INVALID
+    return None
 
 
 def attach_screenshot(

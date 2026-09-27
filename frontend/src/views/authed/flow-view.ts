@@ -841,7 +841,7 @@ ${this.flow.review_instructions}</pre>
           ${this.renderScheduleCard()}
           ${
             this.flow.trigger_event_source === 'webhook' &&
-            this.flow.webhook_config
+            this.flow.webhook_config?.webhook_secret
               ? html`
                   <sl-card>
                     <div slot="header">
@@ -1382,7 +1382,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
   }
 
   copyWebhookUrl() {
-    if (!this.flow.webhook_config) return;
+    if (!this.flow.webhook_config?.webhook_secret) return;
     const webhookUrl = `${window.location.origin}/api/v1/webhooks/flows/${this.flowId}/${this.flow.webhook_config.webhook_secret}`;
     navigator.clipboard.writeText(webhookUrl).then(() => {
       alert('Webhook URL copied to clipboard!');
@@ -2044,7 +2044,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
 
   renderWebhookTriggerFields() {
     // If editing and webhook config exists, show the URL
-    if (!this.isNew && this.flow.webhook_config) {
+    if (!this.isNew && this.flow.webhook_config?.webhook_secret) {
       return html`
         <div>
           <p

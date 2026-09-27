@@ -8536,6 +8536,67 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/ai-models/{model_id}/credentials/marker:
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: Read Subscription OAuth Rotation Marker
+      description: 'Return the rotation marker of a stored subscription-OAuth bundle.
+
+
+        Subscription OAuth grants (Claude Code, Codex) use single-use refresh
+
+        tokens. When both the operator''s laptop and Preloop hold a copy, the CLI
+
+        keeps them on one lineage: it pushes a newer local bundle, and pulls
+
+        Preloop''s bundle through ``POST /ai-models/{model_id}/credentials/export``
+
+        when Preloop''s copy is newer. This read tells the CLI which side is newer
+
+        without downloading tokens on every Codex permission-hook call.
+
+
+        The response carries no token material: ``expires`` is the stored
+
+        access-token expiry in epoch milliseconds and moves forward on every
+
+        rotation, ``last_refresh`` is when Preloop last wrote the bundle (import,
+
+        CLI push, or server-side refresh), ``credentials_status`` is ``error``
+
+        when the last server-side refresh failed, and ``account_id`` names the
+
+        provider account the bundle belongs to. This read never refreshes the
+
+        bundle, so it cannot rotate the grant by itself. API-key credentials are
+
+        refused with 400.'
+      operationId: read_ai_model_credential_marker_api_v1_ai_models__model_id__credentials_marker_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: model_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Model Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelCredentialMarkerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/ai-models/{model_id}/credentials/export:
     post:
       tags:
@@ -8553,9 +8614,21 @@ paths:
 
         live lineage. The CLI calls this at offboard time to restore the agent''s
 
-        local login before the Preloop-held credential is removed. API-key
+        local login before the Preloop-held credential is removed, and from the
 
-        credentials are never exportable.'
+        Codex permission hook and ``preloop agents sync-credentials`` to pull
+
+        Preloop''s copy back into the local login when
+
+        ``GET /ai-models/{model_id}/credentials/marker`` shows it is newer. A
+
+        stored bundle that is about to expire is refreshed before it is returned.
+
+        ``last_refresh`` is when Preloop last wrote the bundle. Every export is
+
+        written to the audit log without token material. API-key credentials are
+
+        never exportable.'
       operationId: export_ai_model_credentials_api_v1_ai_models__model_id__credentials_export_post
       security:
       - bearerAuth: []
@@ -11136,7 +11209,16 @@ paths:
       tags:
       - Flows
       summary: Send Execution Command
-      description: Send a command to a running flow execution.
+      description: 'Send a command to a running flow execution.
+
+
+        ``stop`` goes through ``preloop.services.flow_execution_stop``, the same
+
+        code path the automatic pull request stops use (#1032). It is idempotent:
+
+        stopping an execution that already ended changes nothing and answers with
+
+        the status it ended in.'
       operationId: send_execution_command_api_v1_flows_executions__execution_id__command_post
       security:
       - bearerAuth: []
@@ -11605,6 +11687,57 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/runners/{runner_id}:
+    delete:
+      tags:
+      - Runners
+      summary: Delete Runner
+      description: 'Delete a runner and reject its token from now on.
+
+
+        A runner that holds executions is refused with 409 unless ``force`` is
+
+        set. With ``force`` each held execution is stopped (the stop intent an
+
+        account halt writes, settled here because the runner can no longer
+
+        report back) and its runtime API keys are revoked. A live socket in this
+
+        process is told which executions to halt and then closed; one on another
+
+        replica ends on its next frame. Flows that route to the runner''s labels
+
+        see one runner fewer and fall back to their configured behaviour.'
+      operationId: delete_runner_api_v1_runners__runner_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      - name: force
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Force
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerDeleteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     get:
       tags:
       - Runners
@@ -11627,6 +11760,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunnerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runners/{runner_id}/token:
+    post:
+      tags:
+      - Runners
+      summary: Rotate Runner Token
+      description: 'Mint a new runner token; the previous one is rejected immediately.
+
+
+        The new token is in this response and nowhere else. A socket
+
+        authenticated with the old token is closed: in this process now, on
+
+        another replica at its next frame.'
+      operationId: rotate_runner_token_api_v1_runners__runner_id__token_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerRegisterResponse'
         '422':
           description: Validation Error
           content:
@@ -13476,6 +13646,14 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        last_refresh:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Refresh
+          description: When Preloop last wrote this bundle (import, CLI push, or server-side
+            refresh), in UTC
       type: object
       required:
       - credential_type
@@ -13491,6 +13669,52 @@ components:
         single-use, so the Preloop-held copy is the only live lineage after a
 
         server-side refresh). Token material must never be logged.'
+    AIModelCredentialMarkerResponse:
+      properties:
+        credential_type:
+          type: string
+          title: Credential Type
+          description: Logical credential type stored for the model
+        expires:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Expires
+          description: Access-token expiry of the stored bundle in epoch milliseconds.
+            It moves forward every time the bundle is rotated.
+        last_refresh:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Refresh
+          description: When Preloop last wrote this bundle (import, CLI push, or server-side
+            refresh), in UTC
+        credentials_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Credentials Status
+          description: Status of the model's credential secret
+        account_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Account Id
+          description: Provider account the bundle belongs to (the ChatGPT account
+            id for Codex), so the CLI never pulls another account's login
+      type: object
+      required:
+      - credential_type
+      title: AIModelCredentialMarkerResponse
+      description: 'Rotation marker for a stored subscription-OAuth bundle.
+
+
+        Carries no token material. The CLI reads it on the Codex permission hook
+
+        to decide whether Preloop''s copy is newer than the local login before it
+
+        downloads the bundle through the export endpoint.'
     AIModelGatewayUsageSummaryResponse:
       properties:
         ai_model_id:
@@ -27235,6 +27459,27 @@ components:
       - concurrency
       title: RunnerConcurrencyUpdate
       description: Edit one runner's slot ceiling from the console.
+    RunnerDeleteResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        deleted:
+          type: boolean
+          title: Deleted
+          default: true
+        halted_execution_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Halted Execution Ids
+      type: object
+      required:
+      - id
+      title: RunnerDeleteResponse
+      description: Outcome of deleting a runner; its token is rejected from now on.
     RunnerFleetSummary:
       properties:
         runner_count:
@@ -32598,9 +32843,20 @@ components:
     WebhookConfig:
       properties:
         webhook_secret:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Webhook Secret
-          description: Secure token for authenticating webhook requests (auto-generated)
+          description: Secure token for authenticating webhook requests (auto-generated
+            for webhook triggers; unset on flows triggered by tracker events)
+        supersede_on_update:
+          type: boolean
+          title: Supersede On Update
+          description: When a pull or merge request gets a new head, stop this flow's
+            executions still working on an older head of the same request before starting
+            the new one. Off by default; the Pull Request Reviewer preset turns it
+            on.
+          default: false
         dedupe_path:
           anyOf:
           - type: string
@@ -32610,8 +32866,6 @@ components:
             key (e.g. 'data.issue.id'). When unset, defaults to 'attachments.0.title_link'
             then 'data.issue.id'.
       type: object
-      required:
-      - webhook_secret
       title: WebhookConfig
       description: Configuration for webhook triggers.
     WebhookDeliveryRead:

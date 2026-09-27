@@ -865,3 +865,99 @@ def test_matching_event_types_includes_legacy_dotted_issue_names() -> None:
         "issue.updated",
     )
     assert matching_event_types("comment_created") == ("comment_created",)
+
+
+class TestPullRequestLifecycleStops:
+    """Which normalized events end, or move, a pull request (#1032)."""
+
+    @pytest.mark.parametrize(
+        ("tracker", "raw", "payload", "normalized", "stop_source"),
+        [
+            (
+                "github",
+                "pull_request",
+                {"action": "closed", "pull_request": {"merged": True, "number": 1}},
+                "pull_request_merged",
+                "pr_merged",
+            ),
+            (
+                "github",
+                "pull_request",
+                {"action": "closed", "pull_request": {"merged": False, "number": 1}},
+                "pull_request_closed",
+                "pr_closed",
+            ),
+            (
+                "gitlab",
+                "Merge Request Hook",
+                {"object_attributes": {"action": "merge", "iid": 7}},
+                "merge_request_merged",
+                "pr_merged",
+            ),
+            (
+                "gitlab",
+                "Merge Request Hook",
+                {"object_attributes": {"action": "close", "iid": 7}},
+                "merge_request_closed",
+                "pr_closed",
+            ),
+            (
+                "bitbucket",
+                "pullrequest:fulfilled",
+                {},
+                "pull_request_merged",
+                "pr_merged",
+            ),
+            (
+                "bitbucket",
+                "pullrequest:rejected",
+                {},
+                "pull_request_closed",
+                "pr_closed",
+            ),
+        ],
+    )
+    def test_end_of_a_request_maps_to_a_stop_source(
+        self, tracker, raw, payload, normalized, stop_source
+    ):
+        from preloop.sync.event_normalizer import pr_close_stop_source
+
+        assert normalize_event_type(tracker, raw, payload) == normalized
+        assert pr_close_stop_source(normalized) == stop_source
+
+    @pytest.mark.parametrize(
+        ("tracker", "raw", "payload", "normalized"),
+        [
+            (
+                "github",
+                "pull_request",
+                {"action": "synchronize"},
+                "pull_request_updated",
+            ),
+            (
+                "gitlab",
+                "Merge Request Hook",
+                {"object_attributes": {"action": "update", "iid": 7}},
+                "merge_request_updated",
+            ),
+            ("bitbucket", "pullrequest:updated", {}, "pull_request_updated"),
+        ],
+    )
+    def test_new_head_maps_to_an_update_type(self, tracker, raw, payload, normalized):
+        from preloop.sync.event_normalizer import (
+            PR_HEAD_UPDATE_EVENT_TYPES,
+            pr_close_stop_source,
+        )
+
+        assert normalize_event_type(tracker, raw, payload) == normalized
+        assert normalized in PR_HEAD_UPDATE_EVENT_TYPES
+        assert pr_close_stop_source(normalized) is None
+
+    @pytest.mark.parametrize(
+        "event_type",
+        [None, "", "pull_request_opened", "issue_closed", "comment_created"],
+    )
+    def test_other_events_stop_nothing(self, event_type):
+        from preloop.sync.event_normalizer import pr_close_stop_source
+
+        assert pr_close_stop_source(event_type) is None

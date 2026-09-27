@@ -8,8 +8,11 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
 import '../../components/view-header.ts';
 import {
+  deleteRunner,
   getAccountOrganization,
   getRunners,
+  rotateRunnerToken,
+  RunnerHasLeasesError,
   updateAccountOrganization,
   updateRunnerConcurrency,
   type RunnerRecord,
@@ -53,6 +56,22 @@ export class RunnersView extends LitElement {
 
   @state()
   private concurrencyError: string | null = null;
+
+  /** Runner a delete or rotate request is in flight for, if any. */
+  @state()
+  private actionPendingFor: string | null = null;
+
+  /**
+   * Outcome of the last delete or rotate, shown under that runner's row.
+   * ``conflict`` marks a delete the server refused because the runner still
+   * holds executions, which is when "Force delete" is offered.
+   */
+  @state()
+  private actionNotice: {
+    runnerId: string;
+    text: string;
+    conflict?: boolean;
+  } | null = null;
 
   private unsubscribe?: () => void;
 
@@ -154,6 +173,19 @@ export class RunnersView extends LitElement {
         flex-direction: column;
         gap: 2px;
       }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-2x-small);
+      }
+      .action-notice td {
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+        color: var(--sl-color-neutral-700);
+        font-size: 13px;
+      }
+      .action-notice sl-button {
+        margin-left: var(--sl-spacing-x-small);
+      }
     `,
   ];
 
@@ -176,6 +208,10 @@ export class RunnersView extends LitElement {
     type?: string;
     payload?: Partial<RunnerRecord>;
   }) {
+    if (message.type === 'runner_deleted' && message.payload?.id) {
+      this.removeRunner(message.payload.id);
+      return;
+    }
     if (message.type !== 'runner_updated' || !message.payload?.id) {
       return;
     }
@@ -196,6 +232,115 @@ export class RunnersView extends LitElement {
       },
       ...this.runners.slice(index + 1),
     ];
+  }
+
+  private removeRunner(runnerId: string) {
+    this.runners = this.runners.filter((row) => row.id !== runnerId);
+    if (this.editingConcurrencyFor === runnerId) {
+      this.editingConcurrencyFor = null;
+    }
+  }
+
+  private async handleDelete(row: RunnerRecord, force = false) {
+    const question = force
+      ? `Halt the executions ${row.name} is running and delete it?`
+      : `Delete runner ${row.name}? Its token stops working and it disconnects.`;
+    if (!window.confirm(question)) {
+      return;
+    }
+    this.actionPendingFor = row.id;
+    this.actionNotice = null;
+    try {
+      await deleteRunner(row.id, force);
+      this.removeRunner(row.id);
+    } catch (err) {
+      this.actionNotice = {
+        runnerId: row.id,
+        text: err instanceof Error ? err.message : 'Failed to delete runner',
+        conflict: err instanceof RunnerHasLeasesError,
+      };
+    } finally {
+      this.actionPendingFor = null;
+    }
+  }
+
+  private async handleRotate(row: RunnerRecord) {
+    if (
+      !window.confirm(
+        `Rotate the token for ${row.name}? The current token stops working and the runner disconnects.`
+      )
+    ) {
+      return;
+    }
+    this.actionPendingFor = row.id;
+    this.actionNotice = null;
+    try {
+      await rotateRunnerToken(row.id);
+      // The new token is deliberately not shown: a runner service picks up a
+      // fresh one on restart, and a secret on screen is one more to leak.
+      this.actionNotice = {
+        runnerId: row.id,
+        text: 'Token rotated and the runner was disconnected. Run "preloop runner restart" on that machine to reconnect with a new token.',
+      };
+    } catch (err) {
+      this.actionNotice = {
+        runnerId: row.id,
+        text:
+          err instanceof Error ? err.message : 'Failed to rotate runner token',
+      };
+    } finally {
+      this.actionPendingFor = null;
+    }
+  }
+
+  private renderActions(row: RunnerRecord) {
+    const busy = this.actionPendingFor === row.id;
+    return html`
+      <div class="actions">
+        <sl-button
+          class="rotate-token"
+          size="small"
+          ?disabled=${busy}
+          @click=${() => void this.handleRotate(row)}
+          >Rotate token</sl-button
+        >
+        <sl-button
+          class="delete-runner"
+          size="small"
+          variant="danger"
+          outline
+          ?disabled=${busy}
+          @click=${() => void this.handleDelete(row)}
+          >Delete</sl-button
+        >
+      </div>
+    `;
+  }
+
+  private renderActionNotice(row: RunnerRecord) {
+    const notice = this.actionNotice;
+    if (!notice || notice.runnerId !== row.id) {
+      return nothing;
+    }
+    return html`
+      <tr class="action-notice">
+        <td colspan="9">
+          <span class="action-notice-text">${notice.text}</span>
+          ${
+            notice.conflict
+              ? html`<sl-button
+                  class="force-delete"
+                  size="small"
+                  variant="danger"
+                  ?disabled=${this.actionPendingFor === row.id}
+                  @click=${() => void this.handleDelete(row, true)}
+                  >Force delete</sl-button
+                >`
+              : nothing
+          }
+        </td>
+      </tr>
+    `;
   }
 
   private async load() {
@@ -448,6 +593,7 @@ export class RunnersView extends LitElement {
                         <th>Last heartbeat</th>
                         <th>Running / slots</th>
                         <th>Executions</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -530,7 +676,9 @@ export class RunnersView extends LitElement {
                                     </div>`
                               }
                             </td>
+                            <td>${this.renderActions(row)}</td>
                           </tr>
+                          ${this.renderActionNotice(row)}
                         `
                       )}
                     </tbody>
