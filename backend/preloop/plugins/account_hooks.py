@@ -384,9 +384,9 @@ class BudgetExtension:
         *,
         account_id: Any,
         auth_context: Any,
-        ai_model: "AIModel",
+        ai_model: AIModel,
         model_alias: Optional[str],
-    ) -> Sequence["BudgetPolicy"]:
+    ) -> Sequence[BudgetPolicy]:
         """Return policies to enforce on top of the account's own.
 
         A returned policy's spend is read from its own ``account_id`` (for

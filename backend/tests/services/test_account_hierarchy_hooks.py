@@ -251,13 +251,16 @@ def test_h3_ai_model_resolution_orders_own_then_shared_then_system(
 def test_h3_shared_model_is_priced_with_its_owners_overrides(
     db_session: Session, test_user: models.User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import preloop.services.pricing_overrides as pricing_overrides
     from preloop.services.model_gateway_budget import ModelGatewayBudgetService
-    from preloop.services.pricing_overrides import pricing_account_id
 
     other = _account(db_session, "Owner")
     foreign = _model(db_session, other.id, "shared/priced", "s1")
     own = _model(db_session, test_user.account_id, "own/priced", "s2")
-    assert pricing_account_id(test_user.account_id, foreign) == test_user.account_id
+    assert (
+        pricing_overrides.pricing_account_id(test_user.account_id, foreign)
+        == test_user.account_id
+    )
 
     account_hooks.register_visibility_provider(
         _Visible(**{VISIBLE_AI_MODEL: [foreign.id]})
@@ -266,8 +269,6 @@ def test_h3_shared_model_is_priced_with_its_owners_overrides(
     service = ModelGatewayBudgetService(
         db_session, ModelGatewayAuthContext(token="t", user=test_user)
     )
-    import preloop.services.pricing_overrides as pricing_overrides
-
     original = pricing_overrides.resolve_pricing_override
 
     def spy(db, *, account_id, ai_model, requested_alias):
