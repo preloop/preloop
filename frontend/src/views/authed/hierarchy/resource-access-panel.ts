@@ -18,6 +18,7 @@ import {
   currentAccountId,
   deleteShare,
   getTags,
+  isConflict,
   listShares,
   listSubaccounts,
   setTags,
@@ -90,6 +91,7 @@ export class ResourceAccessPanel extends LitElement {
   @state() private subaccounts: Subaccount[] = [];
   @state() private tags: Tags = {};
   @state() private governed: string[] = [];
+  private tagsVersion: string | null = null;
   @state() private draftShared = false;
   @state() private draftTarget: ShareTarget['type'] = 'all';
   @state() private draftSelected = new Set<string>();
@@ -170,6 +172,7 @@ export class ResourceAccessPanel extends LitElement {
       if (generation !== this.generation) return;
       this.tags = result.tags;
       this.governed = result.governed_keys ?? [];
+      this.tagsVersion = result.version ?? null;
       this.tagState = 'on';
     } catch {
       // Missing endpoint, or an id this account cannot see: show nothing.
@@ -178,14 +181,10 @@ export class ResourceAccessPanel extends LitElement {
   }
 
   private resetShareDraft() {
-    const current = this.shares[0]?.target;
     this.draftShared = this.shares.length > 0;
-    this.draftTarget = current?.type ?? 'all';
-    this.draftSelected = new Set(
-      current?.type === 'selected' ? current.subaccount_ids : []
-    );
-    this.draftTag =
-      current?.type === 'tag' ? `${current.key}=${current.value}` : '';
+    this.draftTarget = 'all';
+    this.draftSelected = new Set();
+    this.draftTag = '';
   }
 
   private buildTarget(): ShareTarget | string {
@@ -204,43 +203,87 @@ export class ResourceAccessPanel extends LitElement {
     return { type: 'tag', key, value };
   }
 
-  private saveShare = async () => {
+  /**
+   * Runs one share change, then reads the shares back from the server
+   * whether it worked or not, so the list never shows a share that is gone
+   * or hides one that exists.
+   */
+  private async changeShares(change: () => Promise<void>) {
     this.error = '';
-    const target = this.draftShared ? this.buildTarget() : null;
-    if (typeof target === 'string') {
-      this.error = target;
-      return;
-    }
     this.saving = true;
     try {
-      for (const share of this.shares) {
-        await deleteShare(this.accountId, share.id);
-      }
-      if (target) {
-        await createShare(this.accountId, {
-          resource_type: this.kind as ShareableKind,
-          resource_id: this.resourceId,
-          target,
-        });
-      }
-      await this.loadShares(this.generation, this.resourceId);
+      await change();
     } catch (error) {
       if (isCapabilityOff(error)) this.shareState = 'off';
       else this.error = error instanceof Error ? error.message : 'Failed';
     } finally {
       this.saving = false;
     }
+    if (this.shareState !== 'off') {
+      const error = this.error;
+      await this.loadShares(this.generation, this.resourceId);
+      this.error = error;
+    }
+  }
+
+  /** Adds a share. Existing shares are left alone. */
+  private addShare = async () => {
+    const target = this.buildTarget();
+    if (typeof target === 'string') {
+      this.error = target;
+      return;
+    }
+    await this.changeShares(async () => {
+      await createShare(this.accountId, {
+        resource_type: this.kind as ShareableKind,
+        resource_id: this.resourceId,
+        target,
+      });
+    });
   };
+
+  private removeShare(share: Share) {
+    return this.changeShares(() => deleteShare(this.accountId, share.id));
+  }
+
+  /** Stops every share listed, and only those. */
+  private stopSharing = async () => {
+    const listed = [...this.shares];
+    await this.changeShares(async () => {
+      for (const share of listed) await deleteShare(this.accountId, share.id);
+    });
+  };
+
+  private targetLabel(target: ShareTarget): string {
+    if (target.type === 'all') return 'All subaccounts';
+    if (target.type === 'tag')
+      return `Subaccounts tagged ${target.key}=${target.value}`;
+    const names = target.subaccount_ids.map(
+      (id) => this.subaccounts.find((sub) => sub.id === id)?.name ?? id
+    );
+    return names.join(', ') || 'No subaccounts';
+  }
 
   private async writeTags(next: Tags) {
     this.error = '';
     try {
-      const result = await setTags(this.kind, this.resourceId, next);
+      const result = await setTags(
+        this.kind,
+        this.resourceId,
+        next,
+        this.tagsVersion
+      );
       this.tags = result.tags;
       this.governed = result.governed_keys ?? this.governed;
+      this.tagsVersion = result.version ?? null;
     } catch (error) {
       if (isCapabilityOff(error)) this.tagState = 'off';
-      else this.error = error instanceof Error ? error.message : 'Failed';
+      else if (isConflict(error)) {
+        // Someone else changed the tags first: show theirs, keep nothing.
+        await this.loadTags(this.generation, this.resourceId);
+        this.error =
+          'The tags changed while you were editing. They have been reloaded; make your change again.';
+      } else this.error = error instanceof Error ? error.message : 'Failed';
     }
   }
 
@@ -272,6 +315,25 @@ export class ResourceAccessPanel extends LitElement {
         .value as ShareTarget['type']);
     return html`<section data-testid="share-section">
       <h3>Sharing</h3>
+      ${
+        this.shares.length
+          ? html`<ul data-testid="share-list">
+              ${this.shares.map(
+                (share) =>
+                  html`<li data-share=${share.id}>
+                    ${this.targetLabel(share.target)}
+                    <sl-button
+                      size="small"
+                      variant="text"
+                      ?disabled=${this.saving}
+                      @click=${() => this.removeShare(share)}
+                      >Stop</sl-button
+                    >
+                  </li>`
+              )}
+            </ul>`
+          : nothing
+      }
       <sl-switch
         data-testid="share-toggle"
         ?checked=${this.draftShared}
@@ -283,7 +345,7 @@ export class ResourceAccessPanel extends LitElement {
         this.draftShared
           ? html`<sl-radio-group
                 size="small"
-                label="With"
+                label=${this.shares.length ? 'Also share with' : 'With'}
                 data-testid="share-target"
                 .value=${this.draftTarget}
                 @sl-change=${pickTarget}
@@ -325,19 +387,31 @@ export class ResourceAccessPanel extends LitElement {
                         (this.draftTag = (e.target as HTMLInputElement).value)}
                     ></sl-input>`
                   : nothing
-              }`
-          : nothing
+              }
+              <div class="row">
+                <sl-button
+                  size="small"
+                  variant="primary"
+                  data-testid="share-save"
+                  ?loading=${this.saving}
+                  @click=${this.addShare}
+                  >${this.shares.length ? 'Add share' : 'Share'}</sl-button
+                >
+              </div>`
+          : this.shares.length
+            ? html`<div class="row">
+                <sl-button
+                  size="small"
+                  variant="danger"
+                  outline
+                  data-testid="share-stop"
+                  ?loading=${this.saving}
+                  @click=${this.stopSharing}
+                  >Stop all ${this.shares.length} shown</sl-button
+                >
+              </div>`
+            : nothing
       }
-      <div class="row">
-        <sl-button
-          size="small"
-          variant="primary"
-          data-testid="share-save"
-          ?loading=${this.saving}
-          @click=${this.saveShare}
-          >Save sharing</sl-button
-        >
-      </div>
     </section>`;
   }
 

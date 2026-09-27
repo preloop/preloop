@@ -30,6 +30,21 @@ export function isNotFound(error: unknown): error is NotFoundError {
   return error instanceof NotFoundError;
 }
 
+/**
+ * A write carried the version of what it read and the server answered 409:
+ * someone else changed it in between, and nothing was saved.
+ */
+export class ConflictError extends Error {
+  constructor(message = 'Changed elsewhere') {
+    super(message);
+    this.name = 'ConflictError';
+  }
+}
+
+export function isConflict(error: unknown): error is ConflictError {
+  return error instanceof ConflictError;
+}
+
 type NotFoundMeaning = 'capability-off' | 'not-found';
 
 async function request<T>(
@@ -50,6 +65,7 @@ async function request<T>(
     if (onNotFound === 'capability-off') throw new CapabilityOffError(path);
     throw new NotFoundError();
   }
+  if (response.status === 409) throw new ConflictError();
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(extractErrorMessage(body, fallback));
@@ -485,6 +501,8 @@ export interface ResourceTags {
   tags: Tags;
   /** Keys the caller may read but not change (governed by the parent). */
   governed_keys?: string[];
+  /** Version of the set as read; sent back on write (409 if it moved). */
+  version?: string | null;
 }
 
 const tagsPath = (kind: string, resourceId: string) =>
@@ -495,21 +513,30 @@ export async function getTags(
   resourceId: string
 ): Promise<ResourceTags> {
   const body = await request<Partial<ResourceTags>>(tagsPath(kind, resourceId));
-  return { tags: body?.tags ?? {}, governed_keys: body?.governed_keys ?? [] };
+  return {
+    tags: body?.tags ?? {},
+    governed_keys: body?.governed_keys ?? [],
+    version: body?.version ?? null,
+  };
 }
 
 export async function setTags(
   kind: string,
   resourceId: string,
-  tags: Tags
+  tags: Tags,
+  version: string | null = null
 ): Promise<ResourceTags> {
   const body = await request<Partial<ResourceTags>>(
     tagsPath(kind, resourceId),
-    { method: 'PUT', body: JSON.stringify({ tags }) },
+    { method: 'PUT', body: JSON.stringify({ tags, version }) },
     'not-found',
     'Could not save tags'
   );
-  return { tags: body?.tags ?? tags, governed_keys: body?.governed_keys ?? [] };
+  return {
+    tags: body?.tags ?? tags,
+    governed_keys: body?.governed_keys ?? [],
+    version: body?.version ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +561,8 @@ export interface AccessRuleSet {
   /** Parent rules that apply here; read-only in this account. */
   inherited: Array<AccessRule & { account_name?: string }>;
   modes: Record<string, RuleMode>;
+  /** Version of the rule set as read; sent back on save (409 if it moved). */
+  version: string | null;
 }
 
 export async function getAccessRules(): Promise<AccessRuleSet> {
@@ -542,15 +571,17 @@ export async function getAccessRules(): Promise<AccessRuleSet> {
     rules: body?.rules ?? [],
     inherited: body?.inherited ?? [],
     modes: body?.modes ?? {},
+    version: body?.version ?? null,
   };
 }
 
 export async function saveAccessRules(
-  rules: AccessRule[]
+  rules: AccessRule[],
+  version: string | null
 ): Promise<AccessRuleSet> {
   await request(
     '/api/v1/access/rules',
-    { method: 'PUT', body: JSON.stringify({ rules }) },
+    { method: 'PUT', body: JSON.stringify({ rules, version }) },
     'capability-off',
     'Could not save the rules'
   );

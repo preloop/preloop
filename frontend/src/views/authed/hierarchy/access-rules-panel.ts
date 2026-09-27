@@ -12,6 +12,7 @@ import {
   explainAccess,
   exportAccessRulesYaml,
   getAccessRules,
+  isConflict,
   previewMode,
   saveAccessRules,
   setMode,
@@ -128,7 +129,12 @@ export class AccessRulesPanel extends LitElement {
       await action();
     } catch (error) {
       if (isCapabilityOff(error)) this.off();
-      else this.error = error instanceof Error ? error.message : 'Failed';
+      else if (isConflict(error)) {
+        // Someone else saved first: show their rules instead of ours.
+        await this.load();
+        this.error =
+          'The rules changed while you were editing. They have been reloaded; make your change again.';
+      } else this.error = error instanceof Error ? error.message : 'Failed';
     }
   }
 
@@ -165,7 +171,10 @@ export class AccessRulesPanel extends LitElement {
       },
     };
     void this.guard(async () => {
-      this.data = await saveAccessRules([...(this.data?.rules ?? []), rule]);
+      this.data = await saveAccessRules(
+        [...(this.data?.rules ?? []), rule],
+        this.data?.version ?? null
+      );
       this.yaml = await exportAccessRulesYaml().catch(() => this.yaml);
     });
   };
@@ -174,7 +183,7 @@ export class AccessRulesPanel extends LitElement {
     const rules = [...(this.data?.rules ?? [])];
     rules.splice(index, 1);
     void this.guard(async () => {
-      this.data = await saveAccessRules(rules);
+      this.data = await saveAccessRules(rules, this.data?.version ?? null);
       this.yaml = await exportAccessRulesYaml().catch(() => this.yaml);
     });
   }

@@ -202,6 +202,40 @@ describe('access-rules-panel', () => {
     });
   });
 
+  it('saves rules with the version read and reloads on a concurrent change', async () => {
+    let body: Record<string, unknown> = { ...ruleSet, version: 'r1' };
+    api = mockApi({
+      capabilities: ['abac_rules'],
+      routes: [
+        { path: RULES, body: () => body },
+        { path: `${RULES}/export`, body: { yaml: '' } },
+        { method: 'PUT', path: RULES, status: 409, body: { detail: 'stale' } },
+      ],
+    });
+    const el = await mount();
+    body = {
+      ...ruleSet,
+      rules: [
+        ...ruleSet.rules,
+        { name: 'added-elsewhere', effect: 'forbid', actions: ['flow:run'] },
+      ],
+      version: 'r2',
+    };
+    const remove = el.shadowRoot!.querySelector(
+      'tr[data-inherited="false"] sl-button'
+    ) as HTMLElement;
+    remove.click();
+    await waitUntil(() => el.shadowRoot!.querySelector('.error'));
+    expect(api.callsTo(RULES, 'PUT')[0].body).to.eql({
+      rules: [],
+      version: 'r1',
+    });
+    expect(el.shadowRoot!.querySelector('.error')!.textContent).to.contain(
+      'changed while you were editing'
+    );
+    expect(el.shadowRoot!.textContent).to.contain('added-elsewhere');
+  });
+
   it('reports capability-off without a toast when the endpoint is missing', async () => {
     api = mockApi();
     const before = toastCount();

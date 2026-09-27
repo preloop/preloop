@@ -78,22 +78,18 @@ describe('resource-access-panel', () => {
     );
     const toggle = q(el, 'share-toggle') as HTMLInputElement;
     expect(toggle.checked).to.equal(true);
-    const boxes = [...el.shadowRoot!.querySelectorAll('sl-checkbox')].map(
-      (b) => [
-        b.getAttribute('data-subaccount'),
-        (b as HTMLInputElement).checked,
-      ]
-    );
-    expect(boxes).to.eql([
-      ['sub-a', true],
-      ['sub-b', false],
-    ]);
+    const listed = [
+      ...el.shadowRoot!.querySelectorAll('[data-testid="share-list"] li'),
+    ].map((li) => [li.getAttribute('data-share'), li.textContent!.trim()]);
+    expect(listed).to.have.length(1);
+    expect(listed[0][0]).to.equal('sh-1');
+    expect(listed[0][1]).to.contain('North');
     // No tag section without abac_rules.
     expect(q(el, 'tag-section')).to.be.null;
     expect(api.callsTo(TAGS)).to.have.length(0);
   });
 
-  it('replaces the share when saved with a new target', async () => {
+  it('creates a share when turned on', async () => {
     api = mockApi({
       capabilities: ['account_hierarchy'],
       routes: [
@@ -113,6 +109,140 @@ describe('resource-access-panel', () => {
       resource_id: 'model-1',
       target: { type: 'all' },
     });
+  });
+
+  describe('with several shares on one resource', () => {
+    const TWO = [
+      {
+        id: 'sh-all',
+        resource_type: 'ai_model',
+        resource_id: 'model-1',
+        target: { type: 'all' },
+      },
+      {
+        id: 'sh-tag',
+        resource_type: 'ai_model',
+        resource_id: 'model-1',
+        target: { type: 'tag', key: 'customer', value: 'acme' },
+      },
+    ];
+    const routes = (extra: Parameters<typeof mockApi>[0]['routes'] = []) => [
+      ...(extra ?? []),
+      { path: SHARES, body: { items: TWO } },
+      { path: SUBS, body: { items: [] } },
+      { method: 'DELETE', path: /\/shares\/sh-/, status: 204 },
+    ];
+    const click = (el: ResourceAccessPanel, selector: string) =>
+      (el.shadowRoot!.querySelector(selector) as HTMLElement).click();
+
+    it('lists every share', async () => {
+      api = mockApi({ capabilities: ['account_hierarchy'], routes: routes() });
+      const el = await mount(['account_hierarchy']);
+      await waitUntil(() => q(el, 'share-list'));
+      const text = q(el, 'share-list')!.textContent!;
+      expect(text).to.contain('All subaccounts');
+      expect(text).to.contain('Subaccounts tagged customer=acme');
+    });
+
+    it('adds a share without deleting the others', async () => {
+      api = mockApi({
+        capabilities: ['account_hierarchy'],
+        routes: routes([
+          { method: 'POST', path: SHARES, status: 201, body: { id: 'sh-new' } },
+        ]),
+      });
+      const el = await mount(['account_hierarchy']);
+      await waitUntil(() => q(el, 'share-list'));
+      click(el, '[data-testid="share-save"]');
+      await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
+      expect(api.callsTo(SHARES, 'POST')).to.have.length(1);
+      expect(api.callsTo(/\/shares\//, 'DELETE')).to.have.length(0);
+    });
+
+    it('stops only the share asked for', async () => {
+      api = mockApi({ capabilities: ['account_hierarchy'], routes: routes() });
+      const el = await mount(['account_hierarchy']);
+      await waitUntil(() => q(el, 'share-list'));
+      click(el, 'li[data-share="sh-tag"] sl-button');
+      await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
+      expect(api.callsTo(/\/shares\//, 'DELETE').map((c) => c.path)).to.eql([
+        '/api/v1/accounts/acc-root/shares/sh-tag',
+      ]);
+    });
+
+    it('stopping all removes exactly the listed shares', async () => {
+      api = mockApi({ capabilities: ['account_hierarchy'], routes: routes() });
+      const el = await mount(['account_hierarchy']);
+      await waitUntil(() => q(el, 'share-list'));
+      click(el, '[data-testid="share-toggle"]');
+      await el.updateComplete;
+      click(el, '[data-testid="share-stop"]');
+      await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
+      expect(
+        api.callsTo(/\/shares\//, 'DELETE').map((c) => c.path.split('/').pop())
+      ).to.eql(['sh-all', 'sh-tag']);
+    });
+
+    it('rereads the shares after a failed add and deletes nothing', async () => {
+      api = mockApi({
+        capabilities: ['account_hierarchy'],
+        routes: routes([
+          {
+            method: 'POST',
+            path: SHARES,
+            status: 500,
+            body: { detail: 'boom' },
+          },
+        ]),
+      });
+      const el = await mount(['account_hierarchy']);
+      await waitUntil(() => q(el, 'share-list'));
+      click(el, '[data-testid="share-save"]');
+      await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
+      await el.updateComplete;
+      expect(api.callsTo(/\/shares\//, 'DELETE')).to.have.length(0);
+      expect(el.shadowRoot!.querySelector('.error')!.textContent).to.contain(
+        'boom'
+      );
+      expect(
+        el.shadowRoot!.querySelectorAll('[data-testid="share-list"] li')
+      ).to.have.length(2);
+    });
+  });
+
+  it('writes tags with the version read and reloads on a concurrent change', async () => {
+    let version = 'v1';
+    let tags: Record<string, string> = { env: 'prod' };
+    api = mockApi({
+      capabilities: ['abac_rules'],
+      routes: [
+        { path: TAGS, body: () => ({ tags, governed_keys: [], version }) },
+        {
+          method: 'PUT',
+          path: TAGS,
+          status: 409,
+          body: { detail: 'version mismatch' },
+        },
+      ],
+    });
+    const el = await mount(['abac_rules']);
+    await waitUntil(() => q(el, 'tag-section'));
+    // Someone else writes owner=ops meanwhile.
+    version = 'v2';
+    tags = { env: 'prod', owner: 'ops' };
+    el.shadowRoot!.querySelector<HTMLInputElement>('#new-tag')!.value =
+      'tier=gold';
+    (q(el, 'tag-add') as HTMLElement).click();
+    await waitUntil(() => el.shadowRoot!.querySelector('.error'));
+    expect(api.callsTo(TAGS, 'PUT')[0].body).to.eql({
+      tags: { env: 'prod', tier: 'gold' },
+      version: 'v1',
+    });
+    expect(el.shadowRoot!.querySelector('.error')!.textContent).to.contain(
+      'changed while you were editing'
+    );
+    expect(el.shadowRoot!.querySelector('sl-tag[data-key="owner"]')).to.exist;
+    expect(el.shadowRoot!.querySelector('sl-tag[data-key="tier"]')).to.be.null;
   });
 
   it('shows governed tag keys read-only and refuses to set them', async () => {
