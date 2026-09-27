@@ -14,7 +14,8 @@ MCP clients (Claude Desktop) discover these via /.well-known metadata.
 import logging
 import os
 import time
-from typing import Optional
+import uuid
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
@@ -160,29 +161,39 @@ async def token_exchange(
     client_secret: str = Form(""),
     code_verifier: str = Form(""),
     refresh_token: str = Form(""),
+    device_name: str = Form(""),
+    request: Request = None,  # type: ignore[assignment]
 ):
     """Exchange an authorization code for access/refresh tokens.
 
     Supports both:
     - CLI flow (no PKCE): returns JWT tokens usable with the REST API
     - MCP flow (with PKCE): returns opaque OAuth tokens
+
+    ``device_name`` is optional and only used by the CLI flow: the host name
+    shown in ``preloop auth sessions list``.
     """
     logger.info(
         f"OAuth token request: grant_type={grant_type}, client_id={client_id!r}, "
         f"code={'***' if code else '(empty)'}, code_verifier={'***' if code_verifier else '(empty)'}"
     )
 
+    user_agent = request.headers.get("user-agent") if request is not None else None
     if grant_type == "authorization_code":
         return await _handle_authorization_code(
             code=code,
             redirect_uri=redirect_uri,
             client_id=client_id,
             code_verifier=code_verifier,
+            user_agent=user_agent,
+            hostname=device_name or None,
         )
     elif grant_type == "refresh_token":
         return await _handle_refresh_token(
             refresh_token_str=refresh_token,
             client_id=client_id,
+            user_agent=user_agent,
+            hostname=device_name or None,
         )
     else:
         return _oauth_error(
@@ -192,7 +203,12 @@ async def token_exchange(
 
 
 async def _handle_authorization_code(
-    code: str, redirect_uri: str, client_id: str, code_verifier: str
+    code: str,
+    redirect_uri: str,
+    client_id: str,
+    code_verifier: str,
+    user_agent: Optional[str] = None,
+    hostname: Optional[str] = None,
 ):
     """Exchange authorization code for tokens."""
     from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_auth_code
@@ -295,42 +311,54 @@ async def _handle_authorization_code(
             return await _issue_opaque_tokens(db, db_code)
         else:
             # No PKCE (CLI flow): issue JWT tokens
-            return await _issue_jwt_tokens(db, db_code)
+            return await _issue_jwt_tokens(
+                db, db_code, user_agent=user_agent, hostname=hostname
+            )
 
     finally:
         db.close()
 
 
-async def _issue_jwt_tokens(db, db_code):
-    """Issue JWT access/refresh tokens for CLI usage."""
+def _new_refresh_jti() -> str:
+    """Return a fresh random refresh token id."""
+    return uuid.uuid4().hex
+
+
+def _cli_token_response(
+    *,
+    sub: str,
+    scopes: list[str],
+    generation: int,
+    session_id: uuid.UUID,
+    refresh_jti: str,
+) -> JSONResponse:
+    """Mint the CLI access/refresh JWT pair for one ``cli_session`` row.
+
+    Both tokens carry ``sid`` so revoking the row rejects them. Only the
+    refresh token carries ``jti``; it must match ``cli_session.refresh_jti``
+    to rotate.
+    """
     from datetime import timedelta
 
-    from preloop.api.auth.jwt import (
-        ACCESS_TOKEN_EXPIRE_MINUTES,
-        create_access_token,
-        user_auth_generation,
-    )
-    from preloop.models.crud import crud_user
+    from preloop.api.auth.jwt import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token
 
-    user = crud_user.get(db, id=str(db_code.user_id))
-    if not user:
-        return _oauth_error("invalid_grant", "User not found")
-
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    generation = user_auth_generation(user)
+    sid = str(session_id)
     access_token = create_access_token(
-        data={"sub": str(user.id), "scopes": []},
-        expires_delta=access_token_expires,
+        data={"sub": sub, "scopes": scopes, "sid": sid},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
         auth_generation=generation,
     )
-
-    refresh_token_expires = timedelta(days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS)
     refresh_token = create_access_token(
-        data={"sub": str(user.id), "scopes": [], "refresh": True},
-        expires_delta=refresh_token_expires,
+        data={
+            "sub": sub,
+            "scopes": scopes,
+            "refresh": True,
+            "sid": sid,
+            "jti": refresh_jti,
+        },
+        expires_delta=timedelta(days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS),
         auth_generation=generation,
     )
-
     return JSONResponse(
         {
             "access_token": access_token,
@@ -338,6 +366,42 @@ async def _issue_jwt_tokens(db, db_code):
             "token_type": "bearer",
             "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         }
+    )
+
+
+async def _issue_jwt_tokens(
+    db: Any,
+    db_code: Any,
+    *,
+    user_agent: Optional[str] = None,
+    hostname: Optional[str] = None,
+):
+    """Issue JWT access/refresh tokens for CLI usage.
+
+    Each login records a ``cli_session`` row so this login can be revoked on
+    its own (``POST /oauth/revoke``, ``preloop auth logout``).
+    """
+    from preloop.api.auth.jwt import user_auth_generation
+    from preloop.models.crud import crud_cli_session, crud_user
+
+    user = crud_user.get(db, id=str(db_code.user_id))
+    if not user:
+        return _oauth_error("invalid_grant", "User not found")
+
+    refresh_jti = _new_refresh_jti()
+    cli_session = crud_cli_session.create(
+        db,
+        user_id=user.id,
+        refresh_jti=refresh_jti,
+        user_agent=user_agent,
+        hostname=hostname,
+    )
+    return _cli_token_response(
+        sub=str(user.id),
+        scopes=[],
+        generation=user_auth_generation(user),
+        session_id=cli_session.id,
+        refresh_jti=refresh_jti,
     )
 
 
@@ -384,12 +448,18 @@ async def _issue_opaque_tokens(db, db_code):
     )
 
 
-async def _handle_refresh_token(refresh_token_str: str, client_id: str):
+async def _handle_refresh_token(
+    refresh_token_str: str,
+    client_id: str,
+    user_agent: Optional[str] = None,
+    hostname: Optional[str] = None,
+):
     """Exchange a refresh token for new tokens.
 
     Supports both:
     - Opaque OAuth refresh tokens (MCP clients) — looked up in DB
-    - JWT refresh tokens (CLI) — decoded and reissued
+    - JWT refresh tokens (CLI): decoded and reissued against their
+      ``cli_session`` row
     """
     # 1. Try opaque OAuth refresh token (MCP clients)
     try:
@@ -454,16 +524,13 @@ async def _handle_refresh_token(refresh_token_str: str, client_id: str):
 
     # 2. Try JWT refresh token (CLI path)
     try:
-        from datetime import timedelta
-
         from preloop.api.auth.jwt import (
-            ACCESS_TOKEN_EXPIRE_MINUTES,
-            create_access_token,
+            SESSION_REVOKED_DETAIL,
             decode_token,
             reject_stale_token_generation,
             user_auth_generation,
         )
-        from preloop.models.crud import crud_user
+        from preloop.models.crud import crud_cli_session, crud_user
         from preloop.models.db.session import get_db_session
 
         token_data = decode_token(refresh_token_str)
@@ -478,35 +545,42 @@ async def _handle_refresh_token(refresh_token_str: str, client_id: str):
                 except HTTPException as exc:
                     return _oauth_error("invalid_grant", str(exc.detail))
 
-                generation = user_auth_generation(user)
-                access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-                access_token = create_access_token(
-                    data={
-                        "sub": token_data.sub,
-                        "scopes": token_data.scopes or [],
-                    },
-                    expires_delta=access_token_expires,
-                    auth_generation=generation,
-                )
-                refresh_token_expires = timedelta(
-                    days=CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS
-                )
-                new_refresh = create_access_token(
-                    data={
-                        "sub": token_data.sub,
-                        "scopes": token_data.scopes or [],
-                        "refresh": True,
-                    },
-                    expires_delta=refresh_token_expires,
-                    auth_generation=generation,
-                )
-                return JSONResponse(
-                    {
-                        "access_token": access_token,
-                        "refresh_token": new_refresh,
-                        "token_type": "bearer",
-                        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                    }
+                new_jti = _new_refresh_jti()
+                if token_data.sid is not None:
+                    # Rotate only if this token's jti is still the session's
+                    # current one: a revoked session, or a refresh token that
+                    # was already rotated away, is rejected.
+                    try:
+                        session_id = uuid.UUID(token_data.sid)
+                    except ValueError:
+                        return _oauth_error("invalid_grant", "Invalid refresh token")
+                    if not token_data.jti or not crud_cli_session.rotate(
+                        db,
+                        session_id=session_id,
+                        user_id=user.id,
+                        old_jti=token_data.jti,
+                        new_jti=new_jti,
+                    ):
+                        return _oauth_error("invalid_grant", SESSION_REVOKED_DETAIL)
+                else:
+                    # A CLI refresh token minted before cli_session existed.
+                    # Move it onto a session row so the rotated pair can be
+                    # revoked on its own. The old token itself stays covered
+                    # by the generation check (logout --all).
+                    session_id = crud_cli_session.create(
+                        db,
+                        user_id=user.id,
+                        refresh_jti=new_jti,
+                        user_agent=user_agent,
+                        hostname=hostname,
+                    ).id
+
+                return _cli_token_response(
+                    sub=token_data.sub,
+                    scopes=token_data.scopes or [],
+                    generation=user_auth_generation(user),
+                    session_id=session_id,
+                    refresh_jti=new_jti,
                 )
             finally:
                 db.close()
@@ -580,9 +654,61 @@ async def register_client(request_body: dict):
 # ---------------------------------------------------------------------------
 
 
+def _revoke_cli_jwt(token: str) -> Optional[JSONResponse]:
+    """Revoke the ``cli_session`` behind a CLI JWT.
+
+    Returns:
+        None when ``token`` is not one of our JWTs (the caller then tries
+        the opaque MCP tables), otherwise the response to send.
+    """
+    from preloop.api.auth.jwt import decode_token
+
+    try:
+        token_data = decode_token(token)
+    except HTTPException:
+        return None
+
+    if token_data.sid is None:
+        # Console JWTs and CLI JWTs from before cli_session have no row to
+        # revoke. RFC 7009 section 2.2.1 allows unsupported_token_type here;
+        # a 200 would claim a revocation that did not happen.
+        return _oauth_error(
+            "unsupported_token_type",
+            "This token has no revocable CLI session; revoke every session "
+            "with POST /api/v1/auth/sessions/revoke-all",
+        )
+
+    from preloop.models.crud import crud_cli_session
+    from preloop.models.db.session import get_db_session
+
+    try:
+        session_id = uuid.UUID(token_data.sid)
+        user_id = uuid.UUID(token_data.sub or "")
+    except ValueError:
+        # Signed by us but malformed; nothing to revoke (RFC 7009: 200).
+        return JSONResponse({"status": "revoked"})
+
+    db = next(get_db_session())
+    try:
+        # Revoking an already revoked session is still a success.
+        crud_cli_session.revoke(db, session_id=session_id, user_id=user_id)
+    finally:
+        db.close()
+    return JSONResponse({"status": "revoked"})
+
+
 @router.post("/oauth/revoke")
 async def revoke_token(token: str = Form(...)):
-    """Revoke an access or refresh token."""
+    """Revoke an access or refresh token.
+
+    A CLI JWT (access or refresh) revokes its whole ``cli_session``: both
+    tokens of that login stop working. Opaque MCP tokens are revoked in the
+    MCP token tables as before.
+    """
+    cli_response = _revoke_cli_jwt(token)
+    if cli_response is not None:
+        return cli_response
+
     from preloop.api.endpoints.oauth_consent import get_oauth_provider
 
     provider = get_oauth_provider()
@@ -611,20 +737,6 @@ async def revoke_token(token: str = Form(...)):
     except Exception:
         # Token may already be revoked or absent; RFC 7009 still returns success.
         pass
-
-    # A CLI JWT is not in the opaque tables. RFC 7009 §2.2.1 allows
-    # unsupported_token_type instead of a false "revoked".
-    try:
-        from preloop.api.auth.jwt import decode_token
-
-        decode_token(token)
-    except HTTPException:
-        pass
-    else:
-        return _oauth_error(
-            "unsupported_token_type",
-            "CLI login tokens are revoked with POST /auth/sessions/revoke-all",
-        )
 
     # Not found — still return success per RFC 7009
     return JSONResponse({"status": "revoked"})
