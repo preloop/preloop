@@ -1362,12 +1362,7 @@ class TestEmailVerification:
         assert "Invalid token" in response.json()["detail"]
 
     def test_verify_email_user_not_found(self, db_session_mock):
-        """Test email verification when user not found.
-
-        Note: Due to the exception handling in the router, HTTPException raised
-        for "User not found" gets caught by the outer Exception handler and
-        results in a 500 error. This test verifies the current behavior.
-        """
+        """A token for a row that no longer exists answers 404, not 500."""
         with (
             patch("preloop.api.auth.router.verify_user_token") as mock_verify_token,
             patch("preloop.api.auth.router.crud_user") as mock_crud,
@@ -1382,9 +1377,8 @@ class TestEmailVerification:
                 json={"token": "valid_token"},
             )
 
-        # The HTTPException is caught by the outer except block, returning 500
-        assert response.status_code == 500
-        assert "Error verifying email" in response.json()["detail"]
+        assert response.status_code == 404
+        assert response.json()["detail"] == "User not found"
 
 
 # ============================================================================
@@ -1492,12 +1486,7 @@ class TestPasswordReset:
         assert response.status_code == 400
 
     def test_reset_password_user_not_found(self, db_session_mock):
-        """Test password reset when user not found.
-
-        Note: Due to the exception handling in the router, HTTPException raised
-        for "User not found" gets caught by the outer Exception handler and
-        results in a 500 error. This test verifies the current behavior.
-        """
+        """A token for a row that no longer exists answers 404, not 500."""
         with (
             patch("preloop.api.auth.router.verify_user_token") as mock_verify_token,
             patch("preloop.api.auth.router.crud_user") as mock_crud,
@@ -1515,9 +1504,8 @@ class TestPasswordReset:
                 },
             )
 
-        # The HTTPException is caught by the outer except block, returning 500
-        assert response.status_code == 500
-        assert "Error resetting password" in response.json()["detail"]
+        assert response.status_code == 404
+        assert response.json()["detail"] == "User not found"
 
 
 # ============================================================================

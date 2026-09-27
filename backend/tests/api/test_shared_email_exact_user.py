@@ -282,6 +282,39 @@ class TestPasswordReset:
             )
 
 
+class TestMissingRow:
+    """A link for a row that no longer exists is a 404, never a 500."""
+
+    @pytest.mark.parametrize(
+        "path,mint_name,body",
+        [
+            ("/api/v1/auth/verify-email", "create_email_verification_token", {}),
+            (
+                "/api/v1/auth/reset-password",
+                "create_password_reset_token",
+                {"new_password": NEW_PASSWORD},
+            ),
+        ],
+    )
+    def test_deleted_row_answers_404(
+        self, anon_client: TestClient, path, mint_name, body
+    ):
+        from preloop.utils import tokens
+
+        token = getattr(tokens, mint_name)("gone@example.com", user_id=uuid.uuid4())
+
+        response = anon_client.post(path, json={"token": token, **body})
+
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "User not found"
+
+    def test_ambiguity_error_is_on_the_crud_package_surface(self):
+        from preloop.models.crud import AmbiguousEmailError
+        from preloop.models.crud.user import AmbiguousEmailError as DirectError
+
+        assert AmbiguousEmailError is DirectError
+
+
 class TestRegistrationUnchanged:
     """Registration still refuses any address that is already held."""
 

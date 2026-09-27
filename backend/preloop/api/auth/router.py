@@ -791,6 +791,10 @@ async def verify_email(
                 }
             )
         return response
+    except HTTPException:
+        # "User not found" from _user_for_token is a real answer, not a
+        # server error, so it must not fall into the handler below.
+        raise
     except TokenError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -936,6 +940,10 @@ async def reset_password(
         session.commit()
 
         return {"message": "Password reset successfully"}
+    except HTTPException:
+        # "User not found" from _user_for_token is a real answer, not a
+        # server error, so it must not fall into the handler below.
+        raise
     except TokenError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
