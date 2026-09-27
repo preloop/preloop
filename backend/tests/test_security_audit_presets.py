@@ -749,6 +749,13 @@ class TestPerSourceScreeningMatrix:
         assert "screened_by_no_source" in prompt
         assert "evidence/source-matrix.json" in prompt
 
+    def test_release_audit_may_use_types_only_property(self):
+        prompt = _load_preset(PRESET_FILES["Release Security Audit"])["prompt_template"]
+        norm = _norm(prompt)
+        assert "preloop:types_only" in prompt
+        assert "does not itself suppress a finding" in norm
+        assert "VEX statement still does" in norm
+
     def test_git_range_source_screens_vendored_code(self, prompt):
         """OSV commit queries via the vcs_url in enriched purls — the win
         for vendored C code the purl path is blind to."""

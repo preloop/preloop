@@ -475,10 +475,11 @@ except (OSError, ValueError, KeyError, TypeError, RecursionError):
     return f"""
       PRELOOP_PROVENANCE_FAILED=
       py_status=0
-      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)}{provenance_args} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE'
+      # ``|| py_status=$?``: exit 2 is an expected outcome, and the harness
+      # runs this block under ``set -e``, which would abort on a bare call.
+      python3 - {PR_LOOKUP_FILE} {PR_PAYLOAD_FILE} {update_path} {kind} {shlex.quote(branch)}{provenance_args} > {update_path}.number <<'PRELOOP_FAILURE_UPDATE' || py_status=$?
 {script}
 PRELOOP_FAILURE_UPDATE
-      py_status=$?
       if [ "$py_status" -ne 0 ]; then
         PRELOOP_PROVENANCE_FAILED=1
       fi
@@ -534,7 +535,13 @@ def build_github_pr_capture_shell(
     grep_pr = 'grep -o \'"html_url"[[:space:]]*:[[:space:]]*"[^"]*/pull/[0-9]*"\''
     sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
     return f"""
-    PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    # Initialised here, not only in the lookup fallback: the happy path
+    # (URL in the create response) reads these under ``set -u``. The harness
+    # runs this under ``set -euo pipefail``, so a grep with no match must not
+    # end the block before the fallback (``|| true`` on each capture).
+    PRELOOP_PROVENANCE_FAILED=
+    PRELOOP_BODY_UPDATED=
+    PR_URL=$({grep_pr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url}) || true
     if [ -z "$PR_URL" ]; then
       echo "No PR URL in the create response; looking it up by head branch"
       curl -sS \\
@@ -543,12 +550,12 @@ def build_github_pr_capture_shell(
         -o {PR_LOOKUP_FILE} \\
         "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&head={owner}:{branch}" \\
         || echo "PR lookup by head branch failed"
-      PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+      PR_URL=$({grep_pr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url}) || true
       {_existing_pr_failure_update_shell(kind="github", api_url=f"https://api.github.com/repos/{owner}/{repo}/pulls", authorization=f"Authorization: token {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
+    if [ -n "${{PRELOOP_PROVENANCE_FAILED:-}}" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
-    elif [ -n "$PR_URL" ]; then
+    elif [ -n "${{PR_URL:-}}" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$PR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"github\\"}}"
     else
       echo "No pull request URL could be resolved for branch {branch}"
@@ -571,7 +578,13 @@ def build_gitlab_mr_capture_shell(
     )
     sed_url = 'sed \'s/.*"\\(https[^"]*\\)"$/\\1/\''
     return f"""
-    MR_URL=$({grep_mr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url})
+    # Initialised here, not only in the lookup fallback: the happy path
+    # (URL in the create response) reads these under ``set -u``. The harness
+    # runs this under ``set -euo pipefail``, so a grep with no match must not
+    # end the block before the fallback (``|| true`` on each capture).
+    PRELOOP_PROVENANCE_FAILED=
+    PRELOOP_BODY_UPDATED=
+    MR_URL=$({grep_mr} {PR_RESPONSE_FILE} 2>/dev/null | head -1 | {sed_url}) || true
     if [ -z "$MR_URL" ]; then
       echo "No MR URL in the create response; looking it up by source branch"
       curl -sS \\
@@ -579,12 +592,12 @@ def build_gitlab_mr_capture_shell(
         -o {PR_LOOKUP_FILE} \\
         "https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests?state=opened&source_branch={branch}" \\
         || echo "MR lookup by source branch failed"
-      MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url})
+      MR_URL=$({grep_mr} {PR_LOOKUP_FILE} 2>/dev/null | head -1 | {sed_url}) || true
       {_existing_pr_failure_update_shell(kind="gitlab", api_url=f"https://{gitlab_host}/api/v4/projects/{encoded_path}/merge_requests", authorization=f"PRIVATE-TOKEN: {token_ref}", branch=branch, execution_link=execution_link)}
     fi
-    if [ -n "$PRELOOP_PROVENANCE_FAILED" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
+    if [ -n "${{PRELOOP_PROVENANCE_FAILED:-}}" ] && [ -z "${{PRELOOP_BODY_UPDATED:-}}" ]; then
       echo "PRELOOP_PR_METADATA_WARNING: existing pull request body was left unchanged" >&2
-    elif [ -n "$MR_URL" ]; then
+    elif [ -n "${{MR_URL:-}}" ]; then
       echo "{PR_OPENED_LOG_MARKER} {{\\"url\\": \\"$MR_URL\\", \\"branch\\": \\"{branch}\\", \\"provider\\": \\"gitlab\\"}}"
     else
       echo "No merge request URL could be resolved for branch {branch}"

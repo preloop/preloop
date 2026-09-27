@@ -999,6 +999,8 @@ def read_flow_execution(
     project_execution_totals(db, [execution])
     project_resume_lineage(db, [execution], account_id=current_user.account_id)
     _project_execution_park(db, execution)
+    # The page paints its title from this row before the flow itself loads.
+    execution.flow_name = execution.flow.name if execution.flow else None
 
     return execution
 
@@ -1636,6 +1638,10 @@ async def get_flow_execution_logs(
         return {"logs": [], "source": "database", "has_more": False}
 
 
+# The row type the gateway writes for each model request of an execution.
+MODEL_GATEWAY_CALL_LOG_TYPE = "model_gateway_call"
+
+
 @router.get("/flows/executions/{execution_id}/gateway-events")
 @require_permission("view_flows")
 def get_flow_execution_gateway_events(
@@ -1643,10 +1649,26 @@ def get_flow_execution_gateway_events(
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
-    tail: int | None = None,
+    tail: Annotated[int | None, Query(ge=1)] = None,
     metadata_only: bool = False,
+    model_calls_only: bool = False,
 ) -> Dict[str, Any]:
-    """Get normalized model gateway events for a flow execution."""
+    """Get normalized model gateway events for a flow execution.
+
+    Args:
+        execution_id: ID of the execution.
+        tail: Most recent rows to return (default 5000).
+        metadata_only: Drop the large payload fields (conversation preview,
+            tools, result, stream events).
+        model_calls_only: Return only ``model_gateway_call`` rows. Without it
+            every log row of the execution is returned, including the agent
+            log lines the logs endpoint already serves, and on a long run
+            those crowd the model calls out of ``tail``.
+
+    Returns:
+        ``logs`` (newest first), ``source``, and ``has_more``: whether rows
+        older than the returned ``tail`` exist.
+    """
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
     )
@@ -1654,9 +1676,18 @@ def get_flow_execution_gateway_events(
         raise HTTPException(status_code=404, detail="Flow execution not found")
 
     actual_tail = tail if tail is not None else 5000
+    # One extra row answers has_more without a count query.
     rows = crud_flow_execution_log.get_by_execution_id(
-        db, execution_id, tail=actual_tail, desc=True
+        db,
+        execution_id,
+        tail=actual_tail + 1,
+        desc=True,
+        log_types=[MODEL_GATEWAY_CALL_LOG_TYPE] if model_calls_only else None,
     )
+    has_more = len(rows) > actual_tail
+    if has_more:
+        # Rows come back oldest first, so the extra row is the first one.
+        rows = rows[1:]
 
     events = []
     # Reverse rows so chronological order is maintained (oldest to newest)
@@ -1682,7 +1713,7 @@ def get_flow_execution_gateway_events(
                 "payload": payload,
             }
         )
-    return {"logs": events, "source": "database"}
+    return {"logs": events, "source": "database", "has_more": has_more}
 
 
 @router.get("/flows/executions/{execution_id}/gateway-events/{event_id}")

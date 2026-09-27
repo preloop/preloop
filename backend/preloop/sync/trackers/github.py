@@ -2056,6 +2056,7 @@ class GitHubTracker(BaseTracker):
         state: str = "open",
         limit: int = 20,
         page: int = 1,
+        head_branch: Optional[str] = None,
     ) -> Dict[str, Any]:
         """List pull requests for the connected repository.
 
@@ -2063,6 +2064,8 @@ class GitHubTracker(BaseTracker):
             state: GitHub PR state (open, closed, all).
             limit: Page size (per_page).
             page: 1-based page number.
+            head_branch: Only PRs whose head is this branch of the connected
+                repository (GitHub ``head=owner:branch``).
 
         Returns:
             Dict with normalized ``items`` and ``has_more`` from the Link header.
@@ -2080,6 +2083,8 @@ class GitHubTracker(BaseTracker):
             "sort": "updated",
             "direction": "desc",
         }
+        if head_branch:
+            params["head"] = f"{owner}:{head_branch}"
         raw, headers = await self._request_with_headers("GET", path, params=params)
         if not isinstance(raw, list):
             raise TrackerResponseError("GitHub pull request list was not an array")
@@ -2090,6 +2095,24 @@ class GitHubTracker(BaseTracker):
                 headers.get("Link") or headers.get("link")
             ),
         }
+
+    async def branch_exists(self, branch: str) -> bool:
+        """Whether ``branch`` exists on the connected repository.
+
+        Raises on anything other than a clean found / not-found answer so a
+        caller can tell "absent" from "could not check".
+        """
+        owner = self.connection_details.get("owner")
+        repo = self.connection_details.get("repo")
+        if not owner or not repo:
+            raise TrackerResponseError("Owner/repo not found in connection details")
+        try:
+            await self._request("GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}")
+        except TrackerResponseError as error:
+            if getattr(error, "status_code", None) == 404:
+                return False
+            raise
+        return True
 
     def _normalize_listed_pull_request(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
         """Map a GitHub pulls-list item to the shared PR list shape."""
