@@ -5,8 +5,9 @@ session. Each step is an observation: the action the agent reports, the
 URL or target it names, and the reasoning it gives. A stored step is not
 an approval, a dispatch, or proof that the browser reached that state.
 
-Screenshots are not accepted yet. The `screenshot` field on a stored step
-is always `null`.
+A step may carry a screenshot. It is stored encrypted as a session
+artifact and served back to the console. A step without one has
+`screenshot: null` in its stored metadata.
 
 ## Sending steps
 
@@ -47,8 +48,10 @@ The response is:
 
 `rejected` entries are `{"index": 0, "error": "extra_too_large"}`. `extra`
 is refused when `json.dumps(extra)` is larger than 4096 bytes
-(`extra_too_large`) or cannot be encoded as JSON (`extra_not_json`). The
-other rows in the batch are still stored. More than 200 steps, or an
+(`extra_too_large`) or cannot be encoded as JSON (`extra_not_json`). A
+screenshot is refused as `screenshot_too_large`, `screenshot_invalid` or
+`storage_budget_exhausted` (see below). The other rows in the batch are
+still stored. More than 200 steps, or an
 empty batch, is a 422 for the whole request.
 
 A missing or unknown bearer is 401. A session that belongs to another
@@ -57,6 +60,70 @@ names a different one, the response is 403. A session that has already
 ended is accepted, including a key pinned to that session, so an adapter
 can flush after the run. The model gateway still rejects that key for
 inference.
+
+## Screenshots
+
+Add a `screenshot` object to a step:
+
+```json
+{
+  "source": "playwright_mcp",
+  "source_step_id": "step-2",
+  "step_index": 1,
+  "action": "screenshot",
+  "screenshot": {
+    "content_type": "image/png",
+    "data_base64": "iVBORw0KGgo..."
+  }
+}
+```
+
+`content_type` is `image/png`, `image/jpeg` or `image/webp`. The row is
+refused, and nothing is stored for it, when:
+
+- the decoded image is larger than `RUNTIME_SESSION_SCREENSHOT_MAX_BYTES`
+  (2 MiB by default): `screenshot_too_large`;
+- `data_base64` is not valid base64, is empty, or the bytes are not the
+  declared image type: `screenshot_invalid`;
+- the account's session-artifact budget
+  (`RUNTIME_SESSION_ARTIFACT_ACCOUNT_MAX_BYTES`) cannot fit the image even
+  after evicting older unheld artifacts: `storage_budget_exhausted`.
+
+A repeated step (same `source_step_id`) is a duplicate and does not store
+a second image.
+
+The stored step's `metadata.screenshot` names the artifact:
+
+```json
+{
+  "artifact_id": "7d0c...",
+  "availability": "available",
+  "content_type": "image/png",
+  "size_bytes": 48213
+}
+```
+
+Each session keeps at most `RUNTIME_SESSION_SCREENSHOTS_PER_SESSION_MAX`
+(500 by default) available screenshots. Past that, the oldest by step
+time lose their image bytes. The artifact row and the step's metadata
+stay, and `availability` becomes `evicted`. Screenshots in a session under
+legal hold are never evicted, so a held session can keep more than the
+bound.
+
+### Reading a screenshot
+
+A console user with the `view_runtime_sessions` permission reads the bytes
+with:
+
+```
+GET /api/v1/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}
+```
+
+The response is the image with its stored media type and
+`Cache-Control: private, max-age=300`. It is 404 when the session or the
+artifact is not in the caller's account, or the artifact belongs to
+another session, and 410 with `{"availability": "evicted"}` or
+`{"availability": "expired"}` when the bytes are gone.
 
 ## What is stored
 

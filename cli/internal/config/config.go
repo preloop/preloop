@@ -44,11 +44,28 @@ const (
 )
 
 // Config represents the CLI configuration.
+//
+// AccessToken, RefreshToken and APIURL are the effective values for the
+// selected profile and account (see Select). With no profiles and no
+// accounts in the file they are the top-level keys, exactly as before
+// profiles existed.
 type Config struct {
 	AccessToken  string       `mapstructure:"access_token"`
 	RefreshToken string       `mapstructure:"refresh_token"`
 	APIURL       string       `mapstructure:"api_url"`
 	Runner       RunnerConfig `mapstructure:"runner"`
+
+	// Profile is the selected profile name; empty means DefaultProfile.
+	Profile string `mapstructure:"-"`
+	// Account is the selected account slug; empty means the profile's own
+	// token pair (a single account login).
+	Account string `mapstructure:"-"`
+	// AccountID and AccountName describe Account when it is stored.
+	AccountID   string `mapstructure:"-"`
+	AccountName string `mapstructure:"-"`
+	// AccountMissing is true when Account was asked for (flag or
+	// environment) but the profile holds no tokens for it.
+	AccountMissing bool `mapstructure:"-"`
 }
 
 // RunnerConfig holds the `runner:` block of ~/.preloop/config.yaml.
@@ -89,41 +106,14 @@ func ensureConfigDir() error {
 	return nil
 }
 
-// Load reads the configuration from ~/.preloop/config.yaml.
+// Load reads the configuration from ~/.preloop/config.yaml and resolves the
+// selected profile and account (see Select).
 func Load() (*Config, error) {
-	cfgPath, err := configPath()
+	file, _, err := readFile()
 	if err != nil {
 		return nil, err
 	}
-
-	v := viper.New()
-	v.SetConfigFile(cfgPath)
-	v.SetConfigType("yaml")
-
-	// Set defaults
-	v.SetDefault("api_url", DefaultAPIURL)
-	v.SetDefault("runner.concurrency", DefaultRunnerConcurrency)
-
-	// Read config file (ignore error if file doesn't exist)
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			// Only return error if it's not a "file not found" error
-			if !os.IsNotExist(err) {
-				return nil, fmt.Errorf("failed to read config: %w", err)
-			}
-		}
-	}
-
-	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	cfg.APIURL = normalizeAPIURL(cfg.APIURL)
-	if cfg.APIURL == "" {
-		cfg.APIURL = DefaultAPIURL
-	}
-	return &cfg, nil
+	return file.resolve(currentSelection()), nil
 }
 
 // RunnerConcurrency returns how many executions this host's runner should
@@ -143,28 +133,48 @@ func RunnerConcurrency() int {
 	return cfg.Runner.Concurrency
 }
 
-// Save writes the configuration to ~/.preloop/config.yaml.
+// Save writes the token pair and API URL of cfg to ~/.preloop/config.yaml,
+// into the profile and account cfg was loaded for. For the default profile
+// without accounts these are the top-level keys, so a config file written
+// before profiles existed keeps its exact shape.
 func Save(cfg *Config) error {
+	_, v, err := readFile()
+	if err != nil {
+		return err
+	}
+	prefix := profilePrefix(cfg.Profile)
+	if cfg.Account != "" {
+		if err := ValidateName(cfg.Account); err != nil {
+			return err
+		}
+		accountKey := prefix + "accounts." + cfg.Account + "."
+		v.Set(accountKey+"access_token", cfg.AccessToken)
+		v.Set(accountKey+"refresh_token", cfg.RefreshToken)
+		if cfg.AccountID != "" {
+			v.Set(accountKey+"account_id", cfg.AccountID)
+		}
+		if cfg.AccountName != "" {
+			v.Set(accountKey+"name", cfg.AccountName)
+		}
+	} else {
+		v.Set(prefix+"access_token", cfg.AccessToken)
+		v.Set(prefix+"refresh_token", cfg.RefreshToken)
+	}
+	v.Set(prefix+"api_url", normalizeAPIURL(cfg.APIURL))
+	return writeFile(v)
+}
+
+// writeFile persists v to the config path with owner-only permissions.
+func writeFile(v *viper.Viper) error {
 	if err := ensureConfigDir(); err != nil {
 		return err
 	}
-
 	cfgPath, err := configPath()
 	if err != nil {
 		return err
 	}
-
-	v := viper.New()
 	v.SetConfigFile(cfgPath)
 	v.SetConfigType("yaml")
-
-	// Read first: writing three keys must not delete settings this
-	// function does not know about, such as runner.concurrency.
-	_ = v.ReadInConfig()
-
-	v.Set("access_token", cfg.AccessToken)
-	v.Set("refresh_token", cfg.RefreshToken)
-	v.Set("api_url", normalizeAPIURL(cfg.APIURL))
 
 	if err := v.WriteConfig(); err != nil {
 		// If config file doesn't exist, create it
@@ -186,20 +196,27 @@ func Save(cfg *Config) error {
 	return nil
 }
 
-// Clear removes all authentication tokens from the config.
+// Clear signs out of the selected profile: its token pair, every account
+// token pair it holds and its current account.
 func Clear() error {
-	cfg, err := Load()
+	file, v, err := readFile()
 	if err != nil {
 		return err
 	}
-
-	cfg.AccessToken = ""
-	cfg.RefreshToken = ""
-
-	return Save(cfg)
+	sel := currentSelection()
+	prefix := profilePrefix(sel.profile)
+	v.Set(prefix+"access_token", "")
+	v.Set(prefix+"refresh_token", "")
+	if profile, ok := file.profile(sel.profile); ok &&
+		(len(profile.Accounts) > 0 || profile.CurrentAccount != "") {
+		v.Set(prefix+"accounts", map[string]any{})
+		v.Set(prefix+"current_account", "")
+	}
+	return writeFile(v)
 }
 
-// SetTokens updates the access and refresh tokens in the config.
+// SetTokens updates the access and refresh tokens of the selected profile
+// and account.
 func SetTokens(accessToken, refreshToken string) error {
 	cfg, err := Load()
 	if err != nil {

@@ -4340,6 +4340,39 @@ export async function getFlowExecutionLogs(
   return response.json();
 }
 
+/** One CLI session the runner's usage hook observed during a host run. */
+export interface HostExecSession {
+  conversation_id: string | null;
+  source: string | null;
+  runtime_session_id: string | null;
+  event_count: number;
+  event_types: Record<string, number>;
+  first_event_at: string | null;
+  last_event_at: string | null;
+  models: string[];
+}
+
+/** Hook sessions and seat usage linked to a host-exec flow execution. */
+export interface HostExecSessionsResponse {
+  execution_id: string;
+  sessions: HostExecSession[];
+  event_count: number;
+  premium_requests: number | null;
+  gateway_metered: boolean;
+}
+
+export async function getFlowExecutionHostSessions(
+  executionId: string
+): Promise<HostExecSessionsResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/flows/executions/${executionId}/host-sessions`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch host execution sessions');
+  }
+  return response.json();
+}
+
 export async function getFlowExecutionGatewayEvents(
   executionId: string,
   tail?: number,

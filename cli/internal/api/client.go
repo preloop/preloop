@@ -138,6 +138,14 @@ func NewClient(tokenOverride, urlOverride string) (*Client, error) {
 	}
 
 	explicitTokenOverride := tokenOverride != "" || os.Getenv(config.EnvToken) != ""
+	if cfg.AccountMissing && !explicitTokenOverride {
+		// Never fall back to another account's token: a command meant for
+		// one account must not run against a different one.
+		return nil, fmt.Errorf(
+			"no stored session for account %q in profile %q; run `preloop accounts switch %s`",
+			cfg.Account, cfg.Profile, cfg.Account,
+		)
+	}
 
 	return &Client{
 		baseURL: strings.TrimRight(cfg.APIURL, "/"),

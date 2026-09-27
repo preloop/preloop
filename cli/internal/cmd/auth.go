@@ -774,6 +774,11 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 
 	if cfg.AccessToken == "" {
 		fmt.Println("Not authenticated")
+		printProfileAndAccount(cfg)
+		if cfg.AccountMissing {
+			fmt.Printf("Run 'preloop accounts switch %s' to sign in to this account\n", cfg.Account)
+			return nil
+		}
 		fmt.Println("Run 'preloop login --token <your-token>' to authenticate")
 		return nil
 	}
@@ -809,8 +814,21 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Org:     %s\n", userInfo.Organization)
 	}
 	fmt.Printf("  API URL: %s\n", cfg.APIURL)
+	printProfileAndAccount(cfg)
 
 	return nil
+}
+
+// printProfileAndAccount adds the profile and account lines to auth status
+// when profiles or accounts are in use; a plain single-account login prints
+// exactly what it printed before.
+func printProfileAndAccount(cfg *config.Config) {
+	if cfg.Profile != "" && cfg.Profile != config.DefaultProfile {
+		fmt.Printf("  Profile: %s\n", cfg.Profile)
+	}
+	if cfg.Account != "" {
+		fmt.Printf("  Account: %s\n", describeAccount(cfg))
+	}
 }
 
 // runAuthToken prints the current access token.

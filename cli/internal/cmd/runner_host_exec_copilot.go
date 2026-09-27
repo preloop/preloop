@@ -120,7 +120,7 @@ func validateCopilotToolRules(field string, rules []string) error {
 // prompt uses the `--prompt=` spelling of -p so a prompt that starts with a
 // dash is never parsed as a flag. --allow-all-tools is only ever set when the
 // operator opted in on the local profile.
-func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any) ([]string, error) {
+func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any, mcpArgs ...string) ([]string, error) {
 	prompt, err := jobPromptText(job)
 	if err != nil {
 		return nil, err
@@ -140,11 +140,18 @@ func buildCopilotHostExecArgs(profile hostExecProfile, job map[string]any) ([]st
 		}
 		args = append(args, "--model="+alias)
 	}
+	args = append(args, mcpArgs...)
 	if profile.AllowAllTools {
 		args = append(args, "--allow-all-tools")
 	} else {
 		for _, rule := range profile.AllowTools {
 			args = append(args, "--allow-tool="+strings.TrimSpace(rule))
+		}
+		if len(mcpArgs) > 0 {
+			// The flow's Preloop MCP server is filtered server-side to the
+			// flow's allowed tools; -p mode cannot prompt, so grant it here.
+			// A deny_tools rule for the server still wins.
+			args = append(args, "--allow-tool="+hostExecMCPServerName)
 		}
 	}
 	for _, rule := range profile.DenyTools {

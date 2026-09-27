@@ -21,6 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer accepts a CLI session refresh token. CLI tokens from before this
   change move onto a session the next time they refresh (#839).
 
+- Copilot and Cursor host execution profiles can run review and
+  implementation flows. A profile that sets `allow_checkout` clones the
+  flow's repositories into the run directory at the pinned commit, with a
+  per-repository read credential that is sent only over https (or to a
+  loopback tracker) and never stored in the lease or the clone. Flows with MCP tools get a per-run `preloop-flow` MCP server whose
+  token is scoped to the execution and revoked at completion, so a PR
+  Reviewer can read the diff and post its review. The usage hook links the
+  CLI session and its events to the flow execution, Copilot premium
+  requests are stored as a subscription row, and the execution page shows
+  "N premium requests, not metered by the gateway" with the linked
+  sessions (`GET /api/v1/flows/executions/{id}/host-sessions`). Pull request
+  creation and clone setup commands stay refused on host profiles.
+
 - A Jira project can be bound to a GitHub or GitLab repository
   (`git_clone_config.repository_bindings` on a flow, or
   `settings.repository_bindings` on the Jira project). A Jira-triggered flow
@@ -159,6 +172,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- Managed agent config files (`writeJSONDocument`) are written atomically, so
+  a concurrent reader never sees a partial file; a symlinked config keeps its
+  link. The host execution cleanup test no longer races its fake CLI's pid
+  file.
+- A vulnerability finding whose `epss` or `cvss` is a numeric string is
+  coerced to a number when the string is finite and in range (EPSS 0 to 1,
+  CVSS 0 to 10), recorded on `verdict_corrected`, and re-validated. A
+  string that does not parse stays a contract failure naming the finding
+  index and the value. The verdict and the gate the agent submitted are
+  not relaxed.
 
 - Model prices stay current between releases. Every API, gateway and worker
   process now fetches the upstream litellm price map on startup and every
