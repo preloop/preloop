@@ -7,15 +7,15 @@ Create Date: 2026-09-28
 Fifth of six revisions for the account hierarchy (#986).
 
 Locking: this revision takes ``ACCESS EXCLUSIVE`` on ``"user"`` first and
-holds it to commit, across one full-table scan for ``SET NOT NULL``, the
-foreign key and check validations, and the ``uq_user_person_account`` index
-build. The row-by-row backfill ran in ``20260928_person_backfill`` without
-that lock. Every query on ``"user"`` (every login and API request) waits
-while this runs: about one second per million ``"user"`` rows on a local
-Postgres 16 with a warm cache. If a stall of that length is not acceptable,
-or the table is far larger (a ``statement_timeout`` kill is not retried),
-drain the API first (``docs/operations/schema-migrations.md``, "When to drain
-the API first").
+holds it to commit, across the full-table scan for ``SET NOT NULL``, the two
+foreign key and two check validations, and the ``uq_user_person_account`` and
+``ix_user_access_grant_id`` index builds. The row-by-row backfill ran in
+``20260928_person_backfill`` without that lock. Every query on ``"user"``
+(every login and API request) waits while this runs: 2 to 3 s on one million
+``"user"`` rows on a local Postgres 16 (3.0 s cold, 1.8 to 1.9 s warm). If a
+stall of that length is not acceptable, or the table is far larger (a
+``statement_timeout`` kill is not retried), drain the API first
+(``docs/operations/schema-migrations.md``, "When to drain the API first").
 
 Rows inserted after the backfill committed, by pods still running the
 previous release, have no person yet. They are linked first, under the lock,

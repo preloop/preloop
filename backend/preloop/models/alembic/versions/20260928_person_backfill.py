@@ -5,9 +5,13 @@ Revises: 20260928_person_membership
 Create Date: 2026-09-28
 
 Fourth of six revisions for the account hierarchy (#986). Runs with row locks
-only: ``person_id`` is still nullable here, so the API keeps serving while
-the backfill updates ``"user"``. Rows written after this commits are linked
-by ``20260928_person_constraints``.
+only: ``person_id`` is still nullable here, so reads of ``"user"`` and new
+rows go on while the backfill runs. Every row it links stays row-locked until
+the revision commits, so an update to an existing row (a login records
+``last_login``) waits for it. On one million ``"user"`` rows (local Postgres
+16) the revision took 40 to 57 s, of which the final ``UPDATE`` was 19 to
+30 s. Rows written after this commits are linked by
+``20260928_person_constraints``.
 
 * every row is ``membership_kind = 'direct'`` (the column default);
 * rows whose normalized emails are equal and verified share one person, whose

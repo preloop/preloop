@@ -15,11 +15,12 @@ The person work on ``"user"`` is split in three so no single transaction holds
    nullable, the ``membership_kind`` default is a constant). The lock is held
    for milliseconds;
 2. ``20260928_person_backfill``: link every row to a person. Row locks only;
-   the API keeps reading and writing ``"user"``;
+   the API keeps reading ``"user"`` and inserting into it, and an update to an
+   existing row waits until the backfill commits;
 3. ``20260928_person_constraints``: link rows written since, then ``SET NOT
    NULL``, the foreign keys, ``uq_user_person_account`` and the checks. This
-   one holds ``ACCESS EXCLUSIVE`` on ``"user"`` for a full-table scan and one
-   unique index build; see its docstring for when to drain.
+   one holds ``ACCESS EXCLUSIVE`` on ``"user"`` across those validations and
+   two index builds; see its docstring for when to drain.
 
 Idempotent: every DDL step checks for what it creates.
 """

@@ -15,12 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   account membership) of one human; plus account access grants, resource
   shares with a materialized recipient table, resource tags, tag key policies
   and access rules. Tables and columns only, no endpoints yet. Existing users
-  are backfilled onto persons: rows with the same verified email share one,
-  every other row gets its own. Upgrade note: revision
-  `20260928_person_constraints` holds an exclusive lock on `user` for a
-  full-table scan and a unique index build, about one second per million
-  `user` rows, and every request waits while it runs. On a very large `user`
-  table, or where that stall is not acceptable, drain the API first (see
+  are backfilled onto persons: rows with the same verified email share one
+  (at most one row per account), every other row gets its own. Upgrade note:
+  two revisions touch every `user` row. `20260928_person_backfill` links rows
+  with row locks only, so reads and new sign-ups continue, but an update to an
+  existing `user` row (a login records `last_login`) waits until it commits.
+  `20260928_person_constraints` then holds an exclusive lock on `user` across
+  the NOT NULL scan, two foreign key and two check validations and two index
+  builds, and every query on `user` waits while it runs. Measured on one
+  million `user` rows (local Postgres 16): the backfill took 40 to 57 s, the
+  locked revision 2 to 3 s. Both grow with the row count. On a large `user`
+  table, or where those stalls are not acceptable, drain the API first (see
   "When to drain the API first" in `docs/operations/schema-migrations.md`).
 
 - Cost per issue (`/console/cost/by-issue`, linked from the Cost page) rolls
