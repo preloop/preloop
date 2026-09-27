@@ -186,6 +186,15 @@ def _key_matches_user_account(api_key: Any, user: Any) -> bool:
     return False
 
 
+def _key_owner_account_differs(db: Session, api_key: Any) -> bool:
+    """Return whether a rejected key's owner now sits in another account.
+
+    Used only to name the rejection reason in the gateway diagnostic log.
+    """
+    owner = crud_user.get(db, id=str(api_key.user_id))
+    return owner is not None and str(owner.account_id) != str(api_key.account_id)
+
+
 def _resolve_bearer_context(
     token: str,
     db: Session,
@@ -247,6 +256,8 @@ def _resolve_bearer_context(
             reason = "key is deactivated (agent deleted/suspended or offboarded)"
         elif rejected_key.is_expired:
             reason = "key is expired"
+        elif _key_owner_account_differs(db, rejected_key):
+            reason = "key account does not match its owner's account"
         else:
             reason = "key binding is invalid (managed agent missing or inactive)"
         logger.warning(

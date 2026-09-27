@@ -1,12 +1,17 @@
 """Gateway attribution follows the API key's account, not the user's (#984)."""
 
+import logging
 import re
 from pathlib import Path
 
+import pytest
+
 from preloop.models.crud import crud_account, crud_ai_model, crud_api_key
 from preloop.models.models.api_usage import ApiUsage
+from preloop.services import model_gateway_auth
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
+    authenticate_bearer_token,
     build_runtime_key_auth_context,
 )
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -59,6 +64,26 @@ def test_runtime_key_context_rejects_a_cross_account_key(db_session, test_user):
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_bearer_rejection_log_names_the_account_mismatch(
+    db_session, test_user, caplog
+):
+    """A cross-account bearer is rejected and the gateway log says why."""
+    other = _other_account(db_session)
+    _api_key, token = _key_in(db_session, test_user, other.id)
+
+    with caplog.at_level(logging.WARNING, logger=model_gateway_auth.logger.name):
+        assert await authenticate_bearer_token(token, db_session) is None
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == model_gateway_auth.logger.name
+    ]
+    assert any("account does not match" in message for message in messages)
+    assert not any("managed agent missing" in message for message in messages)
 
 
 def test_usage_row_for_key_request_carries_the_keys_account(db_session, test_user):
