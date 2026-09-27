@@ -141,6 +141,23 @@ def _held_role_ids(user_id: object, account_id: object) -> Any:
     return union(direct_role_ids, team_role_ids)
 
 
+def _scoped_held_roles(user_id: object, account_id: object) -> Any:
+    """Roles the user holds that belong to their account.
+
+    System roles (``account_id`` is null) count. A custom role scoped to
+    another account does not. Shared by the boolean check and the listing
+    so the two cannot drift.
+    """
+    from sqlalchemy import and_, or_
+
+    from preloop.models.models.permission import Role
+
+    return and_(
+        Role.id.in_(_held_role_ids(user_id, account_id)),
+        or_(Role.account_id.is_(None), Role.account_id == account_id),
+    )
+
+
 def user_holds_permission(db, current_user, permission_name: str) -> bool:
     """Whether one of a user's roles grants ``permission_name``.
 
@@ -178,8 +195,7 @@ def user_holds_permission(db, current_user, permission_name: str) -> bool:
         .exists()
     )
     held_role = select(Role.id).where(
-        Role.id.in_(_held_role_ids(user_id, account_id)),
-        or_(Role.account_id.is_(None), Role.account_id == account_id),
+        _scoped_held_roles(user_id, account_id),
         or_(
             and_(Role.name == "owner", Role.is_system_role == true()),
             role_grants_permission,
@@ -204,23 +220,17 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
     Returns:
         Permission names. Order is not significant.
     """
-    from sqlalchemy import and_, or_, select, true
+    from sqlalchemy import or_, select, true
 
     from preloop.models.models.permission import Permission, Role, RolePermission
 
     user_id = current_user.id
     account_id = current_user.account_id
 
-    def scoped_roles() -> Any:
-        return and_(
-            Role.id.in_(_held_role_ids(user_id, account_id)),
-            or_(Role.account_id.is_(None), Role.account_id == account_id),
-        )
-
     system_owner_held = (
         select(Role.id)
         .where(
-            scoped_roles(),
+            _scoped_held_roles(user_id, account_id),
             Role.name == "owner",
             Role.is_system_role == true(),
         )
@@ -229,7 +239,7 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
     granted_permission_ids = (
         select(RolePermission.permission_id)
         .join(Role, Role.id == RolePermission.role_id)
-        .where(scoped_roles())
+        .where(_scoped_held_roles(user_id, account_id))
     )
     names = select(Permission.name).where(
         or_(system_owner_held, Permission.id.in_(granted_permission_ids))
