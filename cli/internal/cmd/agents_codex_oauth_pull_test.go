@@ -538,6 +538,9 @@ func TestCodexOAuthPullFailuresLeaveFileAndStampUntouched(t *testing.T) {
 				if runtime.GOOS == "windows" {
 					f.t.Skip("directory permissions differ on Windows")
 				}
+				if os.Geteuid() == 0 {
+					f.t.Skip("root ignores directory write permissions")
+				}
 				if err := os.Chmod(f.codexDir, 0o500); err != nil {
 					f.t.Fatal(err)
 				}
