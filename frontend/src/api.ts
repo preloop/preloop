@@ -4070,11 +4070,13 @@ export async function getFlowExecutionLogs(
 export async function getFlowExecutionGatewayEvents(
   executionId: string,
   tail?: number,
-  metadataOnly: boolean = false
+  metadataOnly: boolean = false,
+  modelCallsOnly: boolean = false
 ): Promise<FlowGatewayEventsResponse> {
   const params = new URLSearchParams();
   if (tail !== undefined) params.append('tail', tail.toString());
   if (metadataOnly) params.append('metadata_only', 'true');
+  if (modelCallsOnly) params.append('model_calls_only', 'true');
   const paramsStr = params.toString() ? `?${params.toString()}` : '';
 
   const response = await fetchWithAuth(
