@@ -539,26 +539,29 @@ class TimeoutBudget:
         return "the default timeout budget"
 
     def timeout_message(self) -> str:
-        """Operator-facing failure message naming the budget that expired."""
+        """Operator-facing failure message naming the budget that expired.
+
+        The budget is named by ``label()``, the same words the stream stall
+        message uses, so the two cannot describe one budget differently.
+        """
+        label = self.label()
         if self.consumed_seconds:
             return (
-                f"Execution timed out after {self.seconds} seconds, the "
-                f"remainder of this flow's timeout budget after "
-                f"{self.consumed_seconds} seconds already spent before it was "
-                "parked for a human decision (waiting for the human did not "
-                "count). Raise timeout_seconds on the flow if the work "
-                "genuinely needs longer."
+                f"Execution timed out after {self.seconds} seconds, {label} "
+                f"after {self.consumed_seconds} seconds already spent before "
+                "it was parked for a human decision (waiting for the human "
+                "did not count). Raise timeout_seconds on the flow if the "
+                "work genuinely needs longer."
             )
         if self.source == "flow":
             return (
-                f"Execution timed out after {self.seconds} seconds "
-                f"(this flow's timeout budget). Raise timeout_seconds on the "
-                "flow if the work genuinely needs longer."
+                f"Execution timed out after {self.seconds} seconds ({label}). "
+                "Raise timeout_seconds on the flow if the work genuinely "
+                "needs longer."
             )
         return (
-            f"Execution timed out after {self.seconds} seconds (the default "
-            "timeout budget). Set timeout_seconds on the flow to give it a "
-            "budget of its own."
+            f"Execution timed out after {self.seconds} seconds ({label}). "
+            "Set timeout_seconds on the flow to give it a budget of its own."
         )
 
 

@@ -3598,6 +3598,17 @@ class TestPerFlowTimeoutBudget:
         ):
             assert budget.label() in budget.timeout_message()
 
+    def test_timeout_message_takes_its_budget_name_from_label(self, monkeypatch):
+        """One place names the budget; rewording it reaches both messages."""
+        monkeypatch.setattr(TimeoutBudget, "label", lambda self: "BUDGET-NAME")
+
+        for budget in (
+            TimeoutBudget(seconds=900, source="flow"),
+            TimeoutBudget(seconds=900, source="default"),
+            TimeoutBudget(seconds=600, source="flow", consumed_seconds=300),
+        ):
+            assert "BUDGET-NAME" in budget.timeout_message()
+
     def test_timeout_messages_stay_in_the_timeout_category(self):
         """The failure-category classifier keys off this sentence."""
         from preloop.services.flow_failure_category import derive_failure_category
