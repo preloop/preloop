@@ -119,7 +119,15 @@ from preloop.services.report_publication import (
     closed_vocabulary_member,
     parse_report_publication_marker,
 )
-from preloop.services.tracker_git_token import resolve_tracker_git_token
+from preloop.utils.bitbucket import (
+    payload_commit_hash as bitbucket_payload_commit_hash,
+    pr_source_branch as bitbucket_pr_source_branch,
+    pr_target_branch as bitbucket_pr_target_branch,
+)
+from preloop.services.tracker_git_token import (
+    resolve_tracker_git_token,
+    resolve_tracker_git_username,
+)
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
@@ -714,6 +722,12 @@ class FlowExecutionOrchestrator:
                         f"Found commit SHA in pull_request.head.sha: {sha[:8]}"
                     )
                     return sha
+
+        # Bitbucket Cloud PR (pullrequest.source.commit.hash) or repo:push
+        sha = bitbucket_payload_commit_hash(payload)
+        if sha:
+            logger.debug(f"Found Bitbucket commit SHA: {sha[:8]}")
+            return sha
 
         # Direct commit reference
         if "commit" in payload:
@@ -1949,6 +1963,11 @@ class FlowExecutionOrchestrator:
                 logger.debug(f"Extracted MR target branch: {branch}")
                 return branch
 
+            branch = bitbucket_pr_target_branch(payload)
+            if branch:
+                logger.debug(f"Extracted Bitbucket PR destination branch: {branch}")
+                return branch
+
             project = payload.get("project")
             if isinstance(project, dict) and project.get("default_branch"):
                 return project["default_branch"]
@@ -1983,6 +2002,11 @@ class FlowExecutionOrchestrator:
             if object_attrs and "source_branch" in object_attrs:
                 branch = object_attrs["source_branch"]
                 logger.debug(f"Extracted MR source branch: {branch}")
+                return branch
+
+            branch = bitbucket_pr_source_branch(payload)
+            if branch:
+                logger.debug(f"Extracted Bitbucket PR source branch: {branch}")
                 return branch
 
             return None
@@ -2091,11 +2115,15 @@ class FlowExecutionOrchestrator:
                     tracker.auth_type,
                 )
 
-            return {
+            credentials = {
                 "tracker_id": str(tracker_id),
                 "token": token or "",
                 "tracker_type": tracker.tracker_type,
             }
+            username = resolve_tracker_git_username(tracker)
+            if username:
+                credentials["username"] = username
+            return credentials
 
         except Exception as e:
             logger.error(
@@ -2197,7 +2225,8 @@ class FlowExecutionOrchestrator:
 
             return GitCredential(
                 repo_url=strip_url_credentials(repo_url),
-                username=credential_username(host_kind, tracker_type),
+                username=credentials.get("username")
+                or credential_username(host_kind, tracker_type),
                 token=token,
             )
 

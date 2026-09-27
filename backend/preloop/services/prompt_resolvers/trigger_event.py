@@ -175,6 +175,17 @@ class TriggerEventResolver(PromptResolver):
                 _attach_referenced_issues(payload, attrs, source)
             return normalized
 
+        # Bitbucket Cloud: map the ``pullrequest`` object onto the same keys
+        # so the reviewer preset prompt reads one shape for every provider.
+        if isinstance(payload, dict) and isinstance(payload.get("pullrequest"), dict):
+            from preloop.utils.bitbucket import build_object_attributes
+
+            object_attributes = build_object_attributes(payload["pullrequest"])
+            payload["object_attributes"] = object_attributes
+            _attach_referenced_issues(payload, object_attributes, source)
+            normalized["payload"] = payload
+            return normalized
+
         # For GitHub, create object_attributes from pull_request or issue
         if source == "github" or "pull_request" in payload or "issue" in payload:
             # Handle GitHub PR events

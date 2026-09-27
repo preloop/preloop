@@ -43,6 +43,7 @@ from preloop.services.tracker_tool_unlock import (
     unlocked_tool_names_after_tracker,
 )
 from preloop.utils.audit import log_config_change
+from preloop.utils.bitbucket import BitbucketConfigError, validate_bitbucket_config
 from preloop.utils.permissions import require_permission
 
 
@@ -96,6 +97,43 @@ def _apply_tracker_auth(
     if request_data.api_key == "unchanged":
         request_data.api_key = tracker.resolved_api_key
     return {}
+
+
+def _bitbucket_auth_details(
+    tracker_type: TrackerType,
+    request_data: TrackerTestRequest,
+    tracker: Optional[Tracker],
+) -> Dict[str, Any]:
+    """Validate a Bitbucket test request and return its auth details.
+
+    Args:
+        tracker_type: The requested tracker type.
+        request_data: The test request, with the stored token already
+            substituted for ``"unchanged"``.
+        tracker: The persisted tracker when editing, else None.
+
+    Returns:
+        ``{"auth_type": ...}`` for Bitbucket, empty for other types.
+
+    Raises:
+        HTTPException: 400 when the Bitbucket configuration is invalid.
+    """
+    if tracker_type != TrackerType.BITBUCKET:
+        return {}
+    auth_type = (
+        tracker.auth_type
+        if tracker is not None
+        else (request_data.auth_type or "api_token")
+    )
+    try:
+        validate_bitbucket_config(
+            api_key=request_data.api_key,
+            auth_type=auth_type,
+            connection_details=request_data.connection_details,
+        )
+    except BitbucketConfigError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return {"auth_type": auth_type}
 
 
 def _unique_tracker_name(db: Session, *, base_name: str, account_id: str) -> str:
@@ -202,6 +240,18 @@ async def register_tracker(
             detail="Jira tracker requires 'username' in connection_details",
         )
 
+    # Bitbucket: reject app passwords and incomplete configs before any
+    # network call. create_tracker_client swallows errors, so validate here.
+    extra_connection_details: Dict[str, Any] = {}
+    if tracker_type == TrackerType.BITBUCKET:
+        try:
+            validate_bitbucket_config(
+                api_key=api_key, auth_type=auth_type, connection_details=config
+            )
+        except BitbucketConfigError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        extra_connection_details["auth_type"] = auth_type
+
     # Create a tracker client to test the connection
     # For github_app auth, we need to resolve the installation_id to the actual GitHub installation ID
     resolved_github_installation_id = None
@@ -261,8 +311,13 @@ async def register_tracker(
                 connection_details={
                     "url": str(url_str) if url_str else None,
                     **(config or {}),
+                    **extra_connection_details,
                 },
             )
+            if client is None:
+                raise ValueError(
+                    f"Could not create a client for tracker type {tracker_type.value}"
+                )
 
         # Test the connection
         connection_result = await client.test_connection()
@@ -610,6 +665,22 @@ async def update_tracker(
     if update_data.get("api_key") == "unchanged":
         del update_data["api_key"]
 
+    if tracker.tracker_type == TrackerType.BITBUCKET.value and (
+        "api_key" in update_data or "connection_details" in update_data
+    ):
+        try:
+            validate_bitbucket_config(
+                api_key=update_data.get("api_key") or tracker.resolved_api_key,
+                auth_type=tracker.auth_type,
+                connection_details=(
+                    update_data.get("connection_details")
+                    if update_data.get("connection_details") is not None
+                    else tracker.connection_details
+                ),
+            )
+        except BitbucketConfigError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     # Special handling if api_key is updated - revalidate connection.
     api_key_updated = "api_key" in update_data
     if api_key_updated:
@@ -794,6 +865,16 @@ async def test_connection_and_list_orgs(
             )
         auth_details = _apply_tracker_auth(tracker, test_data)
     try:
+        auth_details.update(
+            _bitbucket_auth_details(
+                test_data.tracker_type,
+                test_data,
+                tracker if test_data.tracker_id else None,
+            )
+        )
+    except HTTPException as e:
+        return TrackerTestResponse(success=False, message=str(e.detail), orgs=[])
+    try:
         client = await create_tracker_client(
             tracker_type=test_data.tracker_type.value,
             tracker_id="test-connection",
@@ -825,7 +906,11 @@ async def test_connection_and_list_orgs(
             projects = await client.get_projects(orgs[0]["id"])
             orgs[0]["children"] = [
                 ProjectIdentifier(
-                    id=p["id"], name=p["name"], identifier=p["id"], type="project"
+                    id=p["id"],
+                    name=p["name"],
+                    identifier=p["id"],
+                    type="project",
+                    group=p.get("group"),
                 )
                 for p in projects
             ]
@@ -876,6 +961,13 @@ async def list_projects_for_org(
                 detail="Tracker not found or access denied",
             )
         auth_details = _apply_tracker_auth(tracker, project_data)
+    auth_details.update(
+        _bitbucket_auth_details(
+            project_data.tracker_type,
+            project_data,
+            tracker if project_data.tracker_id else None,
+        )
+    )
     try:
         if project_data.url and not project_data.url.endswith("/"):
             project_data.url = project_data.url + "/"

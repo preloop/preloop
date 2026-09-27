@@ -23,6 +23,11 @@ export interface Tracker {
   oauth_installation_id?: string | null;
   /** Login of the account the bound installation targets (OAuth auth types only). */
   github_installation_target_login?: string | null;
+  connection_details?: Record<string, any> | null;
+  /** When the stored token expires, if recorded (Bitbucket). */
+  token_expires_at?: string | null;
+  /** 'expired', 'expiring' (within 14 days), 'ok', or null when unknown. */
+  token_expiry_status?: 'expired' | 'expiring' | 'ok' | null;
   scope_rules?: Array<{
     scope_type: string;
     rule_type: string;
@@ -148,6 +153,9 @@ export class TrackerItem extends LitElement {
     }
     if (type.includes('gitlab') || name.includes('gitlab')) {
       return { name: 'gitlab', library: 'default' };
+    }
+    if (type.includes('bitbucket')) {
+      return { name: 'bucket', library: 'default' };
     }
     return { name: 'box-seam', library: 'default' };
   }

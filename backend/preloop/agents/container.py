@@ -58,6 +58,11 @@ from preloop.utils.execve_limits import (
     prompt_transport_env,
 )
 from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.bitbucket import (
+    payload_commit_hash as bitbucket_payload_commit_hash,
+    pr_source_branch as bitbucket_pr_source_branch,
+    pr_target_branch as bitbucket_pr_target_branch,
+)
 from preloop.utils.secret_scrubbing import scrub_secret_lines, scrub_secrets
 from preloop.utils.workspace_baseline import (
     BaselineDelivery,
@@ -4385,6 +4390,33 @@ fi
 
         return None, None
 
+    def _resolve_git_username(
+        self,
+        repo_config: Dict[str, Any],
+        execution_context: Dict[str, Any],
+        host_kind: Optional[str],
+        tracker_type: Optional[str],
+    ) -> str:
+        """Return the git username to pair with this repository's token.
+
+        Most providers accept a fixed placeholder username. Bitbucket needs a
+        username that matches the kind of token (the account's Bitbucket
+        username or ``x-bitbucket-api-token-auth`` for an API token,
+        ``x-token-auth`` for access and OAuth tokens), so the orchestrator
+        resolves it per tracker and ships it in ``git_credentials_map``.
+        """
+        git_credentials_map = execution_context.get("git_credentials_map") or {}
+        for tracker_id in (
+            repo_config.get("tracker_id"),
+            execution_context.get("trigger_tracker_id"),
+        ):
+            if not tracker_id:
+                continue
+            creds = git_credentials_map.get(tracker_id) or {}
+            if creds.get("token") and creds.get("username"):
+                return str(creds["username"])
+        return credential_username(host_kind, tracker_type)
+
     def _build_git_credential(
         self,
         repo_url: str,
@@ -4423,7 +4455,9 @@ fi
                 tracker_type,
             )
 
-        username = credential_username(host_kind, tracker_type)
+        username = self._resolve_git_username(
+            repo_config, execution_context, host_kind, tracker_type
+        )
         self.logger.info(
             "Prepared git credential for %s (user=%s, token not in URL)",
             repo_url_log_location(safe_url),
@@ -5195,7 +5229,9 @@ true
             git_user_email=str(git_config.get("git_user_email") or "hello@preloop.ai"),
             push_auth_shell=build_push_auth_setup_shell(
                 token_ref=token_ref,
-                username=credential_username(host_kind, tracker_type),
+                username=self._resolve_git_username(
+                    repo_config, execution_context, host_kind, tracker_type
+                ),
             ),
             pull_request_shell=pull_request_shell,
         )
@@ -5582,7 +5618,9 @@ true
                     if repo_url
                     else None
                 )
-                username = credential_username(host_kind, tracker_type)
+                username = self._resolve_git_username(
+                    repo_config, execution_context, host_kind, tracker_type
+                )
                 push_auth = build_push_auth_setup_shell(
                     token_ref=token_ref, username=username
                 )
@@ -5852,6 +5890,15 @@ true
                     self.logger.info(f"Constructed GitHub clone URL for {slug}")
                     return clone_url
 
+                elif tracker_type == "bitbucket":
+                    # Bitbucket Cloud: https://bitbucket.org/{workspace}/{repo}.git
+                    if not slug.endswith(".git"):
+                        slug = f"{slug}.git"
+
+                    clone_url = f"https://bitbucket.org/{slug}"
+                    self.logger.info(f"Constructed Bitbucket clone URL for {slug}")
+                    return clone_url
+
                 else:
                     self.logger.warning(
                         f"Tracker type '{tracker_type}' not supported for git clone"
@@ -5996,6 +6043,12 @@ true
                 self.logger.info(f"Extracted target branch from GitLab MR: {branch}")
                 return branch
 
+            # Bitbucket Cloud PR - pullrequest.destination.branch.name
+            branch = bitbucket_pr_target_branch(payload)
+            if branch:
+                self.logger.info(f"Extracted target branch from Bitbucket PR: {branch}")
+                return branch
+
             project = payload.get("project")
             if isinstance(project, dict) and project.get("default_branch"):
                 return project["default_branch"]
@@ -6046,6 +6099,12 @@ true
                 )
                 return branch
 
+            # Bitbucket Cloud PR (and PR comment) - pullrequest.source.branch
+            branch = bitbucket_pr_source_branch(payload)
+            if branch:
+                self.logger.info(f"Extracted source branch from Bitbucket PR: {branch}")
+                return branch
+
             return None
         except Exception as e:
             self.logger.debug(f"Error extracting source branch from trigger: {e}")
@@ -6089,6 +6148,11 @@ true
                 if isinstance(head, dict) and head.get("sha"):
                     return head["sha"]
 
+            # Bitbucket Cloud PR or repo:push
+            sha = bitbucket_payload_commit_hash(payload)
+            if sha:
+                return sha
+
             # Direct references
             if "sha" in payload:
                 return payload["sha"]
@@ -6122,6 +6186,13 @@ true
                     url = repo.get("clone_url") or repo.get("html_url") or ""
                     if url:
                         self.logger.info(f"Found GitHub repo URL in trigger: {url}")
+                        return url
+                    # Bitbucket Cloud: repository.links.html.href
+                    html = (repo.get("links") or {}).get("html") or {}
+                    href = html.get("href") if isinstance(html, dict) else None
+                    if href:
+                        url = f"{href.rstrip('/')}.git"
+                        self.logger.info(f"Found Bitbucket repo URL in trigger: {url}")
                     return url
 
             # GitLab structure

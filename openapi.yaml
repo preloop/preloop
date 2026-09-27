@@ -6166,8 +6166,7 @@ paths:
       tags:
       - Projects
       summary: List Project Pull Requests
-      description: List open pull requests (GitHub) or merge requests (GitLab) for
-        a project.
+      description: List open pull requests (GitHub, Bitbucket) or merge requests (GitLab).
       operationId: list_project_pull_requests_api_v1_projects__project_id__pull_requests_get
       security:
       - bearerAuth: []
@@ -24313,6 +24312,13 @@ components:
           type: string
           title: Type
           default: project
+        group:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group
+          description: Grouping label inside the organization, for example the Bitbucket
+            project a repository belongs to.
       type: object
       required:
       - id
@@ -24365,6 +24371,13 @@ components:
           type: string
           title: Updated At
           description: Last update timestamp
+        group:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group
+          description: Grouping label inside the organization, for example the Bitbucket
+            project a repository belongs to.
       type: object
       required:
       - name
@@ -29536,6 +29549,27 @@ components:
 
             fix the scope instead of the sync retrying forever.'
           readOnly: true
+        token_expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token Expires At
+          description: 'When the stored token expires, if the user recorded it.
+
+
+            Bitbucket API tokens and repository access tokens carry an expiry
+
+            date chosen at creation. The API does not report it, so the tracker
+
+            form stores it in ``connection_details["token_expires_at"]``.'
+          readOnly: true
+        token_expiry_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token Expiry Status
+          description: '``expired``, ``expiring`` (within 14 days), ``ok`` or None.'
+          readOnly: true
       type: object
       required:
       - name
@@ -29545,6 +29579,8 @@ components:
       - created
       - last_updated
       - degraded_projects
+      - token_expires_at
+      - token_expiry_status
       title: TrackerResponse
       description: Response model for tracker data (excluding sensitive info like
         api_key).
@@ -29625,6 +29661,14 @@ components:
           - type: 'null'
           title: Organization Identifier
           description: Identifier for the organization to fetch projects from
+        auth_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auth Type
+          description: 'Authentication mode for trackers that support several (Bitbucket:
+            ''api_token'' or ''oauth_token''). Ignored when tracker_id is set: the
+            stored mode is used.'
       type: object
       required:
       - tracker_type
@@ -29661,6 +29705,7 @@ components:
       - github
       - gitlab
       - jira
+      - bitbucket
       title: TrackerType
       description: Enum for tracker types.
     TrackerUpdate:

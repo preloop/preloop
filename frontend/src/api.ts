@@ -2637,6 +2637,24 @@ export async function getTrackers() {
   return response.json();
 }
 
+/**
+ * Pick a readable message from a tracker endpoint error body. FastAPI puts
+ * it in `detail` (a string, or a list for validation errors).
+ */
+export function trackerErrorDetail(errorData: any, fallback: string): string {
+  const detail = errorData?.detail ?? errorData?.message;
+  if (typeof detail === 'string' && detail) {
+    return detail;
+  }
+  return fallback;
+}
+
+/** Extra tracker settings sent with connection tests and project listing. */
+export interface TrackerConnectionOptions {
+  connectionDetails?: Record<string, unknown>;
+  authType?: string;
+}
+
 export async function addTracker(trackerData: any) {
   const response = await fetchWithAuth('/api/v1/trackers', {
     method: 'POST',
@@ -2644,7 +2662,8 @@ export async function addTracker(trackerData: any) {
     body: JSON.stringify(trackerData),
   });
   if (!response.ok) {
-    throw new Error('Failed to add tracker');
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(trackerErrorDetail(errorData, 'Failed to add tracker'));
   }
   return response.json();
 }
@@ -2656,7 +2675,8 @@ export async function updateTracker(trackerId: string, trackerData: any) {
     body: JSON.stringify(trackerData),
   });
   if (!response.ok) {
-    throw new Error('Failed to update tracker');
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(trackerErrorDetail(errorData, 'Failed to update tracker'));
   }
   return response.json();
 }
@@ -2675,15 +2695,16 @@ export async function validateTrackerToken(
   token: string,
   url?: string,
   username?: string,
-  id?: string
+  id?: string,
+  options: TrackerConnectionOptions = {}
 ) {
-  console.log('Validating tracker token', type, token, url, username);
   const payload: {
     tracker_id?: string;
     tracker_type: string;
     api_key: string;
     url?: string;
-    connection_details?: { username?: string };
+    connection_details?: Record<string, unknown>;
+    auth_type?: string;
   } = {
     tracker_type: type,
     api_key: token,
@@ -2696,6 +2717,15 @@ export async function validateTrackerToken(
   }
   if (type.toLowerCase() === 'jira' && username) {
     payload.connection_details = { username };
+  }
+  if (options.connectionDetails) {
+    payload.connection_details = {
+      ...(payload.connection_details ?? {}),
+      ...options.connectionDetails,
+    };
+  }
+  if (options.authType) {
+    payload.auth_type = options.authType;
   }
 
   const response = await fetchWithAuth('/api/v1/trackers/test-and-list-orgs', {
@@ -2721,7 +2751,8 @@ export async function listProjectsForOrg(
   orgId: string,
   url?: string,
   username?: string,
-  trackerId?: string
+  trackerId?: string,
+  options: TrackerConnectionOptions = {}
 ) {
   const payload: any = {
     tracker_id: trackerId,
@@ -2734,6 +2765,15 @@ export async function listProjectsForOrg(
   }
   if (trackerType.toLowerCase() === 'jira' && username) {
     payload.connection_details = { username };
+  }
+  if (options.connectionDetails) {
+    payload.connection_details = {
+      ...(payload.connection_details ?? {}),
+      ...options.connectionDetails,
+    };
+  }
+  if (options.authType) {
+    payload.auth_type = options.authType;
   }
 
   const response = await fetchWithAuth(
