@@ -98,14 +98,33 @@ def send_email(
         raise EmailError(f"Failed to send email: {str(e)}")
 
 
-def send_verification_email(user_email: str, token: str) -> None:
+def _for_user_lines(username: Optional[str], action: str) -> tuple[str, str]:
+    """Text and HTML lines naming the user a link acts on (empty without one).
+
+    One address can hold a user in several accounts, and each gets its own
+    message. Naming the username tells the reader which account a link is for.
+    """
+    if not username:
+        return "", ""
+    return (
+        f"This link {action} for the user {username}.\n",
+        f"<p>This link {action} for the user <strong>{html.escape(username)}"
+        "</strong>.</p>",
+    )
+
+
+def send_verification_email(
+    user_email: str, token: str, username: Optional[str] = None
+) -> None:
     """Send a verification email to a newly registered user.
 
     Args:
         user_email: The user's email address.
         token: The verification token.
+        username: The user the link verifies, named in the message.
     """
     verification_link = f"{PRELOOP_URL}/verify-email?token={token}"
+    for_text, for_html = _for_user_lines(username, "verifies the address")
 
     subject = f"Verify your {APP_NAME} account"
     text_body = f"""
@@ -114,7 +133,7 @@ def send_verification_email(user_email: str, token: str) -> None:
     Please verify your email address by clicking the link below:
 
     {verification_link}
-
+    {for_text}
     If you didn't register for {APP_NAME}, please ignore this email.
 
     Thank you,
@@ -127,6 +146,7 @@ def send_verification_email(user_email: str, token: str) -> None:
         <h2>Welcome to {APP_NAME}!</h2>
         <p>Please verify your email address by clicking the link below:</p>
         <p><a href="{verification_link}">Verify your email</a></p>
+        {for_html}
         <p>If you didn't register for {APP_NAME}, please ignore this email.</p>
         <p>Thank you,<br>The {APP_NAME} Team</p>
     </body>
@@ -136,14 +156,19 @@ def send_verification_email(user_email: str, token: str) -> None:
     send_email(user_email, subject, text_body, html_body)
 
 
-def send_password_reset_email(user_email: str, token: str) -> None:
+def send_password_reset_email(
+    user_email: str, token: str, username: Optional[str] = None
+) -> None:
     """Send a password reset email.
 
     Args:
         user_email: The user's email address.
         token: The password reset token.
+        username: The user whose password the link resets, named in the
+            message.
     """
     reset_link = f"{PRELOOP_URL}/reset-password?token={token}"
+    for_text, for_html = _for_user_lines(username, "resets the password")
 
     subject = f"Reset your {APP_NAME} password"
     text_body = f"""
@@ -152,7 +177,7 @@ def send_password_reset_email(user_email: str, token: str) -> None:
     Please click the link below to set a new password:
 
     {reset_link}
-
+    {for_text}
     If you didn't request a password reset, please ignore this email.
 
     Thank you,
@@ -166,6 +191,7 @@ def send_password_reset_email(user_email: str, token: str) -> None:
         <p>You have requested to reset your {APP_NAME} password.</p>
         <p>Please click the link below to set a new password:</p>
         <p><a href="{reset_link}">Reset your password</a></p>
+        {for_html}
         <p>If you didn't request a password reset, please ignore this email.</p>
         <p>Thank you,<br>The {APP_NAME} Team</p>
     </body>

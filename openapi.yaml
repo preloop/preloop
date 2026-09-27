@@ -120,9 +120,17 @@ paths:
       tags:
       - Auth
       summary: Forgot Password
-      description: "Send a password reset email.\n\nArgs:\n    reset_data: Password\
-        \ reset request with email.\n    background_tasks: Background tasks for sending\
-        \ emails.\n\nReturns:\n    Success message."
+      description: "Send a password reset email for every user row holding the address.\n\
+        \n``user.email`` is not unique: an address invited into a second account\n\
+        holds a second row there, with its own password. This never chooses one\n\
+        of them. Every row holding the address gets its own message, whose link\n\
+        is bound to that row and names its username, so the person resets the\naccount\
+        \ they mean by following that account's link. Each link goes to\nthe address\
+        \ its own row holds, the inbox that row already trusts for a\nreset, so no\
+        \ row is reachable from an inbox it does not name.\n\nArgs:\n    reset_data:\
+        \ Password reset request with email.\n    background_tasks: Background tasks\
+        \ for sending emails.\n\nReturns:\n    The same neutral message whether or\
+        \ not the address is registered."
       operationId: forgot_password_api_v1_auth_forgot_password_post
       requestBody:
         content:
@@ -6166,8 +6174,7 @@ paths:
       tags:
       - Projects
       summary: List Project Pull Requests
-      description: List open pull requests (GitHub) or merge requests (GitLab) for
-        a project.
+      description: List open pull requests (GitHub, Bitbucket) or merge requests (GitLab).
       operationId: list_project_pull_requests_api_v1_projects__project_id__pull_requests_get
       security:
       - bearerAuth: []
@@ -25569,6 +25576,13 @@ components:
           type: string
           title: Type
           default: project
+        group:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group
+          description: Grouping label inside the organization, for example the Bitbucket
+            project a repository belongs to.
       type: object
       required:
       - id
@@ -25621,6 +25635,13 @@ components:
           type: string
           title: Updated At
           description: Last update timestamp
+        group:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Group
+          description: Grouping label inside the organization, for example the Bitbucket
+            project a repository belongs to.
       type: object
       required:
       - name
@@ -31054,6 +31075,27 @@ components:
 
             fix the scope instead of the sync retrying forever.'
           readOnly: true
+        token_expires_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token Expires At
+          description: 'When the stored token expires, if the user recorded it.
+
+
+            Bitbucket API tokens and repository access tokens carry an expiry
+
+            date chosen at creation. The API does not report it, so the tracker
+
+            form stores it in ``connection_details["token_expires_at"]``.'
+          readOnly: true
+        token_expiry_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Token Expiry Status
+          description: '``expired``, ``expiring`` (within 14 days), ``ok`` or None.'
+          readOnly: true
       type: object
       required:
       - name
@@ -31063,6 +31105,8 @@ components:
       - created
       - last_updated
       - degraded_projects
+      - token_expires_at
+      - token_expiry_status
       title: TrackerResponse
       description: Response model for tracker data (excluding sensitive info like
         api_key).
@@ -31143,6 +31187,14 @@ components:
           - type: 'null'
           title: Organization Identifier
           description: Identifier for the organization to fetch projects from
+        auth_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auth Type
+          description: 'Authentication mode for trackers that support several (Bitbucket:
+            ''api_token'' or ''oauth_token''). Ignored when tracker_id is set: the
+            stored mode is used.'
       type: object
       required:
       - tracker_type
@@ -31179,6 +31231,7 @@ components:
       - github
       - gitlab
       - jira
+      - bitbucket
       title: TrackerType
       description: Enum for tracker types.
     TrackerUpdate:

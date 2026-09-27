@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Optional, Type
 
 from .base import BaseTracker
+from .bitbucket import BitbucketTracker
 from .github import GitHubTracker
 from .gitlab import GitLabTracker
 from .jira import JiraTracker
@@ -55,7 +56,7 @@ async def create_tracker_client(
     """Create a tracker client.
 
     Args:
-        tracker_type: Type of tracker ("github", "jira", "gitlab").
+        tracker_type: Type of tracker ("github", "jira", "gitlab", "bitbucket").
         tracker_id: ID of the tracker in the database (UUID string).
         api_key: API key or token for the tracker.
         connection_details: Connection details for the tracker.
@@ -113,6 +114,8 @@ async def create_tracker_client(
             return GitLabTracker(tracker_id, api_key, connection_details)
         elif tracker_type == "jira":
             return JiraTracker(tracker_id, api_key, connection_details)
+        elif tracker_type == "bitbucket":
+            return BitbucketTracker(tracker_id, api_key, connection_details)
         else:
             logger.warning(f"Unsupported tracker type: {tracker_type}")
             return None

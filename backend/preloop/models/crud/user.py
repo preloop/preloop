@@ -4,7 +4,7 @@ import uuid
 from typing import Any, List, Optional
 
 from sqlalchemy import text, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from preloop.models import models
 from .base import CRUDBase
@@ -12,6 +12,14 @@ from .base import CRUDBase
 # Constant advisory-lock key that serializes first-user (bootstrap)
 # registration. Arbitrary but stable app-unique value ("PRLB" in ASCII).
 REGISTRATION_BOOTSTRAP_LOCK_KEY = 0x5052_4C42
+
+
+class AmbiguousEmailError(LookupError):
+    """More than one user row holds the address, so it names no single user."""
+
+    def __init__(self, email: str) -> None:
+        super().__init__("More than one user holds this email address")
+        self.email = email
 
 
 class CRUDUser(CRUDBase[models.User]):
@@ -93,23 +101,77 @@ class CRUDUser(CRUDBase[models.User]):
         """
         return db.query(models.User).filter(models.User.username == username).first()
 
-    def get_by_email(
-        self, db: Session, *, email: str, account_id: Optional[str] = None
-    ) -> Optional[models.User]:
-        """Get user by email.
-
-        Args:
-            db: Database session.
-            email: Email to search for.
-            account_id: Optional account ID for scoping.
-
-        Returns:
-            models.User if found, None otherwise.
-        """
+    def _email_query(
+        self, db: Session, *, email: str, account_id: Any = None
+    ) -> Query[models.User]:
+        """Rows holding ``email``, optionally within one account, in a stable order."""
         query = db.query(models.User).filter(models.User.email == email)
         if account_id:
             query = query.filter(models.User.account_id == account_id)
-        return query.first()
+        return query.order_by(models.User.created_at, models.User.id)
+
+    def list_by_email(
+        self, db: Session, *, email: str, account_id: Any = None
+    ) -> List[models.User]:
+        """Every user row holding an email address.
+
+        ``user.email`` is not unique: an address invited into a second
+        account gets a second row there. A caller that starts from an address
+        must decide what to do with each row, so this returns all of them.
+
+        Args:
+            db: Database session.
+            email: Email to search for (exact match).
+            account_id: Optional account ID to limit the search to.
+
+        Returns:
+            The matching rows, oldest first (empty when none match).
+        """
+        return self._email_query(db, email=email, account_id=account_id).all()
+
+    def email_exists(self, db: Session, *, email: str, account_id: Any = None) -> bool:
+        """Whether any user row holds an email address.
+
+        Args:
+            db: Database session.
+            email: Email to search for (exact match).
+            account_id: Optional account ID to limit the search to.
+
+        Returns:
+            True when at least one row holds the address.
+        """
+        return bool(
+            db.query(
+                self._email_query(db, email=email, account_id=account_id).exists()
+            ).scalar()
+        )
+
+    def get_by_email(
+        self, db: Session, *, email: str, account_id: Any = None
+    ) -> Optional[models.User]:
+        """The one user row holding an email address, or None.
+
+        Never picks a row: when more than one row matches (the same address
+        in several accounts, unless ``account_id`` narrows it to one), this
+        raises instead of returning whichever row the database hands back.
+        Callers that can meet several rows use ``list_by_email`` and handle
+        each; callers that only ask "is it taken" use ``email_exists``.
+
+        Args:
+            db: Database session.
+            email: Email to search for (exact match).
+            account_id: Optional account ID for scoping.
+
+        Returns:
+            models.User if exactly one row matches, None if none does.
+
+        Raises:
+            AmbiguousEmailError: If more than one row matches.
+        """
+        rows = self._email_query(db, email=email, account_id=account_id).limit(2).all()
+        if len(rows) > 1:
+            raise AmbiguousEmailError(email)
+        return rows[0] if rows else None
 
     def get_by_external_id(
         self, db: Session, *, external_id: str, user_source: str

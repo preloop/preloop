@@ -1496,7 +1496,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         remove_reaction: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Update a pull request's metadata, submit a review, and/or manage reactions. To update PR properties: provide title, description, labels, state (open/closed), etc. To submit a review: provide review_action (approve/request_changes/comment) with optional review_body and review_comments for inline feedback. To add/remove reactions: use add_reaction or remove_reaction with emoji names (GitHub: +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab: thumbsup, thumbsdown, smile, eyes, rocket, etc.)."""
+        """Update a pull request's metadata, submit a review, and/or manage reactions. To update PR properties: provide title, description, labels, state (open/closed), etc. To submit a review: provide review_action (approve/request_changes/comment) with optional review_body and review_comments for inline feedback. On Bitbucket, unapprove and remove_request_changes withdraw a verdict, and a review comment with task: true also opens a task. To add/remove reactions: use add_reaction or remove_reaction with emoji names (GitHub: +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab: thumbsup, thumbsdown, smile, eyes, rocket, etc.)."""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 

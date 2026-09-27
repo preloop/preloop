@@ -104,7 +104,7 @@ from .plan import (
     subscription,
     monthly_usage,
 )
-from .user import CRUDUser, crud_user
+from .user import AmbiguousEmailError, CRUDUser, crud_user
 from .permission import (
     CRUDPermission,
     CRUDRole,
@@ -349,6 +349,7 @@ __all__ = [
     "plan",
     "subscription",
     "monthly_usage",
+    "AmbiguousEmailError",
     "crud_user",
     "crud_permission",
     "crud_role",

@@ -63,6 +63,15 @@ Preloop implements authentication and multi-tenancy:
 - Password hashing with industry-standard algorithms
 - Account-level data isolation (all queries filtered by `account_id`)
 - User invitation system with secure token-based email verification
+- Email verification and password reset links are bound to one user row (a
+  `uid` claim next to the address). One address can hold a user in several
+  accounts, so a link never resolves by address alone: it is refused if it has
+  no `uid` (links minted before this binding) or if the row's address changed
+  after it was sent, and the person requests a new one. The forgot-password
+  and resend-verification forms send one link per row holding the address,
+  each naming its username. `crud_user.get_by_email` raises
+  `AmbiguousEmailError` rather than choose between rows; use `list_by_email`
+  or an account scope.
 
 **Plugin System:**
 - Extensible plugin architecture for adding custom functionality

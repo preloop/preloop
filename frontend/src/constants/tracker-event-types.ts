@@ -60,6 +60,27 @@ export const JIRA_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Comment Deleted', value: 'comment_deleted' },
 ];
 
+export const BITBUCKET_TRACKER_EVENTS: TrackerEventOption[] = [
+  { name: 'Pull Request Opened', value: 'pull_request_opened' },
+  { name: 'Pull Request Updated', value: 'pull_request_updated' },
+  { name: 'Pull Request Merged', value: 'pull_request_merged' },
+  { name: 'Pull Request Closed', value: 'pull_request_closed' },
+  { name: 'Pull Request Approved', value: 'pull_request_approved' },
+  { name: 'Pull Request Unapproved', value: 'pull_request_unapproved' },
+  {
+    name: 'Pull Request Changes Requested',
+    value: 'pull_request_changes_requested',
+  },
+  {
+    name: 'Pull Request Changes Request Removed',
+    value: 'pull_request_changes_request_removed',
+  },
+  { name: 'Comment Created', value: 'comment_created' },
+  { name: 'Comment Updated', value: 'comment_updated' },
+  { name: 'Comment Deleted', value: 'comment_deleted' },
+  { name: 'Push to Repository', value: 'push' },
+];
+
 export function getTrackerEventOptions(
   trackerType: string | undefined
 ): TrackerEventOption[] {
@@ -70,6 +91,8 @@ export function getTrackerEventOptions(
       return GITLAB_TRACKER_EVENTS;
     case 'jira':
       return JIRA_TRACKER_EVENTS;
+    case 'bitbucket':
+      return BITBUCKET_TRACKER_EVENTS;
     default:
       return [];
   }

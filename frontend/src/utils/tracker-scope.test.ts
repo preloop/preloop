@@ -2,6 +2,7 @@ import { expect } from '@open-wc/testing';
 
 import {
   describeTrackerScope,
+  groupProjectsByGroup,
   groupProjectsByOrganization,
 } from './tracker-scope';
 import type { Organization, Project } from '../types';
@@ -102,5 +103,34 @@ describe('groupProjectsByOrganization', () => {
       'Alpha App',
       'Zeta',
     ]);
+  });
+});
+
+describe('groupProjectsByGroup', () => {
+  it('groups by project group in first-seen order, ungrouped last', () => {
+    const projects = [
+      { id: 'r1', group: 'Platform' },
+      { id: 'r2', group: null },
+      { id: 'r3', group: 'Mobile' },
+      { id: 'r4', group: 'Platform' },
+      { id: 'r5' },
+    ];
+
+    const groups = groupProjectsByGroup(projects);
+
+    expect(groups.map((g) => g.name)).to.deep.equal(['Platform', 'Mobile', '']);
+    expect(groups[0].projects.map((p) => p.id)).to.deep.equal(['r1', 'r4']);
+    expect(groups[2].projects.map((p) => p.id)).to.deep.equal(['r2', 'r5']);
+  });
+
+  it('returns one unnamed group when nothing is grouped', () => {
+    const groups = groupProjectsByGroup([{ id: 'a' }, { id: 'b' }]);
+    expect(groups).to.have.length(1);
+    expect(groups[0].name).to.equal('');
+    expect(groups[0].projects).to.have.length(2);
+  });
+
+  it('returns no groups for no projects', () => {
+    expect(groupProjectsByGroup([])).to.deep.equal([]);
   });
 });

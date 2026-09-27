@@ -102,6 +102,13 @@ class ProjectResponse(ProjectBase):
     organization_id: UUID = Field(..., description="Organization ID")
     created_at: str = Field(..., description="Creation timestamp")
     updated_at: str = Field(..., description="Last update timestamp")
+    group: Optional[str] = Field(
+        None,
+        description=(
+            "Grouping label inside the organization, for example the "
+            "Bitbucket project a repository belongs to."
+        ),
+    )
 
     @field_serializer("id", "organization_id")
     def serialize_uuid(self, value: UUID) -> str:

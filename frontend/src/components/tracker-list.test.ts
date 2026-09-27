@@ -53,6 +53,8 @@ describe('filterTrackers', () => {
     expect(trackerKindLabel('github')).to.equal('GitHub');
     expect(trackerKindLabel('gitlab')).to.equal('GitLab');
     expect(trackerKindLabel('jira')).to.equal('Jira');
+    expect(trackerKindLabel('bitbucket')).to.equal('Bitbucket Cloud');
+    expect(trackerKindLabel('Bitbucket')).to.equal('Bitbucket Cloud');
   });
 
   it('counts included projects from scope rules', () => {
