@@ -86,7 +86,16 @@ async def prepare_runner_delivery(
                 or "launch_version" in job
             ):
                 raise ValueError("Invalid native host lease")
-            return dict(job)
+            from preloop.services.host_exec_delivery import (
+                HostExecDeliveryError,
+                hydrate_host_exec_job,
+            )
+
+            try:
+                return await hydrate_host_exec_job(db, dict(job))
+            except HostExecDeliveryError as exc:
+                # Messages are authored here, never upstream text.
+                return {**public_job, "launch_error": str(exc)[:512]}
         state = job.get("_publication")
         if state is not None:
             public_job["publication"] = public_publication_descriptor(state)

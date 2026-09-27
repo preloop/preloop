@@ -43,7 +43,7 @@ import './preloop-runner-pool-select';
 import './schedule-config-editor';
 import { defaultScheduleConfig } from './schedule-config-editor';
 import './preloop-flow-preset-picker';
-import { BLANK_PRESET_ID } from './preloop-flow-preset-picker';
+import { BLANK_PRESET_ID, presetSlug } from './preloop-flow-preset-picker';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -71,6 +71,77 @@ export const FLOW_TIMEOUT_MAX_SECONDS = 86400;
 /** Matches the API `approval_window_seconds` constraint `ge=60, le=2592000`. */
 export const APPROVAL_WINDOW_MIN_SECONDS = 60;
 export const APPROVAL_WINDOW_MAX_SECONDS = 2592000;
+
+/**
+ * Characters the reviewer prompt keeps.
+ *
+ * The preset injects `{{flow.review_instructions|truncate(16384)}}`. 16,384
+ * characters is the 16 KiB cap operators are warned about. The API still
+ * accepts up to 32,768 characters; the rest is stored and then dropped.
+ */
+export const REVIEW_INSTRUCTIONS_PROMPT_CAP = 16384;
+
+/** Catalog slug of the Pull Request Reviewer preset. */
+export const REVIEWER_PRESET_SLUG = 'pull-request-reviewer';
+
+/** Docs for `.preloop/review-policy.md`, the same markdown this field stores. */
+export const REVIEW_POLICY_DOCS_URL =
+  'https://docs.preloop.ai/guide/flows/pull-request-review#repository-review-policy';
+
+/** True when the prompt template names the flow review-instructions placeholder. */
+export function promptReferencesReviewInstructions(
+  template: string | null | undefined
+): boolean {
+  return (
+    typeof template === 'string' &&
+    template.includes('flow.review_instructions')
+  );
+}
+
+/**
+ * Value to persist. Blank and whitespace become null so an update clears
+ * a saved policy. The API strips the same way.
+ */
+export function reviewInstructionsForSave(
+  value: string | null | undefined
+): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length > 0 ? text : null;
+}
+
+/** True when the stored text is longer than the reviewer prompt keeps. */
+export function reviewInstructionsOverPromptCap(
+  value: string | null | undefined
+): boolean {
+  const stored = reviewInstructionsForSave(value);
+  return stored !== null && stored.length > REVIEW_INSTRUCTIONS_PROMPT_CAP;
+}
+
+/**
+ * Whether the flow form should offer Review instructions.
+ *
+ * Shown for the Pull Request Reviewer preset, and for any prompt that
+ * references `flow.review_instructions`. `presetSlugValue` is the catalog
+ * slug already resolved from the flow or from its source preset.
+ */
+export function showsReviewInstructionsField(
+  flow: {
+    slug?: string | null;
+    prompt_template?: string | null;
+  },
+  presetSlugValue: string | null
+): boolean {
+  if (promptReferencesReviewInstructions(flow.prompt_template)) return true;
+  const slug = (
+    typeof flow.slug === 'string' && flow.slug.trim()
+      ? flow.slug
+      : presetSlugValue || ''
+  )
+    .trim()
+    .toLowerCase();
+  return slug === REVIEWER_PRESET_SLUG;
+}
 
 /**
  * Approval windows are set in hours and days, not seconds.
@@ -1198,9 +1269,13 @@ export class PreloopFlowForm extends LitElement {
         is_enabled: this.flow.is_enabled ?? true,
         runner_pool: this.normalizedFlowRunnerPool(),
         // Sent only when this form has the field. An unrelated fixture that
-        // never loaded it leaves the stored value alone.
+        // never loaded it leaves the stored value alone. Blank clears it.
         ...('review_instructions' in this.flow
-          ? { review_instructions: this.flow.review_instructions ?? null }
+          ? {
+              review_instructions: reviewInstructionsForSave(
+                this.flow.review_instructions
+              ),
+            }
           : {}),
         // Sent only once filters exist on the form. An explicit null (set by
         // clearEventFilters) is forwarded so the backend clears saved filters.
@@ -2035,17 +2110,43 @@ export class PreloopFlowForm extends LitElement {
         .value=${this.copilotModelValue()}
         @sl-input=${this.handleCopilotModelInput}
       ></sl-input>
-      ${
-        this.flow.git_clone_config?.enabled
-          ? html`<sl-alert variant="warning" open>
-              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-              Host execution cannot clone a repository or open a pull request.
-              This flow clones a repository, so a Copilot runner will refuse the
-              run.
-            </sl-alert>`
-          : nothing
-      }
+      ${this.renderHostExecCloneNotice('Copilot')}
     `;
+  }
+
+  /**
+   * Explain what a host profile does with this flow's checkout settings.
+   *
+   * A host runner clones the flow's repositories only when its local
+   * profile sets allow_checkout. It never opens a pull request, so a flow
+   * that publishes one is refused.
+   */
+  private renderHostExecCloneNotice(label: string) {
+    const clone = this.flow.git_clone_config;
+    if (!clone?.enabled) {
+      return nothing;
+    }
+    if (clone.create_pull_request) {
+      return html`<sl-alert
+        variant="warning"
+        open
+        data-host-exec-clone-notice="refused"
+      >
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        Host execution cannot open a pull request. This flow publishes one, so a
+        ${label} runner will refuse the run.
+      </sl-alert>`;
+    }
+    return html`<sl-alert
+      variant="primary"
+      open
+      data-host-exec-clone-notice="checkout"
+    >
+      <sl-icon slot="icon" name="info-circle"></sl-icon>
+      The ${label} runner clones this flow's repositories into the execution
+      directory only when its host profile sets <code>allow_checkout</code>.
+      Without it the run fails with <code>host_checkout_not_allowed</code>.
+    </sl-alert>`;
   }
 
   private renderHostExecProfileField() {
@@ -2927,6 +3028,24 @@ export class PreloopFlowForm extends LitElement {
                             }}
                             help-text="Filter by Jira issue type"
                           ></sl-input>
+
+                          <sl-input
+                            label="Moved to status"
+                            placeholder="e.g. Ready for Dev"
+                            .value=${this.flow.trigger_config?.status_to || ''}
+                            @sl-input=${(e: any) => {
+                              if (!this.flow.trigger_config)
+                                this.flow.trigger_config = {};
+                              const value = e.target.value.trim();
+                              if (value) {
+                                this.flow.trigger_config.status_to = value;
+                              } else {
+                                delete this.flow.trigger_config.status_to;
+                              }
+                              this.requestUpdate();
+                            }}
+                            help-text="Jira status name the issue moved to. Use with the Issue Status Changed event."
+                          ></sl-input>
                         `
                       : nothing
                   }
@@ -3100,6 +3219,94 @@ export class PreloopFlowForm extends LitElement {
               `
             : nothing
         }
+      </div>
+    `;
+  }
+
+  /**
+   * Catalog slug for the preset this form is editing, when one can be named.
+   *
+   * An account flow has no slug of its own. The source preset does, either
+   * as `slug` or, when the API omits it, as the slug derived from its name.
+   * A preset just chosen on this form wins over the saved source, because
+   * that choice replaced the prompt.
+   */
+  private resolvedPresetSlug(): string | null {
+    const direct = this.flow.slug;
+    if (typeof direct === 'string' && direct.trim()) {
+      return direct.trim().toLowerCase();
+    }
+    const sourceId =
+      this.sourcePresetId ||
+      (typeof this.flow.source_preset_id === 'string'
+        ? this.flow.source_preset_id
+        : '');
+    if (!sourceId) return null;
+    const preset = this.presets.find((item) => item && item.id === sourceId);
+    return preset ? presetSlug(preset) : null;
+  }
+
+  private showsReviewInstructions(): boolean {
+    return showsReviewInstructionsField(this.flow, this.resolvedPresetSlug());
+  }
+
+  private clearReviewInstructions(): void {
+    this.flow = { ...this.flow, review_instructions: null };
+    this.requestUpdate();
+  }
+
+  private renderReviewInstructionsField() {
+    if (!this.showsReviewInstructions()) return nothing;
+    const value =
+      typeof this.flow.review_instructions === 'string'
+        ? this.flow.review_instructions
+        : '';
+    const capKib = REVIEW_INSTRUCTIONS_PROMPT_CAP / 1024;
+    const capLabel = REVIEW_INSTRUCTIONS_PROMPT_CAP.toLocaleString('en-US');
+    const helpText = `Blocking policy for the reviewer. The prompt keeps the first ${capKib} KiB (${capLabel} characters). Leave blank when the repository file is enough.`;
+    const capWarning = `The reviewer prompt keeps the first ${capKib} KiB. Text after ${capLabel} characters is dropped when the review runs.`;
+    return html`
+      <div data-review-instructions>
+        <sl-textarea
+          label="Review instructions"
+          data-review-instructions-input
+          rows="6"
+          .value=${value}
+          help-text=${helpText}
+          @sl-input=${(e: Event) =>
+            this.handleInputChange('review_instructions', e)}
+        ></sl-textarea>
+        <p class="notifications-help">
+          Same markdown as
+          <a
+            href=${REVIEW_POLICY_DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-review-instructions-docs
+            >.preloop/review-policy.md</a
+          >. Stored on the flow, so a preset update does not wipe it.
+        </p>
+        ${
+          reviewInstructionsOverPromptCap(value)
+            ? html`<sl-alert
+                variant="warning"
+                open
+                data-review-instructions-cap
+              >
+                <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                ${capWarning}
+              </sl-alert>`
+            : nothing
+        }
+        <sl-button
+          type="button"
+          size="small"
+          variant="text"
+          data-review-instructions-clear
+          @click=${this.clearReviewInstructions}
+        >
+          Clear
+        </sl-button>
       </div>
     `;
   }
@@ -3504,19 +3711,7 @@ export class PreloopFlowForm extends LitElement {
                     .value=${this.cursorModelValue()}
                     @sl-input=${this.handleCursorModelInput}
                   ></sl-input>
-                  ${
-                    this.flow.git_clone_config?.enabled
-                      ? html`<sl-alert variant="warning" open>
-                          <sl-icon
-                            slot="icon"
-                            name="exclamation-triangle"
-                          ></sl-icon>
-                          Host execution cannot clone a repository or open a
-                          pull request. This flow clones a repository, so a
-                          Cursor runner will refuse the run.
-                        </sl-alert>`
-                      : nothing
-                  }
+                  ${this.renderHostExecCloneNotice('Cursor')}
                 `
               : this.flow.agent_type === 'copilot'
                 ? this.renderCopilotHostExecFields()
@@ -3566,22 +3761,25 @@ export class PreloopFlowForm extends LitElement {
             @sl-input=${(e: Event) =>
               this.handleInputChange('prompt_template', e)}
           ></sl-textarea>
-          <sl-textarea
-            label="Review instructions"
-            rows="4"
-            help-text="Blocking rules for the Pull Request Reviewer. Same markdown as .preloop/review-policy.md. Leave blank when the repository file is enough. Stored on the flow, so a preset update does not wipe it."
-            .value=${this.flow.review_instructions || ''}
-            @sl-input=${(e: Event) =>
-              this.handleInputChange('review_instructions', e)}
-          ></sl-textarea>
+          ${this.renderReviewInstructionsField()}
         </sl-card>
 
         <sl-card>
           <div slot="header" class="card-header-title">
             <sl-icon name="tools"></sl-icon> Allowed MCP tools
           </div>
-          ${this.flow.agent_type === 'cursor' ? html`<p>Cursor profiles use local MCP configuration. These flow tool settings do not apply.</p>` : nothing}
-          ${this.flow.agent_type === 'copilot' ? html`<p>Copilot profiles use the runner user's local Copilot MCP configuration. These flow tool settings do not apply.</p>` : nothing}
+          ${
+            this.flow.agent_type === 'cursor' ||
+            this.flow.agent_type === 'copilot'
+              ? html`<p data-host-exec-mcp-note>
+                  The runner adds these tools to the
+                  ${this.flow.agent_type === 'cursor' ? 'Cursor' : 'Copilot'}
+                  CLI as the <code>preloop-flow</code> MCP server, with a token
+                  scoped to this execution. The runner user's own MCP servers
+                  stay available.
+                </p>`
+              : nothing
+          }
 
           <div
             style="display: flex; flex-direction: column; gap: var(--sl-spacing-medium);"
