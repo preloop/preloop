@@ -106,11 +106,18 @@ agent's.
 ## Turning on semantic search for an account
 
 Semantic search needs vectors, and vectors cost provider spend, so an account
-opts in explicitly. **There is no console UI for this today.** It is an API
-call:
+opts in explicitly. In the console, open **Sessions**, then **Semantic search
+settings** above the list (a search that came back with
+`semantic_not_enabled` also offers **Turn on semantic search** in its
+notice). The card turns embedding on, names the model and endpoint, picks
+the scope, sets the daily cap, and shows how much of the corpus is embedded
+and why the last run stopped short, if it did. A saved change re-runs the
+search on screen.
+
+The same thing over the API:
 
 ```bash
-# Read the current setting
+# Read the current setting, with corpus progress
 curl "$PRELOOP_URL/api/v1/runtime-sessions/settings/embedding" \
   -H "Authorization: Bearer $TOKEN"
 
@@ -118,8 +125,24 @@ curl "$PRELOOP_URL/api/v1/runtime-sessions/settings/embedding" \
 curl -X PUT "$PRELOOP_URL/api/v1/runtime-sessions/settings/embedding" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"enabled": true, "scope": "summaries_only"}'
+  -d '{"enabled": true, "scope": "summaries_only",
+       "provider": "openai_compatible",
+       "model_identifier": "text-embedding-3-small",
+       "base_url": "https://embeddings.example.com/v1"}'
+
+# Turn it off; the provider details stay for a later {"enabled": true}
+curl -X PUT "$PRELOOP_URL/api/v1/runtime-sessions/settings/embedding" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
 ```
+
+Every field of the `PUT` is optional and a field left out is left alone.
+Enabling needs a model, either in the body or already on the setting from an
+earlier opt in; a refusal (no model, a non-https or loopback endpoint) is a
+422 whose `detail.code` names it. Provider details are only accepted when the
+save leaves embedding on. `daily_cap_usd: null` clears the account cap back
+to the deployment default.
 
 Reading takes `view_runtime_sessions`; writing takes `manage_budgets`,
 because widening the scope is a spending decision. `scope` is
@@ -141,7 +164,7 @@ could and names what it could not, in `degraded.reasons`.
 
 | Reason | What happened | What an operator does |
 | --- | --- | --- |
-| `semantic_not_enabled` | The account has not opted in | The `PUT` above |
+| `semantic_not_enabled` | The account has not opted in | Sessions, Semantic search settings, or the `PUT` above |
 | `semantic_disabled_by_deployment` | `SESSION_EMBEDDING_ENABLED` is off | Deployment decision |
 | `semantic_daily_cap_reached` | Today's embedding spend hit the cap | Raise the cap or wait for the next day |
 | `semantic_provider_error` | The embeddings provider could not answer | Check the provider and the worker logs |
