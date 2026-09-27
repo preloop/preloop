@@ -153,10 +153,37 @@ describe('resource-access-panel', () => {
       });
       const el = await mount(['account_hierarchy']);
       await waitUntil(() => q(el, 'share-list'));
+      const draft = el as unknown as { draftTarget: string; draftTag: string };
+      draft.draftTarget = 'tag';
+      draft.draftTag = 'customer=globex';
+      await el.updateComplete;
       click(el, '[data-testid="share-save"]');
       await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
       expect(api.callsTo(SHARES, 'POST')).to.have.length(1);
       expect(api.callsTo(/\/shares\//, 'DELETE')).to.have.length(0);
+    });
+
+    it('refuses to add a share whose target is already shared', async () => {
+      api = mockApi({ capabilities: ['account_hierarchy'], routes: routes() });
+      const el = await mount(['account_hierarchy']);
+      await waitUntil(() => q(el, 'share-list'));
+      click(el, '[data-testid="share-save"]');
+      await waitUntil(() =>
+        el.shadowRoot!.textContent!.includes(
+          'Already shared with All subaccounts.'
+        )
+      );
+      const draft = el as unknown as { draftTarget: string; draftTag: string };
+      draft.draftTarget = 'tag';
+      draft.draftTag = 'customer=acme';
+      await el.updateComplete;
+      click(el, '[data-testid="share-save"]');
+      await waitUntil(() =>
+        el.shadowRoot!.textContent!.includes(
+          'Already shared with Subaccounts tagged customer=acme.'
+        )
+      );
+      expect(api.callsTo(SHARES, 'POST')).to.have.length(0);
     });
 
     it('stops only the share asked for', async () => {
@@ -197,6 +224,10 @@ describe('resource-access-panel', () => {
       });
       const el = await mount(['account_hierarchy']);
       await waitUntil(() => q(el, 'share-list'));
+      const draft = el as unknown as { draftTarget: string; draftTag: string };
+      draft.draftTarget = 'tag';
+      draft.draftTag = 'customer=globex';
+      await el.updateComplete;
       click(el, '[data-testid="share-save"]');
       await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
       await el.updateComplete;

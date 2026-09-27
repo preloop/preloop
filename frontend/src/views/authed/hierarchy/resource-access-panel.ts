@@ -226,11 +226,19 @@ export class ResourceAccessPanel extends LitElement {
     }
   }
 
-  /** Adds a share. Existing shares are left alone. */
+  /**
+   * Adds a share. Existing shares are left alone, and a target that is
+   * already shared is refused rather than posted twice.
+   */
   private addShare = async () => {
     const target = this.buildTarget();
     if (typeof target === 'string') {
       this.error = target;
+      return;
+    }
+    const label = this.targetLabel(target);
+    if (this.shares.some((share) => this.targetLabel(share.target) === label)) {
+      this.error = `Already shared with ${label}.`;
       return;
     }
     await this.changeShares(async () => {
