@@ -10207,9 +10207,26 @@ class OpenAIGatewayService:
                     exc, gateway_provider=gateway_provider
                 ) from exc
 
-        return ModelGatewayBudgetService(self.db, self.auth_context).preflight_check(
+        result = ModelGatewayBudgetService(self.db, self.auth_context).preflight_check(
             ai_model, payload
         )
+        if (
+            result is not None
+            and result.hard_limit_exceeded
+            and result.enforcement_reason == "pricing_required_for_budget_enforcement"
+        ):
+            # The denial is recorded with zero tokens, and the on-miss lookup
+            # only fires for unpriced rows that carry tokens. Without this a
+            # model denied for lacking a price is never looked up, so every
+            # retry is denied the same way (issue #801). Throttled by the
+            # lookup's own dedupe and negative cache.
+            try:
+                schedule_price_lookup(ai_model_id=getattr(ai_model, "id", None))
+            except Exception:  # noqa: BLE001 - never turn a 403 into a 500
+                logger.debug(
+                    "Scheduling price lookup after denial failed", exc_info=True
+                )
+        return result
 
     @staticmethod
     def _normalize_budget_gateway_error(
