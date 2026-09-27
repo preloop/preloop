@@ -74,6 +74,9 @@ def env(db_session: Session, test_user: Any) -> Dict[str, Any]:
     jira = _tracker(db_session, account_id, "jira")
     github = _tracker(db_session, account_id, "github", url="https://github.com")
     gitlab = _tracker(db_session, account_id, "gitlab", url="https://gitlab.com")
+    bitbucket = _tracker(
+        db_session, account_id, "bitbucket", url="https://api.bitbucket.org/2.0"
+    )
     return {
         "db": db_session,
         "account_id": str(account_id),
@@ -83,6 +86,8 @@ def env(db_session: Session, test_user: Any) -> Dict[str, Any]:
         "gh_repo": _project(db_session, github, "Acme/API", identifier="555"),
         "gitlab": gitlab,
         "gl_repo": _project(db_session, gitlab, "group/sub/web", identifier="77"),
+        "bitbucket": bitbucket,
+        "bb_repo": _project(db_session, bitbucket, "team/app", identifier="bb-uuid"),
     }
 
 
@@ -253,6 +258,18 @@ class TestResolve:
                 },
             )
 
+    def test_bitbucket_is_not_a_binding_target_yet(self, env: Dict[str, Any]) -> None:
+        # The post-run pull request step only opens pull requests on GitHub
+        # and GitLab, so Bitbucket leaves hosts_repositories unset for now.
+        with pytest.raises(RepositoryBindingError, match="does not host"):
+            _resolve(
+                env,
+                {
+                    "enabled": True,
+                    "repository_bindings": [_binding(env["bitbucket"], "team/app")],
+                },
+            )
+
     def test_unsynced_repository_fails(self, env: Dict[str, Any]) -> None:
         with pytest.raises(RepositoryBindingError, match="not synced"):
             _resolve(
@@ -306,6 +323,30 @@ class TestResolve:
                 trigger_tracker_id=str(env["github"].id),
                 trigger_source="github",
                 trigger_project_id=str(env["gh_repo"].id),
+            )
+            is None
+        )
+
+    def test_bitbucket_trigger_keeps_its_own_repository(
+        self, env: Dict[str, Any]
+    ) -> None:
+        # Neither a flow nor a project binding may replace the clone target
+        # of a run that a code host triggered, Bitbucket included.
+        env["bb_repo"].settings = {
+            "repository_bindings": [_binding(env["github"], "acme/api")]
+        }
+        env["db"].flush()
+        config = {
+            "enabled": True,
+            "repository_bindings": [_binding(env["github"], "acme/api")],
+        }
+        assert (
+            _resolve(
+                env,
+                config,
+                trigger_tracker_id=str(env["bitbucket"].id),
+                trigger_source="bitbucket",
+                trigger_project_id=str(env["bb_repo"].id),
             )
             is None
         )
