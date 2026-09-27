@@ -14,8 +14,9 @@ Bindings live in two places:
 A non-empty flow-level list overrides the project default. The binding only
 fills ``git_clone_config.repositories`` for this execution; the flow row is
 never modified. The code-host tracker is resolved through the tracker
-factory (``hosts_repositories``), so any provider whose client declares it
-can be bound without changes here.
+factory (``hosts_repositories``). Issue-only triggers are gated on
+``hosts_issues``, so registering a code host that has not yet set
+``hosts_repositories`` does not treat it as Jira-like.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from preloop.models.schemas.flow import (
     validate_repository_bindings,
 )
 from preloop.sync.trackers.factory import (
-    tracker_class_for_type,
+    tracker_hosts_issues,
     tracker_hosts_repositories,
 )
 
@@ -157,11 +158,12 @@ def trigger_needs_binding(tracker_type: Optional[str]) -> bool:
 
     Returns:
         True for known issue-only trackers (Jira). Code hosts and unknown
-        sources (webhooks, schedules) keep their existing behaviour.
+        sources (webhooks, schedules) keep their existing behaviour. Gated on
+        ``hosts_issues``, not on "registered and not a repository host", so a
+        code host that is registered but has not set ``hosts_repositories``
+        yet is not mistaken for an issue tracker.
     """
-    return tracker_class_for_type(tracker_type) is not None and not (
-        tracker_hosts_repositories(tracker_type)
-    )
+    return tracker_hosts_issues(tracker_type)
 
 
 def _load_bindings(

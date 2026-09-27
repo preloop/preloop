@@ -108,6 +108,7 @@ class JiraTracker(BaseTracker):
     """Jira tracker implementation."""
 
     tracker_type: str = "jira"
+    hosts_issues: bool = True
 
     def __init__(
         self,

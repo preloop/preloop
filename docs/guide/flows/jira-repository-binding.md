@@ -2,8 +2,10 @@
 
 A Jira project tracks issues but has no git repository. A flow triggered by a
 Jira issue event can still clone, push and open a pull request once the Jira
-project is bound to a repository on a code host (GitHub or GitLab today; any
-tracker whose client sets `hosts_repositories` works without further changes).
+project is bound to a repository on a code host (GitHub or GitLab today). A
+new code host becomes bindable by registering it in `TRACKER_CLASSES` and
+setting `hosts_repositories` on its client; issue-only triggers are gated on
+`hosts_issues`, so registering a code host does not treat it as Jira-like.
 
 ## Where the binding lives
 

@@ -19,6 +19,7 @@ from preloop.services.repository_binding import (
 )
 from preloop.sync.trackers.factory import (
     tracker_class_for_type,
+    tracker_hosts_issues,
     tracker_hosts_repositories,
 )
 
@@ -106,13 +107,26 @@ class TestFactory:
         assert tracker_hosts_repositories("github") is True
         assert tracker_hosts_repositories("GitLab") is True
         assert tracker_hosts_repositories("jira") is False
+        assert tracker_hosts_repositories("bitbucket") is False
         assert tracker_hosts_repositories("webhook") is False
+        assert tracker_class_for_type("bitbucket") is not None
         assert tracker_class_for_type(None) is None
+
+    def test_hosts_issues(self) -> None:
+        assert tracker_hosts_issues("jira") is True
+        assert tracker_hosts_issues("Jira") is True
+        assert tracker_hosts_issues("github") is False
+        assert tracker_hosts_issues("gitlab") is False
+        assert tracker_hosts_issues("bitbucket") is False
+        assert tracker_hosts_issues("webhook") is False
 
     def test_only_known_issue_trackers_need_a_binding(self) -> None:
         assert trigger_needs_binding("jira") is True
         assert trigger_needs_binding("github") is False
         assert trigger_needs_binding("gitlab") is False
+        # Registered code host without hosts_repositories must not be
+        # treated as issue-only (would hijack its own clone target).
+        assert trigger_needs_binding("bitbucket") is False
         assert trigger_needs_binding("webhook") is False
         assert trigger_needs_binding(None) is False
 
