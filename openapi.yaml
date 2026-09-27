@@ -18706,6 +18706,16 @@ components:
         prompt_template:
           type: string
           title: Prompt Template
+        review_instructions:
+          anyOf:
+          - type: string
+            maxLength: 32768
+          - type: 'null'
+          title: Review Instructions
+          description: Blocking review rules for the Pull Request Reviewer. Same content
+            as .preloop/review-policy.md, for a repository that cannot commit that
+            file. Injected as {{flow.review_instructions}}. Empty means the repository
+            file is the only source.
         ai_model_id:
           anyOf:
           - type: string
@@ -19525,6 +19535,16 @@ components:
           - type: string
           - type: 'null'
           title: Prompt Template
+        review_instructions:
+          anyOf:
+          - type: string
+            maxLength: 32768
+          - type: 'null'
+          title: Review Instructions
+          description: Blocking review rules for the Pull Request Reviewer. Same content
+            as .preloop/review-policy.md, for a repository that cannot commit that
+            file. Injected as {{flow.review_instructions}}. Empty means the repository
+            file is the only source.
         ai_model_id:
           anyOf:
           - type: string
@@ -19796,6 +19816,16 @@ components:
           - type: string
           - type: 'null'
           title: Prompt Template
+        review_instructions:
+          anyOf:
+          - type: string
+            maxLength: 32768
+          - type: 'null'
+          title: Review Instructions
+          description: Blocking review rules for the Pull Request Reviewer. Same content
+            as .preloop/review-policy.md, for a repository that cannot commit that
+            file. Injected as {{flow.review_instructions}}. Empty means the repository
+            file is the only source.
         ai_model_id:
           anyOf:
           - type: string

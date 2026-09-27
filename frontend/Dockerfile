@@ -11,6 +11,10 @@ COPY package*.json ./
 RUN npm ci --cache .npm --prefer-offline --ignore-scripts
 
 COPY . .
+# Browser error reporting is opt-in: pass --build-arg VITE_SENTRY_DSN=<dsn>
+# to enable Sentry in the built bundle. Empty (the default) leaves it off.
+ARG VITE_SENTRY_DSN=""
+ENV VITE_SENTRY_DSN=${VITE_SENTRY_DSN}
 RUN npm run build
 
 # Stage 2: Serve with nginx

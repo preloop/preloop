@@ -1774,7 +1774,7 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 		if localAgent, ok := localAgentsByPrincipal[agent.SessionSourceID]; ok {
 			localConfig = localAgent.ConfigPath
 		}
-		if managedAgentLooksStale(agent, localConfig) {
+		if managedAgentLooksStale(agent) {
 			staleEntries = true
 		}
 		source := agent.SessionSourceType
@@ -1817,10 +1817,10 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func managedAgentLooksStale(agent managedAgentSummary, localConfig string) bool {
-	// Only archived rows are treated as stale. Missing local config (or idle
-	// activity) is normal when the agent lives on another machine.
-	_ = localConfig
+// managedAgentLooksStale reports whether a managed agent row is stale. Only
+// archived rows are: a missing local config (or idle activity) is normal when
+// the agent lives on another machine, so neither is an input.
+func managedAgentLooksStale(agent managedAgentSummary) bool {
 	return strings.EqualFold(strings.TrimSpace(agent.LifecycleState), "decommissioned")
 }
 

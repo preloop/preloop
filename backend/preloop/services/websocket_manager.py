@@ -597,6 +597,51 @@ class WebSocketManager:
             )
 
 
+#: Admin alert tasks started from the NATS message handler. The event loop
+#: keeps only weak references to tasks, so an unreferenced alert could be
+#: garbage-collected before it is sent; each task stays here until it ends.
+_admin_alert_tasks: Set["asyncio.Task[None]"] = set()
+
+
+def _log_admin_alert_outcome(task: "asyncio.Task[None]") -> None:
+    """Release a finished admin alert task and log why it failed, if it did.
+
+    Args:
+        task: The finished alert task.
+    """
+    _admin_alert_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("Admin alert could not be sent: %s", exc, exc_info=exc)
+
+
+def _spawn_admin_alert(*, subject: str, message: str) -> Optional["asyncio.Task[None]"]:
+    """Send an admin alert in the background without blocking the handler.
+
+    The alert is best effort: failing to schedule or send it is logged and
+    never interrupts NATS message handling.
+
+    Args:
+        subject: Alert subject line.
+        message: Alert body.
+
+    Returns:
+        The scheduled task, or None when it could not be scheduled.
+    """
+    try:
+        task = asyncio.create_task(
+            asyncio.to_thread(notify_admins, subject=subject, message=message)
+        )
+    except Exception:
+        logger.warning("Admin alert could not be scheduled", exc_info=True)
+        return None
+    _admin_alert_tasks.add(task)
+    task.add_done_callback(_log_admin_alert_outcome)
+    return task
+
+
 async def nats_consumer(manager: "WebSocketManager"):
     """
     Consumes messages from NATS and broadcasts them to WebSocket clients.
@@ -633,30 +678,16 @@ async def nats_consumer(manager: "WebSocketManager"):
         except json.JSONDecodeError:
             error_msg = f"Received non-JSON message from NATS: {msg.data.decode()}"
             logger.warning(error_msg)
-            try:
-                asyncio.create_task(
-                    asyncio.to_thread(
-                        notify_admins,
-                        subject="[Preloop Alert] Malformed NATS Message Dropped",
-                        message=error_msg,
-                    )
-                )
-            except Exception:
-                # Best-effort admin alert; malformed JSON handling continues below.
-                pass
+            _spawn_admin_alert(
+                subject="[Preloop Alert] Malformed NATS Message Dropped",
+                message=error_msg,
+            )
         except Exception as e:
             logger.error(f"Error processing NATS message: {e}")
-            try:
-                asyncio.create_task(
-                    asyncio.to_thread(
-                        notify_admins,
-                        subject="[Preloop Alert] NATS Message Processing Failed",
-                        message=f"An exception occurred while processing a NATS message: {str(e)}",
-                    )
-                )
-            except Exception:
-                # Best-effort admin alert; log the original processing error above.
-                pass
+            _spawn_admin_alert(
+                subject="[Preloop Alert] NATS Message Processing Failed",
+                message=f"An exception occurred while processing a NATS message: {str(e)}",
+            )
 
     async def persistence_handler(msg: Msg):
         try:
