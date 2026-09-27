@@ -16,6 +16,7 @@ repository URL, never in the URL itself.
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
 import shutil
 import signal
@@ -47,15 +48,14 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     """
     killpg = getattr(os, "killpg", None)
     if killpg is not None:
-        try:
+        # The group is gone once every member exited; fall through to the
+        # child, which is then a no-op.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             killpg(process.pid, signal.SIGKILL)
             return
-        except (ProcessLookupError, PermissionError):
-            pass
-    try:
+    # Already exited and reaped: nothing left to stop.
+    with contextlib.suppress(ProcessLookupError):
         process.kill()
-    except ProcessLookupError:
-        pass
 
 
 class BackportGitError(RuntimeError):
