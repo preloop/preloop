@@ -412,20 +412,20 @@ func TestRunAgentsRemoveRefusesUsageWithoutForce(t *testing.T) {
 }
 
 func TestManagedAgentLooksStaleAndListHint(t *testing.T) {
-	if !managedAgentLooksStale(managedAgentSummary{LifecycleState: "decommissioned"}, "/tmp/x") {
+	if !managedAgentLooksStale(managedAgentSummary{LifecycleState: "decommissioned"}) {
 		t.Fatal("decommissioned should be stale")
 	}
 	if managedAgentLooksStale(managedAgentSummary{
 		LifecycleState: "active",
 		ActivityStatus: "idle",
-	}, "-") {
+	}) {
 		t.Fatal("idle active agent without local config must not be stale (other machine)")
 	}
 	if managedAgentLooksStale(managedAgentSummary{
 		LifecycleState:  "active",
 		ActivityStatus:  "active_now",
 		OnboardingState: "fully_onboarded",
-	}, "/tmp/config.json") {
+	}) {
 		t.Fatal("healthy active row should not be stale")
 	}
 

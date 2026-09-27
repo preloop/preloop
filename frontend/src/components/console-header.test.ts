@@ -1047,3 +1047,87 @@ describe('console-header in-flight executions', () => {
     expect(executionRequests).to.be.greaterThan(1);
   });
 });
+
+/**
+ * Bell notifications are session-only: they come from account events on the
+ * 'system' channel, and the header makes no request for past notifications.
+ */
+describe('console-header system notifications', () => {
+  let systemListeners: Array<(message: any) => void>;
+  let urls: string[];
+  let restoreFetch: () => void;
+  let restoreSubscribe: () => void;
+  let logSpy: sinon.SinonSpy;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    systemListeners = [];
+    urls = [];
+    const innerRestore = stubFetch();
+    const stubbed = window.fetch;
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      urls.push(typeof input === 'string' ? input : input.toString());
+      return stubbed(input, init);
+    }) as typeof window.fetch;
+    restoreFetch = innerRestore;
+
+    const originalSubscribe = unifiedWebSocketManager.subscribe;
+    unifiedWebSocketManager.subscribe = ((
+      topic: string,
+      callback: (message: any) => void
+    ) => {
+      if (topic === 'system') systemListeners.push(callback);
+      return () => {};
+    }) as typeof unifiedWebSocketManager.subscribe;
+    restoreSubscribe = () => {
+      unifiedWebSocketManager.subscribe = originalSubscribe;
+    };
+    logSpy = sinon.spy(console, 'log');
+  });
+
+  afterEach(() => {
+    logSpy.restore();
+    restoreFetch();
+    restoreSubscribe();
+    localStorage.removeItem('accessToken');
+  });
+
+  function stored(el: ConsoleHeader): { title: string; read: boolean }[] {
+    return (
+      el as unknown as {
+        _userNotifications: { title: string; read: boolean }[];
+      }
+    )._userNotifications;
+  }
+
+  it('starts empty and never asks the server for past notifications', async () => {
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await el.updateComplete;
+
+    expect(stored(el)).to.deep.equal([]);
+    expect(urls.some((url) => url.includes('notification'))).to.equal(false);
+  });
+
+  it('adds an unread notification for an account event without logging it', async () => {
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await el.updateComplete;
+    expect(systemListeners).to.have.lengthOf(1);
+
+    systemListeners[0]({
+      type: 'role_changed',
+      id: 'n-role',
+      title: 'Your role changed',
+      message: 'You are now an admin',
+    });
+    await el.updateComplete;
+
+    expect(stored(el)).to.have.lengthOf(1);
+    expect(stored(el)[0].title).to.equal('Your role changed');
+    expect(stored(el)[0].read).to.equal(false);
+    expect(logSpy.called).to.equal(false);
+  });
+});
