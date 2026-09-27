@@ -274,6 +274,33 @@ describe('SessionEmbeddingSettings', () => {
       expect(degraded).to.contain('daily cap');
     });
 
+    it('does not read as a stalled backlog when embedding is off', async () => {
+      install({
+        permissions: null,
+        read: {
+          enabled: false,
+          provider: 'local',
+          model_identifier: 'all-MiniLM',
+          corpus: {
+            vectors: 500,
+            model_vectors: 500,
+            pending: 40,
+            embedded_through: null,
+          },
+        },
+      });
+      const el = await render();
+
+      const progress = q(el, 'embedding-progress')!.textContent!.replace(
+        /\s+/g,
+        ' '
+      );
+      expect(progress).to.contain('Embedding is off');
+      expect(progress).to.contain('500');
+      expect(progress).to.not.contain('waiting');
+      expect(progress).to.contain('40 chunks would be embedded');
+    });
+
     it('warns when the deployment kill switch overrides the account', async () => {
       install({
         permissions: null,

@@ -249,6 +249,20 @@ export class SessionEmbeddingSettings extends LitElement {
         Nothing is embedded yet. Keyword search covers every session either way.
       </p>`;
     }
+    if (!setting.enabled) {
+      // `pending` is scope filtered, not opt in filtered: while embedding is
+      // off nothing drains it, so it must not read as a stalled backlog.
+      return html`<p class="note" data-testid="embedding-progress">
+        Embedding is off. ${formatCount(corpus.vectors)} chunks keep the vectors
+        they already have.
+        ${
+          corpus.pending > 0
+            ? html`${formatCount(corpus.pending)} chunks would be embedded in
+              the current scope if it is turned back on.`
+            : nothing
+        }
+      </p>`;
+    }
     const otherModel = corpus.vectors - corpus.model_vectors;
     return html`<p class="note" data-testid="embedding-progress">
       ${formatCount(corpus.model_vectors)} chunks embedded with the current
