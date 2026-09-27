@@ -39,8 +39,19 @@ Pick one of two modes when you add the tracker.
   repository settings and bound to that one repository, so the tracker also
   needs `repository` set. Sent as Bearer.
 
-Give the token read and write access to repositories, pull requests and
-webhooks. Tasks need pull request write access; without it tasks are skipped.
+Scopes for a personal API token (they do not imply each other):
+
+- `read:repository:bitbucket` and `write:repository:bitbucket` (source, clone
+  and push);
+- `read:pullrequest:bitbucket` and `write:pullrequest:bitbucket` (comments,
+  approvals, request changes and tasks);
+- `read:webhook:bitbucket` and `write:webhook:bitbucket` (webhook
+  registration).
+
+A repository access token needs `repository`, `repository:write`,
+`pullrequest`, `pullrequest:write` and `webhook`. Write access on pull requests
+also allows merge and decline in Bitbucket; Preloop never calls those. If a
+task call is refused (403), Preloop skips the task and says so in the result.
 
 **App passwords are rejected.** Bitbucket is retiring them. Preloop refuses a
 secret that starts with the app password prefix `ATBB` and an `auth_type` or
@@ -163,6 +174,22 @@ and GitLab comment events use:
 payload also carries `object_attributes` (title, description, url, branches,
 state, draft, author, number) in the same shape GitHub pull requests use, so
 the preset prompt is the same for every provider.
+
+## Required approvals
+
+Bitbucket merge checks can require a minimum number of approvals. The author's
+own approval does not count. Preloop approves as the tracker's token owner, so
+that approval counts like any other reviewer's:
+
+1. The branch requires two approvals and one person has already approved.
+2. The reviewer flow approves (`review_action: "approve"`). Bitbucket now
+   counts two approvals.
+3. A person merges. Preloop never does.
+
+Request changes is a separate participant state. The reviewer can remove it
+(`remove_request_changes`) or withdraw its approval (`unapprove`) on a later
+run. Use a dedicated Bitbucket account for the reviewer's API token, so its
+verdict is not mistaken for a person's.
 
 ## MCP tools
 
