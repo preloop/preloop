@@ -161,7 +161,9 @@ def _fill_person(session: Session, user: User, claimed: set[str]) -> None:
 
 
 @event.listens_for(Session, "before_flush")
-def _fill_hierarchy_defaults(session: Session, flush_context: Any, instances: Any):
+def _fill_hierarchy_defaults(
+    session: Session, flush_context: Any, instances: Any
+) -> None:
     """Give new accounts and users the hierarchy columns they must carry."""
     claimed: set[str] = set()
     for obj in list(session.new):
