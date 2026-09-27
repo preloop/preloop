@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -61,6 +61,12 @@ import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+
+/**
+ * Actions the rule dialog offers. `notify` (#959) is for model text rules
+ * only: the call proceeds and policy owners are told. Tool rules never get it.
+ */
+type ModelIOFormAction = 'allow' | 'deny' | 'require_approval' | 'notify';
 
 // Types for tool access rules
 interface ToolAccessRule {
@@ -219,7 +225,7 @@ export class PoliciesView extends LitElement {
     toolName: '',
     target: 'model.request' as 'model.request' | 'model.response',
     enabled: true,
-    action: 'deny' as 'allow' | 'deny' | 'require_approval',
+    action: 'deny' as ModelIOFormAction,
     expression: 'pii.found == true',
     approvalWorkflow: '',
     detectPii: true,
@@ -977,7 +983,7 @@ export class PoliciesView extends LitElement {
       toolName: '',
       target: preset.target as 'model.request' | 'model.response',
       enabled: true,
-      action: preset.action as 'allow' | 'deny' | 'require_approval',
+      action: preset.action as ModelIOFormAction,
       expression: preset.expression,
       approvalWorkflow: '',
       detectPii: preset.detectPii,
@@ -1020,8 +1026,7 @@ export class PoliciesView extends LitElement {
       };
     } else if (rule) {
       const condition = rule.conditions?.[0];
-      const action = (condition?.action || 'deny') as
-        'allow' | 'deny' | 'require_approval';
+      const action = (condition?.action || 'deny') as ModelIOFormAction;
       this._editingModelIOId = rule.id;
       this._modelIOForm = {
         id: rule.id,
@@ -1069,7 +1074,12 @@ export class PoliciesView extends LitElement {
   };
 
   private _patchModelIOForm(patch: Partial<typeof this._modelIOForm>) {
-    this._modelIOForm = { ...this._modelIOForm, ...patch };
+    const next = { ...this._modelIOForm, ...patch };
+    // Tool rules have no notify action; fall back to the dialog's default.
+    if (next.ruleType === 'tool' && next.action === 'notify') {
+      next.action = 'deny';
+    }
+    this._modelIOForm = next;
   }
 
   /** A preset fills in target, detectors, condition, and suggested action. */
@@ -1216,6 +1226,11 @@ export class PoliciesView extends LitElement {
 
   private async saveToolRuleFromForm() {
     const form = this._modelIOForm;
+    const action = form.action;
+    if (action === 'notify') {
+      this._ruleDialogError = 'Notify is only available for model text rules.';
+      return;
+    }
     const tool = this._tools.find((item) => item.name === form.toolName);
     if (!tool) {
       this._ruleDialogError = 'Choose a tool';
@@ -1229,9 +1244,9 @@ export class PoliciesView extends LitElement {
           tool_name: tool.name,
           tool_source: tool.source,
           mcp_server_id: tool.source_id,
-          is_enabled: form.action !== 'deny',
+          is_enabled: action !== 'deny',
           approval_workflow_id:
-            form.action === 'require_approval'
+            action === 'require_approval'
               ? this._approvalPolicies.find(
                   (p) => p.name === form.approvalWorkflow
                 )?.id ||
@@ -1243,12 +1258,12 @@ export class PoliciesView extends LitElement {
         configId = created.id;
       }
       const payload = {
-        action: form.action,
+        action,
         condition_expression: form.expression.trim() || null,
         condition_type: conditionTypeFor(form.expression),
         is_enabled: form.enabled,
         approval_workflow_id:
-          form.action === 'require_approval'
+          action === 'require_approval'
             ? this._approvalPolicies.find(
                 (p) => p.name === form.approvalWorkflow
               )?.id || null
@@ -2029,14 +2044,18 @@ export class PoliciesView extends LitElement {
                                 ? 'action-allow'
                                 : rule.action === 'deny'
                                   ? 'action-deny'
-                                  : 'action-approval'
+                                  : rule.action === 'notify'
+                                    ? 'action-notify'
+                                    : 'action-approval'
                             }
                             variant=${
                               rule.action === 'allow'
                                 ? 'success'
                                 : rule.action === 'deny'
                                   ? 'danger'
-                                  : 'warning'
+                                  : rule.action === 'notify'
+                                    ? 'primary'
+                                    : 'warning'
                             }
                           >
                             ${rule.action}
@@ -2173,7 +2192,23 @@ export class PoliciesView extends LitElement {
             <sl-option value="allow">Allow</sl-option>
             <sl-option value="deny">Deny</sl-option>
             <sl-option value="require_approval">Require approval</sl-option>
+            ${
+              isTool
+                ? nothing
+                : html`<sl-option value="notify">Notify</sl-option>`
+            }
           </sl-select>
+          ${
+            form.action === 'notify'
+              ? html`<p class="model-io-hint" data-testid="notify-hint">
+                  The call goes through unchanged. Each match is recorded with a
+                  short excerpt (secrets redacted) and policy owners are told by
+                  email, push or the approval workflow's chat channel, at most
+                  once an hour per rule and user. Later deny or approval rules
+                  still apply.
+                </p>`
+              : nothing
+          }
         </div>
 
         ${

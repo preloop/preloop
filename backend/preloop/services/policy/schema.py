@@ -254,6 +254,13 @@ class ConditionAction(str, Enum):
     REQUIRE_APPROVAL = "require_approval"
     DENY = "deny"
     ALLOW = "allow"
+    # Model I/O rules only: the call proceeds as with allow, and the match is
+    # recorded and sent to the policy owners (#959). Tool conditions reject it.
+    NOTIFY = "notify"
+
+
+#: Actions a model I/O rule may use but a tool condition may not.
+MODEL_IO_ONLY_ACTIONS = frozenset({ConditionAction.NOTIFY.value})
 
 
 class ConditionType(str, Enum):
@@ -397,6 +404,25 @@ class ToolDefinition(BaseModel):
             return v.lower()
         # Custom MCP server names are allowed
         return v
+
+    @field_validator("conditions")
+    @classmethod
+    def validate_tool_condition_actions(
+        cls, value: Optional[List[ToolCondition]]
+    ) -> Optional[List[ToolCondition]]:
+        """Reject actions only the model I/O evaluator implements.
+
+        The tool evaluator has no notify branch, so a tool condition with
+        ``notify`` would silently act as something else.
+        """
+        for condition in value or []:
+            action = getattr(condition.action, "value", condition.action)
+            if action in MODEL_IO_ONLY_ACTIONS:
+                raise ValueError(
+                    f"Tool conditions do not support action '{action}'. "
+                    "Use it in a model_io rule."
+                )
+        return value
 
 
 class UnknownToolsPolicy(str, Enum):

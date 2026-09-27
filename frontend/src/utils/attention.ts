@@ -25,6 +25,11 @@ import {
 import { sessionBelongsToAgent } from './agent-display';
 import { isCliOnboardableAgentKind } from './agent-kinds';
 import { shellQuote } from './shell';
+import {
+  policyNoticeItems,
+  type AttentionPolicyNotice,
+  type AttentionPolicyNoticeEvidence,
+} from './attention-policy';
 
 /**
  * Everything the console considers "needs attention", derived from data the
@@ -32,7 +37,7 @@ import { shellQuote } from './shell';
  * Attention page can render the same list without a second source of truth.
  */
 export type AttentionKind =
-  'approval' | 'agent' | 'flow' | 'model' | 'budget' | 'pricing';
+  'approval' | 'agent' | 'flow' | 'model' | 'budget' | 'pricing' | 'policy';
 
 /**
  * `low` is for things that are worth naming once and are usually fine: a model
@@ -125,6 +130,8 @@ export interface AttentionEvidence {
   catalogMissing?: boolean;
   unpricedRequests?: number;
   budget?: AttentionBudgetDetail;
+  /** Notify rule hits behind a policy item (#959). */
+  policyNotice?: AttentionPolicyNoticeEvidence;
 }
 
 export interface AttentionItem {
@@ -260,6 +267,8 @@ export interface AttentionInputs {
    * so a model that has one is priced whatever its spend adds up to.
    */
   priceOverrides?: AttentionPriceOverride[];
+  /** Notify rule hits of the last seven days, one row per rule. */
+  policyNotices?: AttentionPolicyNotice[];
   /**
    * Active dismissals. `undefined` (an older backend without the endpoint)
    * hides nothing and is not an error.
@@ -308,6 +317,12 @@ export const ATTENTION_KIND_META: Record<
     icon: 'tags',
     sectionHref: '/console/cost',
   },
+  policy: {
+    label: 'Policy notice',
+    plural: 'Policy notices',
+    icon: 'bell',
+    sectionHref: '/console/policies',
+  },
 };
 
 /** Section order on the Attention page and in the grouped map. */
@@ -318,6 +333,7 @@ export const ATTENTION_KIND_ORDER: AttentionKind[] = [
   'model',
   'budget',
   'pricing',
+  'policy',
 ];
 
 /** The Cost page reads `panel` and scrolls its pricing card into view. */
@@ -1353,6 +1369,7 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
       dismissals,
       now
     ),
+    ...policyNoticeItems(inputs.policyNotices || []),
   ];
 
   const byItemId = new Map<string, AttentionDismissalRecord>();

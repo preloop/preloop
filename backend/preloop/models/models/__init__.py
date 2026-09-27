@@ -87,6 +87,7 @@ from .user_invitation import UserInvitation, UserInvitationStatus
 from .event import Event
 from .visitor import Visitor
 from .identity_link import IdentityLink
+from .policy_notice_hit import PolicyNoticeHit
 from .account_milestone import AccountMilestone
 from .attention_dismissal import AttentionDismissal
 from .instance import Instance
@@ -229,6 +230,7 @@ __all__ = [
     "Event",
     "Visitor",
     "IdentityLink",
+    "PolicyNoticeHit",
     "AccountMilestone",
     "AttentionDismissal",
     "Instance",

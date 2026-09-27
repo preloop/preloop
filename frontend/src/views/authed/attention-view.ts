@@ -55,6 +55,10 @@ import {
 } from '../../utils/attention';
 import { REMOVE_AGENT_CONSEQUENCE } from '../../utils/agent-display';
 import { loadAttentionInputs } from '../../utils/attention-data';
+import {
+  POLICY_NOTICE_HREF,
+  type AttentionPolicyNotice,
+} from '../../utils/attention-policy';
 import { publishAttentionSummary } from '../../utils/attention-summary';
 import {
   formatFutureRelativeTime,
@@ -99,6 +103,7 @@ export class AttentionView extends AuthedElement {
   @state() private gatewayFailures: GatewayUsageSearchResultItem[] = [];
   @state() private budgetPolicies: BudgetPolicy[] = [];
   @state() private priceOverrides: AttentionPriceOverride[] = [];
+  @state() private policyNotices: AttentionPolicyNotice[] = [];
 
   @state() private usageSummary: AccountGatewayUsageSummaryResponse | null =
     null;
@@ -316,6 +321,11 @@ export class AttentionView extends AuthedElement {
       .evidence-table .mono {
         font-family: var(--sl-font-mono);
         font-size: 12px;
+      }
+
+      .policy-notice-excerpt {
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
       }
 
       .evidence-table {
@@ -655,6 +665,7 @@ export class AttentionView extends AuthedElement {
     this.budgetPolicies = inputs.budgetPolicies || [];
     this.usageSummary = inputs.usageSummary || null;
     this.priceOverrides = inputs.priceOverrides || [];
+    this.policyNotices = inputs.policyNotices || [];
     this.dismissals = (inputs.dismissals || []) as AttentionDismissal[];
     this.dismissalsSupported = inputs.dismissalsSupported;
     this.permissions = profile?.permissions ?? null;
@@ -677,6 +688,7 @@ export class AttentionView extends AuthedElement {
       budgetPolicies: this.budgetPolicies,
       usageSummary: this.usageSummary,
       priceOverrides: this.priceOverrides,
+      policyNotices: this.policyNotices,
       dismissals: this.dismissals,
     });
   }
@@ -687,7 +699,8 @@ export class AttentionView extends AuthedElement {
 
   /** `approval` -> `approvals`, `pricing` -> `pricing`. */
   private sectionId(kind: AttentionKind): string {
-    return ATTENTION_KIND_META[kind].plural.toLowerCase();
+    // "Policy notices" has a space, which is not valid in an id selector.
+    return ATTENTION_KIND_META[kind].plural.toLowerCase().replace(/\s+/g, '-');
   }
 
   private scrollToSection(kind: AttentionKind): void {
@@ -1373,6 +1386,53 @@ export class AttentionView extends AuthedElement {
     `;
   }
 
+  private renderPolicyEvidence(item: AttentionItem) {
+    const notice = item.evidence?.policyNotice;
+    if (!notice) {
+      return nothing;
+    }
+    return html`
+      <table class="evidence-table">
+        <tbody>
+          <tr>
+            <th style="width: 40%">Rule</th>
+            <td><code>${notice.ruleId}</code></td>
+          </tr>
+          <tr>
+            <th>Matches in the last 7 days</th>
+            <td>${notice.count}</td>
+          </tr>
+          <tr>
+            <th>Last match</th>
+            <td
+              title=${notice.lastAt ? formatLocalDateTime(notice.lastAt) : nothing}
+            >
+              ${notice.lastAt ? formatRelativeTime(notice.lastAt) : 'unknown'}
+              ${notice.lastUsername ? html`by ${notice.lastUsername}` : nothing}
+            </td>
+          </tr>
+          <tr>
+            <th>Latest excerpt (secrets redacted)</th>
+            <td>
+              ${
+                notice.lastExcerpt
+                  ? html`<code class="policy-notice-excerpt"
+                      >${notice.lastExcerpt}</code
+                    >`
+                  : 'Not available'
+              }
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="evidence-actions">
+        <sl-button size="small" href=${POLICY_NOTICE_HREF}
+          >Review rule</sl-button
+        >
+      </div>
+    `;
+  }
+
   private renderEvidence(item: AttentionItem) {
     switch (item.kind) {
       case 'flow':
@@ -1385,6 +1445,8 @@ export class AttentionView extends AuthedElement {
         return this.renderPricingEvidence(item);
       case 'budget':
         return this.renderBudgetEvidence(item);
+      case 'policy':
+        return this.renderPolicyEvidence(item);
       default:
         return nothing;
     }
@@ -1400,7 +1462,8 @@ export class AttentionView extends AuthedElement {
       evidence.unpricedModels?.length ||
       evidence.zeroPricedModels?.length ||
       evidence.catalogMissing ||
-      evidence.budget
+      evidence.budget ||
+      evidence.policyNotice
     );
   }
 
