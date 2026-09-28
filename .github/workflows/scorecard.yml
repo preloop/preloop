@@ -9,6 +9,12 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  # Only the newest main commit needs a fresh scorecard; superseded push runs
+  # are cancelled. Scheduled and branch_protection_rule runs are not.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
 permissions: read-all
 
 jobs:

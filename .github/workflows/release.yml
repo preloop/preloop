@@ -27,6 +27,16 @@ env:
   IMAGE_NAME_BACKEND: preloop/preloop
   IMAGE_NAME_FRONTEND: preloop/console
 
+concurrency:
+  # Edge images track the tip of main, so a newer main commit cancels the
+  # build for the one it replaced. A cancel can land mid multi-arch push, so
+  # :edge can be briefly inconsistent; the next main build republishes it.
+  # Nothing treats :edge as reliably pullable at an arbitrary instant.
+  # Tag pushes and published releases are never cancelled: every tag is its
+  # own group and cancel is off for them.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
 permissions:
   contents: read
 

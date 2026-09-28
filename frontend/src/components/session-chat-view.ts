@@ -849,7 +849,8 @@ export class SessionChatView extends LitElement {
         </div>
         ${
           displayText
-            ? html`
+            ? // prettier-ignore
+              html`
                 <pre class="step-text">
 ${
                     displayText.length > STEP_PREVIEW_CHARS && !expanded
