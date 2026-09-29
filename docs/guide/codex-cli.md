@@ -5,6 +5,32 @@ through the Preloop gateway, and can install approval hooks with
 `--approvals`. Codex keeps `~/.codex/config.toml` for its own settings.
 Agent Control does not write that file.
 
+## Onboard, verify, roll back
+
+```bash
+preloop agents discover
+preloop agents onboard "Codex CLI"              # MCP firewall + model gateway
+preloop agents onboard "Codex CLI" --approvals  # also route tool calls to Preloop policy and approvals
+```
+
+Onboarding backs up `~/.codex/config.toml` (`~/.codex/config.json` is only a
+legacy fallback) and adds a managed `[mcp_servers.preloop]` entry that points
+at the Preloop MCP endpoint. `--approvals` adds hooks to `~/.codex/hooks.json`:
+`PreToolUse` evaluates your central tool rules, and `PermissionRequest` turns
+the prompts Codex would show you into Preloop approval requests you can answer
+from mobile, watch, or the web console.
+
+```bash
+preloop agents status "Codex CLI"
+preloop agents validate "Codex CLI"
+preloop agents restore "Codex CLI"
+preloop agents offboard "Codex CLI"
+```
+
+See the [CLI quick start](quickstart-cli.md), [Safety Layer and access
+rules](concepts/safety-layer.md) and [Claude Code](clients/claude-code.md) for
+the equivalent flow on other agents.
+
 ## Agent Control sidecar
 
 Codex has no in-process plugin API for operator messages, so Agent Control
