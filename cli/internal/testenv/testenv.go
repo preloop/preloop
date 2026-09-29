@@ -64,7 +64,9 @@ func SetTempHome(t *testing.T) string {
 // parent process that exports any of them, such as a developer shell, makes
 // NewClient authenticate as that credential, or resolve a profile or account
 // other than the login a test saved. The names are literal because config's
-// own tests import this package.
+// own tests import this package. Non-credential overrides such as
+// PRELOOP_RUNNER_CONCURRENCY are not listed: the tests that read them clear
+// them with t.Setenv.
 var CredentialEnv = []string{
 	"PRELOOP_TOKEN",
 	"PRELOOP_URL",

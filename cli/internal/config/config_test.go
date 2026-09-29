@@ -199,6 +199,9 @@ func TestGetConfigDir(t *testing.T) {
 func TestRunnerConcurrencyDefaultsAndOverrides(t *testing.T) {
 	tmpDir := t.TempDir()
 	testenv.SetHome(t, tmpDir)
+	// The environment wins over the file; clear an exported value before
+	// asserting the default and the file value.
+	t.Setenv(EnvRunnerConcurrency, "")
 
 	if got := RunnerConcurrency(); got != DefaultRunnerConcurrency {
 		t.Fatalf("default runner concurrency = %d", got)
