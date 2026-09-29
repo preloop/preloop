@@ -1,21 +1,27 @@
-# High Level Architecture
+# What Preloop includes
 
-Preloop is built on a modular architecture designed for scalability, security, and extensibility. It consists of three main interfaces that connect you to the core platform.
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
-## 1. Console (The Command Center)
+Preloop has three surfaces: the web console, the API (MCP endpoint and model gateway), and the mobile and watch apps. Contributors looking for internals should read the [architecture chapters](../architecture/overview.md).
+
+## Console
 
 The **Console** is the web-based interface where you manage your organization, configure tools, monitor agent activity, and inspect model traffic. It provides a unified view of your issue trackers, automation flows, managed agents, runtime sessions, and governance state.
 
-*   **Dashboard**: View high-level metrics including active runtime sessions, recent tool-call volume, daily model spend, and system status.
+*   **Overview**: Metrics including active runtime sessions, recent tool-call volume, daily model spend, and system status.
 *   **Cost**: Spend trends, attribution by model/agent/session, and budget-health signals (Enterprise adds budget-policy configuration behind feature flags).
-*   **Runtime Sessions & Optimization**: Per-session timelines with the session-optimization loop (analyze, one-click apply, replay-verify) in the **Optimize** tab.
-*   **Issue Management**: Browse and manage issues from connected trackers (Jira, GitHub, GitLab) in a unified view.
-*   **Flow Builder**: Create and configure event-driven agentic workflows.
-*   **Managed Agents, Runtime Sessions & Agent Control**: Inspect enrolled agents, recent sessions, captured gateway interactions, operator-driven session lifecycle actions, and live Agent Control presence/commands where the runtime adapter is connected.
-*   **AI Models**: Configure reusable models, secret-backed credentials, gateway routing, and per-model usage visibility.
-*   **Settings**: Manage users, teams, API keys, and subject-scoped security policies.
+*   **Audit > Sessions and optimization**: Per-session timelines with the session-optimization loop (analyze, one-click apply, replay-verify) in the **Optimize** tab.
+*   **Trackers**: Connect issue trackers (Jira, GitHub, GitLab) that flows and tools work against.
+*   **Flows**: Create and configure event-driven agentic workflows.
+*   **Agents**: Inspect enrolled agents, recent sessions, captured gateway interactions, operator-driven session lifecycle actions, and live Agent Control presence/commands where the runtime adapter is connected.
+*   **Models**: Configure reusable models, secret-backed credentials, gateway routing, and per-model usage visibility.
+*   **Tools** and **Policies**: The tool catalogue, access rules and approval workflows.
+*   **Settings**: Account, records retention, API keys, runners, webhooks, notifications and the emergency kill switch.
 
-## 2. API (The Engine)
+!!! cloud "Cloud and Enterprise"
+    **Users**, **Teams** and **Invitations** appear in the console when user and team management are enabled.
+
+## API
 
 The **API** serves as the gateway for all interactions. It implements the **Model Context Protocol (MCP)** for tool use and the model-gateway endpoints for managed model traffic.
 
@@ -27,7 +33,7 @@ The **API** serves as the gateway for all interactions. It implements the **Mode
 *   **Observability**: Records gateway usage, execution-scoped gateway events, runtime-session activity, and audit trails for operator review.
 *   **Agent Control**: Provides the managed-agent WebSocket and operator command endpoint. The CLI provisions credentials/config and installs or verifies native runtime plugins via `preloop agents install-plugin`. Live agent behavior requires OpenClaw, Hermes, or another runtime to load the plugin that owns reconnect/backoff, heartbeat/status events, capability advertisement, command receipt, and message execution/injection into the active session.
 
-## 3. Mobile & Watch Apps
+## Mobile and watch apps
 
 Stay connected and manage approvals on the go with the **Preloop** native applications.
 

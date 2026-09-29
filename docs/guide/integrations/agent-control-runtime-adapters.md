@@ -1,5 +1,7 @@
 # Agent Control Runtime Adapters
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 **Agent Control** is Preloop's live operator channel for enrolled agents such as OpenClaw and Hermes. Operators on web, mobile, or watch can send audited text (and voice-originated transcripts) to a running local agent. The agent must load a **runtime plugin** that owns the long-lived WebSocket to Preloop.
 
 ---
@@ -109,4 +111,4 @@ Operator voice on mobile/watch uses native STT, then posts a normalized transcri
 - [Hermes reference](../hermes.md)
 - [Mobile apps](../clients/mobile-apps.md)
 - [Runtime Sessions](../concepts/runtime-sessions.md)
-- [Architecture](../architecture.md)
+- [What Preloop includes](../functionality.md)

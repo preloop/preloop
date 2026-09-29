@@ -74,7 +74,8 @@ plugins:
         approvals/justification.md: guide/approvals/justification.md
         approvals/notifications.md: guide/approvals/notifications.md
         approvals/teams.md: guide/approvals/teams.md
-        architecture.md: guide/architecture.md
+        architecture.md: guide/functionality.md
+        guide/architecture.md: guide/functionality.md
         cli.md: guide/cli.md
         clients/claude-code.md: guide/clients/claude-code.md
         clients/gemini-cli.md: guide/clients/gemini-cli.md
@@ -125,6 +126,7 @@ plugins:
 nav:
   - Home:
       - Introduction: index.md
+      - What Preloop includes: guide/functionality.md
       - Quick starts:
           - "Onboard local agents with the CLI (60 s)": guide/quickstart-cli.md
           - "Part 1: Safety layer (5 min)": guide/quickstart.md
@@ -160,7 +162,6 @@ nav:
       - Policy-as-code: guide/concepts/policy-as-code.md
       - Runtime sessions: guide/concepts/runtime-sessions.md
       - Subagent session identity: guide/subagent-session-identity.md
-      - Product architecture: guide/architecture.md
 
   - Governance and approvals:
       - AI-driven approvals: guide/approvals/ai-approvals.md

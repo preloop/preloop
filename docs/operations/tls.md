@@ -1,5 +1,7 @@
 # Expose Preloop With TLS
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The OSS installer starts Preloop on local HTTP ports:
 
 - Console: `http://localhost:3000`
@@ -222,4 +224,4 @@ origin with the same script: [Gateway overhead](../guide/concepts/gateway-overhe
 
 - [Gateway overhead](../guide/concepts/gateway-overhead.md)
 - [Quick Start: CLI onboarding](../guide/quickstart-cli.md)
-- [Architecture](../guide/architecture.md)
+- [What Preloop includes](../guide/functionality.md)
