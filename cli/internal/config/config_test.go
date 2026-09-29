@@ -8,6 +8,23 @@ import (
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
+func TestMain(m *testing.M) {
+	// PRELOOP_PROFILE and PRELOOP_ACCOUNT select what Load reads, and
+	// PRELOOP_TOKEN and PRELOOP_URL override it. A developer shell that
+	// exports one would make these tests read another profile or credential.
+	// Tests of those overrides set them with t.Setenv.
+	testenv.ScrubCredentialEnv()
+	os.Exit(m.Run())
+}
+
+func TestSuiteDoesNotInheritCredentialEnv(t *testing.T) {
+	for _, name := range testenv.CredentialEnv {
+		if value, ok := os.LookupEnv(name); ok {
+			t.Fatalf("unit tests inherited %s=%q from the parent process", name, value)
+		}
+	}
+}
+
 func TestLoadConfig_NoFile(t *testing.T) {
 	// Use a temp dir so no real config is loaded
 	tmpDir := t.TempDir()

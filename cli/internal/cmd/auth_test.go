@@ -306,8 +306,9 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
-	// PRELOOP_TOKEN overrides a login the test saved. A developer shell that
-	// exports it would make these tests call that host instead of the fixture.
+	// PRELOOP_TOKEN, PRELOOP_URL, PRELOOP_PROFILE and PRELOOP_ACCOUNT override
+	// the login a test saved. A developer shell that exports one would make
+	// these tests call that host, or read another profile, not the fixture.
 	testenv.ScrubCredentialEnv()
 
 	// Scrub ambient agent/model env vars so upstream-resolution tests see a
@@ -350,8 +351,10 @@ func TestMain(m *testing.M) {
 }
 
 func TestSuiteDoesNotInheritCredentialEnv(t *testing.T) {
-	if os.Getenv("PRELOOP_TOKEN") != "" || os.Getenv("PRELOOP_URL") != "" {
-		t.Fatal("unit tests inherited PRELOOP_TOKEN or PRELOOP_URL from the parent process")
+	for _, name := range testenv.CredentialEnv {
+		if value, ok := os.LookupEnv(name); ok {
+			t.Fatalf("unit tests inherited %s=%q from the parent process", name, value)
+		}
 	}
 }
 
