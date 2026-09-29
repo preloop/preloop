@@ -1,5 +1,7 @@
 # OWASP Top 10 coverage: what Preloop does and does not do
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This page maps Preloop to the **OWASP Top 10 for Agentic Applications (2026)** and the
 **OWASP Top 10 for LLM Applications (2026)**, entry by entry. It exists so that anyone
 grading Preloop's claims (a buyer, an auditor, or a directory such as
@@ -148,9 +150,10 @@ and the rule that gated the call. Approvals are delivered on mobile, watch, Slac
 Mattermost, email or webhook, and are recorded with approver identity and decision.
 
 **Polarity.** AI-driven approval workflows (Enterprise) let a model decide approvals
-against operator criteria. They can be configured to require human confirmation for
-high-risk decisions. Without that setting, an AI approver is itself a trust surface
-an agent could exploit.
+against operator criteria. Decisions below the workflow's confidence threshold follow
+its fallback (`escalate` to a human, `deny`, or `approve`). With a permissive threshold
+or an `approve` fallback, an AI approver is itself a trust surface an agent could
+exploit.
 
 Edition: human approvals OSS; multi-approver, quorum and AI-driven approvals
 Cloud/Enterprise. Code: `backend/preloop/services/approval_service.py`,
@@ -198,11 +201,12 @@ field-name redaction (`password`, `token`, `api_key`, `authorization`, `credenti
 `private_key`, `client_secret`, `webhook_secret` and similar). Free-text personal data
 inside prompts is **not** redacted by default.
 
-Default posture: content previews captured and redacted; full transcripts are not
-stored by the gateway. Edition: OSS. Code:
+Default posture: content captured and redacted. With the default limits (32768
+characters per message preview, 8192 characters per stored body string) most
+conversations are stored in full after redaction. Edition: OSS. Code:
 `backend/preloop/services/model_gateway_events.py`, `backend/preloop/utils/redaction.py`,
 `backend/preloop/config.py` (`model_gateway_capture_content`). Docs:
-[Security & Privacy](security-privacy.md), [AI Model Gateway](../guide/concepts/model-gateway.md).
+[Security & Privacy](security-privacy.md), [Redaction](redaction.md), [AI Model Gateway](../guide/concepts/model-gateway.md).
 
 ### Supply Chain
 

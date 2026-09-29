@@ -3,7 +3,7 @@
 After reading this page you can route a workflow's approval requests to Slack, Mattermost, or a webhook, and set per-user email and mobile push preferences so approvers get pinged where they actually are.
 
 !!! info "Edition notes"
-    All notification channels — **email, mobile push, Slack, Mattermost, and webhooks** — are available in the **open-source** edition. The mobile and watch apps are proprietary clients, but they work against self-hosted open-source servers.
+    All notification channels (**email, mobile push, Slack, Mattermost, and webhooks**) are available in the **open-source** edition. The mobile and watch apps are proprietary clients, but they work against self-hosted open-source servers.
 
 ---
 
@@ -11,8 +11,8 @@ After reading this page you can route a workflow's approval requests to Slack, M
 
 When an approval is required, Preloop notifies through two kinds of channels:
 
-- **Per-user channels** — email and mobile push, controlled by each approver's own preferences
-- **Per-workflow channels** — Slack, Mattermost, and webhooks, configured on the approval workflow via `channel_configs`
+- **Per-user channels**: email and mobile push, controlled by each approver's own preferences
+- **Per-workflow channels**: Slack, Mattermost, and webhooks, configured on the approval workflow via `channel_configs`
 
 The web dashboard always shows pending requests in real time regardless of channel configuration.
 
@@ -35,7 +35,7 @@ Each user configures three settings in **Settings** → **Notifications**:
 | `enable_email` | on/off | Receive approval emails |
 | `enable_mobile_push` | on/off | Receive push notifications on registered devices |
 
-That is the full set — there are no quiet hours, digests, or per-tool notification overrides.
+That is the full set: there are no quiet hours, digests, or per-tool notification overrides.
 
 ---
 
@@ -43,7 +43,7 @@ That is the full set — there are no quiet hours, digests, or per-tool notifica
 
 Every approval email includes the tool name, formatted arguments, the agent's reasoning (if provided), and direct **Approve** / **Decline** links.
 
-The links carry a secure token, so no login is required — click, decide, done. Sensitive argument values are redacted before they are included.
+The links carry a secure token, so no login is required: click, decide, done. Sensitive argument values are redacted before they are included (see [Redaction](../../security/redaction.md)).
 
 ```
 Subject: Approval Required: pay
@@ -92,7 +92,7 @@ approval_workflows:
         webhook_url: "https://hooks.slack.com/services/T000/B000/XXXX"
 ```
 
-Mattermost is identical — use the `mattermost` key with your Mattermost incoming webhook URL:
+Mattermost is identical: use the `mattermost` key with your Mattermost incoming webhook URL:
 
 ```yaml
     channel_configs:
@@ -100,7 +100,7 @@ Mattermost is identical — use the `mattermost` key with your Mattermost incomi
         webhook_url: "https://mattermost.example.com/hooks/XXXX"
 ```
 
-Because each workflow carries its own `channel_configs`, you can point different workflows at different channels — deployments to `#deploys`, payments to `#finance` — by creating a webhook per channel and one workflow per audience.
+Because each workflow carries its own `channel_configs`, you can point different workflows at different channels (deployments to `#deploys`, payments to `#finance`) by creating a webhook per channel and one workflow per audience.
 
 ---
 
@@ -132,13 +132,13 @@ Preloop POSTs a JSON payload:
 }
 ```
 
-The `actions` URLs are token-authenticated approval links. Sensitive argument values are redacted.
+The `actions` URLs are token-authenticated approval links. Sensitive argument values are [redacted](../../security/redaction.md).
 
 ---
 
 ## Web Dashboard
 
-Always on. The notification bell shows pending requests; clicking one opens the full request with arguments, timeline, and Approve/Decline buttons. Updates arrive over WebSocket — new requests and status changes appear without a refresh.
+Always on. The notification bell shows pending requests; clicking one opens the full request with arguments, timeline, and Approve/Decline buttons. Updates arrive over WebSocket: new requests and status changes appear without a refresh.
 
 ---
 
@@ -148,13 +148,13 @@ Always on. The notification bell shows pending requests; clicking one opens the 
 2. Call the tool from your MCP client
 3. Verify notifications arrive on each configured channel
 4. Approve from one channel
-5. Verify the others reflect the decision — and, if you have push enabled, that the delayed email was skipped
+5. Verify the others reflect the decision, and, if you have push enabled, that the delayed email was skipped
 
 ---
 
 ## Related Pages
 
-- [Async Approvals](async-approvals.md) — non-blocking approvals with polling
-- [Teams in Approval Workflows](teams.md) — routing to groups of approvers
-- [Per-Tool Justification](justification.md) — agent reasoning in notifications
-- [Native Tool Approvals](ai-approvals.md#native-tool-approvals) — approvals for agents' shell and file operations, delivered over the same channels
+- [Async Approvals](async-approvals.md): non-blocking approvals with polling
+- [Teams in Approval Workflows](teams.md): routing to groups of approvers
+- [Per-Tool Justification](justification.md): agent reasoning in notifications
+- [Native Tool Approvals](ai-approvals.md#native-tool-approvals): approvals for agents' shell and file operations, delivered over the same channels

@@ -39,10 +39,10 @@ The OpenAI-compatible surface also serves clients you point at the gateway by ha
 
 If you use Claude Code with a **Pro/Max subscription** instead of an API key, Preloop can still route that traffic through the gateway. The credential type is a Claude Code OAuth token stored on the AI model, and the gateway treats it specially:
 
-- **Byte-faithful proxying.** Anthropic requires the exact Claude Code request shape (the sentinel system block first, `cache_control` markers intact) and rejects anything else. So the gateway forwards `system`, `messages`, and nested `cache_control` blocks untouched — only the model identifier and streaming flag are set by Preloop, and SSE streams are relayed verbatim.
+- **Byte-faithful proxying.** Anthropic requires the exact Claude Code request shape (the sentinel system block first, `cache_control` markers intact) and rejects anything else. So the gateway forwards `system`, `messages`, and nested `cache_control` blocks untouched, only the model identifier and streaming flag are set by Preloop, and SSE streams are relayed verbatim.
 - **Still governed and budgeted.** Budget preflight, governance tool-stripping, attribution, and usage recording run exactly as on the normal path. Only the message bytes are sacred.
-- **No context optimization on this traffic.** Message-level context optimizations are deliberately not applied — rewriting blocks would break byte-fidelity and destroy the prompt-cache prefix. See [Session Optimization](../cost/session-optimization.md#what-optimization-cannot-do-subscription-oauth-traffic).
-- **The credential does not leak to other agents.** The OAuth token lives on one AI model in your account, and gateway calls resolve models per authenticated subject with per-agent attribution — another agent cannot ride a Claude Code subscription credential.
+- **No context optimization on this traffic.** Message-level context optimizations are deliberately not applied: rewriting blocks would break byte-fidelity and destroy the prompt-cache prefix. See [Session Optimization](../cost/session-optimization.md#what-optimization-cannot-do-subscription-oauth-traffic).
+- **The credential does not leak to other agents.** The OAuth token lives on one AI model in your account, and gateway calls resolve models per authenticated subject with per-agent attribution: another agent cannot ride a Claude Code subscription credential.
 - **Validation is surfaced honestly.** Onboarding fires a live validation prompt. If the provider throttles it or refuses on billing/quota grounds, the agent stays enrolled but shows an **unverified** badge in the console (and a Reason in `preloop agents list`/onboarding summaries) until `preloop agents validate <agent> --live` passes.
 
 ---
@@ -53,7 +53,7 @@ Every gateway request can persist:
 
 - token usage and estimated cost in `ApiUsage`
 - provider, model alias, managed agent, runtime session, flow, and API key attribution
-- normalized `model_gateway_call` events with redaction-aware payload capture
+- normalized `model_gateway_call` events with redaction-aware payload capture (see [Redaction](../../security/redaction.md) for what is stored and how to store less)
 - provider-neutral conversation previews for operator review
 
 The console **Cost**, **Runtime Sessions**, and **AI Models** views read from this ledger.
