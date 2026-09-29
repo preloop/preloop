@@ -1,13 +1,14 @@
 # Teams In Approval Workflows
 
+Editions: Cloud, Enterprise.
+
 Teams in Preloop are reusable groups of users. They matter in three places:
 
 - **membership and organization** inside your account
 - **inherited RBAC roles** for users
 - **approval workflow routing** when a workflow should notify a group instead of a single person
 
-!!! info "Availability"
-    Teams, team-based workflows and multi-user quorum behavior are Enterprise features. RBAC and team management ship as an Enterprise plugin; the open-source server enforces the resulting permissions.
+Teams, team-based workflows and multi-user quorum behavior need Cloud or Enterprise. RBAC and team management ship as a plugin; the open-source server enforces the resulting permissions. In OSS a workflow has one approver and **Approvals Required** stays at 1.
 
 
 ## How The Data Model Fits Together
@@ -36,7 +37,7 @@ Key points:
 
 ## Creating And Managing Teams
 
-Go to **Settings → Teams**.
+Go to **Settings > Teams**.
 
 The current team UI supports:
 
@@ -94,10 +95,10 @@ From **Team Members** you can:
 
 Team roles are RBAC roles assigned to the team itself. Every user on that team inherits those permissions.
 
-This is why the **Users** page shows both:
+This is why each user on the **Users** page shows both:
 
-- **Direct Roles**
-- **Inherited Roles**
+- **Roles**: assigned to the user directly
+- **From teams**: inherited through team membership
 
 Use team roles when you want a permission change to apply to a group instead of managing each user individually.
 
@@ -113,7 +114,7 @@ Use team roles when you want a permission change to apply to a group instead of 
 
 ### Invitations
 
-From **Settings → Invitations**, you can invite a user by email and optionally pre-select the teams they should join after accepting the invitation.
+From **Settings > Invitations**, you can invite a user by email and optionally pre-select the teams they should join after accepting the invitation.
 
 This is useful for onboarding because it lets you:
 

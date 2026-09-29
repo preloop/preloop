@@ -1,5 +1,7 @@
 # Roles & Permissions
 
+Editions: Cloud, Enterprise. OSS enforces roles; managing them is Cloud and Enterprise only.
+
 Assign roles to users and teams to control what they can do in your Preloop account. This page documents the 7 system roles, what each one permits, and how permissions combine.
 
 !!! info "Editions"
@@ -284,7 +286,7 @@ Permission names use `verb_resource` underscores (for example `view_cost`, `deci
 
 ### Adding a New User
 
-1. Go to **Settings** → **Users**
+1. Go to **Settings > Users**
 2. Click **+ Invite User**
 3. Fill in the form:
    ```
@@ -308,7 +310,7 @@ Permission names use `verb_resource` underscores (for example `view_cost`, `deci
 
 ### Changing a User's Role
 
-1. Go to **Settings** → **Users**
+1. Go to **Settings > Users**
 2. Find the user
 3. Click **Edit** (pencil icon)
 4. Select new role from dropdown:
@@ -338,7 +340,7 @@ Permission names use `verb_resource` underscores (for example `view_cost`, `deci
 
 ### Removing a User
 
-1. Go to **Settings** → **Users**
+1. Go to **Settings > Users**
 2. Find the user
 3. Click **Remove** (trash icon)
 4. Confirm removal
@@ -381,7 +383,7 @@ Teams can be assigned roles, granting all team members those permissions.
 
 ### Assigning a Role to a Team
 
-1. Go to **Settings** → **Teams**
+1. Go to **Settings > Teams**
 2. Find the team
 3. Open **Manage Team Roles**
 4. Assign the role (e.g. Editor)
@@ -474,24 +476,9 @@ Can approve:
 
 ## Audit Trail
 
-### Viewing Role Changes
-
-1. Go to **Settings** → **Audit Logs**
-2. Filter by category: "User Management"
-3. See events:
-   - User invited
-   - User role changed
-   - User removed
-   - Team role changed
-
-**Each entry shows:**
-
-- Who made the change
-- What changed (old role → new role)
-- When it happened
-- IP address
-
-<!-- TODO screenshot: `audit-role-changes.png` -->
+With the audit plugin, a request refused for a missing permission is recorded
+with the user and the permission. **Audit > All events** does not have a
+separate filter for role or membership changes.
 
 ---
 

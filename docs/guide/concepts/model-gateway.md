@@ -1,5 +1,7 @@
 # AI Model Gateway
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The Preloop **Model Gateway** centralizes model traffic from managed runtimes. Instead of handing provider API keys to every local agent container, Preloop keeps credentials in its secret store and issues short-lived gateway tokens to enrolled runtimes.
 
 ---
@@ -56,7 +58,7 @@ Every gateway request can persist:
 - normalized `model_gateway_call` events with redaction-aware payload capture (see [Redaction](../../security/redaction.md) for what is stored and how to store less)
 - provider-neutral conversation previews for operator review
 
-The console **Cost**, **Runtime Sessions**, and **AI Models** views read from this ledger.
+The console **Cost**, **Audit > Sessions** and **Models** views read from this ledger.
 
 ---
 
@@ -70,7 +72,10 @@ Before dispatching upstream, Preloop evaluates:
 
 Soft limits can annotate responses; hard limits deny the call before it reaches the provider.
 
-Preloop Cloud and Preloop Enterprise add configurable budget policies, negotiated price overrides, and enforcement workflows through billing plugins. Preloop, the open-source edition, includes spend summaries and budget-health alerts from gateway limits. See [Enterprise Billing & FinOps](../integrations/enterprise-billing.md).
+OSS includes account, flow, API-key and managed-agent budgets with soft and hard limits, plus spend summaries and budget-health alerts.
+
+!!! cloud "Cloud and Enterprise"
+    Per-user and per-team budgets, soft and hard limit notifications, and negotiated price overrides come from the RBAC and billing plugins. See [Enterprise Billing & FinOps](../integrations/enterprise-billing.md).
 
 ---
 

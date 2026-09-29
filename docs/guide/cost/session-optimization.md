@@ -1,8 +1,10 @@
 # Session Optimization
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After this page you can take a runtime session that burned more tokens than it should have, get concrete recommendations for it, apply one with a single click, and verify the saving with a measured replay, all on the open-source stack, using your own model keys.
 
-Session optimization shipped in the open-source core in 0.12.0. The `session_optimization` feature is always advertised by `GET /api/v1/features`, and the **Optimize** tab is visible in every console.
+Session optimization ships in OSS. The `session_optimization` feature is always advertised by `GET /api/v1/features`, and the **Optimize** tab is visible in every console.
 
 ---
 
@@ -71,7 +73,10 @@ The split is simple:
 | LLM-assisted on **your own model** (BYOK) | You, through your own gateway budget | Always, every edition |
 | LLM-assisted on a **hosted built-in model** | The operator (Preloop Cloud) | Metered on Cloud |
 
-Self-hosted open source never gates anything: there is no hosted model to meter. On Preloop Cloud, hosted-model analysis is compute the operator pays for, so it can be metered: the server exposes an authorizer hook (`optimization_gating`) that a billing plugin can register; a denial comes back as HTTP 402 at request time. The UI is never hidden and BYOK analysis is never touched by that hook.
+Self-hosted OSS never gates analysis: there is no hosted model to meter.
+
+!!! cloud "Cloud"
+    On Preloop Cloud, hosted-model analysis is compute the operator pays for, so it can be metered: the server exposes an authorizer hook (`optimization_gating`) that a billing plugin can register; a denial comes back as HTTP 402 at request time. The UI is never hidden and BYOK analysis is never touched by that hook.
 
 ---
 

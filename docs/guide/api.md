@@ -4,6 +4,10 @@ hide:
   - toc
 ---
 
+# API reference
+
+Editions: OSS, Cloud, Enterprise. The reference below is the OpenAPI schema served by preloop.ai; a self-hosted server serves its own at `/api/v1/openapi.json`. Endpoints that need a Cloud or Enterprise plugin return 402 or 404 on OSS.
+
 <div id="redoc-container"></div>
 
 <script>

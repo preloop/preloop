@@ -1,5 +1,7 @@
 # Managing Teams
 
+Editions: Cloud, Enterprise.
+
 Create teams, add members, and assign team roles so you can route approvals to groups and grant permissions in one place.
 
 !!! info "Editions"
@@ -20,7 +22,7 @@ Teams are intentionally lightweight: a name, a description, members, and roles. 
 
 ## Creating a Team
 
-1. Go to **Settings** → **Teams**
+1. Go to **Settings > Teams**
 2. Click **+ Create Team**
 3. Enter a **Name** and optional **Description**
 4. Click **Create**
@@ -33,7 +35,7 @@ You can edit the name and description later, or delete the team, from the same p
 
 ## Managing Members
 
-1. **Settings** → **Teams** → find the team
+1. **Settings > Teams** > find the team
 2. Open the **Team Members** modal
 3. Add users from the account's user list, or remove existing members
 
@@ -43,7 +45,7 @@ Removing a member takes away the team's role permissions and stops team-routed a
 
 ## Assigning Team Roles
 
-1. **Settings** → **Teams** → find the team
+1. **Settings > Teams** > find the team
 2. Open the **Manage Team Roles** modal
 3. Assign one or more roles (e.g. Editor)
 

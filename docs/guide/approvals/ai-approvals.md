@@ -1,9 +1,8 @@
 # AI-Driven Approvals
 
-Use AI models to automatically evaluate tool call requests and make approval decisions based on configurable guidelines.
+Editions: Cloud, Enterprise in the console. The OSS server also evaluates `ai_driven` workflows created through the API or policy-as-code.
 
-!!! info "Availability"
-    AI-driven approvals are available in both **Open Source** and **Enterprise** editions.
+Use AI models to automatically evaluate tool call requests and make approval decisions based on configurable guidelines.
 
 ---
 
@@ -31,7 +30,7 @@ metadata:
 approval_workflows:
   - name: ai-reviewer
     approval_type: ai_driven
-    ai_model: claude-sonnet-4-20250514
+    ai_model: claude-sonnet-4.7
     ai_guidelines: |
       Approve routine operations (file reads, searches, list operations).
       Deny any destructive operations (delete, drop, truncate).
@@ -53,11 +52,11 @@ tools:
 
 ### Via Web UI
 
-1. Navigate to **Approval Workflows** → **Create Policy**
-2. Select **AI-Driven** as the approval type
+1. On **Tools**, open **Workflows** and choose **New workflow**
+2. Select **AI-Driven Approval** as the approval type
 3. Configure the AI model, guidelines, and threshold
 4. Set the fallback behavior
-5. Click **Save**
+5. Click **Create Policy** (or **Save Changes** when editing)
 
 ---
 
@@ -148,7 +147,8 @@ Every AI decision is logged with full context:
 - **Model used**: Which AI model evaluated the request
 - **Guidelines applied**: The guidelines text at decision time
 
-The audit log dashboard for browsing decision history is part of the Enterprise audit plugin.
+!!! cloud "Cloud and Enterprise"
+    The **Audit > All events** view for browsing decision history comes from the audit plugin.
 
 ---
 
@@ -160,7 +160,7 @@ The audit log dashboard for browsing decision history is part of the Enterprise 
 approval_workflows:
   - name: prod-guard
     approval_type: ai_driven
-    ai_model: claude-sonnet-4-20250514
+    ai_model: claude-sonnet-4.7
     ai_guidelines: |
       Deny all write operations in production.
       Approve read-only operations.
@@ -194,7 +194,7 @@ approval_workflows:
 
   - name: ai-triage
     approval_type: ai_driven
-    ai_model: claude-sonnet-4-20250514
+    ai_model: claude-sonnet-4.7
     ai_guidelines: |
       Approve routine operations instantly.
       Escalate infrastructure changes to the SRE team.
@@ -207,7 +207,7 @@ approval_workflows:
 
 ## Native Tool Approvals
 
-New in 0.12.2: approvals are no longer limited to MCP tools. Onboarded agents can route their **native** tool calls (shell commands, file edits) through Preloop's approval pipeline:
+Approvals are not limited to MCP tools. Onboarded agents can route their **native** tool calls (shell commands, file edits) through Preloop's approval pipeline:
 
 - **Claude Code** via a `PreToolUse` hook, see [Claude Code](../clients/claude-code.md)
 - **Codex CLI** via a `PermissionRequest` hook

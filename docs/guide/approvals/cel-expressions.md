@@ -1,9 +1,10 @@
 # Conditional Approval with CEL
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After reading this page you can write approval conditions that only trigger when a tool call's arguments match: `deploy` needs approval for production but not staging, `pay` needs approval above $1000, and test those conditions before saving them.
 
-!!! info "Availability"
-    Every edition supports **simple** conditions (`==`, `!=`, `>`, `<`, `>=`, `<=`, `.contains()`). Full **CEL** (Common Expression Language) conditions are an **Enterprise** feature.
+Both condition types are evaluated by the open-source server. Cloud and Enterprise add a syntax check that rejects invalid CEL when a policy is uploaded; on OSS, an invalid CEL expression surfaces when it is evaluated.
 
 ---
 
@@ -13,10 +14,10 @@ Every condition on a tool has a `condition_type`, and this is the first thing to
 
 | `condition_type` | Edition | What it evaluates |
 |------------------|---------|-------------------|
-| `simple` (default) | All | One comparison: `args.field == 'value'`, `!=`, `>`, `<`, `>=`, `<=`, or `args.field.contains('substring')` |
-| `cel` | Enterprise | Full CEL expressions: `&&`, `\|\|`, `in`, `has()`, `startsWith()`, `exists()`, and so on |
+| `simple` (default in policy YAML) | All | One comparison: `args.field == 'value'`, `!=`, `>`, `<`, `>=`, `<=`, `args.field.contains('substring')` or `args.field.matches('regex')` |
+| `cel` | All | Full CEL expressions: `&&`, `\|\|`, `in`, `has()`, `startsWith()`, `exists()`, and so on |
 
-**If you omit `condition_type`, the expression is evaluated by the simple evaluator.** A CEL expression like `args.a > 1 && args.b == 2` will fail under the simple evaluator: set `condition_type: cel` explicitly:
+**If you omit `condition_type` in a policy file, the loader picks it.** An expression that uses CEL operators or functions (`&&`, `||`, `!`, `?`, `[`, `{`, `.contains(`, `.startsWith(`, `.matches(`, `.exists(` and similar) is stored as `cel`, even when it is marked `simple`, so a CEL rule is never silently downgraded. Setting `condition_type: cel` explicitly still documents intent:
 
 ```yaml
 tools:
@@ -28,7 +29,7 @@ tools:
         action: require_approval        # simple evaluator handles this fine
       - expression: "args.environment == 'production' && args.force == true"
         action: deny
-        condition_type: cel             # && requires the CEL evaluator
+        condition_type: cel             # && is CEL; the loader would infer it
 ```
 
 The simple evaluator also lets you drop the `args.` prefix (`amount > 300` works), which is what the web UI condition builder generates.

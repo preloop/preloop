@@ -1,9 +1,8 @@
 # Async Approvals
 
-After reading this page you can switch an approval workflow to non-blocking mode, so agents get a `request_id` back immediately and poll for the decision instead of holding an MCP connection open.
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
-!!! info "Availability"
-    Async approvals are available in all editions.
+After reading this page you can switch an approval workflow to non-blocking mode, so agents get a `request_id` back immediately and poll for the decision instead of holding an MCP connection open.
 
 ---
 
@@ -52,10 +51,9 @@ tools:
 
 ### Via Web UI
 
-1. Navigate to **Tools** → **Approval Workflows**
-2. Edit or create a policy
-3. Toggle **Async Approval** on
-4. Save
+1. On **Tools**, open **Workflows** and edit a workflow or choose **New workflow**
+2. Turn on **Enable Async Approvals**
+3. Click **Create Policy** or **Save Changes**
 
 ---
 

@@ -1,9 +1,8 @@
 # Per-Tool Justification
 
-Require or optionally request agents to explain *why* a tool is being called before approval.
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
-!!! info "Availability"
-    Per-tool justification is available in all editions.
+Require or optionally request agents to explain *why* a tool is being called before approval.
 
 ---
 
@@ -132,7 +131,8 @@ Arguments: {"command": "kubectl rollout restart deployment/api"}
 
 The justification is stored as `agent_reasoning` on the approval request, so it is visible wherever the request is: notifications, the request detail page, and webhook payloads.
 
-The full audit log, every tool call with its arguments, reasoning, and action taken, browsable in the dashboard: is an **Enterprise** plugin.
+!!! cloud "Cloud and Enterprise"
+    The **Audit > All events** view, which lists every tool call with its arguments, reasoning and action, comes from the audit plugin. On OSS, the same calls appear in each runtime session's timeline.
 
 ---
 

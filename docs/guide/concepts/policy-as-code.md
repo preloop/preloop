@@ -1,5 +1,7 @@
 # Policy-as-Code
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Define and manage your AI agent governance policies declaratively using YAML files. Version-control your policies alongside your code.
 
 ---
@@ -129,7 +131,7 @@ Each condition evaluates against tool arguments:
 |-------|------|---------|-------------|
 | `expression` | string | n/a | Expression to evaluate |
 | `action` | string | `require_approval` | `allow`, `deny`, or `require_approval` |
-| `condition_type` | string | `simple` | `simple` (OSS) or `cel` (Enterprise) |
+| `condition_type` | string | `simple` | `simple` or `cel`, both evaluated in every edition |
 | `description` | string | n/a | Human-readable description |
 
 ### `defaults`

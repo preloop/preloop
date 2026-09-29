@@ -1,5 +1,7 @@
 # Cost Analytics & Budgets
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop turns model gateway telemetry into explainable spend. The console **Cost** view helps operators answer how much was spent, who or what spent it, and whether budgets are healthy.
 
 ---
@@ -35,17 +37,17 @@ Because prices change and overrides can be added after the fact, Preloop can rec
 
 ---
 
-## Open Source vs Enterprise
+## OSS vs Cloud and Enterprise
 
-| Question | Open source | Enterprise (billing plugins) |
-|----------|-------------|-------------------------------|
-| How much was spent? | Cost overview, trends, grouped breakdowns | Same, plus exports and FinOps workflows |
-| Who spent it? | Attribution by model, agent, session, API key | Chargeback/showback and team views |
-| Which budget applies? | Budget-health alerts from gateway limits | Configurable budget policies and enforcement |
-| Why was it spent? | Session timeline + gateway event drill-down | LLM-assisted session value reviews |
-| How to optimize? | [Full session-optimization loop](../cost/session-optimization.md): deterministic + BYOK analysis, one-click apply, replay verification | Metered hosted-model analysis, anomaly workflows |
+| Question | OSS | Cloud and Enterprise (billing and RBAC plugins) |
+|----------|-----|-------------------------------------------------|
+| How much was spent? | Cost overview, trends, grouped breakdowns | Same, plus provider billing reconciliation |
+| Who spent it? | Attribution by model, agent, session, API key | Same, plus per-user and per-team budgets |
+| Which budget applies? | Account, flow, API-key and managed-agent budgets with hard limits | Same, plus limit notifications and negotiated price overrides |
+| Why was it spent? | Session timeline and gateway event drill-down | Same |
+| How to optimize? | [Full session-optimization loop](../cost/session-optimization.md): deterministic and BYOK analysis, one-click apply, replay verification | Same, plus metered hosted-model analysis |
 
-The shared frontend gates Enterprise-only panels behind feature flags such as `billing`. Session optimization itself ships in the open-source core.
+The shared frontend gates Cloud and Enterprise panels behind feature flags such as `billing`. Session optimization itself ships in the open-source core.
 
 ---
 
@@ -67,7 +69,10 @@ Core enforcement happens **before upstream dispatch**:
 - account-level and flow-level gateway budgets
 - subject-scoped allowed-model checks
 
-Denied calls never reach the provider. Enterprise plugins can add escalations, notifications, and post-hoc anomaly handling.
+Denied calls never reach the provider.
+
+!!! cloud "Cloud and Enterprise"
+    Per-user and per-team budgets and soft and hard limit notifications need the RBAC plugin.
 
 ---
 
@@ -77,4 +82,4 @@ Denied calls never reach the provider. Enterprise plugins can add escalations, n
 - [AI Model Gateway](model-gateway.md)
 - [Runtime Sessions](runtime-sessions.md)
 - [Enterprise Billing & FinOps](../integrations/enterprise-billing.md)
-- [Architecture](../architecture.md)
+- [What Preloop includes](../functionality.md)

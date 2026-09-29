@@ -1,12 +1,14 @@
 # Enterprise Billing & FinOps
 
-Preloop Cloud and Preloop Enterprise extend the open-source **Cost** experience
-with billing plugins that add budget policy management, negotiated model
-pricing, session optimization, subscriptions, and commercial FinOps workflows.
+Editions: Cloud, Enterprise. Nothing on this page ships in OSS unless it says so.
 
-Open source still owns the canonical `ApiUsage` ledger, OSS cost summaries, and
-gateway budget-health signals. Enterprise features are delivered through the
-`billing` plugin and gated in the shared console by feature flags.
+Preloop Cloud and Preloop Enterprise extend the OSS **Cost** views with a
+billing plugin that adds negotiated model pricing, provider billing
+reconciliation, metered hosted-model analysis, subscriptions, and notifications
+on budget limits.
+
+OSS owns the `ApiUsage` ledger, cost summaries, budgets and their enforcement.
+The billing plugin is gated in the shared console by feature flags.
 
 ---
 
@@ -17,49 +19,46 @@ these flags are true:
 
 | Flag | Enables |
 |------|---------|
-| `billing` | Budget policy CRUD, billing subscription UI, enterprise Cost panels |
+| `billing` | Plan and subscription UI (**Settings > Plan**) and the Cloud and Enterprise Cost panels |
 | `model_price_overrides` | Account-scoped negotiated pricing for gateway cost estimates |
-| `session_optimization` | Always `true` since 0.12.0: [session optimization](../cost/session-optimization.md) ships in the open-source core. Cloud meters hosted-model analysis at request time (HTTP 402 via the authorizer hook), never by hiding the UI. |
-
-Self-hosted Enterprise deployments link EE plugins with
-`./scripts/link_ee_plugins.sh` before installing Preloop.
+| `session_optimization` | Always `true`: [session optimization](../cost/session-optimization.md) ships in OSS. Cloud meters hosted-model analysis at request time (HTTP 402 via the authorizer hook), never by hiding the UI. |
 
 ---
 
-## OSS vs Enterprise boundaries
+## OSS vs Cloud and Enterprise
 
-| Capability | Open source | Enterprise billing plugin |
-|------------|-------------|---------------------------|
-| Spend summaries & trends | `GET /api/v1/cost/summary` | Same data, richer UI filters |
-| Budget health from gateway limits | Yes | Yes, plus configurable policies |
-| Budget policy CRUD | No | `GET/POST/PUT/DELETE /api/v1/budget/policies` |
+| Capability | OSS | Cloud and Enterprise |
+|------------|-----|----------------------|
+| Spend summaries and trends | `GET /api/v1/cost/summary` | Same |
+| Budgets on the account, flows, API keys and managed agents | `GET/POST/PUT/DELETE /api/v1/budget/policies` | Same |
+| Budgets on users and teams, soft and hard limit notifications | No (HTTP 402) | Yes |
+| Repricing historical usage | `POST /api/v1/cost/reprice` | Same, plus pricing overrides |
 | Model price overrides | No | `/api/v1/billing/cost/pricing-overrides` |
+| Provider billing reconciliation | No | `/api/v1/billing/provider-billing/...` |
 | Session optimization | Yes: analyze / apply / replay at `/api/v1/billing/cost/runtime-sessions/{id}/...` ([details](../cost/session-optimization.md)) | Same, plus metered hosted-model analysis |
-| Subscriptions & Stripe | No | `/api/v1/billing/subscription`, checkout, portal |
-| Session value reviews (AI) | Planned | Planned under `/api/v1/billing/cost/value-reviews` |
-| Forecasting & anomalies | Planned | Planned under `/api/v1/billing/cost/forecast`, `/anomalies` |
+| Subscriptions and Stripe | No | `/api/v1/billing/subscription`, checkout, portal |
 
-Enterprise analysis jobs route their own model calls through the Preloop Gateway
-so meta-usage is auditable and respects account budgets.
+Analysis jobs route their own model calls through the Preloop gateway, so
+that usage is recorded and respects account budgets.
 
 ---
 
 ## Budget policies
 
-Enterprise budget policies attach spend limits to subjects such as accounts,
-API keys, flows, or managed agents. The **EnterpriseBudgetEnforcer** applies
-them at gateway preflight time alongside OSS gateway limits.
+Budget policies attach spend limits to a subject: the account, a flow, an API
+key or a managed agent in every edition, plus users and teams on Cloud and
+Enterprise. The gateway checks them before dispatch; a priced request that
+would cross a hard limit gets HTTP 403.
 
-Configure policies from the console **Cost** view when `billing` is enabled, or
-via:
+Configure them from an agent's page in the console, or via:
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
   https://preloop.example.com/api/v1/budget/policies
 ```
 
-Open-source deployments use a no-op enforcer: gateway account/flow limits still
-apply, but configurable policy CRUD is unavailable.
+With the billing plugin, crossing a soft or hard limit also sends a
+notification, and hosted models are priced from their tariff.
 
 ---
 
@@ -102,8 +101,8 @@ endpoints ship in the Enterprise billing plugin.
 
 ## Session optimization
 
-Since 0.12.0 the full optimization loop: analyze, one-click apply, replay
-verification: ships in the open-source core and is documented at
+The full optimization loop (analyze, one-click apply, replay
+verification) ships in OSS and is documented at
 [Session Optimization](../cost/session-optimization.md). What Cloud/Enterprise
 add on top:
 
@@ -111,15 +110,14 @@ add on top:
   built-in models is compute the operator pays for, gated at request time via
   the `optimization_gating` authorizer hook (denials return HTTP 402).
   Deterministic and BYOK analysis are never gated.
-- Session value reviews and anomaly workflows (planned surfaces above).
 
 ---
 
 ## Subscriptions and usage metering
 
-Hosted Preloop and Enterprise self-hosts can enable Stripe-backed plans defined
-in the billing plugin's `plans.yaml`. The plugin tracks monthly usage meters,
-enforces plan limits, and exposes checkout and customer-portal flows.
+Preloop Cloud and Enterprise self-hosts can enable Stripe-backed plans. The
+billing plugin tracks usage against plan limits and exposes checkout and
+customer-portal flows.
 
 This is separate from gateway spend analytics: subscriptions gate product features
 while `ApiUsage` records model consumption.
@@ -133,6 +131,5 @@ while `ApiUsage` records model consumption.
 - [Subject-Scoped Governance](../concepts/subject-scoped-governance.md)
 - [API Reference](../api.md)
 
-!!! info "Enterprise access"
-    Contact [sales@preloop.ai](mailto:sales@preloop.ai) for Preloop Enterprise
-    licensing, or enable the enterprise plugins in your self-hosted deployment.
+Contact [sales@preloop.ai](mailto:sales@preloop.ai) for Preloop Enterprise
+licensing.
