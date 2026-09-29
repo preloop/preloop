@@ -1,5 +1,7 @@
 # Evidence storage and retention
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Audit-style flows write a human-readable pack under `/workspace/evidence/`
 plus `/workspace/result.json`. This page is the operator runbook for how
 that pack is transported, stored, retrieved and retained. It does **not**

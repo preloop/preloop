@@ -1,5 +1,7 @@
 # MCP Tool Integration
 
+Editions: OSS. Contributor documentation for this repository.
+
 Preloop exposes one MCP endpoint to AI clients and evaluates policy before any
 tool call reaches the underlying tool. The first half of this page is for
 users connecting a client; the second half ("MCP Implementation") is for

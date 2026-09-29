@@ -1,5 +1,7 @@
 # Use Cases: AI Automation with Human Oversight
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop is designed to unlock the power of AI agents while maintaining the safety and quality standards of human engineering. Here are some key use cases where this "human-in-the-loop" approach shines.
 
 ## 1. Automated Bug Triage & Preliminary Analysis

@@ -1,5 +1,7 @@
 # Webhook Triggers
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Flows can be triggered by an inbound webhook:
 
 ```

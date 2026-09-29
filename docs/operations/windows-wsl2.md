@@ -1,5 +1,7 @@
 # Windows (WSL2)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 **Windows binaries are available; WSL is the recommended way to run Preloop.**
 
 Every Preloop release publishes Windows CLI binaries for `amd64` and `arm64`,

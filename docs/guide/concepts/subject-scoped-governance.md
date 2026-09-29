@@ -1,5 +1,7 @@
 # Subject-Scoped Governance
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop does not evaluate every request against account defaults alone. **Subject-scoped governance** applies the right tool rules, model limits, and budgets to the concrete subject making the call, usually an API key or an enrolled managed agent.
 
 ---

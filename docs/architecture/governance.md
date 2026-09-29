@@ -1,5 +1,7 @@
 # Subject-Scoped Governance
 
+Editions: OSS. Contributor documentation for this repository.
+
 Governance is applied to the concrete subject using the platform, not only the parent account. This chapter covers subject-scoped configuration, tool access rules, and tool output filters.
 
 ## Subject-Scoped Governance

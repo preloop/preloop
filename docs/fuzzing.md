@@ -1,5 +1,7 @@
 # Continuous fuzzing
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Fuzzing generates and mutates inputs to find crashes, hangs, and violated
 properties. The native Go fuzzer uses coverage feedback to keep mutations that
 reach new code. Our [workflow](https://github.com/preloop/preloop/blob/main/.github/workflows/fuzz.yml) runs it on relevant

@@ -1,5 +1,7 @@
 # preloop.models
 
+Editions: OSS. Contributor documentation for this repository.
+
 `preloop.models` is the data layer: SQLAlchemy, Pydantic, CRUD, and Alembic. This chapter covers models, PostgreSQL + PGVector, the schema, and backend project layout.
 
 ## preloop.models (`./backend/preloop/models`)

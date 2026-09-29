@@ -1,5 +1,7 @@
 # Gateway memory: what a concurrent large response costs
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Gateway replicas were OOMKilled while three agents called
 `/openai/v1/responses` at the same time (issue #670). Losing a replica
 mid-burst turns one account's spike into failed model calls for everyone on

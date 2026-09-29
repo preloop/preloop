@@ -1,5 +1,7 @@
 # Context window and output ceiling
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 A coding harness that does not know how much context its model accepts uses
 its own conservative default. On a model with a large window that shows up as
 early compaction: the harness drops what it just read and then reads it again,

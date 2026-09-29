@@ -1,5 +1,7 @@
 # Security Considerations
 
+Editions: OSS. Contributor documentation for this repository.
+
 Auth, tenancy, redaction, and secret custody are platform concerns, not agent self-reporting. This chapter covers the security checklist, redaction policy, secret service, the tamper-evident audit chain and record signatures, security-screen scoring, and `preloop.security`.
 
 ## Security Screen Scoring (QM Proxy Contract)

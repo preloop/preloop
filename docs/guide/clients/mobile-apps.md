@@ -1,5 +1,7 @@
 # Mobile Apps
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop mobile apps let approvers review requests and respond without opening a laptop. They are the fastest way to keep agents moving while keeping humans in control.
 
 <div class="grid cards" markdown>

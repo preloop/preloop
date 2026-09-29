@@ -1,5 +1,7 @@
 # Claude Code Reference
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 How to onboard Claude Code (Anthropic's agentic coding CLI) into Preloop's Safety Layer with the `preloop` CLI.
 
 ---

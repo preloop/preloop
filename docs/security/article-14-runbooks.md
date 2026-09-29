@@ -1,5 +1,7 @@
 # CRA Article 14 reporting runbooks
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Operational fill-in templates for the three reports CRA Article 14 requires
 from a manufacturer once it becomes aware of an actively exploited
 vulnerability in its product or of a severe incident having an impact on the

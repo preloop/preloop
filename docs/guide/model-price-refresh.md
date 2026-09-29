@@ -1,5 +1,7 @@
 # Model price refresh
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop separates model discovery, price evidence, and current estimates. The
 model-discovery scheduler adds provider model identifiers; it does not refresh
 existing prices. The vendored catalog supplies default estimates. Missing models

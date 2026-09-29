@@ -1,5 +1,7 @@
 # Frontend Architecture
 
+Editions: OSS. Contributor documentation for this repository.
+
 The Preloop Console lives in `frontend`. This chapter covers the Lit/Vite/TypeScript stack, directory layout, and the tracker, tools, and cost views.
 
 The frontend is in the `frontend` directory.

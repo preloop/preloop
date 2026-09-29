@@ -1,5 +1,7 @@
 # Issue readiness and completion audits
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The lifecycle controller connects triage output, authorized implementation pickup,
 and an independent audit after a merged PR closes an issue. GitHub is the first
 provider adapter. Other providers fail explicitly until an authoritative merge

@@ -1,5 +1,7 @@
 # OpenClaw Policy Examples
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Example policies for using Preloop as a safety layer with [OpenClaw](https://github.com/openclaw/openclaw).
 
 For setup instructions, see the **[OpenClaw Integration Guide](../../../integrations/openclaw.md)**.

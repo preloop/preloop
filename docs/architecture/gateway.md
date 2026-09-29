@@ -1,5 +1,7 @@
 # OpenAI-Compatible Model Gateway
 
+Editions: OSS. Contributor documentation for this repository.
+
 Managed runtimes send model traffic through Preloop's OpenAI- and Anthropic-compatible gateway. This chapter covers gateway ingress, accounting, budgets, and the runtime session identity layer used for browsing and audit.
 
 Dedicated `gateway` processes install plugin request dependencies and run `on_gateway_startup` / `on_gateway_shutdown` hooks. A required gateway startup hook failure prevents serving traffic. API routes and API-only background workers remain in the `api` / `all` process. Plugins without gateway-specific resources inherit no-op lifecycle hooks.

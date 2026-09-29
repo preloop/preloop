@@ -1,5 +1,7 @@
 # Agent Control
 
+Editions: OSS. Contributor documentation for this repository.
+
 Agent Control is the audited operator channel to managed agents such as OpenClaw and Hermes. This chapter covers the control WebSocket, CLI/desktop enrollment, and mobile/watch voice contact.
 
 The control WebSocket runs authentication, heartbeat, command persistence and

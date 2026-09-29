@@ -1,5 +1,7 @@
 # Tool Configuration and Approval Workflow
 
+Editions: OSS. Contributor documentation for this repository.
+
 Tool configuration records which tools are enabled and whether they need a human in the loop. This chapter covers approval workflows, the permission-check path for native tools, and `ask_user`.
 
 ## Tool Configuration and Approval Workflow

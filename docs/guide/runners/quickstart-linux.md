@@ -1,5 +1,7 @@
 # Self-hosted runner quickstart (plain Linux / Proxmox)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The Preloop CLI **is** the self-hosted runner. It registers itself with
 your Preloop control plane, holds an outbound WebSocket, leases flow
 executions for your account, and runs the agent in a local Docker

@@ -1,5 +1,7 @@
 # DORA: the AI-agent slice
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop holds the AI-agent slice of an ICT estate: the agents, the tools and
 MCP servers they reach, the models and providers they call through the
 gateway, and the hosts that run them. It does not know about your databases,

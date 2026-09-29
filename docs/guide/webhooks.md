@@ -1,5 +1,7 @@
 # Outbound event webhooks
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop can POST signed governance events to a URL you own: an approval was
 raised or decided, a policy denied a call, a runtime session closed, spend
 crossed a budget, a flow execution finished, a CRA audit found a reportable

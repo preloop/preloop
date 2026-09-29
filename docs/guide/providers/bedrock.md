@@ -1,5 +1,7 @@
 # Amazon Bedrock
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This guide connects an Amazon Bedrock model to Preloop, sends one request
 through the gateway, and checks that the request shows up on the Cost page.
 It covers foundation model ids (`amazon.nova-micro-v1:0`), cross-region

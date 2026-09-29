@@ -1,5 +1,7 @@
 # Security audit presets (CRA evidence packs)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 These Apache presets turn a CI-emitted SBOM and optional build evidence
 into a versioned `result.json` plus a human-readable evidence pack. They
 shipped as `backend/presets/004` through `006` in 0.15.0; `007`

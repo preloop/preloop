@@ -1,5 +1,7 @@
 # Runner end-to-end smoke test (staging)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Internal checklist: verify the self-hosted runner path end-to-end
 against staging (`https://review.preloop.ai`) before handing it to a
 design partner. Takes ~10 minutes on any Linux box or Proxmox guest

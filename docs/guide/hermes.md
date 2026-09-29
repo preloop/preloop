@@ -1,5 +1,7 @@
 # Hermes: onboarding, rollback, and systemd recovery
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Hermes is a supported managed agent. This page is the operational playbook
 for connecting it to Preloop, undoing that connection, and recovering when
 tools stay gated after a config change. The systemd-first kill order comes

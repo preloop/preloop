@@ -1,5 +1,7 @@
 # Accounts, subaccounts and CLI profiles
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Multi-account, subaccounts, sharing and access rules are served by an
 extension plugin. The open-source server does not have these endpoints. The
 console and the CLI show the related views and commands only when

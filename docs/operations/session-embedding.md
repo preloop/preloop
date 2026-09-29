@@ -1,5 +1,7 @@
 # Session embedding worker
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Keyword indexing of session content is separate from vectors. Turning
 embedding off does not stop the corpus from taking writes.
 

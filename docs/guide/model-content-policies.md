@@ -1,5 +1,7 @@
 # Model content policies
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Model I/O rules extend the existing policy engine so instance policies can
 inspect model prompts and completions. Actions are the same as tools
 (`allow`, `deny`, and `require_approval`) plus `notify`, which is only

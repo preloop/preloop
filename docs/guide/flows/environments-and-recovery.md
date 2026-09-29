@@ -1,5 +1,7 @@
 # Execution environments and checkpoint recovery
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Default images are generic harness/toolchain images. They do not bundle the
 Preloop application, PostgreSQL, or another customer's application. A project can
 supply its own image and dependencies. An optional hosted environment profile

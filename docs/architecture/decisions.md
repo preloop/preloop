@@ -1,5 +1,7 @@
 # Technical Decisions
 
+Editions: OSS. Contributor documentation for this repository.
+
 This chapter records technical choices: FastAPI for the REST API, Python, PostgreSQL, and how the stack is deployed (Compose, Helm, service roles).
 
 ## REST API Implementation

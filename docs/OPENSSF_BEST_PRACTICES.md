@@ -1,5 +1,7 @@
 # OpenSSF Best Practices Badge: Readiness Guide
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The [OpenSSF Best Practices badge](https://www.bestpractices.dev/) is a
 maintainer self-assessment against published criteria. It is separate from
 [OpenSSF Scorecard](https://scorecard.dev/), which scans repository practices.

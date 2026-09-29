@@ -1,5 +1,7 @@
 # Automated Issue Implementation preset
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Turns a tracker issue into a working change. The agent reads the issue,
 implements it, adds tests, runs the project's checks, and commits to the
 checkout it was given. Preloop pushes the branch and opens the pull request

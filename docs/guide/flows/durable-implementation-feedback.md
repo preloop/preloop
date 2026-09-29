@@ -1,5 +1,7 @@
 # Durable implementation feedback
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The Automated Issue Implementation preset can keep a PR moving through review
 and CI without leaving an agent container waiting. Each repair gets a new
 FlowExecution, its own execution budgets and fresh credentials. The implementation

@@ -1,5 +1,7 @@
 # Preloop Sync
 
+Editions: OSS. Contributor documentation for this repository.
+
 Preloop Sync polls issue trackers, generates embeddings, and writes through `preloop.models`. This chapter covers the scheduler/worker, tracker clients, the sync data flow, and tracker scope rules.
 
 Private webhook ingress prepares database changes on a worker thread and closes

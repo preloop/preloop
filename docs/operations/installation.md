@@ -1,5 +1,7 @@
 # Install the Open-Source Stack
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After this page you have the full Preloop control plane (API, console, MCP firewall, and model gateway) running on your own machine or server under the Apache 2.0 license, with the first user created and public signup closed.
 
 !!! tip "Prefer not to run anything?"

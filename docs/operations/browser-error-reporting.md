@@ -1,5 +1,7 @@
 # Browser error reporting
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The console can report browser errors to Sentry. It is off by default: the
 repository contains no DSN, and a build without one never initialises Sentry.
 

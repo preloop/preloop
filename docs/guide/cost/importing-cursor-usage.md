@@ -1,5 +1,7 @@
 # Importing Usage from Cursor
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After this page you can take spend that never went through the Preloop model gateway, Cursor's bundled Composer and Auto models being the usual case, and get it into Cost analytics: from the CLI in one command, or from the API if you are scripting it.
 
 Preloop measures model spend by sitting in the request path. Clients that let Preloop rewrite their model configuration route through the [gateway](../concepts/model-gateway.md) and are metered exactly. Cursor's bundled models are the opposite case: they are billed by Cursor, served by Cursor, and never touch your gateway, so Preloop cannot observe them live. Importing closes that gap after the fact using the CSV Cursor already exports.

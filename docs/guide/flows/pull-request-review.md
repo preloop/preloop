@@ -1,5 +1,7 @@
 # Pull Request Reviewer preset
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Reviews a GitHub pull request or a GitLab merge request: security, quality,
 performance, tests, documentation impact, and (since this slice) whether the
 PR actually does what the issue it references asked for.

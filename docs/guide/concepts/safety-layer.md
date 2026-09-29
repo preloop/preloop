@@ -1,5 +1,7 @@
 # Safety Layer And Access Rules
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop is an AI safety and control platform for agents. The Safety Layer is the part of Preloop that evaluates tool calls before they execute.
 
 Instead of giving an agent unrestricted tool access, you place Preloop in front of the tool and define what should happen for each request. This safety-layer model works alongside Preloop's model gateway, runtime observability, budget controls, and audit surfaces.

@@ -1,5 +1,7 @@
 # Windows code signing (SignPath Foundation)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 > **Code signing policy (user-facing):** see
 > [code-signing-policy.md](./code-signing-policy.md).
 > Free code signing provided by [SignPath.io](https://about.signpath.io/),

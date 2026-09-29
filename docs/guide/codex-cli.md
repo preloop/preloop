@@ -1,5 +1,7 @@
 # Codex CLI onboarding
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 `preloop agents onboard "Codex CLI"` enrolls Codex, routes model traffic
 through the Preloop gateway, and can install approval hooks with
 `--approvals`. Codex keeps `~/.codex/config.toml` for its own settings.

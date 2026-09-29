@@ -1,5 +1,7 @@
 # Disposition of historical secret-scan findings
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The gitleaks history scan (`.github/workflows/secret-scan.yml`) walks the
 full history of `main` on every push and PR. It reports clean because every
 historical finding was triaged one by one into `.gitleaksignore`, each with a

@@ -1,5 +1,7 @@
 # Real-Time Communication
 
+Editions: OSS. Contributor documentation for this repository.
+
 Preloop uses a single WebSocket per client with pub/sub routing. This chapter covers MessageRouter, topics, and the unified realtime architecture.
 
 Preloop uses WebSocket connections for real-time updates:

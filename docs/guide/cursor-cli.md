@@ -1,5 +1,7 @@
 # `preloop cursor`: spawn Cursor Agent and record estimated usage
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 `preloop cursor` starts the Cursor Agent CLI (`cursor-agent`) from the
 Preloop CLI. v1 does two things: pass through an interactive session
 unchanged, and optionally capture headless print-mode output so estimated
