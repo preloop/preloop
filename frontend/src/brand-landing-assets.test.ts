@@ -67,10 +67,18 @@ describe('landingImageSources', () => {
     expect(landingImageSources(original)).to.deep.equal({
       src: '/assets/screenshots/quickstart/dark/dashboard-800.webp',
       srcset:
-        '/assets/screenshots/quickstart/dark/dashboard-800.webp 800w, /assets/screenshots/quickstart/dark/dashboard-1600.webp 1600w, /assets/screenshots/quickstart/dark/dashboard.png 3200w',
-      width: 3200,
-      height: 1900,
+        '/assets/screenshots/quickstart/dark/dashboard-800.webp 800w, /assets/screenshots/quickstart/dark/dashboard-1600.webp 1600w, /assets/screenshots/quickstart/dark/dashboard.png 3840w',
+      width: 3840,
+      height: 2160,
     });
+  });
+
+  it('keeps the older audit still at its own size', () => {
+    const sources = landingImageSources(
+      '/assets/screenshots/quickstart/dark/audit_page.png'
+    );
+    expect(sources.srcset).to.contain('audit_page.png 3200w');
+    expect([sources.width, sources.height]).to.deep.equal([3200, 1900]);
   });
 
   it('leaves animations and custom brand images alone', () => {

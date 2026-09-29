@@ -34,7 +34,7 @@ Flows need an AI model to execute tasks. Let's add one.
 You can also add models under **Models > Add model**.
 
 ![Add AI Model](../assets/screenshots/quickstart/add-ai-model-dialog.png)
-*Adding and configuring a new AI model for your automated flows*
+*The Add model dialog. **Model Name / ID** appears after **Fetch models from provider**, or as a text field if the fetch fails.*
 
 !!! info "Don't Have an OpenAI Key?"
     Get one at [platform.openai.com/api-keys](https://platform.openai.com/api-keys), or add a model from any other supported provider.
@@ -85,7 +85,7 @@ When triggered (manually or via webhook), the flow will:
 2. Click **Create flow** at the bottom
 
 ![Create Flow](../assets/screenshots/quickstart/flow-create-form.png)
-*Creating an automated payment processor flow with AI model and approval-gated tools*
+*The tools section of the new flow, with **pay** checked under MCP Server Tools*
 
 **✓ Checkpoint:** Your flow is created!
 
@@ -122,7 +122,7 @@ You'll be redirected to the execution page where you can see the AI agent workin
 *Flow execution in progress: the AI agent is processing the request*
 
 ![Flow waiting for approval](../assets/screenshots/quickstart/flow-execution-waiting-approval.png)
-*Flow paused waiting for human approval before executing the payment*
+*The run is waiting for the Support workflow to approve the payment*
 
 **Approve the Payment:**
 

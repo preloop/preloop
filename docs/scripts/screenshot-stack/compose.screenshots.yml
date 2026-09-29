@@ -1,0 +1,63 @@
+# Compose overlay for the documentation screenshot stack.
+#
+# Use with a dedicated project name so it never collides with a dev stack:
+#   docker compose -p preloopshots -f docker-compose.yml \
+#     -f docker-compose.override.yml \
+#     -f docs/scripts/screenshot-stack/compose.screenshots.yml up -d --build
+#
+# Host ports are remapped to 183xx and bound to 127.0.0.1. Images get local
+# tags so the shared ghcr.io/preloop/* tags are not overwritten. The model is
+# a local OpenAI-compatible stub: no provider key is used.
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:18332:5432"
+  nats:
+    ports: !override
+      - "127.0.0.1:18322:4222"
+  migrate:
+    image: preloop-shots/preloop:local
+  api:
+    image: preloop-shots/preloop:local
+    environment: &agent_env
+      PRELOOP_URL: http://api:8000
+      PRELOOP_MCP_URL: http://api:8000/mcp/v1
+      PRELOOP_MODEL_GATEWAY_URL: http://gateway:8000/openai/v1
+      AGENT_NETWORK_MODE: preloopshots_default
+      OPENCODE_IMAGE: preloop-shots/opencode:local
+    volumes:
+      # Test runs start the agent container from the API process.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports: !override
+      - "127.0.0.1:18300:8000"
+  gateway:
+    image: preloop-shots/preloop:local
+    ports: !override
+      - "127.0.0.1:18301:8000"
+  scheduler:
+    image: preloop-shots/preloop:local
+  worker:
+    image: preloop-shots/preloop:local
+    environment: *agent_env
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  console:
+    image: preloop-shots/console:dev
+    environment:
+      VITE_HMR_CLIENT_PORT: "18373"
+    ports: !override
+      - "127.0.0.1:18373:5173"
+  stub-model:
+    image: preloop-shots/preloop:local
+    restart: unless-stopped
+    volumes:
+      - ./docs/scripts/screenshot-stack:/kit:ro
+    command: python /kit/stub_model.py
+    ports:
+      - "127.0.0.1:18390:9000"
+  example-mcp:
+    image: preloop-shots/preloop:local
+    restart: unless-stopped
+    volumes:
+      - ./scripts/examples:/ex:ro
+    command: python /ex/example_mcp_server.py

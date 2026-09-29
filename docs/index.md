@@ -41,8 +41,8 @@ Two more things make it practical to adopt:
 This lets you keep fast automation for low-risk operations while keeping humans in control of risky actions and keeping model spend, sessions, and runtime behavior visible: starting from the agents you already use instead of rebuilding everything from scratch.
 
 <figure>
-  <img src="assets/screenshots/quickstart/dark/cost_page.png" alt="Preloop cost analytics, spend by model, agent, session, and API key" style="width: 100%; border-radius: 12px;">
-  <figcaption>Model spend, explained: by model, agent, session, API key, flow, and user.</figcaption>
+  <img src="assets/screenshots/quickstart/dark/cost_page.png" alt="Preloop cost analytics, spend by agent, tool, session, and user" style="width: 100%; border-radius: 12px;">
+  <figcaption>Model spend, explained: by agent, tool, session, and user, with budget health.</figcaption>
 </figure>
 
 ## How it works
