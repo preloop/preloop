@@ -65,6 +65,20 @@ func TestSetHomeEscapesTheRealProfile(t *testing.T) {
 	}
 }
 
+func TestScrubCredentialEnvRemovesTokenAndURL(t *testing.T) {
+	t.Setenv("PRELOOP_TOKEN", "ambient-secret")
+	t.Setenv("PRELOOP_URL", "https://preloop.ai")
+
+	ScrubCredentialEnv()
+
+	if got := os.Getenv("PRELOOP_TOKEN"); got != "" {
+		t.Fatalf("PRELOOP_TOKEN = %q after scrub", got)
+	}
+	if got := os.Getenv("PRELOOP_URL"); got != "" {
+		t.Fatalf("PRELOOP_URL = %q after scrub", got)
+	}
+}
+
 func TestSetHomeReturnsTheDirectoryItWasGiven(t *testing.T) {
 	want := t.TempDir()
 	if got := SetHome(t, want); got != want {

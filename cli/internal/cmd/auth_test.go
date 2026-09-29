@@ -306,6 +306,10 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
+	// PRELOOP_TOKEN overrides a login the test saved. A developer shell that
+	// exports it would make these tests call that host instead of the fixture.
+	testenv.ScrubCredentialEnv()
+
 	// Scrub ambient agent/model env vars so upstream-resolution tests see a
 	// hermetic environment. When the test suite itself runs inside a managed
 	// agent session (e.g. Preloop-managed Claude Code exporting
@@ -343,6 +347,12 @@ func TestMain(m *testing.M) {
 	restoreHome()
 	_ = os.RemoveAll(tempHome)
 	os.Exit(code)
+}
+
+func TestSuiteDoesNotInheritCredentialEnv(t *testing.T) {
+	if os.Getenv("PRELOOP_TOKEN") != "" || os.Getenv("PRELOOP_URL") != "" {
+		t.Fatal("unit tests inherited PRELOOP_TOKEN or PRELOOP_URL from the parent process")
+	}
 }
 
 // A valid existing login must short-circuit `preloop login` (the install

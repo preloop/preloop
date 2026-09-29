@@ -58,6 +58,23 @@ func SetTempHome(t *testing.T) string {
 	return SetHome(t, t.TempDir())
 }
 
+// Credential environment variables override the config file (config.EnvToken
+// and config.EnvURL). A parent process that exports them, such as a
+// developer shell, makes NewClient authenticate as that credential instead
+// of the login a test saved.
+const (
+	envToken = "PRELOOP_TOKEN"
+	envURL   = "PRELOOP_URL"
+)
+
+// ScrubCredentialEnv removes PRELOOP_TOKEN and PRELOOP_URL from this process.
+// Call it from TestMain before m.Run. A test that needs one of these values
+// sets it with t.Setenv, which restores the scrubbed empty value afterwards.
+func ScrubCredentialEnv() {
+	_ = os.Unsetenv(envToken)
+	_ = os.Unsetenv(envURL)
+}
+
 // SetProcessHome is the TestMain counterpart to SetHome, for the package-level
 // guard that runs before any *testing.T exists. It mutates the process
 // environment and returns a function that restores the previous values.
