@@ -35,7 +35,7 @@ The installer:
 </figure>
 
 !!! info "Unattended installs"
-    Set `PRELOOP_CONFIRM=1` (truthy values: `1`, `y`, `yes`, `true`, `on`) to auto‑approve every interactive prompt — both in the install script itself and in the CLI subcommands it invokes. This is the recommended way to bake Preloop into your provisioning scripts, devcontainers, or CI runners.
+    Set `PRELOOP_CONFIRM=1` (truthy values: `1`, `y`, `yes`, `true`, `on`) to auto‑approve every interactive prompt, both in the install script itself and in the CLI subcommands it invokes. This is the recommended way to bake Preloop into your provisioning scripts, devcontainers, or CI runners.
 
     ```bash
     PRELOOP_CONFIRM=1 curl -fsSL https://preloop.ai/install/cli | sh
@@ -60,7 +60,7 @@ If you already have an account, choose **`Y`** (default) and the same flow runs 
 
 ## Step 3: Confirm onboarding in the console
 
-The agents page opens to the **canvas** view by default — every detected agent shows up as a card connected to its tools and AI models. You can switch to the cards layout from the toolbar or pan/zoom the canvas to inspect each runtime.
+The agents page opens to the **canvas** view by default, every detected agent shows up as a card connected to its tools and AI models. You can switch to the cards layout from the toolbar or pan/zoom the canvas to inspect each runtime.
 
 <figure>
   <img src="../../assets/animations/quickstart/dark/agents-onboarding.webp" alt="Preloop onboarding all detected agents and refreshing the agents canvas" style="width: 100%; border-radius: 8px;">
@@ -78,9 +78,9 @@ Each card shows the **onboarding state** for that agent:
 
 An agent can also carry an **unverified** badge: enrollment succeeded, but the live validation prompt was throttled or refused upstream, so model traffic has not been proven end-to-end yet. Clear it with `preloop agents validate <name> --live`.
 
-Batch onboarding continues past individual failures and ends with a per-agent summary table (`onboarded` / `partial` / `failed` plus a Reason). The command exits 0 when at least one agent onboarded fully or partially — see [CLI Reference](cli.md#the-onboarding-summary-table) for the exact semantics.
+Batch onboarding continues past individual failures and ends with a per-agent summary table (`onboarded` / `partial` / `failed` plus a Reason). The command exits 0 when at least one agent onboarded fully or partially, see [CLI Reference](cli.md#the-onboarding-summary-table) for the exact semantics.
 
-You can also kick off onboarding from the **Onboard agents** dialog at the top right of the page — it shows the same three CLI commands and one‑click copies for users who want to step through manually.
+You can also kick off onboarding from the **Onboard agents** dialog at the top right of the page, it shows the same three CLI commands and one‑click copies for users who want to step through manually.
 
 ---
 
@@ -107,7 +107,7 @@ preloop approvals pending      # List approvals waiting on you
 ```
 
 !!! note "What `discover` actually does"
-    `preloop agents discover` reads each supported runtime's config (e.g. `~/.codex/config.toml`, `~/.claude/settings.json`, OpenClaw policies, Gemini CLI MCP servers, etc.), proposes any missing additions, and — once you confirm — rewrites supported entries to point at `https://preloop.ai/mcp/v1` (firewall) and the Preloop model gateway. It also writes Agent Control credentials/config for runtimes that support that contract. Original config is backed up next to it so you can roll back at any time.
+    `preloop agents discover` reads each supported runtime's config (e.g. `~/.codex/config.toml`, `~/.claude/settings.json`, OpenClaw policies, Gemini CLI MCP servers, etc.), proposes any missing additions, and (once you confirm) rewrites supported entries to point at `https://preloop.ai/mcp/v1` (firewall) and the Preloop model gateway. It also writes Agent Control credentials/config for runtimes that support that contract. Original config is backed up next to it so you can roll back at any time.
 
 !!! warning "Agent Control requires the runtime plugin"
     CLI onboarding alone cannot keep an agent online or execute operator commands. Run `preloop agents install-plugin <name>` (or install `@preloop-ai/openclaw-plugin` / `preloop-hermes-plugin` from the runtime marketplace), then restart the agent. Without the plugin loaded, MCP and gateway onboarding may be active, but the agent will not appear as a live Agent Control target and mobile/watch/web commands cannot reach the running session.

@@ -1,6 +1,6 @@
 # Claude Code Reference
 
-How to onboard Claude Code — Anthropic's agentic coding CLI — into Preloop's Safety Layer with the `preloop` CLI.
+How to onboard Claude Code (Anthropic's agentic coding CLI) into Preloop's Safety Layer with the `preloop` CLI.
 
 ---
 
@@ -8,8 +8,8 @@ How to onboard Claude Code — Anthropic's agentic coding CLI — into Preloop's
 
 Preloop governs Claude Code on two planes:
 
-- **Tool calls** — a managed `preloop` MCP server entry routes governed tools through the **Preloop MCP Firewall**, where access rules (allow / deny / require_approval) and approval workflows apply.
-- **Model traffic** — onboarding can rewrite Claude Code's environment so model calls go through the **Preloop Gateway** using a managed model alias, giving you cost analytics and budget controls.
+- **Tool calls**: a managed `preloop` MCP server entry routes governed tools through the **Preloop MCP Firewall**, where access rules (allow / deny / require_approval) and approval workflows apply.
+- **Model traffic**: onboarding can rewrite Claude Code's environment so model calls go through the **Preloop Gateway** using a managed model alias, giving you cost analytics and budget controls.
 
 Optionally, Preloop can also install a **native tool-approval hook** so Claude Code's own tool calls (shell commands, file edits) that would normally prompt you in the terminal are routed to Preloop mobile/watch/web approvals instead.
 
@@ -17,7 +17,7 @@ Optionally, Preloop can also install a **native tool-approval hook** so Claude C
 
 ## Prerequisites
 
-- Claude Code installed — see [Anthropic's installation docs](https://docs.anthropic.com/en/docs/claude-code) (e.g. `npm install -g @anthropic-ai/claude-code`).
+- Claude Code installed, see [Anthropic's installation docs](https://docs.anthropic.com/en/docs/claude-code) (e.g. `npm install -g @anthropic-ai/claude-code`).
 - The Preloop CLI:
 
 ```bash
@@ -97,10 +97,10 @@ preloop agents validate "claude code" --live  # plus a live prompt through the a
 preloop agents list                     # all managed agents in your account
 ```
 
-You can also open **`https://preloop.ai/console/agents`** — Claude Code appears as a card with its onboarding state (`Fully onboarded`, `MCP proxy only`, `Model gateway only`, or `Incomplete`).
+You can also open **`https://preloop.ai/console/agents`**: Claude Code appears as a card with its onboarding state (`Fully onboarded`, `MCP proxy only`, `Model gateway only`, or `Incomplete`).
 
 !!! note "Pro/Max subscriptions (OAuth) work too"
-    If your Claude Code runs on a Pro/Max subscription instead of an API key, onboarding stores the OAuth credential and the gateway proxies that traffic **byte-faithfully** — Anthropic requires the exact Claude Code request shape, so Preloop forwards it untouched while still applying budgets, governance tool-stripping, and usage recording. Message-level context optimizations do not apply to this traffic, and the credential is bound to this agent's model — other agents cannot use it. If the post-onboarding live check is throttled or refused upstream, the agent shows an **unverified** badge until `preloop agents validate "claude code" --live` passes. Details: [Model Gateway → Subscription OAuth Passthrough](../concepts/model-gateway.md#subscription-oauth-passthrough).
+    If your Claude Code runs on a Pro/Max subscription instead of an API key, onboarding stores the OAuth credential and the gateway proxies that traffic **byte-faithfully**: Anthropic requires the exact Claude Code request shape, so Preloop forwards it untouched while still applying budgets, governance tool-stripping, and usage recording. Message-level context optimizations do not apply to this traffic, and the credential is bound to this agent's model: other agents cannot use it. If the post-onboarding live check is throttled or refused upstream, the agent shows an **unverified** badge until `preloop agents validate "claude code" --live` passes. Details: [Model Gateway → Subscription OAuth Passthrough](../concepts/model-gateway.md#subscription-oauth-passthrough).
 
 ---
 
@@ -114,7 +114,7 @@ preloop agents onboard "claude code" --approvals
 
 (Interactive onboarding also offers this as a `Route Claude Code's native tool calls ... through Preloop approvals?` prompt.)
 
-This installs a `PreToolUse` hook entry in `~/.claude/settings.json` that runs `preloop agents permission-hook --source claude_code` before each tool call, plus a per-agent credential under `~/.preloop/agents/`. Because Claude Code's `PreToolUse` fires on *every* tool call, the hook first evaluates your own Claude Code permission settings and only escalates calls that **would have prompted you** — those become Preloop approval requests you can answer from the [mobile apps](mobile-apps.md), watch, or web console. Calls your own config already allows proceed untouched.
+This installs a `PreToolUse` hook entry in `~/.claude/settings.json` that runs `preloop agents permission-hook --source claude_code` before each tool call, plus a per-agent credential under `~/.preloop/agents/`. Because Claude Code's `PreToolUse` fires on *every* tool call, the hook first evaluates your own Claude Code permission settings and only escalates calls that **would have prompted you**, those become Preloop approval requests you can answer from the [mobile apps](mobile-apps.md), watch, or web console. Calls your own config already allows proceed untouched.
 
 <!-- TODO screenshot: `claude-cli-approval-flow.png` -->
 
@@ -128,7 +128,7 @@ Multi-step workflows behave the same way: each governed tool call in the sequenc
 
 <!-- TODO screenshot: `claude-multi-tool-workflow.png` -->
 
-The always-available `request_approval` tool lets the agent explicitly ask for human sign-off with custom context — see [Built-in Tools](../tools/builtin.md).
+The always-available `request_approval` tool lets the agent explicitly ask for human sign-off with custom context, see [Built-in Tools](../tools/builtin.md).
 
 ---
 
@@ -147,7 +147,7 @@ preloop agents offboard "claude code"   # restore config and remove managed enro
 
 ## Related
 
-- [CLI quickstart](../quickstart-cli.md) — the 60-second install-and-onboard flow
-- [Safety Layer & Access Rules](../concepts/safety-layer.md) — how rules are evaluated
-- [AI Model Gateway](../concepts/model-gateway.md) — what gateway routing gives you
-- [Mobile Apps](mobile-apps.md) — approve on the go
+- [CLI quickstart](../quickstart-cli.md): the 60-second install-and-onboard flow
+- [Safety Layer & Access Rules](../concepts/safety-layer.md): how rules are evaluated
+- [AI Model Gateway](../concepts/model-gateway.md): what gateway routing gives you
+- [Mobile Apps](mobile-apps.md): approve on the go

@@ -14,8 +14,8 @@ The installer downloads the release binary for your OS/arch from GitHub Releases
 |----------|--------|
 | `PRELOOP_VERSION` | Pin a specific release instead of the latest |
 | `INSTALL_DIR` | Override the install directory |
-| `PRELOOP_CONFIRM` | Truthy (`1`, `y`, `yes`, `true`, `on`): accept all prompts — for provisioning scripts, devcontainers, CI |
-| `PRELOOP_DISABLE_TELEMETRY` | `true`: no version check-ins, no conversion events, no update notices — set this on every test or CI run |
+| `PRELOOP_CONFIRM` | Truthy (`1`, `y`, `yes`, `true`, `on`): accept all prompts, for provisioning scripts, devcontainers, CI |
+| `PRELOOP_DISABLE_TELEMETRY` | `true`: no version check-ins, no conversion events, no update notices, set this on every test or CI run |
 
 Pre-built binaries are also on [GitHub Releases](https://github.com/preloop/preloop/releases), or build from source with `make install` in `cli/`.
 
@@ -28,7 +28,7 @@ Pre-built binaries are also on [GitHub Releases](https://github.com/preloop/prel
 -v, --verbose
 ```
 
-Resolution order — token: `--token` > `PRELOOP_TOKEN` > config file. URL: `--url` > `PRELOOP_URL` > config file. Point the CLI at a self-hosted instance with `preloop login --url https://preloop.example.com` once; the URL is stored in `~/.preloop/config.yaml`.
+Resolution order, token: `--token` > `PRELOOP_TOKEN` > config file. URL: `--url` > `PRELOOP_URL` > config file. Point the CLI at a self-hosted instance with `preloop login --url https://preloop.example.com` once; the URL is stored in `~/.preloop/config.yaml`.
 
 ## Authentication
 
@@ -84,15 +84,15 @@ Onboarding summary:
 | Status | Meaning |
 |--------|---------|
 | `onboarded` | Full onboarding: MCP firewall and (where supported) model routing configured |
-| `partial` | MCP and model config applied, but the managed launcher step was skipped — usually a missing agent binary. Not a failure. |
+| `partial` | MCP and model config applied, but the managed launcher step was skipped, usually a missing agent binary. Not a failure. |
 | `failed` | Enrollment error for this agent; see Reason |
 
-The Reason column also carries live-validation outcomes. `live validation throttled — model traffic unverified` means enrollment succeeded but the verification prompt was rate-limited; the agent shows an **unverified** badge in the console until you re-verify with `preloop agents validate <agent> --live`. `live validation inconclusive (upstream billing/quota)` means the credential authenticated and reached the provider, but the provider refused the call — also re-verify later.
+The Reason column also carries live-validation outcomes. `live validation throttled — model traffic unverified` means enrollment succeeded but the verification prompt was rate-limited; the agent shows an **unverified** badge in the console until you re-verify with `preloop agents validate <agent> --live`. `live validation inconclusive (upstream billing/quota)` means the credential authenticated and reached the provider, but the provider refused the call: also re-verify later.
 
 ### Exit codes
 
-- **0** — at least one attempted agent onboarded, fully or partially (and trivially when nothing was attempted). A single-agent `partial` also exits 0.
-- **1** — every attempted agent failed, or another error occurred.
+- **0**: at least one attempted agent onboarded, fully or partially (and trivially when nothing was attempted). A single-agent `partial` also exits 0.
+- **1**: every attempted agent failed, or another error occurred.
 
 Script against the summary, not just the exit code, when you care about specific agents.
 
@@ -105,26 +105,26 @@ Hint: Running under WSL: agents installed on Windows are not on the WSL PATH —
 ```
 
 Native Windows CLI binaries (`amd64` and `arm64`) also ship with every release.
-WSL remains the recommended environment — see
+WSL remains the recommended environment, see
 [Windows (WSL2)](../operations/windows-wsl2.md) for setup and current limitations.
 
 ### Support levels
 
 | Agent | MCP firewall | Model gateway routing | Agent Control (live channel) |
 |-------|--------------|----------------------|------------------------------|
-| Claude Code | Yes | Yes | — |
-| Codex CLI | Yes | Yes | — |
-| Gemini CLI | Yes | Yes | — |
-| OpenCode | Yes | Yes | — |
+| Claude Code | Yes | Yes | n/a |
+| Codex CLI | Yes | Yes | n/a |
+| Gemini CLI | Yes | Yes | n/a |
+| OpenCode | Yes | Yes | n/a |
 | Hermes | Yes | Yes | Yes (runtime plugin) |
 | OpenClaw | Yes | Yes (OpenAI-compatible gateway) | Yes (runtime plugin) |
-| Cursor | Yes | Manual BYOK: set the OpenAI base-URL override in Cursor's Settings → Models yourself; covers the AI panel incl. Agent mode | — |
-| Claude Desktop | Yes | No | — |
-| Windsurf | Yes | No | — |
-| VS Code / Copilot | Yes | No | — |
-| Copilot CLI | Yes (`~/.copilot/mcp-config.json`) | No on onboard. `preloop copilot` launches the CLI with gateway env vars | — |
-| Antigravity | Yes | No (locked to Google-hosted models) | — |
-| Devin | Yes | No (inference runs in Cognition's cloud) | — |
+| Cursor | Yes | Manual BYOK: set the OpenAI base-URL override in Cursor's Settings → Models yourself; covers the AI panel incl. Agent mode | n/a |
+| Claude Desktop | Yes | No | n/a |
+| Windsurf | Yes | No | n/a |
+| VS Code / Copilot | Yes | No | n/a |
+| Copilot CLI | Yes (`~/.copilot/mcp-config.json`) | No on onboard. `preloop copilot` launches the CLI with gateway env vars | n/a |
+| Antigravity | Yes | No (locked to Google-hosted models) | n/a |
+| Devin | Yes | No (inference runs in Cognition's cloud) | n/a |
 
 "MCP firewall: Yes" means tool calls are governed; agents without gateway routing keep using their own model credentials, so cost analytics and model budgets do not apply to them.
 
@@ -176,7 +176,7 @@ preloop version           # version, commit, build date
 preloop version --check   # check for updates
 ```
 
-The CLI checks for updates at most once per day. With `PRELOOP_DISABLE_TELEMETRY=true` the check-in is disabled entirely — update notices are suppressed too, since they ride on the check-in response.
+The CLI checks for updates at most once per day. With `PRELOOP_DISABLE_TELEMETRY=true` the check-in is disabled entirely: update notices are suppressed too, since they ride on the check-in response.
 
 ## Related
 

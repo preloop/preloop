@@ -58,7 +58,7 @@ In your MCP client (e.g., Claude Code):
 Using @preloop tools, pay alice@example.com $500
 ```
 
-Expected: the client sends the request and waits — the tool does NOT execute immediately.
+Expected: the client sends the request and waits, the tool does NOT execute immediately.
 
 **Step 2: Check for Notification**
 
@@ -165,7 +165,7 @@ This means: only require approval if amount > $1000.
 Using @preloop tools, pay charlie@example.com $500
 ```
 
-Expected: no approval request — the tool executes immediately.
+Expected: no approval request, the tool executes immediately.
 
 **Test B: Above Threshold**
 
@@ -191,7 +191,7 @@ Once tests 1-3 pass, the core Safety Layer works. Run through these quicker chec
 - **Timeout and escalation:** set a short timeout (e.g. 120s) and escalation delay (e.g. 60s) on the `pay` policy, trigger a call, and don't respond. The escalation contact should be notified after the delay, and after the timeout the client should receive a timeout error with the tool NOT executed.
 - **Multiple notification channels:** enable email, web, Slack, and mobile for the `pay` policy and trigger a call. All configured channels should notify within ~30 seconds, and approving from one channel should update the others.
 - **Non-prelooped tool:** call `get_random_number` from the example server with **Require Approval** OFF. It should execute immediately with no notification, but still appear in the audit trail.
-- **Error handling:** trigger a call with invalid arguments (e.g. `pay invalid-email $-100`) and approve it — the execution failure should be reported clearly. Then point the example server at an invalid URL and confirm you get a clean "server unavailable" error instead of a silent failure; restore the URL to `https://example-mcp.preloop.ai/mcp` afterwards.
+- **Error handling:** trigger a call with invalid arguments (e.g. `pay invalid-email $-100`) and approve it: the execution failure should be reported clearly. Then point the example server at an invalid URL and confirm you get a clean "server unavailable" error instead of a silent failure; restore the URL to `https://example-mcp.preloop.ai/mcp` afterwards.
 
 ## Next Steps
 

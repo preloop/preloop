@@ -141,7 +141,7 @@ preloop (https://preloop.ai/mcp/v1) - Connected
 claude mcp tools preloop
 ```
 
-You should see tools like (illustrative — depends on your configuration):
+You should see tools like (illustrative, depends on your configuration):
 - `request_approval` (always available)
 - `pay` (if you added example MCP server)
 - `create_issue`, `update_issue` (if trackers connected)
@@ -351,7 +351,7 @@ Execute the 'pay' tool with recipient=alice@example.com and amount=500
 
 Building your own MCP client or using a different MCP-compatible tool?
 
-`https://preloop.ai/mcp/v1` is a single streamable-HTTP MCP endpoint speaking JSON-RPC 2.0. Any MCP SDK client (Python `mcp`, TypeScript `@modelcontextprotocol/sdk`, etc.) works against it — point the SDK's streamable-HTTP transport at the URL and set an `Authorization: Bearer YOUR_API_KEY` header. There are no REST-style sub-paths; all methods (`initialize`, `tools/list`, `tools/call`, ...) are JSON-RPC messages POSTed to the same URL.
+`https://preloop.ai/mcp/v1` is a single streamable-HTTP MCP endpoint speaking JSON-RPC 2.0. Any MCP SDK client (Python `mcp`, TypeScript `@modelcontextprotocol/sdk`, etc.) works against it: point the SDK's streamable-HTTP transport at the URL and set an `Authorization: Bearer YOUR_API_KEY` header. There are no REST-style sub-paths; all methods (`initialize`, `tools/list`, `tools/call`, ...) are JSON-RPC messages POSTed to the same URL.
 
 ### Minimal curl Example
 
@@ -376,7 +376,7 @@ curl -X POST https://preloop.ai/mcp/v1 \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_approval","arguments":{"reason":"Testing my custom MCP client"}}}'
 ```
 
-If the tool is prelooped, the call blocks until the approval is granted or declined — approval enforcement happens server-side, and your client just sees the final tool result (or an error if declined).
+If the tool is prelooped, the call blocks until the approval is granted or declined: approval enforcement happens server-side, and your client just sees the final tool result (or an error if declined).
 
 ## Next Steps
 

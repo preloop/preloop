@@ -3,7 +3,7 @@
 Sign up for Preloop Cloud, verify your email, and log in to your dashboard. Takes about 2 minutes, no credit card required.
 
 !!! note "Self-hosted?"
-    This page covers Preloop Cloud at [preloop.ai](https://preloop.ai). On a self-hosted instance, registration happens at your own instance's `/register` page (when registration is enabled; the very first account on a fresh install uses the setup link printed by the installer) — the rest of the steps are the same.
+    This page covers Preloop Cloud at [preloop.ai](https://preloop.ai). On a self-hosted instance, registration happens at your own instance's `/register` page (when registration is enabled; the very first account on a fresh install uses the setup link printed by the installer): the rest of the steps are the same.
 
 ---
 

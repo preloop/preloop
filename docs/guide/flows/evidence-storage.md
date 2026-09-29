@@ -50,7 +50,7 @@ Docker runners receive an execution-bound JWT (`aud=flow-artifact`,
 `result.json` when present) and PUT it to
 `/api/v1/flows/executions/{id}/artifacts`. Kubernetes logs then carry only
 `PRELOOP_ARTIFACT_*` status markers and `PRELOOP_EVIDENCE committed|failed|absent`
-lines — never the pack bytes. Hosted Docker uses the same EXIT-trap PUT;
+lines: never the pack bytes. Hosted Docker uses the same EXIT-trap PUT;
 after exit the control plane reads those `PRELOOP_EVIDENCE` lines and binds
 the stored artifact instead of copying `/workspace/evidence` a second time.
 Workspace checkpoints stay on the separate `workspace` / `native_session`
@@ -216,7 +216,7 @@ A local `/tmp/preloop-evidence-reference.json` marker is not proof of
 upload. The server verifies capability scope (account, flow, thread,
 execution, `kind=evidence`) and the archive digest on PUT and GET.
 Direct-upload failure emits `evidence error` / `result error` markers
-and a `failed` or `missing` receipt — never cleartext pack bytes on the
+and a `failed` or `missing` receipt: never cleartext pack bytes on the
 log channel.
 
 ## Retention and legal hold

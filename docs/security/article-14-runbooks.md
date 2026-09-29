@@ -190,6 +190,6 @@ inside one hour.
 ## Retention
 
 Keep every filed report, the evidence pack it was filled from, and the drill
-records for the support period stated in [SECURITY.md](../../SECURITY.md).
+records for the support period stated in [SECURITY.md](https://github.com/preloop/preloop/blob/main/SECURITY.md).
 The run-over-run audit trail (scheduled re-audits) is the record that
 vulnerability handling continued between releases.

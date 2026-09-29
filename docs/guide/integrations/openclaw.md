@@ -38,9 +38,9 @@ preloop agents validate openclaw
 Onboarding, against the default config at `~/.openclaw/openclaw.json`:
 
 1. **Backs up** the original config next to it, so `preloop agents restore openclaw` can undo everything local.
-2. **Imports** the MCP servers configured in OpenClaw into your Preloop account where they can be represented, then rewrites the local MCP config so OpenClaw talks only to the managed `preloop` entry — governed tool access through the MCP firewall.
-3. **Imports the configured model** and rewrites OpenClaw to send model traffic through Preloop's **OpenAI-compatible gateway** with a managed credential. This works for Gemini models too (e.g. `google/gemini-3.1-pro-preview`): Preloop preserves the upstream provider identity and routes through the gateway alias. If your OpenClaw build cannot express the provider/base-URL rewrite, MCP governance still completes and model settings stay manual — the onboarding summary tells you.
-4. **Creates the control-plane records**: a managed agent (`agent_kind: openclaw`), a durable runtime credential bound to it, and a runtime-session history — so this installation has one durable identity for audit, spend attribution, and operator controls.
+2. **Imports** the MCP servers configured in OpenClaw into your Preloop account where they can be represented, then rewrites the local MCP config so OpenClaw talks only to the managed `preloop` entry: governed tool access through the MCP firewall.
+3. **Imports the configured model** and rewrites OpenClaw to send model traffic through Preloop's **OpenAI-compatible gateway** with a managed credential. This works for Gemini models too (e.g. `google/gemini-3.1-pro-preview`): Preloop preserves the upstream provider identity and routes through the gateway alias. If your OpenClaw build cannot express the provider/base-URL rewrite, MCP governance still completes and model settings stay manual: the onboarding summary tells you.
+4. **Creates the control-plane records**: a managed agent (`agent_kind: openclaw`), a durable runtime credential bound to it, and a runtime-session history, so this installation has one durable identity for audit, spend attribution, and operator controls.
 5. **Writes the Agent Control config** for the runtime plugin (next section).
 
 Two config patterns are handled on import: provider/model details under `models.providers`, and provider auth under `auth.profiles` (common for Google/Gemini). With `auth.profiles`, the model identity imports and the rewrite happens, but you may need to add the upstream provider secret in Preloop separately.
@@ -59,7 +59,7 @@ preloop agents offboard openclaw   # restore config + remove the managed enrollm
 
 ## The Agent Control plugin
 
-The runtime plugin is `@preloop-ai/openclaw-plugin` (v0.1.1 on npm, Apache-2.0, vendored in the Preloop repo under `runtime-plugins/openclaw-preloop`). It owns the live side of the integration: the long-lived WebSocket to `/api/v1/agents/control/ws`, reconnect/backoff, presence/heartbeat, capability advertisement, operator-message delivery — and **native tool approvals**.
+The runtime plugin is `@preloop-ai/openclaw-plugin` (v0.1.1 on npm, Apache-2.0, vendored in the Preloop repo under `runtime-plugins/openclaw-preloop`). It owns the live side of the integration: the long-lived WebSocket to `/api/v1/agents/control/ws`, reconnect/backoff, presence/heartbeat, capability advertisement, operator-message delivery, and **native tool approvals**.
 
 Install it through OpenClaw's plugin manager:
 
@@ -73,17 +73,17 @@ Then restart OpenClaw. When the plugin connects and advertises capabilities, Pre
 
 Notes:
 
-- The plugin installer runs inside OpenClaw's Node runtime — Node **>= 20** is required. If OpenClaw reports `requires Node` or `Unsupported engine`, upgrade the Node executable `openclaw` uses and rerun `preloop agents install-plugin openclaw`.
+- The plugin installer runs inside OpenClaw's Node runtime: Node **>= 20** is required. If OpenClaw reports `requires Node` or `Unsupported engine`, upgrade the Node executable `openclaw` uses and rerun `preloop agents install-plugin openclaw`.
 - If native plugin installation is impossible, the CLI can fall back to Preloop's managed Agent Control sidecar so control readiness can still be verified.
-- The plugin's config is written by the CLI under `plugins.entries.preloop-plugin.config` (the plugin's runtime id is `preloop-plugin`) with `control_ws_url`, `bearer_token`, and `runtime_principal_id`. Do not hand-author the `bearer_token`, and do not write Agent Control metadata as a top-level `preloop` object — OpenClaw builds that validate config schemas reject unknown root keys.
+- The plugin's config is written by the CLI under `plugins.entries.preloop-plugin.config` (the plugin's runtime id is `preloop-plugin`) with `control_ws_url`, `bearer_token`, and `runtime_principal_id`. Do not hand-author the `bearer_token`, and do not write Agent Control metadata as a top-level `preloop` object: OpenClaw builds that validate config schemas reject unknown root keys.
 - Validation reports `control_config_written`, `control_plugin_installed`, `control_plugin_verified`, and `control_channel_configured` separately, so MCP/gateway onboarding succeeds even while the plugin is not yet loaded.
 
 ### Native tool approvals (`before_tool_call`)
 
-MCP governance only sees tool calls that go through the MCP server. OpenClaw's *native* tools — shell exec, file writes — never do. The plugin closes that gap: its `before_tool_call` hook intercepts every native tool call and asks Preloop for a decision at `POST /api/v1/agents/permission-check`, which runs your approval workflows and blocks for up to ~300 seconds while you decide on web, mobile, or watch. `deny` blocks the tool with the reason; anything else lets it run.
+MCP governance only sees tool calls that go through the MCP server. OpenClaw's *native* tools (shell exec, file writes) never do. The plugin closes that gap: its `before_tool_call` hook intercepts every native tool call and asks Preloop for a decision at `POST /api/v1/agents/permission-check`, which runs your approval workflows and blocks for up to ~300 seconds while you decide on web, mobile, or watch. `deny` blocks the tool with the reason; anything else lets it run.
 
 - **Fail-closed by default.** If Preloop is unreachable, the tool call is blocked. Set `tool_approval_fail_open: true` in the plugin config only if you accept ungoverned execution during outages. `tool_approval_enabled: false` disables the gate entirely.
-- **Local pre-filter.** The plugin honors OpenClaw's own `~/.openclaw/exec-approvals.json` first: locally denied commands are denied outright, locally allowed ones run untouched — only calls that *would have prompted you* round-trip to Preloop.
+- **Local pre-filter.** The plugin honors OpenClaw's own `~/.openclaw/exec-approvals.json` first: locally denied commands are denied outright, locally allowed ones run untouched, only calls that *would have prompted you* round-trip to Preloop.
 - Per-subject control: the `native_tool_approvals: enforce | off` governance toggle, and a pinned approval workflow per agent (Console → the agent's governance settings).
 
 Approval requests from this path show tool source `agent` and land in the same audit trail as MCP calls.
@@ -145,7 +145,7 @@ tools:
         description: "Privilege escalation and destructive deletes"
 ```
 
-Conditions evaluate against `args` (the tool-call arguments) — that is the only variable bound. Compound expressions and functions like `contains()` / `startsWith()` / `endsWith()` need `condition_type: "cel"`; the default simple evaluator handles single comparisons (`==`, `!=`, `>`, `<`, `>=`, `<=`). Rules are ordered; first match wins; `deny` beats waiting.
+Conditions evaluate against `args` (the tool-call arguments), that is the only variable bound. Compound expressions and functions like `contains()` / `startsWith()` / `endsWith()` need `condition_type: "cel"`; the default simple evaluator handles single comparisons (`==`, `!=`, `>`, `<`, `>=`, `<=`). Rules are ordered; first match wins; `deny` beats waiting.
 
 The [example policies](../examples/policies/openclaw/README.md) cover shell safety, file protection, and browser safety, ready to `preloop policy apply`.
 
@@ -172,7 +172,7 @@ Check the API key is valid, has no stray whitespace, and was not revoked.
 **Plugin installed but the agent never shows online**
 
 - Restart OpenClaw after installing the plugin.
-- `preloop agents validate openclaw` — check the `control_*` fields.
+- `preloop agents validate openclaw`: check the `control_*` fields.
 - Check OpenClaw's Node version (>= 20).
 
 **Agent appears in Preloop but no session activity**
@@ -185,7 +185,7 @@ Check the API key is valid, has no stray whitespace, and was not revoked.
 
 - `preloop policy diff <file>` to confirm what is live.
 - Conditions with functions or `||`/`&&` need `condition_type: "cel"`.
-- Rules evaluate in order — an earlier `allow` wins.
+- Rules evaluate in order: an earlier `allow` wins.
 
 More: [Troubleshooting](../troubleshooting.md).
 
@@ -194,7 +194,7 @@ More: [Troubleshooting](../troubleshooting.md).
 ## Related
 
 - [OpenClaw Policy Examples](../examples/policies/openclaw/README.md)
-- [Agent Control Runtime Adapters](agent-control-runtime-adapters.md) — the wire protocol and adapter contract
+- [Agent Control Runtime Adapters](agent-control-runtime-adapters.md): the wire protocol and adapter contract
 - [Conditional Approval (CEL)](../approvals/cel-expressions.md)
 - [Team-Based Approvals](../approvals/teams.md)
 - [Mobile Apps](../clients/mobile-apps.md)

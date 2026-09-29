@@ -11,8 +11,8 @@ Create teams, add members, and assign team roles so you can route approvals to g
 
 Teams in Preloop are groups of users used in two places:
 
-- **Approval routing** — approval workflows reference teams via `approver_teams` (and `escalation_teams`), so any member can vote on a request
-- **Permissions** — roles assigned to a team apply to all its members, combined as a union with each member's individual roles
+- **Approval routing**: approval workflows reference teams via `approver_teams` (and `escalation_teams`), so any member can vote on a request
+- **Permissions**: roles assigned to a team apply to all its members, combined as a union with each member's individual roles
 
 Teams are intentionally lightweight: a name, a description, members, and roles. There are no team leads, team notification channels, on-call rotations, hierarchies, statuses, or per-team quorums. Notification preferences are per-user, and quorum is the single workflow-level `approvals_required` integer.
 
@@ -25,7 +25,7 @@ Teams are intentionally lightweight: a name, a description, members, and roles. 
 3. Enter a **Name** and optional **Description**
 4. Click **Create**
 
-Pick names that match real approval or permission boundaries (`SRE`, `Finance`, `Security`) — they stay meaningful when reused across approval workflows.
+Pick names that match real approval or permission boundaries (`SRE`, `Finance`, `Security`), they stay meaningful when reused across approval workflows.
 
 You can edit the name and description later, or delete the team, from the same page.
 

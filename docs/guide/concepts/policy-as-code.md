@@ -8,10 +8,10 @@ Define and manage your AI agent governance policies declaratively using YAML fil
 
 Policy-as-code lets you:
 
-- **Define policies in YAML** — MCP servers, approval workflows, tool configurations, and defaults
-- **Version and diff** — Track changes, compare against live config, rollback to previous versions
-- **Validate before applying** — Catch errors without affecting your running system
-- **Import/export** — Move policies between environments (dev → staging → production)
+- **Define policies in YAML**: MCP servers, approval workflows, tool configurations, and defaults
+- **Version and diff**: Track changes, compare against live config, rollback to previous versions
+- **Validate before applying**: Catch errors without affecting your running system
+- **Import/export**: Move policies between environments (dev → staging → production)
 
 ---
 
@@ -81,11 +81,11 @@ Define external MCP servers that tools can reference.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | — | Unique server name (referenced by tools) |
-| `url` | string | — | Server endpoint URL |
+| `name` | string | n/a | Unique server name (referenced by tools) |
+| `url` | string | n/a | Server endpoint URL |
 | `transport` | string | `streamable-http` | `streamable-http`, `http-streaming`, `stdio`, `sse` |
 | `auth_type` | string | `none` | `none`, `bearer`, `api_key`, `oauth` |
-| `auth_config` | object | — | Auth details. Use `${ENV_VAR}` for secrets |
+| `auth_config` | object | n/a | Auth details. Use `${ENV_VAR}` for secrets |
 
 ### `approval_workflows`
 
@@ -93,17 +93,17 @@ Define how approvals are handled. See [AI-Driven Approvals](../approvals/ai-appr
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | — | Unique workflow name |
+| `name` | string | n/a | Unique workflow name |
 | `timeout_seconds` | int | `300` | Approval timeout in seconds (30–86400) |
 | `approvals_required` | int | `1` | Number of approvals needed (quorum, 1–10) |
-| `approver_users` | list | — | Usernames who can approve |
-| `approver_teams` | list | — | Team names whose members can approve |
-| `escalation_users` | list | — | Usernames to escalate to on timeout |
-| `escalation_teams` | list | — | Team names to escalate to on timeout |
-| `channel_configs` | object | — | Per-channel notification configuration |
+| `approver_users` | list | n/a | Usernames who can approve |
+| `approver_teams` | list | n/a | Team names whose members can approve |
+| `escalation_users` | list | n/a | Usernames to escalate to on timeout |
+| `escalation_teams` | list | n/a | Team names to escalate to on timeout |
+| `channel_configs` | object | n/a | Per-channel notification configuration |
 | `approval_type` | string | `standard` | `standard` (human) or `ai_driven` |
-| `ai_model` | string | — | AI model for evaluation (required if `ai_driven`) |
-| `ai_guidelines` | string | — | Guidelines for the AI decision (optional) |
+| `ai_model` | string | n/a | AI model for evaluation (required if `ai_driven`) |
+| `ai_guidelines` | string | n/a | Guidelines for the AI decision (optional) |
 | `ai_confidence_threshold` | float | `0.8` | Minimum confidence for the AI to auto-decide (0.0–1.0) |
 | `ai_fallback_behavior` | string | `escalate` | When AI is uncertain: `escalate`, `approve`, or `deny` |
 | `async_approval` | bool | `false` | Tool calls return immediately; agents poll `get_approval_status` |
@@ -114,12 +114,12 @@ Configure individual tool behaviors.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | — | Tool name (must match actual tool) |
+| `name` | string | n/a | Tool name (must match actual tool) |
 | `source` | string | `builtin` | `builtin`, `mcp`, `http`, or a server name |
 | `enabled` | bool | `true` | Whether the tool is active |
-| `approval_workflow` | string | — | Name of approval workflow to use |
-| `conditions` | list | — | List of conditional rules |
-| `description` | string | — | Override tool description |
+| `approval_workflow` | string | n/a | Name of approval workflow to use |
+| `conditions` | list | n/a | List of conditional rules |
+| `description` | string | n/a | Override tool description |
 
 #### Tool Conditions
 
@@ -127,10 +127,10 @@ Each condition evaluates against tool arguments:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `expression` | string | — | Expression to evaluate |
+| `expression` | string | n/a | Expression to evaluate |
 | `action` | string | `require_approval` | `allow`, `deny`, or `require_approval` |
 | `condition_type` | string | `simple` | `simple` (OSS) or `cel` (Enterprise) |
-| `description` | string | — | Human-readable description |
+| `description` | string | n/a | Human-readable description |
 
 ### `defaults`
 
@@ -138,7 +138,7 @@ Each condition evaluates against tool arguments:
 |-------|------|---------|-------------|
 | `unknown_tools` | string | `allow` | `allow`, `deny`, or `require_approval` |
 | `require_approval_for_new_tools` | bool | `false` | Require approval for newly discovered tools |
-| `default_approval_workflow` | string | — | Fallback approval workflow |
+| `default_approval_workflow` | string | n/a | Fallback approval workflow |
 | `inherit_from_parent` | bool | `true` | Inherit from parent policy |
 
 ---
@@ -210,7 +210,7 @@ DELETE /api/v1/policies/versions/{id}
 ```
 
 !!! warning "Credential Safety"
-    Rollbacks preserve MCP server credentials — only configuration changes are reverted.
+    Rollbacks preserve MCP server credentials, only configuration changes are reverted.
 
 ---
 
@@ -218,11 +218,11 @@ DELETE /api/v1/policies/versions/{id}
 
 The schema validates:
 
-1. **No duplicate names** — MCP server and approval workflow names must be unique
-2. **Valid references** — Tools referencing approval workflows or MCP servers must point to defined names
-3. **AI policy completeness** — AI-driven workflows require `ai_model` (`ai_guidelines` is optional)
-4. **Expression syntax** — Tool condition expressions cannot be empty
-5. **Default references** — `default_approval_workflow` must reference a defined policy
+1. **No duplicate names**: MCP server and approval workflow names must be unique
+2. **Valid references**: Tools referencing approval workflows or MCP servers must point to defined names
+3. **AI policy completeness**: AI-driven workflows require `ai_model` (`ai_guidelines` is optional)
+4. **Expression syntax**: Tool condition expressions cannot be empty
+5. **Default references**: `default_approval_workflow` must reference a defined policy
 
 If validation fails, you get detailed error messages pointing to the exact issue:
 

@@ -377,7 +377,7 @@ Teams can be assigned roles, granting all team members those permissions.
 
 **If Bob is also individually assigned Admin:**
 
-- Bob has the union of Admin and Editor permissions (in practice, Admin's — it is a superset)
+- Bob has the union of Admin and Editor permissions (in practice, Admin's, it is a superset)
 
 ### Assigning a Role to a Team
 
@@ -422,7 +422,7 @@ Viewer (lowest)
 
 ### Permission Combination
 
-**Rule:** A user gets the **union** of all permissions from all their roles — individual and team-inherited. There is no "highest role wins"; every permission granted by any assigned role applies.
+**Rule:** A user gets the **union** of all permissions from all their roles, individual and team-inherited. There is no "highest role wins"; every permission granted by any assigned role applies.
 
 **Example:**
 

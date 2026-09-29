@@ -1,6 +1,6 @@
 # Quick Start: AI Agent Control in 5 Minutes
 
-Welcome! This guide walks you through setting up Preloop end-to-end — from signup to testing layered access rules with Claude Code.
+Welcome! This guide walks you through setting up Preloop end-to-end, from signup to testing layered access rules with Claude Code.
 
 !!! tip "Already running an agent locally?"
     The fastest path is the one‑line CLI install. It detects your existing agents (Claude Code, Codex CLI, Gemini CLI, OpenClaw, OpenCode, …), creates an account if needed, and onboards them in under a minute. See **[Onboard local agents with the CLI](quickstart-cli.md)** before continuing here.
@@ -68,8 +68,8 @@ Preloop lets you layer multiple rules on each tool. In this demo we create two a
 ### Create Approval Workflows
 
 1. Go to **Approval Workflows** and click **Create Workflow**
-2. Create a **Support** workflow — approvers: your support team, quorum: 1
-3. Create a **CFO** workflow — approvers: your CFO / finance team, quorum: 1
+2. Create a **Support** workflow, approvers: your support team, quorum: 1
+3. Create a **CFO** workflow, approvers: your CFO / finance team, quorum: 1
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -84,10 +84,10 @@ Back on the **`pay`** tool card, add four rules (evaluated top to bottom):
 
 | Priority | Condition | Action | Workflow |
 |----------|-----------|--------|----------|
-| 1 | `amount <= 100` | **Allow** | — |
+| 1 | `amount <= 100` | **Allow** | n/a |
 | 2 | `amount <= 200` | **Require Approval** | Support |
 | 3 | `amount <= 1000` | **Require Approval** | CFO |
-| 4 | *(default)* | **Deny** | — |
+| 4 | *(default)* | **Deny** | n/a |
 
 Enable **Require Justification** so agents must explain why they need to call the tool.
 
@@ -166,7 +166,7 @@ $ claude -p 'Pay $50 to Marvin for lunch' --allowedTools mcp__preloop__pay
 The payment of $50 to Marvin has been completed successfully.
 ```
 
-The payment is under $100, so it's **automatically allowed** — no approval needed.
+The payment is under $100, so it's **automatically allowed**, no approval needed.
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -204,12 +204,12 @@ The payment is between $100 and $200, triggering the **Support** approval workfl
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
     <source src="../../assets/animations/quickstart/demo_async_approval.mp4" type="video/mp4">
   </video>
-  <figcaption>$150 payment requires Support approval — approved via the mobile app</figcaption>
+  <figcaption>$150 payment requires Support approval: approved via the mobile app</figcaption>
 </figure>
 
 ### Review the Audit Trail
 
-Every tool call — allowed, denied, or approved — is logged in the **Audit Trail**:
+Every tool call (allowed, denied, or approved) is logged in the **Audit Trail**:
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">

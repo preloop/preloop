@@ -34,7 +34,7 @@ access token, and two API keys pasted into a docs example (the same two keys
 appear in two consecutive commits of the same day, hence four fingerprints
 for one incident). All are high-entropy credential shapes committed while
 the repository was private and published when it went public. They were
-reported privately through the process in [SECURITY.md](../../SECURITY.md)
+reported privately through the process in [SECURITY.md](https://github.com/preloop/preloop/blob/main/SECURITY.md)
 when the first gitleaks history scan surfaced them (scanning added
 2026-09-08, #508) rather than in a public issue. **This repository contains
 no record that they were rotated.** The honest status is therefore: treat as

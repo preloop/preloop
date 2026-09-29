@@ -8,7 +8,7 @@ The **Console** is the web-based interface where you manage your organization, c
 
 *   **Dashboard**: View high-level metrics including active runtime sessions, recent tool-call volume, daily model spend, and system status.
 *   **Cost**: Spend trends, attribution by model/agent/session, and budget-health signals (Enterprise adds budget-policy configuration behind feature flags).
-*   **Runtime Sessions & Optimization**: Per-session timelines with the session-optimization loop — analyze, one-click apply, replay-verify — in the **Optimize** tab.
+*   **Runtime Sessions & Optimization**: Per-session timelines with the session-optimization loop (analyze, one-click apply, replay-verify) in the **Optimize** tab.
 *   **Issue Management**: Browse and manage issues from connected trackers (Jira, GitHub, GitLab) in a unified view.
 *   **Flow Builder**: Create and configure event-driven agentic workflows.
 *   **Managed Agents, Runtime Sessions & Agent Control**: Inspect enrolled agents, recent sessions, captured gateway interactions, operator-driven session lifecycle actions, and live Agent Control presence/commands where the runtime adapter is connected.
@@ -43,6 +43,6 @@ The main repository ships a scripted end-to-end rig at
 [`scripts/e2e-rig`](https://github.com/preloop/preloop/tree/main/scripts/e2e-rig):
 it installs a pinned OSS release on a VM behind TLS, onboards every
 discoverable agent with the CLI, exercises the gateway and optimization loop,
-then offboards and asserts each agent's config was restored — recording
+then offboards and asserts each agent's config was restored, recording
 browser and terminal footage along the way. See its README for requirements
 and usage; it always runs with `PRELOOP_DISABLE_TELEMETRY=true`.

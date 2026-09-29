@@ -20,7 +20,7 @@ unmodified under Docker Desktop.
 2. Install Docker Desktop and enable the **WSL2 backend**
    (*Settings → General → Use the WSL 2 based engine*), then enable integration
    for your distribution under *Settings → Resources → WSL Integration*.
-3. Open your WSL shell — **not** PowerShell or Git Bash — and run the normal
+3. Open your WSL shell (**not** PowerShell or Git Bash) and run the normal
    installer:
 
     ```bash
@@ -43,7 +43,7 @@ From here, follow [Install the OSS Stack](installation.md); nothing else differs
 
 ### Inside WSL (recommended)
 
-Use the standard installer — it is an ordinary Linux install:
+Use the standard installer, it is an ordinary Linux install:
 
 ```bash
 curl -fsSL https://preloop.ai/install/cli | sh
@@ -85,7 +85,7 @@ preloop version
 
 !!! warning "Do not use the shell installer under Git Bash"
     `install/cli` is a POSIX shell script. Under Git Bash it cannot write to
-    `/usr/local/bin` and falls back to `~/.local/bin` — a directory that is
+    `/usr/local/bin` and falls back to `~/.local/bin`: a directory that is
     **not** on the Windows `PATH`, so `preloop` appears to install successfully
     and then is not found. Download the `.exe` and set `PATH` as above instead.
 
@@ -104,17 +104,17 @@ avoids all of them.
 
 | Area | Behaviour on native Windows |
 |------|-----------------------------|
-| Claude Desktop discovery | Supported — the CLI reads `%APPDATA%\Claude\claude_desktop_config.json`. |
+| Claude Desktop discovery | Supported: the CLI reads `%APPDATA%\Claude\claude_desktop_config.json`. |
 | Credential probing | Auth probes that read POSIX keychains and shell-based credential helpers do not resolve on Windows; some agents will report an unverified credential and need manual re-verification. |
 | OpenClaw runtime management | Runtime install and lifecycle management assume POSIX process and path semantics; manage OpenClaw from inside WSL. |
-| Managed agent launchers | Not available. Onboarding can generate a wrapper script that launches an agent with Preloop's environment pre-applied; it is emitted as a `bash` script into `~/.local/bin`, which Windows cannot execute. MCP firewall and model-gateway routing still work — only the generated launcher is skipped. |
-| Agents installed under WSL | Not visible to the Windows binary (and vice versa) — the two have separate home directories and `PATH`s. |
+| Managed agent launchers | Not available. Onboarding can generate a wrapper script that launches an agent with Preloop's environment pre-applied; it is emitted as a `bash` script into `~/.local/bin`, which Windows cannot execute. MCP firewall and model-gateway routing still work, only the generated launcher is skipped. |
+| Agents installed under WSL | Not visible to the Windows binary (and vice versa): the two have separate home directories and `PATH`s. |
 
 !!! danger "Token files are not ACL-restricted on Windows"
     Preloop writes durable bearer tokens to disk with mode `0600` so that they
     are not world-readable. On Windows, Go's `os.Chmod` only toggles the
     read-only attribute and **does not** restrict NTFS ACLs, so that protection
-    silently does not apply — the token file inherits whatever ACL its parent
+    silently does not apply: the token file inherits whatever ACL its parent
     directory grants.
 
     If you use the native Windows binary, keep Preloop's config directory on a

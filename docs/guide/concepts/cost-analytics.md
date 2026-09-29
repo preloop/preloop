@@ -22,12 +22,12 @@ Spend summaries and breakdowns in open source are derived from this ledger plus 
 
 Estimated cost on each `ApiUsage` row is computed from the row's token counts and a price for that provider/model, resolved in this order:
 
-1. **Account price override** — if the account has an active override for the model (see below), its per-token prices and fixed request fee apply.
-2. **Vendored price catalog** — otherwise Preloop uses a snapshot of public model prices vendored with the release (`services/data/model_prices.json`). Pinning the snapshot per release keeps default pricing deterministic instead of depending on whichever pricing library version is installed. Maintainers regenerate it with `scripts/update_model_prices.py`.
+1. **Account price override**: if the account has an active override for the model (see below), its per-token prices and fixed request fee apply.
+2. **Vendored price catalog**: otherwise Preloop uses a snapshot of public model prices vendored with the release (`services/data/model_prices.json`). Pinning the snapshot per release keeps default pricing deterministic instead of depending on whichever pricing library version is installed. Maintainers regenerate it with `scripts/update_model_prices.py`.
 
 ### Per-account price overrides and currency
 
-An account can override input/output/cache-token prices, a fixed request fee, and an effective-date range for a specific model. Overrides carry a `currency` and, when the currency is not USD, an `fx_rate_to_usd` conversion rate — Preloop stores all costs in USD but preserves the original currency and unconverted prices for display and audit. Configuring overrides is an Enterprise billing feature; see [Enterprise Billing & FinOps](../integrations/enterprise-billing.md).
+An account can override input/output/cache-token prices, a fixed request fee, and an effective-date range for a specific model. Overrides carry a `currency` and, when the currency is not USD, an `fx_rate_to_usd` conversion rate: Preloop stores all costs in USD but preserves the original currency and unconverted prices for display and audit. Configuring overrides is an Enterprise billing feature; see [Enterprise Billing & FinOps](../integrations/enterprise-billing.md).
 
 ### Repricing historical usage
 
@@ -51,10 +51,10 @@ The shared frontend gates Enterprise-only panels behind feature flags such as `b
 
 ## Console Surfaces
 
-- **Cost overview** — spend, tokens, and request volume over selectable ranges
-- **Breakdowns** — by model, provider, managed agent, runtime session, or API key
-- **Budget health** — soft warnings and hard-limit state from gateway budgets
-- **Session drill-down** — jump from a cost row into the runtime session timeline
+- **Cost overview**: spend, tokens, and request volume over selectable ranges
+- **Breakdowns**: by model, provider, managed agent, runtime session, or API key
+- **Budget health**: soft warnings and hard-limit state from gateway budgets
+- **Session drill-down**: jump from a cost row into the runtime session timeline
 
 Enterprise accounts can additionally configure budget policies and model price overrides from the same area when the billing plugin is enabled. See [Enterprise Billing & FinOps](../integrations/enterprise-billing.md).
 

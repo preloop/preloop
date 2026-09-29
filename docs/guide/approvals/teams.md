@@ -219,4 +219,4 @@ Use multiple teams in a single workflow when more than one group is allowed to r
 - [Managing Teams](../users/managing-teams.md)
 - [Multi-Channel Notifications](notifications.md)
 - [Conditional Approval (CEL)](cel-expressions.md)
-- [Native Tool Approvals](ai-approvals.md#native-tool-approvals) — route agents' shell and file operations to the same team-based workflows
+- [Native Tool Approvals](ai-approvals.md#native-tool-approvals): route agents' shell and file operations to the same team-based workflows

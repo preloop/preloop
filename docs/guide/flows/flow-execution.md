@@ -14,7 +14,7 @@ Every time a flow triggers, an **execution** is created. An execution represents
 PENDING → INITIALIZING → STARTING → RUNNING → SUCCEEDED | FAILED | STOPPED
 ```
 
-If a tool call requires approval, the execution stays `RUNNING` while it waits — there is no separate waiting-for-approval state.
+If a tool call requires approval, the execution stays `RUNNING` while it waits: there is no separate waiting-for-approval state.
 
 **Key Features:**
 
@@ -113,7 +113,7 @@ Execution pages update in real-time via WebSocket:
 - Agent reading prompt
 - Calling tools
 - Processing results
-- May pause for approvals — the execution stays RUNNING while a prelooped tool call waits on human approval
+- May pause for approvals: the execution stays RUNNING while a prelooped tool call waits on human approval
 
 **Next States:** SUCCEEDED, FAILED, or STOPPED
 
@@ -382,12 +382,12 @@ Each flow execution runs inside an isolated container. The agent type determines
 
 Every agent script follows the same lifecycle inside the container:
 
-1. **Environment setup** — install CLI, configure model access, and set up MCP server connection
-2. **Initialization commands** — git clone, custom init commands from the flow
-3. **`PRELOOP_AGENT_EXEC_START` sentinel** — printed to stdout to signal the orchestrator that the agent is about to start. Success/failure detection is suppressed until this marker is seen, preventing false positives from setup output.
-4. **Agent execution** — the CLI runs with the flow's prompt
-5. **Exit code capture** — the container exits with the agent's exit code
-6. **Post-execution sleep** — optional debug window (`AGENT_POST_EXEC_SLEEP` env var)
+1. **Environment setup**: install CLI, configure model access, and set up MCP server connection
+2. **Initialization commands**: git clone, custom init commands from the flow
+3. **`PRELOOP_AGENT_EXEC_START` sentinel**: printed to stdout to signal the orchestrator that the agent is about to start. Success/failure detection is suppressed until this marker is seen, preventing false positives from setup output.
+4. **Agent execution**: the CLI runs with the flow's prompt
+5. **Exit code capture**: the container exits with the agent's exit code
+6. **Post-execution sleep**: optional debug window (`AGENT_POST_EXEC_SLEEP` env var)
 
 ### MCP Server Connection
 
@@ -404,9 +404,9 @@ Tools available to the agent are restricted to the flow's configured tool list. 
 
 When a flow uses a gateway-enabled AI model, the agent does not need to talk directly to the upstream model provider. Instead, Preloop can inject managed gateway settings so model traffic flows through the Preloop control plane.
 
-- **Gateway-enabled path** — the agent receives a managed base URL, model alias, and short-lived bearer token
-- **Direct-provider path** — the agent uses provider-specific access when a gateway route is unavailable or intentionally disabled
-- **Shared observability** — gateway requests are attributed to the account, flow, flow execution, runtime session, and runtime principal in one usage ledger
+- **Gateway-enabled path**: the agent receives a managed base URL, model alias, and short-lived bearer token
+- **Direct-provider path**: the agent uses provider-specific access when a gateway route is unavailable or intentionally disabled
+- **Shared observability**: gateway requests are attributed to the account, flow, flow execution, runtime session, and runtime principal in one usage ledger
 
 ---
 
@@ -571,9 +571,9 @@ curl -X POST 'https://<your-preloop-host>/api/v1/flows/executions/{execution_id}
 **How it works:**
 
 - Retry is available for executions in `FAILED` or `STOPPED` status (plus the legacy `TIMEOUT` and `CANCELLED` statuses from older versions)
-- The retry creates a **new** execution reusing the original trigger event data — the original execution is untouched
+- The retry creates a **new** execution reusing the original trigger event data: the original execution is untouched
 - The new execution is linked to the original via `retry_of_execution_id`, so you can trace retry chains
 
-There is no automatic retry — you decide when a failure is worth re-running.
+There is no automatic retry, you decide when a failure is worth re-running.
 
 ---

@@ -47,7 +47,7 @@ The profile has three parts:
   exists, and the reasons are recorded with the verification evidence.
 - `unknown_default`: checks required for every changed path without a matching rule. It is never an
   empty list. The shipped profile refuses publication with a message that
-  says what to configure — a runnable repository profile is required before
+  says what to configure: a runnable repository profile is required before
   strict verification is enabled on a live flow.
 
 Customize the profile per repository:
@@ -112,7 +112,7 @@ execution result is labeled `source: sandbox_log`, `authenticated: false`:
 log markers and sandbox files are observable diagnostics, not proof of origin.
 Isolated publication requires independently authenticated controller or
 runner-host verification before it can use these semantics to authorize a push. Anything the agent writes under
-`verification` itself is kept as `verification_reported` — a claim, not
+`verification` itself is kept as `verification_reported`: a claim, not
 evidence. The full evidence (commands, exit codes, per-check logs,
 environment digest, profile version, commit and tree) lands in
 `/workspace/evidence/verification/` inside the evidence pack, and the

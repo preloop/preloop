@@ -144,14 +144,14 @@ POST /api/v1/policies/generate-from-audit
 
 ## How It Works
 
-1. **Context gathering** — The system collects your account's MCP servers, registered tools, and current policy (optional)
-2. **LLM generation** — Your default AI model generates valid policy YAML matching the Preloop schema
-3. **Validation** — The output is validated against the PolicyDocument schema
-4. **Preview** — You review and optionally edit the YAML before applying
+1. **Context gathering**: The system collects your account's MCP servers, registered tools, and current policy (optional)
+2. **LLM generation**: Your default AI model generates valid policy YAML matching the Preloop schema
+3. **Validation**: The output is validated against the PolicyDocument schema
+4. **Preview**: You review and optionally edit the YAML before applying
 
 For audit-log generation:
-1. **Pattern analysis** — Historical tool calls are summarised (frequency, users, outcomes)
-2. **LLM generation** — The summary is sent to the LLM with instructions to create appropriate rules
+1. **Pattern analysis**: Historical tool calls are summarised (frequency, users, outcomes)
+2. **LLM generation**: The summary is sent to the LLM with instructions to create appropriate rules
 3. **Same validation and preview flow**
 
 ---

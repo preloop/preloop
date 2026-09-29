@@ -11,7 +11,7 @@ to roll back if something goes wrong.
 
 ## Docker Compose (OSS install script)
 
-Re-run the same command you installed with — it upgrades in place:
+Re-run the same command you installed with, it upgrades in place:
 
 ```bash
 curl -fsSL https://preloop.ai/install/oss | sh
@@ -19,14 +19,14 @@ curl -fsSL https://preloop.ai/install/oss | sh
 
 The installer detects the existing install in `~/.preloop-oss` and:
 
-- **keeps your configuration** — public URL, TLS setup, SMTP credentials,
+- **keeps your configuration**: public URL, TLS setup, SMTP credentials,
   `SECRET_KEY`, and the database password are preserved. Setting an
   environment variable when re-running overrides that one setting; everything
   else stays as it was.
-- **backs up the database first** — a dump is written to
+- **backs up the database first**: a dump is written to
   `~/.preloop-oss/backups/` before anything changes.
 - **pulls the new images** and restarts the stack.
-- **applies schema migrations automatically** — the `migrate` service runs
+- **applies schema migrations automatically**: the `migrate` service runs
   `alembic upgrade head` before the API starts.
 - **removes containers for services a new version dropped.**
 
@@ -100,7 +100,7 @@ Self-hosted instances send an anonymous daily version check to preloop.ai
 (instance id, version, edition) that also powers the update notice above. Set
 `PRELOOP_DISABLE_TELEMETRY=true` on the server (add it to
 `~/.preloop-oss/.env`, then `docker compose up -d`), and in the shell where you
-run the CLI, to disable it entirely — opted-out installs never phone home and
+run the CLI, to disable it entirely: opted-out installs never phone home and
 never appear in instance tracking or adoption metrics. Update notices are
 suppressed too, since they ride on the check-in response. This is the standing
 rule for internal, CI, or throwaway test installs.

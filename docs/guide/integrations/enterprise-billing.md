@@ -19,7 +19,7 @@ these flags are true:
 |------|---------|
 | `billing` | Budget policy CRUD, billing subscription UI, enterprise Cost panels |
 | `model_price_overrides` | Account-scoped negotiated pricing for gateway cost estimates |
-| `session_optimization` | Always `true` since 0.12.0 — [session optimization](../cost/session-optimization.md) ships in the open-source core. Cloud meters hosted-model analysis at request time (HTTP 402 via the authorizer hook), never by hiding the UI. |
+| `session_optimization` | Always `true` since 0.12.0: [session optimization](../cost/session-optimization.md) ships in the open-source core. Cloud meters hosted-model analysis at request time (HTTP 402 via the authorizer hook), never by hiding the UI. |
 
 Self-hosted Enterprise deployments link EE plugins with
 `./scripts/link_ee_plugins.sh` before installing Preloop.
@@ -34,7 +34,7 @@ Self-hosted Enterprise deployments link EE plugins with
 | Budget health from gateway limits | Yes | Yes, plus configurable policies |
 | Budget policy CRUD | No | `GET/POST/PUT/DELETE /api/v1/budget/policies` |
 | Model price overrides | No | `/api/v1/billing/cost/pricing-overrides` |
-| Session optimization | Yes — analyze / apply / replay at `/api/v1/billing/cost/runtime-sessions/{id}/...` ([details](../cost/session-optimization.md)) | Same, plus metered hosted-model analysis |
+| Session optimization | Yes: analyze / apply / replay at `/api/v1/billing/cost/runtime-sessions/{id}/...` ([details](../cost/session-optimization.md)) | Same, plus metered hosted-model analysis |
 | Subscriptions & Stripe | No | `/api/v1/billing/subscription`, checkout, portal |
 | Session value reviews (AI) | Planned | Planned under `/api/v1/billing/cost/value-reviews` |
 | Forecasting & anomalies | Planned | Planned under `/api/v1/billing/cost/forecast`, `/anomalies` |
@@ -102,12 +102,12 @@ endpoints ship in the Enterprise billing plugin.
 
 ## Session optimization
 
-Since 0.12.0 the full optimization loop — analyze, one-click apply, replay
-verification — ships in the open-source core and is documented at
+Since 0.12.0 the full optimization loop: analyze, one-click apply, replay
+verification: ships in the open-source core and is documented at
 [Session Optimization](../cost/session-optimization.md). What Cloud/Enterprise
 add on top:
 
-- **Metered hosted-model analysis** — LLM-assisted analysis on operator-hosted
+- **Metered hosted-model analysis**: LLM-assisted analysis on operator-hosted
   built-in models is compute the operator pays for, gated at request time via
   the `optimization_gating` authorizer hook (denials return HTTP 402).
   Deterministic and BYOK analysis are never gated.

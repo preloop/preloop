@@ -9,7 +9,7 @@ URL:    https://YOUR_PRELOOP_URL/mcp/v1
 Header: Authorization: Bearer YOUR_API_KEY
 ```
 
-That gives you the MCP firewall — access rules, approvals, audit — for every tool call the client makes through Preloop. What differs per client is **model traffic**: only some clients let Preloop rewrite their model configuration so spend flows through the [gateway](../concepts/model-gateway.md).
+That gives you the MCP firewall (access rules, approvals, audit) for every tool call the client makes through Preloop. What differs per client is **model traffic**: only some clients let Preloop rewrite their model configuration so spend flows through the [gateway](../concepts/model-gateway.md).
 
 ## Support matrix
 
@@ -26,8 +26,8 @@ That gives you the MCP firewall — access rules, approvals, audit — for every
 | Windsurf | Automatic | Not available |
 | VS Code / Copilot | Automatic | Not available |
 | Copilot CLI | Automatic (`~/.copilot/mcp-config.json`) | Not rewritten on onboard. `preloop copilot` sets the gateway env vars |
-| Antigravity | Automatic | Not available — locked to Google-hosted models, no custom base URL |
-| Devin | Automatic | Not available — inference runs in Cognition's cloud |
+| Antigravity | Automatic | Not available: locked to Google-hosted models, no custom base URL |
+| Devin | Automatic | Not available: inference runs in Cognition's cloud |
 
 "Automatic" means `preloop agents discover` / `preloop agents onboard <agent>` handles it. Clients without model routing keep using their own provider credentials: tool calls are governed and audited, but their model spend is not metered live, so model budgets do not apply to them. Spend that is not metered live can still be brought into Cost analytics after the fact by importing it, see [Importing usage from Cursor](../cost/importing-cursor-usage.md).
 
@@ -81,11 +81,11 @@ Discovered and onboarded for MCP governance. Claude Desktop has no mechanism for
 
 ## Everything else
 
-If your client is MCP-capable but not in the table, add the endpoint manually (URL + bearer header as above) and it gets the same tool governance. Check `preloop agents discover --json` first — the discovery list grows release by release.
+If your client is MCP-capable but not in the table, add the endpoint manually (URL + bearer header as above) and it gets the same tool governance. Check `preloop agents discover --json` first: the discovery list grows release by release.
 
 ## Related
 
 - [Importing usage from Cursor](../cost/importing-cursor-usage.md): get bundled-model spend into Cost analytics
-- [CLI Reference — support levels](../cli.md#support-levels)
-- [Connect Your MCP Client](../getting-started/connect-mcp-client.md) — generic setup steps
-- [Subject-Scoped Governance](../concepts/subject-scoped-governance.md) — scoping tools/models per client key
+- [CLI Reference: support levels](../cli.md#support-levels)
+- [Connect Your MCP Client](../getting-started/connect-mcp-client.md): generic setup steps
+- [Subject-Scoped Governance](../concepts/subject-scoped-governance.md): scoping tools/models per client key

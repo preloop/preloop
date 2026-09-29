@@ -22,7 +22,7 @@ Runtime plugin  WS /api/v1/agents/control/ws
 Native agent runtime  (OpenClaw / Hermes session)
 ```
 
-MCP firewall and model gateway traffic are unchanged. Agent Control adds presence, operator messages, interrupts, and status — not a bypass around policy enforcement.
+MCP firewall and model gateway traffic are unchanged. Agent Control adds presence, operator messages, interrupts, and status, not a bypass around policy enforcement.
 
 ---
 
@@ -86,7 +86,7 @@ A loaded adapter must:
 - keep the WebSocket open while the agent session is available for operator contact
 - send heartbeat/status/presence envelopes so Preloop shows online state
 - receive `send_message` commands from operator surfaces
-- treat each operator message as an **audited user turn** in the active session — not a hidden system prompt or policy bypass
+- treat each operator message as an **audited user turn** in the active session, not a hidden system prompt or policy bypass
 - route resulting tool calls and model calls through the configured MCP firewall and model gateway
 
 Operator voice on mobile/watch uses native STT, then posts a normalized transcript through the same command surface.

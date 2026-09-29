@@ -8,8 +8,8 @@ Call Preloop's built-in MCP tools from any connected agent, and gate them with a
 
 Preloop provides two categories of built-in tools:
 
-1. **Always-Available Tools** — `request_approval`, `ask_user`, and `get_approval_status` work immediately
-2. **Tracker-Dependent Tools** — issue, comment, and pull-request tools appear only when a tracker (GitHub, GitLab, or Jira) is connected; the pull-request and comment-editing tools additionally require a GitHub or GitLab tracker
+1. **Always-Available Tools**: `request_approval`, `ask_user`, and `get_approval_status` work immediately
+2. **Tracker-Dependent Tools**: issue, comment, and pull-request tools appear only when a tracker (GitHub, GitLab, or Jira) is connected; the pull-request and comment-editing tools additionally require a GitHub or GitLab tracker
 
 All built-in tools return **strings**. Tracker tools return the result serialized as JSON; the "Returns" blocks below are illustrative examples of that JSON, not a separate schema.
 
@@ -19,7 +19,7 @@ All built-in tools can be protected by the Safety Layer with access rules and ap
 
 Each tool supports multiple **access rules** with fine-grained control:
 
-- **Actions**: `allow`, `deny`, or `require_approval` — determine whether a tool call proceeds, is blocked, or needs human approval
+- **Actions**: `allow`, `deny`, or `require_approval`: determine whether a tool call proceeds, is blocked, or needs human approval
 - **CEL conditions**: Match rule application to specific argument values (e.g. production vs staging, high-value transactions)
 - **Priority ordering**: Rules are evaluated in priority order (lowest priority value first); the first matching rule applies
 
@@ -77,7 +77,7 @@ See [MCP Tool Integration](../../architecture/mcp.md) for details.
 
 ### `ask_user`
 
-Ask the human a question and wait for their answer — with multiple-choice
+Ask the human a question and wait for their answer, with multiple-choice
 options, a free-text reply, or both. Where `request_approval` is a yes/no gate,
 `ask_user` returns the human's actual answer so the agent can act on it.
 
@@ -87,12 +87,12 @@ Slack, email, console).
 
 **Arguments:**
 
-- `question` (string, required) — the question to ask
-- `options` (string[], optional) — answer options to offer as tappable buttons
-- `allow_free_text` (boolean, optional, default `true`) — let the user type a
+- `question` (string, required): the question to ask
+- `options` (string[], optional): answer options to offer as tappable buttons
+- `allow_free_text` (boolean, optional, default `true`): let the user type a
   free-text answer
-- `context` (string, optional) — extra context shown to the human
-- `approval_workflow` (string, optional) — name of the approval workflow to
+- `context` (string, optional): extra context shown to the human
+- `approval_workflow` (string, optional): name of the approval workflow to
   route the question to (defaults to the account default)
 
 **Returns:** a string containing the user's answer, e.g. `User answered:
@@ -373,7 +373,7 @@ add_comment(
 
 **When to preloop:**
 
-- ✅ Comments are visible to your whole team and external collaborators — gate if agents comment autonomously
+- ✅ Comments are visible to your whole team and external collaborators: gate if agents comment autonomously
 
 ---
 
@@ -442,7 +442,7 @@ Create a pull request (GitHub) or merge request (GitLab).
 
 **When to preloop:**
 
-- ✅ Opening PRs triggers CI and notifies reviewers — gate for autonomous agents
+- ✅ Opening PRs triggers CI and notifies reviewers: gate for autonomous agents
 
 ---
 
@@ -461,7 +461,7 @@ Update a pull request's metadata, submit a review, and/or manage reactions.
 
 **When to preloop:**
 
-- ✅ **Always for `review_action: approve`** — an agent approving PRs is a merge gate bypass
+- ✅ **Always for `review_action: approve`**: an agent approving PRs is a merge gate bypass
 
 **Recommended policy:**
 
@@ -528,7 +528,7 @@ improvements = improve_compliance(issues=["PROJ-123"])
 
 **When to preloop:**
 
-- ⚪ Returns suggestions only — it does not modify issues. Gate `update_issue` instead if agents apply the suggestions.
+- ⚪ Returns suggestions only, it does not modify issues. Gate `update_issue` instead if agents apply the suggestions.
 
 ---
 

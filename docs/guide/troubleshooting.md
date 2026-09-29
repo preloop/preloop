@@ -8,11 +8,11 @@ After this page you can diagnose the failures people actually hit: the OSS insta
 
 The installer probes Docker before doing anything. The three messages and what they mean:
 
-- `Docker is not installed (the 'docker' command was not found).` — install Docker Desktop (macOS) or Docker Engine (Linux) first.
-- `Docker is installed but the daemon is not running.` — start it: `open -a Docker` on macOS, `sudo systemctl start docker` on Linux.
-- `Docker is installed but its daemon did not respond within 10 seconds.` — the daemon is wedged. Restart it (`killall Docker && open -a Docker`, or `sudo systemctl restart docker`) and verify with `docker info`.
+- `Docker is not installed (the 'docker' command was not found).`: install Docker Desktop (macOS) or Docker Engine (Linux) first.
+- `Docker is installed but the daemon is not running.`: start it: `open -a Docker` on macOS, `sudo systemctl start docker` on Linux.
+- `Docker is installed but its daemon did not respond within 10 seconds.`: the daemon is wedged. Restart it (`killall Docker && open -a Docker`, or `sudo systemctl restart docker`) and verify with `docker info`.
 
-`Docker Compose v2 is required` means the `docker compose` subcommand failed — upgrade Docker or install the compose plugin.
+`Docker Compose v2 is required` means the `docker compose` subcommand failed: upgrade Docker or install the compose plugin.
 
 ### The install ran but something is off
 
@@ -24,11 +24,11 @@ The installer validates the admin email up front (`name@domain.tld` shape) so fi
 
 ### "FIRST USER WAS NOT CREATED" banner
 
-If unattended first-user creation fails, the installer exits non-zero with a loud banner — and deliberately leaves public signups **open** so you are not locked out. Create the first user in the console using the **setup link** the banner prints (`<PRELOOP_URL>/register#bootstrap=<token>` — while the instance has zero users, registration requires that token), then re-run the installer (or set `REGISTRATION_ENABLED=false` in `~/.preloop-oss/.env` and `docker compose up -d api`) to close registration.
+If unattended first-user creation fails, the installer exits non-zero with a loud banner, and deliberately leaves public signups **open** so you are not locked out. Create the first user in the console using the **setup link** the banner prints (`<PRELOOP_URL>/register#bootstrap=<token>`, while the instance has zero users, registration requires that token), then re-run the installer (or set `REGISTRATION_ENABLED=false` in `~/.preloop-oss/.env` and `docker compose up -d api`) to close registration.
 
 ### Registration is closed but the database is fresh
 
-Re-running the installer against a fresh database (for example after deleting the postgres volume) while `.env` still says `REGISTRATION_ENABLED=false` would lock everyone out. The installer detects this — it counts users in the database and prints:
+Re-running the installer against a fresh database (for example after deleting the postgres volume) while `.env` still says `REGISTRATION_ENABLED=false` would lock everyone out. The installer detects this, it counts users in the database and prints:
 
 ```text
 The existing configuration disables public signup, but the database is fresh
@@ -37,7 +37,7 @@ The existing configuration disables public signup, but the database is fresh
 
 If you hit a closed `/register` on an instance you know is empty, re-run the installer or flip `REGISTRATION_ENABLED=true` in `.env` yourself and restart the api service.
 
-Note that on an empty instance with `PRELOOP_BOOTSTRAP_TOKEN` set in `.env` (every installer-managed install), `/register` shows a **"Setup link required"** notice instead of the open form: the first signup must use the setup link (`<PRELOOP_URL>/register#bootstrap=<token>`), regardless of `REGISTRATION_ENABLED`. Rebuild the link from the token in `~/.preloop-oss/.env`, or re-run the installer to have it printed again. A **"This instance has already been claimed"** notice on the setup link means a user already exists — sign in instead, or ask the admin for an invitation.
+Note that on an empty instance with `PRELOOP_BOOTSTRAP_TOKEN` set in `.env` (every installer-managed install), `/register` shows a **"Setup link required"** notice instead of the open form: the first signup must use the setup link (`<PRELOOP_URL>/register#bootstrap=<token>`), regardless of `REGISTRATION_ENABLED`. Rebuild the link from the token in `~/.preloop-oss/.env`, or re-run the installer to have it printed again. A **"This instance has already been claimed"** notice on the setup link means a user already exists: sign in instead, or ask the admin for an invitation.
 
 ## CLI and onboarding
 
@@ -68,8 +68,8 @@ Windows limitations, see [Windows (WSL2)](../operations/windows-wsl2.md).
 
 Onboarding fires one live validation prompt through the agent to prove model traffic actually flows through the gateway. Two outcomes leave the agent enrolled but unverified:
 
-- **Live check throttled** — the provider rate-limited the verification call.
-- **Upstream refused** — the credential authenticated and reached the provider, but the provider rejected the call (billing/quota). This proves the plumbing works, so it is not treated as a failure.
+- **Live check throttled**: the provider rate-limited the verification call.
+- **Upstream refused**: the credential authenticated and reached the provider, but the provider rejected the call (billing/quota). This proves the plumbing works, so it is not treated as a failure.
 
 Both resolve the same way:
 
@@ -77,7 +77,7 @@ Both resolve the same way:
 preloop agents validate <agent> --live
 ```
 
-`preloop agents validate <agent>` (without `--live`) prints the full checklist — `preloop_server_present`, `gateway_base_url_ok`, `gateway_token_ok`, `model_provider_rewritten`, `control_*` — which pinpoints what is misconfigured.
+`preloop agents validate <agent>` (without `--live`) prints the full checklist: `preloop_server_present`, `gateway_base_url_ok`, `gateway_token_ok`, `model_provider_rewritten`, `control_*`, which pinpoints what is misconfigured.
 
 ### Rolling back an onboarding
 
@@ -96,7 +96,7 @@ The tool list is filtered per subject. Check, in order:
 
 1. The `Authorization: Bearer <key>` header is present and the key is valid (`preloop auth status`, or curl `/api/v1/auth/api-keys` as the console user).
 2. Built-in tracker tools (`get_issue`, `create_issue`, …) only appear when a tracker is connected to the account.
-3. Subject-scoped governance can hide tools for a specific API key or managed agent — check the key's or agent's governance settings in the console.
+3. Subject-scoped governance can hide tools for a specific API key or managed agent: check the key's or agent's governance settings in the console.
 4. External MCP server tools require a successful **Scan Tools** on the server entry under **Tools**.
 
 ### Approval-gated calls time out
@@ -107,7 +107,7 @@ The MCP call blocks until the workflow decides, up to the workflow's `timeout_se
 
 ### Telemetry in test/CI environments
 
-`PRELOOP_DISABLE_TELEMETRY=true` on the server **and** in the shell running the CLI disables the daily version check-in and all adoption telemetry. Opted-out installs never phone home and never appear in instance metrics. Set it for every disposable install — see [Upgrading Preloop](../operations/upgrade.md#disabling-telemetry-internaltest-installs).
+`PRELOOP_DISABLE_TELEMETRY=true` on the server **and** in the shell running the CLI disables the daily version check-in and all adoption telemetry. Opted-out installs never phone home and never appear in instance metrics. Set it for every disposable install, see [Upgrading Preloop](../operations/upgrade.md#disabling-telemetry-internaltest-installs).
 
 ### Where things live
 

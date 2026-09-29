@@ -67,15 +67,15 @@ tools:
 |-------|------|---------|-------------|
 | `approval_type` | `"ai_driven"` | `"standard"` | Must be `"ai_driven"` to enable AI evaluation |
 | `ai_model` | string | `gpt-5.4-mini` | AI model to use (e.g., `claude-sonnet-4.7`, `gpt-5.4`) |
-| `ai_guidelines` | string | — | Instructions for the AI when making decisions |
-| `ai_context` | dict | — | Extra context merged into the evaluation — worked examples, domain knowledge |
+| `ai_guidelines` | string | n/a | Instructions for the AI when making decisions |
+| `ai_context` | dict | n/a | Extra context merged into the evaluation: worked examples, domain knowledge |
 | `ai_confidence_threshold` | float | `0.8` | Minimum confidence (0.0–1.0) for auto-decision |
 | `ai_fallback_behavior` | string | `"escalate"` | Action when uncertain: `escalate`, `approve`, or `deny` |
-| `escalation_workflow` | string | — | Name of the policy to escalate to (for `escalate` fallback) |
+| `escalation_workflow` | string | n/a | Name of the policy to escalate to (for `escalate` fallback) |
 
 ### `ai_context`
 
-Beyond the guidelines prompt, you can attach structured context that gets merged into the AI's evaluation — useful for worked examples and domain knowledge that would clutter the guidelines text:
+Beyond the guidelines prompt, you can attach structured context that gets merged into the AI's evaluation, useful for worked examples and domain knowledge that would clutter the guidelines text:
 
 ```yaml
 approval_workflows:
@@ -207,11 +207,11 @@ approval_workflows:
 
 ## Native Tool Approvals
 
-New in 0.12.2: approvals are no longer limited to MCP tools. Onboarded agents can route their **native** tool calls — shell commands, file edits — through Preloop's approval pipeline:
+New in 0.12.2: approvals are no longer limited to MCP tools. Onboarded agents can route their **native** tool calls (shell commands, file edits) through Preloop's approval pipeline:
 
-- **Claude Code** via a `PreToolUse` hook — see [Claude Code](../clients/claude-code.md)
+- **Claude Code** via a `PreToolUse` hook, see [Claude Code](../clients/claude-code.md)
 - **Codex CLI** via a `PermissionRequest` hook
-- **OpenClaw** via the `@preloop-ai/openclaw-plugin` package (v0.1.1), which registers a `before_tool_call` hook — see [OpenClaw](../integrations/openclaw.md)
+- **OpenClaw** via the `@preloop-ai/openclaw-plugin` package (v0.1.1), which registers a `before_tool_call` hook, see [OpenClaw](../integrations/openclaw.md)
 - **Hermes** via its runtime plugin
 
 Each hook calls `POST /api/v1/agents/permission-check` with the agent's managed credential. The server evaluates your policies (including AI-driven workflows) and responds:
@@ -220,6 +220,6 @@ Each hook calls `POST /api/v1/agents/permission-check` with the agent's managed 
 {"decision": "allow", "reason": "…", "request_id": "…"}
 ```
 
-The call blocks for up to ~300 seconds while a human decides, and is **fail-closed** by default — if Preloop is unreachable, the tool call is denied (the OpenClaw plugin exposes `tool_approval_fail_open`, default `false`, to invert this).
+The call blocks for up to ~300 seconds while a human decides, and is **fail-closed** by default, if Preloop is unreachable, the tool call is denied (the OpenClaw plugin exposes `tool_approval_fail_open`, default `false`, to invert this).
 
 Toggle enforcement per subject with the governance setting `native_tool_approvals: enforce | off` (unset means enforce).

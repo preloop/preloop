@@ -103,6 +103,6 @@ success, non-zero on FAILED/STOPPED/TIMEOUT.
   execution ends. Root on the host can still read it from the running
   container until then.
 - No `git_clone_config` / `custom_commands` execution on the runner
-  host yet — those run inside the agent image if it supports them.
+  host yet, those run inside the agent image if it supports them.
 - Runner-side workspace caching is not implemented; every job is a
   fresh `docker run --rm`.

@@ -1,6 +1,6 @@
 # Conditional Approval with CEL
 
-After reading this page you can write approval conditions that only trigger when a tool call's arguments match — `deploy` needs approval for production but not staging, `pay` needs approval above $1000 — and test those conditions before saving them.
+After reading this page you can write approval conditions that only trigger when a tool call's arguments match: `deploy` needs approval for production but not staging, `pay` needs approval above $1000, and test those conditions before saving them.
 
 !!! info "Availability"
     Every edition supports **simple** conditions (`==`, `!=`, `>`, `<`, `>=`, `<=`, `.contains()`). Full **CEL** (Common Expression Language) conditions are an **Enterprise** feature.
@@ -16,7 +16,7 @@ Every condition on a tool has a `condition_type`, and this is the first thing to
 | `simple` (default) | All | One comparison: `args.field == 'value'`, `!=`, `>`, `<`, `>=`, `<=`, or `args.field.contains('substring')` |
 | `cel` | Enterprise | Full CEL expressions: `&&`, `\|\|`, `in`, `has()`, `startsWith()`, `exists()`, and so on |
 
-**If you omit `condition_type`, the expression is evaluated by the simple evaluator.** A CEL expression like `args.a > 1 && args.b == 2` will fail under the simple evaluator — set `condition_type: cel` explicitly:
+**If you omit `condition_type`, the expression is evaluated by the simple evaluator.** A CEL expression like `args.a > 1 && args.b == 2` will fail under the simple evaluator: set `condition_type: cel` explicitly:
 
 ```yaml
 tools:
@@ -68,7 +68,7 @@ Each condition has three fields:
 | `condition_type` | `simple` (default), `cel` | Which evaluator runs the expression |
 
 !!! warning "The only variable is `args`"
-    Expressions are evaluated against the tool call's arguments, bound as `args`. There is no `user`, `tool`, `now()`, or `timestamp()` — conditions cannot reference the calling user, tool metadata, or the current time. If a decision depends on who is calling, use approval workflow routing and RBAC instead.
+    Expressions are evaluated against the tool call's arguments, bound as `args`. There is no `user`, `tool`, `now()`, or `timestamp()`: conditions cannot reference the calling user, tool metadata, or the current time. If a decision depends on who is calling, use approval workflow routing and RBAC instead.
 
 ---
 
@@ -180,7 +180,7 @@ tools:
 
 ### Tiered Payment Approval
 
-Route the same tool to different workflows by amount — put each tier in its own condition and workflow:
+Route the same tool to different workflows by amount, put each tier in its own condition and workflow:
 
 ```yaml
 approval_workflows:
@@ -262,10 +262,10 @@ The response reports whether the expression matched:
 
 ### What to Test
 
-1. **Boundary values** — exactly at thresholds (`amount == 1000`)
-2. **Missing arguments** — required args absent from `sample_args`
-3. **Edge cases** — empty lists, null values
-4. **Type mismatches** — string where a number is expected
+1. **Boundary values**: exactly at thresholds (`amount == 1000`)
+2. **Missing arguments**: required args absent from `sample_args`
+3. **Edge cases**: empty lists, null values
+4. **Type mismatches**: string where a number is expected
 
 ---
 
@@ -287,7 +287,7 @@ has(args.optional_field) && args.optional_field == "value" // correct
 
 ### Wrong case in string comparison
 
-Comparisons are case-sensitive. Match the exact value the tool sends — check a real tool call's arguments in the request log rather than guessing at capitalization.
+Comparisons are case-sensitive. Match the exact value the tool sends: check a real tool call's arguments in the request log rather than guessing at capitalization.
 
 ### Confusing OR with a bare value
 
@@ -299,7 +299,7 @@ args.environment in ["production", "staging"]   // correct
 ### Missing parentheses in mixed logic
 
 ```cel
-// Evaluates as (a && b) || c — probably not what you meant:
+// Evaluates as (a && b) || c, probably not what you meant:
 args.amount > 1000 && args.environment == "production" || args.priority == "critical"
 
 // Explicit:

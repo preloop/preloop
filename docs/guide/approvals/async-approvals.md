@@ -9,7 +9,7 @@ After reading this page you can switch an approval workflow to non-blocking mode
 
 ## Overview
 
-By default, when a tool call requires approval, the MCP connection **blocks** — the agent waits until a human approves or declines. This works well for interactive sessions but has two drawbacks:
+By default, when a tool call requires approval, the MCP connection **blocks**: the agent waits until a human approves or declines. This works well for interactive sessions but has two drawbacks:
 
 1. **Client timeouts.** Most MCP clients default to 30–60 s; approval can take minutes.
 2. **Blocked agents.** The agent cannot do other work while waiting.
@@ -119,7 +119,7 @@ On the next poll after approval, the tool executes and the response includes its
 }
 ```
 
-Approver comments appear as `comment` entries in the event log. If declined, `status` is `"declined"` and no `tool_result` is present. If a concurrent poll is already executing the tool, the response reports `status: "executing"` — poll again for the cached result. If execution failed, the poll returns `tool_execution_error` instead of re-running the tool.
+Approver comments appear as `comment` entries in the event log. If declined, `status` is `"declined"` and no `tool_result` is present. If a concurrent poll is already executing the tool, the response reports `status: "executing"`: poll again for the cached result. If execution failed, the poll returns `tool_execution_error` instead of re-running the tool.
 
 ---
 
@@ -138,7 +138,7 @@ Approver comments appear as `comment` entries in the event log. If declined, `st
 |-------|-------------|
 | `pending` | Waiting for human decision (reported as `pending_approval` in the initial tool response) |
 | `approved` | Human approved; tool result available |
-| `executing` | Computed status while another poll is running the approved tool — poll again |
+| `executing` | Computed status while another poll is running the approved tool: poll again |
 | `declined` | Human declined; tool not executed |
 | `cancelled` | Request was cancelled; tool not executed |
 | `expired` | Timeout reached without a decision |
@@ -182,8 +182,8 @@ Called by the agent to poll approval status.
 
 - **Set reasonable timeouts.** 10 minutes (`timeout_seconds: 600`) works for most workflows.
 - **Use with agentic flows.** Async approval is ideal for automated flow executions where the agent runs unattended.
-- **Combine with justification.** Require agents to explain *why* they need the tool — reviewers see the justification in the approval notification. See [Per-Tool Justification](justification.md).
+- **Combine with justification.** Require agents to explain *why* they need the tool: reviewers see the justification in the approval notification. See [Per-Tool Justification](justification.md).
 - **Monitor via WebSocket.** Subscribe to the `approvals` topic for real-time approval status updates in the UI.
 
 !!! tip "Native tool calls too"
-    Approvals are not limited to MCP tools. Onboarded agents can route their native tool calls (shell commands, file edits) through Preloop approvals — see [Native Tool Approvals](ai-approvals.md#native-tool-approvals).
+    Approvals are not limited to MCP tools. Onboarded agents can route their native tool calls (shell commands, file edits) through Preloop approvals, see [Native Tool Approvals](ai-approvals.md#native-tool-approvals).

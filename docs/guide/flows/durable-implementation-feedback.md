@@ -266,7 +266,7 @@ workers. Merely enabling feedback on a saved flow does not enable artifact uploa
 
 The chart already supports shared `extraEnv` on the API, gateway, execution workers
 and scheduler. Its defaults leave `FLOW_ARTIFACT_DIRECT_UPLOAD` disabled. The
-optional [native checkpoint overlay](../../../helm/preloop/values-native-checkpoints.yaml)
+optional [native checkpoint overlay](https://github.com/preloop/preloop/blob/main/helm/preloop/values-native-checkpoints.yaml)
 enables it and retains both workspace and native artifacts for seven days. Copy
 and review that file with your installation values; do not enable it merely by
 setting an environment variable on the Helm client or CI job.

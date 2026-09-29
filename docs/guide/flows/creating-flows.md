@@ -1,6 +1,6 @@
 # Creating Flows
 
-Create a flow that runs an AI agent when an event fires — a GitHub PR, a GitLab MR, a Jira ticket, or any HTTP webhook — with approval workflows enforced on every prelooped tool call.
+Create a flow that runs an AI agent when an event fires (a GitHub PR, a GitLab MR, a Jira ticket, or any HTTP webhook) with approval workflows enforced on every prelooped tool call.
 
 ---
 
@@ -151,7 +151,7 @@ Amount: ${{trigger_event.payload.amount}}
    - GitHub: Issue opened, PR opened, PR merged, push, etc.
    - GitLab: MR opened, MR merged, issue opened, pipeline, etc.
    - Jira: Issue opened, issue updated, comment created, etc.
-   - A flow can subscribe to multiple event types at once (`trigger_event_types` is an array) — for example, trigger on both `issue_opened` and `issue_updated`
+   - A flow can subscribe to multiple event types at once (`trigger_event_types` is an array), for example, trigger on both `issue_opened` and `issue_updated`
 
 **GitHub Event Types:**
 
@@ -511,7 +511,7 @@ Commands run with full container privileges, so they are restricted: they are co
 1. Review all configuration
 2. Click **Create** (or **Update** if editing)
 
-Flows you create or clone start **Enabled** — they trigger on matching events immediately. Only built-in presets start disabled. Use the **Disable** button on the flow details page if you want to pause it.
+Flows you create or clone start **Enabled**, they trigger on matching events immediately. Only built-in presets start disabled. Use the **Disable** button on the flow details page if you want to pause it.
 
 ### Test Run
 

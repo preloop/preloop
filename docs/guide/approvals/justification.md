@@ -130,9 +130,9 @@ Arguments: {"command": "kubectl rollout restart deployment/api"}
 
 ## Audit Trail
 
-The justification is stored as `agent_reasoning` on the approval request, so it is visible wherever the request is — notifications, the request detail page, and webhook payloads.
+The justification is stored as `agent_reasoning` on the approval request, so it is visible wherever the request is: notifications, the request detail page, and webhook payloads.
 
-The full audit log — every tool call with its arguments, reasoning, and action taken, browsable in the dashboard — is an **Enterprise** plugin.
+The full audit log, every tool call with its arguments, reasoning, and action taken, browsable in the dashboard: is an **Enterprise** plugin.
 
 ---
 
@@ -144,4 +144,4 @@ The full audit log — every tool call with its arguments, reasoning, and action
 - **Review justifications regularly.** They show you how agents reason about the tools you gate.
 
 !!! tip "Native tool calls too"
-    Justification-style reasoning also flows through [native tool approvals](ai-approvals.md#native-tool-approvals) — agents like Claude Code and OpenClaw pass their reasoning along when a shell command or file edit is escalated for approval.
+    Justification-style reasoning also flows through [native tool approvals](ai-approvals.md#native-tool-approvals): agents like Claude Code and OpenClaw pass their reasoning along when a shell command or file edit is escalated for approval.

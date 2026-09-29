@@ -15,7 +15,7 @@ Flows can be triggered by:
 
 Schedule/cron triggers are not yet available.
 
-A tracker-triggered flow can subscribe to multiple event types at once (`trigger_event_types` is an array) — for example, both `issue_opened` and `issue_updated`.
+A tracker-triggered flow can subscribe to multiple event types at once (`trigger_event_types` is an array), for example, both `issue_opened` and `issue_updated`.
 
 This guide provides complete event payload structures for each trigger type.
 
@@ -946,7 +946,7 @@ Issue updated: {{trigger_event.payload.issue.key}}
 Changes: {{trigger_event.payload.changelog.items}}
 ```
 
-Array indexing is not supported in templates — pass the whole `changelog.items` array and ask the agent to read the `fromString`/`toString` values.
+Array indexing is not supported in templates: pass the whole `changelog.items` array and ask the agent to read the `fromString`/`toString` values.
 
 ---
 
@@ -1031,7 +1031,7 @@ Use dot notation to access nested fields:
 
 ### Arrays
 
-Template resolution is dot-notation over objects only — array indexing like `labels[0]` is not supported. Pass the whole array:
+Template resolution is dot-notation over objects only: array indexing like `labels[0]` is not supported. Pass the whole array:
 
 ```
 Labels: {{trigger_event.payload.issue.labels}}

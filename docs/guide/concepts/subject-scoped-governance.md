@@ -1,6 +1,6 @@
 # Subject-Scoped Governance
 
-Preloop does not evaluate every request against account defaults alone. **Subject-scoped governance** applies the right tool rules, model limits, and budgets to the concrete subject making the call — usually an API key or an enrolled managed agent.
+Preloop does not evaluate every request against account defaults alone. **Subject-scoped governance** applies the right tool rules, model limits, and budgets to the concrete subject making the call, usually an API key or an enrolled managed agent.
 
 ---
 
@@ -8,9 +8,9 @@ Preloop does not evaluate every request against account defaults alone. **Subjec
 
 When Preloop evaluates a tool listing, policy decision, or gateway budget check, it walks this chain:
 
-1. **Active API key** — narrowest token-scoped overrides when present
-2. **Linked managed agent** — per-agent tool visibility, access rules, and allowed models
-3. **Account defaults** — broad fallback for the organization
+1. **Active API key**: narrowest token-scoped overrides when present
+2. **Linked managed agent**: per-agent tool visibility, access rules, and allowed models
+3. **Account defaults**: broad fallback for the organization
 
 The same subject context flows through MCP tool listing, approval evaluation, and model gateway preflight checks so one runtime token sees only the intended tools and models.
 
@@ -20,10 +20,10 @@ The same subject context flows through MCP tool listing, approval evaluation, an
 
 Subject-scoped configuration can carry:
 
-- **allowed_models** — restrict which AI models a runtime may call through the gateway
-- **tool access rules** — ordered allow / deny / approval rules beyond account defaults
-- **tool_enabled_overrides** — hide or expose specific tools for one enrolled agent
-- **budget metadata** — per-subject spend limits where configured
+- **allowed_models**: restrict which AI models a runtime may call through the gateway
+- **tool access rules**: ordered allow / deny / approval rules beyond account defaults
+- **tool_enabled_overrides**: hide or expose specific tools for one enrolled agent
+- **budget metadata**: per-subject spend limits where configured
 
 ---
 

@@ -33,7 +33,7 @@ Built-in tools (create_issue, update_issue) are limited to what Preloop provides
 
 ### Real-World Examples
 
-Preloop uses **access rules** — ordered rules that evaluate to **deny**, **allow**, or **require_approval**. Rules use [CEL expressions](../approvals/cel-expressions.md) to match on tool arguments. The first matching rule wins (priority-based evaluation).
+Preloop uses **access rules**: ordered rules that evaluate to **deny**, **allow**, or **require_approval**. Rules use [CEL expressions](../approvals/cel-expressions.md) to match on tool arguments. The first matching rule wins (priority-based evaluation).
 
 **Deployment Tools:**
 
@@ -287,11 +287,11 @@ Authorization: Bearer your_oauth_access_token
 
 Once tools are discovered, you control access using **access rules**. Each rule has:
 
-- **Action** — `deny`, `allow`, or `require_approval`
-- **Condition** — A [CEL expression](../approvals/cel-expressions.md) that matches on the tool's arguments (e.g., `args.amount > 1000`)
-- **Priority** — Rules with a lower priority value are evaluated first
-- **Approval workflow** — For `require_approval` rules, which workflow to use (human or AI-driven)
-- **Description** — Human-readable explanation of the rule
+- **Action**: `deny`, `allow`, or `require_approval`
+- **Condition**: A [CEL expression](../approvals/cel-expressions.md) that matches on the tool's arguments (e.g., `args.amount > 1000`)
+- **Priority**: Rules with a lower priority value are evaluated first
+- **Approval workflow**: For `require_approval` rules, which workflow to use (human or AI-driven)
+- **Description**: Human-readable explanation of the rule
 
 !!! tip "Rule Evaluation"
     Rules are evaluated in **priority order** (lowest priority value first). The first matching rule determines the action. If no rules match, the tool's default behavior applies.
@@ -425,14 +425,14 @@ Preloop shows different tools to different users based on:
 
 ## Tool Output Filters
 
-Some MCP tools return verbose JSON results full of fields your agent never uses — raw HTML, embedded metadata, duplicate URLs. Every one of those fields is paid for again on each subsequent model call as session context. **Tool output filters** strip named top-level fields from a tool's JSON results on the proxy hot path, *before* the result reaches the calling agent, without modifying the upstream tool.
+Some MCP tools return verbose JSON results full of fields your agent never uses: raw HTML, embedded metadata, duplicate URLs. Every one of those fields is paid for again on each subsequent model call as session context. **Tool output filters** strip named top-level fields from a tool's JSON results on the proxy hot path, *before* the result reaches the calling agent, without modifying the upstream tool.
 
 How a filter works:
 
 - Each filter names a **tool** and a list of **dropped fields** (top-level keys to remove from each result object).
 - Filters are **account-scoped**. Optionally narrow one to a specific MCP **server** and/or a specific **managed agent**; left unset, it matches any server and applies account-wide.
 - When several filters match the same call, the union of their dropped fields is stripped.
-- Filtering only applies to results that parse as a JSON object (or a list of objects). Non-JSON output passes through unchanged, and any filtering error leaves the original result intact — filters can trim a result, never break it.
+- Filtering only applies to results that parse as a JSON object (or a list of objects). Non-JSON output passes through unchanged, and any filtering error leaves the original result intact: filters can trim a result, never break it.
 
 !!! note "Managing filters"
     Filter enforcement runs in the open-source core. Creating and managing filters is part of the cost-optimization tooling in **Preloop Cloud** and **Preloop Enterprise**: the Console's session-optimization suggestions open a filter dialog prefilled with a tool's droppable fields, and the billing API exposes CRUD at `/api/v1/billing/cost/output-filters` (`GET` list, `POST` create, `DELETE /{filter_id}`).
@@ -515,7 +515,7 @@ tools:
 
 **Examples:** `process_payment`, `issue_refund`, `void_transaction`
 
-**Access rules strategy — tiered by amount with AI + human approval:**
+**Access rules strategy, tiered by amount with AI + human approval:**
 
 ```yaml
 approval_workflows:
@@ -538,11 +538,11 @@ tools:
       # High-value: 2 human approvers
       - expression: "args.amount > 10000"
         action: require_approval
-        description: "High-value payments — human review"
+        description: "High-value payments: human review"
       # Medium-value: AI review
       - expression: "args.amount > 500"
         action: require_approval
-        description: "Medium payments — AI review"
+        description: "Medium payments: AI review"
       # Small: auto-approve
       - expression: "args.amount <= 500"
         action: allow
@@ -657,18 +657,18 @@ Enable audit logging in **Settings** → **Audit Logs**.
 ### Pattern 1: Multi-Environment Setup
 
 ```yaml
-# Development — no rules, everything allowed
+# Development: no rules, everything allowed
 Name: Deploy (Dev)
 URL: https://deploy-dev.acme.com
 Status: active
 
-# Staging — AI approval for low friction
+# Staging: AI approval for low friction
 Name: Deploy (Staging)
 URL: https://deploy-staging.acme.com
 Status: active
 # Tools use AI-driven approval workflow
 
-# Production — human approval, 2 reviewers
+# Production: human approval, 2 reviewers
 Name: Deploy (Prod)
 URL: https://deploy-prod.acme.com
 Status: active
