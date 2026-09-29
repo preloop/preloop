@@ -4,9 +4,9 @@ status: non-normative
 
 # Subagent turns: what reaches the gateway, per harness
 
-Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
-
 > **Status: findings / design note. Not shipped behaviour.** This page records observations or a proposed design. Nothing here is a product capability unless a linked release note says so.
+
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
 When a coding harness runs a subagent, does the subagent's model traffic look
 different from its parent's by the time it reaches Preloop? This page records
