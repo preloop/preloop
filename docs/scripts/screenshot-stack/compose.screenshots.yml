@@ -7,7 +7,11 @@
 #
 # Host ports are remapped to 183xx and bound to 127.0.0.1. Images get local
 # tags so the shared ghcr.io/preloop/* tags are not overwritten. The model is
-# a local OpenAI-compatible stub: no provider key is used.
+# a local OpenAI-compatible stub: no provider key is used. Telemetry is off
+# on every Preloop service (AGENTS.md: test rigs never report to preloop.ai).
+x-no-telemetry: &no_telemetry
+  PRELOOP_DISABLE_TELEMETRY: "true"
+
 services:
   postgres:
     ports: !override
@@ -17,9 +21,11 @@ services:
       - "127.0.0.1:18322:4222"
   migrate:
     image: preloop-shots/preloop:local
+    environment: *no_telemetry
   api:
     image: preloop-shots/preloop:local
     environment: &agent_env
+      <<: *no_telemetry
       PRELOOP_URL: http://api:8000
       PRELOOP_MCP_URL: http://api:8000/mcp/v1
       PRELOOP_MODEL_GATEWAY_URL: http://gateway:8000/openai/v1
@@ -32,10 +38,12 @@ services:
       - "127.0.0.1:18300:8000"
   gateway:
     image: preloop-shots/preloop:local
+    environment: *no_telemetry
     ports: !override
       - "127.0.0.1:18301:8000"
   scheduler:
     image: preloop-shots/preloop:local
+    environment: *no_telemetry
   worker:
     image: preloop-shots/preloop:local
     environment: *agent_env
@@ -52,6 +60,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./docs/scripts/screenshot-stack:/kit:ro
+    environment: *no_telemetry
     command: python /kit/stub_model.py
     ports:
       - "127.0.0.1:18390:9000"
@@ -60,4 +69,5 @@ services:
     restart: unless-stopped
     volumes:
       - ./scripts/examples:/ex:ro
+    environment: *no_telemetry
     command: python /ex/example_mcp_server.py

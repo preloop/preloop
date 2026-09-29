@@ -14,7 +14,7 @@ rerun it. For the four landing stills it also writes the `-800.webp` and
 
 | File | Purpose |
 | --- | --- |
-| `compose.screenshots.yml` | Compose overlay: remapped ports (console 18373, API 18300, gateway 18301, stub 18390), the model stub and the example MCP server. |
+| `compose.screenshots.yml` | Compose overlay: remapped ports (console 18373, API 18300, gateway 18301, stub 18390), `PRELOOP_DISABLE_TELEMETRY=true` on every Preloop service, the model stub and the example MCP server. |
 | `opencode.Dockerfile` | OpenCode agent image with a writable `/workspace`, so a local flow run can start. |
 | `stub_model.py` | OpenAI-compatible stub. Returns fixed replies with token usage, calls `pay` for flow prompts, and answers approval-summary prompts. |
 | `seed.py` | Signs up a local user, adds the example MCP server, the quickstart `pay` rules and workflows, two stub models, an API key, four agents, ten gateway sessions and a few MCP calls (one left pending approval). |
@@ -31,7 +31,8 @@ docker build -t preloop-shots/opencode:local -f docs/scripts/screenshot-stack/op
 COMPOSE="docker compose -p preloopshots -f docker-compose.yml -f docker-compose.override.yml -f docs/scripts/screenshot-stack/compose.screenshots.yml"
 $COMPOSE up -d
 
-docker run --rm --network preloopshots_default \
+docker run --rm -e PRELOOP_DISABLE_TELEMETRY=true \
+  --network preloopshots_default \
   -v "$PWD/docs/scripts/screenshot-stack:/kit:ro" \
   preloop-shots/preloop:local python /kit/seed.py
 
