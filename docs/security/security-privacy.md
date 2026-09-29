@@ -82,7 +82,7 @@ page. The OWASP page states the same posture under
 
 - **Full control**: Deploy on your own infrastructure
 - **Your data stays yours**: tool calls, model traffic, and audit data never leave your network
-- **Telemetry is limited and opt-out**: the only phone-home is a pseudonymous daily version check-in to preloop.ai (random instance id, version, edition) that powers the update notice. Set `PRELOOP_DISABLE_TELEMETRY=true` to disable it entirely: opted-out installs never phone home. See [Upgrading Preloop](../operations/upgrade.md#disabling-telemetry-internaltest-installs).
+- **Telemetry is limited and opt-out**: the only phone-home is a pseudonymous daily version check-in to preloop.ai that powers the update notice. It sends a random instance id, the version, the edition and the instance metadata record. That record holds the result of the previous check-in and the time the install marker was delivered. The first successful check-in of a fresh install also carries a one-time `install_completed` marker with the installer's start and completion timestamps. Nothing else is sent. Set `PRELOOP_DISABLE_TELEMETRY=true` to disable it entirely: opted-out installs never phone home. See [Upgrading Preloop](../operations/upgrade.md#disabling-telemetry-internaltest-installs).
 - **Docker Compose** or **Kubernetes (Helm)** deployment
 
 ```bash

@@ -21,7 +21,7 @@ All built-in tools can be protected by the Safety Layer with access rules and ap
 
 Each tool supports multiple **access rules** with fine-grained control:
 
-- **Actions**: `allow`, `deny`, or `require_approval`: determine whether a tool call proceeds, is blocked, or needs human approval
+- **Actions**: `allow`, `deny`, or `require_approval` decides whether a tool call proceeds, is blocked, or needs human approval
 - **CEL conditions**: Match rule application to specific argument values (e.g. production vs staging, high-value transactions)
 - **Priority ordering**: Rules are evaluated in priority order (lowest priority value first); the first matching rule applies
 

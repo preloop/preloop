@@ -11,7 +11,7 @@ After this page you can diagnose the failures people actually hit: the OSS insta
 The installer probes Docker before doing anything. The three messages and what they mean:
 
 - `Docker is not installed (the 'docker' command was not found).`: install Docker Desktop (macOS) or Docker Engine (Linux) first.
-- `Docker is installed but the daemon is not running.`: start it: `open -a Docker` on macOS, `sudo systemctl start docker` on Linux.
+- `Docker is installed but the daemon is not running.`: start it with `open -a Docker` on macOS, `sudo systemctl start docker` on Linux.
 - `Docker is installed but its daemon did not respond within 10 seconds.`: the daemon is wedged. Restart it (`killall Docker && open -a Docker`, or `sudo systemctl restart docker`) and verify with `docker info`.
 
 `Docker Compose v2 is required` means the `docker compose` subcommand failed: upgrade Docker or install the compose plugin.
@@ -79,7 +79,7 @@ Both resolve the same way:
 preloop agents validate <agent> --live
 ```
 
-`preloop agents validate <agent>` (without `--live`) prints the full checklist: `preloop_server_present`, `gateway_base_url_ok`, `gateway_token_ok`, `model_provider_rewritten`, `control_*`, which pinpoints what is misconfigured.
+`preloop agents validate <agent>` (without `--live`) prints the full checklist (`preloop_server_present`, `gateway_base_url_ok`, `gateway_token_ok`, `model_provider_rewritten`, `control_*`), which pinpoints what is misconfigured.
 
 ### Rolling back an onboarding
 
