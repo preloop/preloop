@@ -1,5 +1,7 @@
 # Gemini CLI Reference
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Complete guide to using Gemini CLI with Preloop's Safety Layer.
 
 ---
@@ -34,7 +36,7 @@ gemini --version
 **Step 1: Get Your API Key**
 
 1. Log in to [preloop.ai](https://preloop.ai)
-2. Settings → API Keys → + Create API Key
+2. **Settings > API Keys > Create API key**
 3. Name: "Gemini CLI"
 4. Copy the key
 

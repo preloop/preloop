@@ -1,5 +1,7 @@
 # Gateway overhead
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 How much latency the model gateway adds, measured on a self-hosted open-source
 install. This is a **latency ping** (tiny streaming prompt, N=30), not a
 saturated throughput test. Do not read it as an NGFW-style 30-50% bandwidth tax.
@@ -12,7 +14,8 @@ in the Preloop repo. Keys stay in the environment.
 
 Same model, same tiny stream, client on the same Linux host as Preloop
 (2 vCPU VM). Open-source edition **0.15.0**. Two paired runs on 2026-08-20,
-15:37 to 15:42 UTC.
+15:37 to 15:42 UTC. These numbers were not re-measured on 0.16.0; the
+reproduction commands below pin 0.15.0 so they reproduce this run.
 
 The number that moved in 0.15.0 is the **stream tail** (time from first SSE
 byte to `data: [DONE]`). On 0.14.0 that tail was ~172 ms on both HTTP and
@@ -131,7 +134,7 @@ curl -fsSL -o measure_gateway_overhead.py \
 
 ### 2. Add a model with your key
 
-In the console: **Settings → AI Models → Add Model**. Paste an OpenAI or
+In the console: **Models > Add model**. Paste an OpenAI or
 Gemini API key, pick a small chat model, enable Preloop gateway routing.
 
 Note the **gateway alias** the console shows. That string is `PRELOOP_MODEL`.
@@ -142,7 +145,7 @@ account that owns the model.
 
 ### 3. Create a Preloop API key
 
-**Settings → API Keys** → create a key on **the same user** that owns the
+**Settings > API Keys** → create a key on **the same user** that owns the
 model. That value is `PRELOOP_API_KEY`. OSS console keys are a 40-character
 token shown once. They are not `plk_`-prefixed.
 

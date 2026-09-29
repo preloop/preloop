@@ -1,9 +1,11 @@
 # Quick Start: AI Agent Control in 5 Minutes
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Welcome! This guide walks you through setting up Preloop end-to-end, from signup to testing layered access rules with Claude Code.
 
 !!! tip "Already running an agent locally?"
-    The fastest path is the one‑line CLI install. It detects your existing agents (Claude Code, Codex CLI, Gemini CLI, OpenClaw, OpenCode, …), creates an account if needed, and onboards them in under a minute. See **[Onboard local agents with the CLI](quickstart-cli.md)** before continuing here.
+    The fastest path is the one-line CLI install. It detects your existing agents (Claude Code, Codex CLI, Gemini CLI, OpenClaw, OpenCode and others), creates an account if needed, and onboards them in under a minute. See **[Onboard local agents with the CLI](quickstart-cli.md)** before continuing here.
 
     ```bash
     curl -fsSL https://preloop.ai/install/cli | sh
@@ -13,7 +15,7 @@ Welcome! This guide walks you through setting up Preloop end-to-end, from signup
     See the complete flow in action: [**Watch on YouTube**](https://www.youtube.com/watch?v=okBvOn_TC9o)
 
 !!! success "What You'll Accomplish"
-    - Create your account with a 14-day free trial
+    - Create your account
     - Connect an MCP server and scan its tools
     - Create approval workflows and layered access rules
     - Connect Claude Code and the mobile app
@@ -25,10 +27,15 @@ Welcome! This guide walks you through setting up Preloop end-to-end, from signup
 
 ## Step 1: Create Your Account
 
-1. Go to **[https://preloop.ai](https://preloop.ai)** and click **Sign Up**
-2. Complete the Stripe checkout to start your **14-day free trial**
-3. Enter your username and organization name
-4. Set your password on the welcome page
+1. Open `/register` on your Preloop server (on Preloop Cloud, click **Sign Up** on [preloop.ai](https://preloop.ai))
+2. Enter a **Username**, **Email** and **Password** (8 to 72 characters) and click **Create account**
+3. Open the email "Verify your Preloop account" and click **Verify your email**
+4. Sign in with your username and password
+
+!!! cloud "Cloud and Enterprise"
+    On Preloop Cloud a new account starts a trial of a paid plan. When the
+    trial ends without a subscription, the account moves to the Free plan. See
+    [Account setup](getting-started/account.md).
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -43,14 +50,14 @@ Welcome! This guide walks you through setting up Preloop end-to-end, from signup
 
 We host an example MCP server with a `pay` tool for testing.
 
-1. Navigate to **Tools & MCP** in the sidebar
-2. Click **+ Add Source** → **MCP Server**
+1. Open **Tools** in the sidebar
+2. Click **Add MCP server**
 3. Fill in:
-    - **Name:** `Example MCP Server`
-    - **URL:** `https://example-mcp.preloop.ai/mcp`
-    - **Transport:** `http-streaming`
-    - **Auth Type:** `none`
-4. Click **Add**, then **Scan Tools**
+    - **Server Name:** `Example MCP Server`
+    - **Server URL:** `https://example-mcp.preloop.ai/mcp`
+    - **Transport:** HTTP Streaming (fixed)
+    - **Authentication Type:** None
+4. Click **Add**, then **Scan for tools**
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -67,9 +74,13 @@ Preloop lets you layer multiple rules on each tool. In this demo we create two a
 
 ### Create Approval Workflows
 
-1. Go to **Approval Workflows** and click **Create Workflow**
-2. Create a **Support** workflow, approvers: your support team, quorum: 1
-3. Create a **CFO** workflow, approvers: your CFO / finance team, quorum: 1
+1. On **Tools**, open the **Workflows** menu and click **New workflow**
+2. Create a **Support** workflow of type **Standard Human Approval** with one approver, and click **Create Policy**
+3. Create a **CFO** workflow the same way, with your finance approver
+
+!!! cloud "Cloud and Enterprise"
+    Workflows with several approvers, team approvers, a quorum above one or
+    escalation need Cloud or Enterprise. See [Team Approvals](approvals/teams.md).
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -80,16 +91,16 @@ Preloop lets you layer multiple rules on each tool. In this demo we create two a
 
 ### Configure Layered Access Rules
 
-Back on the **`pay`** tool card, add four rules (evaluated top to bottom):
+Open the **`pay`** tool and add four rules with **Add rule** (evaluated top to bottom):
 
 | Priority | Condition | Action | Workflow |
 |----------|-----------|--------|----------|
 | 1 | `amount <= 100` | **Allow** | n/a |
-| 2 | `amount <= 200` | **Require Approval** | Support |
-| 3 | `amount <= 1000` | **Require Approval** | CFO |
+| 2 | `amount <= 200` | **Require approval** | Support |
+| 3 | `amount <= 1000` | **Require approval** | CFO |
 | 4 | *(default)* | **Deny** | n/a |
 
-Enable **Require Justification** so agents must explain why they need to call the tool.
+Set **Justification requirement** to **Required** so agents must explain why they need to call the tool.
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -98,8 +109,8 @@ Enable **Require Justification** so agents must explain why they need to call th
   <figcaption>Layered access rules: allow → approval → deny based on amount</figcaption>
 </figure>
 
-!!! tip "What Just Happened?"
-    You prelooped the `pay` tool! The Preloop logo badge now appears on the tool card, indicating that access rules are enforced before execution.
+!!! tip "What just happened?"
+    Calls to the `pay` tool now pass the access rules before they reach the MCP server.
 
 ---
 
@@ -107,8 +118,8 @@ Enable **Require Justification** so agents must explain why they need to call th
 
 ### Create an API Key
 
-1. Click **Setup Instructions** on any tool card
-2. Click **Create New API Key**, name it, and copy the key
+1. Open **Settings > API Keys**
+2. Click **Create API key**, name it, and copy the key
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -122,7 +133,7 @@ Enable **Require Justification** so agents must explain why they need to call th
 
 ### Configure Claude Code
 
-Copy the `claude mcp add` command shown in the setup instructions and paste it in your terminal (replace `YOUR_API_KEY`):
+Register Preloop as an MCP server in Claude Code (replace `YOUR_API_KEY`, and the host if you self-host):
 
 ```bash
 claude mcp add \
@@ -132,8 +143,8 @@ claude mcp add \
   https://preloop.ai/mcp/v1
 ```
 
-!!! tip "One‑command alternative"
-    You can skip the manual `claude mcp add` step entirely by running `preloop agents discover` (or `curl -fsSL https://preloop.ai/install/cli | sh` on a fresh machine). The CLI auto‑detects Claude Code (and Codex / Gemini / OpenClaw / OpenCode / …), wires the MCP server through Preloop with the correct token, and lets you confirm each change. See [Onboard local agents with the CLI](quickstart-cli.md).
+!!! tip "One-command alternative"
+    **Tools > Connect an agent** shows the same path: install the CLI, run `preloop login`, then `preloop agents discover`. The CLI detects Claude Code (and Codex, Gemini, OpenClaw, OpenCode and others), wires the MCP server through Preloop with the correct token, and lets you confirm each change. See [Onboard local agents with the CLI](quickstart-cli.md).
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -198,7 +209,7 @@ $ claude -p 'Pay $150 to Marvin for office supplies' --allowedTools mcp__preloop
 Waiting for approval...
 ```
 
-The payment is between $100 and $200, triggering the **Support** approval workflow. Approve it from your phone or the web dashboard:
+The payment is between $100 and $200, triggering the **Support** approval workflow. Approve it from your phone or from **Audit > Approvals** in the console:
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -207,9 +218,13 @@ The payment is between $100 and $200, triggering the **Support** approval workfl
   <figcaption>$150 payment requires Support approval: approved via the mobile app</figcaption>
 </figure>
 
-### Review the Audit Trail
+### Review the audit trail
 
-Every tool call (allowed, denied, or approved) is logged in the **Audit Trail**:
+Every tool call (allowed, denied, or approved) is recorded. Open **Audit > Sessions** for the session timeline and **Audit > Approvals** for the decisions:
+
+!!! cloud "Cloud and Enterprise"
+    **Audit > All events** lists every audit event across the account.
+
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -279,7 +294,7 @@ You've just:
 
     ---
 
-    Configure quorum, escalation, and team-based approval workflows.
+    Configure quorum, escalation, and team-based approval workflows (Cloud and Enterprise).
 
     [**Team Approvals**](approvals/teams.md)
 

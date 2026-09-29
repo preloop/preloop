@@ -1,5 +1,7 @@
 # OpenClaw Integration
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After this page you have a local OpenClaw installation whose MCP tool calls go through the Preloop firewall, whose model traffic goes through the Preloop gateway, whose **native** tool calls (shell, file writes) wait for your approval on phone/watch/web, and which you can message live from the console.
 
 !!! info "Example Policies"
@@ -110,7 +112,7 @@ If you would rather wire only the MCP firewall by hand (no gateway, no Agent Con
 }
 ```
 
-Create the API key in the console under **Settings → API Keys**. The CLI-managed path above is strictly better: durable per-agent identity, gateway routing, backups, and validation.
+Create the API key in the console under **Settings > API Keys**. The CLI-managed path above is strictly better: durable per-agent identity, gateway routing, backups, and validation.
 
 ---
 
@@ -178,7 +180,7 @@ Check the API key is valid, has no stray whitespace, and was not revoked.
 **Agent appears in Preloop but no session activity**
 
 - Start a fresh OpenClaw session and trigger at least one MCP or model action.
-- Check **Agents** and **Runtime Sessions** in the console.
+- Check **Agents** and **Audit > Sessions** in the console.
 - If model calls were expected, verify the runtime uses the managed gateway path.
 
 **Policy not triggering**

@@ -1,5 +1,7 @@
 # Connect Your MCP Client
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Learn how to connect Claude Code, Cline, Zed, or any MCP-compatible client to Preloop.
 
 ---
@@ -39,7 +41,7 @@ Discovery can inspect local configurations for **OpenClaw**, **OpenCode**, **Cla
 ### 1. Get Your API Key
 
 1. Log in to [preloop.ai](https://preloop.ai)
-2. Go to **Settings** → **API Keys**
+2. Go to **Settings > API Keys**
 3. Click **+ Create API Key**
 4. Give it a name (e.g., "Claude Code")
 5. Click **Create** and copy the key

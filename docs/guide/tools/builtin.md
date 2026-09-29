@@ -1,5 +1,7 @@
 # Built-in Tools
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Call Preloop's built-in MCP tools from any connected agent, and gate them with access rules and approval workflows. This page is the argument reference for every built-in tool.
 
 ---
@@ -636,7 +638,7 @@ tools:
 }
 ```
 
-**Solution:** Connect a tracker in **Settings** → **Trackers**
+**Solution:** Connect a tracker under **Trackers > Add tracker**
 
 **Invalid issue ID:**
 

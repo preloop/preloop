@@ -1,5 +1,7 @@
 # Upgrading Preloop
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Preloop upgrades in place: the installer and the Helm chart both take care of
 database backups and schema migrations for you. This page covers the
 Docker-Compose (OSS) stack, Kubernetes/Helm deployments, and the CLI, plus how
@@ -35,7 +37,7 @@ The installer detects the existing install in `~/.preloop-oss` and:
 To upgrade (or stay) on a specific release, set `PRELOOP_VERSION`:
 
 ```bash
-curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.12.2 sh
+curl -fsSL https://preloop.ai/install/oss | PRELOOP_VERSION=0.16.0 sh
 ```
 
 You can also edit `PRELOOP_VERSION` in `~/.preloop-oss/.env` and run

@@ -1,5 +1,7 @@
 # Testing Your Approval Workflow
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Verify your Preloop setup end-to-end: call a prelooped tool from your MCP client, receive the approval request, approve it, and confirm the tool executes and everything lands in the audit trail.
 
 These tests use the hosted demo MCP server at `https://example-mcp.preloop.ai/mcp`, which provides harmless sample tools like `pay` and `get_random_number`.
@@ -27,26 +29,26 @@ Verify the complete approval flow works: call tool → receive notification → 
 
 If you haven't already:
 
-1. Go to **Tools & MCP** → **+ Add Source** → **MCP Server**
+1. Go to **Tools** > **Add MCP server**
 2. Configure:
    ```
-   Name: Example MCP Server
-   URL: https://example-mcp.preloop.ai/mcp
-   Transport: http-streaming
-   Auth Type: none
-   Status: active
+   Server Name: Example MCP Server
+   Server URL: https://example-mcp.preloop.ai/mcp
+   Transport: HTTP Streaming
+   Authentication Type: None
    ```
-3. Click **Save**
-4. Click **Scan Tools**
+3. Click **Add**
+4. Click **Scan for tools**
 
 **Step 2: Preloop the `pay` Tool**
 
-1. Find `pay` tool in Tools & MCP list
-2. Click **Configure** (gear icon)
-3. Toggle **Require Approval** to ON
-4. Set approvers: Add yourself
-5. Notification: Select "Email"
-6. Click **Save**
+1. Find the `pay` tool on the **Tools** page and expand it
+2. Click **Add rule** and choose **Require approval**
+3. Select an approval workflow, or create one with yourself as the approver
+4. Leave the condition empty so every call needs approval
+5. Click **Add rule**
+
+Email notifications depend on your own settings under **Settings > Notifications**.
 
 ### Execute Test
 
@@ -86,11 +88,11 @@ Payment of $500 sent to alice@example.com
 Transaction ID: tx_abc123
 ```
 
-In the dashboard, the request moves to "Approved" in **Approvals** → **History**.
+In the dashboard, the request moves to **History** under **Audit > Approvals**.
 
 ### Verify Audit Trail
 
-1. Go to **Approvals** → **History**
+1. Go to **Audit > Approvals** and look under **History**
 2. Find your test request and click it
 3. Verify it shows: requester, tool (`pay`), arguments, status (Approved), approver, timestamps, and the execution result
 
@@ -148,12 +150,12 @@ Verify CEL conditions work: approval only required when the condition matches.
 
 ### Setup
 
-1. Go to Tools & MCP → Find `pay` tool → Configure
-2. In **Approval Condition**, enter:
+1. Go to **Tools**, find the `pay` tool, and edit its **Require approval** rule
+2. Set the condition to `amount > 1000` with the condition builder, or as a **CEL Expression**:
    ```cel
    args.amount > 1000
    ```
-3. Click **Save**
+3. Click **Update rule**
 
 This means: only require approval if amount > $1000.
 
@@ -187,10 +189,10 @@ Expected: approval request sent, client waits, tool executes after you approve.
 
 Once tests 1-3 pass, the core Safety Layer works. Run through these quicker checks as needed:
 
-- **Team-based approval with quorum** (needs 2+ users): create a team under **Settings** → **Teams**, set it as the `pay` approver with quorum 2, and trigger a call. The tool must wait for the second approval before executing, and the audit log should show both approvers. See [Team-Based Approvals](../approvals/teams.md).
-- **Timeout and escalation:** set a short timeout (e.g. 120s) and escalation delay (e.g. 60s) on the `pay` policy, trigger a call, and don't respond. The escalation contact should be notified after the delay, and after the timeout the client should receive a timeout error with the tool NOT executed.
+- **Team-based approval with quorum** (needs 2+ users): (Cloud and Enterprise) create a team under **Settings > Teams**, set it as the approver of the `pay` workflow with **Approvals Required** 2, and trigger a call. The tool must wait for the second approval before executing, and the audit log should show both approvers. See [Team-Based Approvals](../approvals/teams.md).
+- **Timeout and escalation** (Cloud and Enterprise): set a short timeout (e.g. 120s) and escalation delay (e.g. 60s) on the `pay` policy, trigger a call, and don't respond. The escalation contact should be notified after the delay, and after the timeout the client should receive a timeout error with the tool NOT executed.
 - **Multiple notification channels:** enable email, web, Slack, and mobile for the `pay` policy and trigger a call. All configured channels should notify within ~30 seconds, and approving from one channel should update the others.
-- **Non-prelooped tool:** call `get_random_number` from the example server with **Require Approval** OFF. It should execute immediately with no notification, but still appear in the audit trail.
+- **Non-prelooped tool:** call `get_random_number` from the example server, which has no rule. It should execute immediately with no notification, but still appear in the audit trail.
 - **Error handling:** trigger a call with invalid arguments (e.g. `pay invalid-email $-100`) and approve it: the execution failure should be reported clearly. Then point the example server at an invalid URL and confirm you get a clean "server unavailable" error instead of a silent failure; restore the URL to `https://example-mcp.preloop.ai/mcp` afterwards.
 
 ## Next Steps

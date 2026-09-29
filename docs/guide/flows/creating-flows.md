@@ -1,5 +1,7 @@
 # Creating Flows
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Create a flow that runs an AI agent when an event fires (a GitHub PR, a GitLab MR, a Jira ticket, or any HTTP webhook) with approval workflows enforced on every prelooped tool call.
 
 ---
@@ -18,7 +20,7 @@ Create a flow that runs an AI agent when an event fires (a GitHub PR, a GitLab M
 - **Flow** - The automated workflow definition
 - **Trigger** - Event that starts the flow (webhook or tracker event)
 - **AI Agent** - The agent type executing the flow (Codex CLI, Gemini CLI, or OpenCode)
-- **AI Model** - The LLM powering the agent (GPT-5.1-codex, Gemini 2.0 Pro, etc.)
+- **AI Model** - The LLM powering the agent (for example GPT-5.4 or Claude Sonnet 4.7)
 - **Prompt Template** - Instructions for the agent (supports variable interpolation)
 - **Tools** - MCP tools the agent can use (respects approval workflows)
 - **Execution** - Single run of a flow (triggered by an event)
@@ -30,7 +32,7 @@ Create a flow that runs an AI agent when an event fires (a GitHub PR, a GitLab M
 ### Step 1: Navigate to Flows
 
 1. Click **Flows** in the left sidebar
-2. Click **+ Create Flow**
+2. Click **Create flow**
 
 ### Step 2: Choose Creation Method
 
@@ -44,11 +46,11 @@ Flows cloned from a preset track their source: if the preset is later updated, t
 
 Four presets (SBOM Verify, SBOM Exploit Check, Release Security Audit, Component Due Diligence Record) turn a CI-emitted SBOM into a versioned `result.json` plus a human-readable evidence pack for a human assessor: see [Security audit presets (CRA evidence packs)](security-audit-presets.md).
 
-**Option B: Create from Scratch**
+**Option B: Blank flow**
 
-Build a custom flow from the ground up. Click **Create from Scratch**.
+Build a custom flow from the ground up. Pick **Blank flow** at the top of the form.
 
-For this guide, we'll create from scratch.
+For this guide, we'll start from a blank flow.
 
 ---
 
@@ -81,10 +83,9 @@ Description: Triggers deployment to staging environment when PR is merged to mai
 
 Flows can be triggered by:
 
-1. **Webhooks** - HTTP POST from any external service
-2. **Tracker Events** - GitHub, GitLab, Jira events
-
-Schedule/cron triggers are not yet available.
+1. **Webhooks**: HTTP POST from any external service
+2. **Tracker events**: GitHub, GitLab, Jira events
+3. **Schedules**: an interval, daily or weekly time, or cron expression, see [Schedule Triggers](flow-triggers.md#schedule-triggers)
 
 #### Option 1: Webhook Trigger
 
@@ -97,7 +98,7 @@ Schedule/cron triggers are not yet available.
 
 **Configuration:**
 
-1. Select **Trigger Type:** Webhook
+1. Select **Trigger type:** Webhook
 2. Save the flow (webhook URL generated after creation)
 3. Use the webhook URL to trigger the flow
 
@@ -137,17 +138,17 @@ Amount: ${{trigger_event.payload.amount}}
 **Configuration:**
 
 
-1. **Select Trigger Type:** Tracker Event
+1. **Trigger type:** Tracker event
 
-2. **Select Tracker** - Choose from your configured trackers
-   - If no trackers exist, click "+ Add Tracker"
+2. **Tracker**: choose from your configured trackers
+   - If no trackers exist, add one under **Trackers > Add tracker**
 
-3. **Select Organization** - The GitHub org, GitLab group, or Jira project
+3. **Organization**: the GitHub org, GitLab group, or Jira project
 
-4. **Select Project** - Specific repository or project
+4. **Projects (optional)**: specific repository or project
    - Can leave empty to trigger on all projects in organization
 
-5. **Select Event Types** - What triggers the flow
+5. **Events**: what triggers the flow
    - GitHub: Issue opened, PR opened, PR merged, push, etc.
    - GitLab: MR opened, MR merged, issue opened, pipeline, etc.
    - Jira: Issue opened, issue updated, comment created, etc.
@@ -267,19 +268,19 @@ Each flow needs an AI model (LLM) to power the agent.
 
 **If you have no models configured:**
 
-1. Click **+ Add AI Model**
+1. Under **AI model**, click **Add AI model**
 2. Fill in:
-   - **Name:** Descriptive name (e.g., "GPT 5.1 Codex")
+   - **Name:** Descriptive name (e.g., "GPT-5.4")
    - **Provider:** OpenAI, Anthropic, Google, Qwen, DeepSeek, or OpenAI-compatible
    - **Model:** Select from dropdown (filtered by agent compatibility)
    - **Credentials:** Configure the upstream provider credential or secret reference when the model needs direct provider access
    - **Gateway Routing:** Enable Preloop gateway routing when you want model traffic to flow through Preloop's OpenAI-compatible or Anthropic-compatible gateway
-3. Click **Create**
+3. Click **Save**
 
 **If you have existing models:**
 
 - Select from the dropdown (filtered by agent type compatibility)
-- Or click **+ Add New AI Model** to add another
+- Or click **Add AI model** to add another
 
 **How model routing works:**
 
@@ -292,11 +293,6 @@ Each flow needs an AI model (LLM) to power the agent.
 - The resolved prompt and tool allowlist
 - The selected model identity and agent-specific configuration
 - Either direct provider access details or Preloop gateway settings such as a managed base URL, model alias, and short-lived bearer token
-
-**Recommended models:**
-
-- **GPT-5.1-codex** (OpenAI) - Best for Codex CLI
-- **Gemini 2.0 Pro** (Google) - Best for Gemini CLI
 
 The model dropdown filters to providers the selected agent supports.
 
@@ -509,23 +505,23 @@ Commands run with full container privileges, so they are restricted: they are co
 ### Save the Flow
 
 1. Review all configuration
-2. Click **Create** (or **Update** if editing)
+2. Click **Create flow** (or **Save changes** if editing)
 
-Flows you create or clone start **Enabled**, they trigger on matching events immediately. Only built-in presets start disabled. Use the **Disable** button on the flow details page if you want to pause it.
+Flows you create or clone start **Enabled**, they trigger on matching events immediately. Only built-in presets start disabled. Use **Pause** on the flow details page if you want to stop it from triggering, and **Resume** to turn it back on.
 
-### Test Run
+### Run now
 
-Test your flow before real events trigger it:
+Start a run by hand before real events trigger it. The run is a real one and spends like any other:
 
-1. Click **Test Run** button
-2. If prompt has `{{trigger_event.*}}` variables, you'll see a dialog
-3. Fill in test values for each variable:
+1. Click **Run now**
+2. If the prompt has `{{trigger_event.*}}` variables, the dialog **Values for the trigger event** opens
+3. Fill in values for each variable:
    ```
    trigger_event.payload.recipient: test@example.com
-   trigger_event.payload.amount: 1500
+   trigger_event.payload.amount: 150
    trigger_event.payload.contract_id: TEST-001
    ```
-4. Click **Run Test**
+4. Click **Run now**
 5. You'll be redirected to the execution page to watch it run
 
 ---
@@ -538,8 +534,8 @@ Each time a flow triggers, an **execution** is created.
 
 **View Executions:**
 1. Go to flow details page
-2. Scroll to **Recent Executions** section
-3. Or: Navigate to **Flows** → **Executions** for all executions
+2. Scroll to **Recent executions**
+3. Or: on **Flows**, click **View all** next to **In flight** for all executions
 
 **Execution States:**
 - `PENDING` - Queued, not started yet

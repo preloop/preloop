@@ -1,5 +1,7 @@
 # OpenCode Reference
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Complete guide to using OpenCode with Preloop's Safety Layer.
 
 ---
@@ -37,7 +39,7 @@ opencode --version
 **Step 1: Get Your API Key**
 
 1. Log in to [preloop.ai](https://preloop.ai)
-2. Settings → API Keys → + Create API Key
+2. **Settings > API Keys > Create API key**
 3. Name: "OpenCode"
 4. Copy the key
 

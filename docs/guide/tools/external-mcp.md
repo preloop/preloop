@@ -1,5 +1,7 @@
 # Prelooping External MCP Tools
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Add external MCP servers to Preloop and wrap their tools with approval workflows.
 
 ---
@@ -90,25 +92,21 @@ tools:
 
 ## Adding External MCP Servers
 
-### Step 1: Navigate to Tools & MCP
+### Step 1: Open Tools
 
-1. Go to **Tools & MCP** in left sidebar
-2. Click **+ Add Source** → **MCP Server**
+1. Open **Tools** in the sidebar
+2. Click **Add MCP server**
 
 ### Step 2: Configure Server
 
-**Required Fields:**
+The console form has these fields:
 
-- **Name** - Descriptive name (e.g., "Deployment Server")
-- **URL** - MCP server endpoint
-- **Transport** - `streamable-http` (default), `http-streaming`, `stdio`, or `sse`
-- **Status** - Set to `active`
+- **Server Name**: a descriptive name (e.g., "Deployment Server")
+- **Server URL**: the MCP server endpoint
+- **Transport**: HTTP Streaming (fixed in the console; the API field `transport` defaults to `http-streaming`)
+- **Authentication Type**: None, Bearer Token or OAuth 2.0
 
-**Optional Fields:**
-
-- **Auth Type** - `none`, `bearer`, `api_key`, or `oauth`
-- **Headers** - Custom headers if needed
-- **Description** - What tools this server provides
+Click **Add** to save the server. The API also accepts `auth_type: api_key` and a `status` of `active`, `error` or `disabled`.
 
 <!-- TODO screenshot: `external-mcp-add.png` -->
 
@@ -116,7 +114,7 @@ tools:
 
 After adding the server:
 
-1. Click **Scan Tools** button
+1. Click **Scan for tools** on the server
 2. Preloop discovers available tools
 3. Tools appear in your tools list
 4. Each tool shows its source server
@@ -132,11 +130,10 @@ Preloop hosts an example MCP server for testing:
 ### Configuration
 
 ```yaml
-Name: Example MCP Server
-URL: https://example-mcp.preloop.ai/mcp
-Transport: streamable-http
-Auth Type: none
-Status: active
+Server Name: Example MCP Server
+Server URL: https://example-mcp.preloop.ai/mcp
+Transport: HTTP Streaming
+Authentication Type: None
 ```
 
 ### Available Tools
@@ -298,16 +295,16 @@ Once tools are discovered, you control access using **access rules**. Each rule 
 
 ### Option 1: Via Web UI
 
-1. Find tool in **Tools & MCP** list
+1. Find the tool on the **Tools** page
 2. Click the tool to expand it
-3. Click **+ Add Rule** to create an access rule
+3. Click **Add rule** to create an access rule
 4. Configure the rule:
-   - **Action**: Deny, Allow, or Require Approval
-   - **Condition**: CEL expression (e.g., `args.amount > 500`)
-   - **Approval Workflow** (if Require Approval): Select an existing workflow or create a new one
-     - **Human approval**: Designated approvers review and decide
-     - **AI-driven approval**: An AI model evaluates the request against guidelines
-   - **Description**: Explain what this rule does
+   - **Action**: Deny, Require approval, or Allow
+   - **Condition**: build it with the condition builder, or write a **CEL Expression** (e.g., `args.amount > 500`)
+   - **Approval workflow** (for Require approval): select an existing workflow or create a new one
+     - **Human approval**: designated approvers review and decide
+     - **AI-driven approval**: an AI model evaluates the request against guidelines (offered in the Cloud and Enterprise console)
+   - **Description**: explain what this rule does
 5. Drag rules to reorder priority
 6. Click **Save**
 
@@ -394,21 +391,21 @@ curl -X POST https://preloop.ai/api/v1/tool-configurations/{config_id}/access-ru
 
 ### Automatic Discovery
 
-When you click **Scan Tools**, Preloop:
+When you click **Scan for tools**, Preloop:
 
 1. Connects to MCP server
 2. Calls `tools/list` method
 3. Receives tool schemas
 4. Parses tool names, descriptions, arguments
-5. Displays in Tools & MCP list
+5. Lists them on the **Tools** page
 
 ### Manual Refresh
 
 Tools don't update automatically. To refresh:
 
-1. Go to **Tools & MCP**
+1. Go to **Tools**
 2. Find your MCP server
-3. Click **Scan Tools** again
+3. Click **Scan for tools** again
 4. New tools appear, removed tools disappear
 
 **Recommended:** Scan after updating your MCP server.
@@ -434,8 +431,8 @@ How a filter works:
 - When several filters match the same call, the union of their dropped fields is stripped.
 - Filtering only applies to results that parse as a JSON object (or a list of objects). Non-JSON output passes through unchanged, and any filtering error leaves the original result intact: filters can trim a result, never break it.
 
-!!! note "Managing filters"
-    Filter enforcement runs in the open-source core. Creating and managing filters is part of the cost-optimization tooling in **Preloop Cloud** and **Preloop Enterprise**: the Console's session-optimization suggestions open a filter dialog prefilled with a tool's droppable fields, and the billing API exposes CRUD at `/api/v1/billing/cost/output-filters` (`GET` list, `POST` create, `DELETE /{filter_id}`).
+!!! cloud "Cloud and Enterprise"
+    Filter enforcement runs in OSS. Creating and managing filters is part of the cost-optimization tooling in **Preloop Cloud** and **Preloop Enterprise**: the Console's session-optimization suggestions open a filter dialog prefilled with a tool's droppable fields, and the billing API exposes CRUD at `/api/v1/billing/cost/output-filters` (`GET` list, `POST` create, `DELETE /{filter_id}`).
 
 ---
 
@@ -638,14 +635,14 @@ Monitor all external tool calls:
 - Approved or declined
 - Result or error
 
-Enable audit logging in **Settings** → **Audit Logs**.
+Tool calls are recorded in each runtime session's timeline (**Audit > Sessions**). On Cloud and Enterprise, **Audit > All events** lists them account-wide.
 
 ### 5. Rotate Credentials
 
 ```bash
 # Rotate MCP server tokens quarterly
 1. Generate new token on MCP server
-2. Update in Preloop: Tools & MCP → Edit Server → Update Token
+2. Update in Preloop: Tools > Edit server (pencil icon) > new token
 3. Test connection
 4. Revoke old token
 ```

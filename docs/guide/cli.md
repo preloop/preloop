@@ -1,5 +1,7 @@
 # CLI Reference
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After this page you can install the `preloop` CLI, authenticate it against Cloud or your own instance, onboard and offboard local agents, manage policies and approvals from the terminal, and read the onboarding summary table and exit codes correctly in scripts.
 
 ## Install
@@ -77,7 +79,7 @@ Batch onboarding continues past individual failures and prints a summary:
 Onboarding summary:
   Agent        Status     Reason
   Claude Code  onboarded  -
-  Codex CLI    partial    codex binary not found in PATH — launcher skipped; MCP and model routing configured
+  Codex CLI    partial    codex binary not found in PATH - launcher skipped; MCP and model routing configured
   Windsurf     failed     ...
 ```
 
@@ -87,7 +89,7 @@ Onboarding summary:
 | `partial` | MCP and model config applied, but the managed launcher step was skipped, usually a missing agent binary. Not a failure. |
 | `failed` | Enrollment error for this agent; see Reason |
 
-The Reason column also carries live-validation outcomes. `live validation throttled — model traffic unverified` means enrollment succeeded but the verification prompt was rate-limited; the agent shows an **unverified** badge in the console until you re-verify with `preloop agents validate <agent> --live`. `live validation inconclusive (upstream billing/quota)` means the credential authenticated and reached the provider, but the provider refused the call: also re-verify later.
+The Reason column also carries live-validation outcomes. `live validation throttled - model traffic unverified` means enrollment succeeded but the verification prompt was rate-limited; the agent shows an **unverified** badge in the console until you re-verify with `preloop agents validate <agent> --live`. `live validation inconclusive (upstream billing/quota)` means the credential authenticated and reached the provider, but the provider refused the call: also re-verify later.
 
 ### Exit codes
 
@@ -101,7 +103,7 @@ Script against the summary, not just the exit code, when you care about specific
 If you run the CLI inside WSL but installed agents on the Windows side, onboarding prints:
 
 ```text
-Hint: Running under WSL: agents installed on Windows are not on the WSL PATH — install the agent inside WSL or add its Windows install dir to PATH.
+Hint: Running under WSL: agents installed on Windows are not on the WSL PATH - install the agent inside WSL or add its Windows install dir to PATH.
 ```
 
 Native Windows CLI binaries (`amd64` and `arm64`) also ship with every release.

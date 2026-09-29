@@ -1,5 +1,7 @@
 # Flow Execution
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Monitor, debug, and manage flow executions.
 
 ---
@@ -33,7 +35,7 @@ If a tool call requires approval, the execution stays `RUNNING` while it waits: 
 
 View all flow executions across all flows:
 
-1. Navigate to **Flows** → **Executions** in left sidebar
+1. On **Flows**, click **View all** next to **In flight**
 2. See table of all executions
 
 **Table Columns:**
@@ -416,7 +418,7 @@ When a flow uses a gateway-enabled AI model, the agent does not need to talk dir
 
 The main dashboard combines execution and runtime-control-plane stats:
 
-1. Navigate to **Dashboard** (home page)
+1. Open **Overview** (the console home page)
 2. See metrics:
    - **Active Runtime Sessions** - Managed sessions currently active across flows and enrolled agents
    - **Recent Tool Calls** - Tool-call volume across managed runtimes

@@ -1,5 +1,7 @@
 # Cursor, Claude Desktop & Other MCP Clients
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After this page you know exactly what Preloop can and cannot govern for each MCP-capable client the CLI discovers, and how to wire the ones that need manual steps.
 
 Any client that speaks MCP over streamable HTTP can point at Preloop's endpoint with an API key:
@@ -61,7 +63,7 @@ Steps:
 2. In the **OpenAI API Key** section, paste your Preloop API key and enable the key toggle.
 3. Enable **Override OpenAI Base URL** and enter `https://YOUR_PRELOOP_URL/openai/v1`.
 4. Pick a third-party model in the model picker (for example `gpt-5.2` or `claude-sonnet-4-5`), or use **Add Custom Model** with the exact model alias configured on your Preloop AI models.
-5. Test: open the AI panel (Cmd/Ctrl+L), send a prompt, then check the **Cost** and **Runtime Sessions** views in the Preloop console for the call.
+5. Test: open the AI panel (Cmd/Ctrl+L), send a prompt, then check **Cost** and **Audit > Sessions** in the Preloop console for the call.
 
 What to expect:
 

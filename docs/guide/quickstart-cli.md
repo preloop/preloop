@@ -1,5 +1,7 @@
 # Quick Start: Onboard Local Agents with the CLI
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The fastest way to get value out of Preloop is to install the Preloop CLI on the machine where your AI agents already run. The CLI discovers supported agents (Claude Code, Codex CLI, Gemini CLI, Hermes, OpenClaw, OpenCode, Cursor, Windsurf, ...), creates an account if you don't have one yet, provisions managed credentials/config, and rewrites supported tool and model endpoints through the Preloop MCP Firewall and Preloop Gateway.
 
 Agent Control has one extra runtime requirement: for OpenClaw, Hermes, or another long-running agent to receive live operator commands, that agent must load a native Preloop runtime plugin. The CLI writes the `preloop.control` contract and can install or verify the plugin via `preloop agents install-plugin`; the plugin owns the long-lived WebSocket, reconnect/backoff, heartbeat/status events, capability advertisement, command receipt, and command execution.
@@ -8,7 +10,7 @@ Agent Control has one extra runtime requirement: for OpenClaw, Hermes, or anothe
     1. Run the install command.
     2. The CLI scans your machine and lists every supported agent it found.
     3. It opens your browser to sign in or sign up.
-    4. You're redirected back to **`/console/agents`** with everything wired up live.
+    4. You're redirected back to **`/console/agents`** with everything wired up.
 
 ---
 
@@ -22,9 +24,9 @@ curl -fsSL https://preloop.ai/install/cli | sh
 
 The installer:
 
-1. Downloads the `preloop` binary into `~/.preloop/bin` (or `/usr/local/bin` if writable) and prints the path it added to your shell.
+1. Downloads the `preloop` binary into `/usr/local/bin` if it is writable, otherwise `~/.local/bin` (set `INSTALL_DIR` to choose another directory).
 2. Runs `preloop agents discover --no-onboard-prompt` so you can see your detected agents **before** signing up.
-3. Asks whether you want to log in (default), sign up, or skip authentication. Picking sign‑up routes the browser to `/register` instead of `/login`.
+3. Asks whether you want to log in (default), sign up, or skip authentication. Picking sign-up routes the browser to `/register` instead of `/login`.
 4. After authentication completes, runs `preloop agents discover` to walk through onboarding for every detected agent (default `Y`).
 
 <figure>
@@ -35,7 +37,7 @@ The installer:
 </figure>
 
 !!! info "Unattended installs"
-    Set `PRELOOP_CONFIRM=1` (truthy values: `1`, `y`, `yes`, `true`, `on`) to auto‑approve every interactive prompt, both in the install script itself and in the CLI subcommands it invokes. This is the recommended way to bake Preloop into your provisioning scripts, devcontainers, or CI runners.
+    Set `PRELOOP_CONFIRM=1` (truthy values: `1`, `y`, `yes`, `true`, `on`) to auto-approve every interactive prompt, both in the install script itself and in the CLI subcommands it invokes. This is the recommended way to bake Preloop into your provisioning scripts, devcontainers, or CI runners.
 
     ```bash
     PRELOOP_CONFIRM=1 curl -fsSL https://preloop.ai/install/cli | sh
@@ -47,40 +49,40 @@ The installer:
 
 If this is your first time, choose **`s`** (sign up) at the prompt. The CLI opens a browser to `https://preloop.ai/register?…` and remembers the OAuth context it was about to consent to. After you create your account:
 
-1. Preloop auto‑logs you in (no detour through the sign‑in page).
+1. Preloop signs you in (no detour through the sign-in page).
 2. The OAuth consent page resumes where it left off and authorizes the CLI.
 3. Your browser lands on **`https://preloop.ai/console/agents?cli=connected`**, the live canvas of your account's agents.
 
 If you already have an account, choose **`Y`** (default) and the same flow runs from `/login` instead.
 
 !!! tip "SSH and headless hosts"
-    On a headless host the CLI auto‑falls back to the copy/paste flow (`preloop login --headless`). Force it with `preloop login --headless` or `preloop signup --headless` to skip the loopback callback entirely. After pasting the code, the consent page shows a **Continue to your agents** button.
+    On a headless host the CLI falls back to the copy/paste flow (`preloop login --headless`). Force it with `preloop login --headless` or `preloop signup --headless` to skip the loopback callback entirely. After pasting the code, the consent page shows a **Continue to your agents** button.
 
 ---
 
 ## Step 3: Confirm onboarding in the console
 
-The agents page opens to the **canvas** view by default, every detected agent shows up as a card connected to its tools and AI models. You can switch to the cards layout from the toolbar or pan/zoom the canvas to inspect each runtime.
+The **Agents** page lists every onboarded agent. The toolbar switches between the list, cards and canvas layouts; the canvas shows each agent connected to its tools and AI models, and you can pan and zoom it to inspect each runtime.
 
 <figure>
   <img src="../../assets/animations/quickstart/dark/agents-onboarding.webp" alt="Preloop onboarding all detected agents and refreshing the agents canvas" style="width: 100%; border-radius: 8px;">
   <figcaption>Onboarding all detected agents refreshes the live agents canvas.</figcaption>
 </figure>
 
-Each card shows the **onboarding state** for that agent:
+Each agent shows its **onboarding state**:
 
 | Badge | Meaning |
 |-------|---------|
 | `Fully onboarded` | Tool calls are routed through the MCP Firewall **and** model calls go through the Gateway. Agent Control still requires a loaded runtime plugin. |
-| `MCP proxy only` | Tool calls are firewalled, but the agent still uses its own model credentials. |
-| `Model gateway only` | Model traffic is gated, but the agent still calls tools directly. |
+| `MCP only` | Tool calls are firewalled, but the agent still uses its own model credentials. |
+| `Gateway only` | Model traffic is gated, but the agent still calls tools directly. |
 | `Incomplete` | Detected but not fully managed yet. Run `preloop agents onboard <name>` to connect it. |
 
-An agent can also carry an **unverified** badge: enrollment succeeded, but the live validation prompt was throttled or refused upstream, so model traffic has not been proven end-to-end yet. Clear it with `preloop agents validate <name> --live`.
+An agent can also carry an **unverified** note ("Live check throttled, unverified" or "Upstream refused, unverified"): enrollment succeeded, but the live validation prompt was throttled or refused upstream, so model traffic has not been proven end-to-end yet. Clear it with `preloop agents validate <name> --live`.
 
 Batch onboarding continues past individual failures and ends with a per-agent summary table (`onboarded` / `partial` / `failed` plus a Reason). The command exits 0 when at least one agent onboarded fully or partially, see [CLI Reference](cli.md#the-onboarding-summary-table) for the exact semantics.
 
-You can also kick off onboarding from the **Onboard agents** dialog at the top right of the page, it shows the same three CLI commands and one‑click copies for users who want to step through manually.
+You can also start onboarding from **Onboard existing agent** at the top right of the page. The dialog shows the same CLI commands with copy buttons for users who want to step through manually.
 
 ---
 
@@ -130,7 +132,7 @@ preloop approvals pending      # List approvals waiting on you
 
     ---
 
-    Trigger your prelooped tools from event‑driven workflows.
+    Trigger your prelooped tools from event-driven workflows.
 
     [**Continue to Part 2: Flows**](quickstart-flows.md)
 

@@ -1,5 +1,7 @@
 # Troubleshooting
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After this page you can diagnose the failures people actually hit: the OSS installer refusing to start, agents that onboard but stay "unverified", WSL discovery misses, locked-out registration, and MCP connections that silently show no tools.
 
 ## Installer
@@ -46,7 +48,7 @@ Note that on an empty instance with `PRELOOP_BOOTSTRAP_TOKEN` set in `.env` (eve
 `partial` is not an error. It means MCP and model routing were configured but the managed launcher step was skipped, almost always because the agent binary is not on `PATH`:
 
 ```text
-codex binary not found in PATH — launcher skipped; MCP and model routing configured
+codex binary not found in PATH - launcher skipped; MCP and model routing configured
 ```
 
 Install the binary (or fix `PATH`) and re-run `preloop agents onboard <agent>`.
@@ -56,7 +58,7 @@ Install the binary (or fix `PATH`) and re-run `preloop agents onboard <agent>`.
 Agents installed on the Windows side are not on the WSL `PATH`. The CLI prints this hint when it detects WSL:
 
 ```text
-Running under WSL: agents installed on Windows are not on the WSL PATH — install the agent inside WSL or add its Windows install dir to PATH.
+Running under WSL: agents installed on Windows are not on the WSL PATH - install the agent inside WSL or add its Windows install dir to PATH.
 ```
 
 Prefer installing the agents inside WSL; mixing Windows binaries with a WSL-side Preloop CLI leaves the launcher step permanently skipped.

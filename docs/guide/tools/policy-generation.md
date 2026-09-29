@@ -1,5 +1,7 @@
 # Policy Generation
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Generate Preloop policy YAML using AI from natural-language descriptions or historical audit-log patterns.
 
 ---
@@ -9,7 +11,7 @@ Generate Preloop policy YAML using AI from natural-language descriptions or hist
 Instead of writing policy YAML by hand, you can describe what you want in plain English and let an AI model generate a valid policy for you. You can also generate policies based on your actual tool usage patterns from audit logs.
 
 !!! info "Requirements"
-    At least one AI model must be configured in your Preloop account (Settings → AI Models).
+    At least one AI model must be configured in your Preloop account (**Models > Add model**).
 
 ---
 
@@ -94,12 +96,12 @@ preloop agents starter-policy github --apply --dry-run # validate only
 
 ## Web UI Usage
 
-1. Navigate to **Tools** → click **Generate Policy** button
-2. Choose **From Description** or **From Audit Logs** tab
-3. Enter your prompt or select date range
+1. Open **Policies** and click **Describe a change**
+2. Choose the **From Description** or **From Audit Logs** tab
+3. Enter your prompt, or pick an optional start and end date
 4. Click **Generate**
-5. Review the generated YAML
-6. Click **Apply Policy** to activate it
+5. Review the generated YAML and its diff against the live policy (**Download** saves it as a file)
+6. Click **Save**, review the changes, and click **Apply changes** to activate it
 
 ---
 

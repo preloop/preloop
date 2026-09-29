@@ -1,5 +1,7 @@
 # Flow Triggers
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Complete reference for all flow trigger types and their event payloads.
 
 ---
@@ -8,12 +10,11 @@ Complete reference for all flow trigger types and their event payloads.
 
 Flows can be triggered by:
 
-1. **Webhooks** - HTTP POST from any service
-2. **GitHub Events** - PR, issue, push, release events
-3. **GitLab Events** - MR, issue, pipeline events
-4. **Jira Events** - Issue and comment events
-
-Schedule/cron triggers are not yet available.
+1. **Webhooks**: HTTP POST from any service
+2. **GitHub Events**: PR, issue, push, release events
+3. **GitLab Events**: MR, issue, pipeline events
+4. **Jira Events**: issue and comment events
+5. **Schedules**: an interval, a daily or weekly time, or a cron expression
 
 A tracker-triggered flow can subscribe to multiple event types at once (`trigger_event_types` is an array), for example, both `issue_opened` and `issue_updated`.
 
@@ -130,6 +131,36 @@ Severity: {{trigger_event.payload.severity}}
 Server: {{trigger_event.payload.server.hostname}}
 Error: {{trigger_event.payload.details.error}}
 ```
+
+---
+
+## Schedule Triggers
+
+In the flow form, choose **Trigger type > Schedule**. **Repeats** offers
+**Interval** (every N minutes, hours or days), **Daily** and **Weekly** (days
+and an **At time**); the **Advanced: cron expression** switch takes a 5-field
+crontab such as `0 9 * * mon-fri`. Every schedule has a **Timezone**, and the
+form previews the next run times.
+
+Rules:
+
+- Two runs of the same flow are at least 5 minutes apart and at most 366 days apart.
+- A tick is skipped while a previous run of the flow is still in progress.
+- Paused (disabled) flows do not fire.
+
+Through the API, set `trigger_event_source: "schedule"` and a
+`schedule_config`, one of:
+
+```json
+{"type": "interval", "every": 30, "unit": "minutes", "timezone": "UTC"}
+{"type": "daily", "at": "09:00", "timezone": "Europe/Athens"}
+{"type": "weekly", "days": ["mon", "thu"], "at": "09:00", "timezone": "UTC"}
+{"type": "cron", "expr": "0 9 * * mon-fri", "timezone": "UTC"}
+```
+
+A schedule can carry a static `payload` that is merged into every run. Each
+run's `trigger_event.payload` also has `schedule` (the schedule in words),
+`timezone` and `scheduled_at` (UTC, ISO 8601).
 
 ---
 

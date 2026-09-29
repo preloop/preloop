@@ -1,5 +1,7 @@
 # Multi-Channel Notifications
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 After reading this page you can route a workflow's approval requests to Slack, Mattermost, or a webhook, and set per-user email and mobile push preferences so approvers get pinged where they actually are.
 
 !!! info "Edition notes"
@@ -27,7 +29,7 @@ Delivery is mobile-first:
 
 ## Per-User Preferences
 
-Each user configures three settings in **Settings** → **Notifications**:
+Each user configures three settings in **Settings > Notifications**:
 
 | Setting | Values | Description |
 |---------|--------|-------------|
