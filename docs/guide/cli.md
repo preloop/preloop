@@ -17,7 +17,7 @@ The installer downloads the release binary for your OS/arch from GitHub Releases
 | `PRELOOP_VERSION` | Pin a specific release instead of the latest |
 | `INSTALL_DIR` | Override the install directory |
 | `PRELOOP_CONFIRM` | Truthy (`1`, `y`, `yes`, `true`, `on`): accept all prompts, for provisioning scripts, devcontainers, CI |
-| `PRELOOP_DISABLE_TELEMETRY` | `true`: no version check-ins, no conversion events, no update notices, set this on every test or CI run |
+| `PRELOOP_DISABLE_TELEMETRY` | `true`: no version check-ins, no conversion events, no update notices. Set this on every test or CI run |
 
 Pre-built binaries are also on [GitHub Releases](https://github.com/preloop/preloop/releases), or build from source with `make install` in `cli/`.
 

@@ -27,7 +27,7 @@ In the console, open **Audit → Sessions**, pick a session, and switch to the *
 
 ### 1. Analyze
 
-`POST /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations` (requires the `view_cost` permission) inspects the session's captured gateway traffic and produces a context profile: cache behavior, retry waste, oversized tool outputs, tools that were advertised but never invoked, plus actionable suggestions.
+`POST /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations` (requires the `view_cost` permission) inspects the session's captured gateway traffic and produces a context profile (cache behavior, retry waste, oversized tool outputs, tools that were advertised but never invoked) plus actionable suggestions.
 
 Two analysis modes, chosen automatically:
 

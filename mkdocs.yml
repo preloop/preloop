@@ -20,15 +20,10 @@ theme:
     - content.code.annotate
     - content.tabs.link
     - content.action.edit
+  # Dark only: docs/stylesheets/extra.css and the Redoc theme in
+  # docs/guide/api.md hardcode dark colours.
   palette:
-    - scheme: slate
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
-    - scheme: default
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
+    scheme: slate
   icon:
     repo: fontawesome/brands/github
   font:

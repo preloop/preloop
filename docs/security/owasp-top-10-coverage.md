@@ -21,7 +21,7 @@ Rules this page follows:
   under **Polarity**.
 - Preloop is not a certification, a conformity assessment, or legal advice.
 
-Editions: **OSS** is the Apache-2.0 repository. **Cloud** and **Enterprise** add users,
+Edition labels used below: **OSS** is the Apache-2.0 repository. **Cloud** and **Enterprise** add users,
 teams, RBAC, multi-approver workflows and AI-driven approvals. Unless stated
 otherwise, a control below ships in OSS.
 

@@ -7,9 +7,10 @@ complement the diff-scoped [Pull Request Reviewer preset](pull-request-review.md
 on every change and stays cheap; these run rarely (per release, on a
 schedule, or on demand), sample the repository deterministically, and
 declare exactly what they covered. Each run is a single execution that
-ends by writing `/workspace/result.json` with a versioned schema: captured as a first-class execution artifact and retrievable via
-`GET /api/v1/flows/executions/{execution_id}/result`: plus a
-human-readable evidence pack under `/workspace/evidence/`.
+ends by writing `/workspace/result.json` with a versioned schema, plus a
+human-readable evidence pack under `/workspace/evidence/`. Preloop captures
+`result.json` as a first-class execution artifact, retrievable via
+`GET /api/v1/flows/executions/{execution_id}/result`.
 
 | Preset | Lens | result.json schema |
 | --- | --- | --- |
@@ -39,8 +40,8 @@ disable one lens without touching the others.
 vulnerability matching, secrets hygiene, and CI hardening belong to the
 [security audit presets](security-audit-presets.md) (referenced, not
 duplicated). If a review pass trips over something security-shaped, it
-files one referral finding pointing at that family: a `file:line`
-pointer only, never a secret value, and moves on. The Standards
+files one referral finding pointing at that family (a `file:line` pointer
+only, never a secret value) and moves on. The Standards
 Compliance Walk marks security rows of a named standard
 `covered_elsewhere: release-security-audit` instead of re-checking them.
 
@@ -192,8 +193,8 @@ project under review is one directory of a larger repository (everything
 read, searched, and claimed is scoped to that subtree; `docs_paths`
 overrides document discovery). It extracts claims from the project's
 documentation and checks each one against the code. **Five checkable
-claim types only**: `entry_point`, `service`, `dependency`, `env_var`,
-`command`: because a sixth would turn the lens into a prose critic.
+claim types only** (`entry_point`, `service`, `dependency`, `env_var`,
+`command`), because a sixth would turn the lens into a prose critic.
 Everything else a document says is out of scope: no finding about
 writing quality, tone, structure, or completeness is ever emitted, and
 missing documentation is not drift (a claim that was never made cannot

@@ -2,7 +2,7 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
-After reading this page you can write approval conditions that only trigger when a tool call's arguments match: `deploy` needs approval for production but not staging, `pay` needs approval above $1000, and test those conditions before saving them.
+After reading this page you can write approval conditions that only trigger when a tool call's arguments match (for example, `deploy` needs approval for production but not staging, and `pay` needs approval above $1000), and test those conditions before saving them.
 
 Both condition types are evaluated by the open-source server. Cloud and Enterprise add a syntax check that rejects invalid CEL when a policy is uploaded; on OSS, an invalid CEL expression surfaces when it is evaluated.
 

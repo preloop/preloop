@@ -62,7 +62,9 @@ Editions: OSS, Cloud, Enterprise. The reference below is the OpenAPI schema serv
     );
   }
 </script>
-<script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js" onload="initRedoc()"> </script>
+<script src="https://cdn.jsdelivr.net/npm/redoc@2.5.4/bundles/redoc.standalone.js"
+        integrity="sha384-w447zOpYfw/1Tv/5AK9NfHTlQIqE3RVR6KY62jCyy9zNDgO64cMwGGP1Fj0zJVf5"
+        crossorigin="anonymous" onload="initRedoc()"></script>
 
 <style>
   #redoc-container {
