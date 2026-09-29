@@ -1,0 +1,62 @@
+# Documentation site for docs.preloop.ai. Build: mkdocs build --strict
+site_name: Preloop Documentation
+site_url: https://docs.preloop.ai/
+repo_url: https://github.com/preloop/preloop
+repo_name: preloop/preloop
+edit_uri: edit/main/docs/
+docs_dir: docs
+
+theme:
+  name: material
+  logo: assets/preloop-badge.svg
+  favicon: assets/favicon.png
+  features:
+    - navigation.sections
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+  palette:
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: Fira Code
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mermaid2

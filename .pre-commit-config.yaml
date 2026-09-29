@@ -10,9 +10,9 @@ repos:
     -   id: trailing-whitespace
     -   id: end-of-file-fixer
     -   id: check-yaml
-        exclude: ^(helm/|scripts/examples/helm)
+        exclude: ^(helm/|scripts/examples/helm|mkdocs\.yml$)
     -   id: check-added-large-files
-        exclude: frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp
+        exclude: ^(frontend/public/assets/screenshots/quickstart/dark/agents-onboarding\.webp|docs/assets/animations/quickstart/dark/agents-onboarding\.webp)$
     -   id: debug-statements
     -   id: check-toml
 
