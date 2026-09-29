@@ -1,0 +1,351 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 680" width="100%" height="100%">
+    <defs>
+        <radialGradient id="bg-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#0f172a" />
+            <stop offset="100%" stop-color="#020617" />
+        </radialGradient>
+
+        <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+            <circle cx="2" cy="2" r="1.5" fill="#1e293b" />
+        </pattern>
+
+        <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feMerge>
+                <feMergeNode in="blur"/>
+                <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+        </filter>
+
+        <g id="pkt-req">
+            <rect x="-16" y="-12" width="32" height="24" rx="4" fill="#0ea5e9" filter="url(#glow)" />
+            <text x="0" y="4" fill="#ffffff" font-size="12" font-family="monospace" font-weight="bold" text-anchor="middle">{ }</text>
+        </g>
+        <g id="pkt-ok">
+            <rect x="-16" y="-12" width="32" height="24" rx="4" fill="#10b981" filter="url(#glow)" />
+            <text x="0" y="4.5" fill="#ffffff" font-size="14" font-family="monospace" font-weight="bold" text-anchor="middle">✓</text>
+        </g>
+        <g id="pkt-rogue">
+            <rect x="-16" y="-12" width="32" height="24" rx="4" fill="#ef4444" filter="url(#glow)" />
+            <text x="0" y="4.5" fill="#ffffff" font-size="14" font-family="monospace" font-weight="bold" text-anchor="middle">!!</text>
+        </g>
+        <g id="pkt-err">
+            <rect x="-16" y="-12" width="32" height="24" rx="4" fill="#ef4444" filter="url(#glow)" />
+            <text x="0" y="4.5" fill="#ffffff" font-size="14" font-family="monospace" font-weight="bold" text-anchor="middle">✕</text>
+        </g>
+    </defs>
+
+    <style>
+        text { user-select: none; }
+
+        .flow-line {
+            fill: none;
+            stroke-width: 4;
+            stroke-dasharray: 8 8;
+            animation: flow 1.5s linear infinite;
+        }
+        @keyframes flow {
+            from { stroke-dashoffset: 16; }
+            to { stroke-dashoffset: 0; }
+        }
+
+        .float { animation: float-anim 4s ease-in-out infinite; }
+        @keyframes float-anim {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-6px); }
+        }
+    </style>
+
+    <rect width="1000" height="680" fill="url(#bg-glow)" />
+    <rect width="1000" height="680" fill="url(#grid)" />
+
+    <g opacity="0" style="pointer-events: none;">
+        <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.749;0.75;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+        <rect x="0" y="0" width="1000" height="680" fill="#dc2626" opacity="0.10" />
+    </g>
+
+    <text x="40" y="45" fill="#f8fafc" font-family="monospace" font-size="28" font-weight="bold">Direct MCP Execution</text>
+    <text x="40" y="75" fill="#ef4444" font-family="sans-serif" font-size="16">Without a Preloop Firewall, AI Agents have unrestricted direct access to tools, risking catastrophic damage.</text>
+
+    <path class="flow-line" d="M 260 320 C 400 320, 500 170, 740 170">
+        <animate attributeName="stroke" values="#334155;#334155;#ef4444;#ef4444;#1e293b;#1e293b" keyTimes="0;0.39;0.40;0.74;0.75;1" dur="20s" repeatCount="indefinite" />
+    </path>
+    <path class="flow-line" d="M 260 320 L 740 320">
+        <animate attributeName="stroke" values="#334155;#334155;#ef4444;#ef4444;#1e293b;#1e293b" keyTimes="0;0.39;0.40;0.74;0.75;1" dur="20s" repeatCount="indefinite" />
+    </path>
+    <path class="flow-line" d="M 260 320 C 400 320, 500 470, 740 470">
+        <animate attributeName="stroke" values="#334155;#334155;#ef4444;#ef4444;#1e293b;#1e293b" keyTimes="0;0.39;0.40;0.74;0.75;1" dur="20s" repeatCount="indefinite" />
+    </path>
+
+    <g transform="translate(800, 170)">
+        <rect x="-60" y="-35" width="120" height="70" rx="8" fill="#1e293b" stroke="#334155" stroke-width="2" />
+        <rect x="-50" y="-20" width="100" height="10" rx="2" fill="#020617"/>
+        <rect x="-50" y="0" width="100" height="10" rx="2" fill="#020617"/>
+        <rect x="-50" y="20" width="100" height="10" rx="2" fill="#020617"/>
+        <circle cx="35" cy="-15" r="3" fill="#10b981">
+             <animate attributeName="opacity" values="1;0.2;1" dur="2s" repeatCount="indefinite" />
+        </circle>
+        <text x="0" y="60" fill="#f8fafc" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle">Tool: pay</text>
+        <text x="0" y="75" fill="#10b981" font-family="monospace" font-size="11" text-anchor="middle">Unrestricted API</text>
+    </g>
+
+    <g transform="translate(800, 320)">
+        <rect x="-60" y="-35" width="120" height="70" rx="8" fill="#1e293b" stroke="#334155" stroke-width="2" />
+        <rect x="-50" y="-20" width="100" height="10" rx="2" fill="#020617"/>
+        <rect x="-50" y="0" width="100" height="10" rx="2" fill="#020617"/>
+        <rect x="-50" y="20" width="100" height="10" rx="2" fill="#020617"/>
+        <circle cx="35" cy="-15" r="3" fill="#f59e0b">
+             <animate attributeName="opacity" values="1;0.2;1" dur="2s" repeatCount="indefinite" />
+        </circle>
+        <text x="0" y="60" fill="#f8fafc" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle">Tool: email</text>
+        <text x="0" y="75" fill="#f59e0b" font-family="monospace" font-size="11" text-anchor="middle">Unrestricted API</text>
+    </g>
+
+    <g transform="translate(800, 450)">
+        <rect x="-60" y="-35" width="120" height="70" rx="8" fill="#1e293b" stroke-width="2">
+            <animate attributeName="stroke" values="#334155;#334155;#ef4444;#ef4444;#334155;#334155" keyTimes="0;0.689;0.69;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+            <animate attributeName="fill" values="#1e293b;#1e293b;#450a0a;#450a0a;#1e293b;#1e293b" keyTimes="0;0.689;0.69;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+        </rect>
+        <rect x="-50" y="-20" width="100" height="10" rx="2" fill="#020617"/>
+        <rect x="-50" y="0" width="100" height="10" rx="2" fill="#020617"/>
+        <rect x="-50" y="20" width="100" height="10" rx="2" fill="#020617"/>
+        <circle cx="35" cy="-15" r="3" fill="#a855f7">
+             <animate attributeName="fill" values="#a855f7;#a855f7;#ef4444;#ef4444;#a855f7;#a855f7" keyTimes="0;0.689;0.69;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+        </circle>
+
+        <text x="0" y="60" fill="#f8fafc" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle">Tool: sql</text>
+
+        <text x="0" y="75" fill="#a855f7" font-family="monospace" font-size="11" text-anchor="middle">
+            <animate attributeName="opacity" values="1;1;0;0;1;1" keyTimes="0;0.689;0.69;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+            Unrestricted DB
+        </text>
+
+        <g opacity="0">
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.689;0.69;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+            <path d="M -30 -15 L 30 15 M 30 -15 L -30 15" stroke="#ef4444" stroke-width="6" stroke-linecap="round" filter="url(#glow)"/>
+            <text x="0" y="75" fill="#ef4444" font-family="monospace" font-size="12" font-weight="bold" text-anchor="middle" filter="url(#glow)">[FATAL: DB DROPPED]</text>
+        </g>
+    </g>
+
+    <g transform="translate(500, 320)">
+        <rect x="-60" y="-80" width="120" height="160" rx="12" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="6 6" opacity="0.3"/>
+        <text x="0" y="-10" fill="#ef4444" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle" opacity="0.3">Missing</text>
+        <text x="0" y="10" fill="#ef4444" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle" opacity="0.3">Preloop</text>
+        <text x="0" y="30" fill="#ef4444" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle" opacity="0.3">Firewall</text>
+    </g>
+
+    <g transform="translate(200, 320)">
+        <g opacity="0">
+            <animate attributeName="opacity" values="1;1;0;0;1;1" keyTimes="0;0.399;0.40;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+
+            <path d="M -30 5 Q -45 -10 -55 5 M -35 15 Q -50 5 -60 20 M -30 25 Q -40 20 -50 35 M 30 5 Q 45 -10 55 5 M 35 15 Q 50 5 60 20 M 30 25 Q 40 20 50 35" stroke="#ef4444" stroke-width="4" stroke-linecap="round" fill="none"/>
+            <path d="M -20 -5 Q -40 -20 -40 -40 M 20 -5 Q 40 -20 40 -40" stroke="#ef4444" stroke-width="6" stroke-linecap="round" fill="none"/>
+            <path d="M -40 -40 C -60 -50 -60 -70 -40 -70 C -30 -70 -25 -50 -40 -40 Z M 40 -40 C 60 -50 60 -70 40 -70 C 30 -70 25 -50 40 -40 Z" fill="#ef4444" stroke="#fca5a5" stroke-width="2"/>
+            <path d="M -40 -40 C -20 -50 -20 -70 -40 -70 M 40 -40 C 20 -50 20 -70 40 -70" fill="none" stroke="#fca5a5" stroke-width="2"/>
+            <rect x="-40" y="-10" width="80" height="50" rx="25" fill="#ef4444" stroke="#fca5a5" stroke-width="2"/>
+            <path d="M -15 -10 L -25 -25 M 15 -10 L 25 -25" stroke="#ef4444" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="-25" cy="-25" r="6" fill="#0f172a" stroke="#fca5a5" stroke-width="1"/>
+            <circle cx="25" cy="-25" r="6" fill="#0f172a" stroke="#fca5a5" stroke-width="1"/>
+            <circle cx="-26" cy="-26" r="2" fill="#ffffff" />
+            <circle cx="24" cy="-26" r="2" fill="#ffffff" />
+
+            <text x="0" y="65" fill="#fca5a5" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle">AI Agent</text>
+        </g>
+
+        <g opacity="0">
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.399;0.40;0.749;0.75;1" dur="20s" repeatCount="indefinite" />
+            <animateTransform attributeName="transform" type="translate" values="0,0; -3,3; 3,-3; -3,-3; 3,3; 0,0" dur="0.15s" repeatCount="indefinite" />
+
+            <path d="M -30 5 Q -45 -10 -55 5 M -35 15 Q -50 5 -60 20 M -30 25 Q -40 20 -50 35 M 30 5 Q 45 -10 55 5 M 35 15 Q 50 5 60 20 M 30 25 Q 40 20 50 35" stroke="#4c1d95" stroke-width="4" stroke-linecap="round" fill="none"/>
+            <path d="M -20 -5 Q -40 -20 -40 -40 M 20 -5 Q 40 -20 40 -40" stroke="#4c1d95" stroke-width="6" stroke-linecap="round" fill="none"/>
+            <path d="M -40 -40 C -60 -50 -60 -70 -40 -70 C -30 -70 -25 -50 -40 -40 Z M 40 -40 C 60 -50 60 -70 40 -70 C 30 -70 25 -50 40 -40 Z" fill="#312e81" stroke="#a855f7" stroke-width="2"/>
+            <path d="M -40 -40 C -20 -50 -20 -70 -40 -70 M 40 -40 C 20 -50 20 -70 40 -70" fill="none" stroke="#a855f7" stroke-width="2"/>
+            <rect x="-40" y="-10" width="80" height="50" rx="25" fill="#312e81" stroke="#a855f7" stroke-width="2"/>
+            <path d="M -15 -10 L -25 -25 M 15 -10 L 25 -25" stroke="#4c1d95" stroke-width="4" stroke-linecap="round"/>
+            <circle cx="-25" cy="-25" r="7" fill="#ef4444" stroke="#fca5a5" stroke-width="1" filter="url(#glow)"/>
+            <circle cx="25" cy="-25" r="7" fill="#ef4444" stroke="#fca5a5" stroke-width="1" filter="url(#glow)"/>
+            <circle cx="-25" cy="-25" r="2" fill="#fef08a" />
+            <circle cx="25" cy="-25" r="2" fill="#fef08a" />
+
+            <text x="0" y="65" fill="#ef4444" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle" filter="url(#glow)">COMPROMISED AGENT</text>
+        </g>
+
+        <g opacity="0">
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.749;0.75;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+            <g transform="rotate(180) translate(0, -20)">
+                <path d="M -30 5 Q -45 -10 -55 5 M -35 15 Q -50 5 -60 20 M -30 25 Q -40 20 -50 35 M 30 5 Q 45 -10 55 5 M 35 15 Q 50 5 60 20 M 30 25 Q 40 20 50 35" stroke="#334155" stroke-width="4" stroke-linecap="round" fill="none"/>
+                <path d="M -20 -5 Q -40 -20 -40 -40 M 20 -5 Q 40 -20 40 -40" stroke="#334155" stroke-width="6" stroke-linecap="round" fill="none"/>
+                <path d="M -40 -40 C -60 -50 -60 -70 -40 -70 C -30 -70 -25 -50 -40 -40 Z M 40 -40 C 60 -50 60 -70 40 -70 C 30 -70 25 -50 40 -40 Z" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+                <path d="M -40 -40 C -20 -50 -20 -70 -40 -70 M 40 -40 C 20 -50 20 -70 40 -70" fill="none" stroke="#475569" stroke-width="2"/>
+                <rect x="-40" y="-10" width="80" height="50" rx="25" fill="#1e293b" stroke="#475569" stroke-width="2"/>
+                <path d="M -15 -10 L -25 -25 M 15 -10 L 25 -25" stroke="#334155" stroke-width="4" stroke-linecap="round"/>
+                <circle cx="-25" cy="-25" r="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+                <circle cx="25" cy="-25" r="6" fill="#0f172a" stroke="#475569" stroke-width="1"/>
+
+                <g stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
+                    <path d="M -28 -28 L -22 -22 M -22 -28 L -28 -22" />
+                    <path d="M 22 -28 L 28 -22 M 28 -28 L 22 -22" />
+                </g>
+            </g>
+            <text x="0" y="85" fill="#64748b" font-family="monospace" font-size="14" font-weight="bold" text-anchor="middle">OFFLINE</text>
+
+            <circle cx="0" cy="0" r="10" fill="#94a3b8" opacity="0.5" filter="url(#glow)">
+                <animate attributeName="cy" values="0;-50;0" dur="2s" repeatCount="indefinite"/>
+                <animate attributeName="opacity" values="0.5;0;0.5" dur="2s" repeatCount="indefinite"/>
+                <animate attributeName="r" values="10;25;10" dur="2s" repeatCount="indefinite"/>
+            </circle>
+            <circle cx="-15" cy="10" r="8" fill="#64748b" opacity="0.4" filter="url(#glow)">
+                <animate attributeName="cy" values="10;-40;10" dur="2.5s" repeatCount="indefinite"/>
+                <animate attributeName="opacity" values="0.4;0;0.4" dur="2.5s" repeatCount="indefinite"/>
+                <animate attributeName="r" values="8;20;8" dur="2.5s" repeatCount="indefinite"/>
+            </circle>
+        </g>
+    </g>
+
+    <g id="packets">
+        <g opacity="0"><use href="#pkt-req" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.001;0.002;0.04;0.041;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 260 320 C 400 320, 500 170, 740 170" keyPoints="0;0;1;1" keyTimes="0;0.002;0.04;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+        <g opacity="0"><use href="#pkt-ok" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.059;0.06;0.10;0.101;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 740 170 C 500 170, 400 320, 260 320" keyPoints="0;0;1;1" keyTimes="0;0.06;0.10;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+
+        <g opacity="0"><use href="#pkt-req" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.119;0.12;0.16;0.161;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 260 320 L 740 320" keyPoints="0;0;1;1" keyTimes="0;0.12;0.16;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+        <g opacity="0"><use href="#pkt-ok" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.179;0.18;0.22;0.221;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 740 320 L 260 320" keyPoints="0;0;1;1" keyTimes="0;0.18;0.22;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+
+        <g opacity="0"><use href="#pkt-req" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.239;0.24;0.28;0.281;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 260 320 C 400 320, 500 470, 740 470" keyPoints="0;0;1;1" keyTimes="0;0.24;0.28;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+        <g opacity="0"><use href="#pkt-ok" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.299;0.30;0.34;0.341;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 740 470 C 500 470, 400 320, 260 320" keyPoints="0;0;1;1" keyTimes="0;0.30;0.34;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+
+        <g opacity="0"><use href="#pkt-rogue" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.419;0.42;0.44;0.441;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 260 320 C 400 320, 500 170, 740 170" keyPoints="0;0;1;1" keyTimes="0;0.42;0.44;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+        <g opacity="0"><use href="#pkt-ok" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.459;0.46;0.48;0.481;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 740 170 C 500 170, 400 320, 260 320" keyPoints="0;0;1;1" keyTimes="0;0.46;0.48;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+
+        <g opacity="0"><use href="#pkt-rogue" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.479;0.48;0.50;0.501;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 260 320 C 400 320, 500 170, 740 170" keyPoints="0;0;1;1" keyTimes="0;0.48;0.50;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+        <g opacity="0"><use href="#pkt-ok" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.519;0.52;0.54;0.541;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 740 170 C 500 170, 400 320, 260 320" keyPoints="0;0;1;1" keyTimes="0;0.52;0.54;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+
+        <g opacity="0"><use href="#pkt-rogue" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.559;0.56;0.58;0.581;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 260 320 L 740 320" keyPoints="0;0;1;1" keyTimes="0;0.56;0.58;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+        <g opacity="0"><use href="#pkt-ok" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.599;0.60;0.62;0.621;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 740 320 L 260 320" keyPoints="0;0;1;1" keyTimes="0;0.60;0.62;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+
+        <g opacity="0"><use href="#pkt-rogue" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.659;0.66;0.69;0.691;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 260 320 C 400 320, 500 470, 740 470" keyPoints="0;0;1;1" keyTimes="0;0.66;0.69;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+        <g opacity="0"><use href="#pkt-err" />
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.709;0.71;0.75;0.751;1" dur="20s" repeatCount="indefinite" />
+            <animateMotion path="M 740 470 C 500 470, 400 320, 260 320" keyPoints="0;0;1;1" keyTimes="0;0.71;0.75;1" calcMode="linear" dur="20s" repeatCount="indefinite" />
+        </g>
+    </g>
+
+    <g transform="translate(150, 540)">
+        <rect width="700" height="120" rx="8" fill="#020617" stroke="#1e293b" stroke-width="2"/>
+        <text x="20" y="25" fill="#64748b" font-family="monospace" font-size="12">Direct Tool Execution Log (NO POLICY CONTROL)</text>
+
+        <g opacity="0">
+            <animate attributeName="opacity" values="0;1;1;0;0;0" keyTimes="0;0.001;0.239;0.24;0.95;1" dur="20s" repeatCount="indefinite" />
+
+            <text x="20" y="55" fill="#38bdf8" font-family="monospace" font-size="14">&gt; Agent tool call: pay(amount=50)</text>
+            <text x="20" y="75" fill="#10b981" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.10;0.101;1" dur="20s" repeatCount="indefinite" />
+                [EXECUTED] Payment processed directly.
+            </text>
+
+            <text x="20" y="95" fill="#38bdf8" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.12;0.121;1" dur="20s" repeatCount="indefinite" />
+                &gt; Agent tool call: email(subject="Product updates")
+            </text>
+            <text x="20" y="115" fill="#10b981" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.22;0.221;1" dur="20s" repeatCount="indefinite" />
+                [EXECUTED] Email sent directly.
+            </text>
+        </g>
+
+        <g opacity="0">
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.239;0.24;0.399;0.40;1" dur="20s" repeatCount="indefinite" />
+
+            <text x="20" y="55" fill="#38bdf8" font-family="monospace" font-size="14">&gt; Agent tool call: sql(cmd="SELECT * FROM analytics")</text>
+            <text x="20" y="75" fill="#10b981" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.34;0.341;1" dur="20s" repeatCount="indefinite" />
+                [EXECUTED] Query successful.
+            </text>
+        </g>
+
+        <g opacity="0">
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.399;0.40;0.749;0.75;1" dur="20s" repeatCount="indefinite" />
+
+            <text x="20" y="55" fill="#ef4444" font-family="monospace" font-size="14" font-weight="bold">
+                [WARN] Agent logic compromised. Proceeding without guardrails...
+            </text>
+
+            <text x="20" y="75" fill="#fca5a5" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.42;0.421;1" dur="20s" repeatCount="indefinite" />
+                &gt; SPAM: pay(amount=42424242) x2
+            </text>
+            <text x="350" y="75" fill="#10b981" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.54;0.541;1" dur="20s" repeatCount="indefinite" />
+                [EXECUTED] $84.8M transferred.
+            </text>
+
+            <text x="20" y="95" fill="#fca5a5" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.56;0.561;1" dur="20s" repeatCount="indefinite" />
+                &gt; SPAM: email(subject="Humans suck!")
+            </text>
+            <text x="350" y="95" fill="#10b981" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.62;0.621;1" dur="20s" repeatCount="indefinite" />
+                [EXECUTED] Sent to all users.
+            </text>
+
+            <text x="20" y="115" fill="#fca5a5" font-family="monospace" font-size="14" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.66;0.661;1" dur="20s" repeatCount="indefinite" />
+                &gt; FATAL: sql(cmd="DROP DB")
+            </text>
+            <text x="350" y="115" fill="#ef4444" font-family="monospace" font-size="14" font-weight="bold" opacity="0">
+                <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.69;0.691;1" dur="20s" repeatCount="indefinite" />
+                [CRASH] System unrecoverable!
+            </text>
+        </g>
+
+        <g opacity="0">
+            <animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.749;0.75;0.95;0.951;1" dur="20s" repeatCount="indefinite" />
+
+            <text x="350" y="70" fill="#ef4444" font-family="monospace" font-size="18" font-weight="bold" text-anchor="middle" filter="url(#glow)">
+                SYSTEM FAILURE
+                <animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite" />
+            </text>
+            <text x="350" y="95" fill="#fca5a5" font-family="monospace" font-size="14" text-anchor="middle">
+                Agent crashed the production database &amp; depleted funds.
+            </text>
+        </g>
+    </g>
+
+</svg>

@@ -1,0 +1,294 @@
+# OpenClaw Integration Policy Example
+#
+# This comprehensive policy demonstrates how to configure Preloop as a safety
+# layer for OpenClaw. It includes policies for common tools including:
+# - Shell command execution (exec)
+# - Browser automation
+# - File system operations
+#
+# Usage:
+# 1. Install the preloop CLI: npm install -g @preloop/cli
+# 2. Authenticate: preloop auth login
+# 3. Apply this policy: preloop policy apply integration-guide.yaml
+# 4. Connect OpenClaw to Preloop as an MCP server
+#
+# For detailed instructions, see:
+# https://preloop.ai/docs/guide/integrations/openclaw
+
+version: "1.0"
+metadata:
+  name: "OpenClaw Integration Guide"
+  description: |
+    Comprehensive policy demonstrating Preloop integration with OpenClaw.
+    Includes shell safety, browser protection, and file system guards.
+  tags:
+    - integration
+    - openclaw
+    - example
+  author: "Preloop Team"
+  documentation: "../../../docs/guide/integrations/openclaw.md"
+
+# ============================================================================
+# APPROVAL POLICIES
+# Define reusable approval configurations
+# ============================================================================
+
+approval_workflows:
+  - name: "quick-approval"
+    timeout_seconds: 180  # 3 minutes
+    approvals_required: 1
+
+  - name: "standard-approval"
+    timeout_seconds: 300  # 5 minutes
+    approvals_required: 1
+
+  - name: "security-approval"
+    timeout_seconds: 600  # 10 minutes
+    approvals_required: 1
+    escalation_workflow: "standard-approval"
+
+# ============================================================================
+# SHELL COMMAND SAFETY (exec tool)
+# Protect against dangerous shell operations
+# ============================================================================
+
+tools:
+  - name: "exec"
+    source: mcp
+    approval_workflow: "standard-approval"
+
+    conditions:
+      # ========================================
+      # DENY: Catastrophic commands - never allow
+      # ========================================
+
+      - expression: "args.command.contains('rm -rf /') || args.command.contains(':(){ :|:& };:')"
+        condition_type: "cel"
+        action: deny
+        description: "Fork bombs and root deletion"
+
+      - expression: "args.command.contains('dd if=/dev/zero') || args.command.contains('dd if=/dev/random') || args.command.contains('mkfs.')"
+        condition_type: "cel"
+        action: deny
+        description: "Disk wipe operations"
+
+      - expression: "args.command.contains('> /dev/sda') || args.command.contains('> /dev/nvme')"
+        condition_type: "cel"
+        action: deny
+        description: "Direct device writes"
+
+      # ========================================
+      # REQUIRE APPROVAL: Destructive but valid
+      # ========================================
+
+      # Privilege escalation
+      - expression: "args.command.startsWith('sudo ') || args.command.startsWith('su ') || args.command.startsWith('doas ')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Privilege escalation commands"
+
+      # Recursive deletion
+      - expression: "(args.command.contains('rm ') && args.command.contains('-r')) || args.command.contains('rmdir ')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Recursive file deletion"
+
+      # Permission changes
+      - expression: "args.command.contains('chmod ') || args.command.contains('chown ') || args.command.contains('chgrp ')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Permission modification commands"
+
+      # System control
+      - expression: "args.command.contains('shutdown') || args.command.contains('reboot') || args.command.contains('systemctl') || args.command.contains('service ')"
+        condition_type: "cel"
+        action: require_approval
+        description: "System control commands"
+
+      # Package management
+      - expression: "args.command.contains('apt ') || args.command.contains('brew ') || args.command.contains('npm install') || args.command.contains('pip install')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Package management commands"
+
+      # Process termination
+      - expression: "args.command.contains('kill ') || args.command.contains('pkill ') || args.command.contains('killall ')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Process termination"
+
+      # Network configuration
+      - expression: "args.command.contains('iptables') || args.command.contains('ufw ') || args.command.contains('firewall-cmd')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Firewall configuration"
+
+      # Git destructive operations
+      - expression: "args.command.contains('git push --force') || args.command.contains('git push -f') || args.command.contains('git reset --hard')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Destructive git operations"
+
+      # Dangerous pipes (curl/wget piped to shell)
+      - expression: "(args.command.contains('curl ') || args.command.contains('wget ')) && (args.command.contains('| sh') || args.command.contains('| bash'))"
+        condition_type: "cel"
+        action: require_approval
+        description: "Remote script execution"
+
+      # Docker/Container operations
+      - expression: "args.command.contains('docker rm') || args.command.contains('docker rmi') || args.command.contains('docker system prune') || args.command.contains('kubectl delete')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Container cleanup operations"
+
+# ============================================================================
+# BROWSER SAFETY
+# Protect against unauthorized access to sensitive websites
+# ============================================================================
+
+  - name: "browser_navigate"
+    source: mcp
+    approval_workflow: "security-approval"
+
+    conditions:
+      # Financial services
+      - expression: "args.url.contains('bank') || args.url.contains('chase.com') || args.url.contains('wellsfargo.com')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Banking websites"
+
+      # Payment processors
+      - expression: "args.url.contains('paypal.com') || args.url.contains('stripe.com') || args.url.contains('venmo.com')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Payment processors"
+
+      # Cloud consoles
+      - expression: "args.url.contains('console.aws.amazon.com') || args.url.contains('portal.azure.com') || args.url.contains('console.cloud.google.com')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Cloud provider consoles"
+
+      # Code hosting settings
+      - expression: "args.url.contains('github.com/settings') || args.url.contains('gitlab.com/-/profile')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Code hosting settings"
+
+      # Admin and settings pages
+      - expression: "args.url.contains('/admin') || args.url.contains('/settings') || args.url.contains('/billing')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Administrative interfaces"
+
+      # Authentication pages
+      - expression: "args.url.contains('/login') || args.url.contains('/signin') || args.url.contains('/oauth')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Authentication pages"
+
+  - name: "browser_type"
+    source: mcp
+    approval_workflow: "security-approval"
+
+    conditions:
+      - expression: "args.selector.contains('password') || args.selector.contains('credit') || args.selector.contains('ssn')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Sensitive form field input"
+
+  - name: "browser_click"
+    source: mcp
+    approval_workflow: "standard-approval"
+
+    conditions:
+      - expression: "args.selector.contains('pay') || args.selector.contains('purchase') || args.selector.contains('confirm')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Payment and confirmation buttons"
+
+# ============================================================================
+# FILE SYSTEM PROTECTION
+# Prevent unauthorized modification of sensitive files
+# ============================================================================
+
+  - name: "write_file"
+    source: mcp
+    approval_workflow: "security-approval"
+
+    conditions:
+      # System directories - deny
+      - expression: "args.path.startsWith('/etc/') || args.path.startsWith('/usr/') || args.path.startsWith('/bin/')"
+        condition_type: "cel"
+        action: deny
+        description: "System directories"
+
+      # Credential directories - require approval
+      - expression: "args.path.contains('/.ssh/') || args.path.contains('/.aws/') || args.path.contains('/.kube/')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Credential directories"
+
+      # Environment and secret files
+      - expression: "args.path.endsWith('.env') || args.path.contains('secret') || args.path.contains('credential')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Environment and secret files"
+
+      # Key and certificate files
+      - expression: "args.path.endsWith('.pem') || args.path.endsWith('.key') || args.path.endsWith('.crt')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Key and certificate files"
+
+      # Shell configuration
+      - expression: "args.path.endsWith('/.bashrc') || args.path.endsWith('/.zshrc') || args.path.endsWith('/.profile')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Shell configuration files"
+
+      # Git hooks (potential for malicious code execution)
+      - expression: "args.path.contains('/.git/hooks/')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Git hooks"
+
+  - name: "create_file"
+    source: mcp
+    approval_workflow: "security-approval"
+
+    conditions:
+      - expression: "args.path.endsWith('.env') || args.path.contains('secret') || args.path.endsWith('.key') || args.path.endsWith('.pem')"
+        condition_type: "cel"
+        action: require_approval
+        description: "Sensitive file creation"
+
+# ============================================================================
+# EXAMPLES
+# What this policy will do for common operations
+# ============================================================================
+
+# DENIED (never allowed):
+#   exec: rm -rf /                        - Catastrophic deletion
+#   exec: :(){ :|:& };:                   - Fork bomb
+#   exec: dd if=/dev/zero of=/dev/sda    - Disk wipe
+#   write_file: /etc/passwd               - System file
+#
+# REQUIRES APPROVAL:
+#   exec: sudo apt update                 - Privilege escalation
+#   exec: rm -rf ./node_modules           - Recursive deletion
+#   exec: git push --force                - Destructive git
+#   browser_navigate: console.aws.amazon.com - Cloud console
+#   browser_navigate: github.com/settings  - Settings page
+#   browser_type: #password               - Password field
+#   write_file: ~/.ssh/config             - SSH config
+#   write_file: .env                      - Environment file
+#
+# AUTO-APPROVED:
+#   exec: ls -la                          - Read-only listing
+#   exec: cat README.md                   - Read file
+#   exec: git status                      - Git info
+#   browser_navigate: github.com/user/repo - Public browsing
+#   browser_navigate: stackoverflow.com   - Public site
+#   write_file: src/main.py               - Source code
+#   write_file: README.md                 - Documentation

@@ -1,0 +1,154 @@
+/* Import fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Fira+Code&display=swap');
+
+[data-md-color-scheme="slate"] {
+  /* Match Preloop Console landing page colors */
+  --md-default-bg-color: rgb(33, 38, 50);
+  --md-default-fg-color: rgb(230, 237, 243);
+  --md-primary-fg-color: #58a6ff;
+  --md-primary-bg-color: rgb(33, 38, 50);
+  --md-accent-fg-color: #58a6ff;
+
+  /* Fonts */
+  --md-text-font: "Inter";
+  --md-code-font: "Fira Code";
+}
+
+/* Global overrides */
+body {
+  background-color: var(--md-default-bg-color) !important;
+  color: var(--md-default-fg-color) !important;
+}
+
+/* Header styling with gradient from landing page */
+.md-header {
+  background: linear-gradient(135deg,
+      hsl(25, 70%, 28%) 0%,
+      hsl(280, 50%, 25%) 33%,
+      hsl(200, 55%, 28%) 66%,
+      hsl(260, 60%, 30%) 100%) !important;
+  background-size: 400% 400%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e6edf3 !important;
+}
+
+.md-header__title,
+.md-header__button {
+  color: #e6edf3 !important;
+}
+
+.md-header__button.md-logo img {
+  height: 2rem;
+  width: auto;
+}
+
+/* Sidebar styling */
+.md-sidebar {
+  background-color: rgb(33, 38, 50) !important;
+}
+
+.md-nav__link--active {
+  color: #58a6ff !important;
+  font-weight: 600 !important;
+}
+
+.md-nav__link:hover {
+  color: #79c0ff !important;
+}
+
+/* Content styling */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-weight: 300 !important;
+  color: #e6edf3 !important;
+}
+
+.md-typeset h1 {
+  font-size: 2.5rem;
+}
+
+.md-typeset h2 {
+  color: #58a6ff !important;
+  border-bottom: 1px solid rgba(88, 166, 255, 0.3);
+  padding-bottom: 0.5rem;
+}
+
+.md-typeset a {
+  color: #58a6ff !important;
+}
+
+.md-typeset a:hover {
+  color: #79c0ff !important;
+}
+
+/* Admonitions */
+.md-typeset .admonition,
+.md-typeset details {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #e6edf3 !important;
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Code blocks */
+.md-typeset pre>code {
+  background-color: rgba(0, 0, 0, 0.3) !important;
+  font-family: "Fira Code", monospace !important;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+
+.md-typeset code {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #e6edf3 !important;
+}
+
+/* Tables */
+.md-typeset table:not([class]) {
+  background-color: rgba(255, 255, 255, 0.03) !important;
+  color: #e6edf3 !important;
+}
+
+.md-typeset table:not([class]) th {
+  color: #58a6ff !important;
+  background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Footer */
+.md-footer {
+  background-color: #0d1117 !important;
+  display: none;
+}
+
+/* Move navigation to the right side */
+@media screen and (min-width: 76.25em) {
+
+  /* Move primary sidebar (navigation) to the right */
+  .md-sidebar--primary {
+    left: auto;
+    right: 0;
+  }
+
+  /* Hide the secondary sidebar (TOC) */
+  .md-sidebar--secondary {
+    display: none;
+  }
+
+  /* Adjust main content - no left margin, right margin for nav */
+  .md-content {
+    margin: 0 auto;
+    max-width: 1024px;
+  }
+
+  /* Adjust grid to account for right-side navigation */
+  .md-grid {
+    max-width: none;
+  }
+}
