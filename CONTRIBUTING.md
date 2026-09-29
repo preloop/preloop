@@ -46,6 +46,23 @@ The first line after the title is:
 These pages stay in `docs/guide/` with that banner. Moving them under
 `docs/design/` or `docs/findings/` is a separate change.
 
+## Documentation site
+
+docs.preloop.ai is built from this repository: `mkdocs.yml` at the root,
+pages under `docs/`. Preview and check a change with:
+
+```bash
+pip install --require-hashes -r requirements/docs.txt
+mkdocs serve             # http://127.0.0.1:8000
+mkdocs build --strict    # what CI runs
+```
+
+Every page has an `Editions:` line directly under its title. The default is
+"Unless stated otherwise, everything on this page ships in OSS". Wrap a
+paragraph that applies only to Cloud and Enterprise in a
+`!!! cloud "Cloud and Enterprise"` admonition. On a non-normative page the
+status banner comes first and the `Editions:` line follows it.
+
 ## Submitting Changes
 
 1. Fork the repository and create a feature branch.
