@@ -106,13 +106,15 @@ def _origin_matches_principal(
     session: models.RuntimeSession,
     principal_type: Optional[str],
     principal_id: Optional[str],
+    gateway_source_id: Optional[str] = None,
 ) -> bool:
     """Reject another principal's row; legacy unbound rows remain compatible."""
     return (
         not session.runtime_principal_type
         or session.runtime_principal_type == principal_type
     ) and (
-        not session.runtime_principal_id or session.runtime_principal_id == principal_id
+        not session.runtime_principal_id
+        or session.runtime_principal_id in {principal_id, gateway_source_id}
     )
 
 
@@ -143,7 +145,7 @@ def _origin_runtime_session_id(
                 session_source_id=f"{principal_id}:{session_id}",
             )
             if session is not None and _origin_matches_principal(
-                session, principal_type, principal_id
+                session, principal_type, principal_id, f"{principal_id}:{session_id}"
             ):
                 return str(session.id)
         # Usage importers and host observers record a bare native session id.

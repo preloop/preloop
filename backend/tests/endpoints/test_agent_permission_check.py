@@ -417,6 +417,8 @@ def test_permission_check_links_gateway_composite_origin(
         account_id=key.account_id,
         session_source_type=principal["type"],
         session_source_id=f"{principal['id']}:{session_id}",
+        runtime_principal_type=principal["type"],
+        runtime_principal_id=f"{principal['id']}:{session_id}",
         started_at=datetime.now(timezone.utc),
     )
     # A matching raw usage-import row must not take precedence over gateway.
@@ -532,3 +534,25 @@ def test_permission_check_legacy_key_uses_managed_principal(
     assert decide.await_args.kwargs["tool_input"]["_preloop_origin"][
         "runtime_session_id"
     ] == str(recorded.id)
+
+
+def test_origin_gateway_principal_metadata_accepts_only_exact_binding() -> None:
+    """Gateway principal metadata may include the native run suffix, never another run."""
+    from preloop.api.endpoints.agent_permission import _origin_matches_principal
+    from preloop.models import models
+
+    for row_id, expected in [
+        ("principal-one", True),
+        ("principal-one:native-one", True),
+        ("principal-one:native-two", False),
+        ("principal-two:native-one", False),
+    ]:
+        row = models.RuntimeSession(
+            runtime_principal_type="codex_cli", runtime_principal_id=row_id
+        )
+        assert (
+            _origin_matches_principal(
+                row, "codex_cli", "principal-one", "principal-one:native-one"
+            )
+            is expected
+        )
