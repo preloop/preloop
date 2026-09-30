@@ -5,10 +5,11 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import UUID4, BaseModel, ConfigDict, Field
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.schemas.auth import AuthUserResponse
 from preloop.schemas.tracker import (
     TrackerResponse,
@@ -27,11 +28,13 @@ from preloop.sync.services.event_bus import event_bus_service
 from preloop.models.db.session import get_db_session
 
 
+from preloop.models import models
 from preloop.models.models.tracker import Tracker, TrackerType, TrackerScopeRule
 
 
 from preloop.models.crud import (
     crud_account,
+    crud_oauth_app_installation,
     crud_tracker,
     crud_tracker_scope_rule,
     crud_tool_configuration,
@@ -53,6 +56,10 @@ router = APIRouter()
 # Auth types that authenticate through an OAuth App installation instead of a
 # stored API token.
 OAUTH_AUTH_TYPES = ("github_app", "oauth_app")
+
+# OAuthAppInstallation.external_id is a BigInteger, so an id outside the signed
+# 64-bit range can never match a stored installation.
+_BIGINT_MAX = 2**63 - 1
 
 
 def _connection_details_from_body(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -91,6 +98,50 @@ def _connection_details_from_body(data: Dict[str, Any]) -> Dict[str, Any]:
         )
     logger.info("Tracker payload used deprecated 'config'; send 'connection_details'")
     return config
+
+
+def _invalid_installation_id() -> HTTPException:
+    """Build the bounded 400 shared by every malformed installation id."""
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            "github_installation_id must be the numeric installation ID "
+            "returned by the GitHub App installation"
+        ),
+    )
+
+
+def _installation_id_from_body(value: Any) -> int:
+    """Normalise a ``github_installation_id`` request value to an int.
+
+    The console carries the id as a string because it is read from the OAuth
+    callback URL query string, while ``OAuthAppInstallation.external_id`` is a
+    ``BigInteger``. Querying the column with the raw string makes PostgreSQL
+    evaluate ``bigint = character varying`` and fail with an operator error, so
+    the value is coerced here, at the request boundary, and a malformed value
+    is rejected before it ever reaches the database.
+
+    Args:
+        value: The raw ``github_installation_id`` value from the request body.
+
+    Returns:
+        The installation id as a positive int.
+
+    Raises:
+        HTTPException: 400 if the value is not a positive integer.
+    """
+    # bool is an int subclass but is never a valid installation id.
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise _invalid_installation_id()
+    if isinstance(value, str) and (not value.isascii() or not value.isdecimal()):
+        raise _invalid_installation_id()
+    try:
+        installation_id = int(value)
+    except ValueError:
+        raise _invalid_installation_id() from None
+    if not 0 < installation_id <= _BIGINT_MAX:
+        raise _invalid_installation_id()
+    return installation_id
 
 
 def _apply_tracker_auth(
@@ -250,11 +301,17 @@ async def register_tracker(
             )
 
         # For OAuth auth types, github_installation_id is required
-        if auth_type in ("github_app", "oauth_app") and not github_installation_id:
+        if auth_type in ("github_app", "oauth_app") and github_installation_id is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Missing required field: github_installation_id (required for OAuth authentication)",
             )
+
+        # The console sends the id as a string (it comes from the OAuth
+        # callback URL) and the installation column is a BIGINT, so normalise
+        # it before it reaches the installation query.
+        if auth_type in ("github_app", "oauth_app"):
+            github_installation_id = _installation_id_from_body(github_installation_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -296,7 +353,9 @@ async def register_tracker(
     # For github_app auth, we need to resolve the installation_id to the actual GitHub installation ID
     resolved_github_installation_id = None
     permission_warnings = []
-    installation = None  # Will be set for OAuth auth types
+    installation: Optional[models.OAuthAppInstallation] = (
+        None  # Set for OAuth auth types
+    )
 
     try:
         if auth_type in ("github_app", "oauth_app"):
@@ -308,18 +367,37 @@ async def register_tracker(
                 )
 
             # Look up the OAuth App installation to get the actual installation ID
-            from preloop.models.models.github_app_installation import (
-                OAuthAppInstallation,
-            )
+            # Rollback expires ORM attributes; retain the scope for error logging.
+            installation_account_id = current_user.account_id
 
-            installation = (
-                db.query(OAuthAppInstallation)
-                .filter(
-                    OAuthAppInstallation.external_id == github_installation_id,
-                    OAuthAppInstallation.account_id == current_user.account_id,
-                )
-                .first()
-            )
+            def lookup_installation() -> Optional[models.OAuthAppInstallation]:
+                try:
+                    return crud_oauth_app_installation.get_by_provider_and_external_id(
+                        db,
+                        provider="github",
+                        external_id=github_installation_id,
+                        account_id=installation_account_id,
+                    )
+                except SQLAlchemyError:
+                    # The session is unusable after a driver error. Reset it and
+                    # answer without echoing driver text back to the console.
+                    try:
+                        db.rollback()
+                    except SQLAlchemyError:
+                        logger.exception("Failed to roll back installation lookup")
+                    logger.exception(
+                        "Failed to look up the GitHub App installation for account %s",
+                        installation_account_id,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=(
+                            "Could not verify the GitHub App installation. "
+                            "Please try again."
+                        ),
+                    )
+
+            installation = await run_db_off_loop(lookup_installation)
 
             if not installation:
                 raise HTTPException(
