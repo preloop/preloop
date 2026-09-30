@@ -399,3 +399,136 @@ def test_permission_check_origin_link_is_account_scoped(
             assert origin["runtime_session_id"] == str(recorded.id)
         else:
             assert "runtime_session_id" not in origin
+
+
+def test_permission_check_links_gateway_composite_origin(
+    client: TestClient, db_session: Session
+) -> None:
+    """Gateway session keys include the authenticated durable principal, not just the native id."""
+    from datetime import datetime, timezone
+    from preloop.models.crud import crud_api_key, crud_runtime_session
+
+    token = _issue_opencode_runtime_token(client)
+    key = crud_api_key.get_by_key(db_session, key=token)
+    principal = key.context_data["runtime_principal"]
+    session_id = "native-session-one"
+    recorded = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=key.account_id,
+        session_source_type=principal["type"],
+        session_source_id=f"{principal['id']}:{session_id}",
+        started_at=datetime.now(timezone.utc),
+    )
+    # A matching raw usage-import row must not take precedence over gateway.
+    crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=key.account_id,
+        session_source_type="opencode",
+        session_source_id=session_id,
+        runtime_principal_type=principal["type"],
+        runtime_principal_id=principal["id"],
+        started_at=datetime.now(timezone.utc),
+    )
+    # A competing gateway principal with the same native id must not win.
+    crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=key.account_id,
+        session_source_type=principal["type"],
+        session_source_id=f"other-principal:{session_id}",
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.flush()
+    decide = AsyncMock(return_value=("allow", "Approved", "req-composite", False))
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {"source": "opencode", "session_id": session_id, "tool_name": "Bash"},
+        )
+    assert response.status_code == 200, response.text
+    assert decide.await_args.kwargs["tool_input"]["_preloop_origin"][
+        "runtime_session_id"
+    ] == str(recorded.id)
+
+
+def test_permission_check_raw_origin_checks_principal_binding(
+    client: TestClient, db_session: Session
+) -> None:
+    """Imported native sessions cannot name another durable principal's work."""
+    from datetime import datetime, timezone
+    from preloop.models.crud import crud_api_key, crud_runtime_session
+
+    token = _issue_opencode_runtime_token(client)
+    key = crud_api_key.get_by_key(db_session, key=token)
+    principal = key.context_data["runtime_principal"]
+    for index, (kind, principal_id, expected) in enumerate(
+        [
+            (principal["type"], principal["id"], True),
+            (principal["type"], "other-principal", False),
+            ("other-type", principal["id"], False),
+        ]
+    ):
+        session_id = f"imported-session-{index}"
+        row = crud_runtime_session.upsert_by_source(
+            db_session,
+            account_id=key.account_id,
+            session_source_type="opencode",
+            session_source_id=session_id,
+            runtime_principal_type=kind,
+            runtime_principal_id=principal_id,
+            started_at=datetime.now(timezone.utc),
+        )
+        db_session.flush()
+        decide = AsyncMock(return_value=("allow", "Approved", "req-imported", False))
+        with patch(
+            "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+        ):
+            response = _post_permission_check(
+                client,
+                token,
+                {"source": "opencode", "session_id": session_id, "tool_name": "Bash"},
+            )
+        assert response.status_code == 200, response.text
+        origin = decide.await_args.kwargs["tool_input"]["_preloop_origin"]
+        assert origin.get("runtime_session_id") == (str(row.id) if expected else None)
+
+
+def test_permission_check_legacy_key_uses_managed_principal(
+    client: TestClient, db_session: Session
+) -> None:
+    """Older durable keys without runtime context still bind to their managed principal."""
+    from datetime import datetime, timezone
+    from preloop.models.crud import crud_api_key, crud_runtime_session
+
+    token = _issue_opencode_runtime_token(client)
+    key = crud_api_key.get_by_key(db_session, key=token)
+    principal = key.context_data["runtime_principal"]
+    context = {
+        k: v
+        for k, v in key.context_data.items()
+        if k not in {"runtime_principal", "runtime_session_id"}
+    }
+    crud_api_key.update(db_session, db_obj=key, obj_in={"context_data": context})
+    recorded = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=key.account_id,
+        session_source_type=principal["type"],
+        session_source_id=f"{principal['id']}:legacy-native",
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.flush()
+    decide = AsyncMock(return_value=("allow", "Approved", "req-legacy", False))
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {"source": "opencode", "session_id": "legacy-native", "tool_name": "Bash"},
+        )
+    assert response.status_code == 200, response.text
+    assert decide.await_args.kwargs["tool_input"]["_preloop_origin"][
+        "runtime_session_id"
+    ] == str(recorded.id)

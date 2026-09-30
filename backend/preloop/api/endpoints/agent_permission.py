@@ -22,6 +22,7 @@ from preloop.api.auth.jwt import (
 )
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
+from preloop.models import models
 from preloop.models.crud import crud_api_key, crud_runtime_session
 from preloop.models.db.session import get_session_factory
 from preloop.services import operator_notes
@@ -42,6 +43,8 @@ class PermissionIdentity:
     managed_agent_id: Optional[UUID]
     runtime_session_id: Optional[UUID]
     managed_agent_name: str
+    runtime_principal_type: Optional[str] = None
+    runtime_principal_id: Optional[str] = None
 
 
 def _resolve_permission_identity(token: str) -> PermissionIdentity:
@@ -58,10 +61,10 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
                 account_id=api_key.account_id,
                 runtime_session_id=runtime_session_id,
             )
+        context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
+        principal = context.get("runtime_principal")
+        principal = principal if isinstance(principal, dict) else {}
         if managed_agent is None:
-            context = (
-                api_key.context_data if isinstance(api_key.context_data, dict) else {}
-            )
             # Flow keys are ephemeral and account-scoped, and must name the
             # exact execution session they were issued for. Ordinary API keys
             # still cannot use this native approval endpoint.
@@ -86,6 +89,10 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
             runtime_session_id=runtime_session.id
             if runtime_session
             else runtime_session_id,
+            runtime_principal_type=principal.get("type")
+            or getattr(managed_agent, "session_source_type", None),
+            runtime_principal_id=principal.get("id")
+            or getattr(managed_agent, "session_source_id", None),
             managed_agent_name=(
                 getattr(managed_agent, "display_name", None)
                 or getattr(managed_agent, "name", None)
@@ -95,21 +102,63 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
         )
 
 
+def _origin_matches_principal(
+    session: models.RuntimeSession,
+    principal_type: Optional[str],
+    principal_id: Optional[str],
+) -> bool:
+    """Reject another principal's row; legacy unbound rows remain compatible."""
+    return (
+        not session.runtime_principal_type
+        or session.runtime_principal_type == principal_type
+    ) and (
+        not session.runtime_principal_id or session.runtime_principal_id == principal_id
+    )
+
+
 def _origin_runtime_session_id(
     identity: PermissionIdentity, source: Optional[str], session_id: str
 ) -> Optional[str]:
     """Link a hook session only to a recorded session in the caller's account."""
     source_type = {"codex_cli": "codex"}.get(source or "", source)
-    if not source_type:
-        return None
     with get_session_factory()() as db:
-        session = crud_runtime_session.get_by_source(
-            db,
-            account_id=identity.account_id,
-            session_source_type=source_type,
-            session_source_id=session_id,
-        )
-        return str(session.id) if session is not None else None
+        principal_type = identity.runtime_principal_type
+        principal_id = identity.runtime_principal_id
+        if (not principal_type or not principal_id) and identity.runtime_session_id:
+            base = crud_runtime_session.get_account_session(
+                db,
+                account_id=identity.account_id,
+                runtime_session_id=identity.runtime_session_id,
+            )
+            if base is not None:
+                principal_type = base.runtime_principal_type or base.session_source_type
+                principal_id = base.runtime_principal_id or base.session_source_id
+        # Gateway sessions use the authenticated durable principal plus run id.
+        # A hook's declared source never substitutes for that trusted principal.
+        if principal_type and principal_id:
+            session = crud_runtime_session.get_by_source(
+                db,
+                account_id=identity.account_id,
+                session_source_type=principal_type,
+                session_source_id=f"{principal_id}:{session_id}",
+            )
+            if session is not None and _origin_matches_principal(
+                session, principal_type, principal_id
+            ):
+                return str(session.id)
+        # Usage importers and host observers record a bare native session id.
+        if source_type:
+            session = crud_runtime_session.get_by_source(
+                db,
+                account_id=identity.account_id,
+                session_source_type=source_type,
+                session_source_id=session_id,
+            )
+            if session is not None and _origin_matches_principal(
+                session, principal_type, principal_id
+            ):
+                return str(session.id)
+        return None
 
 
 def _claim_operator_note(identity: PermissionIdentity) -> Optional[str]:

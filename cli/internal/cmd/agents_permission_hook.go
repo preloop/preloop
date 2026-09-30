@@ -552,7 +552,7 @@ func buildPermissionRequest(
 	}
 
 	req := permissionCheckRequest{Source: source}
-	req.SessionID = firstStringField(event, "sessionId", "session_id", "conversation_id", "thread_id")
+	req.SessionID = hookEventSessionID(raw)
 	req.Model = firstStringField(event, "model", "model_name")
 	if source == permissionSourceCodexCLI && req.Model == "" {
 		req.Model = codexPermissionModel(req.SessionID, firstStringField(event, "transcript_path", "rollout_path"), firstStringField(event, "turn_id"))

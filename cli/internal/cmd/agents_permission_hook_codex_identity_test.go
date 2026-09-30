@@ -86,3 +86,15 @@ func TestApprovalOriginLabelsDistinguishMCPRuntimeFromNativeOrigin(t *testing.T)
 		t.Fatalf("invented native origin: %q %q", session, model)
 	}
 }
+
+func TestPermissionAndOperatorNotesSessionIdentityParity(t *testing.T) {
+	for _, raw := range []string{`{"sessionId":"camel-session"}`, `{"session_id":"snake-session"}`, `{"conversation_id":"conversation"}`, `{"thread_id":"thread"}`, `{"turn_id":"turn-only"}`, `{"sessionId":"preferred","session_id":"other"}`} {
+		req, err := buildPermissionRequest(permissionSourceCodexCLI, []byte(raw), permissionHookCredential{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.SessionID != hookEventSessionID([]byte(raw)) {
+			t.Fatalf("session mismatch for %s", raw)
+		}
+	}
+}
