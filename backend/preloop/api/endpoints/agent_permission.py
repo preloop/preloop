@@ -95,6 +95,23 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
         )
 
 
+def _origin_runtime_session_id(
+    identity: PermissionIdentity, source: Optional[str], session_id: str
+) -> Optional[str]:
+    """Link a hook session only to a recorded session in the caller's account."""
+    source_type = {"codex_cli": "codex"}.get(source or "", source)
+    if not source_type:
+        return None
+    with get_session_factory()() as db:
+        session = crud_runtime_session.get_by_source(
+            db,
+            account_id=identity.account_id,
+            session_source_type=source_type,
+            session_source_id=session_id,
+        )
+        return str(session.id) if session is not None else None
+
+
 def _claim_operator_note(identity: PermissionIdentity) -> Optional[str]:
     """Claim this session's pending operator notes for the hook channel.
 
@@ -196,7 +213,12 @@ class AgentPermissionCheckRequest(BaseModel):
             "can label the requester."
         ),
     )
-    session_id: Optional[str] = Field(None, description="Agent session id")
+    session_id: Optional[str] = Field(
+        None, max_length=255, description="Originating agent session id"
+    )
+    model: Optional[str] = Field(
+        None, max_length=255, description="Originating turn model observed by the hook"
+    )
     cwd: Optional[str] = Field(None, description="Working directory")
     repository: Optional[AgentPermissionRepository] = Field(
         None,
@@ -283,6 +305,20 @@ async def agent_permission_check(
     # tool argument cannot spoof the adapter or repository chip.
     tool_input.pop("_preloop_repository", None)
     tool_input.pop("_preloop_source", None)
+    tool_input.pop("_preloop_origin", None)
+    if payload.session_id or payload.model:
+        tool_input["_preloop_origin"] = {
+            "session_id": (payload.session_id or "").strip() or None,
+            "model": (payload.model or "").strip() or None,
+        }
+    if payload.session_id and payload.session_id.strip():
+        origin_id = await run_db_off_loop(
+            lambda: _origin_runtime_session_id(
+                identity, payload.source, payload.session_id.strip()
+            )
+        )
+        if origin_id:
+            tool_input["_preloop_origin"]["runtime_session_id"] = origin_id
     if payload.cwd:
         tool_input["cwd"] = payload.cwd
     # The approval model intentionally has no adapter column. Preserve the

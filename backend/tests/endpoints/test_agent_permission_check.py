@@ -8,6 +8,7 @@ permission service unchanged, and stamps it into ``tool_input`` as the
 """
 
 from unittest.mock import AsyncMock, patch
+from fastapi.testclient import TestClient
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
@@ -309,3 +310,92 @@ def test_permission_check_rejects_extra_repository_fields(client):
         },
     )
     assert response.status_code == 422
+
+
+def test_permission_check_snapshots_origin_and_ignores_tool_spoof(
+    client: TestClient,
+) -> None:
+    """Two processes using one runtime token keep their originating turn identity."""
+    token = _issue_opencode_runtime_token(client)
+    decide = AsyncMock(return_value=("allow", "Approved", "req-origin", False))
+    for session_id, model in [
+        ("session-one", "gpt-alpha"),
+        ("session-two", "gpt-beta"),
+    ]:
+        with patch(
+            "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+        ):
+            response = _post_permission_check(
+                client,
+                token,
+                {
+                    "source": "codex_cli",
+                    "tool_name": "Bash",
+                    "session_id": session_id,
+                    "model": model,
+                    "tool_input": {
+                        "command": "ls",
+                        "_preloop_origin": {"session_id": "forged", "model": "forged"},
+                    },
+                },
+            )
+        assert response.status_code == 200, response.text
+        assert decide.await_args.kwargs["tool_input"]["_preloop_origin"] == {
+            "session_id": session_id,
+            "model": model,
+        }
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {
+                "source": "codex_cli",
+                "tool_name": "Bash",
+                "tool_input": {"_preloop_origin": {"model": "forged"}},
+            },
+        )
+    assert response.status_code == 200
+    assert "_preloop_origin" not in decide.await_args.kwargs["tool_input"]
+
+
+def test_permission_check_origin_link_is_account_scoped(
+    client: TestClient, db_session: Session
+) -> None:
+    """A recorded origin links only within the requesting account."""
+    from datetime import datetime, timezone
+    from preloop.models.crud import crud_account, crud_api_key, crud_runtime_session
+
+    token = _issue_opencode_runtime_token(client)
+    key = crud_api_key.get_by_key(db_session, key=token)
+    foreign = crud_account.create(
+        db_session, obj_in={"organization_name": "Other example organization"}
+    )
+    for account_id, session_id in [
+        (key.account_id, "owned-session"),
+        (foreign.id, "other-session"),
+    ]:
+        recorded = crud_runtime_session.upsert_by_source(
+            db_session,
+            account_id=account_id,
+            session_source_type="codex",
+            session_source_id=session_id,
+            started_at=datetime.now(timezone.utc),
+        )
+        db_session.flush()
+        decide = AsyncMock(return_value=("allow", "Approved", "req-link", False))
+        with patch(
+            "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+        ):
+            response = _post_permission_check(
+                client,
+                token,
+                {"source": "codex_cli", "session_id": session_id, "tool_name": "Bash"},
+            )
+        assert response.status_code == 200, response.text
+        origin = decide.await_args.kwargs["tool_input"]["_preloop_origin"]
+        if account_id == key.account_id:
+            assert origin["runtime_session_id"] == str(recorded.id)
+        else:
+            assert "runtime_session_id" not in origin

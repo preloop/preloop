@@ -63,6 +63,12 @@ describe('attributionParts', () => {
         title: 'session-1',
       },
       {
+        key: 'model',
+        label: 'Model',
+        text: 'Unknown',
+        title: 'The originating turn did not report a model',
+      },
+      {
         key: 'flow',
         label: 'Flow run',
         text: 'Nightly audit',
@@ -86,6 +92,7 @@ describe('attributionParts', () => {
     expect(parts.map((part) => part.text)).to.deep.equal([
       '3f2a9c14',
       'a1b2c3d4',
+      'Unknown',
     ]);
     // The link still carries the whole id: only the label is shortened.
     expect(parts[0].href).to.equal(
@@ -107,7 +114,7 @@ describe('attributionParts', () => {
     const parts = attributionParts({
       tool_args: { _preloop_source: 'cursor' },
     });
-    expect(parts).to.have.length(1);
+    expect(parts).to.have.length(3);
     expect(parts[0].text).to.equal('Cursor');
     expect(parts[0].href).to.equal(undefined);
   });
@@ -179,4 +186,58 @@ describe('attribution-line', () => {
 
     expect(reachedDocument).to.equal(1);
   });
+});
+
+describe('approval originating turn identity', () => {
+  it('distinguishes parallel Codex processes with a shared credential', async () => {
+    for (const [session, model] of [
+      ['11111111-first', 'gpt-alpha'],
+      ['22222222-second', 'gpt-beta'],
+    ]) {
+      const element = await lineOf({
+        runtime_session_id: 'shared-credential-session',
+        tool_args: {
+          _preloop_source: 'codex_cli',
+          _preloop_origin: {
+            session_id: session,
+            model,
+            runtime_session_id: `recorded-${session}`,
+          },
+        },
+      });
+      expect(textOf(element)).to.contain(`Origin session ${session}`);
+      expect(textOf(element)).to.contain(`Model ${model}`);
+      expect(hrefsOf(element)).to.contain(
+        `/console/runtime-sessions?sessionId=recorded-${session}`
+      );
+    }
+  });
+  it('shows unknown rather than borrowing a shared session model', async () => {
+    const element = await lineOf({
+      tool_args: {
+        _preloop_source: 'codex_cli',
+        _preloop_origin: { session_id: 'unrecorded-session' },
+      },
+    });
+    expect(textOf(element)).to.contain('Origin session unrecord…-session');
+    expect(textOf(element)).to.contain('Model Unknown');
+    expect(hrefsOf(element)).to.deep.equal([]);
+  });
+});
+
+it('distinguishes time ordered session ids sharing the same prefix', () => {
+  const sessions = [
+    '0199aaaa-1111-7000-8000-111111111111',
+    '0199aaaa-1111-7000-8000-222222222222',
+  ];
+  const labels = sessions.map(
+    (session_id) =>
+      attributionParts({
+        tool_args: {
+          _preloop_source: 'codex_cli',
+          _preloop_origin: { session_id, model: 'gpt-alpha' },
+        },
+      }).find((part) => part.key === 'origin')!.text
+  );
+  expect(labels).to.deep.equal(['0199aaaa…11111111', '0199aaaa…22222222']);
 });

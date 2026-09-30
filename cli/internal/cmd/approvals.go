@@ -56,16 +56,18 @@ func (p ApprovalWorkflow) approverSummary() string {
 
 // ApprovalRequest represents an approval request.
 type ApprovalRequest struct {
-	ID          string    `json:"id" yaml:"id"`
-	ToolName    string    `json:"tool_name" yaml:"tool_name"`
-	ToolInput   string    `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
-	Status      string    `json:"status" yaml:"status"`
-	RequestedBy string    `json:"requested_by,omitempty" yaml:"requested_by,omitempty"`
-	RequestedAt api.Time  `json:"requested_at" yaml:"requested_at"`
-	ResolvedBy  string    `json:"resolved_by,omitempty" yaml:"resolved_by,omitempty"`
-	ResolvedAt  api.Time  `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
-	Reason      string    `json:"reason,omitempty" yaml:"reason,omitempty"`
-	SessionID   string    `json:"session_id,omitempty" yaml:"session_id,omitempty"`
+	ID               string                 `json:"id" yaml:"id"`
+	ToolName         string                 `json:"tool_name" yaml:"tool_name"`
+	ToolInput        string                 `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
+	Status           string                 `json:"status" yaml:"status"`
+	RequestedBy      string                 `json:"requested_by,omitempty" yaml:"requested_by,omitempty"`
+	RequestedAt      api.Time               `json:"requested_at" yaml:"requested_at"`
+	ResolvedBy       string                 `json:"resolved_by,omitempty" yaml:"resolved_by,omitempty"`
+	ResolvedAt       api.Time               `json:"resolved_at,omitempty" yaml:"resolved_at,omitempty"`
+	Reason           string                 `json:"reason,omitempty" yaml:"reason,omitempty"`
+	SessionID        string                 `json:"session_id,omitempty" yaml:"session_id,omitempty"`
+	RuntimeSessionID string                 `json:"runtime_session_id,omitempty" yaml:"runtime_session_id,omitempty"`
+	ToolArgs         map[string]interface{} `json:"tool_args,omitempty" yaml:"tool_args,omitempty"`
 }
 
 // approvalsCmd represents the approvals command group.
@@ -236,7 +238,7 @@ func runApprovalsPending(cmd *cobra.Command, args []string) error {
 
 	default: // table
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tTOOL\tREQUESTED BY\tAGE\tINPUT") //nolint:errcheck
+		fmt.Fprintln(w, "ID\tTOOL\tREQUESTED BY\tSESSION\tMODEL\tAGE\tINPUT") //nolint:errcheck
 		for _, r := range requests {
 			age := formatDuration(time.Since(r.RequestedAt.Time))
 			input := r.ToolInput
@@ -248,8 +250,9 @@ func runApprovalsPending(cmd *cobra.Command, args []string) error {
 			if len(id) > 12 {
 				id = id[:12]
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", //nolint:errcheck
-				id, r.ToolName, r.RequestedBy, age, input)
+			session, model := approvalOriginLabels(r)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", //nolint:errcheck
+				id, r.ToolName, r.RequestedBy, session, model, age, input)
 		}
 		return w.Flush()
 	}
@@ -338,4 +341,22 @@ func formatDuration(d time.Duration) string {
 	}
 	days := int(d.Hours() / 24)
 	return fmt.Sprintf("%dd", days)
+}
+
+func approvalOriginLabels(request ApprovalRequest) (string, string) {
+	session, model := "", "Unknown"
+	if origin, ok := request.ToolArgs["_preloop_origin"].(map[string]interface{}); ok {
+		if id := stringField(origin, "session_id"); id != "" {
+			session = id
+		}
+		if name := stringField(origin, "model"); name != "" {
+			model = name
+		}
+	}
+	if session == "" {
+		session = "Unknown"
+	} else if len(session) > 16 {
+		session = session[:8] + "…" + session[len(session)-8:]
+	}
+	return session, model
 }

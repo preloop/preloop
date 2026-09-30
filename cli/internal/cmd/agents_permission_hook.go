@@ -64,6 +64,7 @@ type permissionCheckRequest struct {
 	ToolName        string                 `json:"tool_name"`
 	ToolInput       map[string]interface{} `json:"tool_input,omitempty"`
 	SessionID       string                 `json:"session_id,omitempty"`
+	Model           string                 `json:"model,omitempty"`
 	Cwd             string                 `json:"cwd,omitempty"`
 	Repository      *repositoryIdentity    `json:"repository,omitempty"`
 	AgentReasoning  string                 `json:"agent_reasoning,omitempty"`
@@ -551,7 +552,11 @@ func buildPermissionRequest(
 	}
 
 	req := permissionCheckRequest{Source: source}
-	req.SessionID = firstStringField(event, "sessionId", "session_id", "conversation_id", "turn_id")
+	req.SessionID = firstStringField(event, "sessionId", "session_id", "conversation_id", "thread_id")
+	req.Model = firstStringField(event, "model", "model_name")
+	if source == permissionSourceCodexCLI && req.Model == "" {
+		req.Model = codexPermissionModel(req.SessionID, firstStringField(event, "transcript_path", "rollout_path"), firstStringField(event, "turn_id"))
+	}
 	req.Cwd = firstStringField(event, "cwd")
 	// Repository identity is a trusted observation of the hook's own cwd, never
 	// of the caller-supplied tool arguments: MCP paths are untrusted.

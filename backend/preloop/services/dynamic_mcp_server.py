@@ -101,7 +101,11 @@ def _log_tool_execution_async(
             account_id=account_id,
             user_id=user_uuid,
             tool_name=tool_name,
-            tool_args=tool_args,
+            tool_args={
+                key: value
+                for key, value in tool_args.items()
+                if key != "_preloop_origin"
+            },
             result=status,
             duration_ms=execution_time_ms,
             execution_id=execution_uuid,
@@ -551,7 +555,11 @@ class DynamicMCPServer:
                 decision = await evaluate_policy_async(
                     db=db,
                     tool_name=tool_name,
-                    tool_args=tool_args,
+                    tool_args={
+                        key: value
+                        for key, value in tool_args.items()
+                        if key != "_preloop_origin"
+                    },
                     account_id=user_context.account_id,
                     tool_configuration_id=config.id if config else None,
                     user_id=getattr(user_context, "user_id", None),
@@ -715,7 +723,11 @@ class DynamicMCPServer:
                     tool_configuration_id=config.id if config else None,
                     approval_workflow=policy,
                     tool_name=tool_name,
-                    tool_args=tool_args,
+                    tool_args={
+                        key: value
+                        for key, value in tool_args.items()
+                        if key != "_preloop_origin"
+                    },
                     agent_reasoning=None,  # Could be extracted from context if available
                     execution_id=caller.execution_id,
                     managed_agent_id=caller.managed_agent_id,

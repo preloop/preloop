@@ -108,7 +108,11 @@ def with_approval(tool_func: Callable) -> Callable:
                 policy_decision = await evaluate_policy_async(
                     db=db,
                     tool_name=tool_name,
-                    tool_args=kwargs,
+                    tool_args={
+                        key: value
+                        for key, value in kwargs.items()
+                        if key != "_preloop_origin"
+                    },
                     account_id=user_context.account_id,
                     tool_configuration_id=config.id if config else None,
                     user_id=getattr(user_context, "user_id", None),
@@ -175,7 +179,11 @@ def with_approval(tool_func: Callable) -> Callable:
                             tool_configuration_id=config.id,
                             approval_workflow=workflow,
                             tool_name=tool_name,
-                            tool_args=kwargs,  # Use kwargs as tool arguments
+                            tool_args={
+                                key: value
+                                for key, value in kwargs.items()
+                                if key != "_preloop_origin"
+                            },  # Use kwargs as tool arguments
                             agent_reasoning=None,
                             execution_id=caller.execution_id,
                             managed_agent_id=caller.managed_agent_id,

@@ -351,6 +351,7 @@ async def evaluate_permission_prompt(
         # caller placed in tool_input so it cannot render as a trusted chip.
         tool_args.pop("_preloop_repository", None)
         tool_args.pop("_preloop_source", None)
+        tool_args.pop("_preloop_origin", None)
         tool_args[FINGERPRINT_KEY] = fingerprint
         if tool_use_id:
             tool_args[TOOL_USE_ID_KEY] = str(tool_use_id)

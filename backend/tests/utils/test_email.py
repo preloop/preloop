@@ -741,3 +741,27 @@ class TestSendApprovalRequestEmail:
         _to, subject, body_text, _body_html = mock_send_email.call_args[0]
         assert subject == "Deploy to production"
         assert "Agent: Release Bot" in body_text
+
+
+@pytest.mark.asyncio
+@patch("preloop.utils.email.send_email")
+async def test_approval_email_displays_origin_before_omitting_markers(
+    mock_send_email: MagicMock,
+) -> None:
+    """Origin identity is readable without exposing internal tool metadata."""
+    await send_approval_request_email(
+        "approver@example.com",
+        "Bash",
+        {
+            "_preloop_source": "codex_cli",
+            "_preloop_origin": {"session_id": "11111111-session", "model": "gpt-alpha"},
+            "command": "ls",
+        },
+        "https://example.com/console/approval/request-one",
+        runtime_session_id="shared-session",
+    )
+    _, _, text, html = mock_send_email.call_args[0]
+    assert "Session: 11111111-session · Model: gpt-alpha" in text
+    assert "Session: 11111111-session · Model: gpt-alpha" in html
+    assert "_preloop_origin" not in text
+    assert "shared-session" not in text
