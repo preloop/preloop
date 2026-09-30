@@ -26,12 +26,12 @@ def validate_publication_tracker(
     """Reject unsupported credentials before starting an isolated flow."""
     installation = getattr(tracker, "oauth_installation", None)
     if (
-        tracker.tracker_type != "github"
+        str(tracker.tracker_type or "").lower() != "github"
         or not (
-            tracker.auth_type == "github_app"
+            str(tracker.auth_type or "").lower() == "github_app"
             or (
                 allow_legacy_oauth_app
-                and tracker.auth_type == "oauth_app"
+                and str(tracker.auth_type or "").lower() == "oauth_app"
                 and getattr(installation, "provider", None) == "github"
             )
         )

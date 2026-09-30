@@ -158,12 +158,17 @@ class _CheckpointBuffer:
 class _CheckpointReader:
     """Hash file chunks as tarfile streams them, without loading the member."""
 
-    def __init__(self, source: BinaryIO) -> None:
+    def __init__(self, source: BinaryIO, expected_size: int) -> None:
         self.source = source
+        self.remaining = expected_size
         self.digest = hashlib.sha256()
 
     def read(self, size: int = -1) -> bytes:
-        data = self.source.read(size)
+        requested = self.remaining if size < 0 else min(size, self.remaining)
+        data = self.source.read(requested)
+        if len(data) != requested:
+            raise ValueError("checkpoint_workspace_busy")
+        self.remaining -= len(data)
         self.digest.update(data)
         return data
 
@@ -214,17 +219,11 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
             info.mode = before.st_mode & 0o777
             try:
                 with path.open("rb") as source:
-                    reader = _CheckpointReader(source)
+                    reader = _CheckpointReader(source, before.st_size)
                     archive.addfile(info, reader)
                 after = path.stat()
             except FileNotFoundError:
                 raise ValueError("checkpoint_workspace_busy") from None
-            except OSError as exc:
-                # tarfile reports a file truncated while reading as an
-                # unexpected end of data. Retry a stable snapshot later.
-                if str(exc) == "unexpected end of data":
-                    raise ValueError("checkpoint_workspace_busy") from None
-                raise
             if (before.st_size, before.st_mtime_ns) != (
                 after.st_size,
                 after.st_mtime_ns,

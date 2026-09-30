@@ -6,6 +6,7 @@ Stdout is consumed by the publication wrapper's command substitution, never logs
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import urllib.request
 from urllib.parse import urlsplit
@@ -40,38 +41,76 @@ def refresh() -> str:
     # global clone store from winning. Other repositories retain their helper.
     descriptor, store = tempfile.mkstemp(prefix=".preloop-publication-", dir="/tmp")
     os.close(descriptor)
-    for args in (
-        ["git", "config", "--local", "--replace-all", "credential.helper", ""],
-        [
-            "git",
-            "config",
-            "--local",
-            "--add",
-            "credential.helper",
-            "store --file=" + store,
-        ],
-        ["git", "config", "--local", "credential.useHttpPath", "true"],
-    ):
+    try:
+        for args in (
+            ["git", "config", "--local", "--replace-all", "credential.helper", ""],
+            [
+                "git",
+                "config",
+                "--local",
+                "--add",
+                "credential.helper",
+                "store --file=" + store,
+            ],
+            ["git", "config", "--local", "credential.useHttpPath", "true"],
+        ):
+            subprocess.run(
+                args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        scope = f"protocol=https\nhost={repository.netloc}\npath={repository.path.lstrip('/')}\nusername=x-access-token\n"
         subprocess.run(
-            args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ["git", "credential", "approve"],
+            input=scope + "password=" + token + "\n\n",
+            text=True,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    scope = f"protocol=https\nhost={repository.netloc}\npath={repository.path.lstrip('/')}\nusername=x-access-token\n"
-    subprocess.run(
-        ["git", "credential", "approve"],
-        input=scope + "password=" + token + "\n\n",
-        text=True,
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    os.chmod(store, 0o600)
+        os.chmod(store, 0o600)
+    except Exception:
+        os.unlink(store)
+        raise
     os.environ.pop("PRELOOP_GIT_CREDENTIALS", None)
     return token
 
 
+def cleanup(repository_path: str) -> None:
+    """Remove the publication store and local helper after success or failure."""
+    prefix = ["git", "-C", repository_path, "config", "--local"]
+    result = subprocess.run(
+        prefix + ["--get-all", "credential.helper"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    stores = [
+        helper.removeprefix("store --file=")
+        for helper in result.stdout.splitlines()
+        if helper.startswith("store --file=/tmp/.preloop-publication-")
+        and os.path.dirname(helper.removeprefix("store --file=")) == "/tmp"
+    ]
+    if not stores:
+        return
+    for store in stores:
+        try:
+            os.unlink(store)
+        except FileNotFoundError:
+            pass
+    for key in ("credential.helper", "credential.useHttpPath"):
+        subprocess.run(
+            prefix + ["--unset-all", key],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+
 if __name__ == "__main__":
     try:
-        print(refresh())
+        if sys.argv[1:] == ["cleanup"]:
+            cleanup(os.environ["PRELOOP_PUBLICATION_CLEANUP_REPOSITORY"])
+        else:
+            print(refresh())
     except Exception:
         # Provider responses and subprocess errors may contain secrets.
         raise SystemExit("Publication credential refresh failed") from None

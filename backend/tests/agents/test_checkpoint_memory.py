@@ -81,3 +81,9 @@ def test_nested_dependency_directories_are_excluded(tmp_path: Path) -> None:
         assert names == ["workspace/source.py", "workspace/.preloop-checkpoint.json"]
         metadata = json.load(archive.extractfile(names[-1]))
         assert metadata["version"] == 1
+
+
+def test_short_read_is_classified_without_a_tarfile_error_message() -> None:
+    reader = cc._CheckpointReader(io.BytesIO(b"short"), expected_size=10)
+    with pytest.raises(ValueError, match="checkpoint_workspace_busy"):
+        reader.read(10)

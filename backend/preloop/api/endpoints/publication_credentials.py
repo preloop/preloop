@@ -6,6 +6,7 @@ from uuid import UUID
 
 import httpx
 import jwt
+from anyio import from_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from sqlalchemy.orm import Session
 
@@ -13,7 +14,7 @@ from preloop.config import settings
 from preloop.models.crud import crud_flow_execution, crud_tracker
 from preloop.models.db.session import get_db_session
 from preloop.services.publication_credentials import mint_repository_lease
-from preloop.services.trusted_publisher import PublicationError
+from preloop.services.trusted_publisher import PublicationError, PublicationLease
 
 router = APIRouter()
 AUDIENCE = "execution-publication-credential"
@@ -71,7 +72,7 @@ def publication_claims(authorization: str = Header(default="")) -> dict[str, Any
 @router.post(
     "/flows/executions/{execution_id}/publication-credential", include_in_schema=False
 )
-async def refresh_publication_credential(
+def refresh_publication_credential(
     execution_id: UUID,
     response: Response,
     claims: dict[str, Any] = Depends(publication_claims),
@@ -92,15 +93,22 @@ async def refresh_publication_credential(
     )
     if tracker is None:
         raise HTTPException(404, "publication_tracker_missing")
-    try:
+    # Resolve the lazy relationship on the worker too. The async issuer reads
+    # only loaded attributes; no synchronous SQL runs on the ASGI event loop.
+    _ = tracker.oauth_installation
+
+    async def issue() -> PublicationLease:
         async with httpx.AsyncClient() as client:
-            lease = await mint_repository_lease(
+            return await mint_repository_lease(
                 tracker,
                 claims["repository_url"],
                 write=True,
                 client=client,
                 allow_legacy_oauth_app=True,
             )
+
+    try:
+        lease = from_thread.run(issue)
         if lease.expires_at <= datetime.now(UTC) + timedelta(seconds=30):
             raise PublicationError("Credential lifetime insufficient")
     except (PublicationError, httpx.HTTPError) as exc:

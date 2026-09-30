@@ -171,7 +171,26 @@ def test_refresh_replaces_effective_stale_store_without_changing_legacy_repo(
     helper = git(repository, "config", "--local", "--get", "credential.helper").strip()
     fresh_store = Path(helper.removeprefix("store --file="))
     assert fresh_store.stat().st_mode & 0o777 == 0o600
-    fresh_store.unlink()
+    client.cleanup(str(repository))
+    assert not fresh_store.exists()
+    assert (
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "config",
+                "--local",
+                "--get-all",
+                "credential.helper",
+            ],
+            capture_output=True,
+        ).returncode
+        == 1
+    )
+    assert "password=legacy-token" in git(
+        legacy, "credential", "fill", input="protocol=https\nhost=gitlab.com\n\n"
+    )
 
 
 def test_origin_change_and_mint_failure_stop_before_git_auth(
@@ -225,9 +244,16 @@ def test_github_oauth_alias_refreshes() -> None:
     )
 
 
-@pytest.mark.parametrize("push_count,mint_failure", [(1, False), (0, False), (1, True)])
+@pytest.mark.parametrize(
+    "push_count,mint_failure,publication_failure",
+    [(1, False, False), (0, False, False), (1, True, False), (1, False, True)],
+)
 def test_runtime_refresh_authenticates_push_and_rest_and_fails_closed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, push_count: int, mint_failure: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    push_count: int,
+    mint_failure: bool,
+    publication_failure: bool,
 ) -> None:
     """Execute the rendered wrapper after a simulated two-hour implementation."""
     import threading
@@ -296,6 +322,7 @@ def test_runtime_refresh_authenticates_push_and_rest_and_fails_closed(
         "_build_git_push_shell",
         lambda *args, **kwargs: (
             f"printf 'protocol=https\\nhost=github.com\\npath=example/project.git\\n\\n' | git credential fill > {push_receipt}"
+            + ("\nexit 9" if publication_failure else "")
         ),
     )
     monkeypatch.setattr(
@@ -337,6 +364,9 @@ def test_runtime_refresh_authenticates_push_and_rest_and_fails_closed(
         env=env,
         check=True,
     )
+    existing_stores = set(Path("/tmp").glob(".preloop-publication-*"))
+    parent_receipt = tmp_path / "parent-trap.txt"
+    command = f"trap 'printf finalized > {parent_receipt}' EXIT\n" + command
     try:
         result = subprocess.run(
             ["bash", "-e", "-c", command], env=env, text=True, capture_output=True
@@ -350,6 +380,11 @@ def test_runtime_refresh_authenticates_push_and_rest_and_fails_closed(
     if mint_failure:
         assert result.returncode != 0
         assert not push_receipt.exists()
+        assert not rest_receipt.exists()
+        assert (evidence / "branch.bundle").is_file()
+    elif publication_failure:
+        assert result.returncode == 9
+        assert "password=fresh-two-hour-publication-token" in push_receipt.read_text()
         assert not rest_receipt.exists()
         assert (evidence / "branch.bundle").is_file()
     else:
@@ -366,14 +401,23 @@ def test_runtime_refresh_authenticates_push_and_rest_and_fails_closed(
             "fresh-two-hour-publication-token" not in arg for arg in rest["args"]
         )
         assert "expired-start-token" not in rest["config"]
-    # Dedicated stores are controller-wrapper temporary auth, never evidence.
-    helper = (
-        git(repository, "config", "--local", "--get", "credential.helper").strip()
-        if not mint_failure
-        else ""
+    assert parent_receipt.read_text() == "finalized"
+    assert set(Path("/tmp").glob(".preloop-publication-*")) == existing_stores
+    assert (
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "config",
+                "--local",
+                "--get-all",
+                "credential.helper",
+            ],
+            capture_output=True,
+        ).returncode
+        == 1
     )
-    if helper:
-        Path(helper.removeprefix("store --file=")).unlink()
 
 
 def test_configured_url_credentials_never_enter_refresh_script() -> None:
@@ -394,3 +438,46 @@ def test_isolated_mode_cannot_receive_refresh_authority() -> None:
     }
     with pytest.raises(ValueError, match="Write API tokens"):
         executor()._apply_git_credential_env({}, data)
+
+
+@pytest.mark.parametrize("auth_type", ["GITHUB_APP", "OAUTH_APP"])
+def test_case_normalized_app_auth_refreshes(auth_type: str) -> None:
+    data = context()
+    next(iter(data["git_credentials_map"].values()))["auth_type"] = auth_type
+    assert (
+        "PRELOOP_PUBLICATION_REFRESH_URL="
+        in executor()._prepare_git_post_execution_commands(data)
+    )
+
+
+def test_restored_workspace_recreates_credential_free_origin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repository = tmp_path / "restored"
+    repository.mkdir()
+    git(repository, "init")
+    git(
+        repository,
+        "remote",
+        "add",
+        "origin",
+        "https://user:configured-secret@github.com/example/project.git",
+    )
+    data = context()
+    data.pop("_git_source_branch")
+    data["git_clone_config"]["repositories"][0].update(
+        repository_url="https://user:configured-secret@github.com/example/project.git",
+        clone_path=str(repository),
+    )
+    data["checkpoint_env"] = {"PRELOOP_CHECKPOINT_GET_TOKEN": "synthetic-capability"}
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "global-config"))
+    command = executor()._wrap_clone_with_workspace_restore("echo cold-clone", data)
+    assert "configured-secret" not in command
+    result = subprocess.run(
+        ["bash", "-e", "-c", command], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        git(repository, "remote", "get-url", "origin").strip()
+        == "https://github.com/example/project.git"
+    )

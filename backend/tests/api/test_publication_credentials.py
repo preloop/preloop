@@ -7,12 +7,20 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import jwt
+import anyio
 import pytest
 from fastapi import HTTPException, Response
 
 from preloop.api.endpoints import publication_credentials as endpoint
 from preloop.config import settings
 from preloop.services.trusted_publisher import PublicationError
+
+
+async def _refresh(*args: Any) -> dict[str, str]:
+    """Exercise the same worker/loop bridge FastAPI uses for this sync route."""
+    return await anyio.to_thread.run_sync(
+        lambda: endpoint.refresh_publication_credential(*args)
+    )
 
 
 def claims() -> dict[str, Any]:
@@ -105,9 +113,7 @@ async def test_terminal_or_not_running_does_not_mint(
     mint = AsyncMock()
     monkeypatch.setattr(endpoint, "mint_repository_lease", mint)
     with pytest.raises(HTTPException) as error:
-        await endpoint.refresh_publication_credential(
-            context["execution_id"], Response(), context, Mock()
-        )
+        await _refresh(context["execution_id"], Response(), context, Mock())
     assert error.value.status_code == 409
     mint.assert_not_called()
 
@@ -130,9 +136,7 @@ async def test_tenancy_missing_does_not_mint(
     monkeypatch.setattr(endpoint, "mint_repository_lease", mint)
     db = Mock()
     with pytest.raises(HTTPException) as error:
-        await endpoint.refresh_publication_credential(
-            context["execution_id"], Response(), context, db
-        )
+        await _refresh(context["execution_id"], Response(), context, db)
     assert error.value.status_code == 404
     execution_get.assert_called_once_with(
         db,
@@ -155,9 +159,7 @@ async def test_other_execution_rejected_before_lookup(
     get = Mock()
     monkeypatch.setattr(endpoint.crud_flow_execution, "get", get)
     with pytest.raises(HTTPException) as error:
-        await endpoint.refresh_publication_credential(
-            uuid4(), Response(), context, Mock()
-        )
+        await _refresh(uuid4(), Response(), context, Mock())
     assert error.value.status_code == 403
     get.assert_not_called()
 
@@ -186,14 +188,10 @@ async def test_exact_bound_repository_and_sanitized_issuance(
     response = Response()
     if failure:
         with pytest.raises(HTTPException) as error:
-            await endpoint.refresh_publication_credential(
-                context["execution_id"], response, context, Mock()
-            )
+            await _refresh(context["execution_id"], response, context, Mock())
         assert error.value.detail == "publication_credential_unavailable"
     else:
-        result = await endpoint.refresh_publication_credential(
-            context["execution_id"], response, context, Mock()
-        )
+        result = await _refresh(context["execution_id"], response, context, Mock())
         assert result["token"] == "fresh-secret"
         assert response.headers["cache-control"] == "no-store"
     assert mint.call_args.args == (tracker, context["repository_url"])
@@ -221,8 +219,55 @@ async def test_stop_intent_blocks_new_authority(
     )
     monkeypatch.setattr(endpoint, "mint_repository_lease", mint)
     with pytest.raises(HTTPException) as error:
-        await endpoint.refresh_publication_credential(
-            context["execution_id"], Response(), context, Mock()
-        )
+        await _refresh(context["execution_id"], Response(), context, Mock())
     assert error.value.status_code == 409
     assert mint.call_count == int(mid_mint)
+
+
+@pytest.mark.asyncio
+async def test_crud_runs_off_loop_and_async_provider_runs_on_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    context = claims()
+    loop_thread = threading.get_ident()
+    query_threads: list[int] = []
+
+    def execution_get(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        query_threads.append(threading.get_ident())
+        return SimpleNamespace(status="RUNNING")
+
+    lazy_load_threads: list[int] = []
+
+    class LazyTracker:
+        def __init__(self) -> None:
+            self._installation: SimpleNamespace | None = None
+
+        @property
+        def oauth_installation(self) -> SimpleNamespace:
+            if self._installation is None:
+                assert threading.get_ident() != loop_thread
+                lazy_load_threads.append(threading.get_ident())
+                self._installation = SimpleNamespace(external_id="123")
+            return self._installation
+
+    def tracker_get(*args: Any, **kwargs: Any) -> LazyTracker:
+        query_threads.append(threading.get_ident())
+        return LazyTracker()
+
+    async def issue(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        assert threading.get_ident() == loop_thread
+        assert args[0].oauth_installation.external_id == "123"
+        return SimpleNamespace(
+            token="fresh-token", expires_at=datetime.now(UTC) + timedelta(hours=1)
+        )
+
+    monkeypatch.setattr(endpoint.crud_flow_execution, "get", execution_get)
+    monkeypatch.setattr(endpoint.crud_tracker, "get", tracker_get)
+    monkeypatch.setattr(endpoint, "mint_repository_lease", issue)
+    await _refresh(context["execution_id"], Response(), context, Mock())
+    assert len(query_threads) == 3
+    assert all(thread != loop_thread for thread in query_threads)
+    assert len(lazy_load_threads) == 1
+    assert lazy_load_threads[0] != loop_thread

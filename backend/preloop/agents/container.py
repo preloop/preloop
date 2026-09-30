@@ -4174,6 +4174,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 execution_context.get("trigger_event_data") or {}
             )
             if repo_url:
+                repo_url = strip_url_credentials(repo_url)
                 restore_steps.append(
                     f"(git remote add origin {shlex.quote(repo_url)} || git remote set-url origin {shlex.quote(repo_url)})"
                 )
@@ -5843,8 +5844,8 @@ true
                 )
                 credentials = credential_map.get(tracker_id) or {}
                 if (
-                    credentials.get("auth_type") in APP_AUTH_TYPES
-                    and tracker_type == "github"
+                    str(credentials.get("auth_type") or "").lower() in APP_AUTH_TYPES
+                    and str(tracker_type or "").lower() == "github"
                 ):
                     from preloop.api.endpoints.publication_credentials import (
                         mint_publication_capability,
@@ -5999,7 +6000,30 @@ export GIT_TERMINAL_PROMPT=0"""
                     ]
                 )
 
-                post_commands.extend(repo_post_commands)
+                if refresh_auth:
+                    # A child publication scope owns its EXIT cleanup; the
+                    # harness's checkpoint/finalization trap remains intact.
+                    cleanup_shell = f"""(
+set -e
+export PRELOOP_PUBLICATION_CLEANUP_REPOSITORY={shlex.quote(full_path)}
+_preloop_publication_cleanup() {{
+    python3 - cleanup <<'PRELOOP_PUBLICATION_CLEANUP_CLIENT'
+{client_source}
+PRELOOP_PUBLICATION_CLEANUP_CLIENT
+}}
+trap _preloop_publication_cleanup EXIT
+"""
+                    post_commands.append(cleanup_shell)
+                    post_commands.extend(repo_post_commands)
+                    post_commands.extend(
+                        [
+                            ")",
+                            "PRELOOP_PUBLICATION_RC=$?",
+                            '[ "$PRELOOP_PUBLICATION_RC" -eq 0 ] || exit "$PRELOOP_PUBLICATION_RC"',
+                        ]
+                    )
+                else:
+                    post_commands.extend(repo_post_commands)
 
             push_script = "\n".join(post_commands) if post_commands else ""
             if publishes_report:

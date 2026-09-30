@@ -1566,3 +1566,17 @@ def test_legacy_github_oauth_alias_requires_github_installation(
         else:
             with pytest.raises(PublicationError):
                 validate_publication_tracker(tracker, allow_legacy_oauth_app=True)
+
+
+@pytest.mark.parametrize("auth_type", ["GITHUB_APP", "OAUTH_APP"])
+def test_legacy_app_validator_normalizes_auth_type(
+    tracker: Any, auth_type: str
+) -> None:
+    tracker.auth_type = auth_type
+    tracker.tracker_type = "GitHub"
+    tracker.oauth_installation.provider = "github"
+    with patch(
+        "preloop.services.publication_credentials.settings.github_app",
+        SimpleNamespace(app_id="123", private_key="configured"),
+    ):
+        validate_publication_tracker(tracker, allow_legacy_oauth_app=True)
