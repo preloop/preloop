@@ -136,9 +136,14 @@ prompt_template: |
      tests by the directory or the file that covers your change. Never run
      a repository-wide suite: this container has a bounded memory limit and
      a whole-suite run is the usual way to exceed it, and CI runs the full
-     suite on the pull request anyway. When a broader run is genuinely
-     needed, run one top-level test directory at a time with `-x` and `-q`,
-     and stop at the first failure instead of starting the next directory.
+     suite on the pull request anyway. Before broadening coverage, read
+     the container's cgroup memory limit (memory.max on cgroup v2 or
+     memory.limit_in_bytes on v1). A broad category such as all backend
+     endpoint tests can also exceed that limit during collection. Run only
+     directly affected test files in small batches, each in a fresh process
+     with `-x` and `-q`. Do not use parallel test workers. Stop at the first
+     failure and address it before starting another batch. Leave full-suite
+     and broad category coverage to CI, and record that scope in the summary.
      Never run the same suite again just to confirm a pass.
   4. If a check cannot run in this environment (a missing database, a
      missing network service, a missing secret), do not fake it. Record

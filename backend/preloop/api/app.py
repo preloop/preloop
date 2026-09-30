@@ -1145,9 +1145,10 @@ def _register_control_plane_routes(
     )
     # Note: Issue duplicates endpoint is now loaded via plugins/analytics
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
-    from preloop.api.endpoints import flow_artifacts
+    from preloop.api.endpoints import flow_artifacts, publication_credentials
 
     app.include_router(flow_artifacts.router, prefix="/api/v1", tags=["Flow artifacts"])
+    app.include_router(publication_credentials.router, prefix="/api/v1")
     app.include_router(
         flows.router,
         prefix="/api/v1",

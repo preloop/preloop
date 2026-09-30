@@ -14,11 +14,13 @@ import re
 import shlex
 import tarfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiodocker
 from aiodocker.exceptions import DockerError
 
+from preloop.agents.resources import docker_memory_bytes
 from preloop.config import settings
 from preloop.utils import pr_metadata
 from preloop.services.flow_failure_category import (
@@ -1464,10 +1466,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 # Mount workspace volume with proper permissions
                 "Binds": [f"{workspace_volume}:/workspace:rw"],
                 # Resource limits
-                "Memory": int(os.getenv("AGENT_MEMORY_LIMIT", "2g").replace("g", ""))
-                * 1024
-                * 1024
-                * 1024,
+                "Memory": docker_memory_bytes(os.getenv("AGENT_MEMORY_LIMIT", "4g")),
                 "CpuQuota": int(os.getenv("AGENT_CPU_QUOTA", "100000")),
             },
         }
@@ -1671,7 +1670,7 @@ class ContainerAgentExecutor(AgentExecutor):
         ]
 
         # Get resource limits from config or use defaults
-        memory_limit = os.getenv("AGENT_MEMORY_LIMIT", "2Gi")
+        memory_limit = os.getenv("AGENT_MEMORY_LIMIT", "4Gi")
         cpu_limit = os.getenv("AGENT_CPU_LIMIT", "1")
         memory_request = os.getenv("AGENT_MEMORY_REQUEST", "512Mi")
         cpu_request = os.getenv("AGENT_CPU_REQUEST", "250m")
@@ -3815,7 +3814,8 @@ class ContainerAgentExecutor(AgentExecutor):
         credentials: Dict[int, GitCredential] = (
             execution_context.get(self.GIT_CREDENTIALS_CONTEXT_KEY) or {}
         )
-        env = dict(
+        env = dict(execution_context.get("_publication_refresh_env") or {})
+        env.update(
             build_credential_env(credentials[index] for index in sorted(credentials))
         )
 
@@ -3835,7 +3835,9 @@ class ContainerAgentExecutor(AgentExecutor):
         if (execution_context.get("git_clone_config") or {}).get(
             "publication_mode"
         ) == "isolated":
-            if execution_context.get(self.GIT_API_TOKENS_CONTEXT_KEY):
+            if execution_context.get(
+                self.GIT_API_TOKENS_CONTEXT_KEY
+            ) or execution_context.get("_publication_refresh_env"):
                 raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(execution_context.get("checkpoint_env") or {})
         env.update(execution_context.get("evidence_env") or {})
@@ -4172,6 +4174,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 execution_context.get("trigger_event_data") or {}
             )
             if repo_url:
+                repo_url = strip_url_credentials(repo_url)
                 restore_steps.append(
                     f"(git remote add origin {shlex.quote(repo_url)} || git remote set-url origin {shlex.quote(repo_url)})"
                 )
@@ -5825,7 +5828,61 @@ true
                     tracker_type,
                     resolved_username,
                 )
-                push_auth = build_push_auth_setup_shell(
+                refresh_auth = ""
+                repo_url = strip_url_credentials(repo_url)
+                credential_map = execution_context.get("git_credentials_map") or {}
+                candidate_ids = [repo_config.get("tracker_id")]
+                if not execution_context.get("repository_binding"):
+                    candidate_ids.append(execution_context.get("trigger_tracker_id"))
+                tracker_id = next(
+                    (
+                        candidate
+                        for candidate in candidate_ids
+                        if (credential_map.get(candidate) or {}).get("token")
+                    ),
+                    None,
+                )
+                credentials = credential_map.get(tracker_id) or {}
+                if (
+                    str(credentials.get("auth_type") or "").lower() in APP_AUTH_TYPES
+                    and str(tracker_type or "").lower() == "github"
+                ):
+                    from preloop.api.endpoints.publication_credentials import (
+                        mint_publication_capability,
+                    )
+                    from preloop.config import settings
+                    from preloop.agents import publication_auth_client
+
+                    capability_var = f"PRELOOP_PUBLICATION_CAPABILITY_{idx}"
+                    execution_context.setdefault("_publication_refresh_env", {})[
+                        capability_var
+                    ] = mint_publication_capability(
+                        account_id=str(execution_context["account_id"]),
+                        execution_id=str(execution_context["execution_id"]),
+                        tracker_id=str(tracker_id),
+                        repository_url=repo_url,
+                    )
+                    token_var = self._register_git_api_token(
+                        execution_context, idx, token or ""
+                    )
+                    token_ref = "${%s}" % token_var
+                    client_source = Path(publication_auth_client.__file__).read_text()
+                    refresh_url = (
+                        settings.preloop_url.rstrip("/")
+                        + f"/api/v1/flows/executions/{execution_context['execution_id']}/publication-credential"
+                    )
+                    refresh_auth = f"""set +x
+export PRELOOP_PUBLICATION_REFRESH_URL={shlex.quote(refresh_url)}
+export PRELOOP_PUBLICATION_REFRESH_CAPABILITY="${{{capability_var}}}"
+export PRELOOP_PUBLICATION_REPOSITORY={shlex.quote(repo_url)}
+{token_var}=$(python3 <<'PRELOOP_PUBLICATION_CLIENT'
+{client_source}
+PRELOOP_PUBLICATION_CLIENT
+) || exit 1
+export {token_var}
+unset PRELOOP_GIT_CREDENTIALS PRELOOP_PUBLICATION_REFRESH_CAPABILITY
+export GIT_TERMINAL_PROMPT=0"""
+                push_auth = refresh_auth or build_push_auth_setup_shell(
                     token_ref=token_ref, username=username
                 )
 
@@ -5900,6 +5957,12 @@ true
 
                 # Add PR/MR creation if enabled, including already-pushed work.
                 if create_pr and token:
+                    if refresh_auth:
+                        repo_post_commands.append(
+                            'if [ "$PUSH_COMMIT_COUNT" -eq "0" ]; then\n'
+                            + refresh_auth
+                            + "\nfi"
+                        )
                     pr_create_cmd = self._build_pr_or_mr_create_shell(
                         execution_context=execution_context,
                         git_config=git_config,
@@ -5912,6 +5975,14 @@ true
                         repo_config=repo_config,
                     )
                     if pr_create_cmd:
+                        if refresh_auth:
+                            # Bash process substitution supplies curl config via
+                            # a descriptor. The fresh token never enters argv.
+                            pr_create_cmd = pr_create_cmd.replace(
+                                f'-H "Authorization: token {token_ref}"',
+                                "--config <(printf 'header = \"Authorization: token %s\"\\n' "
+                                + f'"{token_ref}")',
+                            )
                         repo_post_commands.append(pr_create_cmd)
                         repo_post_commands.append(provenance_failure_exit_shell())
 
@@ -5929,7 +6000,30 @@ true
                     ]
                 )
 
-                post_commands.extend(repo_post_commands)
+                if refresh_auth:
+                    # A child publication scope owns its EXIT cleanup; the
+                    # harness's checkpoint/finalization trap remains intact.
+                    cleanup_shell = f"""(
+set -e
+export PRELOOP_PUBLICATION_CLEANUP_REPOSITORY={shlex.quote(full_path)}
+_preloop_publication_cleanup() {{
+    python3 - cleanup <<'PRELOOP_PUBLICATION_CLEANUP_CLIENT'
+{client_source}
+PRELOOP_PUBLICATION_CLEANUP_CLIENT
+}}
+trap _preloop_publication_cleanup EXIT
+"""
+                    post_commands.append(cleanup_shell)
+                    post_commands.extend(repo_post_commands)
+                    post_commands.extend(
+                        [
+                            ")",
+                            "PRELOOP_PUBLICATION_RC=$?",
+                            '[ "$PRELOOP_PUBLICATION_RC" -eq 0 ] || exit "$PRELOOP_PUBLICATION_RC"',
+                        ]
+                    )
+                else:
+                    post_commands.extend(repo_post_commands)
 
             push_script = "\n".join(post_commands) if post_commands else ""
             if publishes_report:

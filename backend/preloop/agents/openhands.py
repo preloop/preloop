@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from aiodocker.exceptions import DockerError
 
+from preloop.agents.resources import docker_memory_bytes
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.services.model_runtime_resolver import gateway_url_for_api
 from preloop.utils.execve_limits import (
@@ -167,10 +168,7 @@ class OpenHandsAgent(ContainerAgentExecutor):
                     "AGENT_NETWORK_MODE", "bridge"
                 ),  # Use bridge by default
                 # Resource limits
-                "Memory": int(os.getenv("AGENT_MEMORY_LIMIT", "2g").replace("g", ""))
-                * 1024
-                * 1024
-                * 1024,
+                "Memory": docker_memory_bytes(os.getenv("AGENT_MEMORY_LIMIT", "4g")),
                 "CpuQuota": int(os.getenv("AGENT_CPU_QUOTA", "100000")),
             },
         }
