@@ -6,6 +6,8 @@ status: non-normative
 
 > **Status: findings / design note. Not shipped behaviour.** This page records observations or a proposed design. Nothing here is a product capability unless a linked release note says so.
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Status: recommendation, measured 2026-09-15. Implementation is tracked
 separately; nothing in this note changes a preset or an image.
 

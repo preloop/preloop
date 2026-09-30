@@ -1,5 +1,7 @@
 # `preloop copilot`: GitHub Copilot CLI through the Preloop gateway
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 `preloop copilot` starts the GitHub Copilot CLI (`copilot`) with BYOK
 environment variables pointed at the Preloop model gateway. Interactive
 mode is a TTY passthrough: stdin, stdout, and stderr stay attached, so the

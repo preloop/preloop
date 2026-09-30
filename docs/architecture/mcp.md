@@ -1,6 +1,106 @@
-# MCP Implementation
+# MCP Tool Integration
 
-The MCP server is implemented inside the FastAPI app via FastMCP. This chapter covers HTTP transport, dynamic tool filtering, and the MCP request path.
+Editions: OSS. Contributor documentation for this repository.
+
+Preloop exposes one MCP endpoint to AI clients and evaluates policy before any
+tool call reaches the underlying tool. The first half of this page is for
+users connecting a client; the second half ("MCP Implementation") is for
+contributors and covers HTTP transport, dynamic tool filtering, and the MCP
+request path inside the FastAPI app.
+
+## What MCP means in Preloop
+
+MCP gives AI clients a standard way to discover tools, inspect their schemas,
+and call them. Without Preloop the path is:
+
+```text
+AI client -> MCP server -> tool executes
+```
+
+With Preloop there is a policy decision in the middle:
+
+```text
+AI client -> Preloop MCP endpoint -> policy evaluation -> allow / deny / require approval
+```
+
+## Endpoint and transport
+
+The endpoint is `https://YOUR_PRELOOP_URL/mcp/v1` over streamable HTTP.
+`preloop agents onboard` writes this entry for supported agents; by hand it
+looks like this:
+
+```bash
+claude mcp add \
+  --transport http \
+  --header "Authorization: Bearer YOUR_API_KEY" \
+  preloop \
+  https://YOUR_PRELOOP_URL/mcp/v1
+```
+
+## What happens on a tool call
+
+1. **Authentication.** The client presents an API key or runtime credential.
+2. **Tool filtering.** Preloop lists only the tools this caller should see.
+3. **Policy evaluation.** Ordered access rules decide allow, deny, or require
+   approval.
+4. **Execution or approval.** Allowed calls run. Approval-gated calls wait for
+   the configured workflow. Denied calls return an MCP error the agent can act
+   on.
+
+```mermaid
+sequenceDiagram
+    participant Client as MCP Client
+    participant Preloop as Preloop
+    participant Policy as Access Rules
+    participant Workflow as Approval Workflow
+    participant Tool as Target Tool
+
+    Client->>Preloop: tools/call(...)
+    Preloop->>Policy: Evaluate ordered rules
+
+    alt allow
+        Policy->>Tool: Execute
+        Tool-->>Preloop: Result
+        Preloop-->>Client: Result
+    else deny
+        Policy-->>Preloop: Deny with message
+        Preloop-->>Client: Error
+    else require approval
+        Policy->>Workflow: Create approval request
+        Workflow-->>Preloop: Pending / approved / declined
+        Preloop-->>Client: Blocking or async response
+    end
+```
+
+## Built-in tools and external MCP servers
+
+One endpoint serves two kinds of tools. Built-in tools are Preloop's own (for
+example `request_approval`, `get_approval_status`, and the issue tools that
+appear once a tracker is connected). External tools come from MCP servers you
+add on the Tools page and are proxied through Preloop. Both are governed by
+the same access rules and approval workflows. See
+[Built-in Tools](../guide/tools/builtin.md) and
+[External MCP Tools](../guide/tools/external-mcp.md).
+
+The tool list is not static. It depends on the caller (API key or managed
+agent, see [Subject-Scoped Governance](../guide/concepts/subject-scoped-governance.md)),
+the connected trackers, the registered MCP servers, and per-tool enablement.
+
+## Blocking and async approval
+
+With blocking approval the tool call waits while the workflow runs and
+returns the final result in the same call. With
+[async approval](../guide/approvals/async-approvals.md) the call returns at
+once with a pending state and a request id, and the agent polls
+`get_approval_status` until there is a decision and a result.
+
+A policy-gated tool is an ordinary tool protected by access rules: the agent
+calls it and Preloop decides whether approval is needed. `request_approval` is
+different: the agent asks for approval as a deliberate step, useful when an
+action spans several steps or the agent wants to give context first.
+
+Related: [Safety Layer](../guide/concepts/safety-layer.md),
+[Policy-as-Code](../guide/concepts/policy-as-code.md).
 
 ## MCP Implementation
 The MCP server is implemented directly within the FastAPI application using a custom

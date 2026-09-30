@@ -1,5 +1,7 @@
 # Compatibility policy
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Operators upgrading a self-hosted install, and anyone scripting against
 Preloop, need to know which surfaces are stable and how a change to them
 is announced. This page is that contract. It is a prerequisite for 1.0.0.

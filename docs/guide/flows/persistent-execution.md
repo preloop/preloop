@@ -1,5 +1,7 @@
 # Persistent flow execution
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Use **Persistent (Govern persistent agent node)** when the work should run on
 an already-enrolled managed agent that is connected to Agent Control, instead
 of provisioning a short-lived container.

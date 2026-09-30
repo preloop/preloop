@@ -1,5 +1,7 @@
 # Code signing policy
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Free code signing provided by [SignPath.io](https://about.signpath.io/),
 certificate by [SignPath Foundation](https://signpath.org/).
 
@@ -41,7 +43,7 @@ Per [SignPath Foundation conditions for Open Source projects](https://signpath.o
 ## Privacy policy
 
 CLI and self-hosted instance telemetry (optional, opt-out) is documented in
-[SECURITY.md § Telemetry](../SECURITY.md#telemetry). Set
+[SECURITY.md § Telemetry](https://github.com/preloop/preloop/blob/main/SECURITY.md#telemetry). Set
 `PRELOOP_DISABLE_TELEMETRY=true` to disable it.
 
 For Preloop Cloud / hosted services, see

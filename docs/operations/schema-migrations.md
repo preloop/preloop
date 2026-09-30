@@ -1,5 +1,7 @@
 # Schema migrations during an upgrade
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 `helm upgrade` runs schema migrations from a `pre-upgrade` hook Job
 (`preloop-migration-job`). That Job starts **before** the new pods roll out and
 **while the previous API pods, sync workers and connected private runners keep

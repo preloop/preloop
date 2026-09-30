@@ -1,5 +1,7 @@
 # Workspace recovery acceptance
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Issue #386 extends the shipped checkpoint transport rather than adding another
 storage path. The following acceptance was exercised on 2026-09-19 using
 PostgreSQL, local Docker, and a disposable kind cluster. No model calls or live

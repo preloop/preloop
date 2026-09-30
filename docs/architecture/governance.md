@@ -1,5 +1,7 @@
 # Subject-Scoped Governance
 
+Editions: OSS. Contributor documentation for this repository.
+
 Governance is applied to the concrete subject using the platform, not only the parent account. This chapter covers subject-scoped configuration, tool access rules, and tool output filters.
 
 ## Subject-Scoped Governance
@@ -25,7 +27,7 @@ The tool configuration system has been expanded with a **ToolAccessRule** model 
 | `is_enabled` | Toggle individual rules on/off |
 | `approval_workflow_id` | Links to an ApprovalWorkflow for "require_approval" rules |
 
-**Evaluation:** Rules are evaluated at runtime in `DynamicFastMCP._evaluate_policy()` — the first matching enabled rule determines the action. If no rules match, the tool call is allowed by default (but audited in EE).
+**Evaluation:** Rules are evaluated at runtime in `DynamicFastMCP._evaluate_policy()`: the first matching enabled rule determines the action. If no rules match, the tool call is allowed by default (but audited in EE).
 
 **Access Rule API Endpoints:**
 - `POST /api/v1/tool-configurations/{config_id}/access-rules` - Create access rule

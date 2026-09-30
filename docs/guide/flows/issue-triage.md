@@ -1,5 +1,7 @@
 # Issue Triage Assistant preset
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Triage improves the issue itself and applies its complexity tag. It records
 remaining scope, acceptance, evidence, risks and missing decisions in a replaceable
 section of the issue body. A developer can pick up the issue without reading the

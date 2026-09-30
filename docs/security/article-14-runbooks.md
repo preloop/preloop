@@ -1,5 +1,7 @@
 # CRA Article 14 reporting runbooks
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Operational fill-in templates for the three reports CRA Article 14 requires
 from a manufacturer once it becomes aware of an actively exploited
 vulnerability in its product or of a severe incident having an impact on the
@@ -190,6 +192,6 @@ inside one hour.
 ## Retention
 
 Keep every filed report, the evidence pack it was filled from, and the drill
-records for the support period stated in [SECURITY.md](../../SECURITY.md).
+records for the support period stated in [SECURITY.md](https://github.com/preloop/preloop/blob/main/SECURITY.md).
 The run-over-run audit trail (scheduled re-audits) is the record that
 vulnerability handling continued between releases.

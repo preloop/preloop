@@ -1,5 +1,7 @@
 # Frontend Architecture
 
+Editions: OSS. Contributor documentation for this repository.
+
 The Preloop Console lives in `frontend`. This chapter covers the Lit/Vite/TypeScript stack, directory layout, and the tracker, tools, and cost views.
 
 The frontend is in the `frontend` directory.
@@ -94,11 +96,11 @@ The Tracker Detail page is the entry point for issue analytics. Clicking a track
 *   **Issues tab:** Open issues for a selected project, with search and Run implementer on GitHub and GitLab.
 *   **Pull requests tab:** Open pull requests (GitHub) or merge requests (GitLab), hidden for Jira. The list is live from the tracker (about a one-minute cache) with Run reviewer, using the same create-from-preset path as the issue implementer.
 
-Issue analytics features are no longer accessible from the main sidebar — they are scoped to individual trackers via this detail page.
+Issue analytics features are no longer accessible from the main sidebar, they are scoped to individual trackers via this detail page.
 
 ### Overview and Attention (`src/views/authed/dashboard-control-plane-view.ts`, `attention-view.ts`)
 
-The Overview (`/console`) leads with five current-state counts (agents, flows, models, tools, need attention), the two gateway endpoints (model gateway and tool firewall), a Usage card (tokens or estimated dollars over one page-wide time range, with global budget rows and the limits dialog), and activity cards. "Need attention" links to `/console/attention`, which lists pending approvals, agents with setup or live-check problems, flows with failed runs, models with gateway failures, budgets over their soft or hard limit, and a stale price catalog. Both views derive their items with `utils/attention.ts` (`deriveAttentionItems`, pure) from the same inputs fetched by `utils/attention-data.ts` (`loadAttentionInputs`), so the hero count and the page agree. Any row except a pending approval can be dismissed ("expected", "snoozed for N days", or "fixed"), and a dismissal is stored server-side against the item's fingerprint — the client's summary of why the item is showing (the latest failed run id, the agent's onboarding, validation and latest-session failure state, the sorted list of unpriced aliases) — so the item stays hidden only while that reason is unchanged and comes back by itself when it is not. One marker is deliberately stable: a model with no price at all can be marked unpriced-by-design from the Models list or the model detail page, which stores `model-unpriced:<alias>` against the fingerprint `unpriced:<alias>`. It carries no timestamp, so another unpriced request does not resurface the model; the Models count and badge, and the inbox's "N models unpriced" item, all leave it out until somebody restores it or the model gets a price (which stops the item being derived at all). The dismissals live behind `GET/PUT/DELETE /api/v1/attention/dismissals[/{item_id}]`: reading is open to any account member so the inbox renders the same for everyone, writing takes `manage_agents`, and the console hides the Dismiss/Restore controls (rather than showing buttons that 403) from members without it or against a server that predates the endpoint.
+The Overview (`/console`) leads with five current-state counts (agents, flows, models, tools, need attention), the two gateway endpoints (model gateway and tool firewall), a Usage card (tokens or estimated dollars over one page-wide time range, with global budget rows and the limits dialog), and activity cards. "Need attention" links to `/console/attention`, which lists pending approvals, agents with setup or live-check problems, flows with failed runs, models with gateway failures, budgets over their soft or hard limit, and a stale price catalog. Both views derive their items with `utils/attention.ts` (`deriveAttentionItems`, pure) from the same inputs fetched by `utils/attention-data.ts` (`loadAttentionInputs`), so the hero count and the page agree. Any row except a pending approval can be dismissed ("expected", "snoozed for N days", or "fixed"), and a dismissal is stored server-side against the item's fingerprint: the client's summary of why the item is showing (the latest failed run id, the agent's onboarding, validation and latest-session failure state, the sorted list of unpriced aliases), so the item stays hidden only while that reason is unchanged and comes back by itself when it is not. One marker is deliberately stable: a model with no price at all can be marked unpriced-by-design from the Models list or the model detail page, which stores `model-unpriced:<alias>` against the fingerprint `unpriced:<alias>`. It carries no timestamp, so another unpriced request does not resurface the model; the Models count and badge, and the inbox's "N models unpriced" item, all leave it out until somebody restores it or the model gets a price (which stops the item being derived at all). The dismissals live behind `GET/PUT/DELETE /api/v1/attention/dismissals[/{item_id}]`: reading is open to any account member so the inbox renders the same for everyone, writing takes `manage_agents`, and the console hides the Dismiss/Restore controls (rather than showing buttons that 403) from members without it or against a server that predates the endpoint.
 
 ### Console surfaces (`src/styles/console-surfaces.css`, `console-styles.css`)
 
@@ -113,10 +115,10 @@ The Tools page is MCP and Native tabs, a summary strip of filterable counts, and
 *   **Toolbar:** Search plus Status, Server, Rules, and Workflow filters on `list-toolbar`, matching Models and Trackers. The List/Cards toggle is hidden (`views=['cards']`) until the flat table lands, so a stored view choice cannot change the page.
 *   **Import/Export:** Full configuration export/import as YAML.
 *   **Key components:**
-    *   `tool-list-item.ts` — Individual tool row with expand/collapse, enable/disable toggle, rule summary badges, and drag-and-drop rule reordering.
-    *   `tool-rule-editor.ts` — Dialog for creating/editing access rules with action selection (deny/require approval/allow), condition builder (simple or CEL), and approval workflow configuration (human or AI-driven).
-    *   `approval-policy-dialog.ts` — Dialog for creating/editing approval workflows.
-*   **Access rule UI semantics:** Actions use semantic icons and colors — Deny (red, `x-octagon-fill`), Require Approval (blue/primary, `shield-lock-fill`), Allow (green, `check-circle-fill`).
+    *   `tool-list-item.ts`: Individual tool row with expand/collapse, enable/disable toggle, rule summary badges, and drag-and-drop rule reordering.
+    *   `tool-rule-editor.ts`: Dialog for creating/editing access rules with action selection (deny/require approval/allow), condition builder (simple or CEL), and approval workflow configuration (human or AI-driven).
+    *   `approval-policy-dialog.ts`: Dialog for creating/editing approval workflows.
+*   **Access rule UI semantics:** Actions use semantic icons and colors, Deny (red, `x-octagon-fill`), Require Approval (blue/primary, `shield-lock-fill`), Allow (green, `check-circle-fill`).
 
 ### Cost Analytics Area (`src/views/authed/cost-*`)
 

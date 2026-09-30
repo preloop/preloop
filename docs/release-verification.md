@@ -1,7 +1,9 @@
 # Signed releases and verification
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Version tags published by `scripts/release.sh` run the GitHub Actions
-[Release workflow](../.github/workflows/release.yml). Since v0.15.0, that workflow
+[Release workflow](https://github.com/preloop/preloop/blob/main/.github/workflows/release.yml). Since v0.15.0, that workflow
 uses GitHub OIDC and Sigstore to sign build provenance for the attached release
 assets. No developer signing key or additional repository secret is needed.
 

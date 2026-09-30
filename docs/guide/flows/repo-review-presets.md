@@ -1,14 +1,16 @@
 # Full-repo review presets (architecture-strategy, code health, standards walk, docs currency)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 These flow presets review a **whole repository** rather than a diff. They
 complement the diff-scoped [Pull Request Reviewer preset](pull-request-review.md): PR review runs
 on every change and stays cheap; these run rarely (per release, on a
 schedule, or on demand), sample the repository deterministically, and
 declare exactly what they covered. Each run is a single execution that
-ends by writing `/workspace/result.json` with a versioned schema —
-captured as a first-class execution artifact and retrievable via
-`GET /api/v1/flows/executions/{execution_id}/result` — plus a
-human-readable evidence pack under `/workspace/evidence/`.
+ends by writing `/workspace/result.json` with a versioned schema, plus a
+human-readable evidence pack under `/workspace/evidence/`. Preloop captures
+`result.json` as a first-class execution artifact, retrievable via
+`GET /api/v1/flows/executions/{execution_id}/result`.
 
 | Preset | Lens | result.json schema |
 | --- | --- | --- |
@@ -31,15 +33,15 @@ after the agent has exited, never by a tool on its allowlist.
 They are a **family sharing one skeleton**, not one parameterized preset:
 the four lenses have different required inputs, different failure modes
 when inputs are missing, different result schemas, and different run
-cadences — and the layered preset loader lets an installation override or
+cadences, and the layered preset loader lets an installation override or
 disable one lens without touching the others.
 
 **Security posture is not re-reviewed here.** SBOM verification,
 vulnerability matching, secrets hygiene, and CI hardening belong to the
 [security audit presets](security-audit-presets.md) (referenced, not
 duplicated). If a review pass trips over something security-shaped, it
-files one referral finding pointing at that family — a `file:line`
-pointer only, never a secret value — and moves on. The Standards
+files one referral finding pointing at that family (a `file:line` pointer
+only, never a secret value) and moves on. The Standards
 Compliance Walk marks security rows of a named standard
 `covered_elsewhere: release-security-audit` instead of re-checking them.
 
@@ -76,7 +78,7 @@ All four presets follow the same guarantees:
   size/extension buckets, churn from `git log` name-only output), then a
   **deterministic sampling plan** (entry points, module boundary files,
   top-by-size and top-by-churn per module, everything under
-  `focus_paths`, nothing under `exclude_paths`) — no random sampling, so
+  `focus_paths`, nothing under `exclude_paths`), no random sampling, so
   consecutive runs stay comparable.
 - **Declared coverage.** `result.json` carries a `coverage` block
   (`files_total`, `files_opened`, `plan_completed`, per-module sampling
@@ -91,7 +93,7 @@ All four presets follow the same guarantees:
   reads) inherited from the Pull Request Reviewer.
 - **Freeze-floor drift.** Deliver a previous run's `result.json`
   (`previous_result_path` in the seed, a hygiene-checked URL, or
-  `previous_result_execution_id` naming a previous execution — see
+  `previous_result_execution_id` naming a previous execution, see
   [Baseline from a previous run](#baseline-from-a-previous-run)) and the
   run classifies everything as new / persisting / resolved. Previous open
   items are a floor: each must reappear re-verified against the current
@@ -124,7 +126,7 @@ skipped inputs.
 
 ### Architecture and Strategy Conformance Review
 
-Declared intent is attached or discovered — in order of precedence:
+Declared intent is attached or discovered, in order of precedence:
 
 1. Payload `intent_docs`: workspace-relative paths (deliverable inline
    via the standard [`workspace_files` seed](../../webhook-triggers.md))
@@ -136,7 +138,7 @@ Declared intent is attached or discovered — in order of precedence:
    `CLAUDE.md`).
 
 Every declaration entering the conformance register carries a
-`file:line` source pointer — a declaration the agent cannot point to
+`file:line` source pointer: a declaration the agent cannot point to
 does not exist. **No intent docs is not a failure**: the run records "no
 declared intent" as a gap row, marks conformance rows `not_checkable`,
 still reports the observed architecture, and caps the verdict at
@@ -149,7 +151,7 @@ Needs nothing beyond the checkout. It reads the project's own
 conventions first (agent instruction files, README head, lint/formatter
 configs) and judges the code by those, not generic taste. Five lenses:
 correctness risk, quality, performance hotspots, dead code, and test
-**shape** — the test map is derived from file layout (test-to-source
+**shape**: the test map is derived from file layout (test-to-source
 ratios, untested entry points) and is never presented as measured
 coverage. Output includes a per-module health register (one row per
 lens) and a findings ledger with stable ids
@@ -157,7 +159,7 @@ lens) and a findings ledger with stable ids
 
 ### Standards Compliance Walk
 
-The payload must name the standards — the preset **refuses to run
+The payload must name the standards: the preset **refuses to run
 without one** (guessing which standard applies would contaminate the
 register):
 
@@ -191,8 +193,8 @@ project under review is one directory of a larger repository (everything
 read, searched, and claimed is scoped to that subtree; `docs_paths`
 overrides document discovery). It extracts claims from the project's
 documentation and checks each one against the code. **Five checkable
-claim types only** — `entry_point`, `service`, `dependency`, `env_var`,
-`command` — because a sixth would turn the lens into a prose critic.
+claim types only** (`entry_point`, `service`, `dependency`, `env_var`,
+`command`), because a sixth would turn the lens into a prose critic.
 Everything else a document says is out of scope: no finding about
 writing quality, tone, structure, or completeness is ever emitted, and
 missing documentation is not drift (a claim that was never made cannot
@@ -260,7 +262,7 @@ Rules, in the order they bite:
   fetched. The caller who attached a file said what they wanted.
 - **Account scoped.** The lookup is scoped to the account that owns the
   flow, so an execution in another account behaves exactly like one that
-  never existed — same outcome, same reason string, nothing to probe
+  never existed: same outcome, same reason string, nothing to probe
   with.
 - **Degrades, never fails.** An id that does not resolve, an execution
   that stored no result, or a result over the cap does not fail the run.

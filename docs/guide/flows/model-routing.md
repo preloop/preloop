@@ -1,5 +1,7 @@
 # Model routing on a flow
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 A flow can choose a model and harness per execution from the issue's current labels. The flow's selected model and harness remain the default. This is not an automatic swap mid-conversation.
 
 For Alibaba-hosted chat models, see [Alibaba Cloud Model Studio](../alibaba-model-studio.md)

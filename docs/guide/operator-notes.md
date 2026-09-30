@@ -1,5 +1,7 @@
 # Operator notes
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 An operator note is a short instruction from an identified human to a running
 agent. You type it in the console, the CLI or the API; the agent receives it at
 its next turn boundary; the note is recorded as a human decision, with who sent

@@ -1,5 +1,7 @@
 # Runner end-to-end smoke test (staging)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Internal checklist: verify the self-hosted runner path end-to-end
 against staging (`https://review.preloop.ai`) before handing it to a
 design partner. Takes ~10 minutes on any Linux box or Proxmox guest
@@ -103,6 +105,6 @@ success, non-zero on FAILED/STOPPED/TIMEOUT.
   execution ends. Root on the host can still read it from the running
   container until then.
 - No `git_clone_config` / `custom_commands` execution on the runner
-  host yet — those run inside the agent image if it supports them.
+  host yet, those run inside the agent image if it supports them.
 - Runner-side workspace caching is not implemented; every job is a
   fresh `docker run --rm`.

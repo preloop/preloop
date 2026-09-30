@@ -1,5 +1,7 @@
 # Supported-release vulnerability maintenance
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This controller keeps one durable work item per opted-in product, supported
 release, and advisory/component pair. It is not a backport factory, not a
 conformity assessment, and not an SLA. Finding absence on a later scan is not

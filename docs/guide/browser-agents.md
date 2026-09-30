@@ -1,5 +1,7 @@
 # Browser steps
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 An agent that drives a browser can attach what it did to its runtime
 session. Each step is an observation: the action the agent reports, the
 URL or target it names, and the reasoning it gives. A stored step is not

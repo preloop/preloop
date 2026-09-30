@@ -1,5 +1,7 @@
 # Agent pod isolation
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 An agent pod runs code a model wrote, on a repository the model can edit,
 with a credential the platform minted for it. It is the least trusted thing
 in the deployment. This page states what such a pod can reach, what the

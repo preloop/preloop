@@ -1,5 +1,7 @@
 # Preloop repository issue readiness policy
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This policy names the labels used to assess issues in `preloop/preloop`.
 It is project policy, not a label taxonomy imposed by the generic triage preset.
 Triage updates the issue assessment and applies its complexity label through the

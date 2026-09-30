@@ -1,0 +1,130 @@
+# Sensitive File Protection Policy for OpenClaw
+#
+# This policy requires human approval before writing to sensitive files
+# and directories that contain credentials, configuration, or system files.
+#
+# Usage:
+# 1. Import this policy via the Preloop API: POST /api/v1/policies/upload
+# 2. The policy will configure file write tools with conditional approval
+# 3. Configure approvers in the Preloop dashboard
+#
+# Customize paths based on your environment and security requirements.
+
+version: "1.0"
+metadata:
+  name: "Sensitive File Protection"
+  description: |
+    Require approval for file write operations to sensitive locations including
+    system configuration, credentials, SSH keys, cloud configs, and environment files.
+  tags:
+    - security
+    - files
+    - openclaw
+
+approval_workflows:
+  - name: "file-write-approval"
+    timeout_seconds: 600  # 10 minutes
+    approvals_required: 1
+
+tools:
+  - name: "write_file"
+    source: mcp
+    approval_workflow: "file-write-approval"
+    conditions:
+      # System configuration directories
+      - expression: "args.path.startsWith('/etc/') || args.path.startsWith('/usr/') || args.path.startsWith('/var/')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "System configuration directories"
+
+      # User home sensitive directories
+      - expression: "args.path.contains('/.ssh/') || args.path.contains('/.gnupg/') || args.path.contains('/.config/')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "User home sensitive directories"
+
+      # Cloud provider credentials
+      - expression: "args.path.contains('/.aws/') || args.path.contains('/.azure/') || args.path.contains('/.gcloud/')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Cloud provider credential directories"
+
+      # Container/K8s credentials
+      - expression: "args.path.contains('/.kube/') || args.path.contains('/.docker/')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Container orchestration credentials"
+
+      # Version control sensitive files
+      - expression: "args.path.contains('/.git/') || args.path.contains('/.gitconfig')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Git configuration files"
+
+      # Shell configuration
+      - expression: "args.path.endsWith('/.bashrc') || args.path.endsWith('/.zshrc') || args.path.endsWith('/.profile')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Shell configuration files"
+
+      # Credential and secret files
+      - expression: "args.path.contains('.env') || args.path.contains('credentials') || args.path.contains('secret')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Environment and credential files"
+
+      # Key files
+      - expression: "args.path.endsWith('.pem') || args.path.endsWith('.key') || args.path.endsWith('.crt')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Certificate and key files"
+
+      # Database files
+      - expression: "args.path.endsWith('.sqlite') || args.path.endsWith('.sqlite3') || args.path.endsWith('.db')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Database files"
+
+  - name: "create_file"
+    source: mcp
+    approval_workflow: "file-write-approval"
+    conditions:
+      # Same conditions as write_file
+      - expression: "args.path.contains('.env') || args.path.contains('secret') || args.path.contains('/.ssh/')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Sensitive file creation"
+
+      - expression: "args.path.endsWith('.pem') || args.path.endsWith('.key')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Key file creation"
+
+  - name: "edit_file"
+    source: mcp
+    approval_workflow: "file-write-approval"
+    conditions:
+      # Sensitive file edits
+      - expression: "args.path.contains('.env') || args.path.contains('secret') || args.path.contains('credentials')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Sensitive file edits"
+
+# Examples of what this policy will do:
+#
+# REQUIRES APPROVAL:
+#   Write to ~/.ssh/config                - SSH configuration
+#   Write to ~/.aws/credentials           - AWS credentials
+#   Write to /etc/hosts                   - System hosts file
+#   Write to project/.env                 - Environment secrets
+#   Write to ~/.kube/config               - Kubernetes credentials
+#   Write to app/config/secrets.yaml      - Secrets in name
+#   Write to ~/.bashrc                    - Shell configuration
+#   Write to server.key                   - Private key file
+#
+# AUTO-APPROVED:
+#   Write to project/src/main.py          - Regular source code
+#   Write to /tmp/scratch.txt             - Temporary files
+#   Write to ~/Documents/notes.md         - User documents
+#   Write to project/README.md            - Documentation
+#   Write to build/output.log             - Build artifacts

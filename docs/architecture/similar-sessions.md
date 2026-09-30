@@ -1,5 +1,7 @@
 # Sessions Similar To This One
 
+Editions: OSS. Contributor documentation for this repository.
+
 `GET /api/v1/runtime-sessions/{id}/similar` answers one question: which other
 sessions of this account went the same way as the one on screen. The issue that
 asked for it (#674) left four decisions open and named none of them as

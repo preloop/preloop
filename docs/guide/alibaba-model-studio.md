@@ -1,5 +1,7 @@
 # Alibaba Cloud Model Studio
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Choose **Alibaba Cloud Model Studio (Qwen)** when adding an AI model. Existing
 configurations keep the provider identifier `qwen`; no migration is needed.
 

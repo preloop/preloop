@@ -1,0 +1,307 @@
+# Documentation site for docs.preloop.ai. Build: mkdocs build --strict
+site_name: Preloop Documentation
+site_url: https://docs.preloop.ai/
+repo_url: https://github.com/preloop/preloop
+repo_name: preloop/preloop
+edit_uri: edit/main/docs/
+docs_dir: docs
+
+theme:
+  name: material
+  logo: assets/preloop-badge.svg
+  favicon: assets/favicon.png
+  features:
+    - navigation.sections
+    - search.suggest
+    - search.highlight
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+  # Dark only: docs/stylesheets/extra.css and the Redoc theme in
+  # docs/guide/api.md hardcode dark colours.
+  palette:
+    scheme: slate
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: Fira Code
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - toc:
+      permalink: true
+      # GitHub-compatible heading ids, so #anchors work on github.com and on the site.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+
+plugins:
+  - search
+  - mermaid2
+  # Old docs.preloop.ai URLs (site pages lived at the docs root before the move).
+  - redirects:
+      redirect_maps:
+        api.md: guide/api.md
+        approvals/ai-approvals.md: guide/approvals/ai-approvals.md
+        approvals/async-approvals.md: guide/approvals/async-approvals.md
+        approvals/cel-expressions.md: guide/approvals/cel-expressions.md
+        approvals/justification.md: guide/approvals/justification.md
+        approvals/notifications.md: guide/approvals/notifications.md
+        approvals/teams.md: guide/approvals/teams.md
+        architecture.md: guide/functionality.md
+        guide/architecture.md: guide/functionality.md
+        cli.md: guide/cli.md
+        clients/claude-code.md: guide/clients/claude-code.md
+        clients/gemini-cli.md: guide/clients/gemini-cli.md
+        clients/mobile-apps.md: guide/clients/mobile-apps.md
+        clients/opencode.md: guide/clients/opencode.md
+        clients/other-mcp-clients.md: guide/clients/other-mcp-clients.md
+        concepts/cost-analytics.md: guide/concepts/cost-analytics.md
+        concepts/gateway-overhead.md: guide/concepts/gateway-overhead.md
+        concepts/model-gateway.md: guide/concepts/model-gateway.md
+        concepts/policy-as-code.md: guide/concepts/policy-as-code.md
+        concepts/runtime-sessions.md: guide/concepts/runtime-sessions.md
+        concepts/safety-layer.md: guide/concepts/safety-layer.md
+        concepts/subject-scoped-governance.md: guide/concepts/subject-scoped-governance.md
+        cost/importing-cursor-usage.md: guide/cost/importing-cursor-usage.md
+        cost/session-optimization.md: guide/cost/session-optimization.md
+        flows/creating-flows.md: guide/flows/creating-flows.md
+        flows/flow-execution.md: guide/flows/flow-execution.md
+        flows/flow-triggers.md: guide/flows/flow-triggers.md
+        getting-started/account.md: guide/getting-started/account.md
+        getting-started/connect-mcp-client.md: guide/getting-started/connect-mcp-client.md
+        getting-started/test-workflow.md: guide/getting-started/test-workflow.md
+        integrations/agent-control-runtime-adapters.md: guide/integrations/agent-control-runtime-adapters.md
+        integrations/enterprise-billing.md: guide/integrations/enterprise-billing.md
+        integrations/openclaw.md: guide/integrations/openclaw.md
+        quickstart-cli.md: guide/quickstart-cli.md
+        quickstart-flows.md: guide/quickstart-flows.md
+        quickstart.md: guide/quickstart.md
+        security-privacy.md: security/security-privacy.md
+        self-hosting/installation.md: operations/installation.md
+        self-hosting/tls.md: operations/tls.md
+        self-hosting/windows.md: operations/windows-wsl2.md
+        tools/builtin.md: guide/tools/builtin.md
+        tools/external-mcp.md: guide/tools/external-mcp.md
+        tools/policy-generation.md: guide/tools/policy-generation.md
+        troubleshooting.md: guide/troubleshooting.md
+        upgrade.md: operations/upgrade.md
+        use-cases.md: guide/use-cases.md
+        users/managing-teams.md: guide/users/managing-teams.md
+        users/roles.md: guide/users/roles.md
+        owasp-top-10-coverage.md: security/owasp-top-10-coverage.md
+        clients/codex-cli.md: guide/codex-cli.md
+        clients/hermes.md: guide/hermes.md
+        concepts/mcp.md: architecture/mcp.md
+        flows/security-audit-presets.md: guide/flows/security-audit-presets.md
+        guide/clients/hermes.md: guide/hermes.md
+        guide/clients/codex-cli.md: guide/codex-cli.md
+
+nav:
+  - Home:
+      - Introduction: index.md
+      - What Preloop includes: guide/functionality.md
+      - Quick starts:
+          - "Onboard local agents with the CLI (60 s)": guide/quickstart-cli.md
+          - "Part 1: Safety layer (5 min)": guide/quickstart.md
+          - "Part 2: Agentic flows (5 min)": guide/quickstart-flows.md
+      - Getting started:
+          - Creating your account: guide/getting-started/account.md
+          - Connect your MCP client: guide/getting-started/connect-mcp-client.md
+          - Testing your workflow: guide/getting-started/test-workflow.md
+
+  - Onboarding agents:
+      - Claude Code: guide/clients/claude-code.md
+      - Codex CLI: guide/codex-cli.md
+      - Gemini CLI: guide/clients/gemini-cli.md
+      - OpenCode: guide/clients/opencode.md
+      - Hermes: guide/hermes.md
+      - Cursor CLI: guide/cursor-cli.md
+      - Copilot coverage: guide/copilot.md
+      - Copilot CLI: guide/copilot-cli.md
+      - Copilot cloud agent: guide/copilot-cloud-agent.md
+      - OpenClaw: guide/integrations/openclaw.md
+      - OpenClaw policy examples: guide/examples/policies/openclaw/README.md
+      - Agent Control runtime adapters: guide/integrations/agent-control-runtime-adapters.md
+      - Browser agents: guide/browser-agents.md
+      - Cursor, Claude Desktop and other MCP clients: guide/clients/other-mcp-clients.md
+      - Mobile apps (iOS, Android): guide/clients/mobile-apps.md
+
+  - Core concepts:
+      - Safety layer and access rules: guide/concepts/safety-layer.md
+      - MCP tools: architecture/mcp.md
+      - AI model gateway: guide/concepts/model-gateway.md
+      - Gateway overhead: guide/concepts/gateway-overhead.md
+      - Subject-scoped governance: guide/concepts/subject-scoped-governance.md
+      - Policy-as-code: guide/concepts/policy-as-code.md
+      - Runtime sessions: guide/concepts/runtime-sessions.md
+      - Subagent session identity: guide/subagent-session-identity.md
+
+  - Governance and approvals:
+      - AI-driven approvals: guide/approvals/ai-approvals.md
+      - Async approvals: guide/approvals/async-approvals.md
+      - Per-tool justification: guide/approvals/justification.md
+      - Conditional approval (CEL): guide/approvals/cel-expressions.md
+      - Multi-channel notifications: guide/approvals/notifications.md
+      - Teams in approval workflows: guide/approvals/teams.md
+      - Built-in tools: guide/tools/builtin.md
+      - External MCP tools: guide/tools/external-mcp.md
+      - Policy generation: guide/tools/policy-generation.md
+      - Model content policies: guide/model-content-policies.md
+      - Account kill switch: guide/account-kill-switch.md
+      - Operator notes: guide/operator-notes.md
+
+  - Sessions, search and audit:
+      - Session search for agents: guide/agent-session-search.md
+      - Saved session searches: guide/session-saved-searches.md
+      - Session search audit: guide/session-search-audit.md
+      - Evidence storage: guide/flows/evidence-storage.md
+      - "DORA: the AI-agent slice": guide/dora-agent-slice.md
+      - Outbound webhooks: guide/webhooks.md
+
+  - Cost:
+      - Cost analytics and budgets: guide/concepts/cost-analytics.md
+      - Session optimization: guide/cost/session-optimization.md
+      - Importing Cursor usage: guide/cost/importing-cursor-usage.md
+      - Cursor usage hooks: guide/cursor-usage-hooks.md
+      - Copilot usage import: guide/copilot-usage-import.md
+      - Usage hooks: guide/usage-hooks.md
+      - Model price refresh: guide/model-price-refresh.md
+      - Model context limits: guide/model-context-limits.md
+      - Hosted spending: operations/hosted-spending.md
+      - Enterprise billing and FinOps: guide/integrations/enterprise-billing.md
+      - Price reviews:
+          - "2026-09-15 Alibaba": pricing/reviews/2026-09-15-alibaba.md
+          - "2026-09-19 Alibaba": pricing/reviews/2026-09-19-alibaba.md
+
+  - Models and providers:
+      - Which gateway URL an agent calls: operations/model-gateway-url.md
+      - Amazon Bedrock: guide/providers/bedrock.md
+      - Azure OpenAI: guide/providers/azure-openai.md
+      - Alibaba Cloud Model Studio: guide/alibaba-model-studio.md
+      - Model routing on a flow: guide/flows/model-routing.md
+
+  - Flows:
+      - Creating flows: guide/flows/creating-flows.md
+      - Flow triggers: guide/flows/flow-triggers.md
+      - Webhook triggers: webhook-triggers.md
+      - Flow execution: guide/flows/flow-execution.md
+      - Persistent execution: guide/flows/persistent-execution.md
+      - Delegation:
+          - Delegation with run_flow: guide/flows/flow-delegation.md
+          - Delegation object shapes: guide/flow-delegation-shapes.md
+          - Approvals in child executions: guide/flow-delegation-child-approvals.md
+      - Environments and recovery: guide/flows/environments-and-recovery.md
+      - Workspace recovery acceptance: guide/flows/workspace-recovery-acceptance.md
+      - Presets:
+          - Pull request review: guide/flows/pull-request-review.md
+          - Issue triage: guide/flows/issue-triage.md
+          - Automated issue implementation: guide/flows/automated-issue-implementation.md
+          - Durable implementation feedback: guide/flows/durable-implementation-feedback.md
+          - Issue readiness and completion audits: guide/flows/issue-lifecycle.md
+          - Issue readiness policy: guide/flows/issue-readiness-policy.md
+          - Release backport: guide/flows/release-backport.md
+          - Full-repo review: guide/flows/repo-review-presets.md
+          - Portfolio review: guide/flows/portfolio-review.md
+          - "Security audit (CRA evidence packs)": guide/flows/security-audit-presets.md
+          - Security maintenance: guide/flows/security-maintenance.md
+          - Product evidence: guide/flows/product-evidence.md
+          - "Scanner binaries: decision note": guide/flows/scanner-binaries-decision.md
+      - Trigger from CI: guide/flows/ci-trigger.md
+      - GitHub Actions: guide/flows/github-actions.md
+      - Trackers:
+          - Bitbucket Cloud: guide/bitbucket-tracker.md
+          - Bitbucket and Jira quickstart: guide/bitbucket-jira-quickstart.md
+          - Jira repository binding: guide/flows/jira-repository-binding.md
+
+  - Runners:
+      - Linux quickstart: guide/runners/quickstart-linux.md
+      - macOS quickstart: guide/runners/quickstart-macos.md
+      - Windows quickstart: guide/runners/quickstart-windows.md
+      - Deploy agents onto Linux hosts: operations/agent-deployment.md
+      - Runner smoke test: guide/runners/staging-smoke.md
+
+  - Users and teams:
+      - Roles and permissions: guide/users/roles.md
+      - Managing teams: guide/users/managing-teams.md
+      - Accounts and CLI profiles: guide/accounts-and-profiles.md
+
+  - Self-hosting and operations:
+      - Install the OSS stack: operations/installation.md
+      - Windows (WSL2): operations/windows-wsl2.md
+      - TLS reverse proxy: operations/tls.md
+      - Upgrading Preloop: operations/upgrade.md
+      - Schema migrations: operations/schema-migrations.md
+      - Database credentials: operations/database-credentials.md
+      - Gateway memory: operations/gateway-memory.md
+      - Session embedding worker: operations/session-embedding.md
+      - Session search: operations/session-search.md
+      - OTLP export: guide/observability-otlp.md
+      - Browser error reporting: operations/browser-error-reporting.md
+
+  - Security and compliance:
+      - Security and privacy: security/security-privacy.md
+      - Redaction: security/redaction.md
+      - OWASP Top 10 coverage: security/owasp-top-10-coverage.md
+      - Agent pod isolation: security/agent-isolation.md
+      - CRA Article 14 runbooks: security/article-14-runbooks.md
+      - Historical secret-scan findings: security/secrets-history.md
+      - Code signing policy: code-signing-policy.md
+      - Windows code signing: windows-code-signing.md
+      - Continuous fuzzing: fuzzing.md
+      - OpenSSF best practices: OPENSSF_BEST_PRACTICES.md
+      - Release verification: release-verification.md
+      - Compatibility policy: compatibility.md
+
+  - Reference:
+      - CLI: guide/cli.md
+      - API: guide/api.md
+      - Troubleshooting: guide/troubleshooting.md
+      - Use cases: guide/use-cases.md
+      - Windows CLI install: windows-cli.md
+      - Native development: native-dev.md
+
+  - Architecture (for contributors):
+      - System overview: architecture/overview.md
+      - Data model: architecture/data-model.md
+      - Technical decisions: architecture/decisions.md
+      - Agent Control: architecture/agent-control.md
+      - Tool configuration and approvals: architecture/approvals.md
+      - Cost analytics and budgeting: architecture/cost.md
+      - Flows: architecture/flows.md
+      - Frontend: architecture/frontend.md
+      - Model gateway: architecture/gateway.md
+      - Subject-scoped governance: architecture/governance.md
+      - Real-time communication: architecture/realtime.md
+      - Security considerations: architecture/security.md
+      - Similar sessions: architecture/similar-sessions.md
+      - Preloop Sync: architecture/sync.md
+
+validation:
+  nav:
+    omitted_files: info
+  links:
+    not_found: warn
+    anchors: warn
+    unrecognized_links: warn

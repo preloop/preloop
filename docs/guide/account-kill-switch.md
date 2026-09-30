@@ -1,5 +1,7 @@
 # Account kill switch
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Use **Settings > Emergency** (`/console/settings/emergency`) to halt an
 account. The controls used to sit on the account page; they now have their own
 page, visible only to a reader who may use them. Owners,

@@ -1,5 +1,7 @@
 # Azure OpenAI
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This guide connects an Azure OpenAI deployment to Preloop, sends one request
 through the gateway, and checks that the request shows up on the Cost page.
 

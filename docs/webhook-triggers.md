@@ -1,5 +1,7 @@
 # Webhook Triggers
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Flows can be triggered by an inbound webhook:
 
 ```
@@ -74,7 +76,7 @@ Each entry:
 | Field | Description |
 | --- | --- |
 | `path` | Destination relative to `/workspace`. Forward slashes only. |
-| `content_base64` | File content, standard base64 (whitespace-wrapped input is tolerated). v1 is inline-only — URLs are not supported. |
+| `content_base64` | File content, standard base64 (whitespace-wrapped input is tolerated). v1 is inline-only: URLs are not supported. |
 
 Files are written **after** the flow's git clone step and **before** any
 custom setup commands, so cloned repos do not sweep the seeds away and setup
@@ -130,6 +132,6 @@ where `/workspace` resolves through a symlink work normally.
 
 ### See also
 
-- [Security audit presets](guide/flows/security-audit-presets.md) — CI-fed
+- [Security audit presets](guide/flows/security-audit-presets.md): CI-fed
   SBOM verification, exploit checking, and release audits that consume
   `workspace_files`-seeded artifacts.

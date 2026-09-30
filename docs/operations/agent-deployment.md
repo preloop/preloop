@@ -1,5 +1,7 @@
 # Deploy agents onto remote Linux hosts
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The console's SSH and GCP deployment actions run the same `preloop agents
 install-runtime` and live validation path as the CLI. Success requires a real
 registered agent, its selected model binding, runtime version, and validated

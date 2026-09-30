@@ -1,5 +1,7 @@
 # Native development (no Docker)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Use this when the stack runs **on the machine** (a Linux VM, a spare host, or
 Cursor Cloud) instead of `docker compose up`. Compose remains the default for
 laptops that have Docker.

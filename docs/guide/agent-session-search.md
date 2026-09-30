@@ -1,5 +1,7 @@
 # search_sessions: the corpus as a tool
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 `search_sessions` is the built-in tool an agent uses to look up what past
 sessions did before repeating the work. It is the same ranked search the
 console runs, asked by the agent instead of by a human: did this migration

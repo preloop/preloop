@@ -1,5 +1,7 @@
 # Jira project repository binding
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 A Jira project tracks issues but has no git repository. A flow triggered by a
 Jira issue event can still clone, push and open a pull request once the Jira
 project is bound to a repository on a code host (GitHub, GitLab or Bitbucket
