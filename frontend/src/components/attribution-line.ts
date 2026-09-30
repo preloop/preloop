@@ -9,6 +9,7 @@ import type {
 import {
   formatApprovalSource,
   getApprovalSource,
+  getApprovalOrigin,
 } from '../utils/approval-identity';
 
 /**
@@ -52,7 +53,7 @@ export interface AttributionSource {
 
 /** One "Label value" pair, already resolved to what the DOM should show. */
 export interface AttributionPart {
-  key: 'agent' | 'key' | 'session' | 'flow';
+  key: 'agent' | 'key' | 'session' | 'flow' | 'origin' | 'model';
   label: string;
   text: string;
   href?: string;
@@ -128,6 +129,32 @@ export function attributionParts(
         sessionId
       )}`,
       title: sessionId,
+    });
+  }
+
+  const origin = getApprovalOrigin(source.tool_args);
+  if (origin?.sessionId && origin.sessionId !== sessionId) {
+    parts.push({
+      key: 'origin',
+      label: 'Origin session',
+      text:
+        origin.sessionId.length > 16
+          ? `${origin.sessionId.slice(0, 8)}…${origin.sessionId.slice(-8)}`
+          : origin.sessionId,
+      title: origin.sessionId,
+      href: origin.runtimeSessionId
+        ? `/console/runtime-sessions?sessionId=${encodeURIComponent(origin.runtimeSessionId)}`
+        : undefined,
+    });
+  } else if (adapter && !origin?.sessionId) {
+    parts.push({ key: 'origin', label: 'Origin session', text: 'Unknown' });
+  }
+  if (origin || adapter || sessionId) {
+    parts.push({
+      key: 'model',
+      label: 'Model',
+      text: origin?.model || 'Unknown',
+      title: origin?.model || 'The originating turn did not report a model',
     });
   }
 

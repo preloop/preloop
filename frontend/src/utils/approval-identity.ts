@@ -1,3 +1,4 @@
+export const APPROVAL_ORIGIN_KEY = '_preloop_origin';
 export const APPROVAL_SOURCE_KEY = '_preloop_source';
 export const APPROVAL_REPOSITORY_KEY = '_preloop_repository';
 
@@ -144,7 +145,26 @@ export function withoutApprovalMetadata(
   const {
     [APPROVAL_SOURCE_KEY]: _source,
     [APPROVAL_REPOSITORY_KEY]: _repository,
+    [APPROVAL_ORIGIN_KEY]: _origin,
     ...displayArgs
   } = toolArgs;
   return displayArgs;
+}
+
+/** Immutable originating hook context, distinct from a shared credential session. */
+export function getApprovalOrigin(
+  toolArgs: Record<string, unknown> | null | undefined
+): {
+  sessionId: string | null;
+  model: string | null;
+  runtimeSessionId: string | null;
+} | null {
+  const raw = toolArgs?.[APPROVAL_ORIGIN_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  return {
+    sessionId: cleanString(record.session_id) || null,
+    model: cleanString(record.model) || null,
+    runtimeSessionId: cleanString(record.runtime_session_id) || null,
+  };
 }

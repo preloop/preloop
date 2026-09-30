@@ -4,6 +4,17 @@ Editions: OSS. Contributor documentation for this repository.
 
 Tool configuration records which tools are enabled and whether they need a human in the loop. This chapter covers approval workflows, the permission-check path for native tools, and `ask_user`.
 
+Native approval requests record the hook's originating session and turn model in
+reserved `_preloop_origin` metadata. The console list and detail, CLI pending
+list, email, and push notifications show this identity so parallel processes
+sharing a credential can be distinguished. A recorded origin session links to
+its account-scoped session page. Missing identity reads as `Unknown`; the
+credential's shared runtime session and an agent's configured model do not
+stand in for the originating process. Codex reads only identity envelopes from
+its exact session rollout using bounded reads, never transcript content or a
+shared model configuration. MCP approvals retain authenticated runtime session
+links and show an unknown turn model when no authoritative model is reported.
+
 ## Tool Configuration and Approval Workflow
 
 Preloop includes comprehensive infrastructure for managing tool configurations and implementing human-in-the-loop approval workflows for sensitive tool operations.

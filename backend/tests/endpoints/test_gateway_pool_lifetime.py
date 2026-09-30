@@ -393,8 +393,13 @@ async def test_nested_session_summary_releases_pool_and_preserves_accounting(
                 )
             )
             try:
-                assert await asyncio.to_thread(entered.wait, 3), (
-                    "nested summary provider was never called"
+                # Same bound as the other provider waits in this file. A
+                # three-second cutoff expired on a loaded CI shard after the
+                # request had already started and before the nested call.
+                await _await_provider_event(
+                    entered,
+                    [task],
+                    message="nested summary provider was never called",
                 )
                 assert not task.done()
                 await asyncio.to_thread(_probe_pool, gateway_pool.engine)
