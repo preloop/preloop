@@ -1659,6 +1659,27 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         """
         direct = aliased(ManagedAgent)
         session_agent = aliased(ManagedAgent)
+        canonical_principal = and_(
+            ApiUsage.runtime_principal_type == "managed_agent",
+            cast(ManagedAgent.id, String) == ApiUsage.runtime_principal_id,
+        )
+        canonical_agent_id = (
+            select(ManagedAgent.id)
+            .where(ManagedAgent.account_id == ApiUsage.account_id, canonical_principal)
+            .correlate(ApiUsage)
+            .scalar_subquery()
+        )
+        source_agent_id = (
+            select(ManagedAgent.id)
+            .where(
+                ManagedAgent.account_id == ApiUsage.account_id,
+                ManagedAgent.session_source_type == ApiUsage.runtime_principal_type,
+                ManagedAgent.session_source_id == ApiUsage.runtime_principal_id,
+            )
+            .correlate(ApiUsage)
+            .scalar_subquery()
+        )
+        direct_agent_id = func.coalesce(canonical_agent_id, source_agent_id)
         session_agent_id = (
             select(ManagedAgent.id)
             .where(
@@ -1736,14 +1757,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 func.count(ApiUsage.id).label("request_count"),
             )
             .select_from(ApiUsage)
-            .outerjoin(
-                direct,
-                and_(
-                    direct.account_id == ApiUsage.account_id,
-                    direct.session_source_type == ApiUsage.runtime_principal_type,
-                    direct.session_source_id == ApiUsage.runtime_principal_id,
-                ),
-            )
+            .outerjoin(direct, direct.id == direct_agent_id)
             .outerjoin(
                 RuntimeSession,
                 and_(

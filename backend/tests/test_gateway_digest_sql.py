@@ -114,6 +114,7 @@ def test_full_window_aggregate_sql_attribution_ranking_and_reconciliation() -> N
         runtime_principal_type="example",
         runtime_principal_id="leading",
     )
+    usage(runtime_principal_type="managed_agent", runtime_principal_id="agent-a")
     usage(runtime_session_id="session-own", model_alias="model-b")
     usage(
         runtime_session_id="session-foreign",
@@ -170,20 +171,20 @@ def test_full_window_aggregate_sql_attribution_ranking_and_reconciliation() -> N
         )
     assert len(statements) == 2
     assert agents[0]["agent_id"] == "agent-a"
-    assert agents[0]["request_count"] == 261
-    assert agents[-1]["total_count"] == 267
+    assert agents[0]["request_count"] == 262
+    assert agents[-1]["total_count"] == 268
     assert agents[-1]["request_count"] == 2
     assert agents[-1]["other_count"] == 1
     assert agents[1]["name"] != agents[0]["name"]
     assert models[0]["name"] == "model-a"
-    assert models[0]["request_count"] == 261
+    assert models[0]["request_count"] == 262
     assert models[1]["name"] == "Fallback model"
     assert models[2]["name"] == "model-b"
     assert models[-1]["request_count"] == 1
     assert models[-1]["other_count"] == 2
     for rows in (agents, models):
         assert (
-            sum(row["request_count"] for row in rows) + rows[-1]["other_count"] == 267
+            sum(row["request_count"] for row in rows) + rows[-1]["other_count"] == 268
         )
     assert all(
         row["name"] not in ("Foreign agent", "Foreign model", "excluded")

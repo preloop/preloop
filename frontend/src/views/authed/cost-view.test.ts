@@ -11,6 +11,7 @@ describe('CostView', () => {
   let fetchStub: sinon.SinonStub;
   let accountPayload: Record<string, unknown>;
   let originalUrl: string;
+  let accountStatus = 200;
   // Per-test copy of the payload so a test can add fields (e.g. the imported
   // usage block) without leaking into the others.
   let summaryPayload: Record<string, unknown>;
@@ -144,6 +145,7 @@ describe('CostView', () => {
   };
 
   beforeEach(() => {
+    accountStatus = 200;
     originalUrl = window.location.pathname + window.location.search;
     accountPayload = {
       id: '00000000-0000-4000-8000-000000000001',
@@ -181,7 +183,9 @@ describe('CostView', () => {
         const url = typeof input === 'string' ? input : input.toString();
 
         if (url.includes('/api/v1/account/details'))
-          return new Response(JSON.stringify(accountPayload));
+          return new Response(JSON.stringify(accountPayload), {
+            status: accountStatus,
+          });
         if (url.includes('/api/v1/billing/cost/reprice/')) {
           return new Response(JSON.stringify(jobStatus));
         }
@@ -1873,6 +1877,19 @@ describe('CostView', () => {
     );
     expect(element.shadowRoot?.textContent).to.contain(
       'Invalid digest date range'
+    );
+  });
+  it('unauthorized account context cannot load digest figures', async () => {
+    accountStatus = 403;
+    window.history.replaceState({}, '', digestUrl);
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await settled(element);
+    expect(costUrls()).to.have.length(0);
+    expect(
+      element.shadowRoot?.querySelector('[aria-label="Cost summary metrics"]')
+    ).not.to.exist;
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Failed to fetch account details'
     );
   });
 });
