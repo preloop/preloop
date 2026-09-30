@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from aiodocker.exceptions import DockerError
 
+from preloop.agents.resources import docker_memory_bytes
 from preloop.utils.execve_limits import (
     PROMPT_FILE_PATH,
     build_prompt_materialization_shell,
@@ -343,10 +344,7 @@ exit $AIDER_EXIT_CODE
                 # tmpfs is an in-memory filesystem that's automatically cleaned up
                 "Tmpfs": {"/workspace": "rw,size=2g,mode=1777"},
                 # Resource limits
-                "Memory": int(os.getenv("AGENT_MEMORY_LIMIT", "2g").replace("g", ""))
-                * 1024
-                * 1024
-                * 1024,
+                "Memory": docker_memory_bytes(os.getenv("AGENT_MEMORY_LIMIT", "4g")),
                 "CpuQuota": int(os.getenv("AGENT_CPU_QUOTA", "100000")),
             },
         }

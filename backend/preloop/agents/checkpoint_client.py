@@ -18,6 +18,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 WORKSPACE_ROOT = Path("/workspace")
 EVIDENCE_REFERENCE_PATH = Path("/tmp/preloop-evidence-reference.json")
@@ -126,6 +127,47 @@ def checkpoint_base(repo: Path, root: Path) -> str | None:
     return git_value(repo, "merge-base", "HEAD", "refs/remotes/origin/HEAD")
 
 
+class _CheckpointBuffer:
+    """Enforce the compressed cap while writing, even within a large member."""
+
+    def __init__(self, limit: int) -> None:
+        self.buffer = io.BytesIO()
+        self.limit = limit
+
+    def write(self, data: bytes) -> int:
+        if self.tell() + len(data) > self.limit:
+            raise ValueError("checkpoint_oversized")
+        return self.buffer.write(data)
+
+    def tell(self) -> int:
+        return self.buffer.tell()
+
+    def getvalue(self) -> bytes:
+        return self.buffer.getvalue()
+
+    def read(self, size: int = -1) -> bytes:
+        return self.buffer.read(size)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self.buffer.seek(offset, whence)
+
+    def close(self) -> None:
+        self.buffer.close()
+
+
+class _CheckpointReader:
+    """Hash file chunks as tarfile streams them, without loading the member."""
+
+    def __init__(self, source: BinaryIO) -> None:
+        self.source = source
+        self.digest = hashlib.sha256()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self.source.read(size)
+        self.digest.update(data)
+        return data
+
+
 def capture(root: Path, *, max_bytes: int) -> bytes:
     """Capture a stable file set, detecting concurrent writes before upload."""
     root = root.resolve()
@@ -158,7 +200,7 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
                     "base_sha": checkpoint_base(repo, root),
                 }
             )
-    buffer = io.BytesIO()
+    buffer = _CheckpointBuffer(max_bytes)
     digest = hashlib.sha256()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for path, before in files:
@@ -166,24 +208,29 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
                 # Runtime remotes can embed clone credentials; recreate from
                 # trusted repository configuration when resuming.
                 continue
+            relative = str(path.relative_to(root))
+            info = tarfile.TarInfo("workspace/" + relative)
+            info.size = before.st_size
+            info.mode = before.st_mode & 0o777
             try:
-                data = path.read_bytes()
+                with path.open("rb") as source:
+                    reader = _CheckpointReader(source)
+                    archive.addfile(info, reader)
                 after = path.stat()
             except FileNotFoundError:
                 raise ValueError("checkpoint_workspace_busy") from None
+            except OSError as exc:
+                # tarfile reports a file truncated while reading as an
+                # unexpected end of data. Retry a stable snapshot later.
+                if str(exc) == "unexpected end of data":
+                    raise ValueError("checkpoint_workspace_busy") from None
+                raise
             if (before.st_size, before.st_mtime_ns) != (
                 after.st_size,
                 after.st_mtime_ns,
             ):
                 raise ValueError("checkpoint_workspace_busy")
-            relative = str(path.relative_to(root))
-            digest.update(relative.encode() + b"\0" + hashlib.sha256(data).digest())
-            info = tarfile.TarInfo("workspace/" + relative)
-            info.size = len(data)
-            info.mode = before.st_mode & 0o777
-            archive.addfile(info, io.BytesIO(data))
-            if buffer.tell() > max_bytes:
-                raise ValueError("checkpoint_oversized")
+            digest.update(relative.encode() + b"\0" + reader.digest.digest())
         metadata = json.dumps(
             {
                 "version": 1,

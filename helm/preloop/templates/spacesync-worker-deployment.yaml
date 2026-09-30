@@ -85,6 +85,11 @@ spec:
             # gateway traffic to the gateway Service, never the API Service.
             - name: PRELOOP_MODEL_GATEWAY_URL_K8S
               value: {{ include "preloop.modelGatewayUrlK8s" $ | quote }}
+            # Keep launched Jobs aligned with the namespace LimitRange.
+            - name: AGENT_MEMORY_LIMIT
+              value: {{ $.Values.agentExecution.limitRange.container.defaultMemory | quote }}
+            - name: AGENT_MEMORY_REQUEST
+              value: {{ $.Values.agentExecution.limitRange.container.defaultRequestMemory | quote }}
             - name: AGENT_EXECUTION_NAMESPACE
               value: {{ $.Values.agentExecution.namespace.create | ternary $.Values.agentExecution.namespace.name $.Release.Namespace | quote }}
             - name: USE_KUBERNETES
