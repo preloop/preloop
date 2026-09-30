@@ -86,6 +86,11 @@ spec:
               value: {{ .Values.environment.mallocArenaMax | quote }}
             - name: PRELOOP_API_SERVICE_HTTP_ENDPOINT
               value: "http://{{ include "preloop.fullname" . }}-api:80"
+            # Keep launched Jobs aligned with the namespace LimitRange.
+            - name: AGENT_MEMORY_LIMIT
+              value: {{ .Values.agentExecution.limitRange.container.defaultMemory | quote }}
+            - name: AGENT_MEMORY_REQUEST
+              value: {{ .Values.agentExecution.limitRange.container.defaultRequestMemory | quote }}
             - name: AGENT_EXECUTION_NAMESPACE
               value: {{ .Values.agentExecution.namespace.create | ternary .Values.agentExecution.namespace.name .Release.Namespace | quote }}
             - name: USE_KUBERNETES

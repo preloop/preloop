@@ -15231,9 +15231,17 @@ components:
         session_id:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Session Id
-          description: Agent session id
+          description: Originating agent session id
+        model:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Model
+          description: Originating turn model observed by the hook
         cwd:
           anyOf:
           - type: string

@@ -439,7 +439,11 @@ async def apply_native_access_rules(
     decision = await evaluate_policy_async(
         db,
         tool_name,
-        tool_input or {},
+        {
+            key: value
+            for key, value in (tool_input or {}).items()
+            if key != "_preloop_origin"
+        },
         account_id,
         tool_configuration_id=config.id,
         user_id=user_id,

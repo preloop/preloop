@@ -1556,3 +1556,20 @@ async def test_pre_tool_use_require_approval_keeps_human_gate(status: str) -> No
     assert result[2] == str(approval.id)
     assert result[3] is (status == "expired")
     service.create_and_notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_origin_snapshot_does_not_enter_native_policy_arguments() -> None:
+    """Only tool arguments enter policy; origin remains on the approval copy."""
+    config = MagicMock(id=uuid.uuid4(), is_enabled=True)
+    call_kwargs = _native_rule_kwargs()
+    tool_input = {
+        "command": "ls",
+        "_preloop_origin": {"session_id": "session-one", "model": "gpt-alpha"},
+    }
+    call_kwargs["tool_input"] = tool_input
+    evaluate = AsyncMock(return_value=PolicyDecision("deny", None, "Denied", None))
+    with patch("preloop.services.policy_evaluator.evaluate_policy_async", evaluate):
+        await apply_native_access_rules(AsyncMock(), config=config, **call_kwargs)
+    assert evaluate.await_args.args[2] == {"command": "ls"}
+    assert tool_input["_preloop_origin"]["model"] == "gpt-alpha"

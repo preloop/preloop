@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -14,6 +15,22 @@ import (
 
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
+
+func TestMain(m *testing.M) {
+	// PRELOOP_TOKEN, PRELOOP_URL, PRELOOP_PROFILE and PRELOOP_ACCOUNT override
+	// the login a test saved. A developer shell that exports one would make
+	// these tests call that host, or read another profile, not the fixture.
+	testenv.ScrubCredentialEnv()
+	os.Exit(m.Run())
+}
+
+func TestSuiteDoesNotInheritCredentialEnv(t *testing.T) {
+	for _, name := range testenv.CredentialEnv {
+		if value, ok := os.LookupEnv(name); ok {
+			t.Fatalf("unit tests inherited %s=%q from the parent process", name, value)
+		}
+	}
+}
 
 func TestNewClientWithToken(t *testing.T) {
 	client := NewClientWithToken("https://example.com", "test-token")

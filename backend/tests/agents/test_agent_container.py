@@ -66,8 +66,11 @@ class TestContainerAgentExecutor:
         assert executor.use_kubernetes is True
 
     @pytest.mark.asyncio
-    async def test_start_docker_success(self, container_executor, mock_docker):
+    async def test_start_docker_success(
+        self, container_executor, mock_docker, monkeypatch
+    ):
         """Test starting a Docker container successfully."""
+        monkeypatch.delenv("AGENT_MEMORY_LIMIT", raising=False)
         # Mock image inspection (image exists)
         mock_docker.images.inspect = AsyncMock()
 
@@ -97,6 +100,12 @@ class TestContainerAgentExecutor:
 
         assert session_ref == "container-123"
         mock_docker.containers.create.assert_called_once()
+        assert (
+            mock_docker.containers.create.call_args.kwargs["config"]["HostConfig"][
+                "Memory"
+            ]
+            == 4 * 1024**3
+        )
         mock_container.start.assert_called_once()
 
     @pytest.mark.asyncio

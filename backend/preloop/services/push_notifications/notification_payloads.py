@@ -61,6 +61,7 @@ class NotificationPayloadBuilder:
         summary: Optional[str] = None,
         rule_context: Optional[Dict[str, Any]] = None,
         agent_name: Optional[str] = None,
+        runtime_session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build payload for new approval request.
 
@@ -81,6 +82,7 @@ class NotificationPayloadBuilder:
             agent_name: The agent that asked, when known. A push is decided on
                 a phone with no page to open, so who asked belongs in the
                 notification rather than only behind a tap.
+            runtime_session_id: Authenticated runtime session for non-native calls.
 
         Returns:
             APNs payload dictionary.
@@ -196,6 +198,12 @@ class NotificationPayloadBuilder:
                 )
 
             body = "\n".join(body_parts) if len(body_parts) > 1 else body_parts[0]
+
+        from preloop.utils.approval_origin import approval_origin_text
+
+        origin_text = approval_origin_text(args, runtime_session_id)
+        if origin_text:
+            subtitle = f"{subtitle} · {origin_text}"
 
         # Custom data for app routing (used by both iOS and Android)
         custom_data = {

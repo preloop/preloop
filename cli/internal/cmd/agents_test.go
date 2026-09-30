@@ -3060,6 +3060,7 @@ func TestApplyClaudeManagedGatewayConfiguresEnv(t *testing.T) {
 		"claude-durable-token",
 		"amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3133,6 +3134,7 @@ func TestApplyClaudeManagedGatewayNonAnthropicModelMapsAllSelectors(t *testing.T
 		"claude-durable-token",
 		"moonshot/kimi-k3-0905",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3181,6 +3183,7 @@ func TestApplyClaudeManagedGatewayReonboardToAnthropicClearsNonFamilySelectors(t
 		"claude-durable-token",
 		"moonshot/kimi-k3-0905",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3191,6 +3194,7 @@ func TestApplyClaudeManagedGatewayReonboardToAnthropicClearsNonFamilySelectors(t
 		"claude-durable-token",
 		"anthropic/claude-sonnet-4-5",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway re-apply error: %v", err)
@@ -3226,6 +3230,7 @@ func TestApplyClaudeManagedGatewayReonboardBetweenNonFamilyModelsRefreshes(t *te
 		"claude-durable-token",
 		"moonshot/kimi-k3-0905",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -3236,6 +3241,7 @@ func TestApplyClaudeManagedGatewayReonboardBetweenNonFamilyModelsRefreshes(t *te
 		"claude-durable-token",
 		"openai/gpt-5.4",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway re-apply error: %v", err)
@@ -3293,6 +3299,7 @@ func TestRestoreClaudeGatewayEnvFromOriginalRemovesNonFamilySelectors(t *testing
 		"preloop-token",
 		"moonshot/kimi-k3-0905",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("applyClaudeManagedGateway returned error: %v", err)
@@ -3370,6 +3377,7 @@ func TestRestoreClaudeGatewayEnvFromOriginalRestoresLocalAuth(t *testing.T) {
 		"preloop-token",
 		"anthropic/claude-haiku-4-5-20251001",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("applyClaudeManagedGateway returned error: %v", err)

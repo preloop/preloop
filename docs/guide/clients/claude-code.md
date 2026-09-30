@@ -53,7 +53,7 @@ Or run `preloop agents discover` and accept the interactive onboarding prompt. O
 1. Creates (or locates) the managed agent identity in your Preloop account and issues a **durable credential** for it.
 2. **Backs up** your existing Claude Code config next to the original so you can roll back at any time.
 3. Adds a managed `preloop` MCP server entry to `~/.claude/settings.json`.
-4. Rewrites supported model configuration so Claude Code's Anthropic traffic routes through the Preloop Gateway (sets `env.ANTHROPIC_BASE_URL` to your Preloop gateway's `/anthropic` endpoint, `env.ANTHROPIC_API_KEY` to the managed credential, and pins `ANTHROPIC_MODEL` to a Preloop model alias).
+4. Rewrites supported model configuration so Claude Code's Anthropic traffic routes through the Preloop Gateway (sets `env.ANTHROPIC_BASE_URL` to your Preloop gateway's `/anthropic` endpoint, `env.ANTHROPIC_API_KEY` to the managed credential, and lets stock Opus/Sonnet/Haiku selectors follow Claude Code defaults).
 5. Runs a live validation prompt through the agent (disable with `--skip-live-validate`).
 
 Useful flags (see `preloop agents onboard --help`):
@@ -64,10 +64,15 @@ Useful flags (see `preloop agents onboard --help`):
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--all` | Onboard every discovered agent |
 | `--approvals` | Also install the native tool-permission hook (see below) |
+| `--pin-model-families` | Persist explicit stock family pins for API-key accounts or gateways with family autoregistration disabled |
 | `--skip-live-validate` | Skip the post-onboarding live validation prompt |
 | `--tags key=value` | Add key-value tags to the enrolled agent |
 
 <!-- TODO screenshot: `claude-mcp-list-connected.png` -->
+
+Stock families follow Claude Code defaults. With subscription OAuth and Claude family autoregistration enabled, new Anthropic releases need no manual refresh: after a Claude Code update, the gateway registers first-used identifiers against the agent's subscription credential. Fable and custom models retain explicit mappings.
+
+Anthropic API-key credentials do not support this automatic registration. For API-key accounts, pass `--pin-model-families` on onboard or refresh to retain catalog-backed stock family pins, or run `preloop models sync` to populate new identifiers before selecting them. Use the same flag when gateway family autoregistration is disabled. The choice persists across later runs; `preloop agents refresh "claude code" --pin-model-families=false` clears it. With explicit pins enabled, refresh verifies family upgrades against the live provider list.
 
 ### What gets written
 

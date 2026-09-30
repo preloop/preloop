@@ -130,7 +130,7 @@ func TestRefreshClaudeKeepsCurrentPinWhenCandidateNotInLiveList(t *testing.T) {
 	}
 
 	outcome, err := refreshClaudeManagedModelDocumentWithLive(
-		AgentConfig{Name: "Claude Code"}, doc, models, nil, live,
+		AgentConfig{Name: "Claude Code"}, doc, models, nil, live, true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -171,7 +171,7 @@ func TestRefreshClaudeKeepsCurrentPinWhenLiveListUnreachable(t *testing.T) {
 	live := claudeLiveModelList{Attempted: true}
 
 	outcome, err := refreshClaudeManagedModelDocumentWithLive(
-		AgentConfig{Name: "Claude Code"}, doc, models, nil, live,
+		AgentConfig{Name: "Claude Code"}, doc, models, nil, live, true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -202,7 +202,7 @@ func TestRefreshClaudeSwitchesToVerifiedNewerAlias(t *testing.T) {
 	}
 
 	outcome, err := refreshClaudeManagedModelDocumentWithLive(
-		AgentConfig{Name: "Claude Code"}, doc, models, nil, live,
+		AgentConfig{Name: "Claude Code"}, doc, models, nil, live, true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -241,7 +241,7 @@ func TestRefreshClaudeReplacesDatedJunkWithVerifiedUndatedAlias(t *testing.T) {
 	}
 
 	outcome, err := refreshClaudeManagedModelDocumentWithLive(
-		AgentConfig{Name: "Claude Code"}, doc, models, nil, live,
+		AgentConfig{Name: "Claude Code"}, doc, models, nil, live, true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -278,7 +278,7 @@ func TestRefreshClaudeReplacesDeauthorizedPinWithLiveVerifiedOlderAlias(t *testi
 	}
 
 	outcome, err := refreshClaudeManagedModelDocumentWithLive(
-		AgentConfig{Name: "Claude Code"}, doc, models, nil, live,
+		AgentConfig{Name: "Claude Code"}, doc, models, nil, live, true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -533,7 +533,7 @@ func TestExecuteAgentsRefreshClaudeKeepsPinOnJunkCatalogRow(t *testing.T) {
 		{Name: "Claude Code", ConfigPath: secondPath},
 	}
 	var out strings.Builder
-	if err := executeAgentsRefresh(client, agents, &out); err != nil {
+	if err := executeAgentsRefresh(client, agents, &out, true, true); err != nil {
 		t.Fatalf("executeAgentsRefresh: %v", err)
 	}
 	if liveHits != 1 {

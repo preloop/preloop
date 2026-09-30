@@ -348,6 +348,17 @@ entry to the selected agent configuration.
 This is the mutating companion to 'preloop agents discover'. Use --dry-run to
 preview the planned config and account changes without writing anything.
 
+Claude Code is onboarded without pinning the stock opus/sonnet/haiku model
+families, so /model follows Claude Code's own defaults. With subscription OAuth
+and gateway family autoregistration enabled, new Anthropic releases arrive with
+the next Claude Code update and unseen ids register on first use. API-key
+accounts must use --pin-model-families or run preloop models sync to populate
+new ids before selecting them.
+The Fable pair and the custom model option are still written. Pass
+--pin-model-families for API-key accounts or a gateway whose family
+autoregistration is disabled; the choice is saved in the local enrollment state so a later refresh
+honours it without the flag.
+
 A missing agent binary does not fail onboarding: the MCP and model routing
 configuration still applies and the managed launcher step is skipped with a
 warning ("partial" onboarding).
@@ -778,6 +789,10 @@ type localEnrollmentState struct {
 	// CodexOAuthSyncModelIDs caches one model row id per distinct Codex
 	// OAuth secret for this enrollment, so a marker check is one request.
 	CodexOAuthSyncModelIDs []string `json:"codex_oauth_sync_model_ids,omitempty"`
+	// PinModelFamilies records the operator's choice from
+	// `--pin-model-families` so `preloop agents refresh` honours it without the
+	// flag on a later run. It only affects Claude Code's stock family pins.
+	PinModelFamilies bool `json:"pin_model_families,omitempty"`
 }
 
 type managedMCPAdapter interface {
@@ -839,6 +854,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("no-usage-hooks", false, "Cursor only: do not install the usage hooks that store conversations as runtime sessions with a token estimate (installed by default)")
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
+	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported live validation prompt in addition to config validation")
@@ -1309,6 +1325,8 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	noUsageHooks, _ := cmd.Flags().GetBool("no-usage-hooks")
 	storeTranscript, _ := cmd.Flags().GetBool("store-transcript")
 	preferredModel, _ := cmd.Flags().GetString("model")
+	pinModelFamilies, _ := cmd.Flags().GetBool("pin-model-families")
+	pinModelFamiliesSet := cmd.Flags().Changed("pin-model-families")
 
 	tags := make(map[string]string)
 	for _, kv := range tagsInput {
@@ -1326,18 +1344,20 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	}
 
 	opts := managedEnrollmentOptions{
-		DryRun:           dryRun,
-		AutoApprove:      autoApprove,
-		LiveValidate:     liveValidate,
-		SkipLiveValidate: skipLiveValidate,
-		Approvals:        approvals,
-		NoUsageHooks:     noUsageHooks,
-		StoreTranscript:  storeTranscript,
-		PreferredModel:   strings.TrimSpace(preferredModel),
-		Tags:             tags,
-		SkipConfirmation: false,
-		Input:            os.Stdin,
-		Output:           os.Stdout,
+		DryRun:              dryRun,
+		AutoApprove:         autoApprove,
+		LiveValidate:        liveValidate,
+		SkipLiveValidate:    skipLiveValidate,
+		Approvals:           approvals,
+		NoUsageHooks:        noUsageHooks,
+		StoreTranscript:     storeTranscript,
+		PreferredModel:      strings.TrimSpace(preferredModel),
+		PinModelFamilies:    pinModelFamilies,
+		PinModelFamiliesSet: pinModelFamiliesSet,
+		Tags:                tags,
+		SkipConfirmation:    false,
+		Input:               os.Stdin,
+		Output:              os.Stdout,
 	}
 
 	if len(args) == 0 {
@@ -4155,6 +4175,7 @@ func applyManagedGatewayForAgent(
 	token string,
 	modelAlias string,
 	familyAliases []string,
+	pinModelFamilies bool,
 ) (managedMCPEnrollmentPlan, error) {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
 	case "openclaw":
@@ -4164,7 +4185,7 @@ func applyManagedGatewayForAgent(
 	case "opencode":
 		return applyOpenCodeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
 	case "claude code":
-		return applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
+		return applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases, pinModelFamilies)
 	case "gemini cli":
 		return applyGeminiManagedGateway(plan, baseURL, token, modelAlias)
 	case "pi", "deepseek harness", "deepseek", "dsh":
@@ -4383,6 +4404,7 @@ func applyClaudeManagedGateway(
 	plan managedMCPEnrollmentPlan,
 	baseURL, token, modelAlias string,
 	familyAliases []string,
+	pinModelFamilies bool,
 ) (managedMCPEnrollmentPlan, error) {
 	env, ok := asObjectMap(plan.ManagedDocument["env"])
 	if !ok {
@@ -4416,49 +4438,53 @@ func applyClaudeManagedGateway(
 		delete(env, key)
 	}
 	clearClaudePinnedModelEnv(env)
-	if selection, envKey := claudePinnedModelSelection(modelAlias); envKey != "" {
-		plan.ManagedDocument["model"] = selection
-		env["ANTHROPIC_MODEL"] = selection
-		// The pinned model's alias goes first so it wins within its own
-		// family; sibling family aliases follow so `/model` switching,
-		// background/fast-path (haiku) requests, and subagents pinned to a
-		// different family all resolve at the gateway instead of 404ing.
-		// clearClaudePinnedModelEnv above wiped every family key, and
-		// claudeFamilyModelEnv only re-adds families that actually resolve,
-		// so no key is ever left pointing at a model the account lacks.
-		// CLAUDE_CODE_SUBAGENT_MODEL stays unset on purpose: with the
-		// family keys covered, subagents resolve through the same selector
-		// chain as stock Claude Code, preserving default model-selection UX.
-		coverage := append([]string{modelAlias}, familyAliases...)
-		for key, value := range claudeFamilyModelEnv(coverage) {
-			env[key] = value
+	if pinModelFamilies {
+		if selection, envKey := claudePinnedModelSelection(modelAlias); envKey != "" {
+			plan.ManagedDocument["model"] = selection
+			env["ANTHROPIC_MODEL"] = selection
+			// The pinned model's alias goes first so it wins within its own
+			// family; sibling family aliases follow so `/model` switching,
+			// background/fast-path (haiku) requests, and subagents pinned to a
+			// different family all resolve at the gateway instead of 404ing.
+			// clearClaudePinnedModelEnv above wiped every family key, and
+			// claudeFamilyModelEnv only re-adds families that actually resolve,
+			// so no key is ever left pointing at a model the account lacks.
+			// CLAUDE_CODE_SUBAGENT_MODEL stays unset on purpose: with the
+			// family keys covered, subagents resolve through the same selector
+			// chain as stock Claude Code, preserving default model-selection UX.
+			coverage := append([]string{modelAlias}, familyAliases...)
+			for key, value := range claudeFamilyModelEnv(coverage) {
+				env[key] = value
+			}
+			plan.Notes = append(plan.Notes, describeClaudeFamilyCoverage(coverage))
+		} else {
+			// Also replace settings.model: a stale explicit selection (e.g.
+			// "claude-fable-5[1m]") outranks the env pin, and when it is not
+			// honorable in API-key mode Claude Code silently switches to its API
+			// default model instead of the managed alias (tester #4, 2026-07-20).
+			plan.ManagedDocument["model"] = modelAlias
+			env["ANTHROPIC_MODEL"] = modelAlias
+			// Non-family managed model (e.g. a Kimi K3 alias): Claude Code's
+			// background/fast-path requests resolve through the built-in
+			// claude-haiku-* family identifiers and subagents through
+			// CLAUDE_CODE_SUBAGENT_MODEL, none of which exist at the gateway
+			// for a non-Anthropic account model. Map every selector at the
+			// managed alias so those calls resolve instead of 404ing.
+			// clearClaudePinnedModelEnv above wipes these same keys first, so
+			// re-onboarding and model changes always refresh them.
+			for key, value := range claudeNonFamilyModelEnv(modelAlias) {
+				env[key] = value
+			}
+			plan.Notes = append(
+				plan.Notes,
+				fmt.Sprintf(
+					"All Claude Code model selectors (opus/sonnet/haiku, background, and subagent models) will resolve to %s through Preloop.",
+					modelAlias,
+				),
+			)
 		}
-		plan.Notes = append(plan.Notes, describeClaudeFamilyCoverage(coverage))
 	} else {
-		// Also replace settings.model: a stale explicit selection (e.g.
-		// "claude-fable-5[1m]") outranks the env pin, and when it is not
-		// honorable in API-key mode Claude Code silently switches to its API
-		// default model instead of the managed alias (tester #4, 2026-07-20).
-		plan.ManagedDocument["model"] = modelAlias
-		env["ANTHROPIC_MODEL"] = modelAlias
-		// Non-family managed model (e.g. a Kimi K3 alias): Claude Code's
-		// background/fast-path requests resolve through the built-in
-		// claude-haiku-* family identifiers and subagents through
-		// CLAUDE_CODE_SUBAGENT_MODEL, none of which exist at the gateway
-		// for a non-Anthropic account model. Map every selector at the
-		// managed alias so those calls resolve instead of 404ing.
-		// clearClaudePinnedModelEnv above wipes these same keys first, so
-		// re-onboarding and model changes always refresh them.
-		for key, value := range claudeNonFamilyModelEnv(modelAlias) {
-			env[key] = value
-		}
-		plan.Notes = append(
-			plan.Notes,
-			fmt.Sprintf(
-				"All Claude Code model selectors (opus/sonnet/haiku, background, and subagent models) will resolve to %s through Preloop.",
-				modelAlias,
-			),
-		)
+		applyClaudeUnpinnedManagedModelEnv(&plan, env, modelAlias, familyAliases)
 	}
 	plan.ManagedModelAlias = modelAlias
 	plan.ManagedProviderName = "preloop"
@@ -4470,6 +4496,77 @@ func applyClaudeManagedGateway(
 		fmt.Sprintf("Model traffic will route through Preloop using %s.", modelAlias),
 	)
 	return refreshManagedPlanSnapshots(plan)
+}
+
+// applyClaudeUnpinnedManagedModelEnv writes the default (unpinned) Claude Code
+// managed model env. Stock Claude Code families (opus/sonnet/haiku) get no env
+// pin, so Claude Code keeps using its own built-in default and the gateway
+// auto-registers unseen claude-* ids for subscription OAuth when enabled; a new release
+// then arrives with the next Claude Code binary update and no `preloop agents
+// refresh`. Fable has no built-in Claude Code default, so its pair stays
+// pinned, and a custom/non-family model is still pinned explicitly or Claude
+// Code's background and subagent requests would 404 at the gateway.
+//
+// It mutates plan.ManagedDocument and env in place because the caller already
+// holds the maps, and appends the note to plan.Notes (hence the pointer: the
+// caller's Note slice header must be updated too).
+func applyClaudeUnpinnedManagedModelEnv(
+	plan *managedMCPEnrollmentPlan,
+	env map[string]interface{},
+	modelAlias string,
+	familyAliases []string,
+) {
+	coverage := append([]string{modelAlias}, familyAliases...)
+	selection, _ := claudePinnedModelSelection(modelAlias)
+	switch {
+	case selection == "":
+		// Custom/non-Anthropic model: pin the main model and map every Claude
+		// Code selector at it so background (haiku fast-path) and subagent
+		// requests resolve at the gateway.
+		plan.ManagedDocument["model"] = modelAlias
+		env["ANTHROPIC_MODEL"] = modelAlias
+		for key, value := range claudeNonFamilyModelEnv(modelAlias) {
+			env[key] = value
+		}
+		plan.Notes = append(
+			plan.Notes,
+			fmt.Sprintf(
+				"All Claude Code model selectors (opus/sonnet/haiku, background, and subagent models) will resolve to %s through Preloop.",
+				modelAlias,
+			),
+		)
+	case claudeFamilySelectorIsStock(selection):
+		// Stock family: drop the family pins and any managed ANTHROPIC_MODEL
+		// pin. settings.model keeps the family selector (e.g. "sonnet"), which
+		// Claude Code resolves to its own built-in default and which clears any
+		// stale non-family model left by a previous enrollment.
+		plan.ManagedDocument["model"] = selection
+		delete(env, "ANTHROPIC_MODEL")
+		for key, value := range claudeUnpinnedFamilyEnv(coverage) {
+			env[key] = value
+		}
+		plan.Notes = append(
+			plan.Notes,
+			"Preloop will let Claude Code pick its own stock family defaults (opus/sonnet/haiku). Automatic registration of new Anthropic ids requires subscription OAuth and enabled family autoregistration. API-key accounts should use --pin-model-families or run preloop models sync before selecting new ids.",
+		)
+	default:
+		// Non-stock family (fable): no built-in Claude Code default exists, so
+		// keep the selector and its env pair, but never invent stock pins.
+		plan.ManagedDocument["model"] = selection
+		env["ANTHROPIC_MODEL"] = selection
+		for key, value := range claudeUnpinnedFamilyEnv(coverage) {
+			env[key] = value
+		}
+		if alias := claudeUnpinnedFamilyEnv(coverage)["ANTHROPIC_DEFAULT_FABLE_MODEL"]; alias != "" {
+			plan.Notes = append(
+				plan.Notes,
+				fmt.Sprintf(
+					"Fable has no built-in Claude Code default; /model fable resolves to %s through Preloop.",
+					alias,
+				),
+			)
+		}
+	}
 }
 
 func restoreClaudeGatewayEnvFromOriginal(

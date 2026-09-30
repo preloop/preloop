@@ -143,15 +143,15 @@ def test_capture_treats_a_vanished_file_as_busy(tmp_path, monkeypatch) -> None:
     from pathlib import Path
 
     (tmp_path / "keep.txt").write_text("ok")
-    real_read = Path.read_bytes
+    real_open = Path.open
 
     def flaky(self, *args, **kwargs):
         if self.name == "keep.txt":
             self.unlink()
             raise FileNotFoundError(self)
-        return real_read(self, *args, **kwargs)
+        return real_open(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(Path, "open", flaky)
     with pytest.raises(ValueError, match="workspace_busy"):
         capture(tmp_path, max_bytes=100000)
 

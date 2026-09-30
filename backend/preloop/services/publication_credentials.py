@@ -20,12 +20,21 @@ from preloop.models import models
 from preloop.services.trusted_publisher import PublicationError, PublicationLease
 
 
-def validate_publication_tracker(tracker: models.Tracker) -> None:
+def validate_publication_tracker(
+    tracker: models.Tracker, *, allow_legacy_oauth_app: bool = False
+) -> None:
     """Reject unsupported credentials before starting an isolated flow."""
     installation = getattr(tracker, "oauth_installation", None)
     if (
-        tracker.tracker_type != "github"
-        or tracker.auth_type != "github_app"
+        str(tracker.tracker_type or "").lower() != "github"
+        or not (
+            str(tracker.auth_type or "").lower() == "github_app"
+            or (
+                allow_legacy_oauth_app
+                and str(tracker.auth_type or "").lower() == "oauth_app"
+                and getattr(installation, "provider", None) == "github"
+            )
+        )
         or not getattr(installation, "external_id", None)
     ):
         raise PublicationError(
@@ -43,9 +52,10 @@ async def mint_repository_lease(
     *,
     write: bool,
     client: httpx.AsyncClient,
+    allow_legacy_oauth_app: bool = False,
 ) -> PublicationLease:
     """Ask GitHub to enforce exact repository and read/write permissions."""
-    validate_publication_tracker(tracker)
+    validate_publication_tracker(tracker, allow_legacy_oauth_app=allow_legacy_oauth_app)
     parsed = urlsplit(repository_url)
     if (
         parsed.scheme != "https"

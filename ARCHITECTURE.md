@@ -115,6 +115,14 @@ graph LR
 
 Execution environment profiles and hosted checkpoint recovery are documented in
 [Environments and recovery](docs/guide/flows/environments-and-recovery.md).
+Workspace checkpoint capture streams individual files and enforces its
+compressed size cap during packing. Dependency directories and caches are
+excluded; oversized captures leave the last complete checkpoint available.
+Hosted legacy GitHub App publication refreshes repository-scoped credentials on
+the controller immediately before push or PR creation. A signed runner capability
+binds the execution, account, tracker and startup repository; issuance requires an
+active execution. App signing keys remain on the controller. The runtime replaces
+stale git credentials and uses the fresh token for PR REST calls as well.
 The sandboxed-browser allowlist sidecar lives in
 [`environments/egress-proxy`](environments/egress-proxy/README.md).
 

@@ -439,6 +439,7 @@ async def send_approval_request_email(
     agent_reasoning: Optional[str] = None,
     summary: Optional[str] = None,
     agent_name: Optional[str] = None,
+    runtime_session_id: Optional[str] = None,
 ) -> None:
     """Send an approval request email to an approver.
 
@@ -452,6 +453,7 @@ async def send_approval_request_email(
         agent_name: The agent that asked, when known. An approver reading an
             inbox decides on the caller as much as on the tool, so the name
             goes in the subject and replaces the generic "An AI agent" line.
+        runtime_session_id: Authenticated runtime session for non-native calls.
 
     Raises:
         EmailError: If email sending fails.
@@ -470,6 +472,9 @@ async def send_approval_request_email(
 
     from preloop.utils.redaction import omit_preloop_markers, redact_dict
 
+    from preloop.utils.approval_origin import approval_origin_text
+
+    origin_text = approval_origin_text(tool_args, runtime_session_id)
     tool_args = omit_preloop_markers(redact_dict(tool_args))
     tool_args_formatted = json.dumps(tool_args, indent=2)
 
@@ -501,6 +506,8 @@ async def send_approval_request_email(
 
     if asker:
         text_parts.append(f"Agent: {asker}")
+    if origin_text:
+        text_parts.append(origin_text)
 
     if agent_reasoning:
         text_parts.append("")
@@ -588,6 +595,8 @@ async def send_approval_request_email(
 
     if asker:
         html_parts.append(f"      <p>Agent: {esc(asker)}</p>")
+    if origin_text:
+        html_parts.append(f"      <p>{esc(origin_text)}</p>")
 
     if agent_reasoning:
         html_parts.extend(

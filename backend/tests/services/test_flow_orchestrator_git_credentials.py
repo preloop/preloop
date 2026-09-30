@@ -185,6 +185,7 @@ class TestTrackerCredentialResolution:
             "tracker_id": "tracker-app",
             "token": APP_TOKEN,
             "tracker_type": "github",
+            "auth_type": "github_app",
         }
 
     async def test_tracker_without_any_token_reports_an_empty_token(self, orchestrator):

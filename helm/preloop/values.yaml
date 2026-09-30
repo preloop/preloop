@@ -985,7 +985,7 @@ agentExecution:
       minMemory: "128Mi"
       # Default limits if not specified
       defaultCpu: "1"
-      defaultMemory: "2Gi"
+      defaultMemory: "4Gi"
       # Default requests if not specified
       defaultRequestCpu: "250m"
       defaultRequestMemory: "512Mi"

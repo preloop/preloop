@@ -108,7 +108,7 @@ func hookEventNameForOperatorNotes(source, hookEvent string, raw []byte) string 
 // same value the permission-check request carries, so a spooled note is only
 // ever handed back to the session it was claimed for.
 func hookEventSessionID(raw []byte) string {
-	return hookEventFieldFromRaw(raw, "session_id", "conversation_id", "turn_id")
+	return hookEventFieldFromRaw(raw, "sessionId", "session_id", "conversation_id", "thread_id")
 }
 
 func hookEventFieldFromRaw(raw []byte, keys ...string) string {

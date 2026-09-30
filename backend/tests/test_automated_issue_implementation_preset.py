@@ -180,7 +180,7 @@ class TestPromptContract:
 
         The agent runs in a container with a bounded memory limit, so the
         implementation phase asks for the tests covering the change, selected
-        per directory or per file, and says that CI owns the full suite.
+        by affected files in fresh processes, and says CI owns broad suites.
         """
         assert "the tests for the modules you touched" in prompt
         assert "Select tests by the directory or the file that covers your change" in (
@@ -190,10 +190,14 @@ class TestPromptContract:
         assert "bounded memory limit" in prompt
         assert "CI runs the full suite on the pull request" in prompt
 
-    def test_broad_runs_are_one_directory_at_a_time(self, prompt):
+    def test_broad_runs_use_small_serial_batches(self, prompt):
         """When a wide run is unavoidable it is still bounded and stops early."""
-        assert "run one top-level test directory at a time with `-x` and `-q`" in prompt
-        assert "stop at the first failure" in prompt
+        assert "cgroup memory limit" in prompt
+        assert "directly affected test files in small batches" in prompt
+        assert "each in a fresh process with `-x` and `-q`" in prompt
+        assert "Do not use parallel test workers" in prompt
+        assert "Leave full-suite and broad category coverage to CI" in prompt
+        assert "Stop at the first failure" in prompt
 
     def test_resume_repeats_only_the_affected_scope(self, prompt):
         assert "scoped to the touched modules under the same memory limit" in prompt
