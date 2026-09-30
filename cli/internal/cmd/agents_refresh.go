@@ -46,17 +46,18 @@ companion to onboard, not a re-onboard.
 Per agent kind:
   Claude Code   Removes the managed model env pins. By default the stock
                 opus/sonnet/haiku family pins are dropped so Claude Code
-                uses its own built-in defaults: a new Anthropic release
-                arrives with the next Claude Code update, the gateway
-                registers the id on first use, and it appears in the
-                catalog and usage with no manual step. The custom model
+                uses its own built-in defaults. With subscription OAuth
+                and family autoregistration enabled, new ids register on
+                first use after a Claude Code update. API-key accounts
+                should use --pin-model-families or run preloop models sync
+                before selecting newly released ids. The custom model
                 option and the Fable pair (Fable has no built-in Claude
                 Code default) are kept, and a non-family pin is preserved
                 verbatim while it stays authorized. Newly released Anthropic
                 family models are still imported into the account catalog and
                 bound to this agent. Pass --pin-model-families (or onboard
-                with it) for a gateway whose Claude family autoregister is
-                disabled; the choice is persisted in the local enrollment
+                with it) for API-key accounts or a gateway whose family
+                autoregistration is disabled; the choice is persisted in the local enrollment
                 state and honoured by later flag-less runs.
                 With pins enabled, candidates are verified against the live
                 Anthropic model list before upgrading; an authorized current
@@ -90,7 +91,7 @@ Examples:
 
 func init() {
 	agentsCmd.AddCommand(agentsRefreshCmd)
-	agentsRefreshCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (needed when the gateway's Claude family autoregister is disabled; persisted in the local enrollment state)")
+	agentsRefreshCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; persisted in the local enrollment state)")
 }
 
 // managedModelRefreshOutcome is the result of rewriting one agent config's
@@ -861,7 +862,7 @@ func refreshClaudeManagedModelDocumentWithLive(
 	removedStockPins = actualRemovedPins
 	if len(removedStockPins) > 0 {
 		notices = append(notices, fmt.Sprintf(
-			"Removed the managed stock Claude Code family pins (%s); Claude Code now follows its own defaults and the gateway registers new Anthropic ids on first use. Pass --pin-model-families if your gateway has the Claude family autoregister disabled.",
+			"Removed the managed stock Claude Code family pins (%s); Claude Code now follows its own defaults. Automatic registration of new ids requires subscription OAuth and enabled family autoregistration. API-key accounts should pass --pin-model-families or run preloop models sync before selecting new ids; pass --pin-model-families if family autoregistration is disabled.",
 			strings.Join(removedStockPins, ", "),
 		))
 	}

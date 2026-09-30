@@ -64,13 +64,15 @@ Useful flags (see `preloop agents onboard --help`):
 | `--yes` / `-y` | Skip confirmation prompts |
 | `--all` | Onboard every discovered agent |
 | `--approvals` | Also install the native tool-permission hook (see below) |
-| `--pin-model-families` | Persist explicit stock family pins for gateways with Claude family autoregistration disabled |
+| `--pin-model-families` | Persist explicit stock family pins for API-key accounts or gateways with family autoregistration disabled |
 | `--skip-live-validate` | Skip the post-onboarding live validation prompt |
 | `--tags key=value` | Add key-value tags to the enrolled agent |
 
 <!-- TODO screenshot: `claude-mcp-list-connected.png` -->
 
-Stock families follow Claude Code defaults, so new Anthropic releases need no manual refresh: after a Claude Code update, the gateway registers first-used identifiers against the agent's subscription credential. Fable and custom models retain explicit mappings. For a gateway with Claude family autoregistration disabled, pass `--pin-model-families` on onboard or refresh. The choice persists across later runs; `preloop agents refresh "claude code" --pin-model-families=false` clears it. With explicit pins enabled, refresh verifies family upgrades against the live provider list.
+Stock families follow Claude Code defaults. With subscription OAuth and Claude family autoregistration enabled, new Anthropic releases need no manual refresh: after a Claude Code update, the gateway registers first-used identifiers against the agent's subscription credential. Fable and custom models retain explicit mappings.
+
+Anthropic API-key credentials do not support this automatic registration. For API-key accounts, pass `--pin-model-families` on onboard or refresh to retain catalog-backed stock family pins, or run `preloop models sync` to populate new identifiers before selecting them. Use the same flag when gateway family autoregistration is disabled. The choice persists across later runs; `preloop agents refresh "claude code" --pin-model-families=false` clears it. With explicit pins enabled, refresh verifies family upgrades against the live provider list.
 
 ### What gets written
 

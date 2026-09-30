@@ -541,3 +541,22 @@ func TestUnpinnedClaudeOnboardRefreshOffboardRestoresOriginalSettings(t *testing
 		t.Fatalf("original settings not restored: %s", restored)
 	}
 }
+
+func TestUnpinnedClaudeGuidanceDistinguishesOAuthAndAPIKey(t *testing.T) {
+	plan, err := applyClaudeManagedGateway(managedMCPEnrollmentPlan{ManagedDocument: map[string]interface{}{}}, "https://preloop.example", "managed-token", "anthropic/claude-sonnet-4-5", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := strings.Join(plan.Notes, "\n")
+	outcome, err := refreshClaudeManagedModelDocument(AgentConfig{Name: "Claude Code"}, claudeRefreshFixtureDoc(), claudeRefreshFixtureModels(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{"onboard note": notes, "refresh notice": strings.Join(outcome.Notices, "\n"), "onboard help": agentsEnrollCmd.Long, "refresh help": agentsRefreshCmd.Long} {
+		for _, needed := range []string{"subscription OAuth", "API-key accounts", "--pin-model-families", "preloop models sync"} {
+			if !strings.Contains(text, needed) {
+				t.Errorf("%s must explain %q: %s", name, needed, text)
+			}
+		}
+	}
+}

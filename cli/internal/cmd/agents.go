@@ -349,12 +349,14 @@ This is the mutating companion to 'preloop agents discover'. Use --dry-run to
 preview the planned config and account changes without writing anything.
 
 Claude Code is onboarded without pinning the stock opus/sonnet/haiku model
-families, so /model follows Claude Code's own defaults and a new Anthropic
-release arrives with the next Claude Code binary update; the gateway registers
-the unseen id on first use and it then appears in the catalog and in usage.
+families, so /model follows Claude Code's own defaults. With subscription OAuth
+and gateway family autoregistration enabled, new Anthropic releases arrive with
+the next Claude Code update and unseen ids register on first use. API-key
+accounts must use --pin-model-families or run preloop models sync to populate
+new ids before selecting them.
 The Fable pair and the custom model option are still written. Pass
---pin-model-families for a gateway whose Claude family autoregister is
-disabled; the choice is saved in the local enrollment state so a later refresh
+--pin-model-families for API-key accounts or a gateway whose family
+autoregistration is disabled; the choice is saved in the local enrollment state so a later refresh
 honours it without the flag.
 
 A missing agent binary does not fail onboarding: the MCP and model routing
@@ -852,7 +854,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("no-usage-hooks", false, "Cursor only: do not install the usage hooks that store conversations as runtime sessions with a token estimate (installed by default)")
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
-	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (needed when the gateway's Claude family autoregister is disabled; the choice persists for refresh)")
+	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported live validation prompt in addition to config validation")
@@ -4499,7 +4501,7 @@ func applyClaudeManagedGateway(
 // applyClaudeUnpinnedManagedModelEnv writes the default (unpinned) Claude Code
 // managed model env. Stock Claude Code families (opus/sonnet/haiku) get no env
 // pin, so Claude Code keeps using its own built-in default and the gateway
-// auto-registers the unseen claude-* id on first use; a new Anthropic release
+// auto-registers unseen claude-* ids for subscription OAuth when enabled; a new release
 // then arrives with the next Claude Code binary update and no `preloop agents
 // refresh`. Fable has no built-in Claude Code default, so its pair stays
 // pinned, and a custom/non-family model is still pinned explicitly or Claude
@@ -4545,7 +4547,7 @@ func applyClaudeUnpinnedManagedModelEnv(
 		}
 		plan.Notes = append(
 			plan.Notes,
-			"Preloop will let Claude Code pick its own stock family defaults (opus/sonnet/haiku); the gateway registers new Anthropic ids on first use.",
+			"Preloop will let Claude Code pick its own stock family defaults (opus/sonnet/haiku). Automatic registration of new Anthropic ids requires subscription OAuth and enabled family autoregistration. API-key accounts should use --pin-model-families or run preloop models sync before selecting new ids.",
 		)
 	default:
 		// Non-stock family (fable): no built-in Claude Code default exists, so
