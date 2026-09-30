@@ -83,6 +83,66 @@ func claudeFamilyForSelector(selector string) (claudeModelFamily, bool) {
 	return claudeModelFamily{}, false
 }
 
+// claudeStockFamilySelectors are the Claude families stock Claude Code ships a
+// built-in default for. Writing ANTHROPIC_DEFAULT_<FAMILY>_MODEL for one of
+// these overrides that default and freezes the managed config on the dated
+// snapshot chosen at onboarding time; a new Anthropic release then waits for a
+// manual `preloop agents refresh`. Unpinned onboarding therefore leaves these
+// keys unset, and the gateway's Claude-family autoregister serves whatever id
+// the installed Claude Code binary asks for.
+//
+// Fable is deliberately excluded: Claude Code has no built-in fable default,
+// so its env pair is the only way to route `/model fable` through the gateway.
+var claudeStockFamilySelectors = map[string]bool{
+	"opus":   true,
+	"sonnet": true,
+	"haiku":  true,
+}
+
+// claudeFamilyIsStock reports whether a family is one Claude Code already has a
+// built-in default for.
+func claudeFamilyIsStock(family claudeModelFamily) bool {
+	return claudeStockFamilySelectors[family.selector]
+}
+
+// claudeFamilySelectorIsStock reports whether a bare selector ("opus") is a
+// stock Claude family.
+func claudeFamilySelectorIsStock(selector string) bool {
+	return claudeStockFamilySelectors[strings.ToLower(strings.TrimSpace(selector))]
+}
+
+// claudeStockFamilyEnvKey reports whether an ANTHROPIC_DEFAULT_* env key
+// belongs to one of the stock Claude families (including the _NAME and other
+// derived variants).
+func claudeStockFamilyEnvKey(envKey string) bool {
+	for _, family := range claudeModelFamilies {
+		if !claudeFamilyIsStock(family) {
+			continue
+		}
+		for _, variant := range claudeFamilyEnvKeyVariants(family.envKey) {
+			if envKey == variant {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// claudeUnpinnedFamilyEnv is claudeFamilyModelEnv with the stock family keys
+// removed. It keeps the non-stock (fable) pair so `/model fable` still routes
+// through the gateway while opus/sonnet/haiku follow Claude Code's built-in
+// defaults.
+func claudeUnpinnedFamilyEnv(aliases []string) map[string]string {
+	env := make(map[string]string)
+	for key, value := range claudeFamilyModelEnv(aliases) {
+		if claudeStockFamilyEnvKey(key) {
+			continue
+		}
+		env[key] = value
+	}
+	return env
+}
+
 // claudeFamilyModelEnv builds the ANTHROPIC_DEFAULT_*_MODEL environment entries
 // for every family represented in aliases.
 //

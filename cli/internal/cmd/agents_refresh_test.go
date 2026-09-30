@@ -157,6 +157,7 @@ func TestRefreshClaudeManagedModelDocumentPicksUpNewFamilyRelease(t *testing.T) 
 
 	outcome, err := refreshClaudeManagedModelDocument(
 		AgentConfig{Name: "Claude Code"}, doc, models, nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -197,6 +198,7 @@ func TestRefreshClaudeManagedModelDocumentUnchangedWhenCatalogMatches(t *testing
 	doc := claudeRefreshFixtureDoc()
 	outcome, err := refreshClaudeManagedModelDocument(
 		AgentConfig{Name: "Claude Code"}, doc, claudeRefreshFixtureModels(), nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -222,6 +224,7 @@ func TestRefreshClaudeManagedModelDocumentPreservesNonFamilyPin(t *testing.T) {
 	)
 	outcome, err := refreshClaudeManagedModelDocument(
 		AgentConfig{Name: "Claude Code"}, doc, models, nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -249,6 +252,7 @@ func TestRefreshClaudeManagedModelDocumentFallsBackWhenPinUnauthorized(t *testin
 	models[0].IsDefault = true // anthropic/claude-fable-5 is the account default
 	outcome, err := refreshClaudeManagedModelDocument(
 		AgentConfig{Name: "Claude Code"}, doc, models, nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -272,6 +276,7 @@ func TestRefreshClaudeManagedModelDocumentSkipsWithoutManagedGateway(t *testing.
 		map[string]interface{}{"model": "opus"},
 		claudeRefreshFixtureModels(),
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -548,7 +553,7 @@ func TestRefreshHermesManagedModelDocumentFallsBackWhenPinUnauthorized(t *testin
 
 func TestRefreshManagedModelDocumentCodexIsNoop(t *testing.T) {
 	outcome, err := refreshAgentManagedModels(
-		nil, AgentConfig{Name: "Codex CLI"}, nil, claudeLiveModelList{}, nil,
+		nil, AgentConfig{Name: "Codex CLI"}, nil, claudeLiveModelList{}, nil, true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected refresh error: %v", err)
@@ -685,7 +690,7 @@ func TestExecuteAgentsRefreshEndToEndOpenCode(t *testing.T) {
 	client := api.NewClientWithToken(server.URL, "tok")
 	agent := AgentConfig{Name: "OpenCode", ConfigPath: cfgPath}
 	var out strings.Builder
-	if err := executeAgentsRefresh(client, []AgentConfig{agent}, &out); err != nil {
+	if err := executeAgentsRefresh(client, []AgentConfig{agent}, &out, false, false); err != nil {
 		t.Fatalf("executeAgentsRefresh: %v", err)
 	}
 

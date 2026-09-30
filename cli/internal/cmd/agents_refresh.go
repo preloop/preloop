@@ -44,20 +44,24 @@ MCP server config, local backups, and the agent's currently selected model
 companion to onboard, not a re-onboard.
 
 Per agent kind:
-  Claude Code   Rewrites the managed model env pins (ANTHROPIC_MODEL,
-                ANTHROPIC_CUSTOM_MODEL_OPTION(_NAME), and the
-                ANTHROPIC_DEFAULT_<FAMILY>_MODEL keys behind /model
-                switching). Each family selector resolves to the newest
-                authorized model in that family, matching stock Claude Code
-                behavior; a candidate is verified against the live Anthropic
-                model list before the pin moves, and the current authorized
-                pin is kept when the live list is unavailable or does not
-                carry the candidate. A pinned family selection (e.g. "fable")
-                is preserved as a selector and upgrades within its family. A
-                non-family pin is preserved verbatim while it stays
-                authorized. Newly released Anthropic family models are
-                imported into the account catalog and bound to this agent
-                first, reusing the same idempotent machinery onboarding uses.
+  Claude Code   Removes the managed model env pins. By default the stock
+                opus/sonnet/haiku family pins are dropped so Claude Code
+                uses its own built-in defaults: a new Anthropic release
+                arrives with the next Claude Code update, the gateway
+                registers the id on first use, and it appears in the
+                catalog and usage with no manual step. The custom model
+                option and the Fable pair (Fable has no built-in Claude
+                Code default) are kept, and a non-family pin is preserved
+                verbatim while it stays authorized. Newly released Anthropic
+                family models are still imported into the account catalog and
+                bound to this agent. Pass --pin-model-families (or onboard
+                with it) for a gateway whose Claude family autoregister is
+                disabled; the choice is persisted in the local enrollment
+                state and honoured by later flag-less runs.
+                With pins enabled, candidates are verified against the live
+                Anthropic model list before upgrading; an authorized current
+                pin stays when the live list is unavailable or lacks the
+                candidate. Fable uses the same verified selection.
   OpenCode      Rewrites the managed provider's models map to the full
                 authorized list; the selected model is preserved.
   OpenClaw      Rewrites models.providers.preloop.models to the full
@@ -78,6 +82,7 @@ removed aliases) plus a final summary line.
 Examples:
   preloop agents refresh
   preloop agents refresh "Claude Code"
+  preloop agents refresh "Claude Code" --pin-model-families
   preloop agents sync opencode`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAgentsRefresh,
@@ -85,6 +90,7 @@ Examples:
 
 func init() {
 	agentsCmd.AddCommand(agentsRefreshCmd)
+	agentsRefreshCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (needed when the gateway's Claude family autoregister is disabled; persisted in the local enrollment state)")
 }
 
 // managedModelRefreshOutcome is the result of rewriting one agent config's
@@ -104,6 +110,9 @@ type managedModelRefreshOutcome struct {
 	// Notes carries one-line reasons for family-pin changes (and deliberate
 	// non-changes) so the before/after diff explains itself.
 	Notes []string
+	// Notices carries one-off informational explanations (e.g. the unpinned
+	// Claude Code family pins just removed) that are not warnings.
+	Notices []string
 	// SkipReason is non-empty when the config carries no managed model
 	// section to refresh (e.g. MCP-only onboarding).
 	SkipReason string
@@ -133,6 +142,9 @@ func runAgentsRefresh(cmd *cobra.Command, args []string) error {
 	if !client.IsAuthenticated() {
 		return fmt.Errorf("not authenticated - run 'preloop login' first")
 	}
+
+	pinModelFamilies, _ := cmd.Flags().GetBool("pin-model-families")
+	pinModelFamiliesSet := cmd.Flags().Changed("pin-model-families")
 
 	discovered, err := discoverAgents(io.Discard, false)
 	if err != nil {
@@ -165,14 +177,24 @@ func runAgentsRefresh(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	return executeAgentsRefresh(client, targets, os.Stdout)
+	return executeAgentsRefresh(client, targets, os.Stdout, pinModelFamilies, pinModelFamiliesSet)
 }
 
 // executeAgentsRefresh fetches the account model list and refreshes every
 // target agent, rendering the per-agent diff report. Split from
 // runAgentsRefresh so tests can drive the full command flow against a fake
 // server and captured output.
-func executeAgentsRefresh(client *api.Client, targets []AgentConfig, w io.Writer) error {
+//
+// pinModelFamilies is the value of --pin-model-families; when
+// pinModelFamiliesSet is false the flag was not passed and each agent keeps
+// the choice persisted in its local enrollment state.
+func executeAgentsRefresh(
+	client *api.Client,
+	targets []AgentConfig,
+	w io.Writer,
+	pinModelFamilies bool,
+	pinModelFamiliesSet bool,
+) error {
 	var accountModels []aiModelResponse
 	if err := client.Get("/api/v1/ai-models", &accountModels); err != nil {
 		return fmt.Errorf("failed to list account AI models: %w", err)
@@ -191,7 +213,13 @@ func executeAgentsRefresh(client *api.Client, targets []AgentConfig, w io.Writer
 	refreshed, unchanged, skipped, failed := 0, 0, 0, 0
 	for _, agent := range targets {
 		fmt.Fprintf(w, "Refreshing %s (%s)\n", resolveAgentDisplayName(agent), agent.ConfigPath) //nolint:errcheck
-		outcome, err := refreshAgentManagedModels(client, agent, accountModels, live, w)
+		agentPin := pinModelFamilies
+		if !pinModelFamiliesSet {
+			if state, stateErr := loadLocalEnrollmentState(agent); stateErr == nil {
+				agentPin = state.PinModelFamilies
+			}
+		}
+		outcome, err := refreshAgentManagedModels(client, agent, accountModels, live, w, agentPin)
 		if err != nil {
 			failed++
 			fmt.Fprintf(w, "  ✗ %v\n", err) //nolint:errcheck
@@ -199,6 +227,9 @@ func executeAgentsRefresh(client *api.Client, targets []AgentConfig, w io.Writer
 		}
 		for _, warning := range outcome.Warnings {
 			fmt.Fprintf(w, "  Warning: %s\n", warning) //nolint:errcheck
+		}
+		for _, notice := range outcome.Notices {
+			fmt.Fprintf(w, "  Note: %s\n", notice) //nolint:errcheck
 		}
 		switch {
 		case outcome.Noop:
@@ -259,6 +290,7 @@ func refreshAgentManagedModels(
 	accountModels []aiModelResponse,
 	live claudeLiveModelList,
 	output io.Writer,
+	pinModelFamilies bool,
 ) (managedModelRefreshOutcome, error) {
 	if output == nil {
 		output = io.Discard
@@ -295,7 +327,7 @@ func refreshAgentManagedModels(
 	// Verify candidate family pins against the provider's live model list
 	// before writing them: a catalog row that Anthropic 404s must not become
 	// the pin. executeAgentsRefresh fetches that list once per run.
-	outcome, err := refreshManagedModelDocument(agent, doc, accountModels, bindings, live)
+	outcome, err := refreshManagedModelDocument(agent, doc, accountModels, bindings, live, pinModelFamilies)
 	if err != nil || outcome.SkipReason != "" || outcome.Doc == nil {
 		return outcome, err
 	}
@@ -308,10 +340,10 @@ func refreshAgentManagedModels(
 			return managedModelRefreshOutcome{}, err
 		}
 	}
-	if err := updateLocalEnrollmentManagedSnapshot(agent, outcome.Doc); err != nil {
-		// The config write already succeeded; a stale snapshot only affects
-		// status displays, so warn instead of failing the refresh.
-		fmt.Fprintf(output, "  Warning: could not update the local managed-config snapshot: %v\n", err) //nolint:errcheck
+	if err := updateLocalEnrollmentManagedSnapshot(agent, outcome.Doc, pinModelFamilies); err != nil {
+		// The config write already succeeded, but the snapshot and persisted
+		// pinning choice may be stale. Warn so the operator can retry.
+		fmt.Fprintf(output, "  Warning: could not save the local managed-config snapshot and family-pinning choice; retry refresh with the same flag: %v\n", err) //nolint:errcheck
 	}
 	return outcome, nil
 }
@@ -325,13 +357,14 @@ func refreshManagedModelDocument(
 	accountModels []aiModelResponse,
 	bindings []managedAgentModelBindingSummary,
 	live claudeLiveModelList,
+	pinModelFamilies bool,
 ) (managedModelRefreshOutcome, error) {
 	if isExtensionHarness(agent) {
 		return refreshHarnessModelDocument(agent, doc, accountModels, bindings)
 	}
 	switch {
 	case isClaudeCodeAgent(agent):
-		return refreshClaudeManagedModelDocumentWithLive(agent, doc, accountModels, bindings, live)
+		return refreshClaudeManagedModelDocumentWithLive(agent, doc, accountModels, bindings, live, pinModelFamilies)
 	case isOpenCodeAgent(agent):
 		return refreshOpenCodeManagedModelDocument(agent, doc, accountModels, bindings)
 	case isOpenClawAgent(agent):
@@ -691,9 +724,10 @@ func refreshClaudeManagedModelDocument(
 	doc map[string]interface{},
 	accountModels []aiModelResponse,
 	bindings []managedAgentModelBindingSummary,
+	pinModelFamilies bool,
 ) (managedModelRefreshOutcome, error) {
 	return refreshClaudeManagedModelDocumentWithLive(
-		agent, doc, accountModels, bindings, claudeLiveModelList{},
+		agent, doc, accountModels, bindings, claudeLiveModelList{}, pinModelFamilies,
 	)
 }
 
@@ -703,6 +737,7 @@ func refreshClaudeManagedModelDocumentWithLive(
 	accountModels []aiModelResponse,
 	bindings []managedAgentModelBindingSummary,
 	live claudeLiveModelList,
+	pinModelFamilies bool,
 ) (managedModelRefreshOutcome, error) {
 	env, ok := asObjectMap(doc["env"])
 	if !ok {
@@ -745,7 +780,7 @@ func refreshClaudeManagedModelDocumentWithLive(
 		alias, note := resolveClaudeFamilyPin(
 			family, lookupString(env, family.envKey), authorized, live,
 		)
-		if note != "" {
+		if note != "" && (pinModelFamilies || !claudeFamilyIsStock(family)) {
 			notes = append(notes, note)
 		}
 		if alias == "" {
@@ -754,11 +789,30 @@ func refreshClaudeManagedModelDocumentWithLive(
 		familyPinBySelector[family.selector] = alias
 		familyAliases = append(familyAliases, alias)
 	}
+	notices := []string{}
+
+	// Detect the stock family pins this refresh is about to drop so the
+	// operator gets a one-line explanation the first time; later flag-less
+	// runs have nothing left to remove and stay quiet.
+	removedStockPins := []string{}
+	if !pinModelFamilies {
+		for _, family := range claudeModelFamilies {
+			if !claudeFamilyIsStock(family) {
+				continue
+			}
+			if alias := strings.TrimSpace(lookupString(env, family.envKey)); alias != "" {
+				removedStockPins = append(removedStockPins, family.envKey)
+			}
+		}
+	}
 
 	// Current selection: a family selector ("fable") stays a selector and
 	// resolves through its verified family pin (stock Claude Code behavior);
 	// a non-family alias is preserved verbatim while it remains authorized.
 	currentSelection := lookupString(env, "ANTHROPIC_MODEL")
+	if currentSelection == "" {
+		currentSelection = lookupString(doc, "model")
+	}
 	if currentSelection == "" {
 		currentSelection = normalizeGatewayModelAlias(lookupString(env, "ANTHROPIC_CUSTOM_MODEL_OPTION"))
 	}
@@ -792,12 +846,26 @@ func refreshClaudeManagedModelDocumentWithLive(
 	}
 
 	plan := managedMCPEnrollmentPlan{Agent: agent, ManagedDocument: doc}
-	plan, err := applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases)
+	plan, err := applyClaudeManagedGateway(plan, baseURL, token, modelAlias, familyAliases, pinModelFamilies)
 	if err != nil {
 		return managedModelRefreshOutcome{}, err
 	}
 
 	afterEnv, _ := asObjectMap(plan.ManagedDocument["env"])
+	actualRemovedPins := removedStockPins[:0]
+	for _, key := range removedStockPins {
+		if lookupString(afterEnv, key) == "" {
+			actualRemovedPins = append(actualRemovedPins, key)
+		}
+	}
+	removedStockPins = actualRemovedPins
+	if len(removedStockPins) > 0 {
+		notices = append(notices, fmt.Sprintf(
+			"Removed the managed stock Claude Code family pins (%s); Claude Code now follows its own defaults and the gateway registers new Anthropic ids on first use. Pass --pin-model-families if your gateway has the Claude family autoregister disabled.",
+			strings.Join(removedStockPins, ", "),
+		))
+	}
+
 	after := claudeManagedModelAliasesFromEnv(afterEnv)
 	selected := modelAlias
 	if selector, _ := claudePinnedModelSelection(modelAlias); selector != "" {
@@ -810,6 +878,7 @@ func refreshClaudeManagedModelDocumentWithLive(
 		Selected: selected,
 		Warnings: warnings,
 		Notes:    notes,
+		Notices:  notices,
 	}, nil
 }
 
@@ -1332,9 +1401,10 @@ func refreshSinglePinnedModelDocument(
 
 // updateLocalEnrollmentManagedSnapshot refreshes the sanitized managed-config
 // snapshot in the local enrollment state so `preloop agents status` reflects
-// the rewrite. The pre-onboarding backup (what `restore` replays) is left
-// untouched on purpose.
-func updateLocalEnrollmentManagedSnapshot(agent AgentConfig, doc map[string]interface{}) error {
+// the rewrite, and records the effective Claude Code family-pinning choice so a
+// later flag-less refresh keeps it. The pre-onboarding backup (what `restore`
+// replays) is left untouched on purpose.
+func updateLocalEnrollmentManagedSnapshot(agent AgentConfig, doc map[string]interface{}, pinModelFamilies bool) error {
 	state, err := loadLocalEnrollmentState(agent)
 	if err != nil {
 		return err
@@ -1346,6 +1416,9 @@ func updateLocalEnrollmentManagedSnapshot(agent AgentConfig, doc map[string]inte
 	sanitizeConfigSnapshot(sanitized)
 	state.ManagedConfig = sanitized
 	state.AppliedAt = time.Now().UTC()
+	if isClaudeCodeAgent(agent) {
+		state.PinModelFamilies = pinModelFamilies
+	}
 	return saveLocalEnrollmentState(state)
 }
 
