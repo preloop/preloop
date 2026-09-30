@@ -10,14 +10,31 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from ..models.runtime_session_optimization_action import (
-    RuntimeSessionOptimizationAction,
-)
+from preloop.models import models
+
 from .base import CRUDBase
+
+RuntimeSessionOptimizationAction = models.RuntimeSessionOptimizationAction
 
 
 class CRUDRuntimeSessionOptimizationAction(CRUDBase[RuntimeSessionOptimizationAction]):
     """CRUD operations for applied optimization actions."""
+
+    def list_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> list[RuntimeSessionOptimizationAction]:
+        """Read applied actions in an account-scoped optional exact window."""
+        query = db.query(self.model).filter(self.model.account_id == account_id)
+        if start is not None:
+            query = query.filter(self.model.created_at >= start)
+        if end is not None:
+            query = query.filter(self.model.created_at < end)
+        return query.all()
 
     def create_applied(
         self,

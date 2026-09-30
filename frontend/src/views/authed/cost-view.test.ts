@@ -9,6 +9,8 @@ import { invalidateApiCaches } from '../../api';
 
 describe('CostView', () => {
   let fetchStub: sinon.SinonStub;
+  let accountPayload: Record<string, unknown>;
+  let originalUrl: string;
   // Per-test copy of the payload so a test can add fields (e.g. the imported
   // usage block) without leaking into the others.
   let summaryPayload: Record<string, unknown>;
@@ -142,6 +144,11 @@ describe('CostView', () => {
   };
 
   beforeEach(() => {
+    originalUrl = window.location.pathname + window.location.search;
+    accountPayload = {
+      id: '00000000-0000-4000-8000-000000000001',
+      organization_name: 'Example account',
+    };
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     summaryPayload = { ...summary };
@@ -173,6 +180,8 @@ describe('CostView', () => {
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
 
+        if (url.includes('/api/v1/account/details'))
+          return new Response(JSON.stringify(accountPayload));
         if (url.includes('/api/v1/billing/cost/reprice/')) {
           return new Response(JSON.stringify(jobStatus));
         }
@@ -268,6 +277,7 @@ describe('CostView', () => {
   });
 
   afterEach(() => {
+    window.history.replaceState({}, '', originalUrl);
     fetchStub.restore();
     localStorage.clear();
     sessionStorage.clear();
@@ -1747,5 +1757,122 @@ describe('CostView', () => {
         'override-active-1'
       );
     });
+  });
+  const digestStart = '2026-09-17T09:00:00.123456Z';
+  const digestEnd = '2026-09-24T09:00:00.654321Z';
+  const digestAccount = '00000000-0000-4000-8000-000000000001';
+  const digestUrl = `/console/cost?account_id=${digestAccount}&start_date=${digestStart}&end_date=${digestEnd}&panel=pricing`;
+  const costUrls = () =>
+    fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/cost/summary'));
+  const settled = async (element: CostView) => {
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+  };
+
+  it('uses the exact digest period for headline and lazy data without saving the preset', async () => {
+    localStorage.setItem('preloop.cost.dateRange', 'this-month');
+    window.history.replaceState({}, '', digestUrl);
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await settled(element);
+    const internals = element as unknown as {
+      loadTab(tab: string): Promise<void>;
+      getProjectedPeriodCost(): number | null;
+      previousRangeSummary: unknown;
+    };
+    await internals.loadTab('sessions');
+    expect(costUrls().length).to.be.greaterThan(0);
+    for (const url of costUrls()) {
+      const params = new URL(url, window.location.origin).searchParams;
+      expect(params.get('start_date')).to.equal(digestStart);
+      expect(params.get('end_date')).to.equal(digestEnd);
+      expect(params.has('account_id')).to.equal(false);
+    }
+    expect(localStorage.getItem('preloop.cost.dateRange')).to.equal(
+      'this-month'
+    );
+    expect(element.shadowRoot?.textContent).not.to.contain('Compared to');
+    expect(element.shadowRoot?.textContent).not.to.contain('Month to date');
+    expect(element.shadowRoot?.textContent).not.to.contain('Projected month');
+    expect(element.shadowRoot?.textContent).to.contain('end exclusive');
+    expect(element.shadowRoot?.textContent).to.contain('Example account');
+    expect(internals.previousRangeSummary).to.equal(null);
+    expect(internals.getProjectedPeriodCost()).to.equal(null);
+  });
+
+  it('selecting the stored preset exits digest mode, and popstate restores it', async () => {
+    localStorage.setItem('preloop.cost.dateRange', 'last-30');
+    window.history.replaceState({}, '', digestUrl);
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await settled(element);
+    element.shadowRoot
+      ?.querySelector('time-range-select')
+      ?.dispatchEvent(
+        new CustomEvent('range-change', { detail: { value: 'last-30' } })
+      );
+    await settled(element);
+    expect(window.location.search).to.equal('?panel=pricing');
+    expect(element.shadowRoot?.textContent).not.to.contain('Digest period:');
+    window.history.replaceState({}, '', digestUrl);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await settled(element);
+    expect(element.shadowRoot?.textContent).to.contain('Digest period:');
+    const last = new URL(
+      costUrls()[costUrls().length - 1],
+      window.location.origin
+    );
+    expect(last.searchParams.get('start_date')).to.equal(digestStart);
+  });
+
+  it('blocks mismatched accounts before every analytics request and rechecks after switching', async () => {
+    accountPayload.id = '00000000-0000-4000-8000-000000000002';
+    window.history.replaceState({}, '', digestUrl);
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await settled(element);
+    expect(costUrls()).to.have.length(0);
+    expect(element.shadowRoot?.textContent).to.contain(
+      'This digest belongs to a different account'
+    );
+    expect(
+      element.shadowRoot?.querySelector('[aria-label="Cost summary metrics"]')
+    ).not.to.exist;
+    expect(window.location.search).to.contain('account_id=');
+    accountPayload.id = digestAccount;
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await settled(element);
+    expect(costUrls().length).to.be.greaterThan(0);
+  });
+
+  it('invalid account links issue no analytics query; invalid dates fall back to the stored preset', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      digestUrl + `&account_id=${digestAccount}`
+    );
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await settled(element);
+    expect(costUrls()).to.have.length(0);
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Invalid digest account link'
+    );
+    localStorage.setItem('preloop.cost.dateRange', 'last-7');
+    window.history.replaceState(
+      {},
+      '',
+      '/console/cost?start_date=2026-02-30T00:00:00Z&end_date=' + digestEnd
+    );
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await settled(element);
+    expect(costUrls().length).to.be.greaterThan(0);
+    expect(costUrls().every((url) => !url.includes('2026-02-30'))).to.equal(
+      true
+    );
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Invalid digest date range'
+    );
   });
 });

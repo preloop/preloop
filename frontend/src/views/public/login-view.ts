@@ -1,3 +1,4 @@
+import { consumeLoginReturn } from '../../utils/login-return';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -156,9 +157,8 @@ export class LoginView extends LitElement {
   }
 
   private _navigateAfterLogin() {
-    const redirectPath = localStorage.getItem('loginRedirect');
+    const redirectPath = consumeLoginReturn();
     if (redirectPath) {
-      localStorage.removeItem('loginRedirect');
       if (redirectPath.startsWith('/admin')) {
         // The admin dashboard is a separate SPA that the console's
         // client-side router cannot reach; do a hard navigation.
