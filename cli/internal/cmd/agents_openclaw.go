@@ -315,6 +315,16 @@ type managedEnrollmentOptions struct {
 	// ``--model``. When set, the interactive model picker is skipped and this
 	// alias is used for gateway onboarding.
 	PreferredModel string
+	// PinModelFamilies keeps writing the stock Claude Code family env pins
+	// (ANTHROPIC_DEFAULT_OPUS_MODEL / _SONNET_MODEL / _HAIKU_MODEL). It is off
+	// by default so new Anthropic releases arrive with the next Claude Code
+	// update instead of a manual refresh; set it with --pin-model-families for
+	// gateways where the Claude family autoregister is disabled.
+	PinModelFamilies bool
+	// PinModelFamiliesSet reports whether --pin-model-families was passed
+	// explicitly. When false, onboarding preserves the persisted choice from a
+	// previous enrollment instead of resetting it to the default.
+	PinModelFamiliesSet bool
 	// AgentPrepared marks that the caller already ran
 	// prepareAgentForEnrollment on the agent (display name confirmed,
 	// runtime principal generated). executeManagedEnrollment must not run
@@ -481,6 +491,20 @@ type bedrockCredentialPayload struct {
 	AWSRegionName      string `json:"aws_region_name,omitempty"`
 }
 
+// resolveEnrollmentPinModelFamilies returns the effective Claude Code family
+// pinning choice for an enrollment: an explicit --pin-model-families wins,
+// otherwise the value persisted by a previous enrollment, otherwise the
+// unpinned default.
+func resolveEnrollmentPinModelFamilies(agent AgentConfig, opts managedEnrollmentOptions) bool {
+	if opts.PinModelFamiliesSet {
+		return opts.PinModelFamilies
+	}
+	if state, err := loadLocalEnrollmentState(agent); err == nil {
+		return state.PinModelFamilies
+	}
+	return opts.PinModelFamilies
+}
+
 func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) error {
 	client := opts.Client
 	var err error
@@ -514,6 +538,12 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			return err
 		}
 	}
+
+	// Resolve the Claude Code family-pinning choice: an explicit
+	// --pin-model-families wins; otherwise preserve the choice persisted by a
+	// previous enrollment so re-onboarding does not silently flip a pinned
+	// gateway back to unpinned (or vice versa).
+	pinModelFamilies := resolveEnrollmentPinModelFamilies(agent, opts)
 
 	// Pre-onboarding readiness: when the agent itself is not logged in,
 	// onboarding still proceeds (the MCP/model config is written), but say so
@@ -618,6 +648,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 				"<token created at apply time>",
 				upstream.ManagedModelAlias,
 				previewClaudeSiblingFamilyAliases(upstream),
+				pinModelFamilies,
 			)
 			if err != nil {
 				return err
@@ -863,6 +894,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 				credentialResp.Token,
 				upstream.ManagedModelAlias,
 				familyAliases,
+				pinModelFamilies,
 			)
 			if err != nil {
 				return err
@@ -908,6 +940,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err != nil {
 		return err
 	}
+	backupState.PinModelFamilies = pinModelFamilies
 	if err := writeAgentConfigDocument(agent, plan.ManagedDocument); err != nil {
 		return err
 	}

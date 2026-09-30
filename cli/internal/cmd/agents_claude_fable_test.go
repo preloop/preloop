@@ -68,6 +68,7 @@ func TestApplyClaudeManagedGatewayTreatsFableAsFamily(t *testing.T) {
 		"claude-durable-token",
 		"anthropic/claude-fable-5",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -122,6 +123,7 @@ func TestApplyClaudeManagedGatewayWritesSiblingFamilyEnv(t *testing.T) {
 			"anthropic/claude-sonnet-4-5",
 			"anthropic/claude-haiku-4-5",
 		},
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -162,6 +164,7 @@ func TestApplyClaudeManagedGatewaySiblingEnvClearedOnReonboard(t *testing.T) {
 		"claude-durable-token",
 		"anthropic/claude-fable-5",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -189,6 +192,7 @@ func TestApplyClaudeManagedGatewayKeepsFamilySelectionBehavior(t *testing.T) {
 		"claude-durable-token",
 		"anthropic/claude-sonnet-4-5",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
@@ -270,6 +274,7 @@ func TestApplyClaudeManagedGatewayWarnsOnShellBedrockOverride(t *testing.T) {
 		"claude-durable-token",
 		"anthropic/claude-sonnet-4-5",
 		nil,
+		true,
 	)
 	if err != nil {
 		t.Fatalf("unexpected gateway apply error: %v", err)
