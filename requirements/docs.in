@@ -1,0 +1,6 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 docs.in -o docs.txt
+# Build the documentation site: mkdocs build --strict (from the repository root)
+mkdocs>=1.6,<2
+mkdocs-material
+mkdocs-mermaid2-plugin
+mkdocs-redirects

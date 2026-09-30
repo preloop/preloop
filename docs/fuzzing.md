@@ -1,8 +1,10 @@
 # Continuous fuzzing
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Fuzzing generates and mutates inputs to find crashes, hangs, and violated
 properties. The native Go fuzzer uses coverage feedback to keep mutations that
-reach new code. Our [workflow](../.github/workflows/fuzz.yml) runs it on relevant
+reach new code. Our [workflow](https://github.com/preloop/preloop/blob/main/.github/workflows/fuzz.yml) runs it on relevant
 pull requests and nightly, with two production parsers:
 
 | Target | Real input surface | Properties checked |
@@ -79,7 +81,7 @@ Use the target/package printed in the failure. Inspect an input before sharing
 it publicly. Investigate the property and production behavior, fix the defect
 without suppressing the assertion, and commit the minimized input alongside the
 fix so normal tests prevent a recurrence. If a bug is security-sensitive, follow
-[SECURITY.md](../SECURITY.md) instead of opening a public disclosure prematurely.
+[SECURITY.md](https://github.com/preloop/preloop/blob/main/SECURITY.md) instead of opening a public disclosure prematurely.
 Coverage corpus entries are useful future seeds, not failures to file as bugs.
 
 The initial single-document property found that canonical decoding silently

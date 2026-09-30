@@ -1,5 +1,7 @@
 # Bitbucket Cloud tracker
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 A Bitbucket tracker connects Preloop to one Bitbucket Cloud workspace. Its
 repositories become Preloop projects, pull request events start flows, and the
 pull request reviewer preset can read a pull request, comment on it and record

@@ -1,5 +1,7 @@
 # GitHub Copilot usage import
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Copilot requests go from the editor straight to GitHub, so the gateway never
 sees them. This import reads what GitHub reports about seats, premium-request
 spend and per-user usage, and shows it in the **Copilot** tab of the Cost

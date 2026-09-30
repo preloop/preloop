@@ -1,5 +1,7 @@
 # Cost Analytics and Budgeting
 
+Editions: OSS. Contributor documentation for this repository.
+
 Cost analytics turns gateway telemetry into explainable spend and budget health. This chapter covers the `ApiUsage` ledger, OSS API/UX boundaries, and the Enterprise plugin split.
 
 ## Progressive reporting

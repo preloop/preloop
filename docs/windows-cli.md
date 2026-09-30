@@ -1,5 +1,7 @@
 # Windows CLI install
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 ## Recommended install (PowerShell)
 
 ```powershell

@@ -1,0 +1,55 @@
+# Documentation build check.
+#
+# docs.preloop.ai is built from this repository: mkdocs.yml at the root,
+# pages under docs/. The deploy wrapper pins this repository as a submodule
+# and runs the same build. This job fails a pull request whose pages would
+# break that build: a broken relative link, a missing nav target or an
+# unknown anchor all fail `mkdocs build --strict`.
+
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'requirements/docs.txt'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'requirements/docs.txt'
+      - '.github/workflows/docs.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: mkdocs build --strict
+    runs-on: ubuntu-latest
+    env:
+      # Silence the MkDocs 2 notice printed by mkdocs-material.
+      NO_MKDOCS_2_WARNING: 'true'
+      DISABLE_MKDOCS_2_WARNING: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install the documentation toolchain
+        run: python -m pip install --require-hashes -r requirements/docs.txt
+
+      - name: Build the site
+        run: mkdocs build --strict

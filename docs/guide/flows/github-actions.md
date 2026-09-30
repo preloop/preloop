@@ -1,5 +1,7 @@
 # Trigger flows from GitHub Actions
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 There are two ways to run a Preloop flow from a GitHub Actions job, and
 the only difference between them is where the agent container runs:
 
@@ -97,8 +99,7 @@ The step fails when the execution does. The outputs (`execution-id`,
           payload: payload.json
           token: ${{ secrets.PRELOOP_TOKEN }}
           mode: runner
-          # The first release with `runner fg --once --ephemeral`
-          # (0.16.0 once published; 0.15.0 does not have it).
+          # 0.16.0 is the first release with `runner fg --once --ephemeral`.
           cli-version: '0.16.0'
 ```
 

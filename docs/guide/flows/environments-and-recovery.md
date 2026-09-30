@@ -1,5 +1,7 @@
 # Execution environments and checkpoint recovery
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Default images are generic harness/toolchain images. They do not bundle the
 Preloop application, PostgreSQL, or another customer's application. A project can
 supply its own image and dependencies. An optional hosted environment profile
@@ -175,7 +177,7 @@ today. Issue #885 would then add timeline rows for those tool calls.
 ## Durable hosted artifacts
 
 Enable `FLOW_ARTIFACT_DIRECT_UPLOAD` when the runner can reach `PRELOOP_URL`.
-The [checkpoint Helm overlay](../../../helm/preloop/values-native-checkpoints.yaml)
+The [checkpoint Helm overlay](https://github.com/preloop/preloop/blob/main/helm/preloop/values-native-checkpoints.yaml)
 enables direct uploads with a 64 MiB compressed cap and matching 80 MiB proxy
 limits. Merge its `extraEnv` entries with existing installation values.
 Without it, the legacy snapshot path remains in effect, including the 2 MiB

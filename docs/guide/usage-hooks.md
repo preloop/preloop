@@ -1,5 +1,7 @@
 # Usage hooks: live conversation tracking in Cost analytics
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 `preloop usage hook` ships conversation lifecycle and usage events to
 `POST /api/v1/usage/ingest` so chats appear in the Cost analytics
 conversation rollup in near real time. It is harness-agnostic: the same

@@ -1,5 +1,7 @@
 # Saved session searches
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 A saved session search is a named question about what the agents did: the
 query text, the ranking mode, the filters and the snippet preferences, stored
 under a name so the same question can be asked again in one click. It is not a

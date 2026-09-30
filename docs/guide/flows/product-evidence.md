@@ -1,5 +1,7 @@
 # Product evidence mapping and provenance limits
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This runbook is for **product-mode** CRA audits: one supported release
 built from several code repositories plus a dedicated compliance
 repository. It does not replace

@@ -1,5 +1,7 @@
 # Auditing session content search
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Opening one session somebody linked reads one session. A content search reads
 every captured prompt, response and tool call the account holds, ranks them,
 and hands back the fragments that matched. It is the broadest read the product

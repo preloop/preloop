@@ -1,5 +1,7 @@
 # Flow to flow delegation: the object shapes
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 When one flow runs another, three records describe the call: the **request**
 the parent sends, the **task** record the child execution is represented by,
 and the **artifact** the child's result becomes. This page freezes those

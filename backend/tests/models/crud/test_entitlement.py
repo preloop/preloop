@@ -315,7 +315,7 @@ def test_grandfathering_a_withdrawn_plan_needs_a_paid_row(
     withdrawn = models.Plan(id="teams", name="Teams", features={}, is_active=False)
     row = _row(status, period_end)
     row.stripe_subscription_id = "sub_provider"
-    assert grandfathers_withdrawn_plan(row, plan=withdrawn) is grandfathered
+    assert grandfathers_withdrawn_plan(row, plan=withdrawn, now=NOW) is grandfathered
 
 
 @pytest.mark.parametrize("status", ["trialing", "active", "past_due"])

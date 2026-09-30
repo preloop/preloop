@@ -1,5 +1,7 @@
 # Which gateway URL an agent calls
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Every agent that routes model traffic through Preloop is told one base URL,
 and a wrong one fails the same way each time: `404 Not Found` from
 `POST .../openai/v1/responses`, no upstream call, no tokens billed, a flow

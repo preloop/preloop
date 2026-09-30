@@ -1,5 +1,7 @@
 # Portfolio Review preset (many projects, one repository, one fan out)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The [full-repo review presets](repo-review-presets.md) each review **one
 project**. This preset sits one layer above them: it takes a repository
 full of independently built projects, discovers what is actually in

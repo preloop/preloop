@@ -1,5 +1,7 @@
 # Bitbucket and Jira software factory quickstart
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This checklist connects a Jira project and a Bitbucket Cloud repository so
 that a Jira ticket becomes a Bitbucket pull request through the Automated
 Issue Implementation flow, with the pull request reviewer and the durable

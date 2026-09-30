@@ -1,5 +1,7 @@
 # Delegation: one flow running another with `run_flow`
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 A flow execution can start another flow of the same account as a child of
 itself. The tool is `run_flow`, it is off by default, and every rule that
 decides whether a call is permitted runs on the server.

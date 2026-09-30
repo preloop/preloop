@@ -1,9 +1,11 @@
 # Self-hosted runner quickstart (plain Linux / Proxmox)
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The Preloop CLI **is** the self-hosted runner. It registers itself with
 your Preloop control plane, holds an outbound WebSocket, leases flow
 executions for your account, and runs the agent in a local Docker
-container — same model as GitHub/GitLab self-hosted runners. No inbound
+container: same model as GitHub/GitLab self-hosted runners. No inbound
 ports, no Kubernetes.
 
 Running on a developer laptop instead? The
@@ -30,8 +32,7 @@ execution profiles are the primary mode.
   pct restart 105
   ```
 
-  If `docker info` fails inside the container after this, use a VM —
-  the runner refuses jobs when Docker is unavailable and reports
+  If `docker info` fails inside the container after this, use a VM:   the runner refuses jobs when Docker is unavailable and reports
   `docker is not available` back to the execution log.
 
 ## 1. Install the CLI
@@ -514,7 +515,7 @@ socket gives the agent the same privileges as the runner user.
 | `no agent image in payload` | The flow's agent type has no default image and no `image`/`docker_image` was set. |
 | Execution FAILED after ~15 min queued | No runner matching `runner_pool` was online; check `preloop runner status` and labels. |
 | Service dies after SSH logout | `sudo loginctl enable-linger $USER`. |
-| Runner shows offline after IP change | Restart: `preloop runner restart` — registration resumes from `~/.preloop/runner.json`. |
+| Runner shows offline after IP change | Restart: `preloop runner restart`: registration resumes from `~/.preloop/runner.json`. |
 
 ## Runner connection recovery
 

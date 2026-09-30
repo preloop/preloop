@@ -1,5 +1,7 @@
 # Database credentials: where they live and how to rotate them
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The chart used to render `DATABASE_URL` as a literal environment value in
 every pod spec, built from `database.cnpg.auth.password`, whose default
 value is the word `postgres`. Two consequences: the connection string was

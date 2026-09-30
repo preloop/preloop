@@ -1,0 +1,121 @@
+# Browser Safety Policy for OpenClaw
+#
+# This policy requires human approval before the AI agent navigates to or
+# interacts with sensitive websites like banking, admin consoles, or
+# cloud provider dashboards.
+#
+# Usage:
+# 1. Import this policy via the Preloop API: POST /api/v1/policies/upload
+# 2. The policy will configure browser tools with conditional approval
+# 3. Configure approvers in the Preloop dashboard
+#
+# Customize domains based on the sites you need to protect.
+
+version: "1.0"
+metadata:
+  name: "Browser Safety"
+  description: |
+    Require approval for browser automation on sensitive websites including
+    banking, payment processors, cloud consoles, and administrative interfaces.
+  tags:
+    - security
+    - browser
+    - openclaw
+
+approval_workflows:
+  - name: "browser-approval"
+    timeout_seconds: 180  # 3 minutes - browser actions are time-sensitive
+    approvals_required: 1
+
+  - name: "form-approval"
+    timeout_seconds: 180
+    approvals_required: 1
+
+tools:
+  - name: "browser_navigate"
+    source: mcp
+    approval_workflow: "browser-approval"
+    conditions:
+      # Banking and financial services
+      - expression: "args.url.contains('bank') || args.url.contains('chase.com') || args.url.contains('wellsfargo.com')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Banking websites"
+
+      # Payment processors
+      - expression: "args.url.contains('paypal.com') || args.url.contains('stripe.com') || args.url.contains('venmo.com')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Payment processors"
+
+      # Cloud provider consoles
+      - expression: "args.url.contains('console.aws.amazon.com') || args.url.contains('portal.azure.com') || args.url.contains('console.cloud.google.com')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Cloud provider consoles"
+
+      # Code hosting settings
+      - expression: "args.url.contains('github.com/settings') || args.url.contains('gitlab.com/-/profile')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Code hosting account settings"
+
+      # Identity and SSO
+      - expression: "args.url.contains('okta.com') || args.url.contains('auth0.com')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Identity provider dashboards"
+
+      # Password managers
+      - expression: "args.url.contains('1password.com') || args.url.contains('lastpass.com') || args.url.contains('bitwarden.com')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Password manager interfaces"
+
+      # Admin patterns
+      - expression: "args.url.contains('/admin') || args.url.contains('/billing') || args.url.contains('/security')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Administrative interfaces"
+
+      # Login pages
+      - expression: "args.url.contains('/login') || args.url.contains('/signin') || args.url.contains('/oauth')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Authentication pages"
+
+  - name: "browser_type"
+    source: mcp
+    approval_workflow: "form-approval"
+    conditions:
+      # Sensitive form fields
+      - expression: "args.selector.contains('password') || args.selector.contains('credit') || args.selector.contains('ssn')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Sensitive form field input"
+
+  - name: "browser_fill"
+    source: mcp
+    approval_workflow: "form-approval"
+    conditions:
+      # Sensitive form fields
+      - expression: "args.selector.contains('password') || args.selector.contains('credit') || args.selector.contains('account')"
+        condition_type: "cel"
+        action: "require_approval"
+        description: "Sensitive form field fill"
+
+# Examples of what this policy will do:
+#
+# REQUIRES APPROVAL:
+#   Navigate to https://chase.com/account        - Banking site
+#   Navigate to https://console.aws.amazon.com   - Cloud console
+#   Navigate to https://github.com/settings/keys - Code hosting settings
+#   Navigate to https://paypal.com/transfer      - Payment action
+#   Navigate to https://admin.company.com        - Admin interface
+#   Fill password field on any login page        - Credential entry
+#
+# AUTO-APPROVED:
+#   Navigate to https://github.com/user/repo     - Public repo browsing
+#   Navigate to https://stackoverflow.com        - Public Q&A site
+#   Navigate to https://docs.python.org          - Documentation
+#   Navigate to https://google.com/search        - Search engine

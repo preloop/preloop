@@ -1,5 +1,7 @@
 # Copilot coverage
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 What Preloop governs and meters on each GitHub Copilot surface. The
 longer guides stay the setup steps. This page is the matrix.
 

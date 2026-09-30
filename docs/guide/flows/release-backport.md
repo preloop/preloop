@@ -1,5 +1,7 @@
 # Release Backport
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 The Release Backport preset (`backend/presets/018-release-backport.yaml`)
 carries a change merged into one release branch forward to later branches.
 It runs no agent. The Preloop control plane does the Git work and opens the

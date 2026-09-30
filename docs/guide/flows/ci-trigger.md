@@ -1,5 +1,7 @@
 # Trigger a flow from CI
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 GitHub Actions and GitLab CI call the Preloop CLI. Preloop does not dispatch
 into your CI APIs. The CLI blocks (when stdin is not a TTY), streams
 execution logs to the job, and exits non-zero on FAILED, STOPPED, or TIMEOUT.

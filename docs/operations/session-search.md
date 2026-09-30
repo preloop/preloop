@@ -1,5 +1,7 @@
 # Session search
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Searching session content is two mechanisms with one entry point. Keyword
 search reads a corpus of text chunks, `session_search_document`, and is the
 half every deployment gets. Semantic search reads vectors over the same

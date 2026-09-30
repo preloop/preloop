@@ -1,5 +1,7 @@
 # Hosted spending rollout
 
+Editions: Cloud.
+
 Hosted spending applies to operator-paid built-in models. BYOK traffic keeps its
 existing gateway, approval, firewall and budget behavior. Included balances are
 separate from retained usage rows: deleting analytics never restores credit.

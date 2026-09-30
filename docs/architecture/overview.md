@@ -1,5 +1,7 @@
 # System Overview
 
+Editions: OSS. Contributor documentation for this repository.
+
 Preloop is an open-source, responsible AI automation platform with a REST API, web console, MCP server, and model gateway. This chapter is the system map: the high-level diagram, key components, the API server, and the REST search path.
 
 Preloop is an open-source, responsible AI automation platform. It can proxy tools from MCP servers, optionally adding a human approval layer with configurable policies. It provides event-driven agentic flows to intelligently automate common tasks using agent frameworks like Claude Code, Codex CLI, OpenCode, Gemini CLI, Aider or OpenHands. It integrates with issue & code tracking systems like Jira, GitHub, GitLab, both for listening to events and for ingesting issues, comments, documentation and code. By leveraging vector-based similarity search, Preloop detects duplicate and overlapping issues, detects unmapped dependencies, evaluates compliance metrics, and offers intelligent suggestions to streamline workflows. The architecture now also includes Preloop-owned model-gateway surfaces so managed runtimes can route model traffic through a central enforcement point for telemetry, budgets, session observability, and secret custody. The architecture emphasizes flexibility, performance, and ease of integration, providing access via a REST API, a web UI, and an MCP server for various clients.
@@ -69,7 +71,7 @@ graph LR
 ## Preloop API Server (Main Repository)
 *   **Framework:** FastAPI-based RESTful API server.
 *   **Authentication:** JWT authentication and authorization. Per-user `auth_generation` (JWT `gen`) is incremented by `POST /auth/sessions/revoke-all` so every outstanding access and refresh token is rejected, including the WebSocket upgrade. See [Security](security.md#authentication--authorization).
-*   **MCP Server:** Includes integrated MCP tool endpoints under `/api/v1/mcp/` for direct communication with MCP clients over HTTP.
+*   **MCP Server:** Serves MCP tools over streamable HTTP at `/mcp/v1` for direct communication with MCP clients over HTTP.
 *   **Validation:** Request validation using Pydantic models (defined in `preloop.models`).
 *   **Documentation:** Automatic API documentation with Swagger/ReDoc.
 *   **Features:** Rate limiting, error handling, monitoring integration.

@@ -1,9 +1,23 @@
 # Hermes: onboarding, rollback, and systemd recovery
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Hermes is a supported managed agent. This page is the operational playbook
 for connecting it to Preloop, undoing that connection, and recovering when
 tools stay gated after a config change. The systemd-first kill order comes
 from [issue #828](https://github.com/preloop/preloop/issues/828).
+
+[Hermes](https://github.com/nousresearch/hermes-agent) is Nous Research's
+open-source agent. It supports MCP servers natively through its
+`mcp_servers` configuration block. Once onboarded, every Hermes tool call
+passes the Preloop safety layer, sensitive calls can wait for a human
+approval (console, mobile, watch, Slack, email), each Hermes process gets a
+durable runtime credential and appears in the Agents view, and tool calls and
+model spend are attributed to that Hermes runtime principal.
+
+Install Hermes from upstream (see the
+[Hermes docs](https://hermes-agent.nousresearch.com/docs) for current
+options); it keeps its configuration in `~/.hermes/config.yaml`.
 
 ## Onboarding
 
@@ -216,3 +230,42 @@ unit already exists:
   change.
 
 If tools are gated, ignore these lines and use the verify path above.
+
+## Manual configuration
+
+If you would rather wire Hermes by hand, create an API key under
+**Settings > API Keys** in the console and add Preloop to the `mcp_servers`
+block of `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  preloop:
+    url: https://preloop.ai/mcp/v1
+    headers:
+      Authorization: Bearer YOUR_API_KEY_HERE
+    enabled: true
+```
+
+For a self-hosted stack, replace `https://preloop.ai` with your own URL.
+`hermes mcp list` should then show `preloop`. A hand-written entry gives you
+tool routing only: no Agent Control block, no model gateway rewrite, and no
+config backup to restore.
+
+## Troubleshooting
+
+- **`preloop agents discover` does not find Hermes.** Discovery looks for
+  `~/.hermes/` (or `~/.hermes/hermes-agent`, `~/.hermes/sessions`) and
+  `~/.local/bin/hermes`. Install Hermes or create one of those paths first.
+- **Tools are missing.** The key Hermes presents needs the `mcp:read` and
+  `mcp:write` scopes (onboarding mints them), and no subject-scoped tool list
+  may be hiding the tools you expect. See
+  [Subject-Scoped Governance](concepts/subject-scoped-governance.md).
+- **Tools stay gated after a config change.** Restart the gateway and any
+  systemd user units, as described above.
+
+## Related
+
+- [Connect your MCP client](getting-started/connect-mcp-client.md)
+- [Agent Control Runtime Adapters](integrations/agent-control-runtime-adapters.md)
+- [Runtime Sessions](concepts/runtime-sessions.md)
+- [Safety Layer and access rules](concepts/safety-layer.md)

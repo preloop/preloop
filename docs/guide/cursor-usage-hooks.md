@@ -1,5 +1,7 @@
 # Cursor hooks: live conversation tracking in Cost analytics
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 This page moved to the harness-agnostic guide:
 
 [Usage hooks](usage-hooks.md)

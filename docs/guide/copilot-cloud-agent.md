@@ -1,5 +1,7 @@
 # Copilot cloud agent: Preloop MCP on GitHub.com
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Repository admins can give the Copilot cloud agent on GitHub.com access
 to Preloop tools by pasting an MCP config into the repository's Copilot
 MCP settings. There is no local config for `preloop agents discover` to

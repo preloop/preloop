@@ -65,6 +65,29 @@ func TestSetHomeEscapesTheRealProfile(t *testing.T) {
 	}
 }
 
+func TestScrubCredentialEnvRemovesCredentialAndSelection(t *testing.T) {
+	ambient := map[string]string{
+		"PRELOOP_TOKEN":   "ambient-secret",
+		"PRELOOP_URL":     "https://preloop.ai",
+		"PRELOOP_PROFILE": "work",
+		"PRELOOP_ACCOUNT": "acme",
+	}
+	for name, value := range ambient {
+		t.Setenv(name, value)
+	}
+
+	ScrubCredentialEnv()
+
+	for name := range ambient {
+		if got, ok := os.LookupEnv(name); ok {
+			t.Fatalf("%s = %q after scrub", name, got)
+		}
+	}
+	if len(CredentialEnv) != len(ambient) {
+		t.Fatalf("CredentialEnv = %v, want exactly %d names", CredentialEnv, len(ambient))
+	}
+}
+
 func TestSetHomeReturnsTheDirectoryItWasGiven(t *testing.T) {
 	want := t.TempDir()
 	if got := SetHome(t, want); got != want {

@@ -2217,6 +2217,7 @@ class FlowExecutionOrchestrator:
                 "tracker_id": str(tracker_id),
                 "token": token or "",
                 "tracker_type": tracker.tracker_type,
+                "auth_type": tracker.auth_type,
             }
             username = resolve_tracker_git_username(tracker)
             if username:
@@ -2278,11 +2279,10 @@ class FlowExecutionOrchestrator:
         Minting an App installation token is async and must happen here, in
         the orchestrator, not in the synchronous container code path.
 
-        GitHub App installation tokens expire within an hour. They are minted
-        at execution start and delivered in the container environment; the
-        post-execution ``git push`` is the same container script, so a run
-        longer than that window can still fail the push with an expired
-        token. The recovery bundle is written before the push.
+        GitHub App installation tokens expire within an hour. The launch
+        token authenticates clone; hosted publication obtains fresh scoped
+        credentials from the controller after verification, before push/PR.
+        The recovery bundle is written before the push.
         """
 
         tracker_id = self._resolve_project_tracker_id(
