@@ -50,7 +50,7 @@
     "docker:test": "./docker-run.sh test"
   },
   "dependencies": {
-    "@sentry/browser": "^10.75.0",
+    "@sentry/browser": "^11.0.0",
     "@shoelace-style/shoelace": "^2.20.1",
     "@tanstack/table-core": "^9.2.4",
     "ansi_up": "^6.0.2",
