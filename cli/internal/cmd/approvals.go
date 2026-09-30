@@ -345,6 +345,11 @@ func formatDuration(d time.Duration) string {
 
 func approvalOriginLabels(request ApprovalRequest) (string, string) {
 	session, model := "", "Unknown"
+	// MCP runtime linkage is authoritative; native shared credential linkage
+	// must never substitute for the process origin.
+	if stringField(request.ToolArgs, "_preloop_source") == "" && request.ToolArgs["_preloop_origin"] == nil {
+		session = request.RuntimeSessionID
+	}
 	if origin, ok := request.ToolArgs["_preloop_origin"].(map[string]interface{}); ok {
 		if id := stringField(origin, "session_id"); id != "" {
 			session = id

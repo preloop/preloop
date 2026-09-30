@@ -75,3 +75,14 @@ func TestCodexPermissionModelBoundedTailAndMissingLatestModel(t *testing.T) {
 		t.Fatalf("borrowed previous model: %q", got)
 	}
 }
+
+func TestApprovalOriginLabelsDistinguishMCPRuntimeFromNativeOrigin(t *testing.T) {
+	session, model := approvalOriginLabels(ApprovalRequest{RuntimeSessionID: "mcp-session"})
+	if session != "mcp-session" || model != "Unknown" {
+		t.Fatalf("lost authenticated MCP linkage: %q %q", session, model)
+	}
+	session, model = approvalOriginLabels(ApprovalRequest{RuntimeSessionID: "shared-native", ToolArgs: map[string]interface{}{"_preloop_source": "codex_cli"}})
+	if session != "Unknown" || model != "Unknown" {
+		t.Fatalf("invented native origin: %q %q", session, model)
+	}
+}
