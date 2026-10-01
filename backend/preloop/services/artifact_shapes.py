@@ -53,17 +53,6 @@ KIND_DOCUMENT = "document"
 KIND_GENERATED_FILE = "generated_file"
 KIND_TRACE = "trace"
 
-KNOWN_KINDS: tuple[str, ...] = (
-    KIND_SCREENSHOT,
-    KIND_RECORDING,
-    KIND_SCREENCAST,
-    KIND_AUDIO,
-    KIND_TRANSCRIPT,
-    KIND_DOCUMENT,
-    KIND_GENERATED_FILE,
-    KIND_TRACE,
-)
-
 MODALITY_IMAGE = "image"
 MODALITY_VIDEO = "video"
 MODALITY_AUDIO = "audio"
@@ -206,7 +195,7 @@ def make_payload(
 def infer_kind(content_type: str, block_type: str | None = None) -> str:
     """Infer an artifact kind from an MCP block type and media type.
 
-    image -> screenshot, audio -> audio, text/vtt or application/x-subrip ->
+    image -> screenshot, audio -> audio, video -> recording, text/vtt or application/x-subrip ->
     transcript, other text -> document, anything else -> generated_file.
     """
     ct = (content_type or "").split(";", 1)[0].strip().lower()
@@ -214,6 +203,8 @@ def infer_kind(content_type: str, block_type: str | None = None) -> str:
         return KIND_SCREENSHOT
     if block_type == MCP_TYPE_AUDIO or ct.startswith("audio/"):
         return KIND_AUDIO
+    if ct.startswith("video/"):
+        return KIND_RECORDING
     if ct in TRANSCRIPT_CONTENT_TYPES:
         return KIND_TRANSCRIPT
     if block_type == MCP_TYPE_TEXT or _is_textual(ct):
@@ -235,12 +226,21 @@ def modality_for(kind: str, content_type: str | None = None) -> str:
     return MODALITY_DOCUMENT
 
 
-def decode_base64(encoded: Any, *, max_bytes: int = DEFAULT_MAX_DECODED_BYTES) -> bytes:
+def decode_base64(
+    encoded: Any,
+    *,
+    max_bytes: int = DEFAULT_MAX_DECODED_BYTES,
+    urlsafe: bool = False,
+) -> bytes:
     """Decode strict base64, refusing oversize input before decoding.
 
     Mirrors ``browser_steps.decode_screenshot``: base64 carries 3 bytes per
     4 characters, so input longer than the encoding of ``max_bytes`` cannot
     decode to an allowed size and is refused without allocating a copy.
+
+    ``urlsafe`` also accepts the URL-safe alphabet and missing padding, as
+    the ProtoJSON mapping of ``bytes`` requires (A2A ``Part.raw``). MCP
+    ``data`` and ``blob`` stay strict standard base64.
 
     Raises:
         ValueError: ``artifact_block_too_large`` or
@@ -251,6 +251,9 @@ def decode_base64(encoded: Any, *, max_bytes: int = DEFAULT_MAX_DECODED_BYTES) -
     encoded = encoded.strip()
     if len(encoded) > 4 * ((max_bytes + 2) // 3):
         raise ValueError(ERROR_BLOCK_TOO_LARGE)
+    if urlsafe:
+        encoded = encoded.replace("-", "+").replace("_", "/")
+        encoded += "=" * (-len(encoded) % 4)
     try:
         data = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -297,6 +300,7 @@ def _meta_object(
     producer: str | None,
     with_name: bool,
     with_content_type: bool,
+    uri: str | None = None,
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "artifact_id": artifact_id,
@@ -311,6 +315,8 @@ def _meta_object(
         meta["name"] = p.name
     if with_content_type:
         meta["content_type"] = p.content_type
+    if uri:
+        meta["uri"] = uri
     return meta
 
 
@@ -344,7 +350,7 @@ def from_mcp_content_block(
     content_type = meta.get("content_type")
     data: bytes | None = None
     text: str | None = None
-    uri: str | None = None
+    uri: str | None = meta.get("uri") if isinstance(meta.get("uri"), str) else None
 
     if block_type == MCP_TYPE_TEXT:
         text = block.get("text")
@@ -406,7 +412,8 @@ def to_mcp_content_block(
     ``ImageContent`` / ``AudioContent`` for image or audio bytes,
     ``TextContent`` for ``text/plain`` text without a uri, and
     ``EmbeddedResource`` (text or blob) for the rest. Always sets
-    ``_meta["preloop.dev/artifact"]``.
+    ``_meta["preloop.dev/artifact"]``; ``ImageContent`` and
+    ``AudioContent`` have no uri slot, so a given uri travels there.
     """
     link_uri = uri or p.uri
     content = _content_bytes(p)
@@ -436,6 +443,7 @@ def to_mcp_content_block(
     if p.data is not None and top in (MCP_TYPE_IMAGE, MCP_TYPE_AUDIO):
         block = {"type": top, "data": _b64(p.data), "mimeType": p.content_type}
         with_ct = False
+        meta_uri = link_uri
     elif (
         p.text is not None
         and not link_uri
@@ -443,6 +451,7 @@ def to_mcp_content_block(
     ):
         block = {"type": MCP_TYPE_TEXT, "text": p.text}
         with_ct = False
+        meta_uri = None
     elif link_uri:
         resource: dict[str, Any] = {"uri": link_uri, "mimeType": p.content_type}
         if p.text is not None:
@@ -451,11 +460,13 @@ def to_mcp_content_block(
             resource["blob"] = _b64(content)
         block = {"type": MCP_TYPE_RESOURCE, "resource": resource}
         with_ct = False
+        meta_uri = None
     elif p.text is not None:
         # No uri to embed under and not plain text: TextContent has no
         # mimeType slot, so the media type travels in _meta.
         block = {"type": MCP_TYPE_TEXT, "text": p.text}
         with_ct = True
+        meta_uri = None
     else:
         # Bytes that are neither image nor audio need a uri for an
         # EmbeddedResource; without one the caller must link instead.
@@ -467,6 +478,7 @@ def to_mcp_content_block(
             producer=producer,
             with_name=True,
             with_content_type=with_ct,
+            uri=meta_uri,
         )
     }
     return block
@@ -530,7 +542,7 @@ def from_a2a_part(
                 raise ValueError(ERROR_BLOCK_TOO_LARGE)
             data = bytes(raw)
         else:
-            data = decode_base64(raw, max_bytes=max_bytes)
+            data = decode_base64(raw, max_bytes=max_bytes, urlsafe=True)
     elif isinstance(part.get(A2A_URL), str):
         uri = part[A2A_URL]
     elif A2A_DATA in part:
@@ -570,6 +582,29 @@ def to_a2a_artifact(
     return artifact
 
 
+def from_a2a_artifact(
+    artifact: Mapping[str, Any],
+    *,
+    max_bytes: int = DEFAULT_MAX_DECODED_BYTES,
+) -> tuple[str, str | None, list[ArtifactPayload]]:
+    """Read an A2A ``Artifact`` dict into ``(artifact_id, name, payloads)``.
+
+    Accepts ``artifact_id`` or its ProtoJSON form ``artifactId``. Both id and
+    a non-empty ``parts`` list are required by the proto.
+    """
+    if not isinstance(artifact, Mapping):
+        raise ValueError(ERROR_BLOCK_TYPE_UNSUPPORTED)
+    artifact_id = artifact.get(A2A_ARTIFACT_ID) or artifact.get(A2A_ARTIFACT_ID_JSON)
+    parts = artifact.get(A2A_PARTS)
+    if not isinstance(artifact_id, str) or not artifact_id or not isinstance(parts, list) or not parts:
+        raise ValueError(ERROR_BLOCK_TYPE_UNSUPPORTED)
+    return (
+        artifact_id,
+        artifact.get(A2A_NAME) or None,
+        [from_a2a_part(part, max_bytes=max_bytes) for part in parts],
+    )
+
+
 # ---------------------------------------------------------------------------
 # OTel GenAI parts
 # ---------------------------------------------------------------------------
@@ -595,13 +630,14 @@ def otel_span_attributes(p: ArtifactPayload) -> dict[str, str]:
 def to_otel_part(p: ArtifactPayload, *, uri: str | None = None) -> dict[str, Any]:
     """Render a payload as an OTel GenAI part.
 
-    ``UriPart`` when ``uri`` is given (preferred: the spec discourages
+    ``UriPart`` when ``uri`` is given or the payload has one (preferred: the spec discourages
     base64 data URLs), else ``BlobPart`` with base64 ``content``.
     """
     part: dict[str, Any] = {
         OTEL_MIME_TYPE: p.content_type,
         OTEL_MODALITY: modality_for(p.kind, p.content_type),
     }
+    uri = uri or p.uri
     if uri:
         return {OTEL_TYPE: OTEL_TYPE_URI, **part, OTEL_URI: uri}
     content = _content_bytes(p)

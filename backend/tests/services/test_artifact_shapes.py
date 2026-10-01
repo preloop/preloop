@@ -527,3 +527,56 @@ def test_module_imports_without_db_settings_or_models():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+# --------------------------------------------------------------------------
+# Review follow-ups (PR #1109)
+# --------------------------------------------------------------------------
+
+
+def test_otel_out_falls_back_to_payload_uri():
+    p = _payload(uri="https://p.test/a/t", content_type="application/zip", kind="trace")
+    assert to_otel_part(p) == {
+        "type": "uri",
+        "mime_type": "application/zip",
+        "modality": "document",
+        "uri": "https://p.test/a/t",
+    }
+
+
+@pytest.mark.parametrize("kind,ct,content,labels", list(_cases()))
+@pytest.mark.parametrize("inline", [True, False])
+def test_round_trip_mcp_keeps_uri(kind, ct, content, labels, inline):
+    p = _orig(kind, ct, content, labels)
+    uri = p.uri or "https://p.test/artifacts/1"
+    back = from_mcp_content_block(to_mcp_content_block(p, uri=uri, inline=inline), kind=None)
+    assert back.uri == uri
+
+
+@pytest.mark.parametrize("ct", ["video/webm", "video/mp4"])
+def test_video_without_kind_is_recording_with_video_modality(ct):
+    p = from_a2a_part({"raw": b64(b"\x1a\x45\xdf\xa3"), "media_type": ct})
+    assert p.kind == "recording"
+    assert to_otel_part(p)["modality"] == "video"
+
+
+def test_from_a2a_artifact_reads_proto_and_camel_names():
+    a = to_a2a_artifact("art-1", "run", [_payload(text="a")])
+    artifact_id, name, payloads = shapes.from_a2a_artifact(a)
+    assert (artifact_id, name, [p.text for p in payloads]) == ("art-1", "run", ["a"])
+    camel = {"artifactId": "art-2", "parts": [{"text": "b", "mediaType": "text/plain"}]}
+    assert shapes.from_a2a_artifact(camel)[0] == "art-2"
+    with pytest.raises(ValueError, match=ERROR_BLOCK_TYPE_UNSUPPORTED):
+        shapes.from_a2a_artifact({"parts": []})
+
+
+@pytest.mark.parametrize("data", [b"\xfb\xff\xfe", b"\xfb\xff", b"\xfb"])
+def test_a2a_raw_accepts_urlsafe_unpadded_base64(data):
+    encoded = base64.urlsafe_b64encode(data).decode().rstrip("=")
+    assert from_a2a_part({"raw": encoded}).data == data
+
+
+def test_mcp_data_stays_standard_base64_only():
+    encoded = base64.urlsafe_b64encode(b"\xfb\xff\xfe").decode()
+    with pytest.raises(ValueError, match=ERROR_BLOCK_INVALID_BASE64):
+        from_mcp_content_block({"type": "image", "data": encoded, "mimeType": "image/png"}, kind=None)
