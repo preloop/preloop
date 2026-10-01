@@ -90,11 +90,23 @@ export interface TranscriptBrowserStepItem {
   activity: RuntimeSessionActivityItem;
 }
 
+/**
+ * One `artifact` activity (deposit API), kept top level like browser steps so
+ * artifacts sit in time order between the turns around them.
+ */
+export interface TranscriptArtifactItem {
+  type: 'artifact';
+  key: string;
+  timestamp: string | null;
+  activity: RuntimeSessionActivityItem;
+}
+
 export type TranscriptItem =
   | TranscriptMessageItem
   | TranscriptStepGroupItem
   | TranscriptDividerItem
-  | TranscriptBrowserStepItem;
+  | TranscriptBrowserStepItem
+  | TranscriptArtifactItem;
 
 export interface TranscriptStats {
   promptCount: number;
@@ -319,7 +331,8 @@ type Atom =
   | { type: 'message'; item: TranscriptMessageItem; order: number }
   | { type: 'step'; step: TranscriptStep; order: number }
   | { type: 'divider'; item: TranscriptDividerItem; order: number }
-  | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number };
+  | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number }
+  | { type: 'artifact'; item: TranscriptArtifactItem; order: number };
 
 function atomTime(atom: Atom): number {
   const timestamp =
@@ -556,6 +569,19 @@ export function buildConversation(
       });
       continue;
     }
+    if (activityType === 'artifact') {
+      atoms.push({
+        type: 'artifact',
+        order: order++,
+        item: {
+          type: 'artifact',
+          key,
+          timestamp: item.timestamp || null,
+          activity: item,
+        },
+      });
+      continue;
+    }
     if (activityType === 'agent_control_message') {
       const metadata = (item.metadata || {}) as Record<string, unknown>;
       const role =
@@ -639,7 +665,11 @@ export function buildConversation(
       currentSteps.push(atom.step);
       return;
     }
-    if (atom.type === 'divider' || atom.type === 'browser_step') {
+    if (
+      atom.type === 'divider' ||
+      atom.type === 'browser_step' ||
+      atom.type === 'artifact'
+    ) {
       closeSteps();
       items.push(atom.item);
       return;

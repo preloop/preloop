@@ -161,6 +161,10 @@ export class RuntimeSessionsView extends LitElement {
   @state()
   private focusTurnId: string | null = null;
 
+  /** Artifact row to land on (`?artifact=<id>`), kept in the location. */
+  @state()
+  private focusArtifactId: string | null = null;
+
   @state()
   private sessionSourceType = 'all';
 
@@ -701,6 +705,7 @@ export class RuntimeSessionsView extends LitElement {
     this.selectedSessionId = params.get('sessionId');
     this.searchQuery = params.get('q') ?? '';
     this.focusTurnId = params.get('turn');
+    this.focusArtifactId = params.get('artifact');
   }
 
   /**
@@ -1172,6 +1177,11 @@ export class RuntimeSessionsView extends LitElement {
     } else {
       url.searchParams.delete('turn');
     }
+    if (this.focusArtifactId) {
+      url.searchParams.set('artifact', this.focusArtifactId);
+    } else {
+      url.searchParams.delete('artifact');
+    }
     const target = `${url.pathname}${url.search}`;
     if (options.push) {
       window.history.pushState({}, '', target);
@@ -1344,6 +1354,7 @@ export class RuntimeSessionsView extends LitElement {
     this.selectedSessionId = sessionId;
     // Picking another session is not landing on a turn any more.
     this.focusTurnId = null;
+    this.focusArtifactId = null;
     this.syncUrl();
     // Observer loads activity/events for the selection; avoid a duplicate
     // parent getAccountRuntimeSessionDetail fetch.
@@ -1893,6 +1904,7 @@ export class RuntimeSessionsView extends LitElement {
           .emptyText=${this.emptySessionsText()}
           .selectedSessionId=${this.selectedSessionId}
           .focusTurnId=${this.focusTurnId}
+          .focusArtifactId=${this.focusArtifactId}
           .syncModeToUrl=${true}
           layout="full"
           defaultReplayMode="conversation"

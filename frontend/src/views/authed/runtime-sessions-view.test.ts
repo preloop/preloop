@@ -742,6 +742,7 @@ describe('RuntimeSessionsView', () => {
         url.startsWith('/api/v1/runtime-sessions/runtime-session-1') &&
         !url.includes('/gateway-events') &&
         !url.includes('/activity') &&
+        !url.includes('/artifacts') &&
         !url.includes('/requests')
       );
     });
