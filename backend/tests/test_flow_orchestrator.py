@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -23,6 +25,9 @@ from preloop.services.flow_orchestrator import (
     FLOW_SUCCESS_SENTINEL,
     FlowExecutionOrchestrator,
     TimeoutBudget,
+    _project_identity_rank,
+    payload_repository_identity,
+    repository_path_from_git_url,
     _build_confirmation_nudge_prompt,
     _failure_report_in_log_lines,
     _result_artifact_confirmation,
@@ -2204,7 +2209,11 @@ class TestPayloadRepositorySelection:
         orchestrator._projects_matching_identity = lambda identity, selected: []
 
         assert orchestrator._resolve_trigger_project_id() is None
-        assert orchestrator._git_clone_config_for_trigger()["repositories"] == []
+        with patch("preloop.services.flow_orchestrator.logger.warning") as warning:
+            clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"] == []
+        warning.assert_called_once()
+        assert "no repository will be cloned" in warning.call_args.args[0]
 
     def test_unrestricted_flow_accepts_an_account_project(self):
         """With no selection, the payload may name any project on the account."""
@@ -2230,6 +2239,141 @@ class TestPayloadRepositorySelection:
 
         orchestrator._projects_matching_identity = projects
         assert orchestrator._resolve_trigger_project_id() == "enterprise"
+
+    def test_project_lookup_runs_once_per_orchestrator(self):
+        """Clone narrowing and the execution context share one project query."""
+        from types import SimpleNamespace
+
+        flow = SimpleNamespace(
+            trigger_project_ids=["admin", "enterprise"],
+            git_clone_config={"enabled": True, "repositories": []},
+            account_id="acct",
+        )
+        event = {
+            "source": "gitlab",
+            "payload": {
+                "project": {
+                    "id": 21,
+                    "path_with_namespace": "spacecode/preloop-ee",
+                    "git_http_url": "https://gitlab.example.com/spacecode/preloop-ee.git",
+                }
+            },
+        }
+        orchestrator = self._orchestrator(flow, event)
+        calls = {"n": 0}
+
+        def projects(identity, selected):
+            calls["n"] += 1
+            return [
+                (
+                    SimpleNamespace(id="enterprise", slug=None, identifier="21"),
+                    "gitlab",
+                )
+            ]
+
+        orchestrator._projects_matching_identity = projects
+        assert orchestrator._resolve_trigger_project_id() == "enterprise"
+        assert (
+            orchestrator._resolve_trigger_project_id(allow_first_project_fallback=False)
+            == "enterprise"
+        )
+        assert (
+            orchestrator._git_clone_config_for_trigger()["repositories"][0][
+                "project_id"
+            ]
+            == "enterprise"
+        )
+        assert calls["n"] == 1
+
+
+class TestPayloadRepositoryIdentity:
+    """Provider payload shapes the clone selector reads."""
+
+    @pytest.mark.parametrize(
+        ("url", "path"),
+        [
+            (
+                "https://gitlab.example.com/spacecode/preloop-ee.git",
+                "spacecode/preloop-ee",
+            ),
+            ("https://github.com/preloop/preloop", "preloop/preloop"),
+            ("git@gitlab.example.com:group/sub/repo.git", "group/sub/repo"),
+            ("ssh://git@github.com/preloop/preloop.git", "preloop/preloop"),
+            ("https://gitlab.example.com", None),
+        ],
+    )
+    def test_repository_path_from_git_url(self, url, path):
+        assert repository_path_from_git_url(url) == path
+
+    def test_github_payload(self):
+        identity = payload_repository_identity(
+            {
+                "source": "github",
+                "payload": {
+                    "repository": {
+                        "id": 42,
+                        "full_name": "preloop/preloop",
+                        "clone_url": "https://github.com/preloop/preloop.git",
+                    }
+                },
+            }
+        )
+        assert identity == {
+            "source": "github",
+            "path": "preloop/preloop",
+            "external_id": "42",
+            "clone_url": "https://github.com/preloop/preloop.git",
+        }
+
+    def test_gitlab_payload_uses_project_id_and_git_url(self):
+        identity = payload_repository_identity(
+            {
+                "source": "gitlab",
+                "payload": {
+                    "project": {
+                        "id": 21,
+                        "path_with_namespace": "spacecode/preloop-ee",
+                        "git_http_url": "https://gitlab.example.com/spacecode/preloop-ee.git",
+                        "web_url": "https://gitlab.example.com/spacecode/preloop-ee",
+                    }
+                },
+            }
+        )
+        assert identity["path"] == "spacecode/preloop-ee"
+        assert identity["external_id"] == "21"
+        assert (
+            identity["clone_url"]
+            == "https://gitlab.example.com/spacecode/preloop-ee.git"
+        )
+
+    def test_bitbucket_payload_uses_uuid_and_html_link(self):
+        identity = payload_repository_identity(
+            {
+                "source": "bitbucket",
+                "payload": {
+                    "repository": {
+                        "full_name": "workspace/repo",
+                        "uuid": "{11111111-2222-3333-4444-555555555555}",
+                        "links": {
+                            "html": {"href": "https://bitbucket.org/workspace/repo"}
+                        },
+                    }
+                },
+            }
+        )
+        assert identity["path"] == "workspace/repo"
+        assert identity["external_id"] == "11111111-2222-3333-4444-555555555555"
+        assert identity["clone_url"] == "https://bitbucket.org/workspace/repo"
+
+    def test_gitlab_numeric_id_does_not_match_a_github_project(self):
+        project = SimpleNamespace(slug=None, identifier="21")
+        identity = {
+            "source": "gitlab",
+            "path": "spacecode/preloop-ee",
+            "external_id": "21",
+        }
+        assert _project_identity_rank(project, "github", identity) == 0
+        assert _project_identity_rank(project, "gitlab", identity) == 2
 
 
 class TestWorkspaceSeedValidation:

@@ -761,6 +761,23 @@ def _link_href(repository: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
+_UNSET = object()
+
+
+class _NamedTriggerProject:
+    """Payload project resolution before the first-project fallback.
+
+    Attributes:
+        project_id: Matched project, or None.
+        forbid_fallback: The payload named a repository the flow did not
+            select, so ``trigger_project_ids[0]`` must not be used.
+    """
+
+    def __init__(self, project_id: Optional[str], forbid_fallback: bool) -> None:
+        self.project_id = project_id
+        self.forbid_fallback = forbid_fallback
+
+
 RUNNER_LOG_PAGE_SIZE = 500
 RUNNER_LOG_SUMMARY_LINES = 1000
 
@@ -2292,38 +2309,10 @@ class FlowExecutionOrchestrator:
             The internal project id, or None when the payload names a
             repository this flow is not allowed to use.
         """
-        identity = payload_repository_identity(self.trigger_event_data or {})
-        project_id = (self.trigger_event_data or {}).get("project_id")
-        if project_id and self._project_is_selected(str(project_id)):
-            return str(project_id)
-
-        from preloop.services.flow_trigger_service import FlowTriggerService
-
-        resolved = FlowTriggerService(self.db)._extract_project_id(
-            self.trigger_event_data or {}
-        )
-        if resolved and self._project_is_selected(str(resolved)):
-            logger.info(f"Resolved trigger project from event payload: {resolved}")
-            return str(resolved)
-
-        if identity:
-            matched = self._match_payload_project(identity)
-            if matched:
-                logger.info(
-                    "Matched trigger payload repository %s to project %s",
-                    identity.get("path") or identity.get("external_id"),
-                    matched,
-                )
-                return matched
-            if self._flow_limits_repositories():
-                logger.info(
-                    "Trigger repository %s is not one of this flow's "
-                    "selected repositories",
-                    identity.get("path") or identity.get("external_id"),
-                )
-                return None
-
-        if not allow_first_project_fallback:
+        named = self._named_trigger_project()
+        if named.project_id is not None:
+            return named.project_id
+        if named.forbid_fallback or not allow_first_project_fallback:
             return None
 
         if self.flow.trigger_project_ids:
@@ -2335,6 +2324,63 @@ class FlowExecutionOrchestrator:
             return fallback
 
         return None
+
+    def _cached_payload_identity(self) -> Optional[Dict[str, Any]]:
+        """Parse the payload repository once per orchestrator."""
+        cached = getattr(self, "_payload_identity_cached", _UNSET)
+        if cached is _UNSET:
+            cached = payload_repository_identity(self.trigger_event_data or {})
+            self._payload_identity_cached = cached
+        return cached
+
+    def _named_trigger_project(self) -> "_NamedTriggerProject":
+        """Resolve the payload's project once, without the first-project fallback.
+
+        ``_prepare_execution_context`` asks for this from repository binding,
+        clone narrowing, and the execution context. The payload cannot change
+        after construction, so the identity parse and the project query run once.
+        """
+        cached = getattr(self, "_named_trigger_project_cached", None)
+        if cached is not None:
+            return cached
+
+        identity = self._cached_payload_identity()
+        project_id = (self.trigger_event_data or {}).get("project_id")
+        resolved_id: Optional[str] = None
+        if project_id and self._project_is_selected(str(project_id)):
+            resolved_id = str(project_id)
+        else:
+            from preloop.services.flow_trigger_service import FlowTriggerService
+
+            extracted = FlowTriggerService(self.db)._extract_project_id(
+                self.trigger_event_data or {}
+            )
+            if extracted and self._project_is_selected(str(extracted)):
+                logger.info(
+                    "Resolved trigger project from event payload: %s", extracted
+                )
+                resolved_id = str(extracted)
+            elif identity:
+                matched = self._match_payload_project(identity)
+                if matched:
+                    logger.info(
+                        "Matched trigger payload repository %s to project %s",
+                        identity.get("path") or identity.get("external_id"),
+                        matched,
+                    )
+                    resolved_id = matched
+
+        forbid_fallback = bool(
+            identity and resolved_id is None and self._flow_limits_repositories()
+        )
+        if forbid_fallback and identity is not None:
+            logger.info(
+                "Trigger repository %s is not one of this flow's selected repositories",
+                identity.get("path") or identity.get("external_id"),
+            )
+        cached = _NamedTriggerProject(resolved_id, forbid_fallback)
+        self._named_trigger_project_cached = cached
+        return cached
 
     def _flow_limits_repositories(self) -> bool:
         """Whether this flow names the repositories it is allowed to use."""
@@ -2469,16 +2515,16 @@ class FlowExecutionOrchestrator:
     def _git_clone_config_for_trigger(self) -> Any:
         """Clone config reduced to the repository the payload named.
 
-        The stored config is not modified. When the payload names one of the
-        flow's repositories, only that entry is cloned. When it names one of
-        the flow's projects and the clone list does not already contain it,
-        that project is the sole clone, using the payload's git URL when the
-        event included one.
+        The stored config is not modified. Clone entries are a hard selection:
+        the payload repository is cloned only when it is one of them (or one
+        of the flow's projects). A payload that names something else clears
+        the list, so a fixed clone of a different repository is not checked
+        out under the payload's commit. That empty checkout is logged.
         """
         config = self._effective_git_clone_config()
         if not isinstance(config, dict):
             return config
-        identity = payload_repository_identity(self.trigger_event_data or {})
+        identity = self._cached_payload_identity()
         if not identity:
             return config
 
@@ -2523,6 +2569,11 @@ class FlowExecutionOrchestrator:
             return narrowed
 
         if self._flow_limits_repositories() and repositories:
+            logger.warning(
+                "Trigger repository %s matches no clone entry; "
+                "no repository will be cloned",
+                identity.get("path") or identity.get("external_id"),
+            )
             narrowed = dict(config)
             narrowed["repositories"] = []
             return narrowed
