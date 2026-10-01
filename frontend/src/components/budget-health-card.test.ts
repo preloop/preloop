@@ -139,8 +139,11 @@ describe('BudgetHealthCard', () => {
     // A month that is 60% gone with $120 spent lands at $200: over the soft
     // limit, under the hard one, so the line reads as a warning.
     const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    // Anchor the window to now, not the calendar month: early in a month
+    // less than MIN_ELAPSED_FRACTION has elapsed and no forecast renders.
+    const day = 24 * 60 * 60 * 1000;
+    const start = new Date(now.getTime() - 18 * day);
+    const end = new Date(start.getTime() + 30 * day);
     const forecastPolicies = [
       {
         ...policies[0],
