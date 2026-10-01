@@ -134,9 +134,19 @@ def test_list_returns_issue_rows_summaries_and_unassigned(
     assert row["project_id"] == str(seeded["project"].id)
     assert row["approved_to_merged_hours"] is None
     assert row["execution_ids"] is None
+    # Every seeded run was priced, so the row is complete and its subtotal is
+    # an attributable total (#1057).
+    assert row["cost_coverage"] == "complete"
+    assert row["known_cost_run_count"] == 2
+    assert row["unknown_cost_run_count"] == 0
+    assert row["attributed_cost_usd"] == 0.5
     assert body["by_project"][0]["estimated_cost"] == 0.5
+    assert body["by_project"][0]["cost_coverage"] == "complete"
     assert body["by_flow"][0]["id"] == str(seeded["flow"].id)
+    assert body["by_flow"][0]["attributed_cost_usd"] == 0.5
     assert body["unassigned"]["run_count"] == 1
+    assert body["unassigned"]["cost_coverage"] == "complete"
+    assert body["unassigned"]["attributed_cost_usd"] == 0.25
     # The plain report carries the unassigned totals, not the rows.
     assert body["unassigned"]["executions"] == []
     assert body["truncated"] is False
@@ -286,6 +296,60 @@ def test_csv_export_matches_the_table(client, db_session: Session, test_user) ->
     assert int(rows[0]["run_count"]) == table["issues"][0]["run_count"]
     assert rows[-1]["issue_key"] == issue_cost_rollup.UNASSIGNED_ISSUE_KEY
     assert int(rows[-1]["run_count"]) == table["unassigned"]["run_count"]
+
+
+def test_partial_and_unknown_coverage_are_reported_and_exported(
+    client, db_session: Session, test_user
+) -> None:
+    """Runs without a cost stay visible instead of being read as free."""
+    seeded = _seed(db_session, test_user.account_id)
+    priced, _, unassigned_run = seeded["executions"]
+    issue_cost_rollup.refresh_execution_cost(
+        db_session, execution_id=priced.id, estimated_cost=None
+    )
+    issue_cost_rollup.refresh_execution_cost(
+        db_session, execution_id=unassigned_run.id, estimated_cost=None
+    )
+    db_session.commit()
+
+    body = client.get(BASE).json()
+
+    row = body["issues"][0]
+    # The legacy subtotal keeps its value and meaning: the priced runs only.
+    assert row["estimated_cost"] == 0.25
+    assert row["cost_coverage"] == "partial"
+    assert (row["known_cost_run_count"], row["unknown_cost_run_count"]) == (1, 1)
+    assert row["attributed_cost_usd"] is None
+    assert body["by_project"][0]["cost_coverage"] == "partial"
+    assert body["by_project"][0]["attributed_cost_usd"] is None
+    assert body["by_flow"][0]["cost_coverage"] == "partial"
+    assert body["by_flow"][0]["attributed_cost_usd"] is None
+    assert body["unassigned"]["cost_coverage"] == "unknown"
+    assert body["unassigned"]["known_cost_run_count"] == 0
+    assert body["unassigned"]["unknown_cost_run_count"] == 1
+    assert body["unassigned"]["estimated_cost"] == 0.0
+    assert body["unassigned"]["attributed_cost_usd"] is None
+
+    exported = client.get(f"{BASE}/export", params={"format": "json"}).json()
+
+    exported_row = exported["issues"][0]
+    assert exported_row["cost_coverage"] == "partial"
+    assert exported_row["known_cost_run_count"] == 1
+    assert exported_row["unknown_cost_run_count"] == 1
+    assert exported_row["attributed_cost_usd"] is None
+    assert exported["unassigned"]["cost_coverage"] == "unknown"
+
+    csv_response = client.get(f"{BASE}/export", params={"format": "csv"})
+
+    rows = list(csv.DictReader(io.StringIO(csv_response.text)))
+    assert rows[0]["cost_coverage"] == "partial"
+    assert rows[0]["known_cost_run_count"] == "1"
+    assert rows[0]["unknown_cost_run_count"] == "1"
+    # A nullable attributed cost is an empty cell in CSV, never 0.
+    assert rows[0]["attributed_cost_usd"] == ""
+    assert float(rows[0]["estimated_cost"]) == 0.25
+    assert rows[-1]["cost_coverage"] == "unknown"
+    assert rows[-1]["attributed_cost_usd"] == ""
 
 
 def test_json_export_carries_execution_ids(

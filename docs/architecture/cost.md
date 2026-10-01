@@ -123,17 +123,61 @@ page is unchanged.
     summaries are sums of the rows. `/unassigned/executions` lists the runs
     in the unassigned bucket for the same filter. `/export` returns CSV
     (issue grain plus one unassigned row) or JSON (with execution ids).
+*   **Cost coverage:** `estimated_cost` is the subtotal of the runs that
+    carry a cost, so on its own it cannot tell a free ticket from an
+    unpriced one. Every issue row, every project and flow summary and the
+    unassigned bucket therefore also report `cost_coverage`,
+    `known_cost_run_count`, `unknown_cost_run_count` and `attributed_cost_usd`.
+    Coverage is `complete` when every contributing run has a cost, `partial`
+    when both kinds are present and `unknown` when none has one; an empty
+    bucket is `unknown` with both counts zero, and a known zero counts as
+    known. `attributed_cost_usd` is the subtotal only for `complete`
+    coverage and null otherwise, so a partial or unknown bucket is never
+    read as a total. The counts come from the same account-scoped fact
+    aggregates as the sums, so they follow the report's filters (a flow
+    filter prices only that flow's runs) without a per-execution usage
+    query.
+*   **What coverage is not:** it describes execution-cost availability, never
+    invoice accuracy. A `complete` row is still an estimate priced from
+    published model rates. The three other cost signals stay deliberately
+    outside these numbers: the premium-request counts a host CLI run
+    reports (`host_exec_usage`, shown on the execution), the daily GitHub
+    Copilot import (`copilot_usage_import`, account level and never
+    attributed to a ticket) and any per-seat subscription price. No daily
+    import dollars are added to an issue total and no seat charge is
+    inferred per ticket. Existing facts keep their stored cost: an explicit
+    historical zero stays known unless its producer is independently shown
+    to be wrong.
 *   **Export columns:** CSV columns, in order: `tracker`, `issue_key`,
     `title`, `project`, `estimated_cost`, `total_tokens`, `run_count`,
     `failed_run_count`, `first_event_at`, `pr_opened_at`, `approved_at`,
     `merged_at`, `first_event_to_pr_opened_hours`,
     `pr_opened_to_approved_hours`, `approved_to_merged_hours`, `issue_url`,
     `pr_url`, `pr_opened_at_source`, `estimate_hours`,
-    `estimate_hours_source`, `estimate_points`, `estimate_points_source`.
+    `estimate_hours_source`, `estimate_points`, `estimate_points_source`,
+    then the appended `cost_coverage`, `known_cost_run_count`,
+    `unknown_cost_run_count`, `attributed_cost_usd`.
     Blank means unknown, never zero. The JSON export's `issues[]` objects
     carry the same fields (null for unknown) plus `execution_ids`. Estimate
     sources are `jira:timeoriginalestimate`, `gitlab:time_estimate`,
     `<tracker type>:<points_field>` or `label:<prefix>`.
+
+    The four coverage columns are appended, so an older consumer keeps
+    reading the same names in the same order and `estimated_cost` keeps its
+    type. What changes is the interpretation, not the shape: a consumer that
+    adds the issue rows together now sees the priced subtotal only, which
+    understates a ticket whose runs were subscription-backed.
+
+    ```csv
+    tracker,issue_key,title,project,estimated_cost,...,cost_coverage,known_cost_run_count,unknown_cost_run_count,attributed_cost_usd
+    GitHub,example-org/example-repo#12,Add the export button,Example,2.0,...,partial,1,1,
+    GitHub,example-org/example-repo#13,Subscription-backed work,Example,0.0,...,unknown,0,2,
+    ```
+
+    The second row is not a free ticket: two runs carry no per-run price, so
+    the row reports no attributable total. A consumer that wants a total
+    only where one exists sums `attributed_cost_usd` and treats the blanks as
+    unknown.
 
 ## Spend outlier alerts
 

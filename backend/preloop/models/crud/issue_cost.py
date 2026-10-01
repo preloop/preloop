@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Iterable, Optional, Sequence
 
-from sqlalchemy import exists, func, or_, select, text
+from sqlalchemy import ColumnElement, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -42,6 +42,23 @@ def _naive_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value
     return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _cost_known_count(fact: type[models.IssueCostExecution]) -> ColumnElement[int]:
+    """Count the facts whose ``estimated_cost`` is not null.
+
+    An explicit zero is a known cost: it was priced and it priced to nothing.
+    """
+    return func.count(fact.id).filter(fact.estimated_cost.is_not(None))
+
+
+def _cost_unknown_count(fact: type[models.IssueCostExecution]) -> ColumnElement[int]:
+    """Count the facts that carry no ``estimated_cost`` at all.
+
+    A subscription-backed run has no per-execution price, so its fact is
+    null rather than zero.
+    """
+    return func.count(fact.id).filter(fact.estimated_cost.is_(None))
 
 
 class CRUDIssueCost:
@@ -568,11 +585,17 @@ class CRUDIssueCost:
 
     def fact_totals_by_rollup_and_flow(
         self, db: Session, *, rollup_ids: Sequence[uuid.UUID]
-    ) -> list[tuple[uuid.UUID, uuid.UUID, int, Decimal, int, int]]:
+    ) -> list[tuple[uuid.UUID, uuid.UUID, int, Decimal, int, int, int, int]]:
         """Per (issue, flow) sums over the facts of the given issues.
 
+        The last two columns count the facts whose ``estimated_cost`` is known
+        and unknown, which is what separates a bucket that is entirely
+        unpriced from one that really cost nothing. A known zero counts as
+        known.
+
         Returns:
-            ``(rollup_id, flow_id, tokens, cost, runs, failed_runs)`` tuples.
+            ``(rollup_id, flow_id, tokens, cost, runs, failed_runs,
+            known_cost_runs, unknown_cost_runs)`` tuples.
         """
         if not rollup_ids:
             return []
@@ -587,12 +610,23 @@ class CRUDIssueCost:
                 func.count(fact.id).filter(
                     fact.status.in_(tuple(FAILED_EXECUTION_STATUSES))
                 ),
+                _cost_known_count(fact),
+                _cost_unknown_count(fact),
             )
             .where(fact.rollup_id.in_(list(rollup_ids)))
             .group_by(fact.rollup_id, fact.flow_id)
         ).all()
         return [
-            (row[0], row[1], int(row[2]), Decimal(row[3]), int(row[4]), int(row[5]))
+            (
+                row[0],
+                row[1],
+                int(row[2]),
+                Decimal(row[3]),
+                int(row[4]),
+                int(row[5]),
+                int(row[6]),
+                int(row[7]),
+            )
             for row in rows
         ]
 
@@ -605,7 +639,7 @@ class CRUDIssueCost:
         end: Optional[datetime] = None,
         project_id: Optional[uuid.UUID] = None,
         flow_id: Optional[uuid.UUID] = None,
-    ) -> tuple[int, Decimal, int, int]:
+    ) -> tuple[int, Decimal, int, int, int, int]:
         """Sums over the facts attributed to no issue, uncapped.
 
         Uses the same filters as ``list_facts(unassigned=True)``.
@@ -619,7 +653,8 @@ class CRUDIssueCost:
             flow_id: Only facts of this flow.
 
         Returns:
-            ``(tokens, cost, runs, failed_runs)``.
+            ``(tokens, cost, runs, failed_runs, known_cost_runs,
+            unknown_cost_runs)``.
         """
         fact = models.IssueCostExecution
         query = (
@@ -630,6 +665,8 @@ class CRUDIssueCost:
                 func.count(fact.id).filter(
                     fact.status.in_(tuple(FAILED_EXECUTION_STATUSES))
                 ),
+                _cost_known_count(fact),
+                _cost_unknown_count(fact),
             )
             .join(models.Flow, models.Flow.id == fact.flow_id)
             .where(fact.account_id == account_id, fact.rollup_id.is_(None))
@@ -643,7 +680,14 @@ class CRUDIssueCost:
         if flow_id is not None:
             query = query.where(fact.flow_id == flow_id)
         row = db.execute(query).one()
-        return int(row[0]), Decimal(row[1]), int(row[2]), int(row[3])
+        return (
+            int(row[0]),
+            Decimal(row[1]),
+            int(row[2]),
+            int(row[3]),
+            int(row[4]),
+            int(row[5]),
+        )
 
     def list_facts(
         self,
