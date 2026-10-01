@@ -62,6 +62,11 @@ from preloop.models.db.gateway_session import (
     has_runtime_session_summary_columns,
     release_gateway_session,
 )
+from preloop.services.codex_crosschat import (
+    crosschat_chat_message,
+    is_unsolicited_crosschat_output,
+    rewrite_crosschat_responses_input,
+)
 from preloop.services.codex_tool_compat import (
     unwrap_freeform_arguments,
     custom_tool_call_output,
@@ -6426,6 +6431,9 @@ class OpenAIGatewayService:
         # Attribution is computed from the tools the CLIENT sent, before the
         # strip, so a stripped tool is still reported (with stripped=True).
         self._capture_tools_meta(payload.get("tools"))
+        # Codex cross-chat deliveries carry no call_id; native upstreams
+        # reject them, so send them as labelled user context instead (#1113).
+        governed_payload = rewrite_crosschat_responses_input(governed_payload)
         body = build_passthrough_body(ai_model, governed_payload, stream=stream)
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -7985,6 +7993,16 @@ class OpenAIGatewayService:
                     }
                 )
                 pending_tool_call_ids.discard(call_id)
+                continue
+
+            if is_unsolicited_crosschat_output(item):
+                # Codex cross-chat delivery (#1113): call_id-less context, not
+                # a tool result. Contract in preloop.services.codex_crosschat.
+                # It must not satisfy (or slip between) a pending tool call.
+                if staged_tool_calls or pending_tool_call_ids:
+                    flush_staged_tool_calls()
+                    raise tool_response_error()
+                messages.append(crosschat_chat_message(item))
                 continue
 
             if item_type == "function_call_output":
