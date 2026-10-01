@@ -884,6 +884,7 @@ def _register_control_plane_routes(
         pull_requests,
         retention,
         roles,
+        runtime_session_artifacts,
         runtime_session_browser_steps,
         search as search_router,
         security_maintenance,
@@ -1216,6 +1217,13 @@ def _register_control_plane_routes(
     # A console-user dependency would reject the runtime key this exists for.
     app.include_router(
         runtime_session_browser_steps.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
+    )
+    # Artifact deposit and list authenticate inside the route for the same
+    # reason: the agent's runtime key is the main caller.
+    app.include_router(
+        runtime_session_artifacts.router,
         prefix="/api/v1",
         tags=["Runtime Sessions"],
     )
