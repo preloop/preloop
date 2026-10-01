@@ -22944,13 +22944,14 @@ components:
         known_cost_run_count:
           type: integer
           title: Known Cost Run Count
-          description: Contributing runs with, and without, a cost estimate. estimated_cost
-            alone is the subtotal of the priced runs, not total spend.
+          description: Contributing runs that carry a cost estimate, and so are summed
+            into estimated_cost. An explicit zero counts as known.
         unknown_cost_run_count:
           type: integer
           title: Unknown Cost Run Count
-          description: Contributing runs with, and without, a cost estimate. estimated_cost
-            alone is the subtotal of the priced runs, not total spend.
+          description: Contributing runs with no cost estimate, for example subscription-backed
+            runs. They contribute nothing to estimated_cost, which is therefore the
+            subtotal of the known runs rather than total spend.
         attributed_cost_usd:
           anyOf:
           - type: number
@@ -23103,13 +23104,14 @@ components:
         known_cost_run_count:
           type: integer
           title: Known Cost Run Count
-          description: Contributing runs with, and without, a cost estimate. estimated_cost
-            alone is the subtotal of the priced runs, not total spend.
+          description: Contributing runs that carry a cost estimate, and so are summed
+            into estimated_cost. An explicit zero counts as known.
         unknown_cost_run_count:
           type: integer
           title: Unknown Cost Run Count
-          description: Contributing runs with, and without, a cost estimate. estimated_cost
-            alone is the subtotal of the priced runs, not total spend.
+          description: Contributing runs with no cost estimate, for example subscription-backed
+            runs. They contribute nothing to estimated_cost, which is therefore the
+            subtotal of the known runs rather than total spend.
         attributed_cost_usd:
           anyOf:
           - type: number
@@ -23162,14 +23164,15 @@ components:
         known_cost_run_count:
           type: integer
           title: Known Cost Run Count
-          description: Contributing runs with, and without, a cost estimate. estimated_cost
-            alone is the subtotal of the priced runs, not total spend.
+          description: Contributing runs that carry a cost estimate, and so are summed
+            into estimated_cost. An explicit zero counts as known.
           default: 0
         unknown_cost_run_count:
           type: integer
           title: Unknown Cost Run Count
-          description: Contributing runs with, and without, a cost estimate. estimated_cost
-            alone is the subtotal of the priced runs, not total spend.
+          description: Contributing runs with no cost estimate, for example subscription-backed
+            runs. They contribute nothing to estimated_cost, which is therefore the
+            subtotal of the known runs rather than total spend.
           default: 0
         attributed_cost_usd:
           anyOf:

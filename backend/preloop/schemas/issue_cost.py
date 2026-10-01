@@ -24,9 +24,17 @@ COVERAGE_DESCRIPTION = (
     "as known. This describes execution-cost availability, never invoice "
     "accuracy."
 )
-COUNTS_DESCRIPTION = (
-    "Contributing runs with, and without, a cost estimate. estimated_cost "
-    "alone is the subtotal of the priced runs, not total spend."
+#: The two counts are described separately so the generated spec says which
+#: field counts priced runs and which counts unpriced ones; a consumer should
+#: not have to infer it from the field name.
+KNOWN_COST_RUN_COUNT_DESCRIPTION = (
+    "Contributing runs that carry a cost estimate, and so are summed into "
+    "estimated_cost. An explicit zero counts as known."
+)
+UNKNOWN_COST_RUN_COUNT_DESCRIPTION = (
+    "Contributing runs with no cost estimate, for example subscription-backed "
+    "runs. They contribute nothing to estimated_cost, which is therefore the "
+    "subtotal of the known runs rather than total spend."
 )
 ATTRIBUTED_DESCRIPTION = (
     "The estimated_cost subtotal when cost_coverage is complete; null "
@@ -84,11 +92,11 @@ class IssueCostRow(BaseModel):
     )
     known_cost_run_count: int = Field(
         ...,
-        description=COUNTS_DESCRIPTION,
+        description=KNOWN_COST_RUN_COUNT_DESCRIPTION,
     )
     unknown_cost_run_count: int = Field(
         ...,
-        description=COUNTS_DESCRIPTION,
+        description=UNKNOWN_COST_RUN_COUNT_DESCRIPTION,
     )
     attributed_cost_usd: Optional[float] = Field(
         None,
@@ -166,8 +174,10 @@ class IssueCostSummary(BaseModel):
         ),
     )
     cost_coverage: CostCoverage = Field(..., description=COVERAGE_DESCRIPTION)
-    known_cost_run_count: int = Field(..., description=COUNTS_DESCRIPTION)
-    unknown_cost_run_count: int = Field(..., description=COUNTS_DESCRIPTION)
+    known_cost_run_count: int = Field(..., description=KNOWN_COST_RUN_COUNT_DESCRIPTION)
+    unknown_cost_run_count: int = Field(
+        ..., description=UNKNOWN_COST_RUN_COUNT_DESCRIPTION
+    )
     attributed_cost_usd: Optional[float] = Field(
         None, description=ATTRIBUTED_DESCRIPTION
     )
@@ -189,8 +199,10 @@ class IssueCostUnassigned(BaseModel):
     cost_coverage: CostCoverage = Field(
         COVERAGE_UNKNOWN, description=COVERAGE_DESCRIPTION
     )
-    known_cost_run_count: int = Field(0, description=COUNTS_DESCRIPTION)
-    unknown_cost_run_count: int = Field(0, description=COUNTS_DESCRIPTION)
+    known_cost_run_count: int = Field(0, description=KNOWN_COST_RUN_COUNT_DESCRIPTION)
+    unknown_cost_run_count: int = Field(
+        0, description=UNKNOWN_COST_RUN_COUNT_DESCRIPTION
+    )
     attributed_cost_usd: Optional[float] = Field(
         None, description=ATTRIBUTED_DESCRIPTION
     )
