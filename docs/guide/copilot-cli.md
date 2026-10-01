@@ -86,7 +86,12 @@ Copilot login and seat of the OS user that runs `preloop runner fg`. This
 is a separate path from `preloop copilot`: model traffic goes to GitHub
 under that seat, not through the Preloop gateway, so it is billed as the
 seat's premium requests and is not gateway metered. The execution page
-shows "Not gateway metered" for these runs.
+shows "Not gateway metered" for these runs, and the run's
+premium-request count is not a token ledger or a price. Dollars for the
+seat come from the [premium-request import](copilot-usage-import.md),
+per user and per day, so this path has no ticket-level cost. What it
+governs, records and does not do is collected in
+[Copilot coverage](copilot.md).
 
 1. Install Copilot CLI and sign in once as the runner user
    (`copilot`, then `/login`, or set `COPILOT_GITHUB_TOKEN` in the runner's
@@ -143,7 +148,8 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   https (plain http is accepted only for a loopback tracker). Clone
   `setup_commands` are
   refused, and so is `create_pull_request`: a host run can review and
-  comment, but it does not push branches or open pull requests.
+  comment, but it does not push branches or open pull requests, so it is
+  not the full ticket-to-PR factory.
 - **MCP tools.** When the flow allows MCP tools or servers, the runner adds
   a `preloop-flow` MCP server to this run only
   (`--additional-mcp-config`, written to a `0600` file in the run
@@ -153,7 +159,8 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   `--allow-tool=preloop-flow`, so the flow's tools run without a prompt;
   profile `deny_tools` rules still apply. The PR Reviewer reads the diff
   and posts its review through these tools. The runner user's own
-  `~/.copilot/mcp-config.json` servers stay available.
+  `~/.copilot/mcp-config.json` servers stay available, and are governed
+  only where they point at Preloop's `/mcp/v1`.
 - **Sessions and usage.** The runner exports `PRELOOP_FLOW_EXECUTION_ID`
   and `PRELOOP_FLOW_ID` to Copilot. The Preloop usage hook forwards the
   execution id, so the Copilot session and its hook events are linked to
@@ -161,20 +168,26 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   completes, by Copilot session id. The premium requests from the `result`
   event are stored as one subscription row. The execution page shows
   "N premium requests, not metered by the gateway" and lists the linked
-  Copilot sessions. No gateway usage row is written for the run.
+  Copilot sessions. No gateway usage row is written for the run. Those
+  sessions, hook events and that count are execution bookkeeping; they
+  are not token, cost or replay parity with a gateway path.
 
 Tool permissions are local to the profile:
 
 - `allow_tools` and `deny_tools` take Copilot permission rules such as
   `write`, `shell(git:*)` or `github(get_file_contents)`. With no rules,
   any tool that needs permission, such as editing files or running shell
-  commands, is denied because the run cannot ask.
+  commands, is denied because the run cannot ask. These are Copilot
+  native-tool rules and are separate from MCP governance.
 - `allow_all_tools: true` passes `--allow-all-tools`. The runner refuses it
   unless the Preloop approval hook is installed
   (`preloop agents onboard "Copilot CLI" --approvals`), so every tool call
   still goes through Preloop policy.
 - `force_writes`, `--allow-all`, `--yolo`, `--model`, `--agent`, prompt,
-  resume and MCP flags cannot be set in profile `argv`.
+  resume and MCP flags cannot be set in profile `argv`. That includes
+  `--additional-mcp-config`: the operator cannot supply or replace the
+  flow's MCP server, and the runner passes the flag itself for every job
+  that has one.
 
 The Copilot environment is built from an allowlist: a per-OS system
 baseline, `COPILOT_*`, `GH_*` and `GITHUB_TOKEN` (so the seat login is
@@ -207,9 +220,17 @@ Named errors:
 | `copilot_hooks_unavailable` | Preloop could not install or read its own hooks file under `~/.copilot/hooks` (or `$COPILOT_HOME/hooks`). The run fails before Copilot starts. |
 
 Like Cursor host profiles, this path does not open pull requests, run
-custom commands or clone setup commands, or resume sessions. See
+custom commands or clone setup commands, or resume sessions. Those
+requests are refused before the run with a message naming the missing
+capability; they are not silently dropped and they are not on this path
+today. Checkout and review are the whole scope: a host run reads the
+diff, comments, and stops there, so it is not the full ticket-to-PR
+factory. Use the Docker harness for flows that publish. See
 [host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
-for the shared rules.
+for the shared rules, and
+[#1069](https://github.com/preloop/preloop/issues/1069) for the open work
+on Bitbucket publication and feedback continuation, which this page does
+not describe as shipped.
 
 Copilot plan terms govern how a seat may be used. A developer running
 flows on their own machine with their own seat is ordinary use. Check

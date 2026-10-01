@@ -3,18 +3,31 @@
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
 What Preloop governs and meters on each GitHub Copilot surface. The
-longer guides stay the setup steps. This page is the matrix.
+longer guides stay the setup steps. This page is the matrix. It describes
+the current release line: check it against the version you have deployed
+before quoting it.
 
 Rows are surfaces. Columns are:
 
-- **MCP tool calls governed:** policies, approvals, and audit for tool
-  calls that go through Preloop.
-- **Model calls metered:** tokens, cost, and session replay for the
-  model request itself.
-- **Sessions recorded:** a runtime session from a Copilot hook.
+- **MCP governed:** policies, approvals, and audit for MCP tool calls
+  that go through Preloop.
+- **Models metered:** tokens, cost, and session replay for the model
+  request itself.
+- **Hook sessions:** a runtime session from a Copilot hook.
 - **Spend visible:** gateway usage, or the premium-request import.
+- **Dollars per ticket:** whether a run's money can be attributed to a
+  ticket, an execution or a session. A count, a daily report or a seat
+  estimate is not ticket-level dollars, and an unknown amount is not a
+  zero.
+- **Publication and feedback:** whether the surface pushes branches,
+  opens pull requests, or continues a run from a review comment.
 - **Status today:** shipped, planned (with an issue), or not possible
   (with the reason).
+
+Those are separate answers, and a surface can have one without the
+others. The private-runner host flow below governs MCP and records hook
+sessions while it meters no model traffic, prices no ticket and
+publishes nothing.
 
 Session replay is the console timeline of gateway `ApiUsage` rows
 (`docs/architecture/gateway.md`, Current Explorer Surface). A session
@@ -24,20 +37,20 @@ can still open a runtime session without that timeline.
 GitHub-hosted model traffic never passes through the Preloop gateway.
 There is no proxy for those models. The [premium-request import](copilot-usage-import.md)
 stores what GitHub reports (seats, daily premium-request `netAmount`,
-usage-metrics counters). It is not per request, and it is not a
-transcript.
+usage-metrics counters). It is not per request, it is not matched to a
+ticket, and it is not a transcript.
 
 ## Matrix
 
-| Surface | MCP tool calls governed | Model calls metered | Sessions recorded (hooks) | Spend visible | Status today |
-| --- | --- | --- | --- | --- | --- |
-| VS Code Copilot Chat, GitHub-hosted models | Yes, for MCP servers Preloop writes | Not possible: no proxy for GitHub-hosted models | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Premium-request import | MCP shipped. Metering not possible; hooks not wired |
-| VS Code Copilot Chat, BYOK (custom endpoint) | Same MCP path as the row above | Planned ([#787](https://github.com/preloop/preloop/issues/787)) | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Gateway, only if #787 lands. Import stays GitHub-reported | Planned ([#787](https://github.com/preloop/preloop/issues/787)) |
-| Copilot CLI, GitHub-hosted, interactive on a laptop | Yes, after onboard. Native tools need `--approvals` | Not possible: no proxy for GitHub-hosted models | Yes, lifecycle only | Premium-request import | Shipped |
-| Copilot CLI, GitHub-hosted, flow on a private-runner host profile | Only the runner user's own MCP file. Flow MCP settings do not apply | Not possible: no proxy for GitHub-hosted models | Yes. The runner installs usage hooks before the run | Execution: not gateway metered, plus a premium-request count. Dollars: import | Shipped ([#956](https://github.com/preloop/preloop/issues/956)) |
-| Copilot CLI BYOK through the gateway (`preloop copilot`) | Same CLI MCP and approval hooks | Yes: tokens, cost, and session replay | Yes, when the CLI hooks are installed | Gateway. Not the premium-request import | Shipped |
-| Copilot cloud coding agent on GitHub.com | Yes. Preloop policy on `/mcp/v1` | Not possible: no proxy for GitHub-hosted models | Not installed. Preloop does not write `.github/hooks` | Import is daily, not a session. Usage metrics exclude Copilot Chat on GitHub.com | MCP shipped. Hooks not installed |
-| Copilot inline completions | Not applicable. A completion is not an MCP tool call | Not possible: no proxy for GitHub-hosted models | Not possible: no hook surface for completions | Premium-request import, as daily aggregates only | Not possible for live governance or metering |
+| Surface | MCP governed | Models metered | Hook sessions | Spend visible | Dollars per ticket | Publication and feedback | Status today |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| VS Code Copilot Chat, GitHub-hosted models | Yes, for MCP servers Preloop writes | Not possible: no proxy for GitHub-hosted models | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Premium-request import | No. Per user and day only | Not this surface: a person drives the chat | MCP shipped. Metering not possible; hooks not wired |
+| VS Code Copilot Chat, BYOK (custom endpoint) | Same MCP path as the row above | Planned ([#787](https://github.com/preloop/preloop/issues/787)) | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Gateway, only if #787 lands. Import stays GitHub-reported | No today. #787 would give per-request gateway rows; until then the import is per user and day | Not this surface | Planned ([#787](https://github.com/preloop/preloop/issues/787)) |
+| Copilot CLI, GitHub-hosted, interactive on a laptop | Yes, after onboard. Native tools need `--approvals` | Not possible: no proxy for GitHub-hosted models | Yes, lifecycle only | Premium-request import | No. Per user and day only | Not this surface: a person drives the session | Shipped |
+| Copilot CLI, GitHub-hosted, flow on a private-runner host profile | Yes, from two separate sources: the runner user's own MCP file, and the flow's `preloop-flow` server, which the runner supplies per job with a short-lived, execution-scoped token | Not possible: no proxy for GitHub-hosted models | Yes. The runner installs usage hooks before the run | Execution: not gateway metered, plus a premium-request count. Dollars: import | No. The count is not tokens and not a price, and the import is per user and day. Unknown stays unknown | No. Managed pull-request creation and native feedback resume are rejected before the run | Shipped ([#956](https://github.com/preloop/preloop/issues/956)), with the flow MCP server |
+| Copilot CLI BYOK through the gateway (`preloop copilot`) | Same CLI MCP and approval hooks | Yes: tokens, cost, and session replay | Yes, when the CLI hooks are installed | Gateway. Not the premium-request import | Yes for a gateway flow: gateway rows carry the session and the execution. The local launcher attributes to the session, not to a ticket | Not this launcher. Publication belongs to the flow's harness; the local launcher pushes nothing | Shipped |
+| Copilot cloud coding agent on GitHub.com | Yes. Preloop policy on `/mcp/v1` | Not possible: no proxy for GitHub-hosted models | Not installed. Preloop does not write `.github/hooks` | Import is daily, not a session. Usage metrics exclude Copilot Chat on GitHub.com | No. The import is per user and day, and the job is not matched to a row | Native on GitHub, outside Preloop. The agent's comments and pull requests are GitHub activity, not a Preloop publication record | MCP shipped. Hooks not installed |
+| Copilot inline completions | Not applicable. A completion is not an MCP tool call | Not possible: no proxy for GitHub-hosted models | Not possible: no hook surface for completions | Premium-request import, as daily aggregates only | No | Not applicable | Not possible for live governance or metering |
 
 ## Where each cell comes from
 
@@ -67,7 +80,10 @@ onboarding writes a VS Code hook config, so sessions stay unrecorded.
 
 Spend for this row is the [premium-request import](copilot-usage-import.md):
 daily, marked not metered by the gateway
-(`backend/preloop/services/copilot_usage_import.py`).
+(`backend/preloop/services/copilot_usage_import.py`). It is stored per
+user, per day and per model, so it cannot price a ticket. A day with no
+imported row is unknown, not zero. Publication and feedback are not this
+surface: a person drives the chat.
 
 ### VS Code Copilot Chat, BYOK (custom endpoint)
 
@@ -88,6 +104,11 @@ Gateway spend and the import are different ledgers. The import stores
 GitHub's reported figures only. A call that never reached GitHub is not
 in that import. [#788](https://github.com/preloop/preloop/issues/788)
 says not to double-count BYOK traffic that does go through the gateway.
+
+There are no ticket-level dollars on this row today. If #787 lands, the
+gateway would record per-request rows against the session; until then
+the only figures are GitHub's daily per-user report. Publication and
+feedback stay outside this surface either way.
 
 ### Copilot CLI, GitHub-hosted models, interactive
 
@@ -110,7 +131,10 @@ Cursor only (`cli/internal/cmd/usage_hook.go`), so this session is not
 a replay of the model call.
 
 Dollars for the seat's premium requests come from the import, not from
-the hook.
+the hook. That import is per user and day, so this row has no
+ticket-level dollars, and a missing day is unknown rather than zero.
+Publication and feedback are not this surface: a person drives the
+session.
 
 ### Copilot CLI, GitHub-hosted models, flow on a private runner
 
@@ -122,14 +146,54 @@ Issue [#956](https://github.com/preloop/preloop/issues/956) is closed.
 The runner strips `COPILOT_PROVIDER_*` so the run cannot silently become
 BYOK (`cli/internal/cmd/runner_host_exec_copilot.go`).
 
-MCP: the run uses the runner user's `~/.copilot/mcp-config.json`. Flow
-MCP settings do not apply. `--additional-mcp-config` is a flag the
-runner refuses. If that user has onboarded Copilot CLI, those MCP tool
-calls are governed. If not, Preloop does not write an MCP file for the
-job. Profile `allow_tools` and `deny_tools` are Copilot permission
-rules. `allow_all_tools` is refused unless
+MCP for this run comes from two separate sources, and they are governed
+differently.
+
+- **The flow's own MCP server, supplied by the runner.** When the flow
+  lists allowed MCP tools or servers (`flow_uses_mcp`,
+  `backend/preloop/services/host_exec_delivery.py`), the control plane
+  mints a short-lived token scoped to that one execution
+  (`create_flow_runtime_token`,
+  `backend/preloop/services/flow_runtime_token.py`: `mcp:read` and
+  `mcp:write` scopes, the flow's allowed tools and servers in the token
+  context, a two-hour expiry). The lease carries the token without
+  persisting it. The runner writes a per-job configuration file in the
+  run directory (`.preloop/copilot-mcp-config.json`, mode `0600`),
+  points Copilot at it with the managed flag
+  `--additional-mcp-config=@<file>`, and adds
+  `--allow-tool=preloop-flow` unless the profile set `allow_all_tools`,
+  because `-p` mode cannot prompt and the server is already filtered to
+  the flow's tools (`hostExecMCPConfig`,
+  `cli/internal/cmd/runner_host_exec_flow.go`; `buildCopilotHostExecArgs`,
+  `cli/internal/cmd/runner_host_exec_copilot.go`). Profile `deny_tools`
+  rules still apply. The token never enters argv or the CLI environment.
+  The runner removes the file when the job ends, and the control plane
+  revokes the token when the execution completes
+  (`revoke_flow_runtime_tokens`). So a flow that configures MCP does get
+  flow MCP on this path, with a credential scoped to one run.
+- **The runner user's own MCP file.** `~/.copilot/mcp-config.json` (or
+  `$COPILOT_HOME`), written by `preloop agents onboard "Copilot CLI"`,
+  is still read for the run and its servers stay available. That file is
+  the operator's local configuration. Preloop governs those tool calls
+  only where the servers point at Preloop's `/mcp/v1`; an unrelated local
+  MCP server the operator added is their own tool, and this page does not
+  promise Preloop governance for it.
+
+Those are different behaviors, and one is not a consequence of the
+other. The operator still cannot replace the managed server:
+`--additional-mcp-config` is in `copilotManagedFlags`
+(`cli/internal/cmd/runner_host_exec_copilot.go`), so putting it in
+profile `argv` is refused when the profile is loaded, alongside
+`--model`, `--resume`, `--allow-all-tools` and the other runner-owned
+flags. That refusal is about operator-supplied argv. The runner supplies
+the same flag itself for every job that carries a flow MCP token.
+
+Profile `allow_tools` and `deny_tools` are Copilot permission rules for
+native tools, which is a separate mechanism from MCP governance.
+`allow_all_tools` is refused unless
 `preloop agents onboard "Copilot CLI" --approvals` has installed the
-approval hook.
+`preToolUse` approval hook. That hook gates native tool calls; it is not
+MCP governance, and MCP governance is not native-tool approval.
 
 Model calls are not gateway metered. The server forces
 `gateway_metered: false`
@@ -140,16 +204,61 @@ a token ledger and not a dollar amount.
 
 Sessions: before each run the runner upserts the Preloop usage hooks
 in `~/.copilot/hooks/preloop.json` (same lifecycle events as onboard).
-Other hook files are left alone.
-
-Dollars still come from the premium-request import, per user and day,
-not from the execution row.
+Other hook files are left alone. Sessions, hooks and a premium-request
+count are execution bookkeeping. They are not token, cost or replay
+parity with a gateway path, which captures per-request `ApiUsage` rows.
 
 Copilot plan terms govern how a seat may be used. A developer running
 flows on their own machine with their own seat is ordinary use. Check
 the organization's Copilot terms before sharing one seat across
 automated flows for several people. The launcher guide states that
 limit; this page does not restate the terms.
+
+#### What this path does not do today
+
+- **Publication and feedback are refused, not queued silently.** A flow
+  whose `git_clone_config` sets `create_pull_request`, a flow in
+  isolated publication mode, a flow with remote custom commands or clone
+  `setup_commands`, and a flow asking for native CLI session resume are
+  all rejected before the run, by `host_exec_unavailable_reason`
+  (`backend/preloop/services/host_exec.py`) and
+  `jobRejectedHostExecInjection`
+  (`cli/internal/cmd/runner_host_exec.go`). Each refusal names the
+  capability the path does not have yet. Nothing on this page describes
+  them as shipped.
+- **Review and checkout are supported, and that is the whole scope.**
+  With `allow_checkout`, the runner clones the flow's repositories and
+  the reviewer reads the diff and posts its review through the flow's
+  MCP tools. The run does not push branches and does not open pull
+  requests, so a host run is not the full ticket-to-PR factory. Use the
+  Docker harness for flows that publish.
+- [#1069](https://github.com/preloop/preloop/issues/1069) tracks Bitbucket
+  publication and feedback continuation for host flows. It is open.
+  When it ships, that issue updates this matrix for the version, the
+  capability and the opt-in that actually apply; nothing proposed there
+  is claimed here.
+
+#### Dollars on this path
+
+There is no ticket-level dollar figure for this surface, and none is
+estimated. The execution row carries a count Copilot reported and the
+"Not gateway metered" marker. The
+[premium-request import](copilot-usage-import.md) carries per user, per
+day and per model figures GitHub billed, plus a seat count. Neither
+ledger is joined to a ticket, an execution or a session, and neither
+prices a run. A seat with no import connected, or a day GitHub has not
+settled yet, is unknown: it is not a zero. The Cost page shows "no data
+imported" for a range with nothing imported, and the execution page
+shows the count and the "Not gateway metered" marker instead of an
+estimate.
+
+Implementation evidence, not a live run: `TestCopilotHostExecGetsFlowMCPServer`
+and `TestHostExecRejectsInjectedPreambleMarkerAndBadMCPToken` in
+`cli/internal/cmd/runner_host_exec_flow_test.go` cover the per-job file,
+the managed flag, the token's absence from argv and the cleanup;
+`TestNormalizeCopilotHostExecProfile` in
+`cli/internal/cmd/runner_host_exec_copilot_test.go` covers the managed
+flag refusal.
 
 ### Copilot CLI BYOK (`preloop copilot`)
 
@@ -166,7 +275,11 @@ captured `ApiUsage` rows. MCP onboarding is a separate step (the same
 replace the gateway ledger.
 
 Spend for this path is the gateway. It is not the premium-request
-import.
+import. Gateway rows carry the session and, in a flow, the execution, so
+this is the only Copilot row with per-request cost. The local launcher
+still attributes to the session, not to a ticket, and it pushes nothing:
+publication and feedback are the flow harness's job, not this
+command's.
 
 ### Copilot cloud coding agent on GitHub.com
 
@@ -196,6 +309,12 @@ Usage-metrics reports do not include Copilot Chat on GitHub.com or
 GitHub Mobile (GitHub usage-metrics concepts, read 2026-09-27). They do
 include IDE, Copilot CLI, and agent-app telemetry. They are not a bill.
 
+Because both are per user and day, no cloud agent job is matched to a
+figure, and this row has no ticket-level dollars. The agent does post
+comments and open pull requests on GitHub in its own right; that is
+GitHub activity that Preloop neither performs nor records, and it is not
+Preloop publication or feedback continuation.
+
 ### Copilot inline completions
 
 Inline completions do not call MCP tools, so tool governance does not
@@ -205,7 +324,9 @@ hook sessions are not possible.
 
 What remains is the premium-request import: daily aggregates and
 usage-metrics counters (acceptance and code generation among them), not
-one completion.
+one completion. Those are per user and per day, so they never price an
+individual completion, and a day with no row is unknown rather than
+zero. A completion has nothing to publish and nothing to continue.
 
 ## Recommended setups
 
@@ -216,8 +337,10 @@ one completion.
    [premium-request import](copilot-usage-import.md) so seats and
    premium-request spend show on the Cost page, marked not metered by
    the gateway. Run flows on Copilot CLI with a private-runner host
-   profile when the work should use that runner user's seat. This setup
-   does not meter model calls live.
+   profile when the work should use that runner user's seat; the flow's
+   own MCP tools are governed there through a per-job server. This setup
+   does not meter model calls live, does not attribute dollars to a
+   ticket, and does not publish from a host run.
 
 2. **BYOK overflow through the gateway.** When the team has provider
    keys and wants tokens, cost, and session replay, start Copilot CLI
@@ -258,6 +381,16 @@ The host-exec command shape is verified in
 (cited from that file for [#956](https://github.com/preloop/preloop/issues/956)).
 The operator steps are in the [Copilot CLI guide](copilot-cli.md).
 
+The flow-scoped MCP server for a host run is written by
+`hostExecMCPConfig`
+(`cli/internal/cmd/runner_host_exec_flow.go`), minted by
+`create_flow_runtime_token` and revoked by `revoke_flow_runtime_tokens`
+(`backend/preloop/services/flow_runtime_token.py`), and the flags a
+profile may not override are `copilotManagedFlags`
+(`cli/internal/cmd/runner_host_exec_copilot.go`). The shared host rules,
+including the rejected publication and resume paths, are in
+[host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only).
+
 The cloud agent MCP click path, including the GitHub how-to URL, is in
 [Copilot cloud agent](copilot-cloud-agent.md).
 
@@ -267,3 +400,4 @@ The cloud agent MCP click path, including the GitHub how-to URL, is in
 - [Copilot cloud agent MCP](copilot-cloud-agent.md)
 - [Usage hooks](usage-hooks.md) (Copilot CLI section)
 - [Premium-request import](copilot-usage-import.md)
+- [Host execution profiles on a private runner](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
