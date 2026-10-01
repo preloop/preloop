@@ -39,7 +39,8 @@ TEXT_STATUSES: frozenset[str] = frozenset(
     {"none", "extracted", "ocr", "captioned", "failed"}
 )
 
-# Label keys with a documented meaning. Any other key that matches the key
+# Label keys with a documented meaning (read by the deposit API docs in #1080
+# and EE label-scoped grants). Any other key that matches the key
 # pattern is accepted as account-defined.
 #   site: physical or logical site the artifact belongs to (e.g. a plant).
 #   tenant_ref: the caller's own customer or tenant reference.

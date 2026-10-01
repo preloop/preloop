@@ -361,7 +361,7 @@ def _session_artifact(
         source="browser_use",
         source_ref=source_ref,
         content_type="image/png",
-        plaintext=b"unpublished-screenshot-bytes",
+        plaintext=b"\x89PNG\r\n\x1a\n" + b"unpublished-screenshot-bytes",
         manifest={"step_index": 1},
         expires_at=expires_at,
         commit=False,

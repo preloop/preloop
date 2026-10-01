@@ -37,6 +37,11 @@ VALID: list[tuple[str, str, bytes]] = [
 
 # Declared type with bytes that do not match it.
 MISMATCH: list[tuple[str, str, bytes]] = [
+    ("screenshot", "image/png", b"\xff\xd8\xff-jpeg"),
+    ("screenshot", "image/jpeg", b"\x89PNG\r\n\x1a\n"),
+    ("screenshot", "image/webp", b"RIFF\x00\x00\x00\x00WAVE"),
+    ("recording", "video/webm", b"not-webm"),
+    ("recording", "video/mp4", b"\x1a\x45\xdf\xa3"),
     ("screencast", "video/webm", b"not-a-webm"),
     ("screencast", "video/mp4", b"\x00\x00\x00\x18nope"),
     ("audio", "audio/mpeg", b"RIFF....WAVE"),

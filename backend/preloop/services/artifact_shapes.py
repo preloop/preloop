@@ -20,6 +20,9 @@ No Preloop-specific wire shape: an artifact travels as
 
 Each ``from_*`` reverses its ``to_*``: content type, byte sha256, name, kind
 and labels survive the round trip.
+
+No production caller yet: the deposit route and MCP tools wire this up in
+#1080 and #1081. Tests pin the mapping until then.
 """
 
 from __future__ import annotations

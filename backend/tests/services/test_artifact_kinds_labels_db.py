@@ -37,6 +37,8 @@ SAMPLE: dict[str, tuple[str, bytes]] = {
     "trace": ("application/zip", b"PK\x03\x04trace"),
 }
 WRONG_MAGIC: dict[str, tuple[str, bytes]] = {
+    "screenshot": ("image/png", b"GIF89a-not-a-png"),
+    "recording": ("video/webm", b"not-webm"),
     "screencast": ("video/webm", b"not-webm"),
     "audio": ("audio/ogg", b"ID3nope"),
     "transcript": ("application/json", b"{broken"),
@@ -184,6 +186,16 @@ def test_bad_labels_are_refused(
 ) -> None:
     with pytest.raises(ValueError, match="artifact_labels_invalid"):
         _store(db_session, scope, "transcript", labels=labels)
+
+
+@pytest.mark.parametrize("field", ["name", "tool_name"])
+@pytest.mark.parametrize("value", ["", "n" * 256])
+def test_empty_or_long_name_and_tool_name_are_refused(
+    db_session: Session, scope: dict[str, Any], field: str, value: str
+) -> None:
+    with pytest.raises(ValueError, match=f"artifact_{field}_invalid"):
+        _store(db_session, scope, "document", **{field: value})
+    assert _store(db_session, scope, "document", **{field: "n" * 255})
 
 
 def test_tags_list_and_reserved_keys_are_accepted(

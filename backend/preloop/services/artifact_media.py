@@ -108,12 +108,16 @@ def _is_zip(data: bytes) -> bool:
 
 _Check = Callable[[bytes], bool]
 
-# Screenshots keep the signature check that browser steps already apply.
-# Recordings are checked for media type only here: their upload route (#887)
-# owns the container check, and rows written before this change keep loading.
+# Every entry has a signature check, so ``store()`` refuses mismatched bytes
+# whichever route calls it (browser steps, the firewall, the #1080 deposit
+# route).
 _ALLOWED: dict[str, dict[str, _Check | None]] = {
-    "screenshot": {"image/png": None, "image/jpeg": None, "image/webp": None},
-    "recording": {"video/webm": None, "video/mp4": None},
+    "screenshot": {
+        "image/png": _is_png,
+        "image/jpeg": _is_jpeg,
+        "image/webp": _is_webp,
+    },
+    "recording": {"video/webm": _is_ebml, "video/mp4": _is_iso_bmff},
     "screencast": {"video/webm": _is_ebml, "video/mp4": _is_iso_bmff},
     "audio": {
         "audio/mpeg": _is_mpeg_audio,
@@ -138,11 +142,6 @@ _ALLOWED: dict[str, dict[str, _Check | None]] = {
     "trace": {"application/zip": _is_zip},
 }
 
-IMAGE_SIGNATURES: dict[str, _Check] = {
-    "image/png": _is_png,
-    "image/jpeg": _is_jpeg,
-    "image/webp": _is_webp,
-}
 
 _EXECUTABLE_MAGIC: tuple[bytes, ...] = (
     b"\x7fELF",
@@ -162,21 +161,8 @@ def normalize_media_type(content_type: str) -> str:
 
 def is_declared_image(content_type: str, data: bytes) -> bool:
     """Return True when ``data`` starts with the signature of ``content_type``."""
-    check = IMAGE_SIGNATURES.get(normalize_media_type(content_type))
+    check = _ALLOWED["screenshot"].get(normalize_media_type(content_type))
     return bool(check and check(data))
-
-
-def allowed_media_types(kind: str) -> tuple[str, ...] | None:
-    """Return the media types a kind accepts, or None when any type is accepted.
-
-    Raises:
-        ValueError: ``artifact_kind_invalid`` for an unknown kind.
-    """
-    if kind not in ARTIFACT_KINDS:
-        raise ValueError("artifact_kind_invalid")
-    if kind == "generated_file":
-        return None
-    return tuple(_ALLOWED[kind])
 
 
 def check_content(kind: str, content_type: str, data: bytes) -> str:
