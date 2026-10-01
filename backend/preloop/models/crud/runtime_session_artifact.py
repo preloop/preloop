@@ -9,7 +9,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -490,22 +490,14 @@ def cleanup(db: Session, *, now: datetime) -> int:
         )
         .exists()
     )
-    expired_ids = [
-        row_id
-        for (row_id,) in db.query(models.RuntimeSessionArtifact.id)
+    count = (
+        db.query(models.RuntimeSessionArtifact)
         .filter(
             models.RuntimeSessionArtifact.expires_at < now,
             models.RuntimeSessionArtifact.legal_hold.is_(False),
             ~session_held,
             models.RuntimeSessionArtifact.availability == "available",
         )
-        .all()
-    ]
-    if not expired_ids:
-        return 0
-    count = (
-        db.query(models.RuntimeSessionArtifact)
-        .filter(models.RuntimeSessionArtifact.id.in_(expired_ids))
         .update(
             {
                 models.RuntimeSessionArtifact.ciphertext: None,
@@ -514,9 +506,32 @@ def cleanup(db: Session, *, now: datetime) -> int:
             synchronize_session=False,
         )
     )
-    _drop_search_chunks(db, expired_ids)
+    _drop_unavailable_search_chunks(db)
     db.commit()
     return int(count or 0)
+
+
+def _drop_unavailable_search_chunks(db: Session) -> int:
+    """Remove search chunks of every artifact whose bytes are gone.
+
+    One statement over all unavailable artifacts rather than the ids of this
+    pass, so a chunk left by an earlier pass (or written before this sweep
+    existed) is reclaimed too.
+    """
+    from preloop.models.models.session_search_document import SessionSearchDocument
+
+    gone = select(func.cast(models.RuntimeSessionArtifact.id, String)).where(
+        models.RuntimeSessionArtifact.availability != "available"
+    )
+    return int(
+        db.query(SessionSearchDocument)
+        .filter(
+            SessionSearchDocument.source_kind == "artifact",
+            SessionSearchDocument.source_id.in_(gone),
+        )
+        .delete(synchronize_session=False)
+        or 0
+    )
 
 
 def _drop_search_chunks(db: Session, artifact_ids: list[Any]) -> None:
