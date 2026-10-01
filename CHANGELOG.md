@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`deposit_artifact` MCP tool.** An agent stores a file, image, transcript
+  or text on its own runtime session through the MCP endpoint alone; it
+  shows up in the session's artifact list and timeline. Takes one MCP
+  content block, answers with a `resource_link` and the artifact descriptor,
+  and reports refusals with the same codes as the REST deposit API.
+  Default-off: enable it on the Tools page or in a flow's
+  `allowed_mcp_tools`. See `docs/architecture/mcp.md` (#1081).
 - **`preloop flow trigger --stop-on-interrupt`.** When `--wait` is
   interrupted by SIGINT or SIGTERM, the CLI stops the execution on the
   server (one stop request), prints the execution id and final status, and
