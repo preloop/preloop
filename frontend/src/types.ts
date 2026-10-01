@@ -1289,13 +1289,18 @@ export interface RuntimeSessionOptimizationActionListResponse {
   items: RuntimeSessionOptimizationAppliedAction[];
 }
 
-/** Session screenshot and recording bytes against the account storage budget. */
+/**
+ * Session artifact bytes against the account storage budget. ``by_kind``
+ * always has screenshot and recording; newer servers add screencast, audio,
+ * transcript, document, generated_file and trace, and may add more later.
+ */
 export interface SessionArtifactUsage {
   used_bytes: number;
   budget_bytes: number;
   by_kind: {
     screenshot: number;
     recording: number;
+    [kind: string]: number;
   };
   evicted_count_30d: number;
 }
