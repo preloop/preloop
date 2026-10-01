@@ -45,6 +45,7 @@ import type {
   RuntimeSessionActivityItem,
   RuntimeSessionSummary,
   SessionSearchResponse,
+  SessionSearchArtifactRef,
   SessionSearchResult,
   SessionSearchSnippet,
 } from '../../types';
@@ -95,6 +96,28 @@ const ARTIFACT_KIND_LABELS: Record<string, string> = {
   generated_file: 'Generated file',
   trace: 'Trace',
 };
+
+/**
+ * The header lines the indexer writes at the top of an artifact chunk
+ * (`backend/preloop/services/session_search_index.py`, `_artifact_header`).
+ */
+export function artifactHeaderLines(
+  artifact: SessionSearchArtifactRef
+): string[] {
+  const labels = Object.keys(artifact.labels || {})
+    .sort()
+    .map((key) => {
+      const value = artifact.labels[key];
+      return `${key}=${Array.isArray(value) ? value.join(' ') : value}`;
+    })
+    .join(' ');
+  return [
+    'kind: artifact',
+    artifact.kind ? `artifact_kind: ${artifact.kind}` : '',
+    artifact.name ? `name: ${artifact.name}` : '',
+    labels ? `labels: ${labels}` : '',
+  ].filter(Boolean);
+}
 
 /** `m:ss` (or `h:mm:ss`) for a transcript cue start in seconds. */
 export function formatCueStart(seconds: number): string {
@@ -1381,19 +1404,20 @@ export class RuntimeSessionsView extends LitElement {
    * the turn so the page does not pretend it jumped.
    */
   private snippetJumpsToTurn(snippet: SessionSearchSnippet): boolean {
-    if (snippet.source_kind === 'artifact') {
-      return Boolean(snippet.artifact?.activity_id);
-    }
     return TURN_JUMP_KINDS.has(snippet.source_kind);
   }
 
-  /** The timeline row a snippet opens at: the turn, or the deposit row. */
+  /**
+   * The timeline row a snippet opens at. An artifact hit names its deposit
+   * row (`activity_id`), so the location is right as soon as the timeline
+   * draws artifact rows; until it does, the hit keeps the "Opens the
+   * session" hint rather than claiming a jump it cannot make.
+   */
   private snippetTurnId(snippet: SessionSearchSnippet): string | null {
-    if (!this.snippetJumpsToTurn(snippet)) return null;
     if (snippet.source_kind === 'artifact') {
       return snippet.artifact?.activity_id ?? null;
     }
-    return snippet.source_id;
+    return this.snippetJumpsToTurn(snippet) ? snippet.source_id : null;
   }
 
   private openSnippet(
@@ -1782,7 +1806,7 @@ export class RuntimeSessionsView extends LitElement {
       ${
         typeof artifact.cue_start === 'number'
           ? html`<span data-testid="snippet-cue-start"
-              >at ${formatCueStart(artifact.cue_start)}</span
+              >from ${formatCueStart(artifact.cue_start)}</span
             >`
           : ''
       }
@@ -1817,12 +1841,35 @@ export class RuntimeSessionsView extends LitElement {
         session to see the turn.</span
       >`;
     }
-    const parts = snippet.text.split(/<mark>|<\/mark>/);
+    const parts = this.snippetBody(snippet).split(/<mark>|<\/mark>/);
     return html`<span class="snippet-text"
       >${parts.map((part, index) =>
         index % 2 === 1 ? html`<mark>${part}</mark>` : part
       )}</span
     >`;
+  }
+
+  /**
+   * The snippet text without the artifact header lines (kind, name, labels)
+   * that the badges already show. A header line that carries a marked term
+   * stays, since it is why the chunk matched.
+   */
+  private snippetBody(snippet: SessionSearchSnippet): string {
+    const text = snippet.text ?? '';
+    const artifact = snippet.artifact;
+    if (snippet.source_kind !== 'artifact' || !artifact) return text;
+    const header = artifactHeaderLines(artifact);
+    const lines = text.split('\n');
+    let skip = 0;
+    while (
+      skip < lines.length - 1 &&
+      !lines[skip].includes('<mark>') &&
+      lines[skip].trim() &&
+      header.some((line) => line.endsWith(lines[skip].trim()))
+    ) {
+      skip += 1;
+    }
+    return lines.slice(skip).join('\n');
   }
 
   private searchResultTitle(result: SessionSearchResult): string {

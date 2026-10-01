@@ -1146,7 +1146,7 @@ describe('RuntimeSessionsView', () => {
       );
     });
 
-    it('shows an artifact hit with its kind, name, labels and cue time, and opens its timeline row', async () => {
+    it('shows an artifact hit with its kind, name, labels and cue time, and opens the session with its deposit row in the location', async () => {
       fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () => {
         const body = searchResponse();
         body.results[0].snippets = [
@@ -1160,7 +1160,7 @@ describe('RuntimeSessionsView', () => {
             role: 'artifact',
             rank: 0.5,
             redaction_state: 'clear',
-            text: 'Receiving Lead: Reporting a <mark>damaged</mark> <mark>pallet</mark>',
+            text: 'nord-late.vtt\nlabels: site=nord tags=handover dock\nReceiving Lead: Reporting a <mark>damaged</mark> <mark>pallet</mark>',
             artifact: {
               artifact_id: 'artifact-1',
               activity_id: 'activity-artifact-1',
@@ -1188,8 +1188,14 @@ describe('RuntimeSessionsView', () => {
       expect(labels).to.deep.equal(['site: nord', 'tags: handover, dock']);
       expect(
         button.querySelector('[data-testid="snippet-cue-start"]')!.textContent
-      ).to.contain('at 1:05');
-      expect(button.textContent).to.not.contain('Opens the session');
+      ).to.contain('from 1:05');
+      // The timeline does not draw artifact rows yet, so no jump is claimed.
+      expect(button.textContent).to.contain('Opens the session');
+      // The header lines the badges already show are not repeated.
+      const body = button.querySelector('.snippet-text')!.textContent!;
+      expect(body.trim()).to.equal(
+        'Receiving Lead: Reporting a damaged pallet'
+      );
 
       button.click();
       await element.updateComplete;
