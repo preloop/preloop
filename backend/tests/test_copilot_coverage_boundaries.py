@@ -47,8 +47,13 @@ BOUNDARY_FACTS = (
     "not the full ticket-to-PR factory",
 )
 
-#: The open tracking issue must stay marked as open, not as shipped.
-OPEN_ISSUE = "#1069"
+#: The sentence that marks the tracking issue as open work, not as shipped.
+#: It is matched whole, link and marker included, so the check does not
+#: depend on where the issue number is first mentioned on the page.
+OPEN_ISSUE_TRACKING = (
+    "[#1069](https://github.com/preloop/preloop/issues/1069) tracks Bitbucket "
+    "publication and feedback continuation for host flows. It is open."
+)
 
 
 def _matrix_rows(text: str) -> list[list[str]]:
@@ -135,9 +140,12 @@ def test_host_flow_boundaries_and_open_issue_are_stated() -> None:
     text = _flat(COVERAGE.read_text(encoding="utf-8"))
     for fact in BOUNDARY_FACTS:
         assert fact in text, fact
-    # The open issue is referenced as tracked work, never as shipped.
-    mention = text[text.index(OPEN_ISSUE) :][:400]
-    assert "It is open." in mention, mention
+    # The open issue is referenced as tracked work, never as shipped. Match
+    # the tracking sentence rather than a fixed window after the first
+    # "#1069" on the page: another cell citing the same issue moves that
+    # first mention, and a window anchored to it would then fail while the
+    # page is still correct.
+    assert OPEN_ISSUE_TRACKING in text, "the page must call #1069 open, not shipped"
 
 
 def test_import_page_separates_ticket_dollars_from_daily_figures() -> None:
