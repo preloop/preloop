@@ -557,6 +557,12 @@ export class AccountView extends LitElement {
     );
   }
 
+  /** ``generated_file`` becomes ``Generated file``. */
+  private _kindLabel(kind: string): string {
+    const words = kind.replace(/_/g, ' ');
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
   private _renderSessionArtifactUsage() {
     const usage = this._sessionArtifactUsage;
     if (!usage) return '';
@@ -588,7 +594,7 @@ export class AccountView extends LitElement {
           ${this._otherArtifactKinds(usage).map(
             ([kind, bytes]) => html`
               <div class="usage-metric" data-kind=${kind}>
-                <div class="usage-label">${kind.replace(/_/g, ' ')}</div>
+                <div class="usage-label">${this._kindLabel(kind)}</div>
                 <div class="usage-value">${this._formatBytes(bytes)}</div>
               </div>
             `

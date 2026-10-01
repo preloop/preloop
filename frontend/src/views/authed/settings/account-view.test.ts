@@ -1194,9 +1194,9 @@ describe('AccountView', () => {
     await element.updateComplete;
 
     const cells = usageCells(element);
-    expect(cells['transcript']).to.equal('2 KiB');
-    expect(cells['generated file']).to.equal('1 KiB');
-    expect(cells['audio'], 'empty kinds stay hidden').to.be.undefined;
+    expect(cells['Transcript']).to.equal('2 KiB');
+    expect(cells['Generated file']).to.equal('1 KiB');
+    expect(cells['Audio'], 'empty kinds stay hidden').to.be.undefined;
     expect(cells['Screenshots']).to.equal('0 B');
   });
 
