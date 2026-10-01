@@ -281,7 +281,7 @@ describe('LandingView hero video', () => {
     expect(img.getAttribute('src')).to.equal(
       HERO_WITH_VIDEO.hero.image.replace('.png', '-800.webp')
     );
-    expect(img.srcset).to.contain(`${HERO_WITH_VIDEO.hero.image} 3840w`);
+    expect(img.srcset).to.contain(`${HERO_WITH_VIDEO.hero.image} 3200w`);
     // Click-to-load: nothing in the shadow DOM references YouTube yet.
     expect(el.shadowRoot?.querySelector('iframe')).to.not.exist;
     expect(el.shadowRoot?.innerHTML).to.not.contain('youtube');
@@ -491,7 +491,7 @@ describe('LandingView responsive screenshots', () => {
         original.replace('.png', '-800.webp')
       );
       expect(hero.srcset).to.contain('1600.webp 1600w');
-      expect(hero.srcset).to.contain(`${original} 3840w`);
+      expect(hero.srcset).to.contain(`${original} 3200w`);
       expect(hero.sizes).to.contain('1150px');
       expect(hero.loading).to.equal('eager');
       expect(preview.loading).to.equal('lazy');

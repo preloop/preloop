@@ -1,23 +1,14 @@
 import type { BrandConfig } from './brand-config';
 
 const screenshotDirectory = '/assets/screenshots/quickstart/dark/';
-// Intrinsic size of each bundled original. audit_page predates the 0.16
-// capture script (docs/scripts/capture_screenshots.py), which shoots at
-// 1920x1080 with device scale factor 2.
-const refreshedScreenshotSize = { width: 3840, height: 2160 };
-const responsiveScreenshots = new Map<
-  string,
-  { width: number; height: number }
->(
-  (
-    [
-      ['agent_bubble', refreshedScreenshotSize],
-      ['audit_page', { width: 3200, height: 1900 }],
-      ['cost_page', refreshedScreenshotSize],
-      ['dashboard', refreshedScreenshotSize],
-      ['rules_configured', refreshedScreenshotSize],
-    ] as const
-  ).map(([name, size]) => [`${screenshotDirectory}${name}.png`, size])
+const responsiveScreenshots = new Set(
+  [
+    'agent_bubble',
+    'audit_page',
+    'cost_page',
+    'dashboard',
+    'rules_configured',
+  ].map((name) => `${screenshotDirectory}${name}.png`)
 );
 
 function responsiveDerivatives(original: string): {
@@ -40,15 +31,14 @@ export function landingImageSources(original: string): {
   height?: number;
 } {
   const derivatives = responsiveDerivatives(original);
-  const size = responsiveScreenshots.get(original);
-  if (!derivatives.length || !size) return { src: original };
+  if (!derivatives.length) return { src: original };
   return {
     src: derivatives[0].src,
-    srcset: [...derivatives, { src: original, width: size.width }]
+    srcset: [...derivatives, { src: original, width: 3200 }]
       .map(({ src, width }) => `${src} ${width}w`)
       .join(', '),
-    width: size.width,
-    height: size.height,
+    width: 3200,
+    height: 1900,
   };
 }
 

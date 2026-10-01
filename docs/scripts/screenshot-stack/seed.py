@@ -12,8 +12,16 @@ What it creates, all through the public API:
     four quickstart rules on the pay tool (allow <= 100, Support <= 200,
     CFO <= 1000, deny above)
   * two AI models that point at the local stub (no provider key)
-  * one API key and four registered agents with enrollment records
-  * chat sessions through the model gateway and a few MCP tool calls
+  * one API key and three registered agents with enrollment records (three:
+    an EE account on the free plan is capped there)
+  * an account budget (soft $200, hard $300 a month) and two flows cloned
+    from the built-in presets (a second user needs a paid EE plan; on the free
+    plan "Invite a teammate" is an optional step and does not keep the
+    checklist open)
+  * chat sessions through the model gateway and MCP tool calls through the
+    tool firewall; two calls go to approval and are decided through the
+    approvals API while the agent waits (one approved, one declined), and one
+    is left pending for the Support workflow
 """
 
 import asyncio
@@ -161,6 +169,35 @@ def seed_policy(c):
     print("policy, models and API key seeded")
 
 
+def seed_account(c):
+    """A budget and two preset flows, through the console's APIs."""
+    ok(
+        c.post(
+            "/api/v1/budget/policies",
+            json={
+                "subject_type": "account",
+                "period": "monthly",
+                "soft_limit_usd": 200,
+                "hard_limit_usd": 300,
+            },
+        ),
+        "budget",
+    )
+    presets = ok(c.get("/api/v1/flows/presets"), "presets")
+    cloned = 0
+    for preset in presets:
+        if cloned == 2:
+            break
+        r = c.post("/api/v1/flows/presets/%s/clone" % preset["id"])
+        if r.status_code < 400:
+            cloned += 1
+            flow = r.json()
+            name = flow["name"].removeprefix("Copy of ")
+            ok(c.put("/api/v1/flows/%s" % flow["id"], json={"name": name}), "rename")
+            print("flow", name)
+    print("budget and flows seeded")
+
+
 AGENTS = [
     (
         "Claude Code (alex-mbp)",
@@ -177,7 +214,6 @@ AGENTS = [
         "openclaw",
         "Summarise yesterday's on-call incidents.",
     ),
-    ("Hermes (research)", "hermes", "Compare pricing of three vector databases."),
 ]
 # (agent index, task, turns): one gateway session each.
 SESSIONS = [
@@ -189,8 +225,8 @@ SESSIONS = [
     (1, "Check which dependency updates are safe to merge.", 4),
     (2, "Summarise yesterday's on-call incidents.", 5),
     (2, "Explain the search latency regression since Friday.", 4),
-    (3, "Compare pricing of three vector databases.", 6),
-    (3, "Check that the orders migration is safe to rerun.", 3),
+    (1, "Compare pricing of three vector databases.", 6),
+    (0, "Check that the orders migration is safe to rerun.", 3),
 ]
 TOOLS = [
     {
@@ -304,11 +340,11 @@ def chat_session(token, task, turns):
         )
 
 
-async def mcp_calls(token, calls):
+async def mcp_calls(token, calls, timeout=15):
     tr = StreamableHttpTransport(
         API + "/mcp/v1", headers={"Authorization": "Bearer " + token}
     )
-    async with Client(tr, timeout=20) as cl:
+    async with Client(tr, timeout=timeout + 5) as cl:
         names = [t.name for t in await cl.list_tools()]
         for tool, args in calls:
             name = next((n for n in names if n == tool or n.endswith(tool)), None)
@@ -317,7 +353,7 @@ async def mcp_calls(token, calls):
                 continue
             try:
                 res = await asyncio.wait_for(
-                    cl.call_tool(name, args, raise_on_error=False), timeout=15
+                    cl.call_tool(name, args, raise_on_error=False), timeout=timeout
                 )
                 text = " ".join(getattr(x, "text", "") for x in (res.content or []))
                 print(
@@ -327,12 +363,40 @@ async def mcp_calls(token, calls):
                 print("mcp", name, args.get("amount", ""), type(exc).__name__)
 
 
+async def decide_when_pending(c, decisions, timeout=40):
+    """Approve or decline pending pay requests by amount, as a reviewer would."""
+    left = dict(decisions)
+    deadline = asyncio.get_event_loop().time() + timeout
+    while left and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(1.5)
+        r = await asyncio.to_thread(
+            c.get, "/api/v1/approval-requests", params={"status": "pending"}
+        )
+        if r.status_code >= 400:
+            continue
+        for req in r.json():
+            amount = (req.get("tool_args") or {}).get("amount")
+            if amount in left:
+                approve, comment = left.pop(amount)
+                verb = "approve" if approve else "decline"
+                d = await asyncio.to_thread(
+                    c.post,
+                    "/api/v1/approval-requests/%s/%s" % (req["id"], verb),
+                    json={"approved": approve, "comment": comment},
+                )
+                print("approval", amount, verb, d.status_code)
+
+
 async def main():
     c = login()
     seed_policy(c)
+    seed_account(c)
     agents = register_agents(c)
-    for idx, task, turns in SESSIONS:
-        chat_session(agents[idx][2], task, turns)
+    # Two rounds with twice the turns: enough volume that the cost page and
+    # the budget bar look like a team's month, not a smoke test.
+    for _ in range(2):
+        for idx, task, turns in SESSIONS:
+            chat_session(agents[idx][2], task, turns * 2)
     print("chat sessions done")
     why = "Paying the contractor invoice for the completed March milestone."
     await mcp_calls(
@@ -360,6 +424,38 @@ async def main():
             ),
             ("verify_refund_eligibility", {"order_id": "ORD-1042"}),
         ],
+    )
+    # Approved by Support and declined by the CFO while the agent waits.
+    await asyncio.gather(
+        mcp_calls(
+            agents[1][2],
+            [
+                (
+                    "pay",
+                    {
+                        "recipient": "qa-contractor@example.com",
+                        "amount": 180,
+                        "justification": "Invoice INV-2207 for the test lab rental.",
+                    },
+                ),
+                (
+                    "pay",
+                    {
+                        "recipient": "cloud-vendor@example.com",
+                        "amount": 640,
+                        "justification": "Prepay next quarter of CI runners.",
+                    },
+                ),
+            ],
+            timeout=35,
+        ),
+        decide_when_pending(
+            c,
+            {
+                180: (True, "Matches the signed invoice."),
+                640: (False, "Not budgeted this quarter."),
+            },
+        ),
     )
     await mcp_calls(
         agents[2][2],

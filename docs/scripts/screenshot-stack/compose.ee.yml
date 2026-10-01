@@ -1,0 +1,21 @@
+# Optional overlay: run the screenshot stack on an EE backend image.
+#
+# The Overview Activity panel, the Tool firewall counter and the audit
+# timeline read /api/v1/audit-logs, which only the EE audit plugin serves.
+# Build an EE image (preloop-ee Dockerfile with this checkout as preloop/),
+# export PRELOOP_SHOTS_IMAGE=<that tag> and add this file after
+# compose.screenshots.yml. It drops the `.:/app` source mount from the base
+# file, which would otherwise hide the EE plugins baked into the image.
+services:
+  migrate:
+    volumes: !reset []
+  api:
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock
+  gateway:
+    volumes: !reset []
+  scheduler:
+    volumes: !reset []
+  worker:
+    volumes: !override
+      - /var/run/docker.sock:/var/run/docker.sock

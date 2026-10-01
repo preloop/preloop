@@ -1,6 +1,6 @@
 """Capture the documentation and landing screenshots from a local stack.
 
-Dark theme, 1920x1080 viewport, device scale factor 2, PNG, no annotations.
+Dark theme, framing per image (see WIDE and NARROW), PNG, no annotations.
 Run it against the local screenshot stack described in README.md, never
 against staging or production. File names are stable: every capture
 overwrites the file the docs or the landing page already reference.
@@ -15,6 +15,7 @@ them once per fresh stack.
 
 import argparse
 import asyncio
+import io
 import time
 from pathlib import Path
 
@@ -27,12 +28,27 @@ DOCS_SHOTS = REPO / "docs" / "assets" / "screenshots"
 LANDING_DARK = (
     REPO / "frontend" / "public" / "assets" / "screenshots" / "quickstart" / "dark"
 )
-VIEWPORT = {"width": 1920, "height": 1080}
+# Framing matches the images these files replaced, so the console content
+# keeps the same size relative to the image (a wider viewport shrinks it):
+#   console pages (docs */dark/, landing dark/): 1600x950 CSS pixels
+#   quickstart dialogs and flow pages (docs quickstart/*.png): 1400x900
+# Pages render at device scale factor 2. Landing files keep the 2x pixels
+# (3200x1900, as before); docs files are downscaled to 1x (1600x950 and
+# 1400x900, as before).
+WIDE = {"width": 1600, "height": 950}
+NARROW = {"width": 1400, "height": 900}
+VIEWPORT = dict(WIDE)
 SCALE = 2
 # Stills the landing page serves with -800/-1600 webp derivatives.
-# audit_page is one of them but is not captured here: the audit timeline
-# reads /api/v1/audit-logs, which the open-source backend does not serve.
-LANDING_WEBP = {"agent_bubble", "cost_page", "dashboard", "rules_configured"}
+# audit_page needs an EE backend (compose.ee.yml): the audit timeline reads
+# /api/v1/audit-logs, which the open-source backend does not serve.
+LANDING_WEBP = {
+    "agent_bubble",
+    "audit_page",
+    "cost_page",
+    "dashboard",
+    "rules_configured",
+}
 
 FLOW_NAME = "Contract Payment Processor"
 # Name, description and prompt match docs/guide/quickstart-flows.md, Step 2.
@@ -91,7 +107,12 @@ def parse_args():
 def save_png(src: bytes, *targets: Path) -> None:
     for target in targets:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(src)
+        if target.is_relative_to(DOCS_SHOTS):
+            img = Image.open(io.BytesIO(src))
+            size = (VIEWPORT["width"], VIEWPORT["height"])
+            img.resize(size, Image.LANCZOS).save(target, "PNG", optimize=True)
+        else:
+            target.write_bytes(src)
         print("saved", target.relative_to(REPO))
 
 
@@ -137,6 +158,31 @@ async def login(page: Page, args) -> None:
     await page.wait_for_load_state("networkidle")
 
 
+async def dismiss_plan_nudges(page: Page, args) -> None:
+    """Close the EE plan banner ("3 of 3 agents, See plans") as a user would.
+
+    On an EE stack the seed account is on the free plan, which caps agents at
+    three and shows a usage nudge at the cap. The docs describe the console,
+    not the plan, so the capture dismisses it with its own close button; the
+    dismissal is remembered for the rest of the run.
+    """
+    await page.goto(args.base_url + "/console")
+    await page.wait_for_load_state("networkidle")
+    await page.wait_for_timeout(1500)
+    for _ in range(3):
+        clicked = await page.evaluate(
+            "() => {"
+            + DEEP_QUERY
+            + "const b = deepQuery(document, 'usage-nudge-banner');"
+            " const btn = b && b.shadowRoot && b.shadowRoot.querySelector("
+            "'button.dismiss'); if (btn) { btn.click(); return true; }"
+            " return false; }"
+        )
+        if not clicked:
+            break
+        await page.wait_for_timeout(500)
+
+
 def api_client(args) -> httpx.Client:
     r = httpx.post(
         args.api_url + "/api/v1/auth/token",
@@ -174,6 +220,13 @@ async def cap_cost_page(page, args, api):
         DOCS_SHOTS / "quickstart/dark/cost_page.png",
         LANDING_DARK / "cost_page.png",
     )
+
+
+async def cap_audit_page(page, args, api):
+    # Needs an EE backend: the timeline reads /api/v1/audit-logs (audit plugin).
+    await page.goto(args.base_url + "/console/audit")
+    await wait_view(page, "audit-view")
+    await shoot(page, "audit_page", LANDING_DARK / "audit_page.png")
 
 
 async def cap_rules_configured(page, args, api):
@@ -336,6 +389,42 @@ async def cap_flow_create_form(page, args, api):
     await page.wait_for_load_state("networkidle")
 
 
+async def scroll_past_records(page: Page) -> None:
+    """Scroll the execution page so the run itself, not the evidence card, fills the frame.
+
+    The Records (evidence pack) card sits above the run's status banner and
+    stream; at the docs frame height it would push "Waiting for Support" and
+    the agent output below the fold.
+    """
+    bottom = await page.evaluate(
+        "() => {"
+        + DEEP_QUERY
+        + """
+        const all = [];
+        const walk = (root) => {
+          for (const el of root.querySelectorAll?.('*') || []) {
+            all.push(el);
+            if (el.shadowRoot) walk(el.shadowRoot);
+          }
+        };
+        walk(document);
+        const title = all.find(
+          (el) => el.children.length === 0 && el.textContent.trim() === 'Records'
+        );
+        if (!title) return 0;
+        let card = title;
+        while (card && card.getBoundingClientRect().height < 250) {
+          card = card.parentElement || card.getRootNode().host;
+        }
+        return card ? card.getBoundingClientRect().bottom : 0;
+      }"""
+    )
+    if bottom > 120:
+        await page.mouse.move(VIEWPORT["width"] // 2, VIEWPORT["height"] // 2)
+        await page.mouse.wheel(0, bottom - 70)
+        await page.wait_for_timeout(800)
+
+
 async def cap_flow_run(page, args, api):
     flows = api.get("/api/v1/flows").json()
     flows = flows if isinstance(flows, list) else flows.get("items", [])
@@ -388,6 +477,7 @@ async def cap_flow_run(page, args, api):
     await page.reload()
     await wait_view(page, "flow-execution-view")
     await page.wait_for_timeout(3000)
+    await scroll_past_records(page)
     await shoot(
         page,
         "flow-execution-waiting-approval",
@@ -400,8 +490,10 @@ CAPTURES = [
     ("dashboard", cap_dashboard),
     ("cost_page", cap_cost_page),
     ("rules_configured", cap_rules_configured),
+    ("audit_page", cap_audit_page),
     ("agent_bubble", cap_agent_bubble),
     ("optimize-tab", cap_optimize_tab),
+    ("narrow", None),
     ("add-ai-model-dialog", cap_add_ai_model_dialog),
     ("flow-create-form", cap_flow_create_form),
     ("flow-run", cap_flow_run),
@@ -428,7 +520,13 @@ async def main():
         )
         page = await context.new_page()
         await login(page, args)
+        await dismiss_plan_nudges(page, args)
         for name, fn in CAPTURES:
+            if fn is None:  # switch to the quickstart dialog framing
+                VIEWPORT.clear()
+                VIEWPORT.update(NARROW)
+                await page.set_viewport_size(VIEWPORT)
+                continue
             if only and name not in only:
                 continue
             print("capturing", name)

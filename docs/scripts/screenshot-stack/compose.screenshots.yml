@@ -20,10 +20,10 @@ services:
     ports: !override
       - "127.0.0.1:18322:4222"
   migrate:
-    image: preloop-shots/preloop:local
+    image: ${PRELOOP_SHOTS_IMAGE:-preloop-shots/preloop:local}
     environment: *no_telemetry
   api:
-    image: preloop-shots/preloop:local
+    image: ${PRELOOP_SHOTS_IMAGE:-preloop-shots/preloop:local}
     environment: &agent_env
       <<: *no_telemetry
       PRELOOP_URL: http://api:8000
@@ -37,15 +37,15 @@ services:
     ports: !override
       - "127.0.0.1:18300:8000"
   gateway:
-    image: preloop-shots/preloop:local
+    image: ${PRELOOP_SHOTS_IMAGE:-preloop-shots/preloop:local}
     environment: *no_telemetry
     ports: !override
       - "127.0.0.1:18301:8000"
   scheduler:
-    image: preloop-shots/preloop:local
+    image: ${PRELOOP_SHOTS_IMAGE:-preloop-shots/preloop:local}
     environment: *no_telemetry
   worker:
-    image: preloop-shots/preloop:local
+    image: ${PRELOOP_SHOTS_IMAGE:-preloop-shots/preloop:local}
     environment: *agent_env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -56,7 +56,7 @@ services:
     ports: !override
       - "127.0.0.1:18373:5173"
   stub-model:
-    image: preloop-shots/preloop:local
+    image: ${PRELOOP_SHOTS_IMAGE:-preloop-shots/preloop:local}
     restart: unless-stopped
     volumes:
       - ./docs/scripts/screenshot-stack:/kit:ro
@@ -65,7 +65,7 @@ services:
     ports:
       - "127.0.0.1:18390:9000"
   example-mcp:
-    image: preloop-shots/preloop:local
+    image: ${PRELOOP_SHOTS_IMAGE:-preloop-shots/preloop:local}
     restart: unless-stopped
     volumes:
       - ./scripts/examples:/ex:ro
