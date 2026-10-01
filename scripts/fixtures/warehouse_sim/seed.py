@@ -5,7 +5,9 @@ accounts ("Lager Nord" and "Lager Sued"), the REST calls that register the
 warehouse-sim MCP server and set its tool policies:
 
 * ``get_transcript`` is allowed only for the account's own site, through a
-  ``tool_access_rules`` CEL argument rule (``args.site != '<own>'`` -> deny).
+  ``tool_access_rules`` argument rule (``args.site != '<own>'`` -> deny).
+  The API derives ``condition_type`` from the expression (this one is stored
+  as ``simple``), so the plan does not send it.
 * ``propose_workflow_change`` requires approval and a justification.
 * ``create_task`` is allowed.
 * ``list_workflows``, ``get_audio`` and ``transcribe_audio`` get the same
@@ -112,7 +114,6 @@ def account_plan(account: str, site: str, mcp_url: str) -> Dict[str, Any]:
                 {
                     "action": "deny",
                     "condition_expression": f"args.site != '{site}'",
-                    "condition_type": "cel",
                     "priority": 1,
                     "description": f"{account} may only read site {site}",
                 },
@@ -132,7 +133,6 @@ def account_plan(account: str, site: str, mcp_url: str) -> Dict[str, Any]:
             {
                 "action": "deny",
                 "condition_expression": f"args.site != '{site}'",
-                "condition_type": "cel",
                 "priority": 1,
                 "description": f"{account} may only change site {site}",
             },

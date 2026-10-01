@@ -16,8 +16,14 @@ TEXT_FILES = [
 ]
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@([A-Za-z0-9.\-]+\.[A-Za-z]{2,})")
-# Digit runs that look like phone numbers (7+ digits, optional separators).
+# International numbers anywhere in the fixture (README and code included).
 PHONE = re.compile(r"\+\d[\d\s\-]{8,}\d")
+# Any phone-shaped digit run in the data files, national format included:
+# "07131 1234567", "(555) 010-0199", "555.010.0199". Seven or more digits
+# joined by spaces, dashes, dots or parentheses. VTT timestamps are excluded
+# because ":" is not a joiner; digits inside URLs (after "/") are skipped.
+NATIONAL = re.compile(r"(?<![\w:./])[+(]?\d[\d ().\-]{5,}\d(?![\w:])")
+DATA_FILES = [p for p in TEXT_FILES if p.suffix in {".vtt", ".bpmn"}]
 
 ALLOWED_PHONES = {"+1 555 010 0199", "+49 7131 1234567"}
 PII_TRANSCRIPT = ("sued", "night")
@@ -41,6 +47,33 @@ def test_phone_numbers_are_the_documented_fixture_numbers():
             continue
         for number in PHONE.findall(text):
             assert number.strip() in ALLOWED_PHONES, f"{path}: {number}"
+
+
+def _digits(text):
+    return re.sub(r"\D", "", text)
+
+
+def test_data_files_contain_no_other_phone_shaped_numbers():
+    allowed = {_digits(n) for n in ALLOWED_PHONES}
+    for path in DATA_FILES:
+        for run in NATIONAL.findall(path.read_text(encoding="utf-8")):
+            digits = _digits(run)
+            if len(digits) < 7:
+                continue
+            assert any(digits in a or a.endswith(digits) for a in allowed), (
+                f"{path}: {run!r}"
+            )
+
+
+def test_national_format_guard_catches_unlisted_numbers():
+    for sample in ("call 07131 1234567 now", "(555) 010-0198", "tel 555.010.0177"):
+        hits = [r for r in NATIONAL.findall(sample) if len(_digits(r)) >= 7]
+        assert hits, sample
+    assert not [
+        r
+        for r in NATIONAL.findall("00:00:04.500 --> 00:00:10.000 delivery 4711")
+        if len(_digits(r)) >= 7
+    ]
 
 
 def test_us_number_is_in_555_01xx_fiction_range():

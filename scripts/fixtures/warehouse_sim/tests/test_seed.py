@@ -33,7 +33,9 @@ def test_get_transcript_is_restricted_to_own_site_by_argument_rule():
     for acct in seed.build_plan("http://sim/mcp"):
         (rule,) = _rules(acct, "get_transcript")
         assert rule["action"] == "deny"
-        assert rule["condition_type"] == "cel"
+        # The API derives condition_type itself (tools.py create_access_rule);
+        # sending one would only mislead readers of the plan.
+        assert "condition_type" not in rule
         assert rule["condition_expression"] == f"args.site != '{acct['site']}'"
 
 

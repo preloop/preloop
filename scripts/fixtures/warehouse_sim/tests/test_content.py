@@ -130,7 +130,10 @@ def test_get_audio_shape_and_size(site, shift):
     raw = base64.b64decode(block["data"], validate=True)
     assert len(raw) < 200 * 1024
     with wave.open(io.BytesIO(raw)) as w:
-        assert w.getnchannels() == 1 and w.getnframes() > 0
+        assert w.getnchannels() == 1 and w.getsampwidth() == 2
+        assert w.getframerate() == data.AUDIO_RATE == 8000
+        assert w.getnframes() == int(data.AUDIO_RATE * data.AUDIO_SECONDS)
+        assert data.AUDIO_SECONDS == 1.5
 
 
 def test_audio_clips_are_distinct():

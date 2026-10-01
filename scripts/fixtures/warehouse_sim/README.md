@@ -70,8 +70,11 @@ Sample BPMN files (`picking-route`, `goods-receipt`) per site are under
   that we could verify, so this number is a documented fixture value, not a
   guaranteed unassigned one. Do not dial it.
 
-`tests/test_synthetic_data.py` fails if any other email domain or phone
-number appears in the fixture.
+`tests/test_synthetic_data.py` fails if any other email domain or
+international (`+...`) number appears anywhere in the fixture, or if any
+other phone-shaped run of seven or more digits (national formats such as
+`07131 1234567` or `(555) 010-0199` included) appears in the transcripts or
+BPMN files.
 
 ### What the current PII detector sees
 
@@ -103,8 +106,10 @@ python -m scripts.fixtures.warehouse_sim.seed --json    # same plan as JSON
 Per account it registers the server, scans it, creates a "Site lead"
 approval workflow, and sets:
 
-* `get_transcript`, `list_workflows`, `get_audio`: a `tool_access_rules` CEL
-  rule `args.site != '<own site>'` with action `deny`.
+* `get_transcript`, `list_workflows`, `get_audio`: a `tool_access_rules`
+  argument rule `args.site != '<own site>'` with action `deny`. The API
+  derives the condition type from the expression; this one is stored as
+  `simple`.
 * `propose_workflow_change`: `justification_mode: "required"`, the same
   own-site deny rule, then `require_approval` with the "Site lead" workflow.
 * `create_task`, `transcribe_audio`: enabled, no rules.
