@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic fixture: site sued, workflow picking-route. Sample only, no engine config. -->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="defs_sued_picking_route" targetNamespace="https://example.com/warehouse-sim">
+  <bpmn:process id="picking-route" name="Picking route (sued)" isExecutable="false">
+    <bpmn:startEvent id="start" />
+    <bpmn:task id="step_1" name="Pick aisle 3" />
+    <bpmn:task id="step_2" name="Pick aisle 11" />
+    <bpmn:endEvent id="end" />
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="step_1" />
+    <bpmn:sequenceFlow id="f2" sourceRef="step_1" targetRef="step_2" />
+    <bpmn:sequenceFlow id="f3" sourceRef="step_2" targetRef="end" />
+  </bpmn:process>
+</bpmn:definitions>

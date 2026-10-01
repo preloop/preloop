@@ -387,6 +387,13 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
+      # Fixture MCP server for artifact demos and tests (#1091). Outside
+      # backend/tests, so the backend shards do not collect it.
+      - name: warehouse-sim fixture tests
+        env:
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+        run: python -m pytest scripts/fixtures/warehouse_sim/tests -q
+
   helm-lint:
     name: Helm Chart Checks
     runs-on: ubuntu-latest
