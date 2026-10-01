@@ -2309,6 +2309,22 @@ class FlowExecutionOrchestrator:
             The internal project id, or None when the payload names a
             repository this flow is not allowed to use.
         """
+        # The preset runner calls this on a stand-in that only has
+        # trigger_event_data and flow.trigger_project_ids. Do not call
+        # another method before that case has returned.
+        event = getattr(self, "trigger_event_data", None) or {}
+        explicit = event.get("project_id") if isinstance(event, dict) else None
+        flow = getattr(self, "flow", None)
+        selected = getattr(flow, "trigger_project_ids", None) or []
+        git_config = (
+            getattr(flow, "git_clone_config", None) if flow is not None else None
+        )
+        repositories = (
+            git_config.get("repositories") if isinstance(git_config, dict) else None
+        )
+        has_repositories = isinstance(repositories, list) and bool(repositories)
+        if explicit and not selected and not has_repositories:
+            return str(explicit)
         named = self._named_trigger_project()
         if named.project_id is not None:
             return named.project_id
