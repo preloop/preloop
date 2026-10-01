@@ -30,6 +30,8 @@ import type {
 import { buildConversation } from '../utils/transcript';
 import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
+import './browser-step-row';
+import { browserStepKey } from '../utils/session-artifacts';
 import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
@@ -80,6 +82,10 @@ export class SessionChatView extends LitElement {
 
   @property({ attribute: false })
   activity: RuntimeSessionActivityItem[] = [];
+
+  /** Session the activity belongs to; browser-step screenshots load from it. */
+  @property({ type: String })
+  sessionId = '';
 
   @property({ type: Boolean })
   loading = false;
@@ -394,6 +400,14 @@ export class SessionChatView extends LitElement {
       white-space: pre-wrap;
     }
 
+    .browser-step-item {
+      margin: 0.25rem 0;
+      border-radius: 8px;
+    }
+    .browser-step-item:focus {
+      outline: 2px solid var(--sl-color-primary-400, #60a5fa);
+      outline-offset: 2px;
+    }
     .divider {
       align-items: center;
       color: var(--sl-color-neutral-500);
@@ -877,9 +891,32 @@ ${
     `;
   }
 
+  /** Scroll the row of one browser step into view and focus it. */
+  scrollToBrowserStep(key: string): boolean {
+    const row = this.renderRoot.querySelector<HTMLElement>(
+      `[data-browser-step-key="${key}"]`
+    );
+    if (!row) return false;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+    return true;
+  }
+
   private renderItem(item: TranscriptItem) {
     if (item.type === 'message') return this.renderMessage(item);
     if (item.type === 'steps') return this.renderStepGroup(item);
+    if (item.type === 'browser_step') {
+      return html`<div
+        class="browser-step-item"
+        tabindex="-1"
+        data-browser-step-key=${browserStepKey(item.activity)}
+      >
+        <browser-step-row
+          .item=${item.activity}
+          .sessionId=${this.sessionId}
+        ></browser-step-row>
+      </div>`;
+    }
     return html`
       <div class="divider">
         ${item.label}

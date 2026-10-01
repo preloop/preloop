@@ -170,6 +170,23 @@ Set `MCP_PLAYWRIGHT_DERIVE_BROWSER_STEPS=false` to record those calls as
 plain `tool_call` rows only. Other browser MCP servers are not derived;
 post their steps through the API above.
 
+## In the console
+
+Open the session in **Sessions**. Every browser step renders inline in the
+Conversation and Transcript views, in time order between the model turns
+and tool calls around it: an action icon, the action and URL, the target,
+the step index and the agent's reasoning (collapsed). A step with a
+screenshot shows a thumbnail; click it for the full-size viewer, where the
+arrow keys page through the session's steps and Escape closes it.
+
+When a session has browser steps, a strip above the timeline lists one
+entry per step. Click an entry to scroll the timeline to that step.
+
+A screenshot that was evicted by a storage bound or expired under the
+retention policy shows a grey placeholder with the reason and a link to
+the session artifact storage card under **Settings > Account**. The step
+itself stays.
+
 ## What is stored
 
 Each accepted step is a `browser_step` activity on the session. It shows

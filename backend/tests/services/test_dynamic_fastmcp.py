@@ -926,6 +926,48 @@ class TestMCPCallTool:
                     task_meta=None,
                 )
 
+    async def test_call_proxied_tool_audits_client_name(
+        self, dynamic_mcp, user_context
+    ):
+        """The tool_call audit row names the tool the client called."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+        dynamic_mcp._proxied_tool_servers["proxied_tool"] = "server-id"
+        available_tools = [
+            Tool(name="proxied_tool", description="Proxied", parameters={})
+        ]
+        audit_service = MagicMock()
+        plugin_manager = MagicMock()
+        plugin_manager.get_service.side_effect = lambda key: (
+            audit_service if key == "audit_service" else None
+        )
+        mock_result = ToolResult(
+            content=[types.TextContent(type="text", text="Result")]
+        )
+        with (
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+            patch(
+                "preloop.plugins.base.get_plugin_manager",
+                return_value=plugin_manager,
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(return_value=mock_result),
+                create=True,
+            ),
+        ):
+            await dynamic_mcp.call_tool("proxied_tool", {})
+
+        audit_service.log_tool_call_async.assert_called_once()
+        kwargs = audit_service.log_tool_call_async.call_args.kwargs
+        assert kwargs["tool_name"] == "proxied_tool"
+
     async def test_call_disabled_builtin_tool_rejected(self, dynamic_mcp, user_context):
         """A builtin tool disabled by ToolConfiguration cannot be invoked by name."""
         from fastmcp.tools.tool import ToolResult

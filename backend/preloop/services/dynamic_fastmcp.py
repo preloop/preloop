@@ -1775,7 +1775,11 @@ async def {internal_name}({params_str}):
                         db_factory=lambda: next(get_db()),
                         account_id=uuid.UUID(user_context.account_id),
                         user_id=uuid.UUID(user_context.user_id),
-                        tool_name=name,
+                        # The name the client called, not the internal
+                        # ``account_<id>_`` router name: the audit trail,
+                        # the Activity feed and the policy sub-events all
+                        # show the tool the agent asked for.
+                        tool_name=client_tool_name,
                         tool_args=redact_dict(arguments),
                         result=exec_status,
                         duration_ms=elapsed_ms,
