@@ -549,7 +549,9 @@ def test_otel_out_falls_back_to_payload_uri():
 def test_round_trip_mcp_keeps_uri(kind, ct, content, labels, inline):
     p = _orig(kind, ct, content, labels)
     uri = p.uri or "https://p.test/artifacts/1"
-    back = from_mcp_content_block(to_mcp_content_block(p, uri=uri, inline=inline), kind=None)
+    back = from_mcp_content_block(
+        to_mcp_content_block(p, uri=uri, inline=inline), kind=None
+    )
     assert back.uri == uri
 
 
@@ -579,4 +581,6 @@ def test_a2a_raw_accepts_urlsafe_unpadded_base64(data):
 def test_mcp_data_stays_standard_base64_only():
     encoded = base64.urlsafe_b64encode(b"\xfb\xff\xfe").decode()
     with pytest.raises(ValueError, match=ERROR_BLOCK_INVALID_BASE64):
-        from_mcp_content_block({"type": "image", "data": encoded, "mimeType": "image/png"}, kind=None)
+        from_mcp_content_block(
+            {"type": "image", "data": encoded, "mimeType": "image/png"}, kind=None
+        )

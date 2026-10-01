@@ -596,7 +596,12 @@ def from_a2a_artifact(
         raise ValueError(ERROR_BLOCK_TYPE_UNSUPPORTED)
     artifact_id = artifact.get(A2A_ARTIFACT_ID) or artifact.get(A2A_ARTIFACT_ID_JSON)
     parts = artifact.get(A2A_PARTS)
-    if not isinstance(artifact_id, str) or not artifact_id or not isinstance(parts, list) or not parts:
+    if (
+        not isinstance(artifact_id, str)
+        or not artifact_id
+        or not isinstance(parts, list)
+        or not parts
+    ):
         raise ValueError(ERROR_BLOCK_TYPE_UNSUPPORTED)
     return (
         artifact_id,
