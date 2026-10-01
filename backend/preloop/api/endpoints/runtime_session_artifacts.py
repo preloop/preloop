@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+from anyio import from_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -26,7 +27,6 @@ from preloop.api.gateway_auth_dependency import (
     authenticate_request,
     get_browser_step_auth_context,
 )
-from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import models
 from preloop.models.db.session import get_db_session
 from preloop.schemas.runtime_session_artifact import (
@@ -89,7 +89,7 @@ _DEPOSIT_BODY = {
         507: {"description": "storage_budget_exhausted"},
     },
 )
-async def deposit_runtime_session_artifact(
+def deposit_runtime_session_artifact(
     runtime_session_id: str,
     request: Request,
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
@@ -103,26 +103,25 @@ async def deposit_runtime_session_artifact(
     A repeated ``Idempotency-Key`` returns the stored artifact with
     ``Idempotent-Replayed: true``.
     """
-    body = await _read_bounded_body(request)
+    # Sync handler on the threadpool; the ASGI stream is read on the loop.
+    body = from_thread.run(_read_bounded_body, request)
     content_type = request.headers.get("content-type", "").lower()
     try:
         if content_type.startswith("multipart/form-data"):
-            fields, payload = await _parse_multipart(request, body)
+            fields, payload = from_thread.run(_parse_multipart, request, body)
         else:
             fields, payload = _parse_json(body)
-        result = await run_db_off_loop(
-            lambda: artifact_deposit.deposit(
-                db,
-                auth=auth,
-                runtime_session_id=runtime_session_id,
-                payload=payload,
-                name=fields.name,
-                labels=fields.labels,
-                activity_id=fields.activity_id,
-                parent_artifact_id=fields.parent_artifact_id,
-                tool_name=fields.tool_name,
-                idempotency_key=idempotency_key,
-            )
+        result = artifact_deposit.deposit(
+            db,
+            auth=auth,
+            runtime_session_id=runtime_session_id,
+            payload=payload,
+            name=fields.name,
+            labels=fields.labels,
+            activity_id=fields.activity_id,
+            parent_artifact_id=fields.parent_artifact_id,
+            tool_name=fields.tool_name,
+            idempotency_key=idempotency_key,
         )
     except ArtifactDepositError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
@@ -139,12 +138,22 @@ def _require_view_runtime_sessions(*, current_user: Any, db: Session) -> None:
     """Endpoint-level permission gate, evaluated for user credentials."""
 
 
+async def _list_auth_context(
+    authorization: Optional[str] = Header(None),
+    db: Session = Depends(get_db_session),
+) -> ModelGatewayAuthContext:
+    """Any account bearer; the route decides what it may list."""
+    return await authenticate_request(
+        authorization, db, allow_ended_runtime_session=True
+    )
+
+
 @router.get(
     "/runtime-sessions/{runtime_session_id}/artifacts",
     response_model=RuntimeSessionArtifactListOut,
     responses={**_ERRORS, 422: {"description": "Bad kind, label, limit or cursor"}},
 )
-async def list_runtime_session_artifacts(
+def list_runtime_session_artifacts(
     runtime_session_id: str,
     kind: Optional[str] = Query(None),
     label: list[str] = Query(
@@ -152,19 +161,15 @@ async def list_runtime_session_artifacts(
     ),
     limit: int = Query(artifact_deposit.LIST_LIMIT_DEFAULT),
     cursor: Optional[str] = Query(None),
-    authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db_session),
+    auth: ModelGatewayAuthContext = Depends(_list_auth_context),
 ) -> RuntimeSessionArtifactListOut:
     """List a session's artifacts, newest first, with cursor pagination.
 
     A key pinned to this session may list it. Any other credential needs a
     user with ``view_runtime_sessions`` in the session's account.
     """
-    auth = await authenticate_request(
-        authorization, db, allow_ended_runtime_session=True
-    )
-
-    def run() -> RuntimeSessionArtifactListOut:
+    try:
         session = artifact_deposit.require_session(
             db, auth=auth, runtime_session_id=runtime_session_id
         )
@@ -190,9 +195,6 @@ async def list_runtime_session_artifacts(
             limit=limit,
             cursor=cursor,
         )
-
-    try:
-        return await run_db_off_loop(run)
     except ArtifactDepositError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
 
