@@ -56,3 +56,6 @@ LICENSE
 # Local dev files
 .vscode/
 .idea/
+
+# Test and demo fixtures (warehouse-sim MCP server); never in the image
+scripts/fixtures/

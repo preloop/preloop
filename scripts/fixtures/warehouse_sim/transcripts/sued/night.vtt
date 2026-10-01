@@ -1,0 +1,20 @@
+WEBVTT
+Kind: captions
+Language: en
+
+NOTE
+Synthetic fixture. Site sued, night shift. Topic: contact details for detector demos.
+All personal data below is synthetic: a placeholder name, an example.com email,
+a 555-01xx phone number and a documented German fixture number.
+
+00:00:00.000 --> 00:00:05.000
+<v Night Supervisor>Handover note, the carrier contact for tomorrow is Erika Mustermann.
+
+00:00:05.000 --> 00:00:10.000
+<v Night Supervisor>Her email is erika.mustermann@example.com for the delivery slot change.
+
+00:00:10.000 --> 00:00:15.000
+<v Night Supervisor>US dispatch can be reached at +1 555 010 0199 after 6 pm.
+
+00:00:15.000 --> 00:00:20.000
+<v Night Supervisor>The local depot number is +49 7131 1234567, ask for the night desk.
