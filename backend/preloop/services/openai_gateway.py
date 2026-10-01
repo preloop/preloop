@@ -4467,8 +4467,11 @@ class OpenAIGatewayService:
     def _build_openai_codex_payload(
         self, ai_model: GatewayModel, payload: Dict[str, Any], *, stream: bool = False
     ) -> Dict[str, Any]:
+        # The ChatGPT Codex backend receives the client's raw ``input``, so
+        # call_id-less cross-chat deliveries need the same rewrite as the
+        # native passthrough (#1113).
         upstream_payload = self._sanitize_openai_codex_payload(
-            json.loads(json.dumps(payload))
+            json.loads(json.dumps(rewrite_crosschat_responses_input(payload)))
         )
         upstream_payload["model"] = ai_model.model_identifier
         if stream:

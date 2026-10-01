@@ -17,8 +17,9 @@ Compatibility contract (preloop/preloop#1113)
    ``codex-rs/core/src/agent/control/sender_context.rs``:
    ``codex_app``/``codex_tui`` + ``send_message_to_thread`` and
    ``cloud_threads`` + ``send_message``; AND the flattened output text is
-   one complete ``<codex_delegation>...</codex_delegation>`` wrapper (leading
-   and trailing whitespace ignored). Codex's own recogniser keys on the
+   exactly one complete, non-empty ``<codex_delegation>...</codex_delegation>``
+   wrapper (leading and trailing whitespace ignored; nested or concatenated
+   wrappers are rejected). Codex's own recogniser keys on the
    namespace/name pair and treats the wrapper as optional provenance, but
    every Codex emitter we found (``codex-rs/tui/src/dynamic_tools.rs``)
    writes the wrapper, and so does the reported desktop payload. Requiring it
@@ -34,10 +35,11 @@ Compatibility contract (preloop/preloop#1113)
    call_ids keep failing.
 4. Because the rewrite is applied on every request, replaying a stored
    history that already contains the item succeeds (the recovery path).
-5. Scope: every non-passthrough route for a Responses request (LiteLLM to
-   Anthropic, Gemini, OpenRouter and the rest, and the ChatGPT Codex backend)
-   consumes the normalized chat messages, so it sees the user message, and
-   content policy scans that text. Request logging, previews and budget
+5. Scope: the native passthrough and the ChatGPT Codex backend forward the
+   client's ``input`` items, so both apply the Responses-form rewrite. Every
+   other route for a Responses request (LiteLLM to Anthropic, Gemini,
+   OpenRouter and the rest) consumes the normalized chat messages, so it sees
+   the user message, and content policy scans that text. Request logging, previews and budget
    preflight keep reading the raw client payload, which is the correct
    record of what the client sent; none of them pair call_ids.
 """
@@ -77,10 +79,12 @@ def is_unsolicited_crosschat_output(item: Any) -> bool:
     if (item.get("namespace"), item.get("name")) not in CROSSCHAT_DELIVERY_TOOLS:
         return False
     text = _output_text(item.get("output")).strip()
+    if not (text.startswith(_WRAPPER_OPEN) and text.endswith(_WRAPPER_CLOSE)):
+        return False
+    body = text[len(_WRAPPER_OPEN) : -len(_WRAPPER_CLOSE)]
+    # Exactly one non-empty wrapper: no nested or concatenated wrappers.
     return (
-        len(text) >= len(_WRAPPER_OPEN) + len(_WRAPPER_CLOSE)
-        and text.startswith(_WRAPPER_OPEN)
-        and text.endswith(_WRAPPER_CLOSE)
+        bool(body.strip()) and _WRAPPER_OPEN not in body and _WRAPPER_CLOSE not in body
     )
 
 

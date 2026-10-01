@@ -97,6 +97,13 @@ def test_recognizes_codex_delivery_shapes(item):
         _item(output="ordinary output"),
         _item(output="<codex_delegation>incomplete"),
         _item(output="<codex_delegation></codex_delegation> trailing"),
+        _item(output="<codex_delegation></codex_delegation>"),
+        _item(output="<codex_delegation>  </codex_delegation>"),
+        _item(
+            output="<codex_delegation>a</codex_delegation>"
+            "<codex_delegation>b</codex_delegation>"
+        ),
+        _item(output="<codex_delegation><codex_delegation>a</codex_delegation>"),
         _item(output=[]),
         _item(output=None),
         _item(type="custom_tool_call_output"),
@@ -326,3 +333,29 @@ def test_transcode_forwards_delivery_as_user_message(db_session, test_user):
     assert len(delivered) == 1 and delivered[0]["role"] == "user"
     assert not any(m.get("role") == "tool" for m in sent)
     assert result["output_text"] == "ack"
+
+
+def test_chatgpt_codex_backend_payload_rewrites_delivery():
+    """openai-codex models forward raw ``input``; the item must be rewritten."""
+    service = _bare_service()
+    ai_model = SimpleNamespace(
+        id="model-1",
+        provider_name="openai-codex",
+        model_identifier="gpt-5.4",
+        api_endpoint="https://chatgpt.com/backend-api/codex",
+    )
+    payload = {
+        "model": "codex-alias",
+        "instructions": "x",
+        "input": [
+            {"type": "message", "role": "user", "content": "start"},
+            _item(id="fc_delivery", output=DELEGATION),
+        ],
+    }
+    upstream = service._build_openai_codex_payload(ai_model, payload)
+    assert payload["input"][1] == _item(id="fc_delivery", output=DELEGATION)
+    assert upstream["input"][0] == payload["input"][0]
+    assert upstream["input"][1] == crosschat_responses_message(
+        _item(id="fc_delivery", output=DELEGATION)
+    )
+    assert not any(i.get("type") == "function_call_output" for i in upstream["input"])
