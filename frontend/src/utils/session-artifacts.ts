@@ -139,6 +139,19 @@ export function browserStepKey(item: RuntimeSessionActivityItem): string {
   return `browser-step-${raw.replace(/[^A-Za-z0-9_-]/g, '_')}`;
 }
 
+/**
+ * Display number of a step: the agent-reported `step_index` when present,
+ * otherwise the step's position in the session. The row, the header strip
+ * and the viewer all use this so the same step reads the same everywhere.
+ */
+export function browserStepNumber(
+  item: RuntimeSessionActivityItem,
+  position: number
+): number {
+  const index = browserStepMetadata(item).step_index;
+  return typeof index === 'number' ? index : position;
+}
+
 /** Steps in time order, then by step index for steps sharing a timestamp. */
 export function sortBrowserSteps(
   items: RuntimeSessionActivityItem[]

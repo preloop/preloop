@@ -79,6 +79,7 @@ import type { ArtifactViewerImage } from './artifact-image-viewer';
 import {
   browserStepKey,
   browserStepMetadata,
+  browserStepNumber,
   sortBrowserSteps,
 } from '../utils/session-artifacts';
 import { consoleDialogStyles } from '../styles/console-dialog';
@@ -1666,7 +1667,9 @@ export class PreloopSessionObserver extends LitElement {
         key: browserStepKey(item),
         artifactId: meta.screenshot?.artifact_id || null,
         availability: meta.screenshot?.availability || null,
-        title: `Step ${position + 1}: ${action}${meta.url ? ` ${meta.url}` : ''}`,
+        title: `Step #${browserStepNumber(item, position)}: ${action}${
+          meta.url ? ` ${meta.url}` : ''
+        }`,
         caption: meta.target ? `Target: ${meta.target}` : null,
       };
     });

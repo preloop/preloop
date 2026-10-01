@@ -196,6 +196,16 @@ export class BrowserStepThumbnail extends LitElement {
         }
       </div>`;
     }
+    if (this.load?.status === 'ok' && this.compact) {
+      // The strip wraps the thumbnail in its own button; no nested control.
+      return html`<div class="box">
+        <img
+          data-testid="screenshot-thumbnail"
+          src=${this.load.url}
+          alt=${this.label}
+        />
+      </div>`;
+    }
     if (this.load?.status === 'ok') {
       return html`<button
         class="box"

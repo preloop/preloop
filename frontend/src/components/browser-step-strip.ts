@@ -4,6 +4,7 @@ import type { RuntimeSessionActivityItem } from '../types';
 import {
   browserStepKey,
   browserStepMetadata,
+  browserStepNumber,
 } from '../utils/session-artifacts';
 import './browser-step-thumbnail';
 
@@ -109,10 +110,11 @@ export class BrowserStepStrip extends LitElement {
             const meta = browserStepMetadata(item);
             const action = String(meta.action || 'other');
             const shot = meta.screenshot;
+            const number = browserStepNumber(item, position);
             return html`<button
               type="button"
               data-step-key=${browserStepKey(item)}
-              aria-label=${`Jump to step ${position + 1}: ${action}`}
+              aria-label=${`Jump to step #${number}: ${action}`}
               @click=${() => this.scrub(item)}
             >
               ${
@@ -122,11 +124,11 @@ export class BrowserStepStrip extends LitElement {
                       .sessionId=${this.sessionId}
                       .artifactId=${shot.artifact_id}
                       .availability=${String(shot.availability || 'available')}
-                      .label=${`Step ${position + 1} ${action}`}
+                      .label=${`Step #${number} ${action}`}
                     ></browser-step-thumbnail>`
                   : html`<span class="chip">${action}</span>`
               }
-              <span class="index">${position + 1}</span>
+              <span class="index">#${number}</span>
             </button>`;
           })}
         </div>

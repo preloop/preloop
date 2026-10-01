@@ -459,6 +459,12 @@ export class SessionReplayPanel extends LitElement {
 
     .timeline-event,
     .chat-message,
+    .chat-turn.browser-step-turn {
+      padding: 0;
+      border: none;
+      background: transparent;
+      box-shadow: none;
+    }
     .activity-event {
       background: var(--sl-color-neutral-0);
       border: 1px solid var(--sl-color-neutral-200);
