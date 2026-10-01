@@ -106,6 +106,7 @@ class TestListAllTools:
             "deposit_artifact",
             "search_artifacts",
             "get_artifact",
+            "search",
         }
         # Issue triage folded back into get_issue/update_issue (#661): no
         # separate default-disabled triage tools remain in the catalogue.

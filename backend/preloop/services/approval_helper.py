@@ -468,6 +468,17 @@ async def require_approval(
                 tool_name=tool_name,
                 tool_source=tool_source,
             )
+            if not config and tool_source == "builtin":
+                alias = {"search": "search_issues", "search_issues": "search"}.get(
+                    tool_name
+                )
+                if alias:
+                    config = await get_tool_config_by_name_and_source_async(
+                        db,
+                        account_id=account_id,
+                        tool_name=alias,
+                        tool_source=tool_source,
+                    )
 
             # If workflow_id is provided directly (for standalone requests), use it
             if workflow_id:

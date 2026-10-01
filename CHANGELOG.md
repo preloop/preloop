@@ -401,6 +401,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Renamed tracker built-in `search` to `search_issues`. The legacy name `search`
+  is retained as a deprecated alias (disabled by default on fresh accounts,
+  available when explicitly referenced by a flow allow-list or policy) and will
+  be removed in 0.18.0 (#1044).
+- Reduced `search_sessions` description and schema to under 250 tokens (was 633
+  tokens), preserving model context budget during tool definitions (#1044).
 - **Console: Shoelace assets ship with the console.** The theme
   stylesheets, autoloader, lazily loaded components and icons are served
   from `/vendor/shoelace/` on the console's own origin instead of a public

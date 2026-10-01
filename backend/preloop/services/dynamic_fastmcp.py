@@ -1271,11 +1271,13 @@ class DynamicFastMCP(FastMCP):
         # it cannot call tools outside the flow's allowed list
         if user_context.allowed_flow_tools is not None:
             original_count = len(available_tools)
-            available_tools = [
-                tool
-                for tool in available_tools
-                if tool.name in user_context.allowed_flow_tools
-            ]
+            allowed = set(user_context.allowed_flow_tools)
+            # Backward-compatible alias matching (#1044): search and search_issues
+            if "search" in allowed:
+                allowed.add("search_issues")
+            if "search_issues" in allowed:
+                allowed.add("search")
+            available_tools = [tool for tool in available_tools if tool.name in allowed]
             logger.info(
                 f"Flow execution restriction: filtered {original_count} tools down to "
                 f"{len(available_tools)} allowed tools for flow execution "
