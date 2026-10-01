@@ -78,8 +78,23 @@ export interface TranscriptDividerItem {
   timestamp: string | null;
 }
 
+/**
+ * One `browser_step` activity, kept top level (never folded into a step
+ * group) so browser actions and their screenshots stay visible between the
+ * model and tool turns around them.
+ */
+export interface TranscriptBrowserStepItem {
+  type: 'browser_step';
+  key: string;
+  timestamp: string | null;
+  activity: RuntimeSessionActivityItem;
+}
+
 export type TranscriptItem =
-  TranscriptMessageItem | TranscriptStepGroupItem | TranscriptDividerItem;
+  | TranscriptMessageItem
+  | TranscriptStepGroupItem
+  | TranscriptDividerItem
+  | TranscriptBrowserStepItem;
 
 export interface TranscriptStats {
   promptCount: number;
@@ -303,7 +318,8 @@ function eventIsFailure(event: FlowGatewayEvent): boolean {
 type Atom =
   | { type: 'message'; item: TranscriptMessageItem; order: number }
   | { type: 'step'; step: TranscriptStep; order: number }
-  | { type: 'divider'; item: TranscriptDividerItem; order: number };
+  | { type: 'divider'; item: TranscriptDividerItem; order: number }
+  | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number };
 
 function atomTime(atom: Atom): number {
   const timestamp =
@@ -527,6 +543,19 @@ export function buildConversation(
       });
       continue;
     }
+    if (activityType === 'browser_step') {
+      atoms.push({
+        type: 'browser_step',
+        order: order++,
+        item: {
+          type: 'browser_step',
+          key,
+          timestamp: item.timestamp || null,
+          activity: item,
+        },
+      });
+      continue;
+    }
     if (activityType === 'agent_control_message') {
       const metadata = (item.metadata || {}) as Record<string, unknown>;
       const role =
@@ -610,7 +639,7 @@ export function buildConversation(
       currentSteps.push(atom.step);
       return;
     }
-    if (atom.type === 'divider') {
+    if (atom.type === 'divider' || atom.type === 'browser_step') {
       closeSteps();
       items.push(atom.item);
       return;
