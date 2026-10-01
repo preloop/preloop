@@ -1337,8 +1337,27 @@ export interface IssueCostExecution {
   end_time: string | null;
 }
 
+/**
+ * How much of a cost bucket's runs carried an execution cost estimate
+ * (#1057). Coverage is about execution-cost availability, never invoice
+ * accuracy: `complete` means every run was priced (an explicit zero counts
+ * as priced), `unknown` means none was.
+ */
+export type CostCoverage = 'complete' | 'partial' | 'unknown';
+
+/** The cost-coverage fields every issue row, summary and bucket carries. */
+export interface IssueCostCoverage {
+  /** Subtotal of the priced runs only; not total spend. */
+  estimated_cost: number;
+  cost_coverage: CostCoverage;
+  known_cost_run_count: number;
+  unknown_cost_run_count: number;
+  /** estimated_cost when coverage is complete, null otherwise. */
+  attributed_cost_usd: number | null;
+}
+
 /** One tracker issue with summed cost and cycle-time milestones. */
-export interface IssueCostRow {
+export interface IssueCostRow extends IssueCostCoverage {
   id: string;
   tracker_id: string;
   tracker_name: string;
@@ -1350,7 +1369,6 @@ export interface IssueCostRow {
   pr_url: string | null;
   project_id: string | null;
   project_name: string | null;
-  estimated_cost: number;
   total_tokens: number;
   run_count: number;
   failed_run_count: number;
@@ -1370,11 +1388,10 @@ export interface IssueCostRow {
   estimate_points_source: string | null;
 }
 
-export interface IssueCostSummary {
+export interface IssueCostSummary extends IssueCostCoverage {
   id: string | null;
   name: string;
   issue_count: number;
-  estimated_cost: number;
   total_tokens: number;
   run_count: number;
   failed_run_count: number;
@@ -1388,8 +1405,7 @@ export interface IssueCostReport {
   issues: IssueCostRow[];
   by_project: IssueCostSummary[];
   by_flow: IssueCostSummary[];
-  unassigned: {
-    estimated_cost: number;
+  unassigned: IssueCostCoverage & {
     total_tokens: number;
     run_count: number;
     failed_run_count: number;

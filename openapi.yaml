@@ -22927,7 +22927,37 @@ components:
         estimated_cost:
           type: number
           title: Estimated Cost
-          description: Sum of the contributing executions' estimated_cost.
+          description: 'Sum of the contributing executions'' estimated_cost. This
+            is the known subtotal, not total spend: runs without a cost contribute
+            nothing to it. Read cost_coverage next to it.'
+        cost_coverage:
+          type: string
+          enum:
+          - complete
+          - partial
+          - unknown
+          title: Cost Coverage
+          description: 'Whether every contributing run had a cost estimate: complete,
+            partial or unknown. A bucket with no runs is unknown, and a known zero
+            counts as known. This describes execution-cost availability, never invoice
+            accuracy.'
+        known_cost_run_count:
+          type: integer
+          title: Known Cost Run Count
+          description: Contributing runs with, and without, a cost estimate. estimated_cost
+            alone is the subtotal of the priced runs, not total spend.
+        unknown_cost_run_count:
+          type: integer
+          title: Unknown Cost Run Count
+          description: Contributing runs with, and without, a cost estimate. estimated_cost
+            alone is the subtotal of the priced runs, not total spend.
+        attributed_cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Attributed Cost Usd
+          description: The estimated_cost subtotal when cost_coverage is complete;
+            null otherwise, so a partial or unknown bucket is never read as a total.
         total_tokens:
           type: integer
           title: Total Tokens
@@ -23032,6 +23062,9 @@ components:
       - tracker_type
       - issue_key
       - estimated_cost
+      - cost_coverage
+      - known_cost_run_count
+      - unknown_cost_run_count
       - total_tokens
       - run_count
       - failed_run_count
@@ -23054,6 +23087,36 @@ components:
         estimated_cost:
           type: number
           title: Estimated Cost
+          description: 'Sum of the contributing executions'' estimated_cost: the known
+            subtotal of the bucket, not total spend.'
+        cost_coverage:
+          type: string
+          enum:
+          - complete
+          - partial
+          - unknown
+          title: Cost Coverage
+          description: 'Whether every contributing run had a cost estimate: complete,
+            partial or unknown. A bucket with no runs is unknown, and a known zero
+            counts as known. This describes execution-cost availability, never invoice
+            accuracy.'
+        known_cost_run_count:
+          type: integer
+          title: Known Cost Run Count
+          description: Contributing runs with, and without, a cost estimate. estimated_cost
+            alone is the subtotal of the priced runs, not total spend.
+        unknown_cost_run_count:
+          type: integer
+          title: Unknown Cost Run Count
+          description: Contributing runs with, and without, a cost estimate. estimated_cost
+            alone is the subtotal of the priced runs, not total spend.
+        attributed_cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Attributed Cost Usd
+          description: The estimated_cost subtotal when cost_coverage is complete;
+            null otherwise, so a partial or unknown bucket is never read as a total.
         total_tokens:
           type: integer
           title: Total Tokens
@@ -23068,6 +23131,9 @@ components:
       - name
       - issue_count
       - estimated_cost
+      - cost_coverage
+      - known_cost_run_count
+      - unknown_cost_run_count
       - total_tokens
       - run_count
       - failed_run_count
@@ -23078,7 +23144,40 @@ components:
         estimated_cost:
           type: number
           title: Estimated Cost
+          description: 'Sum of the unassigned executions'' estimated_cost: the known
+            subtotal, not total spend.'
           default: 0.0
+        cost_coverage:
+          type: string
+          enum:
+          - complete
+          - partial
+          - unknown
+          title: Cost Coverage
+          description: 'Whether every contributing run had a cost estimate: complete,
+            partial or unknown. A bucket with no runs is unknown, and a known zero
+            counts as known. This describes execution-cost availability, never invoice
+            accuracy.'
+          default: unknown
+        known_cost_run_count:
+          type: integer
+          title: Known Cost Run Count
+          description: Contributing runs with, and without, a cost estimate. estimated_cost
+            alone is the subtotal of the priced runs, not total spend.
+          default: 0
+        unknown_cost_run_count:
+          type: integer
+          title: Unknown Cost Run Count
+          description: Contributing runs with, and without, a cost estimate. estimated_cost
+            alone is the subtotal of the priced runs, not total spend.
+          default: 0
+        attributed_cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Attributed Cost Usd
+          description: The estimated_cost subtotal when cost_coverage is complete;
+            null otherwise, so a partial or unknown bucket is never read as a total.
         total_tokens:
           type: integer
           title: Total Tokens
