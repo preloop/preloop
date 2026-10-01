@@ -355,6 +355,10 @@ describe('artifacts in the session timeline', () => {
         .classList.contains('gone')
     ).to.equal(true);
     expect(artifactFetches().some((u) => u.includes(EVICTED))).to.equal(false);
+    // The reason is said once: no thumbnail placeholder repeats it.
+    expect(Boolean(evicted.querySelector('browser-step-thumbnail'))).to.equal(
+      false
+    );
   });
 
   it('shows the 410 state when the byte route says the bytes are gone', async () => {

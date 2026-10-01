@@ -79,8 +79,8 @@ export class SessionArtifactRow extends LitElement {
       background: var(--sl-color-neutral-0, #fff);
     }
     :host([highlighted]) .row {
+      border-left-color: var(--sl-color-warning-500, #f59e0b);
       box-shadow: 0 0 0 2px var(--sl-color-warning-400, #fbbf24);
-      background: var(--sl-color-warning-50, #fffbeb);
     }
     .row.gone {
       border-left-color: var(--sl-color-neutral-400, #9ca3af);
@@ -562,7 +562,7 @@ ${shown}${more ? '\n...' : ''}</pre>
           }
         </div>
         ${
-          artifact.group === 'screenshot'
+          artifact.group === 'screenshot' && !this.isGone
             ? html`<browser-step-thumbnail
                 .sessionId=${this.sessionId}
                 .artifactId=${artifact.id}
