@@ -902,6 +902,7 @@ export interface RuntimeSessionActivityItem {
     | 'session_started'
     | 'session_ended'
     | 'agent_control_message'
+    | 'browser_step'
     | string;
   timestamp: string;
   title: string;
@@ -920,6 +921,48 @@ export interface RuntimeSessionActivityItem {
   is_retry?: boolean;
   retry_of_api_usage_id?: string | null;
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * Availability of a stored session artifact. `evicted` means the per-session
+ * or account bound dropped the bytes; `expired` means retention did.
+ */
+export type SessionArtifactAvailability = 'available' | 'evicted' | 'expired';
+
+/** Pointer to a browser step's screenshot artifact (bytes fetched separately). */
+export interface BrowserStepScreenshotRef {
+  artifact_id: string;
+  availability: SessionArtifactAvailability | string;
+  content_type?: string | null;
+  size_bytes?: number | null;
+}
+
+/**
+ * `metadata` of a `browser_step` activity item, as stored by the browser-step
+ * ingestion API and the Playwright MCP derivation. A step is an observation of
+ * what the agent says it did, never an approval or proof of page state.
+ */
+export interface BrowserStepMetadata {
+  source?: 'api' | 'browser_use' | 'skyvern' | 'playwright_mcp' | string;
+  source_step_id?: string | null;
+  step_index?: number | null;
+  action?:
+    | 'navigate'
+    | 'click'
+    | 'type'
+    | 'select'
+    | 'scroll'
+    | 'screenshot'
+    | 'extract'
+    | 'wait'
+    | 'done'
+    | 'other'
+    | string;
+  url?: string | null;
+  target?: string | null;
+  reasoning?: string | null;
+  extra?: Record<string, unknown> | null;
+  screenshot?: BrowserStepScreenshotRef | null;
 }
 
 export interface RuntimeSessionActivityListResponse {

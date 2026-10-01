@@ -37,6 +37,12 @@ import {
 import { outcomeLabel } from '../utils/outcome-label';
 import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
+import './browser-step-row';
+import {
+  browserStepKey,
+  isBrowserStep,
+  sortBrowserSteps,
+} from '../utils/session-artifacts';
 import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
@@ -139,6 +145,9 @@ type ChatTurn = {
   // Activity (operator/talk) turns are NOT gateway requests: they carry no real
   // token/cost/tool stats, so the header suppresses those meaningless zeros.
   isActivity: boolean;
+  // Set for a `browser_step` activity turn: rendered as a browser-step row
+  // with its screenshot thumbnail instead of chat bubbles.
+  browserStep?: RuntimeSessionActivityItem | null;
   // Measured idle-TTL cache expiry for this turn (from optimize context profile).
   idleExpiry: ChatTurnIdleExpiry | null;
 };
@@ -4198,8 +4207,10 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private getSupportingActivity(): RuntimeSessionActivityItem[] {
-    if (!this.events.length) return this.activity;
-    return this.activity.filter((item) => {
+    // Browser steps render as their own turns with screenshots.
+    const activity = this.activity.filter((item) => !isBrowserStep(item));
+    if (!this.events.length) return activity;
+    return activity.filter((item) => {
       if (item.activity_type === 'model_interaction') return false;
       if (item.activity_type === 'model_gateway_call') return false;
       if (this.isToolCallActivity(item)) return false;
@@ -4208,6 +4219,7 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private isToolCallActivity(item: RuntimeSessionActivityItem): boolean {
+    if (isBrowserStep(item)) return false;
     return item.activity_type === 'tool_call' || Boolean(item.tool_name);
   }
 
@@ -4438,7 +4450,28 @@ export class SessionReplayPanel extends LitElement {
         idleExpiry: null,
       }));
 
-    const turns = [...eventTurns, ...activityTurns].sort(
+    const browserStepTurns: ChatTurn[] = sortBrowserSteps(this.activity).map(
+      (item) => ({
+        id: browserStepKey(item),
+        index: 0,
+        event: null,
+        timestamp: item.timestamp || null,
+        title: item.title || 'Browser step',
+        deltaMessages: [],
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: null,
+        estimatedCost: 0,
+        toolCallCount: 0,
+        failed: String(item.status || '').toLowerCase() === 'failed',
+        isActivity: true,
+        browserStep: item,
+        idleExpiry: null,
+      })
+    );
+
+    const turns = [...eventTurns, ...activityTurns, ...browserStepTurns].sort(
       (left, right) =>
         new Date(left.timestamp || 0).getTime() -
         new Date(right.timestamp || 0).getTime()
@@ -4461,6 +4494,8 @@ export class SessionReplayPanel extends LitElement {
 
   private turnPassesTypeFilter(turn: ChatTurn): boolean {
     if (this.chatTypeFilter === 'all') return true;
+    // A browser action is tool activity, not a message.
+    if (turn.browserStep) return this.chatTypeFilter === 'tools';
     if (this.chatTypeFilter === 'tools') return turn.toolCallCount > 0;
     // messages only: non-tool delta messages present.
     return turn.deltaMessages.some((message) => !message.isToolRelated);
@@ -5135,10 +5170,33 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
+  /** Scroll the turn of one browser step into view and focus it. */
+  scrollToBrowserStep(key: string): boolean {
+    const row = this.renderRoot.querySelector<HTMLElement>(
+      `[data-browser-step-key="${key}"]`
+    );
+    if (!row) return false;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+    return true;
+  }
+
   private renderChatTurn(
     turn: ChatTurn,
     mostExpensiveTurnId: string | null = null
   ) {
+    if (turn.browserStep) {
+      return html`<div
+        class="chat-turn browser-step-turn"
+        tabindex="0"
+        data-browser-step-key=${turn.id}
+      >
+        <browser-step-row
+          .item=${turn.browserStep}
+          .sessionId=${this.session?.id || ''}
+        ></browser-step-row>
+      </div>`;
+    }
     const event = turn.event;
     const isMostExpensive = Boolean(
       mostExpensiveTurnId && turn.id === mostExpensiveTurnId

@@ -73,6 +73,14 @@ import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
 import './similar-sessions-panel';
+import './browser-step-strip';
+import './artifact-image-viewer';
+import type { ArtifactViewerImage } from './artifact-image-viewer';
+import {
+  browserStepKey,
+  browserStepMetadata,
+  sortBrowserSteps,
+} from '../utils/session-artifacts';
 import { consoleDialogStyles } from '../styles/console-dialog';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
@@ -257,6 +265,9 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private loadedActivity: Record<string, RuntimeSessionActivityItem[]> = {};
+  /** Index into the active session's browser steps shown full size, or -1. */
+  @state()
+  private browserStepViewerIndex = -1;
 
   @state()
   private loadedRequests: Record<string, RuntimeSessionRequestItem[]> = {};
@@ -967,6 +978,7 @@ export class PreloopSessionObserver extends LitElement {
     if (this.replayMode === 'optimize') {
       this.maybeResumeOptimizationJob(sessionId);
     }
+    this.browserStepViewerIndex = -1;
     this.dispatchEvent(
       new CustomEvent('session-selected', {
         detail: { sessionId },
@@ -1639,6 +1651,79 @@ export class PreloopSessionObserver extends LitElement {
       : [];
   }
 
+  /** Browser steps of the active session, in time order. */
+  private get activeBrowserSteps(): RuntimeSessionActivityItem[] {
+    return sortBrowserSteps(this.activeActivity);
+  }
+
+  private browserStepViewerImages(
+    steps: RuntimeSessionActivityItem[]
+  ): ArtifactViewerImage[] {
+    return steps.map((item, position) => {
+      const meta = browserStepMetadata(item);
+      const action = String(meta.action || 'other');
+      return {
+        key: browserStepKey(item),
+        artifactId: meta.screenshot?.artifact_id || null,
+        availability: meta.screenshot?.availability || null,
+        title: `Step ${position + 1}: ${action}${meta.url ? ` ${meta.url}` : ''}`,
+        caption: meta.target ? `Target: ${meta.target}` : null,
+      };
+    });
+  }
+
+  private openBrowserStepViewer(key: string): void {
+    const index = this.activeBrowserSteps.findIndex(
+      (item) => browserStepKey(item) === key
+    );
+    if (index >= 0) this.browserStepViewerIndex = index;
+  }
+
+  /**
+   * Scroll the timeline to one browser step. The visible timeline (Conversation
+   * or Transcript) owns the row; when neither shows it, open the step in the
+   * viewer so the click still lands somewhere.
+   */
+  private scrubToBrowserStep(key: string): void {
+    const selector =
+      this.replayMode === 'conversation'
+        ? 'session-chat-view'
+        : 'session-replay-panel';
+    const host = this.renderRoot.querySelector(selector) as
+      (Element & { scrollToBrowserStep?: (key: string) => boolean }) | null;
+    if (this.requestsView || !host?.scrollToBrowserStep?.(key)) {
+      this.openBrowserStepViewer(key);
+    }
+  }
+
+  private renderBrowserStepStrip() {
+    const steps = this.activeBrowserSteps;
+    if (!steps.length || !this.activeSessionId) return nothing;
+    return html`<browser-step-strip
+      style="margin-bottom: var(--sl-spacing-small);"
+      .steps=${steps}
+      .sessionId=${this.activeSessionId}
+      @browser-step-scrub=${(event: CustomEvent<{ key: string }>) =>
+        this.scrubToBrowserStep(event.detail.key)}
+    ></browser-step-strip>`;
+  }
+
+  private renderBrowserStepViewer() {
+    const steps = this.activeBrowserSteps;
+    if (!steps.length || !this.activeSessionId) return nothing;
+    return html`<artifact-image-viewer
+      .sessionId=${this.activeSessionId}
+      .images=${this.browserStepViewerImages(steps)}
+      .index=${this.browserStepViewerIndex}
+      @viewer-close=${() => {
+        this.browserStepViewerIndex = -1;
+      }}
+      @viewer-navigate=${(event: CustomEvent<{ index: number }>) => {
+        this.browserStepViewerIndex = event.detail.index;
+      }}
+    ></artifact-image-viewer>`;
+  }
+
   private get activeEventPage(): EventPageState | null {
     return this.activeSessionId
       ? this.loadedEventPages[this.activeSessionId] || null
@@ -1810,6 +1895,7 @@ export class PreloopSessionObserver extends LitElement {
     }
     return html`
       <session-chat-view
+        .sessionId=${this.activeSessionId || ''}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
         .loading=${
@@ -2059,8 +2145,13 @@ export class PreloopSessionObserver extends LitElement {
     }
 
     const content = html`
-      <div class="content">
+      <div
+        class="content"
+        @browser-step-open=${(event: CustomEvent<{ key: string }>) =>
+          this.openBrowserStepViewer(event.detail.key)}
+      >
         ${this.renderToolbar()} ${this.renderOptimizeHint()}
+        ${this.renderBrowserStepStrip()}
         ${
           this.error
             ? html`
@@ -2291,6 +2382,7 @@ export class PreloopSessionObserver extends LitElement {
               `
             : nothing
         }
+        ${this.renderBrowserStepViewer()}
       </div>
     `;
 
