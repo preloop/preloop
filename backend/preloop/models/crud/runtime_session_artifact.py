@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -14,21 +15,95 @@ from sqlalchemy.orm import Session
 
 from preloop.config import settings
 from preloop.models import models
+from preloop.services.artifact_media import ARTIFACT_KINDS, check_content
 from preloop.utils.encryption import _get_fernet
 
 _KIND_LIMITS: dict[str, str] = {
-    "screenshot": "runtime_session_screenshot_max_bytes",
-    "recording": "runtime_session_recording_max_bytes",
+    kind: f"runtime_session_{kind}_max_bytes" for kind in ARTIFACT_KINDS
 }
 _UNAVAILABLE: frozenset[str] = frozenset({"evicted", "expired"})
 
+PRODUCERS: frozenset[str] = frozenset(
+    {
+        "gateway",
+        "firewall",
+        "deposit_api",
+        "deposit_mcp",
+        "cli",
+        "hook",
+        "runner",
+        "browser_steps",
+    }
+)
+TEXT_STATUSES: frozenset[str] = frozenset(
+    {"none", "extracted", "ocr", "captioned", "failed"}
+)
 
-def _max_bytes(kind: str) -> int:
-    """Return the plaintext cap for a screenshot or recording.
+# Label keys with a documented meaning. Any other key that matches the key
+# pattern is accepted as account-defined.
+#   site: physical or logical site the artifact belongs to (e.g. a plant).
+#   tenant_ref: the caller's own customer or tenant reference.
+#   consent_basis: why recording this person is allowed (e.g. contract).
+#   retention_class: retention bucket name; enforced by EE records policy.
+#   tags: free-form list of short strings.
+RESERVED_LABEL_KEYS: frozenset[str] = frozenset(
+    {"site", "tenant_ref", "consent_basis", "retention_class", "tags"}
+)
+LABEL_MAX_KEYS = 16
+LABEL_VALUE_MAX_CHARS = 128
+LABEL_TAGS_MAX = 16
+_LABEL_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,62}$")
+
+
+def _label_string(value: Any) -> bool:
+    return isinstance(value, str) and len(value) <= LABEL_VALUE_MAX_CHARS
+
+
+def validate_labels(labels: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a copy of ``labels`` after checking keys and values.
+
+    Rules: at most 16 keys; each key matches ``^[a-z][a-z0-9_.-]{0,62}$``;
+    each value is a string of up to 128 characters, except ``tags``, which is
+    a list of up to 16 such strings.
 
     Args:
-        kind: Artifact kind. Allowed values are ``screenshot`` and
-            ``recording``.
+        labels: Label mapping, or None for no labels.
+
+    Returns:
+        The validated labels (an empty dict for None).
+
+    Raises:
+        ValueError: ``artifact_labels_invalid`` when any rule is broken.
+    """
+    if labels is None:
+        return {}
+    if not isinstance(labels, dict) or len(labels) > LABEL_MAX_KEYS:
+        raise ValueError("artifact_labels_invalid")
+    clean: dict[str, Any] = {}
+    for key, value in labels.items():
+        if not isinstance(key, str) or not _LABEL_KEY.match(key):
+            raise ValueError("artifact_labels_invalid")
+        if key == "tags":
+            if (
+                not isinstance(value, list)
+                or len(value) > LABEL_TAGS_MAX
+                or not all(_label_string(tag) for tag in value)
+            ):
+                raise ValueError("artifact_labels_invalid")
+            clean[key] = list(value)
+        elif _label_string(value):
+            clean[key] = value
+        else:
+            raise ValueError("artifact_labels_invalid")
+    return clean
+
+
+def _max_bytes(kind: str) -> int:
+    """Return the plaintext cap for an artifact kind.
+
+    Args:
+        kind: Artifact kind, one of
+            :data:`preloop.services.artifact_media.ARTIFACT_KINDS`.
 
     Returns:
         The configured maximum plaintext size in bytes.
@@ -78,6 +153,13 @@ def store(
     manifest: dict[str, Any],
     activity_id: UUID | None = None,
     expires_at: datetime | None = None,
+    name: str | None = None,
+    labels: dict[str, Any] | None = None,
+    producer: str | None = None,
+    agent_id: UUID | None = None,
+    tool_name: str | None = None,
+    text_status: str = "none",
+    parent_artifact_id: UUID | None = None,
     commit: bool = True,
 ) -> models.RuntimeSessionArtifact:
     """Encrypt and insert an artifact, or return the existing source row.
@@ -93,7 +175,7 @@ def store(
         db: Database session.
         account_id: Owning account. Reads always filter on this.
         runtime_session_id: Session the bytes belong to.
-        kind: ``screenshot`` or ``recording``.
+        kind: One of :data:`preloop.services.artifact_media.ARTIFACT_KINDS`.
         source: Producer name, for example ``browser_use``.
         source_ref: Source-native id. Null skips the idempotency key.
         content_type: Media type of the plaintext.
@@ -101,6 +183,14 @@ def store(
         manifest: Free-form metadata such as ``step_index`` or ``duration_ms``.
         activity_id: Optional activity the artifact illustrates.
         expires_at: Optional retention deadline. Not purged here.
+        name: Optional display name, for example a file name.
+        labels: Account-defined labels, checked by :func:`validate_labels`.
+        producer: Ingest path, one of :data:`PRODUCERS`.
+        agent_id: Agent that produced the bytes, when known.
+        tool_name: Tool that produced the bytes, when known.
+        text_status: One of :data:`TEXT_STATUSES`.
+        parent_artifact_id: Artifact in the same account this one derives
+            from, for example the transcript a summary was written from.
         commit: When True, commit the insert. When False, only flush.
 
     Returns:
@@ -108,6 +198,13 @@ def store(
 
     Raises:
         ValueError: ``artifact_kind_invalid`` for an unknown kind,
+            ``artifact_media_type_invalid`` when the media type is not
+            allowed for the kind, ``artifact_content_mismatch`` when the
+            bytes do not match the media type (or a generated file is an
+            executable), ``artifact_labels_invalid`` for bad labels,
+            ``artifact_producer_invalid``, ``artifact_text_status_invalid``,
+            ``artifact_name_invalid``, ``artifact_parent_invalid`` when the
+            parent is not an artifact of this account,
             ``artifact_too_large`` when the plaintext exceeds that kind's cap,
             or ``storage_budget_exhausted`` when the account budget cannot fit
             the plaintext even after evicting every unheld artifact. Nothing
@@ -117,6 +214,21 @@ def store(
     """
     if len(plaintext) > _max_bytes(kind):
         raise ValueError("artifact_too_large")
+    content_type = check_content(kind, content_type, plaintext)
+    clean_labels = validate_labels(labels)
+    if producer is not None and producer not in PRODUCERS:
+        raise ValueError("artifact_producer_invalid")
+    if text_status not in TEXT_STATUSES:
+        raise ValueError("artifact_text_status_invalid")
+    if name is not None and (not name or len(name) > 255):
+        raise ValueError("artifact_name_invalid")
+    if tool_name is not None and (not tool_name or len(tool_name) > 255):
+        raise ValueError("artifact_tool_name_invalid")
+    if (
+        parent_artifact_id is not None
+        and get(db, account_id=account_id, artifact_id=parent_artifact_id) is None
+    ):
+        raise ValueError("artifact_parent_invalid")
 
     if source_ref is not None:
         existing = _existing_source_row(
@@ -179,6 +291,13 @@ def store(
         availability="available",
         expires_at=expires_at,
         legal_hold=bool(session_held),
+        name=name,
+        labels=clean_labels,
+        producer=producer,
+        agent_id=agent_id,
+        tool_name=tool_name,
+        text_status=text_status,
+        parent_artifact_id=parent_artifact_id,
         # Client clock, not transaction_timestamp(): two inserts in one
         # transaction would otherwise share created_at and sort by uuid.
         created_at=datetime.now(UTC),
@@ -239,6 +358,8 @@ def list_for_session(
     account_id: UUID,
     runtime_session_id: UUID,
     kind: str | None = None,
+    labels: dict[str, Any] | None = None,
+    producer: str | None = None,
 ) -> list[models.RuntimeSessionArtifact]:
     """List an account's artifacts for one session, oldest first.
 
@@ -247,6 +368,9 @@ def list_for_session(
         account_id: Account the caller is allowed to read.
         runtime_session_id: Session to list.
         kind: When set, only rows of this kind.
+        labels: When set, only rows whose labels contain these (JSONB
+            ``@>``). ``{"tags": ["a"]}`` matches rows tagged ``a``.
+        producer: When set, only rows from this producer.
 
     Returns:
         Matching rows ordered by ``created_at``.
@@ -257,6 +381,10 @@ def list_for_session(
     )
     if kind is not None:
         query = query.filter(models.RuntimeSessionArtifact.kind == kind)
+    if labels:
+        query = query.filter(models.RuntimeSessionArtifact.labels.contains(labels))
+    if producer is not None:
+        query = query.filter(models.RuntimeSessionArtifact.producer == producer)
     return list(
         query.order_by(
             models.RuntimeSessionArtifact.created_at.asc(),

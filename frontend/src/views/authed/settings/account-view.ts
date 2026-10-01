@@ -529,7 +529,7 @@ export class AccountView extends LitElement {
    * consequence is thinner analytics detail. This is a product-safety rule
    * from the canonical pricing spec, not a tone preference.
    */
-  /** Used and budget bytes for session screenshots and recordings. */
+  /** Format a byte count with binary units. */
   private _formatBytes(value: number): string {
     const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
     let size = value;
@@ -540,6 +540,21 @@ export class AccountView extends LitElement {
     }
     const text = Number.isInteger(size) ? String(size) : size.toFixed(1);
     return `${text} ${units[unit]}`;
+  }
+
+  /**
+   * Kinds other than screenshot and recording that hold bytes. Shown with the
+   * raw kind name until display labels land (#1083); unknown future kinds
+   * render the same way instead of breaking the card.
+   */
+  private _otherArtifactKinds(usage: SessionArtifactUsage): [string, number][] {
+    return Object.entries(usage.by_kind).filter(
+      ([kind, bytes]) =>
+        kind !== 'screenshot' &&
+        kind !== 'recording' &&
+        typeof bytes === 'number' &&
+        bytes > 0
+    );
   }
 
   private _renderSessionArtifactUsage() {
@@ -570,6 +585,14 @@ export class AccountView extends LitElement {
               ${this._formatBytes(usage.by_kind.recording)}
             </div>
           </div>
+          ${this._otherArtifactKinds(usage).map(
+            ([kind, bytes]) => html`
+              <div class="usage-metric" data-kind=${kind}>
+                <div class="usage-label">${kind.replace(/_/g, ' ')}</div>
+                <div class="usage-value">${this._formatBytes(bytes)}</div>
+              </div>
+            `
+          )}
         </div>
       </div>
     `;

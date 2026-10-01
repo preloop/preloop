@@ -74,7 +74,9 @@ def test_usage_endpoint_matches_rows(
     body = response.json()
     assert body["used_bytes"] == screenshot.size_bytes
     assert body["budget_bytes"] == budget
-    assert body["by_kind"] == {"screenshot": 100, "recording": 0}
+    assert body["by_kind"]["screenshot"] == 100
+    assert body["by_kind"]["recording"] == 0
+    assert all(v == 0 for k, v in body["by_kind"].items() if k != "screenshot")
     assert body["evicted_count_30d"] == 1
     assert body == account_usage(db_session, account_id=test_user.account_id)
 

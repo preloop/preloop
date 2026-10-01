@@ -29317,15 +29317,38 @@ components:
         screenshot:
           type: integer
           title: Screenshot
+          default: 0
         recording:
           type: integer
           title: Recording
+          default: 0
+        screencast:
+          type: integer
+          title: Screencast
+          default: 0
+        audio:
+          type: integer
+          title: Audio
+          default: 0
+        transcript:
+          type: integer
+          title: Transcript
+          default: 0
+        document:
+          type: integer
+          title: Document
+          default: 0
+        generated_file:
+          type: integer
+          title: Generated File
+          default: 0
+        trace:
+          type: integer
+          title: Trace
+          default: 0
       type: object
-      required:
-      - screenshot
-      - recording
       title: SessionArtifactUsageByKind
-      description: Available plaintext bytes by artifact kind.
+      description: Available plaintext bytes by artifact kind (zero when unused).
     SessionArtifactUsageResponse:
       properties:
         used_bytes:

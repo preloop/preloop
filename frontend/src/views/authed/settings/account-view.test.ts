@@ -1170,6 +1170,36 @@ describe('AccountView', () => {
     expect(cells['Used']).to.contain('1 MiB');
   });
 
+  it('renders newer artifact kinds by name and hides empty ones', async () => {
+    fetchStub = createFetchStub({
+      billing: false,
+      sessionArtifactUsage: {
+        used_bytes: 3072,
+        budget_bytes: 1048576,
+        by_kind: {
+          screenshot: 0,
+          recording: 0,
+          audio: 0,
+          transcript: 2048,
+          generated_file: 1024,
+          some_future_kind: 0,
+        },
+        evicted_count_30d: 0,
+      },
+    });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    const cells = usageCells(element);
+    expect(cells['transcript']).to.equal('2 KiB');
+    expect(cells['generated file']).to.equal('1 KiB');
+    expect(cells['audio'], 'empty kinds stay hidden').to.be.undefined;
+    expect(cells['Screenshots']).to.equal('0 B');
+  });
+
   it('stops listening after disconnect so a window dispatch fetches nothing', async () => {
     fetchStub = createFetchStub({ billing: true });
     const element = await fixture<AccountView>(
