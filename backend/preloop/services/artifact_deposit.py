@@ -71,7 +71,19 @@ _STATUS_BY_CODE: dict[str, int] = {
 }
 
 OnStored = Callable[[Session, models.RuntimeSessionArtifact], None]
-ON_STORED: list[OnStored] = []
+
+
+def index_text_on_stored(db: Session, artifact: models.RuntimeSessionArtifact) -> None:
+    """Index the artifact into session search (#1082), synchronously.
+
+    Extraction is bounded by the per-kind cap and the 1 MiB text cap.
+    """
+    from preloop.services.session_search_index import index_artifact_text
+
+    index_artifact_text(db, artifact, commit=True)
+
+
+ON_STORED: list[OnStored] = [index_text_on_stored]
 """Callbacks run after a deposit commits, in order, with the new row.
 
 A failing callback is logged and does not fail the deposit. Replays of an

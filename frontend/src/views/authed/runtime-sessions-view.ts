@@ -81,7 +81,29 @@ const MATCH_TAG_LABELS: Record<string, string> = {
   operator_note: 'Operator note',
   session_summary: 'Session summary',
   flow_log: 'Flow log',
+  artifact: 'Artifact',
 };
+
+/** Readable artifact kinds for an artifact match tag. */
+const ARTIFACT_KIND_LABELS: Record<string, string> = {
+  transcript: 'Transcript',
+  document: 'Document',
+  screenshot: 'Screenshot',
+  recording: 'Recording',
+  screencast: 'Screencast',
+  audio: 'Audio',
+  generated_file: 'Generated file',
+  trace: 'Trace',
+};
+
+/** `m:ss` (or `h:mm:ss`) for a transcript cue start in seconds. */
+export function formatCueStart(seconds: number): string {
+  const whole = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = String(whole % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+}
 
 /**
  * Corpus kinds whose source_id names a turn the transcript can scroll to.
@@ -1359,7 +1381,19 @@ export class RuntimeSessionsView extends LitElement {
    * the turn so the page does not pretend it jumped.
    */
   private snippetJumpsToTurn(snippet: SessionSearchSnippet): boolean {
+    if (snippet.source_kind === 'artifact') {
+      return Boolean(snippet.artifact?.activity_id);
+    }
     return TURN_JUMP_KINDS.has(snippet.source_kind);
+  }
+
+  /** The timeline row a snippet opens at: the turn, or the deposit row. */
+  private snippetTurnId(snippet: SessionSearchSnippet): string | null {
+    if (!this.snippetJumpsToTurn(snippet)) return null;
+    if (snippet.source_kind === 'artifact') {
+      return snippet.artifact?.activity_id ?? null;
+    }
+    return snippet.source_id;
   }
 
   private openSnippet(
@@ -1367,9 +1401,7 @@ export class RuntimeSessionsView extends LitElement {
     snippet: SessionSearchSnippet
   ) {
     this.selectedSessionId = result.runtime_session_id;
-    this.focusTurnId = this.snippetJumpsToTurn(snippet)
-      ? snippet.source_id
-      : null;
+    this.focusTurnId = this.snippetTurnId(snippet);
     this.syncUrl({ push: true });
   }
 
@@ -1727,8 +1759,45 @@ export class RuntimeSessionsView extends LitElement {
     `;
   }
 
+  /**
+   * Labels and cue time of an artifact match, so a transcript hit says which
+   * site it came from and where in the recording it is.
+   */
+  private renderArtifactMeta(snippet: SessionSearchSnippet) {
+    const artifact = snippet.artifact;
+    if (snippet.source_kind !== 'artifact' || !artifact) return '';
+    const labels = Object.entries(artifact.labels || {}).map(([key, value]) =>
+      Array.isArray(value) ? `${key}: ${value.join(', ')}` : `${key}: ${value}`
+    );
+    return html`
+      ${labels.map(
+        (label) =>
+          html`<sl-badge
+            variant="primary"
+            pill
+            data-testid="snippet-artifact-label"
+            >${label}</sl-badge
+          >`
+      )}
+      ${
+        typeof artifact.cue_start === 'number'
+          ? html`<span data-testid="snippet-cue-start"
+              >at ${formatCueStart(artifact.cue_start)}</span
+            >`
+          : ''
+      }
+    `;
+  }
+
   /** The readable reason a snippet matched, with the role when there is one. */
   private matchTag(snippet: SessionSearchSnippet): string {
+    const artifact = snippet.artifact;
+    if (snippet.source_kind === 'artifact' && artifact) {
+      const kind = artifact.kind
+        ? (ARTIFACT_KIND_LABELS[artifact.kind] ?? artifact.kind)
+        : 'Artifact';
+      return artifact.name ? `${kind} · ${artifact.name}` : kind;
+    }
     const label = MATCH_TAG_LABELS[snippet.source_kind] ?? snippet.source_kind;
     return snippet.role ? `${label} · ${snippet.role}` : label;
   }
@@ -1791,6 +1860,7 @@ export class RuntimeSessionsView extends LitElement {
                   <sl-badge variant="neutral" pill
                     >${this.matchTag(snippet)}</sl-badge
                   >
+                  ${this.renderArtifactMeta(snippet)}
                   <span>${this.formatDateTime(snippet.occurred_at)}</span>
                 </div>
                 ${this.renderSnippetText(snippet)}
@@ -2434,7 +2504,7 @@ export class RuntimeSessionsView extends LitElement {
         <div class="main-column">
           <div class="page">
             <list-toolbar
-              searchPlaceholder="Search prompts, responses, and tool calls"
+              searchPlaceholder="Search prompts, responses, tool calls, and artifacts"
               searchLabel="Search session content"
               .search=${this.searchQuery}
               .views=${[]}

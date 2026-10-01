@@ -490,14 +490,22 @@ def cleanup(db: Session, *, now: datetime) -> int:
         )
         .exists()
     )
-    count = (
-        db.query(models.RuntimeSessionArtifact)
+    expired_ids = [
+        row_id
+        for (row_id,) in db.query(models.RuntimeSessionArtifact.id)
         .filter(
             models.RuntimeSessionArtifact.expires_at < now,
             models.RuntimeSessionArtifact.legal_hold.is_(False),
             ~session_held,
             models.RuntimeSessionArtifact.availability == "available",
         )
+        .all()
+    ]
+    if not expired_ids:
+        return 0
+    count = (
+        db.query(models.RuntimeSessionArtifact)
+        .filter(models.RuntimeSessionArtifact.id.in_(expired_ids))
         .update(
             {
                 models.RuntimeSessionArtifact.ciphertext: None,
@@ -506,8 +514,18 @@ def cleanup(db: Session, *, now: datetime) -> int:
             synchronize_session=False,
         )
     )
+    _drop_search_chunks(db, expired_ids)
     db.commit()
     return int(count or 0)
+
+
+def _drop_search_chunks(db: Session, artifact_ids: list[Any]) -> None:
+    """Remove the session search chunks quoting artifacts whose bytes went."""
+    from preloop.models.crud import crud_session_search_document
+
+    crud_session_search_document.delete_for_sources(
+        db, source_kind="artifact", source_ids=artifact_ids
+    )
 
 
 def mark_unavailable(
@@ -540,6 +558,7 @@ def mark_unavailable(
         return False
     row.ciphertext = None
     row.availability = availability
+    _drop_search_chunks(db, [row.id])
     if commit:
         db.commit()
     else:

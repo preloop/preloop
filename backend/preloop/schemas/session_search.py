@@ -15,7 +15,7 @@ they asked for, and they have no way to tell.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Literal, Optional, get_args
+from typing import Any, Dict, List, Literal, Optional, get_args
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -162,6 +162,36 @@ class SessionSearchFilters(BaseModel):
         description=("One corpus source kind: " + ", ".join(SOURCE_KINDS) + "."),
     )
 
+    kind: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=32,
+        description=(
+            "Artifact kind, for example transcript or document. Restricts the "
+            "search to artifact chunks."
+        ),
+    )
+    label: Optional[List[str]] = Field(
+        None,
+        max_length=16,
+        description=(
+            "Artifact label filters as key:value, for example site:nord. "
+            "Repeatable; every one must match (AND). tags:x matches an "
+            "artifact whose tags include x. Restricts the search to artifact "
+            "chunks."
+        ),
+    )
+
+    @field_validator("label")
+    @classmethod
+    def validate_label(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Reject a label filter that is not key:value."""
+        for raw in value or ():
+            key, sep, item = raw.partition(":")
+            if not sep or not key.strip() or not item.strip():
+                raise ValueError("label filters must be key:value")
+        return value
+
     @field_validator("source_kind")
     @classmethod
     def validate_source_kind(cls, value: Optional[str]) -> Optional[str]:
@@ -249,6 +279,24 @@ class SessionSearchRequest(BaseModel):
         return normalized
 
 
+class SessionSearchArtifactRef(BaseModel):
+    """The artifact an ``artifact`` chunk came from, enough to open it.
+
+    ``activity_id`` is the timeline row the deposit wrote, so a console can
+    land on that row; ``cue_start`` is the start in seconds of the transcript
+    cue the chunk begins in, when the transcript was timed.
+    """
+
+    artifact_id: str
+    activity_id: Optional[str] = None
+    kind: Optional[str] = None
+    name: Optional[str] = None
+    content_type: Optional[str] = None
+    labels: Dict[str, Any] = Field(default_factory=dict)
+    cue_start: Optional[float] = None
+    text_truncated: bool = False
+
+
 class SessionSearchSnippet(BaseModel):
     """One matching chunk of one session.
 
@@ -291,6 +339,13 @@ class SessionSearchSnippet(BaseModel):
             "Cosine similarity between the query vector and this chunk. Null "
             "for a chunk the vector half never scored, because a keyword "
             "match has no similarity to report."
+        ),
+    )
+    artifact: Optional[SessionSearchArtifactRef] = Field(
+        None,
+        description=(
+            "Set when source_kind is artifact: the artifact id, its timeline "
+            "activity id, kind, name, labels and the transcript cue start."
         ),
     )
 
