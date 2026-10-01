@@ -8,6 +8,10 @@ console runs, asked by the agent instead of by a human: did this migration
 already run, what did the last attempt conclude, what was this user already
 asked last week.
 
+> Note: `search_sessions` searches past agent execution session transcripts.
+> To search issues, tasks, or pull requests across connected issue trackers,
+> use `search_issues`.
+
 It exists because a corpus only a human can query is half a corpus. The
 expensive failures are the ones an agent walks into with no memory: the
 migration applied twice, the answer derived again from scratch, the question

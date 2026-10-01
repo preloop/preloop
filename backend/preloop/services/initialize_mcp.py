@@ -261,7 +261,46 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     update_issue_tool.parameters = deepcopy(UPDATE_ISSUE_SCHEMA)
     mcp.add_tool(update_issue_tool)
 
-    # Register Tool 4: search
+    # Register Tool 4: search_issues
+    @mcp.tool()
+    async def search_issues(
+        query: str,
+        project: str | None = None,
+        limit: int = 10,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """Search issues and comments across connected trackers using similarity or fulltext search. Read-only."""
+        # Get user context for approval checking
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+
+        if not user_context:
+            return "Error: No user context available"
+
+        # Check approval with streaming
+        approved, error = await require_approval(
+            tool_name="search_issues",
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments={"query": query, "project": project, "limit": limit},
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+
+        if not approved:
+            return error
+
+        result = await mcp_router.search_issues(
+            query=query,
+            project=project,
+            limit=limit,
+        )
+        return result.model_dump_json()
+
+    # Register Tool 4 (alias): search (deprecated alias for search_issues, removed in 0.18.0)
     @mcp.tool()
     async def search(
         query: str,
@@ -269,7 +308,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         limit: int = 10,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Search for issues and comments using similarity or fulltext search."""
+        """Search for issues and comments in connected trackers. (Deprecated: use search_issues instead. Will be removed in 0.18.0.)"""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -293,7 +332,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         if not approved:
             return error
 
-        result = await mcp_router.search(
+        result = await mcp_router.search_issues(
             query=query,
             project=project,
             limit=limit,

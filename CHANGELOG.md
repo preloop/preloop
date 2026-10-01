@@ -284,6 +284,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Renamed tracker built-in `search` to `search_issues`. The legacy name `search`
+  is retained as a deprecated alias (disabled by default on fresh accounts,
+  available when explicitly referenced by a flow allow-list or policy) and will
+  be removed in 0.18.0 (#1044).
+- Reduced `search_sessions` description and schema to under 250 tokens (was 633
+  tokens), preserving model context budget during tool definitions (#1044).
 - `webhook_config.webhook_secret` is optional in the flow API, so a flow
   triggered by tracker events can carry `webhook_config` for
   `supersede_on_update` alone. An update that sends `webhook_config`
