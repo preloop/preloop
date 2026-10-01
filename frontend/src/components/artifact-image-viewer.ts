@@ -34,8 +34,10 @@ export class ArtifactImageViewer extends LitElement {
   @property({ type: Number }) index = -1;
 
   @state() private load: SessionArtifactLoad | null = null;
-  private heldArtifactId: string | null = null;
-  private previouslyFocused: Element | null = null;
+  /** The artifact this viewer holds, with the session it was acquired under. */
+  private held: { sessionId: string; artifactId: string } | null = null;
+  private previouslyFocused: HTMLElement | null = null;
+  private previousBodyOverflow: string | null = null;
 
   static styles = css`
     :host {
@@ -148,7 +150,33 @@ export class ArtifactImageViewer extends LitElement {
   disconnectedCallback(): void {
     window.removeEventListener('keydown', this.handleKeydown);
     this.releaseHeld();
+    this.unlockScroll();
     super.disconnectedCallback();
+  }
+
+  /**
+   * The element that really has focus, looking through shadow roots: a
+   * thumbnail button lives inside nested shadow DOM, and
+   * `document.activeElement` alone would only name the outermost host.
+   */
+  private static deepActiveElement(): HTMLElement | null {
+    let active: Element | null = document.activeElement;
+    while (active?.shadowRoot?.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active instanceof HTMLElement ? active : null;
+  }
+
+  private lockScroll(): void {
+    if (this.previousBodyOverflow !== null) return;
+    this.previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  }
+
+  private unlockScroll(): void {
+    if (this.previousBodyOverflow === null) return;
+    document.body.style.overflow = this.previousBodyOverflow;
+    this.previousBodyOverflow = null;
   }
 
   protected willUpdate(changed: Map<string, unknown>): void {
@@ -160,8 +188,10 @@ export class ArtifactImageViewer extends LitElement {
       const wasOpen =
         changed.has('index') && (changed.get('index') as number) >= 0;
       if (this.open && !wasOpen && changed.has('index')) {
-        this.previouslyFocused = document.activeElement;
+        this.previouslyFocused = ArtifactImageViewer.deepActiveElement();
       }
+      if (this.open) this.lockScroll();
+      else this.unlockScroll();
       this.syncArtifact();
     }
   }
@@ -174,29 +204,72 @@ export class ArtifactImageViewer extends LitElement {
 
   private syncArtifact(): void {
     const image = this.open ? this.images[this.index] : null;
-    const wanted =
-      image && image.artifactId && this.sessionId ? image.artifactId : null;
-    if (wanted === this.heldArtifactId) return;
+    // Metadata that already says evicted or expired would only earn a 410.
+    const fetchable =
+      image &&
+      image.artifactId &&
+      this.sessionId &&
+      (!image.availability || image.availability === 'available');
+    const wanted = fetchable
+      ? { sessionId: this.sessionId, artifactId: image.artifactId as string }
+      : null;
+    if (
+      wanted &&
+      this.held &&
+      wanted.sessionId === this.held.sessionId &&
+      wanted.artifactId === this.held.artifactId
+    ) {
+      return;
+    }
     this.releaseHeld();
     this.load = null;
     if (!wanted) return;
-    this.heldArtifactId = wanted;
-    const sessionId = this.sessionId;
-    void acquireSessionArtifact(sessionId, wanted).then((result) => {
-      if (this.heldArtifactId === wanted) this.load = result;
-    });
+    this.held = wanted;
+    void acquireSessionArtifact(wanted.sessionId, wanted.artifactId).then(
+      (result) => {
+        if (this.held === wanted) this.load = result;
+      }
+    );
   }
 
   private releaseHeld(): void {
-    if (this.heldArtifactId && this.sessionId) {
-      releaseSessionArtifact(this.sessionId, this.heldArtifactId);
+    // Release under the session the artifact was acquired with, which may
+    // differ from `sessionId` when the session changed while open.
+    if (this.held) {
+      releaseSessionArtifact(this.held.sessionId, this.held.artifactId);
     }
-    this.heldArtifactId = null;
+    this.held = null;
+  }
+
+  /** Keep Tab and Shift+Tab inside the dialog's own controls. */
+  private trapFocus(event: KeyboardEvent): void {
+    const controls = Array.from(
+      this.renderRoot.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href]'
+      )
+    );
+    if (!controls.length) return;
+    event.preventDefault();
+    const active =
+      this.renderRoot instanceof ShadowRoot
+        ? (this.renderRoot.activeElement as HTMLElement | null)
+        : null;
+    const at = active ? controls.indexOf(active) : -1;
+    const step = event.shiftKey ? -1 : 1;
+    const next =
+      at === -1
+        ? event.shiftKey
+          ? controls.length - 1
+          : 0
+        : (at + step + controls.length) % controls.length;
+    controls[next].focus();
   }
 
   private handleKeydown = (event: KeyboardEvent): void => {
     if (!this.open) return;
-    if (event.key === 'Escape') {
+    if (event.key === 'Tab') {
+      this.trapFocus(event);
+    } else if (event.key === 'Escape') {
       event.preventDefault();
       this.close();
     } else if (event.key === 'ArrowLeft') {
@@ -212,12 +285,13 @@ export class ArtifactImageViewer extends LitElement {
     if (!this.open) return;
     this.releaseHeld();
     this.load = null;
+    this.unlockScroll();
     this.dispatchEvent(
       new CustomEvent('viewer-close', { bubbles: true, composed: true })
     );
-    const target = this.previouslyFocused as HTMLElement | null;
+    const target = this.previouslyFocused;
     this.previouslyFocused = null;
-    target?.focus?.();
+    if (target?.isConnected) target.focus();
   }
 
   go(delta: number): void {

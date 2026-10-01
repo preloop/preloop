@@ -364,4 +364,127 @@ describe('browser steps in the session timeline', () => {
       panel.scrollToBrowserStep('browser-step-playwright_mcp-call-2')
     ).to.equal(true);
   });
+
+  it('viewer skips the fetch for evicted metadata, traps Tab and locks scroll', async () => {
+    const images = [
+      {
+        key: 'a',
+        artifactId: SHOT_GONE,
+        availability: 'evicted',
+        title: 'Step #1',
+      },
+      {
+        key: 'b',
+        artifactId: SHOT_A,
+        availability: 'available',
+        title: 'Step #2',
+      },
+    ];
+    fetchStub.resetHistory();
+    const viewer = await fixture<ArtifactImageViewer>(html`
+      <artifact-image-viewer
+        .sessionId=${SESSION_ID}
+        .images=${images}
+        .index=${0}
+      ></artifact-image-viewer>
+    `);
+    await viewer.updateComplete;
+    expect(
+      viewer.shadowRoot!.querySelector('[data-testid="viewer-unavailable"]')
+    ).to.exist;
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((c) => String(c.args[0]).includes('/artifacts/'))
+    ).to.have.length(0);
+    expect(document.body.style.overflow).to.equal('hidden');
+
+    // Tab cycles inside the dialog and never reaches the page behind it.
+    const controls = () =>
+      Array.from(
+        viewer.shadowRoot!.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href]'
+        )
+      );
+    const first = controls()[0];
+    const last = controls()[controls().length - 1];
+    last.focus();
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', cancelable: true })
+    );
+    expect(viewer.shadowRoot!.activeElement).to.equal(first);
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Tab',
+        shiftKey: true,
+        cancelable: true,
+      })
+    );
+    expect(viewer.shadowRoot!.activeElement).to.equal(last);
+
+    viewer.addEventListener('viewer-close', () => (viewer.index = -1));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await viewer.updateComplete;
+    expect(document.body.style.overflow).to.equal('');
+  });
+
+  it('viewer releases under the session it acquired with when the session changes', async () => {
+    const images = [
+      {
+        key: 'b',
+        artifactId: SHOT_B,
+        availability: 'available',
+        title: 'Step #2',
+      },
+    ];
+    const viewer = await fixture<ArtifactImageViewer>(html`
+      <artifact-image-viewer
+        .sessionId=${SESSION_ID}
+        .images=${images}
+        .index=${0}
+      ></artifact-image-viewer>
+    `);
+    await waitUntil(() =>
+      viewer.shadowRoot!.querySelector('[data-testid="viewer-image"]')
+    );
+    expect(heldSessionArtifactCount()).to.equal(1);
+    viewer.sessionId = '22222222-2222-4222-8222-222222222222';
+    await viewer.updateComplete;
+    viewer.remove();
+    expect(heldSessionArtifactCount()).to.equal(0);
+  });
+
+  it('viewer returns focus to the thumbnail button that opened it', async () => {
+    const row = await fixture(html`
+      <browser-step-row
+        .item=${STEPS[2]}
+        .sessionId=${SESSION_ID}
+      ></browser-step-row>
+    `);
+    const thumb = row.shadowRoot!.querySelector(
+      'browser-step-thumbnail'
+    ) as BrowserStepThumbnail;
+    await waitUntil(() => thumb.shadowRoot!.querySelector('button'));
+    const trigger = thumb.shadowRoot!.querySelector(
+      'button'
+    ) as HTMLButtonElement;
+    trigger.focus();
+    const viewer = document.createElement('artifact-image-viewer');
+    viewer.sessionId = SESSION_ID;
+    viewer.images = [
+      {
+        key: 'c',
+        artifactId: SHOT_B,
+        availability: 'available',
+        title: 'Step #2',
+      },
+    ];
+    document.body.appendChild(viewer);
+    viewer.index = 0;
+    await viewer.updateComplete;
+    viewer.addEventListener('viewer-close', () => (viewer.index = -1));
+    viewer.close();
+    expect(thumb.shadowRoot!.activeElement).to.equal(trigger);
+    viewer.remove();
+  });
 });

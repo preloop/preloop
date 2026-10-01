@@ -49,6 +49,12 @@ import { saveTalkWindowGeometry, talkRoutePath } from '../../utils/talk-window';
 import type { PendingTalkMessage } from '../../components/session-chat-view';
 import { TALK_RETRY_EVENT } from '../../components/session-chat-view';
 import type { TalkComposer } from '../../components/talk-composer';
+import '../../components/artifact-image-viewer';
+import {
+  browserStepKey,
+  browserStepViewerImages,
+  sortBrowserSteps,
+} from '../../utils/session-artifacts';
 import {
   TALK_MESSAGE_SENT_EVENT,
   TALK_PENDING_CHANGED_EVENT,
@@ -62,6 +68,8 @@ export class AgentTalkView extends LitElement {
   @state() private agent: ManagedAgentSummary | null = null;
   @state() private sessions: RuntimeSessionSummary[] = [];
   @state() private sessionId: string | null = null;
+  /** Browser step shown full size in the viewer, or -1. */
+  @state() private browserStepViewerIndex = -1;
   /** A session named in the URL is pinned: live traffic never moves it. */
   @state() private pinnedSessionId: string | null = null;
   @state() private windowMode = false;
@@ -374,6 +382,7 @@ export class AgentTalkView extends LitElement {
       const nextSession = this.pickSession(this.sessions);
       const changed = nextSession !== this.sessionId;
       this.sessionId = nextSession;
+      if (changed) this.browserStepViewerIndex = -1;
       this.syncDocumentTitle();
       this.postChannel('open');
       if (nextSession && (changed || !this.events.length)) {
@@ -607,6 +616,12 @@ export class AgentTalkView extends LitElement {
       <session-chat-view
         scrollable
         followLive
+        .sessionId=${this.sessionId || ''}
+        @browser-step-open=${(event: CustomEvent<{ key: string }>) => {
+          this.browserStepViewerIndex = sortBrowserSteps(
+            this.activity
+          ).findIndex((item) => browserStepKey(item) === event.detail.key);
+        }}
         .events=${this.events}
         .activity=${this.activity}
         .pending=${this.pending}
@@ -620,6 +635,21 @@ export class AgentTalkView extends LitElement {
         }
         @session-events-page-requested=${() => void this.loadMoreEvents()}
       ></session-chat-view>
+      ${
+        this.sessionId && this.browserStepViewerIndex >= 0
+          ? html`<artifact-image-viewer
+              .sessionId=${this.sessionId}
+              .images=${browserStepViewerImages(sortBrowserSteps(this.activity))}
+              .index=${this.browserStepViewerIndex}
+              @viewer-close=${() => {
+                this.browserStepViewerIndex = -1;
+              }}
+              @viewer-navigate=${(event: CustomEvent<{ index: number }>) => {
+                this.browserStepViewerIndex = event.detail.index;
+              }}
+            ></artifact-image-viewer>`
+          : nothing
+      }
       <talk-composer
         .agent=${this.agent}
         .sessionId=${this.sessionId}

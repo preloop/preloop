@@ -75,11 +75,9 @@ import './session-request-timeline';
 import './similar-sessions-panel';
 import './browser-step-strip';
 import './artifact-image-viewer';
-import type { ArtifactViewerImage } from './artifact-image-viewer';
 import {
   browserStepKey,
-  browserStepMetadata,
-  browserStepNumber,
+  browserStepViewerImages,
   sortBrowserSteps,
 } from '../utils/session-artifacts';
 import { consoleDialogStyles } from '../styles/console-dialog';
@@ -1657,24 +1655,6 @@ export class PreloopSessionObserver extends LitElement {
     return sortBrowserSteps(this.activeActivity);
   }
 
-  private browserStepViewerImages(
-    steps: RuntimeSessionActivityItem[]
-  ): ArtifactViewerImage[] {
-    return steps.map((item, position) => {
-      const meta = browserStepMetadata(item);
-      const action = String(meta.action || 'other');
-      return {
-        key: browserStepKey(item),
-        artifactId: meta.screenshot?.artifact_id || null,
-        availability: meta.screenshot?.availability || null,
-        title: `Step #${browserStepNumber(item, position)}: ${action}${
-          meta.url ? ` ${meta.url}` : ''
-        }`,
-        caption: meta.target ? `Target: ${meta.target}` : null,
-      };
-    });
-  }
-
   private openBrowserStepViewer(key: string): void {
     const index = this.activeBrowserSteps.findIndex(
       (item) => browserStepKey(item) === key
@@ -1716,7 +1696,7 @@ export class PreloopSessionObserver extends LitElement {
     if (!steps.length || !this.activeSessionId) return nothing;
     return html`<artifact-image-viewer
       .sessionId=${this.activeSessionId}
-      .images=${this.browserStepViewerImages(steps)}
+      .images=${browserStepViewerImages(steps)}
       .index=${this.browserStepViewerIndex}
       @viewer-close=${() => {
         this.browserStepViewerIndex = -1;

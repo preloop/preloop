@@ -152,6 +152,34 @@ export function browserStepNumber(
   return typeof index === 'number' ? index : position;
 }
 
+/** One entry for the full-size viewer (see artifact-image-viewer). */
+export interface BrowserStepViewerImage {
+  key: string;
+  artifactId: string | null;
+  availability: string | null;
+  title: string;
+  caption: string | null;
+}
+
+/** Viewer entries for steps already in time order, one per step. */
+export function browserStepViewerImages(
+  steps: RuntimeSessionActivityItem[]
+): BrowserStepViewerImage[] {
+  return steps.map((item, position) => {
+    const meta = browserStepMetadata(item);
+    const action = String(meta.action || 'other');
+    return {
+      key: browserStepKey(item),
+      artifactId: meta.screenshot?.artifact_id || null,
+      availability: meta.screenshot?.availability || null,
+      title: `Step #${browserStepNumber(item, position)}: ${action}${
+        meta.url ? ` ${meta.url}` : ''
+      }`,
+      caption: meta.target ? `Target: ${meta.target}` : null,
+    };
+  });
+}
+
 /** Steps in time order, then by step index for steps sharing a timestamp. */
 export function sortBrowserSteps(
   items: RuntimeSessionActivityItem[]
