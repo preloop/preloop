@@ -118,4 +118,3 @@ def test_parameters_are_dropped_and_type_lowercased() -> None:
 def test_every_kind_has_a_modality() -> None:
     assert set(media.KIND_MODALITY) == set(media.ARTIFACT_KINDS)
     assert set(media.KIND_MODALITY.values()) <= {"image", "video", "audio", "document"}
-
