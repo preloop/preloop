@@ -168,6 +168,39 @@ def mock_agent_executor():
     return mock_executor
 
 
+def _gitlab_project(db_session, account_id, *, name, slug, identifier):
+    """Create a GitLab tracker project owned by ``account_id``."""
+    from preloop.models import models
+
+    tracker = models.Tracker(
+        name=f"gitlab-{identifier}",
+        account_id=account_id,
+        tracker_type="gitlab",
+        url="https://gitlab.example.com",
+        api_key="test-token",
+        auth_type="api_token",
+    )
+    db_session.add(tracker)
+    db_session.flush()
+    organization = models.Organization(
+        name=name,
+        identifier=identifier,
+        tracker_id=tracker.id,
+    )
+    db_session.add(organization)
+    db_session.flush()
+    project = models.Project(
+        name=name,
+        identifier=identifier,
+        slug=slug,
+        organization_id=organization.id,
+        is_active=True,
+    )
+    db_session.add(project)
+    db_session.flush()
+    return project
+
+
 class TestFlowExecutionOrchestrator:
     """Test suite for FlowExecutionOrchestrator."""
 
@@ -1908,6 +1941,176 @@ class TestFlowExecutionOrchestrator:
 
         assert orchestrator._resolve_trigger_project_id() == android_id
 
+    def test_payload_matches_selected_project_without_tracker_id(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        test_account: Account,
+        mock_nats_client,
+    ):
+        """A CI payload names one selected project, not trigger_project_ids[0]."""
+        admin = _gitlab_project(
+            db_session,
+            test_account.id,
+            name="Preloop Admin",
+            slug="spacecode/preloop-admin",
+            identifier="1",
+        )
+        enterprise = _gitlab_project(
+            db_session,
+            test_account.id,
+            name="Preloop Enterprise",
+            slug=None,
+            identifier="21",
+        )
+        test_flow.trigger_project_ids = [str(admin.id), str(enterprise.id)]
+        test_flow.git_clone_config = {"enabled": True, "repositories": []}
+        orchestrator = FlowExecutionOrchestrator(
+            db=db_session,
+            flow_id=test_flow.id,
+            trigger_event_data={
+                "source": "gitlab",
+                "type": "merge_request_updated",
+                "payload": {
+                    "project": {
+                        "id": 21,
+                        "path_with_namespace": "spacecode/preloop-ee",
+                        "git_http_url": "https://gitlab.example.com/spacecode/preloop-ee.git",
+                        "web_url": "https://gitlab.example.com/spacecode/preloop-ee",
+                    }
+                },
+            },
+            nats_client=mock_nats_client,
+        )
+        orchestrator._get_flow_details()
+
+        assert orchestrator._resolve_trigger_project_id() == str(enterprise.id)
+        clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"] == [
+            {
+                "project_id": str(enterprise.id),
+                "clone_path": "/workspace",
+                "repository_url": "https://gitlab.example.com/spacecode/preloop-ee.git",
+            }
+        ]
+
+    def test_payload_outside_selected_projects_is_not_the_first_project(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        test_account: Account,
+        mock_nats_client,
+    ):
+        """A repository the flow did not select is not replaced with another."""
+        admin = _gitlab_project(
+            db_session,
+            test_account.id,
+            name="Preloop Admin",
+            slug="spacecode/preloop-admin",
+            identifier="1",
+        )
+        test_flow.trigger_project_ids = [str(admin.id)]
+        test_flow.git_clone_config = {
+            "enabled": True,
+            "repositories": [
+                {
+                    "repository_url": "https://gitlab.example.com/spacecode/preloop-admin.git",
+                    "project_id": str(admin.id),
+                }
+            ],
+        }
+        orchestrator = FlowExecutionOrchestrator(
+            db=db_session,
+            flow_id=test_flow.id,
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "project": {
+                        "id": 21,
+                        "path_with_namespace": "spacecode/preloop-ee",
+                        "git_http_url": "https://gitlab.example.com/spacecode/preloop-ee.git",
+                    }
+                },
+            },
+            nats_client=mock_nats_client,
+        )
+        orchestrator._get_flow_details()
+
+        assert orchestrator._resolve_trigger_project_id() is None
+        assert orchestrator._git_clone_config_for_trigger()["repositories"] == []
+
+    def test_unrestricted_flow_matches_payload_against_the_account(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        test_account: Account,
+        mock_nats_client,
+    ):
+        """No selected repositories means the payload may name any account project."""
+        enterprise = _gitlab_project(
+            db_session,
+            test_account.id,
+            name="Preloop Enterprise",
+            slug="spacecode/preloop-ee",
+            identifier="21",
+        )
+        test_flow.trigger_project_ids = []
+        test_flow.git_clone_config = {"enabled": True, "repositories": []}
+        orchestrator = FlowExecutionOrchestrator(
+            db=db_session,
+            flow_id=test_flow.id,
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "project": {
+                        "id": 21,
+                        "path_with_namespace": "spacecode/preloop-ee",
+                    }
+                },
+            },
+            nats_client=mock_nats_client,
+        )
+        orchestrator._get_flow_details()
+
+        assert orchestrator._resolve_trigger_project_id() == str(enterprise.id)
+
+    def test_clone_list_keeps_only_the_payload_repository(
+        self, db_session: Session, test_flow: Flow, mock_nats_client
+    ):
+        """Several configured clone URLs narrow to the one the payload names."""
+        test_flow.trigger_project_ids = []
+        test_flow.git_clone_config = {
+            "enabled": True,
+            "repositories": [
+                {
+                    "repository_url": "https://gitlab.example.com/spacecode/preloop-admin.git"
+                },
+                {
+                    "repository_url": "https://gitlab.example.com/spacecode/preloop-ee.git"
+                },
+            ],
+        }
+        orchestrator = FlowExecutionOrchestrator(
+            db=db_session,
+            flow_id=test_flow.id,
+            trigger_event_data={
+                "source": "gitlab",
+                "payload": {
+                    "project": {
+                        "path_with_namespace": "spacecode/preloop-ee",
+                        "git_http_url": "https://gitlab.example.com/spacecode/preloop-ee.git",
+                    }
+                },
+            },
+            nats_client=mock_nats_client,
+        )
+        orchestrator._get_flow_details()
+
+        clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"] == [
+            {"repository_url": "https://gitlab.example.com/spacecode/preloop-ee.git"}
+        ]
+
     @pytest.mark.skip(
         reason="FK constraint prevents creating flow with non-existent AI model. "
         "This edge case cannot occur in production. Coverage tested via code review."
@@ -1924,6 +2127,109 @@ class TestFlowExecutionOrchestrator:
         """Test warning when AI model not found."""
         # This scenario is prevented by FK constraint in production
         pass
+
+
+class TestPayloadRepositorySelection:
+    """Selection logic that does not need a migrated database."""
+
+    def _orchestrator(self, flow, event):
+        orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+        orchestrator.flow = flow
+        orchestrator.db = MagicMock()
+        orchestrator.trigger_event_data = event
+        return orchestrator
+
+    def test_identifier_match_beats_the_first_selected_project(self):
+        """Project 21 is selected even when another project is listed first."""
+        from types import SimpleNamespace
+
+        admin_id = "admin"
+        enterprise_id = "enterprise"
+        flow = SimpleNamespace(
+            trigger_project_ids=[admin_id, enterprise_id],
+            git_clone_config={"enabled": True, "repositories": []},
+            account_id="acct",
+        )
+        event = {
+            "source": "gitlab",
+            "payload": {
+                "project": {
+                    "id": 21,
+                    "path_with_namespace": "spacecode/preloop-ee",
+                    "git_http_url": "https://gitlab.example.com/spacecode/preloop-ee.git",
+                }
+            },
+        }
+        orchestrator = self._orchestrator(flow, event)
+        enterprise = SimpleNamespace(id=enterprise_id, slug=None, identifier="21")
+        orchestrator._projects_matching_identity = lambda identity, selected: (
+            [(enterprise, "gitlab")] if selected == {admin_id, enterprise_id} else []
+        )
+
+        assert orchestrator._resolve_trigger_project_id() == enterprise_id
+        clone = orchestrator._git_clone_config_for_trigger()
+        assert clone["repositories"][0]["project_id"] == enterprise_id
+        assert (
+            clone["repositories"][0]["repository_url"]
+            == "https://gitlab.example.com/spacecode/preloop-ee.git"
+        )
+
+    def test_unselected_repository_does_not_fall_back(self):
+        """A payload outside the selection is not cloned as the first project."""
+        from types import SimpleNamespace
+
+        flow = SimpleNamespace(
+            trigger_project_ids=["admin"],
+            git_clone_config={
+                "enabled": True,
+                "repositories": [
+                    {
+                        "project_id": "admin",
+                        "repository_url": "https://gitlab.example.com/spacecode/preloop-admin.git",
+                    }
+                ],
+            },
+            account_id="acct",
+        )
+        event = {
+            "source": "gitlab",
+            "payload": {
+                "project": {
+                    "id": 21,
+                    "path_with_namespace": "spacecode/preloop-ee",
+                }
+            },
+        }
+        orchestrator = self._orchestrator(flow, event)
+        orchestrator._projects_matching_identity = lambda identity, selected: []
+
+        assert orchestrator._resolve_trigger_project_id() is None
+        assert orchestrator._git_clone_config_for_trigger()["repositories"] == []
+
+    def test_unrestricted_flow_accepts_an_account_project(self):
+        """With no selection, the payload may name any project on the account."""
+        from types import SimpleNamespace
+
+        flow = SimpleNamespace(
+            trigger_project_ids=[],
+            git_clone_config={"enabled": True, "repositories": []},
+            account_id="acct",
+        )
+        event = {
+            "source": "gitlab",
+            "payload": {"project": {"path_with_namespace": "spacecode/preloop-ee"}},
+        }
+        orchestrator = self._orchestrator(flow, event)
+        project = SimpleNamespace(
+            id="enterprise", slug="spacecode/preloop-ee", identifier="21"
+        )
+
+        def projects(identity, selected):
+            assert selected is None
+            return [(project, "gitlab")]
+
+        orchestrator._projects_matching_identity = projects
+        assert orchestrator._resolve_trigger_project_id() == "enterprise"
 
 
 class TestWorkspaceSeedValidation:
