@@ -137,6 +137,7 @@ const OUTCOME_OPTIONS = [
   { value: 'declined', label: 'Declined' },
   { value: 'executed', label: 'Executed' },
   { value: 'failed', label: 'Failed' },
+  { value: 'upstream_error', label: 'Upstream Error' },
   { value: 'budget_denied', label: 'Budget Denied' },
   { value: 'expired', label: 'Expired' },
 ];
@@ -884,6 +885,8 @@ export class AuditView extends AuthedElement {
       case 'failed':
       case 'failure':
         return { variant: 'danger', label: 'Failed' };
+      case 'upstream_error':
+        return { variant: 'danger', label: 'Upstream Error' };
       case 'budget_denied':
         return { variant: 'danger', label: 'Budget Denied' };
       case 'success':
@@ -1676,6 +1679,12 @@ export class AuditView extends AuthedElement {
         story += `The tool then failed${err ? ` — ${err}` : ''}.`;
       }
     } else if (
+      group.outcome === 'upstream_error' ||
+      group.outcome === 'failed' ||
+      (group.outcome === 'declined' && !approvalResolutionSubevent)
+    ) {
+      story += this._toolCallFailureStory(group);
+    } else if (
       group.outcome === 'success' ||
       group.outcome === 'executed' ||
       group.outcome === 'allow'
@@ -1702,6 +1711,19 @@ export class AuditView extends AuthedElement {
         <strong>Summary:</strong> ${story}
       </div>
     `;
+  }
+
+  private _toolCallFailureStory(group: AuditGroup): string {
+    const details = group.primary_event.details || {};
+    const code = details.error_code ? ` (${details.error_code})` : '';
+    const reason = details.error_reason ? `: ${details.error_reason}` : '';
+    if (group.outcome === 'upstream_error') {
+      return `The upstream server returned an error${code}${reason}.`;
+    }
+    if (group.outcome === 'declined') {
+      return `The call was declined and nothing was forwarded${reason}.`;
+    }
+    return `The tool call failed${code}${reason}.`;
   }
 
   private _renderSubEvent(sub: SubEvent) {
