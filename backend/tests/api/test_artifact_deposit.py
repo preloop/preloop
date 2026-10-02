@@ -245,6 +245,29 @@ def test_image_block_is_inferred_as_screenshot(client, db_session, test_user):
     assert fetched.content == PNG
 
 
+def test_meta_labels_are_kept_and_top_level_labels_win(client, db_session, test_user):
+    session = _session(db_session, test_user.account_id, "deposit-meta-labels")
+    token = _token(db_session, test_user, runtime_session_id=session.id)
+    body = _transcript_body(labels={"site": "sued"})
+    body["content"]["_meta"] = {
+        "preloop.dev/artifact": {
+            "labels": {"site": "nord", "consent_basis": "works-agreement-2026-03"}
+        }
+    }
+
+    created = client.post(
+        f"{BASE}/{session.id}/artifacts", headers=_auth(token), json=body
+    )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["labels"] == {
+        "site": "sued",
+        "consent_basis": "works-agreement-2026-03",
+    }
+    [row] = _rows(db_session, session.id)
+    assert row.labels == created.json()["labels"]
+
+
 def test_error_codes(client, db_session, test_user, monkeypatch):
     session = _session(db_session, test_user.account_id, "deposit-errors")
     token = _token(db_session, test_user, runtime_session_id=session.id)
