@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -60,11 +61,17 @@ type attachFake struct {
 	queries  []url.Values
 	refuse   string
 	live     chan string
+	// attachedEndedAt is put on the "attached" frame, as the server does for
+	// a session that ended before the socket opened.
+	attachedEndedAt string
 }
 
 type attachConnScript struct {
 	messages []string
 	drop     bool
+	// beforeDrop runs after the messages are sent and before the connection
+	// is closed: what happens on the server while the client is away.
+	beforeDrop func()
 }
 
 func newAttachFake(t *testing.T) *attachFake {
@@ -88,14 +95,14 @@ func newAttachFake(t *testing.T) *attachFake {
 			if index < len(fake.conns) {
 				script = fake.conns[index]
 			}
-			refuse := fake.refuse
+			refuse, endedAt := fake.refuse, fake.attachedEndedAt
 			fake.mu.Unlock()
 			conn, err := upgrader.Upgrade(w, r, nil)
 			fake.mu.Lock()
 			if err != nil {
 				return
 			}
-			go fake.serveConn(conn, script, refuse)
+			go fake.serveConn(conn, script, refuse, endedAt)
 		case r.Method == http.MethodPost:
 			body := map[string]interface{}{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -121,7 +128,18 @@ func newAttachFake(t *testing.T) *attachFake {
 		case path == runtimeSessionsPath+"/"+attachTestSession+"/activity":
 			_, _ = io.WriteString(w, `{"items":[`+strings.Join(fake.activity, ",")+`]}`)
 		case path == approvalRequestsListPath:
-			_, _ = io.WriteString(w, `[`+strings.Join(fake.pending, ",")+`]`)
+			limit, skip := 100, 0
+			_, _ = fmt.Sscan(r.URL.Query().Get("limit"), &limit)
+			_, _ = fmt.Sscan(r.URL.Query().Get("skip"), &skip)
+			page := []string{}
+			if skip < len(fake.pending) {
+				end := skip + limit
+				if end > len(fake.pending) {
+					end = len(fake.pending)
+				}
+				page = fake.pending[skip:end]
+			}
+			_, _ = io.WriteString(w, `[`+strings.Join(page, ",")+`]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -135,17 +153,24 @@ func itoa(n int) string {
 	return string(data)
 }
 
-func (f *attachFake) serveConn(conn *websocket.Conn, script attachConnScript, refuse string) {
+func (f *attachFake) serveConn(conn *websocket.Conn, script attachConnScript, refuse, endedAt string) {
 	defer conn.Close()
 	if refuse != "" {
 		_ = conn.WriteJSON(map[string]string{"type": "error", "error": "forbidden", "detail": refuse})
 		return
 	}
-	_ = conn.WriteJSON(map[string]interface{}{"type": "attached", "runtime_session_id": attachTestSession})
+	attached := map[string]interface{}{"type": "attached", "runtime_session_id": attachTestSession}
+	if endedAt != "" {
+		attached["ended_at"] = endedAt
+	}
+	_ = conn.WriteJSON(attached)
 	for _, message := range script.messages {
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(message))
 	}
 	if script.drop {
+		if script.beforeDrop != nil {
+			script.beforeDrop()
+		}
 		return
 	}
 	go func() {
@@ -344,18 +369,16 @@ func TestAttachReconnectReportsMissedEventsWithoutDuplicates(t *testing.T) {
 	fake := newAttachFake(t)
 	fake.setActivity(activityTool)
 	missed := `{"activity_type":"tool_call","timestamp":"2026-10-02T12:00:30","title":"Glob","status":"allowed","tool_name":"Glob","server_name":"claude_code"}`
-	fake.conns = []attachConnScript{
-		{messages: []string{liveToolBash}, drop: true},
-		{},
-	}
 	// While the first connection is down, two things happen: the Bash call
 	// that was already streamed reaches the timeline, and a Glob call nobody
 	// saw.
 	bashItem := `{"activity_type":"tool_call","timestamp":"2026-10-02T12:00:05","title":"Bash","status":"approved","tool_name":"Bash","server_name":"claude_code"}`
-	go func() {
-		time.Sleep(5 * time.Millisecond)
-		fake.setActivity(activityTool, bashItem, missed)
-	}()
+	fake.conns = []attachConnScript{
+		{messages: []string{liveToolBash}, drop: true, beforeDrop: func() {
+			fake.setActivity(activityTool, bashItem, missed)
+		}},
+		{},
+	}
 
 	run := startAttach(t, fake, attachOptions{target: attachTestSession})
 	run.waitFor(t, "reconnected, 1 events missed")
@@ -545,5 +568,61 @@ func TestAttachNeutralisesControlCharactersInEventLines(t *testing.T) {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("%q reached the terminal:\n%q", forbidden, out)
 		}
+	}
+}
+
+func TestAttachTreatsASilentConnectionAsDropped(t *testing.T) {
+	originalTimeout, originalPing := attachReadTimeout, attachPingInterval
+	attachReadTimeout, attachPingInterval = 150*time.Millisecond, time.Hour
+	t.Cleanup(func() { attachReadTimeout, attachPingInterval = originalTimeout, originalPing })
+
+	fake := newAttachFake(t)
+	// The first connection is half open: it attaches, then never sends a
+	// frame again and never answers a ping.
+	fake.conns = []attachConnScript{{}, {messages: []string{liveToolBash}}}
+
+	run := startAttach(t, fake, attachOptions{target: attachTestSession})
+	run.waitFor(t, "claude_code/Bash")
+	_ = run.stop(t)
+	if out := run.out.String(); !strings.Contains(out, "connection lost") || !strings.Contains(out, "reconnected") {
+		t.Errorf("a silent connection must be reported and replaced:\n%s", out)
+	}
+}
+
+func TestAttachExitsWhenTheSocketSaysTheSessionAlreadyEnded(t *testing.T) {
+	fake := newAttachFake(t)
+	fake.attachedEndedAt = "2026-10-02T12:00:00"
+	fake.conns = []attachConnScript{{}}
+
+	run := startAttach(t, fake, attachOptions{target: attachTestSession})
+	select {
+	case err := <-run.done:
+		if err != nil {
+			t.Fatalf("an ended session is not an error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a session that ended before the socket opened must not wait for the end poll")
+	}
+	if !strings.Contains(run.out.String(), "session ended; detaching") {
+		t.Errorf("the end must be said:\n%s", run.out.String())
+	}
+}
+
+func TestAttachPagesPendingApprovalsToFindThisSessions(t *testing.T) {
+	fake := newAttachFake(t)
+	for index := 0; index < 150; index++ {
+		fake.pending = append(fake.pending, fmt.Sprintf(
+			`{"id":"%08d-0000-4000-8000-000000000000","approval_workflow_id":"w","status":"pending","tool_name":"Write","requested_at":"2026-10-02T11:00:00","runtime_session_id":"bbbbbbbb-2222-4222-8222-222222222222"}`, index))
+	}
+	fake.pending[120] = pendingBash
+	fake.conns = []attachConnScript{{}}
+
+	run := startAttach(t, fake, attachOptions{target: attachTestSession})
+	run.waitFor(t, "approval pending Bash")
+	_, _ = io.WriteString(run.input, "a\n")
+	run.waitFor(t, "approval 3b3eb5f2 approved")
+	_ = run.stop(t)
+	if strings.Contains(run.out.String(), "Write") {
+		t.Errorf("other sessions' approvals must stay hidden:\n%s", run.out.String())
 	}
 }

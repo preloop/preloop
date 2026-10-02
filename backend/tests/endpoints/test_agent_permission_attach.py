@@ -278,3 +278,44 @@ def test_native_tool_status(
     decision: str, request_id: Any, timed_out: bool, status: str
 ) -> None:
     assert endpoint._native_tool_status(decision, request_id, timed_out) == status
+
+
+def test_a_failed_second_claim_keeps_the_notes_the_first_one_took(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claim commits its notes as delivered, so they must reach the agent."""
+
+    class _Session:
+        def __enter__(self) -> "_Session":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    calls: list[Any] = []
+
+    def claim(db: Any, **kwargs: Any) -> list[str]:
+        calls.append(kwargs["runtime_session_id"])
+        if len(calls) == 2:
+            raise RuntimeError("store unavailable")
+        return ["note-from-first-session"]
+
+    monkeypatch.setattr(endpoint, "get_session_factory", lambda: _Session)
+    monkeypatch.setattr(endpoint.operator_notes, "claim_pending_notes", claim)
+    monkeypatch.setattr(
+        endpoint.operator_notes, "render_notes_block", lambda notes: "|".join(notes)
+    )
+    identity = endpoint.PermissionIdentity(
+        account_id=str(uuid4()),
+        user_id=uuid4(),
+        api_key_id=uuid4(),
+        managed_agent_id=uuid4(),
+        runtime_session_id=uuid4(),
+        managed_agent_name="Agent",
+    )
+    origin = str(uuid4())
+
+    rendered = endpoint._claim_operator_note(identity, origin_session_id=origin)
+
+    assert calls == [str(identity.runtime_session_id), origin]
+    assert rendered == "note-from-first-session"

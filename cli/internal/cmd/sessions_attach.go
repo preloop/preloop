@@ -45,8 +45,6 @@ import (
 const (
 	approvalRequestsListPath = "/api/v1/approval-requests"
 
-	attachDefaultSince = 10 * time.Minute
-
 	// attachNoteNotice is said once on attach: a hook-governed agent has no
 	// stdin, and pretending otherwise is how operators lose a steer.
 	attachNoteNotice = "notes are delivered at the agent's next tool or model call"
@@ -59,13 +57,23 @@ const (
 	// live event).
 	attachEndPollInterval = 30 * time.Second
 
-	attachPingInterval = 25 * time.Second
+	// attachApprovalPageSize is the approval list endpoint's own ceiling, and
+	// attachApprovalMaxPages bounds how far the replay pages through it.
+	attachApprovalPageSize = 100
+	attachApprovalMaxPages = 20
 )
 
-// Reconnect backoff bounds; tests shorten them.
+// Timing knobs; tests shorten them.
 var (
 	attachReconnectMin = time.Second
 	attachReconnectMax = 30 * time.Second
+	// attachPingInterval is how often the client pings; the server answers
+	// every ping, so a healthy connection never goes this long silent.
+	attachPingInterval = 25 * time.Second
+	// attachReadTimeout is how long a connection may stay silent before it
+	// is treated as dropped. Three missed pongs: a half-open connection (a
+	// silent NAT or load balancer drop) then reconnects instead of freezing.
+	attachReadTimeout = 3 * attachPingInterval
 )
 
 // attachIsTerminal is swapped by tests; colour is for people.
@@ -218,11 +226,10 @@ type attachSession struct {
 	sessionID string
 	cutoff    time.Time
 
-	mu       sync.Mutex
-	seen     map[string]bool
-	pending  []attachApproval
-	ended    bool
-	lastSeen time.Time
+	mu      sync.Mutex
+	seen    map[string]bool
+	pending []attachApproval
+	ended   bool
 }
 
 // attachApproval is a pending approval this attach can decide.
@@ -384,15 +391,9 @@ func (s *attachSession) replay() (int, error) {
 		}
 	}
 
-	var approvals []json.RawMessage
-	query := url.Values{"status": {"pending"}, "limit": {"100"}}
-	if err := s.client.Get(approvalRequestsListPath+"?"+query.Encode(), &approvals); err != nil {
-		// Approvals are a separate permission; following the session does
-		// not depend on it.
-		var apiErr *api.APIError
-		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden {
-			return 0, fmt.Errorf("could not read pending approvals: %w", err)
-		}
+	approvals, err := s.pendingApprovals()
+	if err != nil {
+		return 0, err
 	}
 	for _, raw := range approvals {
 		if event, ok := attachEventFromApproval(raw, s.sessionID, s.opts.execution); ok {
@@ -408,6 +409,38 @@ func (s *attachSession) replay() (int, error) {
 		}
 	}
 	return printed, nil
+}
+
+// pendingApprovals pages through the account's pending approvals. The list
+// endpoint has no session filter and no total, so a short page is the only
+// end marker; stopping at the first page could hide this session's approval
+// and turn a typed "a" into a note.
+func (s *attachSession) pendingApprovals() ([]json.RawMessage, error) {
+	var all []json.RawMessage
+	for page := 0; page < attachApprovalMaxPages; page++ {
+		var batch []json.RawMessage
+		query := url.Values{
+			"status": {"pending"},
+			"limit":  {strconv.Itoa(attachApprovalPageSize)},
+			"skip":   {strconv.Itoa(page * attachApprovalPageSize)},
+		}
+		if err := s.client.Get(approvalRequestsListPath+"?"+query.Encode(), &batch); err != nil {
+			// Approvals are a separate permission; following the session
+			// does not depend on it.
+			var apiErr *api.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+				return all, nil
+			}
+			return nil, fmt.Errorf("could not read pending approvals: %w", err)
+		}
+		all = append(all, batch...)
+		if len(batch) < attachApprovalPageSize {
+			return all, nil
+		}
+	}
+	s.notice(fmt.Sprintf("more than %d pending approvals in the account; only the first %d were checked for this session",
+		attachApprovalMaxPages*attachApprovalPageSize, attachApprovalMaxPages*attachApprovalPageSize))
+	return all, nil
 }
 
 // follow streams live events, reconnecting with backoff until the context
@@ -445,6 +478,12 @@ func (s *attachSession) follow(ctx context.Context) error {
 		}
 		firstConnect = false
 		backoff = attachReconnectMin
+		if s.isEnded() {
+			// The session ended between the detail read and the connect.
+			_ = conn.Close()
+			s.notice("session ended; detaching")
+			return nil
+		}
 
 		err = s.stream(ctx, conn, endPoll.C)
 		_ = conn.Close()
@@ -536,14 +575,23 @@ func (s *attachSession) connect(ctx context.Context) (*websocket.Conn, error) {
 func (s *attachSession) stream(ctx context.Context, conn *websocket.Conn, endPoll <-chan time.Time) error {
 	messages := make(chan []byte)
 	readErr := make(chan error, 1)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
 		for {
+			// Re-armed before every read: any frame, including a pong or the
+			// server's heartbeat, proves the connection is alive.
+			_ = conn.SetReadDeadline(time.Now().Add(attachReadTimeout))
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				readErr <- err
 				return
 			}
-			messages <- data
+			select {
+			case messages <- data:
+			case <-done:
+				return
+			}
 		}
 	}()
 	ping := time.NewTicker(attachPingInterval)
@@ -606,9 +654,6 @@ func (s *attachSession) emit(event attachEvent) bool {
 			return false
 		}
 		s.seen[event.key] = true
-	}
-	if event.at.After(s.lastSeen) {
-		s.lastSeen = event.at
 	}
 	switch {
 	case event.approval != nil && event.approvalPending:

@@ -360,23 +360,29 @@ def _claim_operator_note(
     ]
     if origin_session_id and origin_session_id not in session_ids:
         session_ids.append(origin_session_id)
-    try:
-        with get_session_factory()() as db:
-            notes: list[Any] = []
-            for session_id in session_ids:
-                notes.extend(
-                    operator_notes.claim_pending_notes(
-                        db,
-                        account_id=identity.account_id,
-                        managed_agent_id=str(identity.managed_agent_id),
-                        runtime_session_id=session_id,
-                        channel=operator_notes.CHANNEL_HOOK,
-                    )
+    # Each session is claimed in its own transaction and its own try: a claim
+    # commits the notes as delivered, so a failure on the second session must
+    # not discard notes the first one already took.
+    notes: list[Any] = []
+    for session_id in session_ids:
+        try:
+            with get_session_factory()() as db:
+                claimed = operator_notes.claim_pending_notes(
+                    db,
+                    account_id=identity.account_id,
+                    managed_agent_id=str(identity.managed_agent_id),
+                    runtime_session_id=session_id,
+                    channel=operator_notes.CHANNEL_HOOK,
                 )
-            return operator_notes.render_notes_block(notes) if notes else None
-    except Exception:
-        logger.warning("Operator note claim failed on permission check", exc_info=True)
-        return None
+                if claimed:
+                    # Rendered while the session is open; the rows expire
+                    # on close.
+                    notes.append(operator_notes.render_notes_block(claimed))
+        except Exception:
+            logger.warning(
+                "Operator note claim failed on permission check", exc_info=True
+            )
+    return "\n".join(notes) if notes else None
 
 
 def _permission_check_base_url() -> str:
