@@ -1,3 +1,17 @@
+import {
+  renderSessionApproval,
+  renderSessionActivity,
+} from './session-approval-presentation';
+import './session-tool-card';
+import './session-approval-card';
+import './session-live-activity';
+import { type SessionApprovalState } from './session-live-activity';
+import {
+  sessionTools,
+  sessionTimelineTime,
+  type SessionTool,
+} from '../utils/session-live';
+import type { ApprovalRequest } from '../types';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -187,6 +201,29 @@ const REPLAY_SCROLL_RESUME_DELAY_MS = 550;
 
 @customElement('session-replay-panel')
 export class SessionReplayPanel extends LitElement {
+  @state() private approvalState: SessionApprovalState = {
+    requests: [],
+    canDecide: false,
+    author: '',
+    now: Date.now(),
+  };
+  private renderApproval(request: ApprovalRequest) {
+    return renderSessionApproval(this, this.approvalState, request);
+  }
+  private renderActivity() {
+    if (this.replayMode === 'conversation') return nothing;
+    return renderSessionActivity(
+      this,
+      this.session?.id || '',
+      this.events,
+      this.activity,
+      Boolean(this.session?.endedAt),
+      this.approvalState,
+      (state) => {
+        this.approvalState = state;
+      }
+    );
+  }
   @property({ type: Object })
   session: ObservedSession | null = null;
 
@@ -1554,6 +1591,17 @@ export class SessionReplayPanel extends LitElement {
     }
   }
 
+  willUpdate(changed: Map<string | number | symbol, unknown>): void {
+    const previous = changed.get('session') as
+      ObservedSession | null | undefined;
+    if (changed.has('session') && previous?.id !== this.session?.id)
+      this.approvalState = {
+        requests: [],
+        canDecide: false,
+        author: '',
+        now: Date.now(),
+      };
+  }
   updated(changed: Map<string | number | symbol, unknown>): void {
     if (changed.has('availableModels') && !this.optimizeModelId) {
       // Preselect the account default so the optimization model dropdown shows
@@ -4378,6 +4426,7 @@ export class SessionReplayPanel extends LitElement {
 
   private getChatTurns(): ChatTurn[] {
     const events = this.getChatEvents();
+    const tools = sessionTools(this.events, this.activity);
     const seenSignatures = new Set<string>();
     const eventTurns: ChatTurn[] = [];
     const idleExpiryById = this.getIdleExpiryByEventId();
@@ -4397,6 +4446,16 @@ export class SessionReplayPanel extends LitElement {
         if (text && seenSignatures.has(signature)) return;
         if (text) seenSignatures.add(signature);
         const isToolRelated = this.messageIsToolRelated(message);
+        if (
+          isToolRelated &&
+          message.tool_call_ids?.length &&
+          message.tool_call_ids.every((id) =>
+            tools.some(
+              (tool) => tool.callId === id && tool.result !== undefined
+            )
+          )
+        )
+          return;
         if (isToolRelated) toolCallCount += 1;
         deltaMessages.push({
           ...message,
@@ -5516,21 +5575,58 @@ export class SessionReplayPanel extends LitElement {
   private renderChatView() {
     const turns = this.getVisibleChatTurns();
     const mostExpensiveTurnId = this.getMostExpensiveTurnId();
+    const rows: Array<{
+      id: string;
+      timestamp: string | null;
+      turn?: ChatTurn;
+      tool?: SessionTool;
+      request?: ApprovalRequest;
+    }> = [
+      ...turns.map((turn) => ({
+        id: turn.id,
+        timestamp: turn.timestamp,
+        turn,
+      })),
+      ...sessionTools(this.events, this.activity).map((tool) => ({
+        id: tool.id,
+        timestamp: tool.timestamp,
+        tool,
+      })),
+      ...this.approvalState.requests.map((request) => ({
+        id: `approval:${request.id}`,
+        timestamp: request.requested_at,
+        request,
+      })),
+    ];
+    if (this.chatSort === 'newest' || this.chatSort === 'oldest')
+      rows.sort(
+        (a, b) =>
+          (sessionTimelineTime(a.timestamp) -
+            sessionTimelineTime(b.timestamp)) *
+          (this.chatSort === 'newest' ? -1 : 1)
+      );
     return html`
       <div class="panel">
         ${this.renderFocusJumpHint()} ${this.renderChatSummaryBar()}
         ${this.renderChatControlBar(turns.length)}
         ${
-          turns.length
+          rows.length
             ? html`
                 <div
                   class="chat-thread"
                   @keydown=${this.handleChatThreadKeydown}
                 >
                   ${repeat(
-                    turns,
-                    (turn) => turn.id,
-                    (turn) => this.renderChatTurn(turn, mostExpensiveTurnId)
+                    rows,
+                    (row) => row.id,
+                    (row) =>
+                      row.turn
+                        ? this.renderChatTurn(row.turn, mostExpensiveTurnId)
+                        : row.tool
+                          ? html`<session-tool-card
+                              .tool=${row.tool}
+                            ></session-tool-card>`
+                          : this.renderApproval(row.request!)
                   )}
                 </div>
               `
@@ -5681,6 +5777,10 @@ export class SessionReplayPanel extends LitElement {
   }
 
   render() {
+    return html`${this.renderActivity()}${this.renderContent()}`;
+  }
+
+  private renderContent() {
     if (this.loading) {
       return html`
         <div class="loading">
@@ -5694,8 +5794,12 @@ export class SessionReplayPanel extends LitElement {
       return html`<div class="empty">${this.emptyText}</div>`;
     }
 
-    if (!this.events.length && !this.activity.length) {
-      return html`<div class="empty">
+    if (
+      !this.events.length &&
+      !this.activity.length &&
+      !this.approvalState.requests.length
+    ) {
+      return html` <div class="empty">
         No interactions captured for this session.
       </div>`;
     }

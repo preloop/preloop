@@ -48,7 +48,7 @@ def test_usage_endpoint_matches_rows(
         source="browser_use",
         source_ref="step-1",
         content_type="image/png",
-        plaintext=b"a" * 100,
+        plaintext=b"\x89PNG\r\n\x1a\n" + b"a" * 92,
         manifest={},
     )
     recording = crud.store(
@@ -59,7 +59,7 @@ def test_usage_endpoint_matches_rows(
         source="browser_use",
         source_ref="clip-1",
         content_type="video/webm",
-        plaintext=b"b" * 250,
+        plaintext=b"\x1a\x45\xdf\xa3" + b"b" * 246,
         manifest={},
     )
     assert crud.mark_unavailable(
@@ -74,7 +74,9 @@ def test_usage_endpoint_matches_rows(
     body = response.json()
     assert body["used_bytes"] == screenshot.size_bytes
     assert body["budget_bytes"] == budget
-    assert body["by_kind"] == {"screenshot": 100, "recording": 0}
+    assert body["by_kind"]["screenshot"] == 100
+    assert body["by_kind"]["recording"] == 0
+    assert all(v == 0 for k, v in body["by_kind"].items() if k != "screenshot")
     assert body["evicted_count_30d"] == 1
     assert body == account_usage(db_session, account_id=test_user.account_id)
 
@@ -102,6 +104,6 @@ def test_exhausted_budget_is_the_507_error(
             source="browser_use",
             source_ref="clip-held",
             content_type="video/webm",
-            plaintext=b"0123456789abcdef",
+            plaintext=b"\x1a\x45\xdf\xa3" + b"0123456789ab",
             manifest={},
         )

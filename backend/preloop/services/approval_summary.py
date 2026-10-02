@@ -126,7 +126,12 @@ def _call_summary_model(
     kwargs["num_retries"] = 0
     response = litellm.completion(**kwargs)
     check_reasoning_model_empty_content(response)
-    text = (response.choices[0].message.content or "").strip()
+    choice = response.choices[0]
+    if getattr(choice, "finish_reason", None) == "length":
+        # Cut off at max_tokens (reasoning models spend the budget thinking).
+        # What is left is a fragment, often the tail of an argument value.
+        raise ValueError("approval summary truncated at max_tokens")
+    text = (choice.message.content or "").strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1]
         text = text.rsplit("```", 1)[0].strip()
@@ -135,7 +140,54 @@ def _call_summary_model(
         text = text[1:-1].strip()
     if len(text) > SUMMARY_MAX_CHARS:
         text = text[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+    if _is_argument_fragment(text, tool_args):
+        raise ValueError("approval summary is a fragment, not a sentence")
     return text
+
+
+def _is_argument_fragment(text: str, tool_args: dict[str, Any]) -> bool:
+    """True when the text is a lone piece of an argument value.
+
+    A summary such as ``sandbox.examp`` (the middle of an identifier
+    argument) is what a cut-off completion leaves behind. A one-word ask
+    or a summary in a language written without spaces is kept: only a
+    single token that also appears inside the arguments is rejected.
+    """
+    token = text.strip().strip(".?!")
+    if not token or any(ch.isspace() for ch in token):
+        return False
+    serialized = json.dumps(tool_args, ensure_ascii=False, default=str)
+    return token in serialized
+
+
+def fallback_approval_summary(
+    tool_name: str, tool_args: Optional[dict[str, Any]] = None
+) -> str:
+    """Deterministic ask used when no model summary is available.
+
+    Built from the tool name and redacted top-level arguments so receivers
+    (the webhook ``summary`` field) always get a sentence, never null.
+    """
+    question = _ask_user_question(tool_args)
+    if question:
+        return question[:SUMMARY_MAX_CHARS]
+    parts = []
+    for key, value in redact_dict(dict(tool_args or {})).items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, default=str)
+        text = str(value)
+        if len(text) > 80:
+            text = text[:79] + "…"
+        parts.append(f"{key}={text}")
+    ask = f"Allow {tool_name}"
+    if parts:
+        ask += " with " + ", ".join(parts)
+    ask += "?"
+    if len(ask) > SUMMARY_MAX_CHARS:
+        ask = ask[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+    return ask
 
 
 async def generate_approval_summary(

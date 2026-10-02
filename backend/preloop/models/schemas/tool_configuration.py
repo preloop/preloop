@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 
 # Tool Configuration Schemas
@@ -217,11 +217,37 @@ class ApprovalWorkflowResponse(ApprovalWorkflowBase):
     ai_confidence_threshold: float
     ai_fallback_behavior: str
     escalation_workflow_id: Optional[UUID] = None
+    # Webhook signing. The secret itself is returned once: in the response
+    # that generated it (create, or rotate). Reads carry only the hint.
+    webhook_secret: Optional[str] = Field(
+        None,
+        description=(
+            "Webhook signing secret. Present only in the response that "
+            "generated it; store it, it is not shown again."
+        ),
+    )
+    webhook_secret_hint: Optional[str] = Field(
+        None, description="Last characters of the webhook signing secret"
+    )
     # Timestamps
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def _hide_webhook_secret(self) -> "ApprovalWorkflowResponse":
+        """Keep the stored signing secret out of ``approval_config``."""
+        config = self.approval_config
+        if isinstance(config, dict) and "webhook_secret" in config:
+            secret = config.get("webhook_secret")
+            if isinstance(secret, str) and len(secret) >= 4:
+                # Same hint the deliveries list shows (signing.secret_hint).
+                self.webhook_secret_hint = secret[-4:]
+            self.approval_config = {
+                k: v for k, v in config.items() if k != "webhook_secret"
+            }
+        return self
 
     @field_serializer("id", "account_id", "escalation_workflow_id")
     def serialize_uuid(self, value: Optional[UUID]) -> Optional[str]:

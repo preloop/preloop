@@ -291,10 +291,14 @@ class TestApprovalDecision:
         assert decision.approved is True
         assert decision.comment == "Approved by team lead"
 
-    def test_approved_field_required(self):
-        """Test that approved field is required."""
+    def test_approved_field_optional(self):
+        """approved is optional: /approve and /decline take it from the path.
+
+        /decide enforces it in the handler (issue 1128).
+        """
+        assert ApprovalDecision().approved is None
         with pytest.raises(ValidationError):
-            ApprovalDecision()
+            ApprovalDecision(approved="not-a-bool")
 
     def test_effective_comment_precedence(self):
         """answer_text > selected_option > comment for ask_user answers."""

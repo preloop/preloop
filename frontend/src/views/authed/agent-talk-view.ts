@@ -616,7 +616,9 @@ export class AgentTalkView extends LitElement {
       <session-chat-view
         scrollable
         followLive
+        @session-live-reload=${() => this.scheduleReload()}
         .sessionId=${this.sessionId || ''}
+        .ended=${Boolean(this.sessions.find((session) => session.id === this.sessionId)?.ended_at)}
         @browser-step-open=${(event: CustomEvent<{ key: string }>) => {
           this.browserStepViewerIndex = sortBrowserSteps(
             this.activity

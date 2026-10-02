@@ -3,7 +3,7 @@
 import logging
 import os
 import uuid
-from typing import AsyncGenerator, Optional, Union
+from typing import Annotated, AsyncGenerator, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,8 +45,34 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 #: Channel label recorded on the timeline for decisions made through the
-#: authenticated API (web console and mobile app sessions).
+#: authenticated API from a browser session (the web console).
 AUTHENTICATED_DECISION_CHANNEL = "console"
+#: Decisions made with an API key (CLI, scripts, receiving systems).
+API_DECISION_CHANNEL = "api"
+#: The iOS app's requests carry URLSession's default user agent, which
+#: starts with the app's bundle name ("PreloopAI/<build> CFNetwork/...").
+_MOBILE_USER_AGENT_MARKER = "preloopai"
+
+
+def _decision_channel(request: Request, current_user: User) -> str:
+    """Name the surface an authenticated decision came through.
+
+    ``api`` when the caller authenticated with an API key: that comes from
+    the credential itself. For a browser or app session it is ``mobile``
+    when the request comes from the mobile app, else ``console``. The
+    session label is a hint about the surface, not an authorization fact;
+    who decided is recorded separately from the authenticated user.
+    """
+    # Read the instance dict: the attribute is only set by API-key auth.
+    if getattr(current_user, "__dict__", {}).get("_auth_api_key") is not None:
+        return API_DECISION_CHANNEL
+    headers = getattr(request, "headers", None) or {}
+    user_agent = headers.get("user-agent")
+    if isinstance(user_agent, str) and user_agent.lower().startswith(
+        _MOBILE_USER_AGENT_MARKER
+    ):
+        return "mobile"
+    return AUTHENTICATED_DECISION_CHANNEL
 
 
 def _decider_identity(current_user: User) -> str:
@@ -320,13 +346,39 @@ def get_approval_request_history(
     return response
 
 
+def _decision_for_path(
+    decision: Optional[ApprovalDecision], *, approving: bool
+) -> ApprovalDecision:
+    """Normalize the body of /approve or /decline, where the path is the decision.
+
+    The body is optional. ``approved`` may still be sent by older callers; if
+    it is, it must agree with the path, so a contradictory request is refused
+    instead of silently doing the opposite of what one half of it says.
+    """
+    decision = decision or ApprovalDecision()
+    if decision.approved is not None and decision.approved != approving:
+        route = "approve" if approving else "decline"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'approved': {str(decision.approved).lower()} contradicts "
+                f"/{route}. Omit 'approved', or use /decide."
+            ),
+        )
+    decision.approved = approving
+    return decision
+
+
 @router.get("", response_model=list[ApprovalRequestResponse])
 @require_permission("view_approvals")
 def list_approval_requests(
     status: Optional[str] = Query(None, description="Filter by status"),
     execution_id: Optional[str] = Query(None, description="Filter by execution ID"),
-    limit: int = Query(50, le=100, description="Maximum number of results"),
-    skip: int = Query(0, description="Number of results to skip"),
+    runtime_session_id: Annotated[
+        Optional[uuid.UUID], Query(description="Filter by runtime session ID")
+    ] = None,
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
+    skip: int = Query(0, ge=0, description="Number of results to skip"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> list[ApprovalRequestResponse]:
@@ -335,6 +387,7 @@ def list_approval_requests(
     Args:
         status: Filter by status (pending, approved, declined, etc.)
         execution_id: Filter by execution ID
+        runtime_session_id: Filter by a validated runtime session ID
         limit: Maximum number of results
         skip: Number of results to skip
         current_user: Current authenticated user
@@ -347,6 +400,7 @@ def list_approval_requests(
         db,
         account_id=current_user.account_id,
         execution_id=execution_id,
+        runtime_session_id=str(runtime_session_id) if runtime_session_id else None,
         status=status,
         skip=skip,
         limit=limit,
@@ -363,8 +417,8 @@ def list_approval_requests(
 @require_permission("decide_approvals")
 async def approve_request(
     request_id: uuid.UUID,
-    decision: ApprovalDecision,
     request: Request,
+    decision: Optional[ApprovalDecision] = None,
     current_user: User = Depends(get_current_active_user),
     # Required by @require_permission (fail-closed checks kwargs["db"]).
     # Handler body uses get_async_db_session() for ApprovalService work.
@@ -385,6 +439,7 @@ async def approve_request(
         HTTPException: If request not found or unauthorized
     """
     _ = db  # Injected for @require_permission; not used by handler body.
+    decision = _decision_for_path(decision, approving=True)
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
@@ -424,7 +479,7 @@ async def approve_request(
             request_id,
             comment,
             user_id=current_user.id,
-            channel=AUTHENTICATED_DECISION_CHANNEL,
+            channel=_decision_channel(request, current_user),
             structured_answer=answer,
         )
         if not updated:
@@ -445,8 +500,8 @@ async def approve_request(
 @require_permission("decide_approvals")
 async def decline_request(
     request_id: uuid.UUID,
-    decision: ApprovalDecision,
     request: Request,
+    decision: Optional[ApprovalDecision] = None,
     current_user: User = Depends(get_current_active_user),
     # Required by @require_permission (fail-closed checks kwargs["db"]).
     # Handler body uses get_async_db_session() for ApprovalService work.
@@ -467,6 +522,7 @@ async def decline_request(
         HTTPException: If request not found or unauthorized
     """
     _ = db  # Injected for @require_permission; not used by handler body.
+    decision = _decision_for_path(decision, approving=False)
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
@@ -499,7 +555,7 @@ async def decline_request(
             request_id,
             decision.effective_comment,
             user_id=current_user.id,
-            channel=AUTHENTICATED_DECISION_CHANNEL,
+            channel=_decision_channel(request, current_user),
         )
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to decline request")
@@ -544,6 +600,15 @@ async def decide_request(
         HTTPException: If request not found or unauthorized
     """
     _ = db  # Injected for @require_permission; not used by handler body.
+    if decision.approved is None:
+        # /decide is the one route whose path does not name the decision.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "'approved' (true or false) is required on /decide. "
+                "Or POST to /approve or /decline, which need no body."
+            ),
+        )
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
@@ -584,7 +649,7 @@ async def decide_request(
                 request_id,
                 comment,
                 user_id=current_user.id,
-                channel=AUTHENTICATED_DECISION_CHANNEL,
+                channel=_decision_channel(request, current_user),
                 structured_answer=answer,
             )
         else:
@@ -592,7 +657,7 @@ async def decide_request(
                 request_id,
                 decision.effective_comment,
                 user_id=current_user.id,
-                channel=AUTHENTICATED_DECISION_CHANNEL,
+                channel=_decision_channel(request, current_user),
             )
 
         if not updated:
@@ -719,14 +784,14 @@ async def decide_requests_batch(
                     request_id,
                     decision.comment,
                     user_id=current_user.id,
-                    channel=AUTHENTICATED_DECISION_CHANNEL,
+                    channel=_decision_channel(request, current_user),
                 )
             else:
                 updated = await approval_service.decline_request(
                     request_id,
                     decision.comment,
                     user_id=current_user.id,
-                    channel=AUTHENTICATED_DECISION_CHANNEL,
+                    channel=_decision_channel(request, current_user),
                 )
         except Exception as error:  # noqa: BLE001 - one bad id, not the batch
             await db.rollback()

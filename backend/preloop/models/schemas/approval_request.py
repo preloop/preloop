@@ -433,10 +433,19 @@ class ApprovalEventPublic(BaseModel):
 class ApprovalDecision(BaseModel):
     """Schema for an approval decision or a question answer."""
 
-    approved: bool = Field(
-        ..., description="Whether the request is approved or declined"
+    approved: Optional[bool] = Field(
+        None,
+        description=(
+            "Required on /decide. Optional on /approve and /decline, where the "
+            "path already names the decision; if sent there it must agree with it."
+        ),
     )
     comment: Optional[str] = Field(None, description="Comment from the approver")
+    reason: Optional[str] = Field(
+        None,
+        description="Deprecated alias for comment, used when comment is not set.",
+        json_schema_extra={"deprecated": True},
+    )
     selected_option: Optional[str] = Field(
         None, description="For ask_user questions: the option the user chose"
     )
@@ -452,6 +461,13 @@ class ApprovalDecision(BaseModel):
             "them is ignored."
         ),
     )
+
+    @model_validator(mode="after")
+    def _reason_is_comment(self) -> "ApprovalDecision":
+        """Fold the legacy ``reason`` key into ``comment`` (older CLI builds)."""
+        if self.comment is None and self.reason:
+            self.comment = self.reason
+        return self
 
     @property
     def effective_comment(self) -> Optional[str]:

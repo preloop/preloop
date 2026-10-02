@@ -43,6 +43,26 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
     return exc
 
 
+class UpstreamToolContent(list):
+    """Content blocks of an upstream ``CallToolResult``.
+
+    Still a plain list for existing callers, but keeps ``isError`` and
+    ``structuredContent`` so the proxy can forward them instead of
+    flattening a tool error into a normal result.
+    """
+
+    def __init__(
+        self,
+        items: Any = (),
+        *,
+        is_error: bool = False,
+        structured_content: Optional[Dict[str, Any]] = None,
+    ):
+        super().__init__(items)
+        self.is_error = is_error
+        self.structured_content = structured_content
+
+
 def is_mcp_unavailable_error(exc: BaseException) -> bool:
     """Heuristic: does ``exc`` indicate the upstream MCP server is unreachable/
     unavailable (connection refused, 5xx/502, ``Session terminated``, timeout)
@@ -298,7 +318,7 @@ class MCPClient:
 
     async def call_tool(
         self, tool_name: str, arguments: Dict[str, Any]
-    ) -> List[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    ) -> UpstreamToolContent:
         """Call a tool on the MCP server.
 
         Args:
@@ -306,7 +326,8 @@ class MCPClient:
             arguments: Tool arguments
 
         Returns:
-            Tool execution result
+            Content blocks, carrying the upstream ``is_error`` and
+            ``structured_content``
 
         Raises:
             RuntimeError: If not connected
@@ -344,7 +365,14 @@ class MCPClient:
                             )
                         )
 
-                return content_list
+                structured = getattr(result, "structuredContent", None)
+                return UpstreamToolContent(
+                    content_list,
+                    is_error=getattr(result, "isError", False) is True,
+                    structured_content=(
+                        structured if isinstance(structured, dict) else None
+                    ),
+                )
         except BaseException as e:
             # NOTE: ExceptionGroup (py3.11) subclasses Exception, so it would
             # otherwise be swallowed by a bare `except Exception` and re-raised

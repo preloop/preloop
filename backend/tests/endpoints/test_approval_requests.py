@@ -123,6 +123,7 @@ class TestListApprovalRequests:
 
             result = approval_requests.list_approval_requests(
                 status=None,
+                runtime_session_id=None,
                 execution_id=None,
                 limit=50,
                 skip=0,
@@ -137,6 +138,7 @@ class TestListApprovalRequests:
             mock_crud.get_multi_by_account.assert_called_once_with(
                 mock_db_session,
                 account_id=mock_user.account_id,
+                runtime_session_id=None,
                 execution_id=None,
                 status=None,
                 skip=0,
@@ -154,6 +156,7 @@ class TestListApprovalRequests:
 
             approval_requests.list_approval_requests(
                 status="pending",
+                runtime_session_id=None,
                 execution_id=None,
                 limit=50,
                 skip=0,
@@ -164,6 +167,7 @@ class TestListApprovalRequests:
             mock_crud.get_multi_by_account.assert_called_once_with(
                 mock_db_session,
                 account_id=mock_user.account_id,
+                runtime_session_id=None,
                 execution_id=None,
                 status="pending",
                 skip=0,
@@ -182,6 +186,7 @@ class TestListApprovalRequests:
 
             approval_requests.list_approval_requests(
                 status=None,
+                runtime_session_id=None,
                 execution_id=execution_id,
                 limit=50,
                 skip=0,
@@ -192,11 +197,62 @@ class TestListApprovalRequests:
             mock_crud.get_multi_by_account.assert_called_once_with(
                 mock_db_session,
                 account_id=mock_user.account_id,
+                runtime_session_id=None,
                 execution_id=execution_id,
                 status=None,
                 skip=0,
                 limit=50,
             )
+
+    def test_list_approval_requests_with_runtime_session_id_filter(
+        self, mock_user: MagicMock, mock_db_session: MagicMock
+    ) -> None:
+        """Validated session UUID is combined with account, execution and status."""
+        session_id = uuid.uuid4()
+        with patch(
+            "preloop.api.endpoints.approval_requests.crud_approval_request"
+        ) as mock_crud:
+            mock_crud.get_multi_by_account.return_value = []
+            approval_requests.list_approval_requests(
+                runtime_session_id=session_id,
+                status="pending",
+                execution_id="execution-example",
+                limit=25,
+                skip=100,
+                current_user=mock_user,
+                db=mock_db_session,
+            )
+            mock_crud.get_multi_by_account.assert_called_once_with(
+                mock_db_session,
+                account_id=mock_user.account_id,
+                execution_id="execution-example",
+                runtime_session_id=str(session_id),
+                status="pending",
+                skip=100,
+                limit=25,
+            )
+
+    def test_invalid_session_uuid_is_rejected_before_crud(
+        self, mock_user: MagicMock, mock_db_session: MagicMock
+    ) -> None:
+        """Malformed session filters cannot broaden an approval query."""
+        app = FastAPI()
+        app.include_router(approval_requests.router)
+        app.dependency_overrides[get_current_active_user] = lambda: mock_user
+        app.dependency_overrides[get_db_session] = lambda: mock_db_session
+        with (
+            patch(
+                "preloop.api.endpoints.approval_requests.crud_approval_request"
+            ) as mock_crud,
+            TestClient(app) as client,
+        ):
+            assert (
+                client.get(
+                    "/approval-requests?runtime_session_id=not-a-uuid"
+                ).status_code
+                == 422
+            )
+            mock_crud.get_multi_by_account.assert_not_called()
 
     def test_list_approval_requests_empty(self, mock_user, mock_db_session):
         """Test listing when no approval requests exist."""
@@ -207,6 +263,7 @@ class TestListApprovalRequests:
 
             result = approval_requests.list_approval_requests(
                 status=None,
+                runtime_session_id=None,
                 execution_id=None,
                 limit=50,
                 skip=0,

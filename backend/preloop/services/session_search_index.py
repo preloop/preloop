@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,7 @@ from preloop.models.models.session_search_document import (
     REDACTION_STATE_CLEAR,
     REDACTION_STATE_METADATA_ONLY,
     REDACTION_STATE_REDACTED,
+    SOURCE_KIND_ARTIFACT,
     SOURCE_KIND_BROWSER_STEP,
     SOURCE_KIND_FLOW_LOG,
     SOURCE_KIND_GATEWAY_INTERACTION,
@@ -42,7 +43,9 @@ from preloop.models.models.session_search_document import (
     SOURCE_KIND_TRANSCRIPT_MESSAGE,
     SessionSearchDocument,
 )
+from preloop.services import artifact_text
 from preloop.services.gateway_usage_search import GatewayUsageSearchService
+from preloop.services.model_content_detectors import PII_EMAIL_RE
 from preloop.utils.secret_scrubbing import REDACTED as SCRUB_PLACEHOLDER
 from preloop.utils.secret_scrubbing import scrub_secrets
 
@@ -57,6 +60,11 @@ CHUNK_OVERLAP_CHARS = 200
 #: A single source never produces more than this many chunks. A runaway
 #: payload costs a bounded number of rows, and the cut is deterministic.
 MAX_CHUNKS_PER_SOURCE = 64
+#: Chunk ceiling for one artifact: enough for the 1 MiB of extracted text
+#: :mod:`preloop.services.artifact_text` keeps, at one chunk per
+#: ``CHUNK_SIZE_CHARS - CHUNK_OVERLAP_CHARS`` characters, plus headroom for
+#: the cut being pulled back to a word boundary.
+ARTIFACT_MAX_CHUNKS = 1200
 #: Mask applied to a credential-looking value found in free text.
 REDACTED_VALUE = GatewayUsageSearchService.REDACTED_VALUE
 
@@ -99,18 +107,29 @@ def indexing_enabled() -> bool:
     return bool(getattr(settings, "session_search_index_enabled", True))
 
 
-def chunk_text(text: str) -> List[str]:
+def chunk_text(text: str, *, max_chunks: int = MAX_CHUNKS_PER_SOURCE) -> List[str]:
     """Split normalised text into deterministic overlapping chunks."""
+    return [chunk for _start, chunk in chunk_spans(text, max_chunks=max_chunks)]
+
+
+def chunk_spans(
+    text: str, *, max_chunks: int = MAX_CHUNKS_PER_SOURCE
+) -> List[Tuple[int, str]]:
+    """Chunks as :func:`chunk_text` cuts them, each with its start offset.
+
+    The offset is into the stripped text, which is what lets a writer map a
+    chunk back to the transcript cue it begins in.
+    """
     normalized = (text or "").strip()
     if not normalized:
         return []
     if len(normalized) <= CHUNK_SIZE_CHARS:
-        return [normalized]
+        return [(0, normalized)]
 
-    chunks: List[str] = []
+    chunks: List[Tuple[int, str]] = []
     start = 0
     length = len(normalized)
-    while start < length and len(chunks) < MAX_CHUNKS_PER_SOURCE:
+    while start < length and len(chunks) < max_chunks:
         end = min(start + CHUNK_SIZE_CHARS, length)
         window = normalized[start:end]
         if end < length:
@@ -126,7 +145,8 @@ def chunk_text(text: str) -> List[str]:
                 window = normalized[start:end]
         chunk = window.strip()
         if chunk:
-            chunks.append(chunk)
+            leading = len(window) - len(window.lstrip())
+            chunks.append((start + leading, chunk))
         if end >= length:
             break
         start = max(end - CHUNK_OVERLAP_CHARS, start + 1)
@@ -194,9 +214,11 @@ def _build_chunks(
     api_key_id: Optional[Any] = None,
     flow_id: Optional[Any] = None,
     status: Optional[str] = None,
+    max_chunks: int = MAX_CHUNKS_PER_SOURCE,
+    chunk_meta: Optional[Callable[[int], Dict[str, Any]]] = None,
 ) -> List[SessionSearchChunk]:
-    pieces = chunk_text(text)
-    total = len(pieces)
+    spans = chunk_spans(text, max_chunks=max_chunks)
+    total = len(spans)
     return [
         SessionSearchChunk(
             content=piece,
@@ -210,9 +232,13 @@ def _build_chunks(
             api_key_id=api_key_id,
             flow_id=flow_id,
             status=status,
-            meta_data={**(meta_data or {}), "chunk_count": total},
+            meta_data={
+                **(meta_data or {}),
+                **(chunk_meta(offset) if chunk_meta is not None else {}),
+                "chunk_count": total,
+            },
         )
-        for index, piece in enumerate(pieces)
+        for index, (offset, piece) in enumerate(spans)
     ]
 
 
@@ -276,6 +302,8 @@ def write_source_chunks(
     status: Optional[str] = None,
     commit: bool = False,
     existing: Optional[Sequence[SessionSearchDocument]] = None,
+    max_chunks: int = MAX_CHUNKS_PER_SOURCE,
+    chunk_meta: Optional[Callable[[int], Dict[str, Any]]] = None,
 ) -> List[SessionSearchDocument]:
     """Write one source's chunks, swallowing every failure.
 
@@ -311,6 +339,8 @@ def write_source_chunks(
             api_key_id=api_key_id,
             flow_id=flow_id,
             status=status,
+            max_chunks=max_chunks,
+            chunk_meta=chunk_meta,
         )
         if not chunks:
             return []
@@ -560,6 +590,173 @@ def index_browser_step(
         api_key_id=getattr(activity, "api_key_id", None),
         status=getattr(activity, "status", None),
         commit=commit,
+    )
+
+
+def redact_artifact_text(text: str) -> tuple[str, bool]:
+    """:func:`redact_text`, plus email addresses masked.
+
+    Artifact text is the one source that is a whole document a person wrote
+    or said, so the address of whoever is named in it is masked as well.
+    Phone numbers and names are not: the shipped phone pattern is US shaped
+    and would leave a partial number behind. A pluggable redaction hook is
+    #1100.
+    """
+    masked, changed = redact_text(text)
+    masked, emails = PII_EMAIL_RE.subn(REDACTED_VALUE, masked)
+    return masked, bool(changed or emails)
+
+
+def _artifact_header(artifact: Any) -> str:
+    labels = getattr(artifact, "labels", None) or {}
+    label_text = " ".join(
+        f"{key}={' '.join(map(str, value)) if isinstance(value, list) else value}"
+        for key, value in sorted(labels.items())
+    )
+    lines = [
+        f"kind: {SOURCE_KIND_ARTIFACT}",
+        f"artifact_kind: {artifact.kind}",
+        f"name: {artifact.name}" if getattr(artifact, "name", None) else "",
+        f"tool_name: {artifact.tool_name}"
+        if getattr(artifact, "tool_name", None)
+        else "",
+        f"labels: {label_text}" if label_text else "",
+    ]
+    return redact_artifact_text("\n".join(line for line in lines if line))[0]
+
+
+def _artifact_plaintext(artifact: Any) -> Optional[bytes]:
+    from preloop.models.crud import runtime_session_artifact as crud_artifact
+
+    if getattr(artifact, "ciphertext", None) is None:
+        return None
+    try:
+        return crud_artifact.decrypt(artifact)
+    except ValueError:
+        logger.warning("Artifact %s could not be decrypted for indexing", artifact.id)
+        return None
+
+
+def _record_text_status(artifact: Any, extracted: Any) -> None:
+    has_text = extracted is not None and not extracted.empty
+    artifact.text_status = (
+        artifact_text.TEXT_STATUS_EXTRACTED
+        if has_text
+        else artifact_text.TEXT_STATUS_NONE
+    )
+    if has_text and extracted.truncated:
+        manifest = dict(artifact.manifest or {})
+        manifest["text_truncated"] = True
+        artifact.manifest = manifest
+
+
+def index_artifact_text(
+    db: Session,
+    artifact: Any,
+    *,
+    commit: bool = True,
+) -> List[SessionSearchDocument]:
+    """Index one stored session artifact into the session corpus.
+
+    Transcripts and text documents are extracted by
+    :mod:`preloop.services.artifact_text`, masked with
+    :func:`redact_artifact_text`, chunked and written with source kind
+    ``artifact``. Every chunk carries the artifact id, its timeline
+    ``activity_id``, kind, name and labels in ``meta_data``; a timed
+    transcript chunk also carries ``cue_start``, the start in seconds of the
+    cue the chunk begins in. Other kinds (images, audio, PDF) index the
+    name, labels and tool only.
+
+    Records ``text_status`` (and ``manifest.text_truncated`` past the 1 MiB
+    text cap) on the artifact. Content capture gates the body the same way
+    it does for every other source. Never raises.
+    """
+    try:
+        extracted = None
+        if artifact_text.supports(artifact.kind, artifact.content_type):
+            data = _artifact_plaintext(artifact)
+            if data is not None:
+                extracted = artifact_text.extract_text(
+                    artifact.kind, artifact.content_type, data
+                )
+        _record_text_status(artifact, extracted)
+        # Commit the status on its own: the chunk write below returns without
+        # committing when indexing is off or it fails, and the request session
+        # is closed with a rollback.
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+    except Exception:  # noqa: BLE001 - indexing never fails its caller
+        logger.warning(
+            "Artifact text extraction failed for %s", artifact.id, exc_info=True
+        )
+        db.rollback()
+        return []
+
+    header = _artifact_header(artifact)
+    content_captured = bool(settings.model_gateway_capture_content)
+    has_text = extracted is not None and not extracted.empty
+    cue_offsets: List[Tuple[int, Optional[float]]] = []
+    if has_text and content_captured:
+        if extracted.cues:
+            lines: List[str] = []
+            position = len(header) + 1
+            for cue in extracted.cues:
+                line = redact_artifact_text(cue.text)[0]
+                cue_offsets.append((position, cue.start))
+                lines.append(line)
+                position += len(line) + 1
+            body = "\n".join(lines)
+        else:
+            body = redact_artifact_text(extracted.text)[0]
+        text = f"{header}\n{body}"
+    elif has_text:
+        plain = extracted.text or "\n".join(cue.text for cue in extracted.cues)
+        text = f"{header}\n" + _descriptor(
+            kind=SOURCE_KIND_ARTIFACT, role="artifact", text=plain
+        )
+    else:
+        text = header
+
+    def chunk_meta(offset: int) -> Dict[str, Any]:
+        if not cue_offsets:
+            return {}
+        start = cue_offsets[0][1]
+        for position, cue_start in cue_offsets:
+            if position > offset:
+                break
+            start = cue_start
+        return {"cue_start": start} if start is not None else {}
+
+    meta_data: Dict[str, Any] = {
+        "artifact_id": str(artifact.id),
+        "activity_id": str(artifact.activity_id) if artifact.activity_id else None,
+        "kind": artifact.kind,
+        "name": artifact.name,
+        "labels": dict(artifact.labels or {}),
+        "content_type": artifact.content_type,
+        "tool_name": artifact.tool_name,
+        "text_status": artifact.text_status,
+    }
+    if has_text and extracted.truncated:
+        meta_data["text_truncated"] = True
+    return write_source_chunks(
+        db,
+        account_id=artifact.account_id,
+        runtime_session_id=artifact.runtime_session_id,
+        source_kind=SOURCE_KIND_ARTIFACT,
+        source_id=artifact.id,
+        text=text,
+        occurred_at=getattr(artifact, "created_at", None),
+        role="artifact",
+        content_captured=content_captured,
+        already_sanitised=True,
+        meta_data=meta_data,
+        status=artifact.kind,
+        commit=commit,
+        max_chunks=ARTIFACT_MAX_CHUNKS,
+        chunk_meta=chunk_meta,
     )
 
 
@@ -813,7 +1010,7 @@ def redact_indexed_source(
             text=replacement_text,
             occurred_at=occurred_at or first.occurred_at,
             role=role if role is not None else first.role,
-            meta_data={"redacted_after_indexing": True},
+            meta_data=_carried_meta(source_kind, first.meta_data),
             model_alias=first.model_alias,
             provider_name=first.provider_name,
             runtime_principal_id=first.runtime_principal_id,
@@ -839,6 +1036,26 @@ def redact_indexed_source(
     if commit:
         db.commit()
     return RedactionOutcome(action="withheld", chunks=marked)
+
+
+def _carried_meta(
+    source_kind: str, previous: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Metadata a redaction rewrite keeps from the chunks it replaces.
+
+    An artifact chunk is found and filtered by the identity in its metadata
+    (artifact id, kind, labels), so a redaction must not strip it. Per-chunk
+    keys do not carry over: the replacement text is chunked afresh.
+    """
+    carried: Dict[str, Any] = {}
+    if source_kind == SOURCE_KIND_ARTIFACT and previous:
+        carried = {
+            key: value
+            for key, value in previous.items()
+            if key not in ("chunk_count", "cue_start", "content_captured")
+        }
+    carried["redacted_after_indexing"] = True
+    return carried
 
 
 def _descriptor(*, kind: str, role: Optional[str], text: str) -> str:
