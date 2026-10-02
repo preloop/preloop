@@ -575,3 +575,27 @@ def test_pkce_encryption_ttl_and_configuration_version_binding(storage: tuple) -
     with crud._session() as db:
         row = db.get(models.OAuthConnectionTransaction, transaction["id"])
         assert row.status == "invalidated" and row.pkce_verifier_encrypted is None
+
+
+def test_disconnected_tracker_cannot_reconnect_to_another_instance(
+    storage: tuple,
+) -> None:
+    crud, owners = storage
+    _, grant, _ = active(crud, owners[0])
+    crud.disconnect(account_id=owners[0][0], grant_id=grant["id"], expected_version=0)
+    config = crud.create_configuration(
+        account_id=owners[0][0],
+        provider="bitbucket",
+        instance="https://other.example.com",
+        client_id="synthetic-client",
+        client_secret="synthetic-client-secret",
+        callback_uri=CALLBACK,
+        selected_permissions=[],
+    )
+    binding, pending_grant, _ = pending(crud, owners[0], config)
+    with pytest.raises(OAuthConflictError):
+        crud.complete_connection(
+            **binding, tracker_name="Wrong instance", tracker_id=grant["tracker_id"]
+        )
+    row = crud.get_grant(account_id=owners[0][0], grant_id=pending_grant["id"])
+    assert row["status"] == "pending" and row["tracker_id"] is None

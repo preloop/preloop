@@ -473,6 +473,7 @@ class CRUDManagedOAuth:
                     tracker is None
                     or tracker.is_deleted
                     or tracker.tracker_type != config.provider
+                    or tracker.url != config.canonical_instance
                     or tracker.auth_type != "managed_oauth"
                     or tracker.api_key
                     or tracker.credentials_secret_id
