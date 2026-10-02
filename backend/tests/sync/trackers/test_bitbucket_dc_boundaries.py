@@ -135,3 +135,20 @@ async def test_error_response_cannot_echo_pat(bound: tuple) -> None:
         await tracker.get_pull_request(1)
     assert "synthetic-pat" not in str(exc.value)
     assert "[redacted]" in str(exc.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["bad", "1/2", "", 0, -1, True, 1.5])
+@pytest.mark.parametrize("operation", ["read", "reply", "update", "delete"])
+async def test_malformed_comment_ids_fail_before_io(bound, value, operation):
+    tracker, requests = bound
+    with pytest.raises(TrackerResponseError, match="Invalid comment id"):
+        if operation == "read":
+            await tracker.get_pull_request_comment(1, value)
+        elif operation == "reply":
+            await tracker.add_pull_request_comment(1, "reply", parent_id=value)
+        elif operation == "update":
+            await tracker.update_pull_request_comment(1, value, "edit")
+        else:
+            await tracker.delete_pull_request_comment(1, value)
+    assert requests == []

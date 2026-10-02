@@ -609,6 +609,16 @@ class BitbucketDCTracker(BaseTracker):
         key, slug = self._split_repo(repo_full_name)
         return f"projects/{quote(key, safe='~')}/repos/{quote(slug, safe='')}"
 
+    @staticmethod
+    def _comment_id(value: int | str) -> int:
+        try:
+            number = int(str(value))
+        except (TypeError, ValueError) as exc:
+            raise TrackerResponseError("Invalid comment id.") from exc
+        if number <= 0:
+            raise TrackerResponseError("Invalid comment id.")
+        return number
+
     def _pr_path(self, pr_id: int | str, repo_full_name: Optional[str] = None) -> str:
         try:
             number = int(str(pr_id).strip().lstrip("#"))
@@ -1194,7 +1204,7 @@ class BitbucketDCTracker(BaseTracker):
     ) -> Dict[str, Any]:
         """Return one raw comment (carries ``version``)."""
         data = await self._get_json(
-            f"{self._pr_path(pr_id, repo_full_name)}/comments/{int(comment_id)}"
+            f"{self._pr_path(pr_id, repo_full_name)}/comments/{self._comment_id(comment_id)}"
         )
         reject_cloud_payload(data, "comment")
         if not isinstance(data, Mapping):
@@ -1422,7 +1432,7 @@ class BitbucketDCTracker(BaseTracker):
             raise ValueError("Comment text must not be empty.")
         payload: Dict[str, Any] = {"text": body}
         if parent_id is not None:
-            payload["parent"] = {"id": int(parent_id)}
+            payload["parent"] = {"id": self._comment_id(parent_id)}
         elif path:
             payload["anchor"] = build_comment_anchor(
                 path=path,
@@ -1463,7 +1473,7 @@ class BitbucketDCTracker(BaseTracker):
         The retry only happens when the fields named in ``guard_fields`` are
         unchanged by the concurrent edit; otherwise the conflict is raised.
         """
-        path = f"{self._pr_path(pr_id, repo_full_name)}/comments/{int(comment_id)}"
+        path = f"{self._pr_path(pr_id, repo_full_name)}/comments/{self._comment_id(comment_id)}"
         current = await self.get_pull_request_comment(
             pr_id, comment_id, repo_full_name=repo_full_name
         )
@@ -1528,7 +1538,7 @@ class BitbucketDCTracker(BaseTracker):
             BitbucketDCConflictError: When the comment has replies or keeps
                 changing.
         """
-        path = f"{self._pr_path(pr_id, repo_full_name)}/comments/{int(comment_id)}"
+        path = f"{self._pr_path(pr_id, repo_full_name)}/comments/{self._comment_id(comment_id)}"
         current = await self.get_pull_request_comment(
             pr_id, comment_id, repo_full_name=repo_full_name
         )
