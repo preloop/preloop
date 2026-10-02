@@ -213,6 +213,55 @@ async def decide_approval_request_public(
     Raises:
         HTTPException: If token is invalid, request not found, or already resolved
     """
+    return await _decide_with_token(request_id, decision, token, db_sync)
+
+
+class TokenDecisionBody(BaseModel):
+    """Optional body for the token /approve and /decline routes."""
+
+    comment: Optional[str] = None
+    answer: Optional[dict] = None
+
+
+@router.post("/{request_id}/approve")
+async def approve_approval_request_public(
+    request_id: uuid.UUID,
+    token: str = Query(..., description="Approval token"),
+    body: Optional[TokenDecisionBody] = None,
+    db_sync: Session = Depends(get_db_session),
+) -> ApprovalRequestPublic:
+    """Approve with the token from the webhook or email link. Body is optional.
+
+    This is the URL a webhook receiver calls to approve: the path names the
+    decision, the token in the query string is the only credential.
+    """
+    body = body or TokenDecisionBody()
+    decision = ApprovalDecisionRequest(
+        action="approve", comment=body.comment, answer=body.answer
+    )
+    return await _decide_with_token(request_id, decision, token, db_sync)
+
+
+@router.post("/{request_id}/decline")
+async def decline_approval_request_public(
+    request_id: uuid.UUID,
+    token: str = Query(..., description="Approval token"),
+    body: Optional[TokenDecisionBody] = None,
+    db_sync: Session = Depends(get_db_session),
+) -> ApprovalRequestPublic:
+    """Decline with the token from the webhook or email link. Body is optional."""
+    body = body or TokenDecisionBody()
+    decision = ApprovalDecisionRequest(action="decline", comment=body.comment)
+    return await _decide_with_token(request_id, decision, token, db_sync)
+
+
+async def _decide_with_token(
+    request_id: uuid.UUID,
+    decision: ApprovalDecisionRequest,
+    token: str,
+    db_sync: Session,
+) -> ApprovalRequestPublic:
+    """Shared body of every token-authenticated decision route."""
     # Validate token using CRUD layer (sync)
     approval_request = crud_approval_request.get_by_id_and_token(
         db_sync, request_id=str(request_id), token=token

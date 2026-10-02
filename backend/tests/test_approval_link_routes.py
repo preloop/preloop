@@ -13,6 +13,7 @@ contract from both sides:
 from __future__ import annotations
 
 import inspect
+import re
 import uuid
 from pathlib import Path
 
@@ -54,7 +55,13 @@ def test_email_and_webhook_builders_emit_console_links() -> None:
             "approval link builders must emit /console/approval/<id> "
             "(issue #335); bare /approval/<id> bypasses the SPA route"
         )
-        assert '"/approval/' not in source and "'/approval/" not in source, (
+        # The token decision API (/approval/<id>/approve|decline) is a POST
+        # target for systems, not a page link, so it is allowed (issue 1128).
+        # Any other /approval/ literal is the legacy page path.
+        legacy = re.findall(
+            r"""["']/approval/\{[^}]+\}(?!/(?:approve|decline)\?)""", source
+        )
+        assert not legacy, (
             "approval link builders still emit the legacy /approval/<id> path"
         )
 
@@ -87,6 +94,8 @@ def test_public_token_subpaths_reach_the_api_in_both_nginx_configs() -> None:
     for url in (
         f"/approval/{request_id}/data",
         f"/approval/{request_id}/decide",
+        f"/approval/{request_id}/approve",
+        f"/approval/{request_id}/decline",
     ):
         _assert_proxied("docker", _read_docker_template(), url)
         _assert_proxied("helm", _read_helm_server_block(), url)

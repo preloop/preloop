@@ -4299,11 +4299,13 @@ paths:
           format: uuid
           title: Request Id
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ApprovalDecision'
+              anyOf:
+              - $ref: '#/components/schemas/ApprovalDecision'
+              - type: 'null'
+              title: Decision
       responses:
         '200':
           description: Successful Response
@@ -4340,11 +4342,13 @@ paths:
           format: uuid
           title: Request Id
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ApprovalDecision'
+              anyOf:
+              - $ref: '#/components/schemas/ApprovalDecision'
+              - type: 'null'
+              title: Decision
       responses:
         '200':
           description: Successful Response
@@ -15850,15 +15854,26 @@ components:
     ApprovalDecision:
       properties:
         approved:
-          type: boolean
+          anyOf:
+          - type: boolean
+          - type: 'null'
           title: Approved
-          description: Whether the request is approved or declined
+          description: Required on /decide. Optional on /approve and /decline, where
+            the path already names the decision; if sent there it must agree with
+            it.
         comment:
           anyOf:
           - type: string
           - type: 'null'
           title: Comment
           description: Comment from the approver
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+          description: Deprecated alias for comment, used when comment is not set.
+          deprecated: true
         selected_option:
           anyOf:
           - type: string
@@ -15881,8 +15896,6 @@ components:
             JSON. Validated against that schema server-side; x-autofill fields (author,
             date) are stamped by the platform and anything sent for them is ignored.'
       type: object
-      required:
-      - approved
       title: ApprovalDecision
       description: Schema for an approval decision or a question answer.
     ApprovalDecisionRequest:

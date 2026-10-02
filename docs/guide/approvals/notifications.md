@@ -80,7 +80,7 @@ See [Mobile Apps](../clients/mobile-apps.md) for the full setup flow.
 
 ## Slack and Mattermost
 
-Slack and Mattermost notifications post to an **incoming webhook** configured per approval workflow. The message includes the tool name, redacted arguments, agent reasoning, and Approve / Decline / View links that open the token-based approval page.
+Slack and Mattermost notifications post to an **incoming webhook** configured per approval workflow. The message includes the tool name, redacted arguments, agent reasoning, and a Review button that opens the token-based approval page.
 
 Configure via `channel_configs` on the workflow, in policy YAML:
 
@@ -123,18 +123,61 @@ Preloop POSTs a JSON payload:
 ```json
 {
   "type": "approval_request",
-  "request_id": "…",
+  "request_id": "6f1c0d2e-0000-4000-8000-000000000001",
   "tool_name": "deploy",
+  "summary": "Deploy to production",
   "tool_args": {"environment": "production"},
   "agent_reasoning": "…",
   "status": "pending",
   "requested_at": "2026-07-17T20:00:00Z",
   "expires_at": "2026-07-17T20:10:00Z",
-  "actions": {"approve": "…", "decline": "…", "view": "…"}
+  "actions": {
+    "review": "https://preloop.example.com/console/approval/6f1c…?token=TOKEN",
+    "approve": "…same as review…",
+    "decline": "…same as review…",
+    "view": "…same as review…"
+  },
+  "decision": {
+    "method": "POST",
+    "approve_url": "https://preloop.example.com/approval/6f1c…/approve?token=TOKEN",
+    "decline_url": "https://preloop.example.com/approval/6f1c…/decline?token=TOKEN"
+  }
 }
 ```
 
-The `actions` URLs are token-authenticated approval links. Sensitive argument values are [redacted](../../security/redaction.md).
+There are two kinds of URL in the payload:
+
+- **`actions`** are pages for a person. Every key opens the same approval page in a browser (`GET`). They do not decide anything. `approve`, `decline` and `view` are deprecated aliases of `review`, kept for receivers that read them.
+- **`decision`** is for a system. `POST` to `approve_url` or `decline_url` to record the decision. The token in the query string is the only credential: send no `Authorization` header. The body is optional; send `{"comment": "..."}` to record why.
+
+Sensitive argument values are [redacted](../../security/redaction.md). The token in these URLs decides the request, so treat the payload as a secret.
+
+### Worked example: payload in, decision back
+
+Your service receives the payload above, asks whoever must decide, and answers with one call:
+
+```bash
+# Approve, with a comment
+curl -X POST "$(jq -r .decision.approve_url payload.json)" \
+  -H "Content-Type: application/json" \
+  -d '{"comment": "Confirmed by the account owner"}'
+
+# Or decline (the body is optional)
+curl -X POST "$(jq -r .decision.decline_url payload.json)"
+```
+
+A `200` returns the request with its new `status` (`approved` or `declined`). A `400` means it was already decided or expired; a `404` means the id or token is wrong.
+
+If your service holds a Preloop API key instead, the authenticated routes take the same bodies:
+
+```bash
+curl -X POST "https://preloop.example.com/api/v1/approval-requests/$REQUEST_ID/approve" \
+  -H "Authorization: Bearer $PRELOOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"comment": "Confirmed by the account owner"}'
+```
+
+`/approve` and `/decline` need no body. `/decide` takes `{"approved": true|false, "comment": "..."}` and requires `approved`. The CLI does the same with `preloop approvals approve <id> --reason "..."` and `preloop approvals deny <id> --reason "..."`.
 
 ---
 
