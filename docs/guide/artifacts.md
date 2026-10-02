@@ -244,7 +244,11 @@ is planned in #1089. Until it ships, use the multipart call above.
   excerpt or thumbnail, and a header count with a filter per kind (#1083).
   A session without artifacts says so in the header and links to this page.
 - **Activity API.** `GET /api/v1/runtime-sessions/{id}/activity` returns the
-  same `artifact` rows with the descriptor in `metadata`.
+  same `artifact` rows with an artifact summary in `metadata.artifact`: `id`,
+  `kind`, `name`, `content_type`, `size_bytes`, `labels` and `producer`. The
+  full descriptor (`sha256`, `availability`, `legal_hold`,
+  `parent_artifact_id` and so on) comes from
+  `GET /api/v1/runtime-sessions/{id}/artifacts`.
 - **Storage card.** **Settings > Account** shows the session artifact storage
   used per kind against the account budget.
 - **Artifacts page.** A cross-session page with search and filters is planned
@@ -334,3 +338,4 @@ whose text starts with the code.
 | 507 | `storage_budget_exhausted` | The account budget cannot fit the artifact even after eviction. |
 | (MCP) | `artifact_no_session` | The MCP credential is not bound to a runtime session. |
 | (MCP) | `artifact_link_outside_session` | A `resource_link` names an artifact of another session. |
+| (MCP) 410 | `artifact_unavailable` | A `resource_link` names an artifact whose bytes were evicted or deleted. |

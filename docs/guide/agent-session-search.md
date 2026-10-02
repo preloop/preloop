@@ -148,6 +148,6 @@ not stored unless the account opted in. See
 
 Transcripts, documents, screenshots and other files an agent deposits on its
 session are [session artifacts](artifacts.md). They appear on the session
-timeline next to the turns that produced them. Indexing artifact text into this
-search is planned (#1082); until then search finds the timeline row's name and
-labels, not the file's contents.
+timeline next to the turns that produced them. Artifacts are not searchable
+yet: neither their contents nor their name and labels are in this index.
+Indexing them is planned (#1082).
