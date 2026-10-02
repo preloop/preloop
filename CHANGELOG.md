@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Session artifacts guide.** `docs/guide/artifacts.md` covers kinds and
+  caps, labels, the MCP and REST deposit paths with tested examples, where
+  artifacts appear, retention and budget, the standards mapping and every
+  error code. The browser agents page now says what the console shows and
+  that Playwright MCP `--image-responses omit` yields steps without
+  screenshots (#1090).
 - **`deposit_artifact` MCP tool.** An agent stores a file, image, transcript
   or text on its own runtime session through the MCP endpoint alone; it
   shows up in the session's artifact list and timeline. Takes one MCP
