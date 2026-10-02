@@ -1,6 +1,8 @@
 """Public approval endpoints (token-based authentication, no login required)."""
 
 import uuid
+
+import anyio
 import logging
 from datetime import datetime
 from typing import List, Optional, Sequence
@@ -10,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models.approval_event import ApprovalEvent
@@ -224,7 +227,7 @@ class TokenDecisionBody(BaseModel):
 
 
 @router.post("/{request_id}/approve")
-async def approve_approval_request_public(
+def approve_approval_request_public(
     request_id: uuid.UUID,
     token: str = Query(..., description="Approval token"),
     body: Optional[TokenDecisionBody] = None,
@@ -239,11 +242,15 @@ async def approve_approval_request_public(
     decision = ApprovalDecisionRequest(
         action="approve", comment=body.comment, answer=body.answer
     )
-    return await _decide_with_token(request_id, decision, token, db_sync)
+    # A sync handler runs on the threadpool; the shared path is async because
+    # ApprovalService is, and it offloads its own sync database work.
+    return anyio.from_thread.run(
+        _decide_with_token, request_id, decision, token, db_sync
+    )
 
 
 @router.post("/{request_id}/decline")
-async def decline_approval_request_public(
+def decline_approval_request_public(
     request_id: uuid.UUID,
     token: str = Query(..., description="Approval token"),
     body: Optional[TokenDecisionBody] = None,
@@ -252,7 +259,9 @@ async def decline_approval_request_public(
     """Decline with the token from the webhook or email link. Body is optional."""
     body = body or TokenDecisionBody()
     decision = ApprovalDecisionRequest(action="decline", comment=body.comment)
-    return await _decide_with_token(request_id, decision, token, db_sync)
+    return anyio.from_thread.run(
+        _decide_with_token, request_id, decision, token, db_sync
+    )
 
 
 async def _decide_with_token(
@@ -263,8 +272,10 @@ async def _decide_with_token(
 ) -> ApprovalRequestPublic:
     """Shared body of every token-authenticated decision route."""
     # Validate token using CRUD layer (sync)
-    approval_request = crud_approval_request.get_by_id_and_token(
-        db_sync, request_id=str(request_id), token=token
+    approval_request = await run_db_off_loop(
+        lambda: crud_approval_request.get_by_id_and_token(
+            db_sync, request_id=str(request_id), token=token
+        )
     )
 
     if not approval_request:
@@ -358,8 +369,11 @@ async def _decide_with_token(
 
         # Re-query the timeline so the token page keeps Workflow History
         # after a decision instead of replacing it with the default [].
-        db_sync.expire_all()
-        history = crud_approval_event.get_by_request(
-            db_sync, approval_request_id=updated_request.id
-        )
+        def _history() -> List[ApprovalEvent]:
+            db_sync.expire_all()
+            return crud_approval_event.get_by_request(
+                db_sync, approval_request_id=updated_request.id
+            )
+
+        history = await run_db_off_loop(_history)
         return _to_public_request(updated_request, history)
