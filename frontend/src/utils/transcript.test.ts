@@ -508,6 +508,123 @@ describe('buildConversation', () => {
   });
 });
 
+describe('buildConversation tool rows', () => {
+  const TOOL_CALL = {
+    id: 'call_1',
+    stable_id: true,
+    direction: 'call',
+    name: 'terminal',
+    dialect: 'openai_chat',
+    arguments: '{"command": "pytest -q"}',
+    result: null,
+    is_error: null,
+    redacted: false,
+    truncated: false,
+  };
+
+  function toolEvent(
+    id: string,
+    timestamp: string,
+    entries: Array<Record<string, unknown>>
+  ): FlowGatewayEvent {
+    return {
+      id,
+      execution_id: 'exec-1',
+      timestamp,
+      type: 'model_gateway_call',
+      payload: { outcome: 'success', tool_activity: { entries } },
+    } as FlowGatewayEvent;
+  }
+
+  it('keeps gateway tool calls visible without opening a step group', () => {
+    const { items, stats } = buildConversation([
+      gatewayEvent('e1', '2026-08-06T10:00:00Z', [
+        { role: 'user', text: 'run the tests' },
+      ]),
+      toolEvent('e2', '2026-08-06T10:00:05Z', [TOOL_CALL]),
+    ]);
+
+    const tools = items.filter((item) => item.type === 'tool');
+    expect(tools).to.have.length(1);
+    expect(stats.toolCallCount).to.equal(1);
+    expect(
+      items.filter((item) => item.type === 'steps'),
+      'a tool call must not be folded into an anonymous group'
+    ).to.have.length(0);
+  });
+
+  it('orders the tool row between the prompt and the answer that followed', () => {
+    const { items } = buildConversation([
+      gatewayEvent('e1', '2026-08-06T10:00:00Z', [
+        { role: 'user', text: 'run the tests' },
+      ]),
+      toolEvent('e2', '2026-08-06T10:00:05Z', [
+        TOOL_CALL,
+        {
+          ...TOOL_CALL,
+          direction: 'result',
+          arguments: null,
+          result: '42 passed',
+        },
+      ]),
+      gatewayEvent('e3', '2026-08-06T10:00:12Z', [
+        { role: 'assistant', text: 'All green.', source: 'response' },
+      ]),
+    ]);
+
+    expect(items.map((item) => item.type)).to.deep.equal([
+      'message',
+      'tool',
+      'message',
+    ]);
+    const tool = items[1] as { call: { state: string; name: string } };
+    expect(tool.call.state).to.equal('completed');
+    expect(tool.call.name).to.equal('terminal');
+  });
+
+  it('still counts a native tool_call row as a tool', () => {
+    const { items, stats } = buildConversation(
+      [],
+      [
+        {
+          activity_type: 'tool_call',
+          timestamp: '2026-08-06T10:01:30Z',
+          title: 'Tool call',
+          summary: 'pytest -q',
+          status: 'success',
+          api_usage_id: null,
+          tool_name: 'run_tests',
+          server_name: 'ci',
+          auth_subject_type: null,
+          api_key_id: null,
+          api_key_name: null,
+          estimated_cost: null,
+          total_tokens: null,
+        } as RuntimeSessionActivityItem,
+      ]
+    );
+
+    expect(stats.toolCallCount).to.equal(1);
+    const tools = items.filter((item) => item.type === 'tool');
+    expect(tools).to.have.length(1);
+    expect((tools[0] as { call: { name: string } }).call.name).to.equal(
+      'run_tests'
+    );
+  });
+
+  it('leaves a legacy gateway-only record readable instead of inventing tools', () => {
+    const { items } = buildConversation([
+      gatewayEvent('e1', '2026-08-06T10:00:00Z', [
+        { role: 'user', text: 'run the tests' },
+        { role: 'assistant', text: 'All green.', source: 'response' },
+      ]),
+    ]);
+
+    expect(items.filter((item) => item.type === 'tool')).to.have.length(0);
+    expect(items.filter((item) => item.type === 'message')).to.have.length(2);
+  });
+});
+
 describe('transient live coverage', () => {
   it('does not count request-start signals as missing conversation capture', () => {
     const started: FlowGatewayEvent = {

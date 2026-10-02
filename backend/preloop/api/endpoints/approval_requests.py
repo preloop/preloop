@@ -375,7 +375,8 @@ def list_approval_requests(
     status: Optional[str] = Query(None, description="Filter by status"),
     execution_id: Optional[str] = Query(None, description="Filter by execution ID"),
     runtime_session_id: Annotated[
-        Optional[uuid.UUID], Query(description="Filter by runtime session ID")
+        Optional[uuid.UUID],
+        Query(description="Filter by runtime session ID (agent conversation)"),
     ] = None,
     limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
     skip: int = Query(0, ge=0, description="Number of results to skip"),
@@ -388,20 +389,29 @@ def list_approval_requests(
         status: Filter by status (pending, approved, declined, etc.)
         execution_id: Filter by execution ID
         runtime_session_id: Filter by a validated runtime session ID
+            (agent conversation)
         limit: Maximum number of results
         skip: Number of results to skip
         current_user: Current authenticated user
 
     Returns:
         List of approval requests
+
+    Raises:
+        HTTPException: 422 when ``runtime_session_id`` is not a UUID. The
+            filter is typed rather than string-matched so a typo returns an
+            explicit validation error instead of an empty list that reads as
+            "this session needs nothing".
     """
-    # Use CRUD layer to get approval requests with filters
+    # Use CRUD layer to get approval requests with filters. `runtime_session_id`
+    # is ANDed with the caller's account inside the CRUD layer, so a session id
+    # from another account yields no rows rather than that account's approvals.
     rows = crud_approval_request.get_multi_by_account(
         db,
         account_id=current_user.account_id,
         execution_id=execution_id,
-        runtime_session_id=str(runtime_session_id) if runtime_session_id else None,
         status=status,
+        runtime_session_id=runtime_session_id,
         skip=skip,
         limit=limit,
     )

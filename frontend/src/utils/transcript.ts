@@ -28,6 +28,8 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
 } from '../types';
+import type { LiveToolCall } from './live-session';
+import { normalizeToolCalls } from './live-session';
 
 export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
@@ -92,14 +94,20 @@ export interface TranscriptBrowserStepItem {
 }
 
 /**
- * One `artifact` activity (deposit API), kept top level like browser steps so
- * artifacts sit in time order between the turns around them.
+ * One named tool invocation, rendered as its own card in chronological
+ * context.
+ *
+ * Tool calls used to be folded into the anonymous step groups above, which is
+ * exactly what made a session unreadable while it was running: "3 steps —
+ * 2 tool calls, 1 tool result" says nothing about which tool is blocking. The
+ * rows here keep the name, the lifecycle state and the deciding argument
+ * visible without expanding anything.
  */
-export interface TranscriptArtifactItem {
-  type: 'artifact';
+export interface TranscriptToolItem {
+  type: 'tool';
   key: string;
   timestamp: string | null;
-  activity: RuntimeSessionActivityItem;
+  call: LiveToolCall;
 }
 
 export type TranscriptItem =
@@ -107,7 +115,7 @@ export type TranscriptItem =
   | TranscriptStepGroupItem
   | TranscriptDividerItem
   | TranscriptBrowserStepItem
-  | TranscriptArtifactItem;
+  | TranscriptToolItem;
 
 export interface TranscriptStats {
   promptCount: number;
@@ -333,7 +341,7 @@ type Atom =
   | { type: 'step'; step: TranscriptStep; order: number }
   | { type: 'divider'; item: TranscriptDividerItem; order: number }
   | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number }
-  | { type: 'artifact'; item: TranscriptArtifactItem; order: number };
+  | { type: 'tool'; item: TranscriptToolItem; order: number };
 
 function atomTime(atom: Atom): number {
   const timestamp =
@@ -540,48 +548,32 @@ export function buildConversation(
     });
   }
 
+  // Named tool rows, from gateway `tool_activity` entries and native
+  // `tool_call` rows. These are top level, never folded into a step group: a
+  // generic "3 steps" count is what made a running session unreadable.
+  for (const call of normalizeToolCalls(gatewayEvents, activity)) {
+    stats.toolCallCount += 1;
+    atoms.push({
+      type: 'tool',
+      order: order++,
+      item: {
+        type: 'tool',
+        key: `tool:${call.key}`,
+        timestamp: call.timestamp,
+        call,
+      },
+    });
+  }
+
   for (const [index, item] of activity.entries()) {
     const activityType = (item.activity_type || '').toLowerCase();
     const key = `activity:${index}:${item.timestamp || ''}`;
-    if (activityType === 'tool_call') {
-      stats.toolCallCount += 1;
-      atoms.push({
-        type: 'step',
-        order: order++,
-        step: {
-          key,
-          kind: 'tool_call',
-          label: item.tool_name || item.title || 'Tool call',
-          text: item.summary || '',
-          timestamp: item.timestamp || null,
-          toolName: item.tool_name,
-          serverName: item.server_name,
-          status: item.status,
-          repositoryArgs: item.metadata ?? null,
-          detectionExact: true,
-        },
-      });
-      continue;
-    }
     if (activityType === 'browser_step') {
       atoms.push({
         type: 'browser_step',
         order: order++,
         item: {
           type: 'browser_step',
-          key,
-          timestamp: item.timestamp || null,
-          activity: item,
-        },
-      });
-      continue;
-    }
-    if (activityType === 'artifact') {
-      atoms.push({
-        type: 'artifact',
-        order: order++,
-        item: {
-          type: 'artifact',
           key,
           timestamp: item.timestamp || null,
           activity: item,
@@ -675,7 +667,7 @@ export function buildConversation(
     if (
       atom.type === 'divider' ||
       atom.type === 'browser_step' ||
-      atom.type === 'artifact'
+      atom.type === 'tool'
     ) {
       closeSteps();
       items.push(atom.item);

@@ -26,6 +26,7 @@ import {
   getRuntimeSessionOptimizationJob,
   getRuntimeSessionRequests,
   getSimilarSessions,
+  listApprovalRequests,
   listRuntimeSessionOptimizationActions,
   optimizeRuntimeSession,
   submitRuntimeSessionOptimizationJob,
@@ -46,7 +47,10 @@ import type {
   RuntimeSessionSummary,
   SimilarSessionsResponse,
 } from '../types';
-import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
+import {
+  ConnectionState,
+  unifiedWebSocketManager,
+} from '../services/unified-websocket-manager';
 import {
   isHistoryUnavailable,
   requestHistoryUpgrade,
@@ -279,6 +283,20 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private loadedActivity: Record<string, RuntimeSessionActivityItem[]> = {};
+
+  /**
+   * Approval rows per session, scoped by `runtime_session_id`.
+   *
+   * `{}` for a session whose approvals have not been read yet, which the chat
+   * view renders as "no approval is blocking" rather than as a claim that
+   * none exist. Refreshed on selection and on the `approvals` topic.
+   */
+  @state()
+  private loadedApprovals: Record<
+    string,
+    Array<{ id: string; status: string; requested_at?: string }>
+  > = {};
+
   /** Index into the active session's browser steps shown full size, or -1. */
   @state()
   private browserStepViewerIndex = -1;
@@ -438,6 +456,10 @@ export class PreloopSessionObserver extends LitElement {
   private optimizeHintDismissed = readOptimizeHintDismissed();
 
   private unsubscribeRealtime?: () => void;
+  private unsubscribeRealtimeState: (() => void) | null = null;
+  /** Last socket state the manager reported, or null before it reports one. */
+  @state()
+  private realtimeState: ConnectionState | null = null;
   private refreshTimer: number | null = null;
   private livePulseTimer: number | null = null;
 
@@ -768,11 +790,91 @@ export class PreloopSessionObserver extends LitElement {
       unifiedWebSocketManager.subscribe('runtime_sessions', (message) =>
         this.handleRuntimeSessionActivity(message)
       ),
+      // Approvals never arrive on `gateway_activity` or `runtime_sessions`,
+      // so a session waiting on a decision used to sit silent until the next
+      // model request woke something else. This is the only topic that says
+      // "somebody is waiting for you".
+      unifiedWebSocketManager.subscribe('approvals', (message) =>
+        this.handleApprovalActivity(message)
+      ),
     ];
     this.unsubscribeRealtime = () => {
       for (const unsubscribe of unsubscribers) unsubscribe();
+      this.unsubscribeRealtimeState?.();
+      this.unsubscribeRealtimeState = null;
     };
+    this.unsubscribeRealtimeState = unifiedWebSocketManager.onStateChange(
+      (state) => {
+        this.realtimeState = state;
+      }
+    );
+    // Read the state that is already true, not just the transitions after
+    // subscribing: a socket that connected before this view mounted would
+    // otherwise read as `unknown` until its next reconnect.
+    this.realtimeState = unifiedWebSocketManager.getState();
     void unifiedWebSocketManager.connect();
+  }
+
+  /**
+   * An approval was created, decided, expired or cancelled.
+   *
+   * Only the active session is re-read, and only for the pending set: the
+   * conversation needs "is somebody waiting on me?", not a decision log. A
+   * payload naming another session is ignored outright rather than filtered,
+   * so an approval raised by a session nobody is watching cannot refetch
+   * rows under the one that is.
+   */
+  private handleApprovalActivity(message: any): void {
+    const payload = message?.payload ?? {};
+    const sessionId = payload.runtime_session_id ?? message?.runtime_session_id;
+    if (!sessionId || sessionId !== this.activeSessionId) return;
+    void this.loadApprovalsForSession(sessionId);
+  }
+
+  /**
+   * Read the active session's pending approvals.
+   *
+   * Failures are swallowed on purpose: an approval read that 403s must not
+   * blank a replay the operator is already reading. The line then falls back
+   * to whatever the gateway observed, which is a weaker but true answer.
+   */
+  private async loadApprovalsForSession(sessionId: string): Promise<void> {
+    try {
+      const rows = await listApprovalRequests({
+        runtime_session_id: sessionId,
+        status: 'pending',
+        limit: 100,
+      });
+      this.loadedApprovals = {
+        ...this.loadedApprovals,
+        [sessionId]: (rows as Array<Record<string, unknown>>).map((row) => ({
+          id: String(row.id),
+          status: String(row.status ?? 'pending'),
+          requested_at:
+            typeof row.requested_at === 'string' ? row.requested_at : undefined,
+        })),
+      };
+    } catch (error) {
+      // Deliberately not surfaced: an approvals read that fails must not
+      // blank a replay the operator is already reading. The previously known
+      // set is kept, so the line can be briefly stale rather than wrongly
+      // claiming nothing is waiting.
+      console.error('Failed to refresh session approvals:', error);
+    }
+  }
+
+  /**
+   * Socket health, reported next to the activity line rather than merged into
+   * it.
+   *
+   * `null` before the first state notification, so the line says "reconnecting"
+   * only once the manager has actually told us something. Until then the
+   * activity line falls back to the last observed event, which is the truth we
+   * can still defend.
+   */
+  private get realtimeConnected(): boolean | null {
+    if (this.realtimeState === null) return null;
+    return this.realtimeState === ConnectionState.CONNECTED;
   }
 
   private handleRuntimeSessionActivity(message: any): void {
@@ -1031,6 +1133,10 @@ export class PreloopSessionObserver extends LitElement {
       return;
     }
     this.loadingSessionId = sessionId;
+    // Approvals are read alongside the timeline, not after it: the first thing
+    // an operator checks on a live session is whether it is blocked, and
+    // waiting for the event page first would make that answer arrive late.
+    void this.loadApprovalsForSession(sessionId);
     // A timeline that cannot load is not worth an error on a replay that
     // otherwise renders, with one exception: a session whose whole activity
     // predates the plan's analytics window. That is the plan speaking, and
@@ -1692,6 +1798,24 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   /**
+   * Approvals raised by the ACTIVE session only.
+   *
+   * The account-wide list is deliberately not reused here: showing another
+   * session's pending ask under this conversation would send the operator to
+   * a decision that has nothing to do with what they are watching. The server
+   * scopes the query by session and ANDs it with the caller's account.
+   */
+  private get activePendingApprovals(): Array<{
+    id: string;
+    status: string;
+    requested_at?: string;
+  }> {
+    return this.activeSessionId
+      ? this.loadedApprovals[this.activeSessionId] || []
+      : [];
+  }
+
+  /**
    * Load the session's artifact descriptors for the header count and the
    * row details the timeline metadata lacks (sha256, lineage, availability).
    * A failure leaves the rows on their timeline metadata alone.
@@ -2105,6 +2229,9 @@ export class PreloopSessionObserver extends LitElement {
         @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
+        .pendingApprovals=${this.activePendingApprovals}
+        .sessionEnded=${this.isSessionEnded(this.activeSession)}
+        .connected=${this.realtimeConnected}
         .artifacts=${this.activeArtifacts}
         .artifactKindFilter=${this.artifactKindFilter}
         .highlightArtifactId=${this.highlightedArtifactId}
