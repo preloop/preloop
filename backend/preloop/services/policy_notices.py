@@ -17,7 +17,9 @@ The weekly digest is rendered by the ``optimization_digest`` plugin, which is
 not in this repository. It adds the "Policy notices" section by calling
 :func:`build_policy_notice_digest_section` and rendering the result with
 :meth:`PolicyNoticeDigestSection.render_text` or
-:meth:`PolicyNoticeDigestSection.render_html`.
+:meth:`PolicyNoticeDigestSection.render_html`. The section covers one
+half-open ``[start, end)`` window: the seven days ending at ``now`` by
+default, or exactly the bounds a caller passes.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ import html
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -36,6 +38,10 @@ from preloop.models import models
 from preloop.models.crud import crud_policy_notice_hit
 from preloop.models.crud.policy_notice_hit import PolicyNoticeRuleSummary
 from preloop.models.models.policy_notice_hit import POLICY_NOTICE_EXCERPT_MAX_CHARS
+from preloop.utils.reporting_window import (
+    describe_window_duration,
+    resolve_reporting_window,
+)
 from preloop.utils.secret_scrubbing import scrub_secrets
 
 logger = logging.getLogger(__name__)
@@ -329,21 +335,69 @@ def summarize_policy_notices(
     *,
     now: Optional[datetime] = None,
     window: timedelta = NOTICE_SUMMARY_WINDOW,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
 ) -> List[PolicyNoticeRuleSummary]:
-    """Per-rule notice counts over the last ``window`` (default 7 days)."""
-    moment = now or datetime.now(timezone.utc)
+    """Per-rule notice counts inside one ``[start, end)`` window.
+
+    Without explicit bounds the window is ``window`` (default 7 days) ending
+    at ``now``, the current time when ``now`` is omitted. With them it is
+    exactly the window given, and ``now`` is refused.
+
+    Args:
+        db: Database session.
+        account_id: Account the summary is for.
+        now: End of the default window.
+        window: Length of the default window.
+        start: Inclusive window start, or None for the default window.
+        end: Exclusive window end, or None for the default window.
+
+    Returns:
+        One summary per rule with at least one hit in the window.
+
+    Raises:
+        ValueError: The bounds cannot describe one window; see
+            :func:`preloop.utils.reporting_window.resolve_reporting_window`.
+    """
+    window_start, window_end = resolve_reporting_window(
+        start=start,
+        end=end,
+        now=now,
+        default_window=window,
+        what="policy notice window",
+    )
     return crud_policy_notice_hit.summarize_by_rule(
-        db, account_id=account_id, since=moment - window
+        db, account_id=account_id, since=window_start, until=window_end
     )
 
 
 @dataclass(frozen=True)
 class PolicyNoticeDigestSection:
-    """The "Policy notices" section of the weekly digest."""
+    """The "Policy notices" section of the weekly digest.
+
+    ``window_start`` is inclusive and ``window_end`` exclusive, so a caller
+    renders the window it asked for rather than one it rounded to whole days.
+    """
 
     title: str
-    window_days: int
+    window_start: datetime
+    window_end: datetime
     rows: Sequence[PolicyNoticeRuleSummary]
+
+    @property
+    def window(self) -> timedelta:
+        """How much time the section reports on."""
+        return self.window_end - self.window_start
+
+    @property
+    def window_days(self) -> int:
+        """Whole days the window covers; 7 for the default window."""
+        return int(self.window.total_seconds() // 86400)
+
+    @property
+    def window_label(self) -> str:
+        """The window as words, e.g. ``7 days`` or ``1 day, 3 hours``."""
+        return describe_window_duration(self.window)
 
     @property
     def is_empty(self) -> bool:
@@ -354,7 +408,7 @@ class PolicyNoticeDigestSection:
         """Plain-text section: rule, count, last user, last excerpt."""
         lines = [self.title, ""]
         if self.is_empty:
-            lines.append(f"No notify rule matched in the last {self.window_days} days.")
+            lines.append(f"No notify rule matched in the last {self.window_label}.")
             return "\n".join(lines)
         for row in self.rows:
             noun = "hit" if row.count == 1 else "hits"
@@ -369,7 +423,7 @@ class PolicyNoticeDigestSection:
         if self.is_empty:
             return (
                 f"{heading}<p>No notify rule matched in the last "
-                f"{self.window_days} days.</p>"
+                f"{html.escape(self.window_label)}.</p>"
             )
         body = "".join(
             "<tr>"
@@ -392,22 +446,45 @@ def build_policy_notice_digest_section(
     account_id: Any,
     *,
     now: Optional[datetime] = None,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
 ) -> PolicyNoticeDigestSection:
-    """Data for the digest's "Policy notices" section (last 7 days).
+    """Data for the digest's "Policy notices" section.
 
     Called by the ``optimization_digest`` plugin. Kept here so the section
     reads the table this repository owns and can be tested without it.
 
+    Without explicit bounds the section covers the seven days ending at
+    ``now``. With ``start`` and ``end`` it covers exactly that window, and
+    both bounds are always applied: a hit at or after ``end`` is neither
+    counted nor shown as the latest excerpt, whatever the caller passed.
+
     Args:
         db: Database session.
         account_id: Account the digest is for.
-        now: Injected clock for tests.
+        now: End of the default seven-day window.
+        start: Inclusive window start, or None for the default window.
+        end: Exclusive window end, or None for the default window.
 
     Returns:
         The section, possibly empty.
+
+    Raises:
+        ValueError: The bounds cannot describe one window; see
+            :func:`preloop.utils.reporting_window.resolve_reporting_window`.
     """
+    window_start, window_end = resolve_reporting_window(
+        start=start,
+        end=end,
+        now=now,
+        default_window=NOTICE_SUMMARY_WINDOW,
+        what="policy notice digest window",
+    )
     return PolicyNoticeDigestSection(
         title="Policy notices",
-        window_days=NOTICE_SUMMARY_WINDOW.days,
-        rows=summarize_policy_notices(db, account_id, now=now),
+        window_start=window_start,
+        window_end=window_end,
+        rows=summarize_policy_notices(
+            db, account_id, start=window_start, end=window_end
+        ),
     )

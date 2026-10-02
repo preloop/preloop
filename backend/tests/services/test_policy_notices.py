@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Any, Iterator, Optional
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud import (
+    crud_account,
     crud_policy_notice_hit,
     crud_user,
     notification_preferences,
@@ -314,6 +319,343 @@ def test_digest_section_empty(db_session: Session, test_user: User) -> None:
     )
     assert section.is_empty
     assert "No notify rule matched" in section.render_text()
+
+
+# --- One account, one window ------------------------------------------------
+
+#: Frozen end of the window the boundary tests report on.
+WINDOW_END = datetime(2026, 9, 28, 9, 0, tzinfo=timezone.utc)
+
+
+def _hit_at(
+    db: Session,
+    user: User,
+    at: datetime,
+    *,
+    rule_id: str = "notify-codename",
+    excerpt: Optional[str] = "the project-x plan",
+    user_id: Optional[UUID] = None,
+) -> PolicyNoticeHit:
+    """One hit stored at an exact instant, without the notify debounce."""
+    return crud_policy_notice_hit.record(
+        db,
+        account_id=user.account_id,
+        user_id=user.id if user_id is None else user_id,
+        target="model.request",
+        rule_id=rule_id,
+        rule_description="Mentions of the codename",
+        text_sha256="e" * 64,
+        excerpt=excerpt,
+        now=at,
+    )
+
+
+def _named_user(db: Session, username: str, full_name: str, account_id: UUID) -> User:
+    """A user of ``account_id`` with the given login and display name."""
+    return crud_user.create(
+        db,
+        obj_in={
+            "account_id": account_id,
+            "email": f"{username}@example.com",
+            "username": username,
+            "full_name": full_name,
+            "is_active": True,
+            "email_verified": True,
+            "hashed_password": "x",
+            "user_source": "local",
+        },
+    )
+
+
+def _other_account(db: Session) -> models.Account:
+    return crud_account.create(
+        db, obj_in={"organization_name": "Other Org", "is_active": True}
+    )
+
+
+@contextmanager
+def _captured_sql(db_engine: Any) -> Iterator[list[str]]:
+    """Collect the statements a builder sends while it is inside the block."""
+    statements: list[str] = []
+
+    def capture(connection: Any, cursor: Any, statement: str, *args: Any) -> None:
+        statements.append(statement)
+
+    event.listen(db_engine, "before_cursor_execute", capture)
+    try:
+        yield statements
+    finally:
+        event.remove(db_engine, "before_cursor_execute", capture)
+
+
+def test_digest_window_is_half_open_at_both_ends(
+    db_session: Session, test_user: User
+) -> None:
+    """A hit before the start, at the end or after it is not in the window."""
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(days=7, seconds=1))
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(days=7), excerpt="at start")
+    _hit_at(
+        db_session, test_user, WINDOW_END - timedelta(minutes=1), excerpt="last in"
+    )
+    _hit_at(db_session, test_user, WINDOW_END, excerpt="at end")
+    _hit_at(db_session, test_user, WINDOW_END + timedelta(days=1), excerpt="future")
+
+    section = build_policy_notice_digest_section(
+        db_session, test_user.account_id, now=WINDOW_END
+    )
+
+    assert section.window_start == WINDOW_END - timedelta(days=7)
+    assert section.window_end == WINDOW_END
+    assert section.window_days == 7
+    (row,) = section.rows
+    assert row.count == 2
+    assert row.last_excerpt == "last in"
+    assert row.last_hit_at == WINDOW_END - timedelta(minutes=1)
+
+
+def test_digest_section_follows_an_explicit_two_day_window(
+    db_session: Session, test_user: User
+) -> None:
+    start = WINDOW_END - timedelta(days=2)
+    _hit_at(db_session, test_user, start - timedelta(seconds=1))
+    _hit_at(db_session, test_user, start, excerpt="at start")
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(minutes=1), excerpt="last in")
+    _hit_at(db_session, test_user, WINDOW_END, excerpt="at end")
+    _hit_at(db_session, test_user, WINDOW_END + timedelta(minutes=1), excerpt="future")
+
+    section = build_policy_notice_digest_section(
+        db_session, test_user.account_id, start=start, end=WINDOW_END
+    )
+
+    assert (section.window_start, section.window_end) == (start, WINDOW_END)
+    assert section.window_days == 2
+    (row,) = section.rows
+    assert (row.count, row.last_excerpt) == (2, "last in")
+
+
+def test_summary_counts_only_hits_inside_the_window(
+    db_session: Session, test_user: User
+) -> None:
+    """The CRUD bound is applied before grouping, not after."""
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(days=3), excerpt="inside")
+    _hit_at(db_session, test_user, WINDOW_END, excerpt="at end")
+
+    rows = crud_policy_notice_hit.summarize_by_rule(
+        db_session,
+        account_id=test_user.account_id,
+        since=WINDOW_END - timedelta(days=7),
+        until=WINDOW_END,
+    )
+
+    (row,) = rows
+    assert (row.count, row.last_excerpt) == (1, "inside")
+
+
+def test_the_same_window_in_another_offset_reads_the_same(
+    db_session: Session, test_user: User
+) -> None:
+    """A window written in local time covers the same hits as one in UTC."""
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(hours=1), excerpt="inside")
+    _hit_at(db_session, test_user, WINDOW_END + timedelta(hours=1), excerpt="future")
+    start = WINDOW_END - timedelta(hours=6)
+    offset = timezone(timedelta(hours=-5))
+
+    utc_section = build_policy_notice_digest_section(
+        db_session, test_user.account_id, start=start, end=WINDOW_END
+    )
+    shifted = build_policy_notice_digest_section(
+        db_session,
+        test_user.account_id,
+        start=start.astimezone(offset),
+        end=WINDOW_END.astimezone(offset),
+    )
+    naive = build_policy_notice_digest_section(
+        db_session,
+        test_user.account_id,
+        start=start.replace(tzinfo=None),
+        end=WINDOW_END.replace(tzinfo=None),
+    )
+
+    for other in (shifted, naive):
+        assert (other.window_start, other.window_end) == (start, WINDOW_END)
+        assert [row.last_excerpt for row in other.rows] == ["inside"]
+    assert [row.last_excerpt for row in utc_section.rows] == ["inside"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        (
+            {"start": WINDOW_END - timedelta(days=1)},
+            "start and end must be given together",
+        ),
+        ({"end": WINDOW_END}, "start and end must be given together"),
+        (
+            {"start": WINDOW_END, "end": WINDOW_END - timedelta(days=1)},
+            "end must be after start",
+        ),
+        ({"start": WINDOW_END, "end": WINDOW_END}, "end must be after start"),
+        (
+            {
+                "start": WINDOW_END - timedelta(days=1),
+                "end": WINDOW_END,
+                "now": WINDOW_END,
+            },
+            "now cannot be combined",
+        ),
+    ],
+)
+def test_a_window_that_cannot_be_reported_is_refused(
+    db_session: Session, test_user: User, kwargs: dict, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_policy_notice_digest_section(db_session, test_user.account_id, **kwargs)
+
+
+def test_a_refused_window_is_refused_before_any_query(
+    db_engine: Any, db_session: Session, test_user: User
+) -> None:
+    """Nothing is read for a window that was never going to be rendered."""
+    with _captured_sql(db_engine) as statements:
+        with pytest.raises(ValueError, match="end must be after start"):
+            build_policy_notice_digest_section(
+                db_session,
+                test_user.account_id,
+                start=WINDOW_END,
+                end=WINDOW_END - timedelta(days=1),
+            )
+
+    assert statements == []
+
+
+def test_two_accounts_sharing_a_rule_id_and_display_name_stay_isolated(
+    db_session: Session, test_user: User
+) -> None:
+    """Only the account decides which hits and which names are in a section."""
+    other_account = _other_account(db_session)
+    other_user = _named_user(
+        db_session, "otheruser", test_user.full_name, other_account.id
+    )
+    _hit_at(db_session, other_user, WINDOW_END - timedelta(hours=2), excerpt="theirs")
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(hours=1), excerpt="mine")
+
+    mine = build_policy_notice_digest_section(
+        db_session, test_user.account_id, now=WINDOW_END
+    )
+    theirs = build_policy_notice_digest_section(
+        db_session, other_account.id, now=WINDOW_END
+    )
+
+    assert (mine.rows[0].count, mine.rows[0].last_excerpt) == (1, "mine")
+    assert (mine.rows[0].last_username, mine.rows[0].last_user_id) == (
+        "testuser",
+        test_user.id,
+    )
+    assert (theirs.rows[0].count, theirs.rows[0].last_excerpt) == (1, "theirs")
+    assert (theirs.rows[0].last_username, theirs.rows[0].last_user_id) == (
+        "otheruser",
+        other_user.id,
+    )
+
+
+def test_a_hit_pointing_at_another_accounts_user_names_nobody(
+    db_session: Session, test_user: User
+) -> None:
+    """A user id of another account resolves to no name, not to their name."""
+    other_account = _other_account(db_session)
+    foreign = _named_user(db_session, "foreignuser", "Jane Doe", other_account.id)
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(hours=1), user_id=foreign.id)
+
+    section = build_policy_notice_digest_section(
+        db_session, test_user.account_id, now=WINDOW_END
+    )
+
+    (row,) = section.rows
+    assert row.count == 1
+    assert row.last_username is None
+    assert "Last user: unknown" in section.render_text()
+    assert "foreignuser" not in section.render_html()
+    assert "Jane Doe" not in section.render_html()
+
+
+def test_a_bounded_window_renders_only_the_stored_excerpt(
+    db_session: Session, test_user: User
+) -> None:
+    """Markup is escaped, and a hit whose redaction failed says so."""
+    _hit_at(
+        db_session,
+        test_user,
+        WINDOW_END - timedelta(days=1),
+        rule_id="notify-markup",
+        excerpt="<b>project-x</b> plan",
+    )
+    _hit_at(
+        db_session,
+        test_user,
+        WINDOW_END - timedelta(hours=1),
+        rule_id="notify-unredacted",
+        excerpt=None,
+    )
+
+    section = build_policy_notice_digest_section(
+        db_session,
+        test_user.account_id,
+        start=WINDOW_END - timedelta(days=2),
+        end=WINDOW_END,
+    )
+
+    text = section.render_text()
+    assert "notify-markup: 1 hit" in text
+    assert "Last excerpt: (not available)" in text
+    rendered = section.render_html()
+    assert "&lt;b&gt;project-x&lt;/b&gt;" in rendered
+    assert "<b>project-x</b>" not in rendered
+
+
+def test_a_section_never_reads_captured_request_content(
+    db_engine: Any, db_session: Session, test_user: User
+) -> None:
+    """The section reads stored hits, never the model request or response."""
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(hours=1))
+    with _captured_sql(db_engine) as statements:
+        section = build_policy_notice_digest_section(
+            db_session, test_user.account_id, now=WINDOW_END
+        )
+
+    assert section.rows
+    assert statements
+    for statement in statements:
+        assert "gateway_usage_search_document" not in statement
+        assert "searchable_text" not in statement
+
+
+def test_a_partial_day_window_is_described_as_it_is(
+    db_session: Session, test_user: User
+) -> None:
+    """A window that is not a whole number of days is not called one."""
+    section = build_policy_notice_digest_section(
+        db_session,
+        test_user.account_id,
+        start=WINDOW_END - timedelta(days=1, hours=3),
+        end=WINDOW_END,
+    )
+
+    assert section.window_days == 1
+    assert section.window_label == "1 day, 3 hours"
+    assert "No notify rule matched in the last 1 day, 3 hours." in section.render_text()
+    assert "last 1 day, 3 hours" in section.render_html()
+
+
+def test_the_default_window_is_still_seven_days(
+    db_session: Session, test_user: User
+) -> None:
+    section = build_policy_notice_digest_section(
+        db_session, test_user.account_id, now=WINDOW_END
+    )
+
+    assert section.window_days == 7
+    assert section.window_label == "7 days"
+    assert "No notify rule matched in the last 7 days." in section.render_text()
 
 
 # --- Delivery ---------------------------------------------------------------

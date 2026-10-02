@@ -61,6 +61,7 @@ from preloop.models.models.spend_outlier import (
     SPEND_OUTLIER_RULE_MODEL_MIX,
     SPEND_OUTLIER_RULE_SESSION,
 )
+from preloop.utils.reporting_window import resolve_reporting_window
 
 logger = logging.getLogger(__name__)
 
@@ -759,27 +760,52 @@ def _dismissed_in_digest(
 
 
 def build_spend_outlier_digest_section(
-    db: Session, account_id: UUID, now: Optional[datetime] = None
+    db: Session,
+    account_id: UUID,
+    now: Optional[datetime] = None,
+    *,
+    start: Optional[datetime] = None,
+    end: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """The weekly digest's "Spend outliers" section for one account.
 
     Called by the digest plugin, which renders it. Lists each finding
-    detected in the last :data:`DIGEST_WINDOW_DAYS` once, including findings
-    that were dismissed afterwards (``dismissed`` is True for those).
+    detected in the section's window once, including findings that were
+    dismissed afterwards (``dismissed`` is True for those).
+
+    Without explicit bounds the window is the :data:`DIGEST_WINDOW_DAYS`
+    ending at ``now``. With ``start`` and ``end`` it is exactly that window.
+    Both bounds are always applied, so a finding recorded at or after the
+    end of the window is not in the section whatever the caller passed. The
+    section covers one account: display names, session titles and
+    dismissals are all resolved within ``account_id``, and a finding that
+    points at another account's user or session shows no name at all rather
+    than that account's label.
 
     Args:
         db: Database session.
         account_id: Account the digest is for.
-        now: End of the window; defaults to the current time.
+        now: End of the default window; defaults to the current time.
+        start: Inclusive window start, or None for the default window.
+        end: Exclusive window end, or None for the default window.
 
     Returns:
         ``{"title", "window_start", "window_end", "items"}``. ``items`` is
         empty when nothing fired.
+
+    Raises:
+        ValueError: The bounds cannot describe one window; see
+            :func:`preloop.utils.reporting_window.resolve_reporting_window`.
     """
-    moment = _utc(now)
-    window_start = moment - timedelta(days=DIGEST_WINDOW_DAYS)
+    window_start, window_end = resolve_reporting_window(
+        start=start,
+        end=end,
+        now=now,
+        default_window=timedelta(days=DIGEST_WINDOW_DAYS),
+        what="spend outlier digest window",
+    )
     findings = crud_spend_outlier_finding.list_detected_since(
-        db, account_id=account_id, since=window_start
+        db, account_id=account_id, since=window_start, until=window_end
     )
     unique: Dict[str, models.SpendOutlierFinding] = {}
     for finding in findings:
@@ -787,7 +813,7 @@ def build_spend_outlier_digest_section(
     dismissals: Dict[str, models.AttentionDismissal] = {
         dismissal.item_id: dismissal
         for dismissal in crud_attention_dismissal.get_active_for_account(
-            db, account_id=account_id, now=moment
+            db, account_id=account_id, now=window_end
         )
         if dismissal.item_id.startswith(f"{SPEND_ATTENTION_KIND}:")
     }
@@ -803,7 +829,7 @@ def build_spend_outlier_digest_section(
     return {
         "title": "Spend outliers",
         "window_start": window_start.isoformat(),
-        "window_end": moment.isoformat(),
+        "window_end": window_end.isoformat(),
         "items": items,
     }
 

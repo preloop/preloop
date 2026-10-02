@@ -167,19 +167,46 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
         return db.get(SpendOutlierFinding, finding_id)
 
     def list_detected_since(
-        self, db: Session, *, account_id: UUID, since: datetime
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        since: datetime,
+        until: Optional[datetime] = None,
     ) -> List[SpendOutlierFinding]:
-        """Every finding detected at or after ``since``, oldest first."""
-        return (
+        """Every finding detected in ``[since, until)``, oldest first.
+
+        ``until`` is exclusive and optional. Without it the window has no
+        upper bound, which is what the Attention page wants: it shows what it
+        has. A digest passes the end of its window so a finding recorded
+        after that end cannot appear in it.
+
+        Ordering is total: detection time first, then the fingerprint, then
+        the row id, so two findings detected at the same instant keep the
+        same order on every call.
+
+        Args:
+            db: Database session.
+            account_id: Account the findings belong to.
+            since: Inclusive window start.
+            until: Exclusive window end, or None for no upper bound.
+
+        Returns:
+            The findings in the window, oldest first.
+        """
+        query = (
             db.query(SpendOutlierFinding)
             .filter(SpendOutlierFinding.account_id == account_id)
             .filter(SpendOutlierFinding.detected_at >= since)
             .order_by(
                 SpendOutlierFinding.detected_at.asc(),
                 SpendOutlierFinding.fingerprint.asc(),
+                SpendOutlierFinding.id.asc(),
             )
-            .all()
         )
+        if until is not None:
+            query = query.filter(SpendOutlierFinding.detected_at < until)
+        return query.all()
 
     def set_dismissed(
         self,
