@@ -23,6 +23,12 @@ Attribution order for one execution (first match wins):
 Anything else, and any pull request two issues both claim, is left on the
 pull request only and reported in the unassigned bucket. Cost is the sum of
 ``flow_execution.estimated_cost``; nothing else is added.
+
+That sum is the known subtotal, not total spend. A run whose cost is unknown
+(``estimated_cost`` is null, as for a subscription-backed run that has no
+per-ticket price) contributes nothing to it, so every row, summary and the
+unassigned bucket also report ``cost_coverage`` and how many of their runs
+carry a known cost (#1057).
 """
 
 from __future__ import annotations
@@ -43,6 +49,10 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud import crud_flow_execution, crud_issue_cost
 from preloop.schemas.issue_cost import (
+    COVERAGE_COMPLETE,
+    COVERAGE_PARTIAL,
+    COVERAGE_UNKNOWN,
+    CostCoverage,
     IssueCostExecutionRow,
     IssueCostReport,
     IssueCostRow,
@@ -109,6 +119,10 @@ CSV_COLUMNS: tuple[str, ...] = (
     "estimate_hours_source",
     "estimate_points",
     "estimate_points_source",
+    "cost_coverage",
+    "known_cost_run_count",
+    "unknown_cost_run_count",
+    "attributed_cost_usd",
 )
 
 UNASSIGNED_ISSUE_KEY = "(unassigned)"
@@ -1608,22 +1622,86 @@ def _scheduled_rebuild(
 # --- report --------------------------------------------------------------------
 
 
+def cost_coverage(known_cost_runs: int, unknown_cost_runs: int) -> CostCoverage:
+    """How much of a bucket's run count carries a cost estimate.
+
+    Coverage is about execution-cost availability, never invoice accuracy: a
+    complete bucket is still an estimate priced from published rates, and a
+    subscription-backed run has no per-ticket price to find. A known zero
+    counts as known, so a genuinely free run is never reported as unknown. An
+    empty bucket is unknown, because nothing about it is priced.
+
+    Args:
+        known_cost_runs: Runs whose ``estimated_cost`` is not null.
+        unknown_cost_runs: Runs with no ``estimated_cost``.
+
+    Returns:
+        ``complete`` when every run is priced, ``partial`` when both kinds are
+        present and ``unknown`` when none is.
+    """
+    if known_cost_runs <= 0:
+        return COVERAGE_UNKNOWN
+    if unknown_cost_runs <= 0:
+        return COVERAGE_COMPLETE
+    return COVERAGE_PARTIAL
+
+
+def attributed_cost(coverage: CostCoverage, subtotal: float) -> Optional[float]:
+    """The subtotal, only when every contributing run had a cost.
+
+    Args:
+        coverage: The bucket's ``cost_coverage``.
+        subtotal: The legacy ``estimated_cost`` subtotal.
+
+    Returns:
+        The subtotal for complete coverage, else None. A partial or unknown
+        bucket has no attributable total, and reporting the subtotal there
+        would read as "this is what the ticket cost".
+    """
+    return subtotal if coverage == COVERAGE_COMPLETE else None
+
+
 @dataclass
 class _Totals:
     tokens: int = 0
     cost: Decimal = Decimal("0")
     runs: int = 0
     failed: int = 0
+    #: Runs of this bucket whose cost estimate is known and unknown.
+    known_cost_runs: int = 0
+    unknown_cost_runs: int = 0
     issues: set[uuid.UUID] = field(default_factory=set)
 
     def add(
-        self, rollup_id: uuid.UUID, tokens: int, cost: Decimal, runs: int, failed: int
+        self,
+        rollup_id: uuid.UUID,
+        tokens: int,
+        cost: Decimal,
+        runs: int,
+        failed: int,
+        known_cost_runs: int,
+        unknown_cost_runs: int,
     ) -> None:
         self.tokens += tokens
         self.cost += cost
         self.runs += runs
         self.failed += failed
+        self.known_cost_runs += known_cost_runs
+        self.unknown_cost_runs += unknown_cost_runs
         self.issues.add(rollup_id)
+
+    @property
+    def coverage(self) -> CostCoverage:
+        """Whether every run behind these totals has a cost estimate."""
+        return cost_coverage(self.known_cost_runs, self.unknown_cost_runs)
+
+    def money(self) -> float:
+        """The legacy subtotal of the priced runs."""
+        return _money(self.cost)
+
+    def attributed(self) -> Optional[float]:
+        """The subtotal when coverage is complete, else None."""
+        return attributed_cost(self.coverage, self.money())
 
 
 def _money(value: Optional[Decimal]) -> float:
@@ -1649,7 +1727,10 @@ def build_report(
 
     An issue is in the period when its first event is. Its totals are
     lifetime totals, restricted to one flow when a flow filter is set, so
-    the per-flow and per-project summaries are exact sums of the rows.
+    the per-flow and per-project summaries are exact sums of the rows. Rows,
+    summaries and the unassigned bucket also carry ``cost_coverage`` and the
+    two counts behind it, read from the same account-scoped fact aggregates,
+    so coverage follows the filter instead of being a stored lifetime value.
 
     Args:
         db: Database session.
@@ -1690,11 +1771,17 @@ def build_report(
         cost,
         runs,
         failed,
+        known_cost_runs,
+        unknown_cost_runs,
     ) in crud_issue_cost.fact_totals_by_rollup_and_flow(db, rollup_ids=rollup_ids):
         if flow_id is not None and fid != flow_id:
             continue
-        per_issue[rid].add(rid, tokens, cost, runs, failed)
-        per_flow.setdefault(fid, _Totals()).add(rid, tokens, cost, runs, failed)
+        per_issue[rid].add(
+            rid, tokens, cost, runs, failed, known_cost_runs, unknown_cost_runs
+        )
+        per_flow.setdefault(fid, _Totals()).add(
+            rid, tokens, cost, runs, failed, known_cost_runs, unknown_cost_runs
+        )
 
     execution_ids: dict[uuid.UUID, list[uuid.UUID]] = {}
     if include_execution_ids:
@@ -1729,7 +1816,17 @@ def build_report(
         unassigned_cost,
         unassigned_runs,
         unassigned_failed,
+        unassigned_known_cost_runs,
+        unassigned_unknown_cost_runs,
     ) = crud_issue_cost.unassigned_totals(db, **unassigned_filter)
+    unassigned_totals = _Totals(
+        tokens=unassigned_tokens,
+        cost=unassigned_cost,
+        runs=unassigned_runs,
+        failed=unassigned_failed,
+        known_cost_runs=unassigned_known_cost_runs,
+        unknown_cost_runs=unassigned_unknown_cost_runs,
+    )
 
     trackers, projects, flows = crud_issue_cost.names(
         db,
@@ -1743,7 +1840,13 @@ def build_report(
     for rollup in rollups:
         totals = per_issue[rollup.id]
         per_project.setdefault(rollup.project_id, _Totals()).add(
-            rollup.id, totals.tokens, totals.cost, totals.runs, totals.failed
+            rollup.id,
+            totals.tokens,
+            totals.cost,
+            totals.runs,
+            totals.failed,
+            totals.known_cost_runs,
+            totals.unknown_cost_runs,
         )
         tracker_name, tracker_type = trackers.get(rollup.tracker_id, ("", ""))
         rows.append(
@@ -1761,7 +1864,11 @@ def build_report(
                 project_name=projects.get(rollup.project_id)
                 if rollup.project_id
                 else None,
-                estimated_cost=_money(totals.cost),
+                estimated_cost=totals.money(),
+                cost_coverage=totals.coverage,
+                known_cost_run_count=totals.known_cost_runs,
+                unknown_cost_run_count=totals.unknown_cost_runs,
+                attributed_cost_usd=totals.attributed(),
                 total_tokens=totals.tokens,
                 run_count=totals.runs,
                 failed_run_count=totals.failed,
@@ -1796,7 +1903,11 @@ def build_report(
             id=key,
             name=name,
             issue_count=len(totals.issues),
-            estimated_cost=_money(totals.cost),
+            estimated_cost=totals.money(),
+            cost_coverage=totals.coverage,
+            known_cost_run_count=totals.known_cost_runs,
+            unknown_cost_run_count=totals.unknown_cost_runs,
+            attributed_cost_usd=totals.attributed(),
             total_tokens=totals.tokens,
             run_count=totals.runs,
             failed_run_count=totals.failed,
@@ -1815,10 +1926,14 @@ def build_report(
     )
 
     unassigned = IssueCostUnassigned(
-        estimated_cost=_money(unassigned_cost),
-        total_tokens=unassigned_tokens,
-        run_count=unassigned_runs,
-        failed_run_count=unassigned_failed,
+        estimated_cost=unassigned_totals.money(),
+        cost_coverage=unassigned_totals.coverage,
+        known_cost_run_count=unassigned_totals.known_cost_runs,
+        unknown_cost_run_count=unassigned_totals.unknown_cost_runs,
+        attributed_cost_usd=unassigned_totals.attributed(),
+        total_tokens=unassigned_totals.tokens,
+        run_count=unassigned_totals.runs,
+        failed_run_count=unassigned_totals.failed,
         executions=[_execution_row(fact, name) for fact, name in unassigned_facts],
     )
     return IssueCostReport(
@@ -1943,6 +2058,10 @@ def _csv_cell(value: Any) -> str:
 def report_to_csv(report: IssueCostReport) -> str:
     """Flat issue-grain CSV of a report, plus one unassigned row.
 
+    The coverage columns are appended after the original ones, so a consumer
+    that reads ``estimated_cost`` by name keeps its previous meaning: the
+    known subtotal of the priced runs, never total spend.
+
     Args:
         report: The report to export.
 
@@ -1979,27 +2098,36 @@ def report_to_csv(report: IssueCostReport) -> str:
                     row.estimate_hours_source,
                     row.estimate_points,
                     row.estimate_points_source,
+                    row.cost_coverage,
+                    row.known_cost_run_count,
+                    row.unknown_cost_run_count,
+                    row.attributed_cost_usd,
                 )
             ]
         )
     if report.unassigned.run_count:
         bucket = report.unassigned
-        writer.writerow(
-            [
-                _csv_cell(value)
-                for value in (
-                    "",
-                    UNASSIGNED_ISSUE_KEY,
-                    "",
-                    "",
-                    bucket.estimated_cost,
-                    bucket.total_tokens,
-                    bucket.run_count,
-                    bucket.failed_run_count,
-                )
-            ]
-            + [""] * (len(CSV_COLUMNS) - 8)
+        # The unassigned row fills the issue-grain columns it has, the
+        # appended coverage columns at the end, and leaves the cycle-time
+        # columns in between blank.
+        leading = (
+            "",
+            UNASSIGNED_ISSUE_KEY,
+            "",
+            "",
+            bucket.estimated_cost,
+            bucket.total_tokens,
+            bucket.run_count,
+            bucket.failed_run_count,
         )
+        coverage = (
+            bucket.cost_coverage,
+            bucket.known_cost_run_count,
+            bucket.unknown_cost_run_count,
+            bucket.attributed_cost_usd,
+        )
+        blanks = ("",) * (len(CSV_COLUMNS) - len(leading) - len(coverage))
+        writer.writerow([_csv_cell(value) for value in leading + blanks + coverage])
     return buffer.getvalue()
 
 

@@ -8,6 +8,8 @@ import {
   getIssueCosts,
   getUnassignedIssueCostExecutions,
   listProjects,
+  type CostCoverage,
+  type IssueCostCoverage,
   type IssueCostExecution,
   type IssueCostFilter,
   type IssueCostReport,
@@ -46,6 +48,45 @@ export function formatIssueCost(value: number | null | undefined): string {
   return `$${value.toFixed(digits)}`;
 }
 
+/** What the Cost column says, and why, for one bucket (#1057). */
+export function issueCostTitle(bucket: IssueCostCoverage): string {
+  const coverage = issueCostCoverage(bucket);
+  if (coverage === 'unknown') {
+    return 'No run here has a cost estimate, so this is not a free ticket. Subscription-backed runs report no per-run price.';
+  }
+  if (coverage === 'partial') {
+    return `Estimated cost of ${bucket.unknown_cost_run_count} of ${
+      bucket.known_cost_run_count + bucket.unknown_cost_run_count
+    } runs is missing. The amount shown is the priced subtotal, not total spend.`;
+  }
+  return 'Every run here has a cost estimate, priced from published model rates. This is an estimate, not a measured or invoiced amount.';
+}
+
+/**
+ * The coverage the server stated; a response without it is read as unpriced
+ * rather than complete, because claiming completeness nobody stated is the
+ * bug this fixes.
+ */
+export function issueCostCoverage(bucket: IssueCostCoverage): CostCoverage {
+  return bucket.cost_coverage ?? 'unknown';
+}
+
+/**
+ * The Cost cell text: an unpriced bucket is Unknown, never $0.00.
+ *
+ * A partial bucket shows the known subtotal and how many runs it is missing.
+ */
+export function formatIssueAmount(bucket: IssueCostCoverage): string {
+  const coverage = issueCostCoverage(bucket);
+  if (coverage === 'unknown') return 'Unknown';
+  const amount = formatIssueCost(bucket.estimated_cost);
+  if (coverage === 'complete') return amount;
+  const runs = bucket.unknown_cost_run_count ?? 0;
+  return `${amount} partial; ${runs} ${
+    runs === 1 ? 'run' : 'runs'
+  } without cost`;
+}
+
 /** Hours with one decimal; blank when the later milestone is missing. */
 export function formatIssueHours(value: number | null | undefined): string {
   if (value === null || value === undefined) return '';
@@ -76,6 +117,10 @@ const OPENED_SOURCE_TITLES: Record<string, string> = {
   bind: 'PR opened: approximate, the time Preloop bound the pull request',
   run_end: 'PR opened: approximate, the end of the publishing run',
 };
+
+/** Tooltip of one execution row that carries no cost estimate. */
+const RUN_COST_TITLE =
+  'This run has no cost estimate, so it is not a free run. Subscription-backed runs report no per-run price.';
 
 function formatTime(value: string | null): string {
   if (!value) return '';
@@ -327,7 +372,14 @@ export class IssueCostView extends AuthedElement {
               </td>
               <td>${execution.status}</td>
               ${showLink ? html`<td>${execution.link}</td>` : nothing}
-              <td class="num">${formatIssueCost(execution.estimated_cost)}</td>
+              <td
+                class="num"
+                title=${
+                  execution.estimated_cost === null ? RUN_COST_TITLE : nothing
+                }
+              >
+                ${formatIssueCost(execution.estimated_cost) || 'Unknown'}
+              </td>
               <td>${formatTime(execution.start_time)}</td>
               <td>${formatTime(execution.end_time)}</td>
             </tr>`
@@ -389,7 +441,9 @@ export class IssueCostView extends AuthedElement {
                       : nothing
                   }
                 </td>
-                <td class="num">${formatIssueCost(row.estimated_cost)}</td>
+                <td class="num cost" title=${issueCostTitle(row) || nothing}>
+                  ${formatIssueAmount(row)}
+                </td>
                 <td class="num">${row.total_tokens.toLocaleString()}</td>
                 <td class="num">
                   ${row.run_count}${
@@ -447,8 +501,8 @@ export class IssueCostView extends AuthedElement {
                       <td>${item.name || 'No project'}</td>
                       <td class="num">${item.issue_count}</td>
                       <td class="num">${item.run_count}</td>
-                      <td class="num">
-                        ${formatIssueCost(item.estimated_cost)}
+                      <td class="num" title=${issueCostTitle(item) || nothing}>
+                        ${formatIssueAmount(item)}
                       </td>
                     </tr>`
                 )}
@@ -465,9 +519,9 @@ export class IssueCostView extends AuthedElement {
     return html`<sl-card class="unassigned">
       <h3 slot="header">Unassigned</h3>
       <p>
-        ${bucket.run_count} runs (${formatIssueCost(bucket.estimated_cost)})
-        could not be tied to exactly one issue. They are counted here and not in
-        any issue row.
+        ${bucket.run_count} runs (${formatIssueAmount(bucket)}) could not be
+        tied to exactly one issue. They are counted here and not in any issue
+        row.
       </p>
       <sl-button
         size="small"
@@ -493,7 +547,7 @@ export class IssueCostView extends AuthedElement {
     return html`<div class="page">
       <view-header
         headerText="Cost per issue"
-        description="Agent cost and cycle time for each tracker issue."
+        description="Estimated agent cost and cycle time for each tracker issue."
       ></view-header>
       <div class="toolbar">
         <time-range-select
@@ -543,6 +597,15 @@ export class IssueCostView extends AuthedElement {
           >Export JSON</sl-button
         >
       </div>
+      <p class="muted cost-note">
+        Cost is what Preloop estimated per run. Each row says how much of it is
+        actually priced: complete when every run has a cost, partial when some
+        runs do not, and Unknown instead of a dollar amount when none does.
+        Three sources stay deliberately apart: a CLI run's premium-request count
+        (a subscription has no per-run price), the daily GitHub Copilot import
+        (account level, never attributed to a ticket), and gateway-priced
+        estimates, which is what this page sums.
+      </p>
       ${
         this.error
           ? html`<sl-alert variant="danger" open role="alert"

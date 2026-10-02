@@ -46,7 +46,10 @@ The Cost console loads totals independently of settings and tab breakdowns.
 Selective reporting queries and per-section loading states are described in
 [Progressive reporting](docs/architecture/cost.md#progressive-reporting).
 Cost and cycle time per tracker issue are rolled up across flows into their own
-tables; see [Cost per issue](docs/architecture/cost.md#cost-and-cycle-time-per-tracker-issue).
+tables. Each issue row, summary and unassigned bucket also states `cost_coverage`
+(`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
+unpriced subscription-backed run is never read as a free ticket; see
+[Cost per issue](docs/architecture/cost.md#cost-and-cycle-time-per-tracker-issue).
 
 ## High-Level Architecture
 

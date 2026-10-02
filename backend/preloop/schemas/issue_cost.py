@@ -3,10 +3,43 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+#: Whether every run behind a cost figure had an execution cost (#1057).
+#: Coverage says how much of the bucket is priced; it never says the figure is
+#: what an invoice charged.
+CostCoverage = Literal["complete", "partial", "unknown"]
+
+COVERAGE_COMPLETE: CostCoverage = "complete"
+COVERAGE_PARTIAL: CostCoverage = "partial"
+COVERAGE_UNKNOWN: CostCoverage = "unknown"
+
+#: Shared description of the two coverage fields, for every row shape.
+COVERAGE_DESCRIPTION = (
+    "Whether every contributing run had a cost estimate: complete, partial "
+    "or unknown. A bucket with no runs is unknown, and a known zero counts "
+    "as known. This describes execution-cost availability, never invoice "
+    "accuracy."
+)
+#: The two counts are described separately so the generated spec says which
+#: field counts priced runs and which counts unpriced ones; a consumer should
+#: not have to infer it from the field name.
+KNOWN_COST_RUN_COUNT_DESCRIPTION = (
+    "Contributing runs that carry a cost estimate, and so are summed into "
+    "estimated_cost. An explicit zero counts as known."
+)
+UNKNOWN_COST_RUN_COUNT_DESCRIPTION = (
+    "Contributing runs with no cost estimate, for example subscription-backed "
+    "runs. They contribute nothing to estimated_cost, which is therefore the "
+    "subtotal of the known runs rather than total spend."
+)
+ATTRIBUTED_DESCRIPTION = (
+    "The estimated_cost subtotal when cost_coverage is complete; null "
+    "otherwise, so a partial or unknown bucket is never read as a total."
+)
 
 
 class IssueCostExecutionRow(BaseModel):
@@ -46,7 +79,28 @@ class IssueCostRow(BaseModel):
     project_id: Optional[UUID] = None
     project_name: Optional[str] = None
     estimated_cost: float = Field(
-        ..., description="Sum of the contributing executions' estimated_cost."
+        ...,
+        description=(
+            "Sum of the contributing executions' estimated_cost. This is the "
+            "known subtotal, not total spend: runs without a cost "
+            "contribute nothing to it. Read cost_coverage next to it."
+        ),
+    )
+    cost_coverage: CostCoverage = Field(
+        ...,
+        description=COVERAGE_DESCRIPTION,
+    )
+    known_cost_run_count: int = Field(
+        ...,
+        description=KNOWN_COST_RUN_COUNT_DESCRIPTION,
+    )
+    unknown_cost_run_count: int = Field(
+        ...,
+        description=UNKNOWN_COST_RUN_COUNT_DESCRIPTION,
+    )
+    attributed_cost_usd: Optional[float] = Field(
+        None,
+        description=ATTRIBUTED_DESCRIPTION,
     )
     total_tokens: int
     run_count: int
@@ -112,7 +166,21 @@ class IssueCostSummary(BaseModel):
     id: Optional[UUID] = None
     name: str
     issue_count: int
-    estimated_cost: float
+    estimated_cost: float = Field(
+        ...,
+        description=(
+            "Sum of the contributing executions' estimated_cost: the known "
+            "subtotal of the bucket, not total spend."
+        ),
+    )
+    cost_coverage: CostCoverage = Field(..., description=COVERAGE_DESCRIPTION)
+    known_cost_run_count: int = Field(..., description=KNOWN_COST_RUN_COUNT_DESCRIPTION)
+    unknown_cost_run_count: int = Field(
+        ..., description=UNKNOWN_COST_RUN_COUNT_DESCRIPTION
+    )
+    attributed_cost_usd: Optional[float] = Field(
+        None, description=ATTRIBUTED_DESCRIPTION
+    )
     total_tokens: int
     run_count: int
     failed_run_count: int
@@ -121,7 +189,23 @@ class IssueCostSummary(BaseModel):
 class IssueCostUnassigned(BaseModel):
     """Executions that could not be tied to exactly one issue."""
 
-    estimated_cost: float = 0.0
+    estimated_cost: float = Field(
+        0.0,
+        description=(
+            "Sum of the unassigned executions' estimated_cost: the known "
+            "subtotal, not total spend."
+        ),
+    )
+    cost_coverage: CostCoverage = Field(
+        COVERAGE_UNKNOWN, description=COVERAGE_DESCRIPTION
+    )
+    known_cost_run_count: int = Field(0, description=KNOWN_COST_RUN_COUNT_DESCRIPTION)
+    unknown_cost_run_count: int = Field(
+        0, description=UNKNOWN_COST_RUN_COUNT_DESCRIPTION
+    )
+    attributed_cost_usd: Optional[float] = Field(
+        None, description=ATTRIBUTED_DESCRIPTION
+    )
     total_tokens: int = 0
     run_count: int = 0
     failed_run_count: int = 0

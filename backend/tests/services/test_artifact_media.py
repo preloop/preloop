@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 
 from preloop.services import artifact_media as media
@@ -122,67 +120,12 @@ def test_every_kind_has_a_modality() -> None:
     assert set(media.KIND_MODALITY.values()) <= {"image", "video", "audio", "document"}
 
 
-SHAPE_SAMPLES = [
-    ("screenshot", "image/png", b"\x89PNG\r\n\x1a\nxx"),
-    ("audio", "audio/ogg", b"OggS\x00\x02"),
-    ("transcript", "text/vtt", b"WEBVTT\n\nhallo"),
-    ("trace", "application/zip", b"PK\x03\x04zz"),
-]
-
-
-def _payload(kind: str, content_type: str, data: bytes) -> shapes.ArtifactPayload:
-    return shapes.ArtifactPayload(
-        artifact_id="2b1f0e4a-0000-4000-8000-000000000001",
-        kind=kind,
-        content_type=content_type,
-        sha256=hashlib.sha256(data).hexdigest(),
-        name=f"{kind}.bin",
-        labels={"site": "heilbronn", "tags": ["call", "demo"]},
-        producer="deposit_api",
-        data=data,
-        size_bytes=len(data),
-    )
-
-
-def _same(a: shapes.ArtifactPayload, b: shapes.ArtifactPayload) -> None:
-    assert (b.content_type, b.sha256, b.name, b.kind, b.labels) == (
-        a.content_type,
-        a.sha256,
-        a.name,
-        a.kind,
-        a.labels,
-    )
-
-
-@pytest.mark.parametrize(("kind", "content_type", "data"), SHAPE_SAMPLES)
-def test_mcp_round_trip(kind: str, content_type: str, data: bytes) -> None:
-    a = _payload(kind, content_type, data)
-    block = shapes.to_mcp(a, uri="https://preloop.example/a/1")
-    expected_type = {"screenshot": "image", "audio": "audio"}.get(kind, "resource")
-    assert block["type"] == expected_type
-    _same(a, shapes.from_mcp(block))
-    link = shapes.to_mcp_link(a, uri="https://preloop.example/a/1")
-    assert link["type"] == "resource_link" and link["size"] == len(data)
-    _same(a, shapes.from_mcp(link))
-
-
-@pytest.mark.parametrize(("kind", "content_type", "data"), SHAPE_SAMPLES)
-def test_a2a_round_trip(kind: str, content_type: str, data: bytes) -> None:
-    a = _payload(kind, content_type, data)
-    artifact = shapes.to_a2a(a)
-    assert artifact["parts"][0]["mediaType"] == content_type
-    _same(a, shapes.from_a2a(artifact))
-    _same(a, shapes.from_a2a(shapes.to_a2a(a, url="https://preloop.example/a/1")))
-
-
-@pytest.mark.parametrize(("kind", "content_type", "data"), SHAPE_SAMPLES)
-def test_otel_round_trip(kind: str, content_type: str, data: bytes) -> None:
-    a = _payload(kind, content_type, data)
-    part, attrs = shapes.to_otel(a, uri="https://preloop.example/a/1")
-    assert part["type"] == "uri"
-    assert part["modality"] == media.KIND_MODALITY[kind]
-    assert attrs["preloop.artifact.kind"] == kind
-    _same(a, shapes.from_otel(part, attrs))
-    blob, blob_attrs = shapes.to_otel(a)
-    assert blob["type"] == "blob"
-    _same(a, shapes.from_otel(blob, blob_attrs))
+def test_shapes_mapping_agrees_with_the_kind_table() -> None:
+    """``artifact_shapes`` (from #1109) owns the wire mapping and has its own
+    round-trip tests. Pin that its kinds and modalities match this table, so a
+    kind added here cannot silently map to the wrong OTel modality."""
+    for kind in media.ARTIFACT_KINDS:
+        assert shapes.modality_for(kind) == media.KIND_MODALITY[kind]
+    for content_type in ("image/png", "audio/wav", "video/mp4", "text/vtt",
+                         "text/markdown", "application/zip"):
+        assert shapes.infer_kind(content_type) in media.ARTIFACT_KINDS

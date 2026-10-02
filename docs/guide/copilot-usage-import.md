@@ -12,6 +12,30 @@ Every figure in that tab carries the marker **Not metered by the gateway**.
 Imported Copilot rows never count toward gateway usage, budgets, budget
 alerts, ingestion quota or provider reconciliation drift.
 
+## What these numbers do not say
+
+GitHub reports seats and premium-request spend per user and per day. That
+is the finest grain this import has, and it is a billing report, not an
+activity log:
+
+- **Not per ticket.** Nothing here is joined to a flow execution, a
+  trigger event or a session. A row cannot be read as "this ticket cost
+  X". A Copilot CLI flow on a private runner records the premium-request
+  count Copilot reported for the run, and this import records what
+  GitHub billed the seat that day; the two are not the same number and
+  are not reconciled. See [Copilot coverage](copilot.md) for what each
+  surface meters.
+- **Not per request.** `netAmount` is a daily total per user and model.
+  It is not a price for one prompt, one edit or one model call.
+- **Not a budget for a run.** Nothing here is enforced. Only gateway
+  usage feeds budgets and alerts.
+- **Unknown is not zero.** A day GitHub has not settled yet, a seat that
+  reports no premium requests, an organization that returns no per-user
+  data, and a connection that has not been synced are all *unknown*.
+  The tab shows that state, and "no data imported" for a range with
+  nothing imported, rather than `$0`. The optional seat price behaves
+  the same way.
+
 ## What is imported
 
 | Data | GitHub route | Stored |

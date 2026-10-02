@@ -584,6 +584,200 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+def repository_path_from_git_url(url: str) -> Optional[str]:
+    """Return the ``group/repo`` path from a clone or web URL.
+
+    Args:
+        url: A git or browser URL, with or without a trailing ``.git``.
+
+    Returns:
+        The repository path, or None when the URL has no path.
+    """
+    raw = url.strip()
+    if not raw:
+        return None
+    if raw.endswith(".git"):
+        raw = raw[: -len(".git")]
+    if "://" in raw:
+        rest = raw.split("://", 1)[1]
+        path = rest.split("/", 1)[1] if "/" in rest else ""
+    elif raw.startswith("git@") and ":" in raw:
+        path = raw.split(":", 1)[1]
+    else:
+        return None
+    path = path.strip("/")
+    return path or None
+
+
+def _normalize_repository_path(path: str) -> str:
+    """Compare repository paths without case or a trailing ``.git``."""
+    value = path.strip().strip("/")
+    if value.lower().endswith(".git"):
+        value = value[: -len(".git")]
+    return value.lower()
+
+
+def payload_repository_identity(event: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Read the repository a trigger payload names.
+
+    A GitLab merge request carries ``project.path_with_namespace`` and the
+    numeric project id. A GitHub or Bitbucket event carries ``repository``.
+    CI triggers send the same shapes and often omit ``tracker_id``.
+
+    Args:
+        event: Trigger event, with the provider body under ``payload``.
+
+    Returns:
+        ``source``, ``path``, ``external_id`` and ``clone_url`` when the
+        payload names a repository, otherwise None.
+    """
+    if not isinstance(event, Mapping):
+        return None
+    source = str(event.get("source") or "").lower()
+    payload = event.get("payload")
+    body = payload if isinstance(payload, dict) else event
+    if not isinstance(body, dict):
+        return None
+    project = body.get("project") if isinstance(body.get("project"), dict) else {}
+    repository = (
+        body.get("repository") if isinstance(body.get("repository"), dict) else {}
+    )
+
+    path: Optional[str] = None
+    external_id: Optional[str] = None
+    clone_url: Optional[str] = None
+    if source == "bitbucket" or (source not in {"gitlab", "github"} and repository):
+        path = repository.get("full_name") or repository.get("name")
+        from preloop.utils.bitbucket import normalize_uuid as normalize_bitbucket_uuid
+
+        external_id = normalize_bitbucket_uuid(repository.get("uuid")) or None
+        if external_id is None and repository.get("id") is not None:
+            external_id = str(repository.get("id"))
+        clone_url = repository.get("clone_url") or _link_href(repository)
+    if source == "github" or (source != "gitlab" and repository.get("full_name")):
+        path = repository.get("full_name") or repository.get("name") or path
+        if repository.get("id") is not None and source != "bitbucket":
+            external_id = str(repository.get("id"))
+        clone_url = (
+            repository.get("clone_url")
+            or repository.get("git_url")
+            or repository.get("ssh_url")
+            or clone_url
+        )
+    if source == "gitlab" or project.get("path_with_namespace") or project.get("id"):
+        path = project.get("path_with_namespace") or project.get("path") or path
+        if project.get("id") is not None:
+            external_id = str(project.get("id"))
+        clone_url = (
+            project.get("git_http_url")
+            or project.get("http_url_to_repo")
+            or project.get("ssh_url")
+            or clone_url
+        )
+    if path is not None:
+        path = str(path).strip() or None
+    if not path and clone_url:
+        path = repository_path_from_git_url(str(clone_url))
+    if not path and not external_id:
+        return None
+    return {
+        "source": source,
+        "path": path,
+        "external_id": external_id,
+        "clone_url": str(clone_url) if clone_url else None,
+    }
+
+
+def _project_identity_rank(
+    project: Any, tracker_type: str, identity: Mapping[str, Any]
+) -> int:
+    """Rank how well a project matches a payload repository.
+
+    A tracker of a different host cannot match: GitLab project 21 and GitHub
+    repository 21 are not the same repository. Slug equality outranks a
+    numeric identifier, which can collide across hosts when the tracker type
+    is unknown.
+
+    Args:
+        project: Project row with ``slug`` and ``identifier``.
+        tracker_type: Owning tracker type, or empty when unknown.
+        identity: Parsed payload repository.
+
+    Returns:
+        3 for a path match, 2 for an identifier match, 0 for no match.
+    """
+    source = str(identity.get("source") or "")
+    if source in {"github", "gitlab", "bitbucket"} and tracker_type:
+        if tracker_type != source:
+            return 0
+    slug = _normalize_repository_path(str(project.slug or ""))
+    identifier = str(project.identifier or "")
+    path = identity.get("path")
+    normalized_path = _normalize_repository_path(str(path)) if path else ""
+    if normalized_path and slug and slug == normalized_path:
+        return 3
+    external_id = identity.get("external_id")
+    if external_id and identifier == str(external_id):
+        return 2
+    if normalized_path and _normalize_repository_path(identifier) == normalized_path:
+        return 2
+    return 0
+
+
+def _repository_entry_matches(
+    repo: Mapping[str, Any],
+    identity: Mapping[str, Any],
+    project_id: Optional[str],
+) -> bool:
+    """Whether a clone entry is the repository the payload named."""
+    if project_id and str(repo.get("project_id") or "") == project_id:
+        return True
+    raw_url = repo.get("repository_url")
+    if not raw_url:
+        return False
+    entry_path = repository_path_from_git_url(str(raw_url))
+    payload_path = identity.get("path")
+    if (
+        entry_path
+        and payload_path
+        and _normalize_repository_path(entry_path)
+        == _normalize_repository_path(str(payload_path))
+    ):
+        return True
+    clone_url = identity.get("clone_url")
+    if clone_url and str(raw_url).rstrip("/") == str(clone_url).rstrip("/"):
+        return True
+    return False
+
+
+def _link_href(repository: Mapping[str, Any]) -> Optional[str]:
+    """Return a Bitbucket repository's HTML link, when that is all it has."""
+    links = repository.get("links")
+    if not isinstance(links, dict):
+        return None
+    html = links.get("html")
+    if isinstance(html, dict) and html.get("href"):
+        return str(html["href"])
+    return None
+
+
+_UNSET = object()
+
+
+class _NamedTriggerProject:
+    """Payload project resolution before the first-project fallback.
+
+    Attributes:
+        project_id: Matched project, or None.
+        forbid_fallback: The payload named a repository the flow did not
+            select, so ``trigger_project_ids[0]`` must not be used.
+    """
+
+    def __init__(self, project_id: Optional[str], forbid_fallback: bool) -> None:
+        self.project_id = project_id
+        self.forbid_fallback = forbid_fallback
+
+
 RUNNER_LOG_PAGE_SIZE = 500
 RUNNER_LOG_SUMMARY_LINES = 1000
 
@@ -2097,30 +2291,44 @@ class FlowExecutionOrchestrator:
     ) -> Optional[str]:
         """Resolve the project that triggered this execution.
 
-        Prefer the repository from the webhook payload (e.g. the MR's project)
-        over the first entry in flow.trigger_project_ids, which may be a
-        different repo when the flow watches multiple projects.
+        The payload repository is used when it is one of the flow's selected
+        projects or clone repositories. A flow that selects none is not
+        limited, so the payload is matched against the account's projects.
+        The first selected project is only a fallback when the payload does
+        not name a repository. A CI trigger often has no ``tracker_id``, and
+        taking ``trigger_project_ids[0]`` then clones a different repo than
+        the merge request.
 
         Args:
             allow_first_project_fallback: When False, return None instead of
                 falling back to ``flow.trigger_project_ids[0]``. Callers that
                 address a specific repository (commit statuses) need this,
                 because a wrong repo is worse than no repo.
+
+        Returns:
+            The internal project id, or None when the payload names a
+            repository this flow is not allowed to use.
         """
-        project_id = self.trigger_event_data.get("project_id")
-        if project_id:
-            return str(project_id)
-
-        from preloop.services.flow_trigger_service import FlowTriggerService
-
-        resolved = FlowTriggerService(self.db)._extract_project_id(
-            self.trigger_event_data
+        # The preset runner calls this on a stand-in that only has
+        # trigger_event_data and flow.trigger_project_ids. Do not call
+        # another method before that case has returned.
+        event = getattr(self, "trigger_event_data", None) or {}
+        explicit = event.get("project_id") if isinstance(event, dict) else None
+        flow = getattr(self, "flow", None)
+        selected = getattr(flow, "trigger_project_ids", None) or []
+        git_config = (
+            getattr(flow, "git_clone_config", None) if flow is not None else None
         )
-        if resolved:
-            logger.info(f"Resolved trigger project from event payload: {resolved}")
-            return resolved
-
-        if not allow_first_project_fallback:
+        repositories = (
+            git_config.get("repositories") if isinstance(git_config, dict) else None
+        )
+        has_repositories = isinstance(repositories, list) and bool(repositories)
+        if explicit and not selected and not has_repositories:
+            return str(explicit)
+        named = self._named_trigger_project()
+        if named.project_id is not None:
+            return named.project_id
+        if named.forbid_fallback or not allow_first_project_fallback:
             return None
 
         if self.flow.trigger_project_ids:
@@ -2132,6 +2340,260 @@ class FlowExecutionOrchestrator:
             return fallback
 
         return None
+
+    def _cached_payload_identity(self) -> Optional[Dict[str, Any]]:
+        """Parse the payload repository once per orchestrator."""
+        cached = getattr(self, "_payload_identity_cached", _UNSET)
+        if cached is _UNSET:
+            cached = payload_repository_identity(self.trigger_event_data or {})
+            self._payload_identity_cached = cached
+        return cached
+
+    def _named_trigger_project(self) -> "_NamedTriggerProject":
+        """Resolve the payload's project once, without the first-project fallback.
+
+        ``_prepare_execution_context`` asks for this from repository binding,
+        clone narrowing, and the execution context. The payload cannot change
+        after construction, so the identity parse and the project query run once.
+        """
+        cached = getattr(self, "_named_trigger_project_cached", None)
+        if cached is not None:
+            return cached
+
+        identity = self._cached_payload_identity()
+        project_id = (self.trigger_event_data or {}).get("project_id")
+        resolved_id: Optional[str] = None
+        if project_id and self._project_is_selected(str(project_id)):
+            resolved_id = str(project_id)
+        else:
+            from preloop.services.flow_trigger_service import FlowTriggerService
+
+            extracted = FlowTriggerService(self.db)._extract_project_id(
+                self.trigger_event_data or {}
+            )
+            if extracted and self._project_is_selected(str(extracted)):
+                logger.info(
+                    "Resolved trigger project from event payload: %s", extracted
+                )
+                resolved_id = str(extracted)
+            elif identity:
+                matched = self._match_payload_project(identity)
+                if matched:
+                    logger.info(
+                        "Matched trigger payload repository %s to project %s",
+                        identity.get("path") or identity.get("external_id"),
+                        matched,
+                    )
+                    resolved_id = matched
+
+        forbid_fallback = bool(
+            identity and resolved_id is None and self._flow_limits_repositories()
+        )
+        if forbid_fallback and identity is not None:
+            logger.info(
+                "Trigger repository %s is not one of this flow's selected repositories",
+                identity.get("path") or identity.get("external_id"),
+            )
+        cached = _NamedTriggerProject(resolved_id, forbid_fallback)
+        self._named_trigger_project_cached = cached
+        return cached
+
+    def _flow_limits_repositories(self) -> bool:
+        """Whether this flow names the repositories it is allowed to use."""
+        if self.flow.trigger_project_ids:
+            return True
+        config = self._effective_git_clone_config()
+        if not isinstance(config, dict):
+            return False
+        repositories = config.get("repositories")
+        return isinstance(repositories, list) and bool(repositories)
+
+    def _selected_project_ids(self) -> set[str]:
+        """Project ids the flow has selected, from triggers and clone entries."""
+        selected: set[str] = set()
+        for raw in self.flow.trigger_project_ids or []:
+            if raw:
+                selected.add(str(raw))
+        config = self._effective_git_clone_config()
+        repositories = config.get("repositories") if isinstance(config, dict) else None
+        if isinstance(repositories, list):
+            for repo in repositories:
+                if isinstance(repo, dict) and repo.get("project_id"):
+                    selected.add(str(repo["project_id"]))
+        return selected
+
+    def _project_is_selected(self, project_id: str) -> bool:
+        """Return whether ``project_id`` is allowed for this flow.
+
+        A flow that does not select repositories or projects allows any
+        project that belongs to its account.
+        """
+        if not self._flow_limits_repositories():
+            return True
+        return project_id in self._selected_project_ids()
+
+    def _match_payload_project(self, identity: Mapping[str, Any]) -> Optional[str]:
+        """Find the selected project the payload repository refers to.
+
+        Args:
+            identity: Result of ``payload_repository_identity``.
+
+        Returns:
+            One matching project id. None when nothing matches, or when more
+            than one selected project matches equally well.
+        """
+        limited = self._flow_limits_repositories()
+        selected = self._selected_project_ids() if limited else None
+        if limited and not selected:
+            return None
+        projects = self._projects_matching_identity(identity, selected)
+        ranked: List[tuple[int, str]] = []
+        for project, tracker_type in projects:
+            rank = _project_identity_rank(project, tracker_type, identity)
+            if rank:
+                ranked.append((rank, str(project.id)))
+        if not ranked:
+            return None
+        best = max(rank for rank, _project_id in ranked)
+        winners = [project_id for rank, project_id in ranked if rank == best]
+        if len(set(winners)) != 1:
+            logger.info(
+                "Trigger repository %s matches %s projects; not guessing",
+                identity.get("path") or identity.get("external_id"),
+                len(set(winners)),
+            )
+            return None
+        return winners[0]
+
+    def _projects_matching_identity(
+        self,
+        identity: Mapping[str, Any],
+        selected_ids: Optional[set[str]],
+    ) -> List[tuple[Any, str]]:
+        """Load account projects that could be the payload repository.
+
+        Args:
+            identity: Parsed payload repository.
+            selected_ids: When set, only these project ids are eligible.
+                None means the flow did not limit repositories.
+
+        Returns:
+            ``(project, tracker_type)`` pairs. Tracker type is empty when
+            the project has no tracker.
+        """
+        from sqlalchemy import func, or_
+        from sqlalchemy.orm import joinedload
+
+        from preloop.models.models.organization import Organization
+        from preloop.models.models.project import Project
+        from preloop.models.models.tracker import Tracker
+
+        clauses = []
+        path = identity.get("path")
+        external_id = identity.get("external_id")
+        if path:
+            lowered = _normalize_repository_path(str(path))
+            clauses.append(func.lower(Project.slug) == lowered)
+            clauses.append(func.lower(Project.identifier) == lowered)
+        if external_id:
+            clauses.append(Project.identifier == str(external_id))
+        if not clauses:
+            return []
+
+        query = (
+            self.db.query(Project)
+            .options(joinedload(Project.organization).joinedload(Organization.tracker))
+            .join(Organization)
+            .join(Tracker)
+            .filter(Tracker.account_id == self.flow.account_id)
+            .filter(Project.is_active.is_(True))
+            .filter(or_(*clauses))
+        )
+        if selected_ids is not None:
+            parsed_ids = []
+            for raw in selected_ids:
+                try:
+                    parsed_ids.append(uuid.UUID(str(raw)))
+                except ValueError:
+                    continue
+            if not parsed_ids:
+                return []
+            query = query.filter(Project.id.in_(parsed_ids))
+
+        found: List[tuple[Any, str]] = []
+        for project in query.all():
+            organization = project.organization
+            tracker = organization.tracker if organization is not None else None
+            tracker_type = str(tracker.tracker_type or "").lower() if tracker else ""
+            found.append((project, tracker_type))
+        return found
+
+    def _git_clone_config_for_trigger(self) -> Any:
+        """Clone config reduced to the repository the payload named.
+
+        The stored config is not modified. Clone entries are a hard selection:
+        the payload repository is cloned only when it is one of them (or one
+        of the flow's projects). A payload that names something else clears
+        the list, so a fixed clone of a different repository is not checked
+        out under the payload's commit. That empty checkout is logged.
+        """
+        config = self._effective_git_clone_config()
+        if not isinstance(config, dict):
+            return config
+        identity = self._cached_payload_identity()
+        if not identity:
+            return config
+
+        project_id = self._resolve_trigger_project_id(
+            allow_first_project_fallback=False
+        )
+        repositories = [
+            repo
+            for repo in (config.get("repositories") or [])
+            if isinstance(repo, dict)
+        ]
+        matching = [
+            repo
+            for repo in repositories
+            if _repository_entry_matches(repo, identity, project_id)
+        ]
+        if len(matching) > 1:
+            logger.info(
+                "Trigger repository %s matches %s clone entries; using the first",
+                identity.get("path") or identity.get("external_id"),
+                len(matching),
+            )
+        if matching:
+            chosen = dict(matching[0])
+            if project_id and not chosen.get("project_id"):
+                chosen["project_id"] = project_id
+            if identity.get("clone_url") and not chosen.get("repository_url"):
+                chosen["repository_url"] = identity["clone_url"]
+            narrowed = dict(config)
+            narrowed["repositories"] = [chosen]
+            return narrowed
+
+        if project_id:
+            entry: Dict[str, Any] = {
+                "project_id": project_id,
+                "clone_path": "/workspace",
+            }
+            if identity.get("clone_url"):
+                entry["repository_url"] = identity["clone_url"]
+            narrowed = dict(config)
+            narrowed["repositories"] = [entry]
+            return narrowed
+
+        if self._flow_limits_repositories() and repositories:
+            logger.warning(
+                "Trigger repository %s matches no clone entry; "
+                "no repository will be cloned",
+                identity.get("path") or identity.get("external_id"),
+            )
+            narrowed = dict(config)
+            narrowed["repositories"] = []
+            return narrowed
+        return config
 
     def _resolve_repository_url_from_trigger(self) -> Optional[str]:
         """Extract repository URL from trigger event data.
@@ -2512,7 +2974,7 @@ class FlowExecutionOrchestrator:
             "flow_name": self.flow.name,
             "execution_id": str(self.execution_log.id),
             "account_id": self.flow.account_id,
-            "git_clone_config": clone,
+            "git_clone_config": self._git_clone_config_for_trigger(),
             "trigger_event_data": self.trigger_event_data,
             "trigger_project_id": self._resolve_trigger_project_id(),
         }
@@ -2641,7 +3103,7 @@ class FlowExecutionOrchestrator:
             "allowed_mcp_tools": self.flow.allowed_mcp_tools,
             "account_id": self.flow.account_id,
             "account_api_token": account_api_token,
-            "git_clone_config": self._effective_git_clone_config(),
+            "git_clone_config": self._git_clone_config_for_trigger(),
             "custom_commands": self.flow.custom_commands,
             "trigger_event_data": self.trigger_event_data,
             "trigger_project_ids": [str(pid) for pid in self.flow.trigger_project_ids]

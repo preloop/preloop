@@ -1642,3 +1642,297 @@ async def test_rebuild_sweeper_does_not_start_on_a_role_without_passes(
     sweeper = sweeper_module.IssueCostRebuildSweeper(check_interval_seconds=60)
     await sweeper.start()
     assert not sweeper.running
+
+
+# --- cost coverage (#1057) ----------------------------------------------------
+
+
+def test_cost_coverage_counts_a_known_zero_as_priced() -> None:
+    assert rollup_service.cost_coverage(2, 0) == "complete"
+    assert rollup_service.cost_coverage(1, 0) == "complete"
+    assert rollup_service.cost_coverage(1, 1) == "partial"
+    assert rollup_service.cost_coverage(0, 3) == "unknown"
+    # An empty bucket is unknown: nothing about it is priced.
+    assert rollup_service.cost_coverage(0, 0) == "unknown"
+
+
+def test_attributed_cost_is_the_subtotal_only_when_complete() -> None:
+    assert rollup_service.attributed_cost("complete", 2.0) == 2.0
+    assert rollup_service.attributed_cost("complete", 0.0) == 0.0
+    assert rollup_service.attributed_cost("partial", 2.0) is None
+    assert rollup_service.attributed_cost("unknown", 0.0) is None
+
+
+def test_unknown_only_costs_are_unknown_and_never_free(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost=None)
+    world.run(
+        world.review, world.issue_details(), start=T0 + timedelta(hours=1), cost=None
+    )
+
+    row = world.report().issues[0]
+
+    # The legacy subtotal stays 0.0, which is exactly why coverage exists.
+    assert row.estimated_cost == 0.0
+    assert row.cost_coverage == "unknown"
+    assert row.known_cost_run_count == 0
+    assert row.unknown_cost_run_count == 2
+    assert row.run_count == 2
+    assert row.attributed_cost_usd is None
+
+
+def test_known_only_costs_are_complete(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost="2.0000")
+
+    row = world.report().issues[0]
+
+    assert row.cost_coverage == "complete"
+    assert row.known_cost_run_count == 1
+    assert row.unknown_cost_run_count == 0
+    assert row.estimated_cost == 2.0
+    assert row.attributed_cost_usd == 2.0
+
+
+def test_a_priced_zero_run_is_complete_not_unknown(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost="0.0000")
+
+    row = world.report().issues[0]
+
+    assert row.estimated_cost == 0.0
+    assert row.cost_coverage == "complete"
+    assert row.known_cost_run_count == 1
+    assert row.unknown_cost_run_count == 0
+    # A known zero is still an attributable total.
+    assert row.attributed_cost_usd == 0.0
+
+
+def test_mixed_costs_are_partial_with_no_attributed_total(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost="2.0000")
+    world.run(
+        world.review, world.issue_details(), start=T0 + timedelta(hours=1), cost=None
+    )
+
+    row = world.report().issues[0]
+
+    assert row.estimated_cost == 2.0
+    assert row.cost_coverage == "partial"
+    assert (row.known_cost_run_count, row.unknown_cost_run_count) == (1, 1)
+    assert row.attributed_cost_usd is None
+
+
+def test_summaries_and_the_unassigned_bucket_share_the_definition(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost="2.0000")
+    world.run(
+        world.review, world.issue_details(), start=T0 + timedelta(hours=1), cost=None
+    )
+    world.run(world.audit, {"source": "schedule", "payload": {}}, start=T0, cost=None)
+    world.run(
+        world.audit,
+        {"source": "schedule", "payload": {}},
+        start=T0 + timedelta(hours=1),
+        cost="0.0400",
+    )
+
+    report = world.report()
+
+    project = report.by_project[0]
+    assert project.cost_coverage == "partial"
+    assert (project.known_cost_run_count, project.unknown_cost_run_count) == (1, 1)
+    assert project.attributed_cost_usd is None
+    flows = {item.id: item for item in report.by_flow}
+    assert flows[world.triage.id].cost_coverage == "complete"
+    assert flows[world.triage.id].attributed_cost_usd == 2.0
+    assert flows[world.review.id].cost_coverage == "unknown"
+    assert flows[world.review.id].attributed_cost_usd is None
+    # Unassigned runs are not one of the report's flows; they land in the
+    # bucket instead, which carries the same definitions.
+    bucket = report.unassigned
+    assert bucket.cost_coverage == "partial"
+    assert (bucket.known_cost_run_count, bucket.unknown_cost_run_count) == (1, 1)
+    assert bucket.attributed_cost_usd is None
+    # Every run is counted once, in exactly one bucket.
+    assert (
+        project.run_count
+        == sum(item.run_count for item in report.by_flow)
+        == report.unassigned.run_count
+        == 2
+    )
+    assert (
+        project.known_cost_run_count + project.unknown_cost_run_count
+        == project.run_count
+    )
+    assert (
+        bucket.known_cost_run_count + bucket.unknown_cost_run_count == bucket.run_count
+    )
+
+
+def test_coverage_follows_the_flow_filter(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost="2.0000")
+    world.run(
+        world.review, world.issue_details(), start=T0 + timedelta(hours=1), cost=None
+    )
+
+    triage_only = world.report(flow_id=world.triage.id)
+    assert triage_only.issues[0].cost_coverage == "complete"
+    assert triage_only.issues[0].attributed_cost_usd == 2.0
+    review_only = world.report(flow_id=world.review.id)
+    assert review_only.issues[0].cost_coverage == "unknown"
+    assert review_only.issues[0].estimated_cost == 0.0
+    assert review_only.issues[0].attributed_cost_usd is None
+
+
+def test_an_empty_bucket_is_unknown_with_zero_counts(world: World) -> None:
+    bucket = world.report().unassigned
+
+    assert bucket.run_count == 0
+    assert bucket.cost_coverage == "unknown"
+    assert bucket.known_cost_run_count == 0
+    assert bucket.unknown_cost_run_count == 0
+    assert bucket.attributed_cost_usd is None
+
+
+def test_recording_the_same_fact_twice_does_not_move_the_counts(world: World) -> None:
+    execution = world.run(world.triage, world.issue_details(), start=T0, cost="2.0000")
+    before = world.report().issues[0]
+    world.record(execution)
+
+    after = world.report().issues[0]
+
+    after_counts = (after.known_cost_run_count, after.unknown_cost_run_count)
+    before_counts = (before.known_cost_run_count, before.unknown_cost_run_count)
+
+    assert after_counts == before_counts == (1, 0)
+    assert after.cost_coverage == "complete"
+    assert after.run_count == 1
+
+
+def test_a_null_to_known_correction_updates_coverage(world: World) -> None:
+    execution = world.run(world.triage, world.issue_details(), start=T0, cost=None)
+    assert world.report().issues[0].cost_coverage == "unknown"
+
+    rollup_service.refresh_execution_cost(
+        world.db, execution_id=execution.id, estimated_cost=Decimal("0.7500")
+    )
+    world.db.commit()
+
+    row = world.report().issues[0]
+    assert row.cost_coverage == "complete"
+    assert (row.known_cost_run_count, row.unknown_cost_run_count) == (1, 0)
+    assert row.attributed_cost_usd == 0.75
+
+
+def test_coverage_stays_within_the_account(world: World, db_session: Session) -> None:
+    stranger = World(db_session, name="stranger")
+    stranger.run(stranger.triage, stranger.issue_details(), start=T0, cost=None)
+
+    report = world.report()
+
+    assert report.issues == []
+    assert report.by_project == []
+    assert report.unassigned.run_count == 0
+    assert report.unassigned.cost_coverage == "unknown"
+    assert report.unassigned.attributed_cost_usd is None
+
+
+#: The CSV columns a consumer of the report already relies on; the coverage
+#: columns are appended after them, never in place of one.
+LEGACY_CSV_COLUMNS = rollup_service.CSV_COLUMNS[:-4]
+
+
+def test_csv_and_json_agree_on_coverage_and_keep_legacy_columns(world: World) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost="2.0000")
+    world.run(
+        world.review, world.issue_details(), start=T0 + timedelta(hours=1), cost=None
+    )
+    world.run(world.audit, {"source": "schedule", "payload": {}}, start=T0, cost=None)
+    export = world.report(include_execution_ids=True)
+
+    reader = csv.DictReader(io.StringIO(rollup_service.report_to_csv(export)))
+    header = tuple(reader.fieldnames or ())
+
+    # The legacy columns keep their names, order and position; the coverage
+    # columns are appended, so a consumer reading estimated_cost by name is
+    # unaffected.
+    assert header == rollup_service.CSV_COLUMNS
+    assert header[: len(LEGACY_CSV_COLUMNS)] == LEGACY_CSV_COLUMNS
+    rows = list(reader)
+    by_key = {row["issue_key"]: row for row in rows}
+    issue = by_key[f"{REPO}#12"]
+    unassigned = by_key[rollup_service.UNASSIGNED_ISSUE_KEY]
+    document = json.loads(rollup_service.report_to_json(export))
+    json_by_key = {row["issue_key"]: row for row in document["issues"]}
+    json_issue = json_by_key[f"{REPO}#12"]
+
+    assert issue["cost_coverage"] == "partial"
+    assert issue["known_cost_run_count"] == "1"
+    assert issue["unknown_cost_run_count"] == "1"
+    # A nullable attributed cost is an empty cell, never 0.
+    assert issue["attributed_cost_usd"] == ""
+    assert float(issue["estimated_cost"]) == 2.0
+    assert json_issue["cost_coverage"] == "partial"
+    assert json_issue["known_cost_run_count"] == 1
+    assert json_issue["unknown_cost_run_count"] == 1
+    assert json_issue["attributed_cost_usd"] is None
+    assert unassigned["cost_coverage"] == "unknown"
+    assert unassigned["attributed_cost_usd"] == ""
+    assert document["unassigned"]["cost_coverage"] == "unknown"
+    assert document["unassigned"]["known_cost_run_count"] == 0
+    assert document["unassigned"]["unknown_cost_run_count"] == 1
+    assert document["unassigned"]["attributed_cost_usd"] is None
+    assert document["by_project"][0]["cost_coverage"] == "partial"
+    assert document["by_project"][0]["attributed_cost_usd"] is None
+
+
+def test_csv_writes_the_attributed_total_when_coverage_is_complete(
+    world: World,
+) -> None:
+    world.run(world.triage, world.issue_details(), start=T0, cost="2.0000")
+    export = world.report()
+
+    row = next(csv.DictReader(io.StringIO(rollup_service.report_to_csv(export))))
+
+    assert row["cost_coverage"] == "complete"
+    assert float(row["attributed_cost_usd"]) == 2.0
+
+
+def test_a_daily_import_is_never_charged_to_a_ticket(world: World) -> None:
+    """An imported day of subscription spend stays out of the issue totals.
+
+    The daily GitHub import is an account-level, per-seat view with no ticket
+    attribution. Even when its login and day match an execution, it must not
+    turn an unpriced run into a priced one.
+    """
+    from preloop.models.crud import crud_provider_billing_snapshot
+    from preloop.models.crud.copilot_import import (
+        COPILOT_PROVIDER,
+        LINE_ITEM_PREMIUM_REQUEST,
+    )
+    from preloop.models.crud.provider_billing import IMPORTED_USAGE_SOURCE
+
+    world.run(world.triage, world.issue_details(), start=T0, cost=None)
+    day = T0.replace(hour=0, minute=0, second=0)
+    crud_provider_billing_snapshot.upsert_snapshots(
+        world.db,
+        account_id=world.account.id,
+        rows=[
+            {
+                "provider": COPILOT_PROVIDER,
+                "granularity": "1d",
+                "bucket_start": day,
+                "bucket_end": day + timedelta(days=1),
+                "line_item": LINE_ITEM_PREMIUM_REQUEST,
+                "user_login": "jane-doe",
+                "usage_source": IMPORTED_USAGE_SOURCE,
+                "cost_amount": 42.0,
+                "currency": "USD",
+                "fetched_at": T0,
+            }
+        ],
+    )
+    world.db.commit()
+
+    row = world.report().issues[0]
+
+    assert row.estimated_cost == 0.0
+    assert row.cost_coverage == "unknown"
+    assert row.unknown_cost_run_count == 1
+    assert row.attributed_cost_usd is None
