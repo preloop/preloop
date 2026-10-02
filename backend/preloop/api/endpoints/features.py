@@ -89,6 +89,10 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # admins bypass the flag in the console shell.
     result["features"].setdefault("policies_console", policies_console_enabled())
 
+    from preloop.utils.bitbucket_dc import bitbucket_dc_enabled
+
+    result["features"]["bitbucket_dc"] = bitbucket_dc_enabled()
+
     # Account capabilities (multiple accounts per person, parent and
     # subaccount trees, tag based access rules) are provided by an extension
     # plugin. The console and CLI gate their views and commands on these

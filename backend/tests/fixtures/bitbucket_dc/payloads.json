@@ -1,0 +1,129 @@
+{
+  "application_properties": {
+    "version": "10.2.1",
+    "buildNumber": "10002001",
+    "buildDate": "1760000000000",
+    "displayName": "Bitbucket"
+  },
+  "project": {
+    "key": "PRJ",
+    "id": 7,
+    "name": "Example Project",
+    "description": "Synthetic project",
+    "public": false,
+    "type": "NORMAL",
+    "links": {"self": [{"href": "https://bitbucket.example.com/bitbucket/projects/PRJ"}]}
+  },
+  "repository": {
+    "slug": "my-repo",
+    "id": 42,
+    "name": "My Repo",
+    "description": "Synthetic repository",
+    "hierarchyId": "e3c939f9ef4a7fae272e",
+    "scmId": "git",
+    "state": "AVAILABLE",
+    "statusMessage": "Available",
+    "forkable": true,
+    "defaultBranch": "main",
+    "project": {"key": "PRJ", "id": 7, "name": "Example Project", "public": false, "type": "NORMAL"},
+    "public": false,
+    "archived": false,
+    "links": {
+      "clone": [
+        {"href": "https://bitbucket.example.com/bitbucket/scm/prj/my-repo.git", "name": "http"},
+        {"href": "ssh://git@bitbucket.example.com:7999/prj/my-repo.git", "name": "ssh"}
+      ],
+      "self": [{"href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"}]
+    }
+  },
+  "pull_request": {
+    "id": 101,
+    "version": 3,
+    "title": "Add retry to sync",
+    "description": "Line one\n\nLine two",
+    "state": "OPEN",
+    "open": true,
+    "closed": false,
+    "draft": false,
+    "createdDate": 1759000000000,
+    "updatedDate": 1759003600000,
+    "fromRef": {
+      "id": "refs/heads/feature/retry",
+      "displayId": "feature/retry",
+      "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+      "type": "BRANCH",
+      "repository": {"slug": "my-repo", "id": 42, "name": "My Repo", "project": {"key": "PRJ", "id": 7}}
+    },
+    "toRef": {
+      "id": "refs/heads/main",
+      "displayId": "main",
+      "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+      "type": "BRANCH",
+      "repository": {"slug": "my-repo", "id": 42, "name": "My Repo", "project": {"key": "PRJ", "id": 7}}
+    },
+    "locked": false,
+    "author": {
+      "user": {"name": "jdoe", "slug": "jdoe", "displayName": "Jane Doe", "id": 101, "active": true, "type": "NORMAL"},
+      "role": "AUTHOR", "approved": false, "status": "UNAPPROVED"
+    },
+    "reviewers": [],
+    "participants": [],
+    "links": {"self": [{"href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"}]}
+  },
+  "comment_general": {
+    "id": 501, "version": 0, "text": "Looks good overall.", "severity": "NORMAL", "state": "OPEN",
+    "author": {"name": "rev", "slug": "rev", "displayName": "Reviewer", "id": 102, "active": true, "type": "NORMAL"},
+    "createdDate": 1759001000000, "updatedDate": 1759001000000, "comments": [], "threadResolved": false
+  },
+  "comment_inline": {
+    "id": 502, "version": 1, "text": "Handle the timeout here.", "severity": "NORMAL", "state": "OPEN",
+    "author": {"name": "rev", "slug": "rev", "displayName": "Reviewer", "id": 102, "active": true, "type": "NORMAL"},
+    "createdDate": 1759001100000, "updatedDate": 1759001100000,
+    "anchor": {
+      "diffType": "EFFECTIVE", "fileType": "TO", "line": 12, "lineType": "ADDED",
+      "fromHash": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd", "toHash": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+      "path": {"components": ["src", "sync.py"], "parent": "src", "name": "sync.py", "extension": "py", "toString": "src/sync.py"},
+      "srcPath": {"components": ["src", "sync.py"], "parent": "src", "name": "sync.py", "extension": "py", "toString": "src/sync.py"}
+    },
+    "comments": [
+      {
+        "id": 503, "version": 0, "text": "Done in the latest push.", "severity": "NORMAL", "state": "OPEN",
+        "author": {"name": "jdoe", "slug": "jdoe", "displayName": "Jane Doe", "id": 101, "active": true, "type": "NORMAL"},
+        "createdDate": 1759001200000, "updatedDate": 1759001200000, "comments": []
+      }
+    ],
+    "threadResolved": false
+  },
+  "task": {
+    "id": 601, "version": 0, "text": "Add a unit test for the retry.", "severity": "BLOCKER", "state": "OPEN",
+    "author": {"name": "rev", "slug": "rev", "displayName": "Reviewer", "id": 102, "active": true, "type": "NORMAL"},
+    "createdDate": 1759001300000, "updatedDate": 1759001300000, "comments": []
+  },
+  "participant_approved": {
+    "user": {"name": "rev", "slug": "rev", "displayName": "Reviewer", "id": 102, "active": true, "type": "NORMAL"},
+    "role": "REVIEWER", "approved": true, "status": "APPROVED",
+    "lastReviewedCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b"
+  },
+  "branch_feature": {
+    "id": "refs/heads/feature/retry", "displayId": "feature/retry", "type": "BRANCH",
+    "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b", "latestChangeset": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b", "isDefault": false
+  },
+  "change_modify": {
+    "contentId": "abcdef0123abcdef4567abcdef8987abcdef6543",
+    "fromContentId": "bcdef0123abcdef4567abcdef8987abcdef6543a",
+    "path": {"components": ["src", "sync.py"], "parent": "src", "name": "sync.py", "extension": "py", "toString": "src/sync.py"},
+    "executable": false, "percentUnchanged": -1, "type": "MODIFY", "nodeType": "FILE", "srcExecutable": false,
+    "links": {"self": [{"href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101/diff#src/sync.py"}]}
+  },
+  "error_401": {"errors": [{"context": null, "message": "Authentication failed. Please check your credentials and try again.", "exceptionName": "com.atlassian.bitbucket.auth.IncorrectPasswordAuthenticationException"}]},
+  "error_403": {"errors": [{"context": null, "message": "You are not permitted to access this resource", "exceptionName": "com.atlassian.bitbucket.AuthorisationException"}]},
+  "error_409_version": {"errors": [{"context": null, "message": "You are attempting to modify a pull request based on out-of-date information.", "exceptionName": "com.atlassian.bitbucket.pull.PullRequestOutOfDateException"}]},
+  "cloud_pull_request": {
+    "id": 7, "title": "Cloud PR", "state": "OPEN",
+    "source": {"branch": {"name": "feature"}, "commit": {"hash": "abc"}},
+    "destination": {"branch": {"name": "main"}},
+    "links": {"html": {"href": "https://bitbucket.org/ws/repo/pull-requests/7"}}
+  },
+  "cloud_repository": {"uuid": "{0d6f1a2b-3c4d-4e5f-8a9b-0c1d2e3f4a5b}", "full_name": "ws/repo", "slug": "repo", "name": "repo"},
+  "cloud_comment": {"id": 9, "content": {"raw": "cloud text"}, "user": {"nickname": "someone"}}
+}

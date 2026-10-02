@@ -32459,7 +32459,8 @@ components:
             format: uri
           - type: 'null'
           title: Url
-          description: URL of the tracker instance (required for Jira)
+          description: URL of the tracker instance (required for Jira and Bitbucket
+            Data Center)
         is_active:
           type: boolean
           title: Is Active
@@ -32471,7 +32472,10 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Tracker-specific connection details
+          description: Tracker-specific connection details. bitbucket_dc uses instance_url,
+            version (10.2), project_key, repository_id (numeric, stable across rename),
+            repository_slug, and optional reviewer username. Credentials and deployment
+            trust settings must not be stored here.
         meta_data:
           anyOf:
           - additionalProperties: true
@@ -32682,7 +32686,10 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Tracker-specific connection details
+          description: Tracker-specific connection details. bitbucket_dc uses instance_url,
+            version (10.2), project_key, repository_id (numeric, stable across rename),
+            repository_slug, and optional reviewer username. Credentials and deployment
+            trust settings must not be stored here.
         organization_identifier:
           anyOf:
           - type: string
@@ -32694,9 +32701,9 @@ components:
           - type: string
           - type: 'null'
           title: Auth Type
-          description: 'Authentication mode for trackers that support several (Bitbucket:
-            ''api_token'' or ''oauth_token''). Ignored when tracker_id is set: the
-            stored mode is used.'
+          description: 'Authentication mode for trackers that support several (Bitbucket
+            Cloud: ''api_token'' or ''oauth_token''; Data Center: ''api_token'' user
+            PAT only). Ignored when tracker_id is set: the stored mode is used.'
       type: object
       required:
       - tracker_type
@@ -32734,6 +32741,7 @@ components:
       - gitlab
       - jira
       - bitbucket
+      - bitbucket_dc
       title: TrackerType
       description: Enum for tracker types.
     TrackerUpdate:

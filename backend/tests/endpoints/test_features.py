@@ -46,6 +46,7 @@ class TestGetFeatures:
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
                 "policies_console": True,
+                "bitbucket_dc": False,
                 "passkeys": True,
                 "multi_account": False,
                 "account_hierarchy": False,
@@ -79,6 +80,7 @@ class TestGetFeatures:
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
                 "policies_console": True,
+                "bitbucket_dc": False,
                 "passkeys": True,
                 "multi_account": False,
                 "account_hierarchy": False,
@@ -113,7 +115,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 13
+        assert len(result["features"]) == 14
         assert result["features"]["session_optimization"] is True
 
     @patch("preloop.api.auth.bootstrap.crud_user")
@@ -401,3 +403,22 @@ class TestAccountCapabilities:
 
         for name in self.CAPABILITIES:
             assert features[name] is True, name
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_dc_feature_is_deployment_owned(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
+    from preloop.api.endpoints.features import get_features
+
+    monkeypatch.setenv("PRELOOP_BITBUCKET_DC_ENABLED", "true" if enabled else "false")
+    with (
+        patch("preloop.api.endpoints.features.get_plugin_manager") as manager,
+        patch("preloop.api.auth.bootstrap.crud_user") as users,
+    ):
+        manager.return_value.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {"bitbucket_dc": not enabled},
+        }
+        users.has_any_users.return_value = True
+        assert get_features(db=MagicMock())["features"]["bitbucket_dc"] is enabled
