@@ -1,6 +1,10 @@
 """Encrypted binary artifacts attached to a runtime session.
 
-Screenshots and recordings are observation records stored per account. A row
+Screenshots, recordings, audio, transcripts, documents, generated files and
+traces are observation records stored per account. Provenance columns
+(``producer``, ``agent_id``, ``tool_name``) say where the bytes came from;
+``labels`` carry account-defined metadata (reserved keys ``site``,
+``tenant_ref``, ``consent_basis``, ``retention_class`` and ``tags``). A row
 is never an approval, a dispatch, or proof that a browser reached a state.
 """
 
@@ -27,7 +31,7 @@ from .base import Base
 
 
 class RuntimeSessionArtifact(Base):
-    """One encrypted screenshot or recording for a runtime session."""
+    """One encrypted artifact for a runtime session."""
 
     __tablename__ = "runtime_session_artifact"
     __table_args__ = (
@@ -39,6 +43,17 @@ class RuntimeSessionArtifact(Base):
             "source_ref",
             unique=True,
             postgresql_where=text("source_ref IS NOT NULL"),
+        ),
+        Index(
+            "ix_runtime_session_artifact_labels",
+            "labels",
+            postgresql_using="gin",
+        ),
+        Index(
+            "ix_runtime_session_artifact_account_kind_created",
+            "account_id",
+            "kind",
+            "created_at",
         ),
     )
 
@@ -88,6 +103,34 @@ class RuntimeSessionArtifact(Base):
     )
     expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    labels: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    producer: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    tool_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    text_status: Mapped[Optional[str]] = mapped_column(
+        String(16),
+        nullable=True,
+        default="none",
+        server_default=text("'none'"),
+    )
+    parent_artifact_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "runtime_session_artifact.id",
+            ondelete="SET NULL",
+            name="fk_runtime_session_artifact_parent",
+        ),
         nullable=True,
         index=True,
     )

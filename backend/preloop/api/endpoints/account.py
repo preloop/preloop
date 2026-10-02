@@ -1081,10 +1081,16 @@ class AccountDetailsResponse(BaseModel):
 
 
 class SessionArtifactUsageByKind(BaseModel):
-    """Available plaintext bytes by artifact kind."""
+    """Available plaintext bytes by artifact kind (zero when unused)."""
 
-    screenshot: int
-    recording: int
+    screenshot: int = 0
+    recording: int = 0
+    screencast: int = 0
+    audio: int = 0
+    transcript: int = 0
+    document: int = 0
+    generated_file: int = 0
+    trace: int = 0
 
 
 class SessionArtifactUsageResponse(BaseModel):
