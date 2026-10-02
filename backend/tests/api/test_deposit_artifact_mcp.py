@@ -252,6 +252,22 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
         assert foreign.isError
         assert foreign.content[0].text.startswith("artifact_link_outside_session")
 
+        # Matches the link pattern, names this session, but is not a UUID.
+        for malformed in ("-" * 36, "a" * 36):
+            odd = await mcp.call_tool(
+                TOOL,
+                {
+                    "name": "x",
+                    "content": {
+                        "type": "resource_link",
+                        "uri": artifact_deposit.artifact_uri(session.id, malformed),
+                        "name": "x",
+                    },
+                },
+            )
+            assert odd.isError, malformed
+            assert odd.content[0].text.startswith("artifact_link_outside_session")
+
         bad = await mcp.call_tool(
             TOOL,
             {"name": "x", "content": {"type": "image", "data": "%%%"}},
