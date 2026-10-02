@@ -1499,7 +1499,7 @@ async def update_approval_workflow(
     response_model=ApprovalWorkflowResponse,
 )
 @require_permission("manage_approval_workflows")
-async def rotate_approval_workflow_webhook_secret(
+def rotate_approval_workflow_webhook_secret(
     workflow_id: UUID,
     account: Account = Depends(get_account_for_user),
     current_user: User = Depends(get_current_active_user),
@@ -1511,12 +1511,13 @@ async def rotate_approval_workflow_webhook_secret(
     to obtain a secret for a workflow created by policy apply, or one whose
     secret was not kept.
 
+    Sync handler on purpose: FastAPI runs it in the threadpool, so the sync
+    session never blocks the event loop.
+
     Raises:
         HTTPException: 404 if the workflow is not found, 400 if it has no
             webhook configured.
     """
-    from starlette.concurrency import run_in_threadpool
-
     from preloop.services.event_webhooks.approval_shim import (
         resolve_webhook_target,
         rotate_webhook_secret,
@@ -1524,9 +1525,7 @@ async def rotate_approval_workflow_webhook_secret(
     )
     from preloop.utils.permissions import ensure_permission_in_oss
 
-    await run_in_threadpool(
-        ensure_permission_in_oss, db, current_user, "manage_approval_workflows"
-    )
+    ensure_permission_in_oss(db, current_user, "manage_approval_workflows")
     workflow = crud_approval_workflow.get(
         db, id=workflow_id, account_id=str(account.id)
     )

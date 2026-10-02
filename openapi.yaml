@@ -3850,8 +3850,9 @@ paths:
       description: "Replace the workflow's webhook signing secret and return it once.\n\
         \nDeliveries are signed with the new secret from the next one on. Use this\n\
         to obtain a secret for a workflow created by policy apply, or one whose\n\
-        secret was not kept.\n\nRaises:\n    HTTPException: 404 if the workflow is\
-        \ not found, 400 if it has no\n        webhook configured."
+        secret was not kept.\n\nSync handler on purpose: FastAPI runs it in the threadpool,\
+        \ so the sync\nsession never blocks the event loop.\n\nRaises:\n    HTTPException:\
+        \ 404 if the workflow is not found, 400 if it has no\n        webhook configured."
       operationId: rotate_approval_workflow_webhook_secret_api_v1_approval_workflows__workflow_id__webhook_secret_rotate_post
       security:
       - bearerAuth: []
