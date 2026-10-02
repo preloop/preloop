@@ -82,7 +82,8 @@ credential-bearing model rows are replaced with snapshots before summary I/O.
 
 Credential replacement takes the same account-scoped secret row lock and reloads
 committed state before writing. Successful Claude/Codex rotations retain a bounded
-history of 64 consumed refresh-token SHA-256 hashes in secret metadata. Imports of
+history of 64 consumed refresh-token HMAC-SHA-256 fingerprints in secret metadata,
+keyed with the instance secret and a purpose-specific prefix. Imports of
 those tokens are rejected, including unexpired local access bundles. Terminal
 provider failures are reused without resubmitting the rejected grant; transient
 failures remain retryable. `preloop agents reconnect` replaces credentials in

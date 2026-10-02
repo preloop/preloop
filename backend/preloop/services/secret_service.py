@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
-from hashlib import sha256
+import hmac
 from typing import Any, Callable, Dict, Optional, Protocol
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -383,6 +383,15 @@ class SecretService:
             else []
         )
 
+    @staticmethod
+    def _refresh_token_fingerprint(refresh_token: str) -> str:
+        """Fingerprint a provider token without exposing an unkeyed verifier."""
+        return hmac.digest(
+            (settings.security.encryption_key or settings.security.secret_key).encode(),
+            b"preloop/oauth-refresh/v1/" + refresh_token.encode(),
+            "sha256",
+        ).hex()
+
     def _validate_oauth_replacement(
         self, secret_ref: SecretReference, secret_value: str
     ) -> list[str]:
@@ -400,7 +409,7 @@ class SecretService:
         refresh = str(incoming.get("refresh") or "").strip()
         if not refresh:
             return history
-        fingerprint = sha256(refresh.encode()).hexdigest()
+        fingerprint = self._refresh_token_fingerprint(refresh)
         metadata = secret_ref.meta_data or {}
         # Existing installations have no token history yet. A terminal failure
         # still proves that the currently stored refresh token cannot be reused.
@@ -412,7 +421,7 @@ class SecretService:
             current = json.loads(decrypt_value(secret_ref.encrypted_value))
             failed_refresh = str(current.get("refresh") or "").strip()
             if failed_refresh:
-                failed_hash = sha256(failed_refresh.encode()).hexdigest()
+                failed_hash = self._refresh_token_fingerprint(failed_refresh)
                 if failed_hash not in history:
                     history.append(failed_hash)
         if fingerprint in history:
@@ -430,7 +439,7 @@ class SecretService:
         if not old_refresh or old_refresh == new_refresh:
             return
         history = self._consumed_refresh_hashes(secret_ref)
-        fingerprint = sha256(old_refresh.encode()).hexdigest()
+        fingerprint = self._refresh_token_fingerprint(old_refresh)
         if fingerprint not in history:
             history.append(fingerprint)
         secret_ref.meta_data = {

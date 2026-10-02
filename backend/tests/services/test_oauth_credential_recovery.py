@@ -1,6 +1,5 @@
 """Credential recovery must not roll back a provider's rotating OAuth grant."""
 
-from hashlib import sha256
 import json
 from typing import Any
 from unittest.mock import MagicMock
@@ -81,7 +80,7 @@ def test_rotation_refuses_unexpired_consumed_token_import(
     secret = oauth_model.credentials_secret
     assert secret.status == "active"
     assert secret.meta_data[OAUTH_CONSUMED_REFRESH_HASHES] == [
-        sha256(b"old").hexdigest()
+        service._refresh_token_fingerprint("old")
     ]
     before = secret.encrypted_value
     incoming = json.dumps(
@@ -100,7 +99,7 @@ def test_rotation_refuses_unexpired_consumed_token_import(
         {"type": secret.meta_data["credential_type"], "refresh": "fresh-login"}
     )
     assert service._validate_oauth_replacement(secret, incoming) == [
-        sha256(b"old").hexdigest()
+        service._refresh_token_fingerprint("old")
     ]
 
 
@@ -161,7 +160,10 @@ def test_terminal_failure_is_not_retried_until_reconnected(
     )
     assert secret.status == "active"
     assert "last_refresh_code" not in secret.meta_data
-    assert sha256(b"old").hexdigest() in secret.meta_data[OAUTH_CONSUMED_REFRESH_HASHES]
+    assert (
+        service._refresh_token_fingerprint("old")
+        in secret.meta_data[OAUTH_CONSUMED_REFRESH_HASHES]
+    )
     monkeypatch.setattr(
         service,
         "_refresh_anthropic_claude_code_token",
@@ -224,9 +226,8 @@ def test_consumed_history_is_bounded_and_does_not_store_tokens(
     history = secret.meta_data[OAUTH_CONSUMED_REFRESH_HASHES]
     assert len(history) == OAUTH_REFRESH_HISTORY_LIMIT
     assert all(len(value) == 64 and "synthetic" not in value for value in history)
-    assert (
-        history[-1]
-        == sha256(f"synthetic-{OAUTH_REFRESH_HISTORY_LIMIT + 9}".encode()).hexdigest()
+    assert history[-1] == service._refresh_token_fingerprint(
+        f"synthetic-{OAUTH_REFRESH_HISTORY_LIMIT + 9}"
     )
 
 
@@ -255,3 +256,21 @@ def test_transient_error_does_not_request_provider_login() -> None:
     message = error.recovery_message()
     assert "retry later" in message
     assert "login" not in message
+
+
+def test_token_fingerprint_is_bound_to_instance_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stored history is not an unkeyed verifier for the provider credential."""
+    from preloop.services import secret_service as module
+
+    monkeypatch.setattr(module.settings.security, "encryption_key", "")
+    monkeypatch.setattr(
+        module.settings.security, "secret_key", "synthetic-instance-one"
+    )
+    first = SecretService._refresh_token_fingerprint("synthetic-provider-token")
+    assert first == SecretService._refresh_token_fingerprint("synthetic-provider-token")
+    monkeypatch.setattr(
+        module.settings.security, "secret_key", "synthetic-instance-two"
+    )
+    assert first != SecretService._refresh_token_fingerprint("synthetic-provider-token")
