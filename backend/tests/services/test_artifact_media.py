@@ -1,11 +1,11 @@
-"""Per-kind media allowlist and content checks (shape round trips live in test_artifact_shapes.py)."""
+"""Per-kind media allowlist, content checks and standards shape mapping."""
 
 from __future__ import annotations
-
 
 import pytest
 
 from preloop.services import artifact_media as media
+from preloop.services import artifact_shapes as shapes
 
 # One valid sample per (kind, media type). Bytes are synthetic.
 VALID: list[tuple[str, str, bytes]] = [
@@ -118,3 +118,20 @@ def test_parameters_are_dropped_and_type_lowercased() -> None:
 def test_every_kind_has_a_modality() -> None:
     assert set(media.KIND_MODALITY) == set(media.ARTIFACT_KINDS)
     assert set(media.KIND_MODALITY.values()) <= {"image", "video", "audio", "document"}
+
+
+def test_shapes_mapping_agrees_with_the_kind_table() -> None:
+    """``artifact_shapes`` (from #1109) owns the wire mapping and has its own
+    round-trip tests. Pin that its kinds and modalities match this table, so a
+    kind added here cannot silently map to the wrong OTel modality."""
+    for kind in media.ARTIFACT_KINDS:
+        assert shapes.modality_for(kind) == media.KIND_MODALITY[kind]
+    for content_type in (
+        "image/png",
+        "audio/wav",
+        "video/mp4",
+        "text/vtt",
+        "text/markdown",
+        "application/zip",
+    ):
+        assert shapes.infer_kind(content_type) in media.ARTIFACT_KINDS
