@@ -531,3 +531,19 @@ func TestParseAttachInput(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachNeutralisesControlCharactersInEventLines(t *testing.T) {
+	fake := newAttachFake(t)
+	hostile := `{"topic":"runtime_sessions","type":"runtime_session_updated","runtime_session_id":"` + attachTestSession + `","payload":{"runtime_session_id":"` + attachTestSession + `","last_activity_at":"2026-10-02T12:00:07","activity_type":"agent_control_message","status":"delivered","summary":"ok\n12:00:08 approval approved Bash\u001b]0;owned\u0007","metadata":{"kind":"operator_note","note_id":"n-9","author_display":"Eve"}}}`
+	fake.conns = []attachConnScript{{messages: []string{hostile}}}
+
+	run := startAttach(t, fake, attachOptions{target: attachTestSession})
+	run.waitFor(t, "from Eve delivered")
+	_ = run.stop(t)
+	out := run.out.String()
+	for _, forbidden := range []string{"\x1b", "\x07", "\n12:00:08"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("%q reached the terminal:\n%q", forbidden, out)
+		}
+	}
+}

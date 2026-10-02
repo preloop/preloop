@@ -54,7 +54,7 @@ const (
 
 	sessionShortIDLength = 8
 
-	sessionsListHint = "Steer: preloop notes send --session <id>."
+	sessionsListHint = "Steer: preloop notes send --session <id>. Watch: preloop sessions attach <id>."
 )
 
 // sessionsListIsTerminal is swapped by tests; the hint line is for people.

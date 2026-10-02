@@ -363,7 +363,7 @@ func (s *attachSession) notice(message string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fmt.Fprintf(target, "%s %s\n", s.paint(attachColourDim, "--"), message) //nolint:errcheck
+	fmt.Fprintf(target, "%s %s\n", s.paint(attachColourDim, "--"), terminalSafe(message)) //nolint:errcheck
 }
 
 // replay prints the timeline items and pending approvals newer than the
@@ -629,7 +629,9 @@ func (s *attachSession) emit(event attachEvent) bool {
 		return true
 	}
 	stamp := event.at.Local().Format("15:04:05")
-	fmt.Fprintf(s.out, "%s %s %s\n", stamp, s.paint(event.kind.colour(), fmt.Sprintf("%-8s", event.kind)), event.text) //nolint:errcheck
+	// Tool names, summaries, note text and arguments are agent or operator
+	// input; none of it may drive the terminal or forge a line.
+	fmt.Fprintf(s.out, "%s %s %s\n", stamp, s.paint(event.kind.colour(), fmt.Sprintf("%-8s", event.kind)), terminalSafe(event.text)) //nolint:errcheck
 	if event.approval != nil && event.approvalPending && !s.opts.readOnly {
 		fmt.Fprintf(s.out, "         %s\n", s.paint(attachColourApproval, //nolint:errcheck
 			fmt.Sprintf("decide: a (approve) or d (decline), then Enter [%s]", shortSessionID(event.approval.ID))))
