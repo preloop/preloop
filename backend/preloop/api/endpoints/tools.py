@@ -1181,6 +1181,32 @@ async def list_approval_workflows(
     return [ApprovalWorkflowResponse.model_validate(p) for p in policies]
 
 
+WEBHOOK_SECRET_KEY = "webhook_secret"
+
+
+def _response_with_new_webhook_secret(db: Session, workflow: Any) -> Any:
+    """Build the workflow response, generating and showing a secret once.
+
+    When the workflow now has a webhook but no signing secret, one is
+    generated, stored and returned in ``webhook_secret``. Later reads only
+    carry ``webhook_secret_hint``.
+    """
+    from preloop.services.event_webhooks.approval_shim import ensure_webhook_secret
+
+    secret = ensure_webhook_secret(workflow)
+    if not secret:
+        return ApprovalWorkflowResponse.model_validate(workflow)
+    db.add(workflow)
+    db.flush()
+    # Build the response before committing, so a serialization failure rolls
+    # the secret back with everything else instead of persisting a secret the
+    # caller never saw.
+    response = ApprovalWorkflowResponse.model_validate(workflow)
+    response.webhook_secret = secret
+    db.commit()
+    return response
+
+
 def _empty_human_approver_default(
     *,
     approval_mode: str | None,
@@ -1290,7 +1316,7 @@ async def create_approval_workflow(
             f"Created approval workflow '{workflow_data.name}' (user: {account.id}, is_default: {new_workflow.is_default})"
         )
 
-        return ApprovalWorkflowResponse.model_validate(new_workflow)
+        return _response_with_new_webhook_secret(db, new_workflow)
 
     except Exception as e:
         db.rollback()
@@ -1426,6 +1452,16 @@ async def update_approval_workflow(
                     detail=f"Approval workflow with name '{update_data['name']}' already exists",
                 )
 
+        # A client that round-trips approval_config never sees the stored
+        # signing secret (reads hide it), so carry it over rather than wipe it.
+        if isinstance(update_data.get("approval_config"), dict):
+            stored = (workflow.approval_config or {}).get(WEBHOOK_SECRET_KEY)
+            if stored and not update_data["approval_config"].get(WEBHOOK_SECRET_KEY):
+                update_data["approval_config"] = {
+                    **update_data["approval_config"],
+                    WEBHOOK_SECRET_KEY: stored,
+                }
+
         # Use CRUD layer for proper default workflow handling
         updated_workflow = crud_approval_workflow.update(
             db, db_obj=workflow, obj_in=update_data
@@ -1444,7 +1480,7 @@ async def update_approval_workflow(
             f"Updated approval workflow {workflow_id} for user {account.id} (is_default: {updated_workflow.is_default})"
         )
 
-        return ApprovalWorkflowResponse.model_validate(updated_workflow)
+        return _response_with_new_webhook_secret(db, updated_workflow)
 
     except HTTPException:
         db.rollback()
@@ -1458,6 +1494,69 @@ async def update_approval_workflow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating approval workflow: {str(e)}",
         )
+
+
+@router.post(
+    "/approval-workflows/{workflow_id}/webhook-secret/rotate",
+    response_model=ApprovalWorkflowResponse,
+)
+@require_permission("manage_approval_workflows")
+def rotate_approval_workflow_webhook_secret(
+    workflow_id: UUID,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ApprovalWorkflowResponse:
+    """Replace the workflow's webhook signing secret and return it once.
+
+    Deliveries are signed with the new secret from the next one on. Use this
+    to obtain a secret for a workflow created by policy apply, or one whose
+    secret was not kept.
+
+    Sync handler on purpose: FastAPI runs it in the threadpool, so the sync
+    session never blocks the event loop.
+
+    Raises:
+        HTTPException: 404 if the workflow is not found, 400 if it has no
+            webhook configured.
+    """
+    from preloop.services.event_webhooks.approval_shim import (
+        resolve_webhook_target,
+        rotate_webhook_secret,
+        sync_shim_endpoint,
+    )
+    from preloop.utils.permissions import ensure_permission_in_oss
+
+    ensure_permission_in_oss(db, current_user, "manage_approval_workflows")
+    workflow = crud_approval_workflow.get(
+        db, id=workflow_id, account_id=str(account.id)
+    )
+    if not workflow:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Approval workflow not found or access denied",
+        )
+    if resolve_webhook_target(workflow) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Approval workflow has no webhook configured",
+        )
+
+    secret = rotate_webhook_secret(workflow)
+    db.add(workflow)
+    sync_shim_endpoint(db, workflow)
+    db.commit()
+    db.refresh(workflow)
+    log_config_change(
+        db,
+        user=current_user,
+        config_type="approval_workflow",
+        action="webhook_secret_rotated",
+        new_value={"id": str(workflow.id), "name": workflow.name},
+    )
+    response = ApprovalWorkflowResponse.model_validate(workflow)
+    response.webhook_secret = secret
+    return response
 
 
 @router.delete("/approval-workflows/{workflow_id}", status_code=status.HTTP_200_OK)

@@ -22,7 +22,7 @@ The web dashboard always shows pending requests in real time regardless of chann
 
 Delivery is mobile-first:
 
-- Users with **push enabled** get the push notification immediately; their email is delayed **15 seconds** and skipped entirely if the request is resolved first (for example, approved from the phone).
+- Users with **push enabled** get the push notification immediately; their email is delayed **60 seconds** and skipped entirely if the request is resolved first (for example, approved from the phone).
 - Users with **email only** get the email immediately.
 
 ---
@@ -114,9 +114,11 @@ Send approval events to your own service. Configure the `webhook` key on the wor
     channel_configs:
       webhook:
         url: "https://my-service.example.com/approvals"
-        headers:
-          Authorization: "Bearer ${MY_TOKEN}"
 ```
+
+A workflow has one webhook destination: when several of `webhook`, `slack` and `mattermost` are set, `webhook` wins, then `slack`. Custom request headers are not sent; authenticate deliveries by their signature instead.
+
+Every delivery is signed with HMAC-SHA256. Check the `X-Preloop-Signature` header (`t=<timestamp>,v1=<hex>`, computed over `"<timestamp>.<raw body>"`) as described in [Verifying the signature](../webhooks.md#verifying-the-signature). The workflow's signing secret is returned once, in `webhook_secret`, when you create the workflow through the API; later reads show only `webhook_secret_hint`. For a workflow created from policy YAML, or if you lost the secret, rotate it with `POST /api/v1/approval-workflows/{id}/webhook-secret/rotate`, which returns the new secret once.
 
 Preloop POSTs a JSON payload:
 
@@ -149,6 +151,10 @@ There are two kinds of URL in the payload:
 
 - **`actions`** are pages for a person. Every key opens the same approval page in a browser (`GET`). They do not decide anything. `approve`, `decline` and `view` are deprecated aliases of `review`, kept for receivers that read them.
 - **`decision`** is for a system. `POST` to `approve_url` or `decline_url` to record the decision. The token in the query string is the only credential: send no `Authorization` header. The body is optional; send `{"comment": "..."}` to record why.
+
+`summary` is the one-line ask to show a person. It is never null: when no model summary is available it is built from the tool name and its redacted arguments.
+
+When the request is decided, the timeline records the channel it came through: `api` (an API key, such as the CLI or your service), `token_url` (the `decision` URLs above, or a review link opened without signing in), `mobile` (the mobile app) or `console` (a signed-in browser, including the page a Slack or Mattermost Review button opens).
 
 Sensitive argument values are [redacted](../../security/redaction.md). The token in these URLs decides the request, so treat the payload as a secret.
 
