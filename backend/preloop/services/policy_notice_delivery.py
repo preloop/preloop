@@ -43,9 +43,6 @@ logger = logging.getLogger(__name__)
 #: catalogue: the body is the legacy approval-workflow shape.
 EVENT_POLICY_NOTICE = "policy.notice"
 
-#: Workflow types whose webhook receives notices.
-WEBHOOK_APPROVAL_TYPES = frozenset({"slack", "mattermost", "webhook"})
-
 _MAX_RECIPIENTS = 500
 
 T = TypeVar("T")
