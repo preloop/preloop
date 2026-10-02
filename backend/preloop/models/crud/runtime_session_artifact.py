@@ -394,6 +394,54 @@ def list_for_session(
     )
 
 
+def list_page_for_session(
+    db: Session,
+    *,
+    account_id: UUID,
+    runtime_session_id: UUID,
+    limit: int,
+    kind: str | None = None,
+    labels: dict[str, Any] | None = None,
+    before: tuple[datetime, UUID] | None = None,
+) -> list[models.RuntimeSessionArtifact]:
+    """List one page of a session's artifacts, newest first.
+
+    Keyset pagination on ``(created_at, id)`` so a page boundary is stable
+    while new artifacts arrive.
+
+    Args:
+        db: Database session.
+        account_id: Account the caller is allowed to read.
+        runtime_session_id: Session to list.
+        limit: Maximum rows to return.
+        kind: When set, only rows of this kind.
+        labels: When set, only rows whose labels contain these (JSONB ``@>``).
+        before: ``(created_at, id)`` of the last row of the previous page;
+            only strictly older rows are returned.
+
+    Returns:
+        Up to ``limit`` rows ordered by ``created_at`` then ``id``, descending.
+    """
+    table = models.RuntimeSessionArtifact
+    query = db.query(table).filter(
+        table.account_id == account_id,
+        table.runtime_session_id == runtime_session_id,
+    )
+    if kind is not None:
+        query = query.filter(table.kind == kind)
+    if labels:
+        query = query.filter(table.labels.contains(labels))
+    if before is not None:
+        created_at, artifact_id = before
+        query = query.filter(
+            (table.created_at < created_at)
+            | ((table.created_at == created_at) & (table.id < artifact_id))
+        )
+    return list(
+        query.order_by(table.created_at.desc(), table.id.desc()).limit(limit).all()
+    )
+
+
 def decrypt(artifact: models.RuntimeSessionArtifact) -> bytes:
     """Decrypt an artifact's ciphertext.
 
