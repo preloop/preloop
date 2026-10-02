@@ -65,6 +65,15 @@ def test_agents_cover_more_than_250_sessions_with_one_query(
     db_session: Session, test_user: models.User
 ) -> None:
     agent = managed_agent(db_session, test_user.account_id, "leading")
+    flow = models.Flow(
+        account_id=test_user.account_id,
+        name="Example flow",
+        prompt_template="example",
+        agent_type="codex",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
     for index in range(260):
         session = models.RuntimeSession(
             account_id=test_user.account_id,
@@ -80,6 +89,8 @@ def test_agents_cover_more_than_250_sessions_with_one_query(
             runtime_session_id=session.id,
             runtime_principal_type="example",
             runtime_principal_id="leading",
+            # Flow association must not create a second entry for a request.
+            flow_id=flow.id if index % 2 else None,
         )
     # Direct usage, failure and subscription coverage belong to the population.
     usage(
