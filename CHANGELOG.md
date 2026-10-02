@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Exact digest periods in Cost.** `/console/cost` accepts an
+  `account_id`, `start_date` and `end_date` link (UTC, microsecond
+  precision) and shows that window without changing the saved preset;
+  mismatched or malformed links fetch nothing. Login keeps such return
+  paths and rejects non-local ones. Gateway usage CRUD adds full-window
+  model and agent rankings with unknown and remainder totals.
+
 - **`preloop flow trigger --stop-on-interrupt`.** When `--wait` is
   interrupted by SIGINT or SIGTERM, the CLI stops the execution on the
   server (one stop request), prints the execution id and final status, and

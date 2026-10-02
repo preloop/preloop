@@ -148,3 +148,39 @@ def test_exists_for_suggestion_detects_matching_action(
         )
         is False
     )
+
+
+def test_list_applied_pairs_is_account_scoped(db_session, create_account) -> None:
+    """list_applied_pairs returns only this account's (session, suggestion) pairs."""
+    account = create_account()
+    other = create_account()
+    session = _create_runtime_session(db_session, account.id)
+    other_session = _create_runtime_session(db_session, other.id)
+    db_session.commit()
+    for acct, sess, suggestion in (
+        (account.id, session.id, "scope-tools"),
+        (account.id, session.id, "trim-context"),
+        (other.id, other_session.id, "scope-tools"),
+    ):
+        crud_runtime_session_optimization_action.create_applied(
+            db_session,
+            account_id=acct,
+            runtime_session_id=sess,
+            suggestion_id=suggestion,
+            suggestion_title="Example",
+            action_type="scope_tools",
+            params={},
+            applied_by="alice",
+            runtime_principal_id="agent-1",
+            baseline={},
+            result={},
+        )
+
+    pairs = crud_runtime_session_optimization_action.list_applied_pairs(
+        db_session, account_id=account.id
+    )
+
+    assert pairs == {
+        (str(session.id), "scope-tools"),
+        (str(session.id), "trim-context"),
+    }
