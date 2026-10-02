@@ -268,6 +268,9 @@ export class ChatConnectionsView extends LitElement {
       .href;
     const code =
       this.linkCode?.connectionId === connection.id ? this.linkCode : null;
+    const linkingCommand = code
+      ? `${connection.provider === 'mattermost' ? '/preloop /link' : connection.provider === 'discord' ? '/preloop message:/link' : 'link'} ${code.code}`
+      : '';
     return html`<article aria-label=${connection.name}>
       <div class="heading">
         <h2>${connection.name}</h2>
@@ -307,10 +310,10 @@ export class ChatConnectionsView extends LitElement {
       ${
         code
           ? html`<div class="link-code" role="status">
-              <p>Send this command privately to the bot:</p>
-              <code>/link ${code.code}</code
+              <p>${code.instruction}</p>
+              <code>${linkingCommand}</code
               ><sl-copy-button
-                value=${`/link ${code.code}`}
+                value=${linkingCommand}
                 copy-label="Copy linking command"
               ></sl-copy-button>
               <p>

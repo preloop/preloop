@@ -25,9 +25,11 @@ describe('Chat connections', () => {
   let enabled: boolean;
   let denied: boolean;
   let expiry: string;
+  let provider: string;
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-token');
     manage = false;
+    provider = 'slack';
     linked = false;
     enabled = true;
     denied = false;
@@ -39,6 +41,7 @@ describe('Chat connections', () => {
         const method = init?.method ?? 'GET';
         const connection = {
           ...row,
+          provider,
           linked,
           enabled,
           external_user_id: linked ? 'user-1' : null,
@@ -130,7 +133,7 @@ describe('Chat connections', () => {
       ).to.equal(null);
     expect(el.shadowRoot!.querySelector('.endpoint')).to.equal(null);
     await click(el, 'link');
-    expect(el.shadowRoot!.textContent).to.include('/link private-code');
+    expect(el.shadowRoot!.textContent).to.include('link private-code');
     expect(
       stub
         .getCalls()
@@ -138,6 +141,27 @@ describe('Chat connections', () => {
         .cache
     ).to.equal('no-store');
   });
+  for (const [channel, command] of [
+    ['mattermost', '/preloop /link private-code'],
+    ['discord', '/preloop message:/link private-code'],
+  ]) {
+    it(`shows the supported ${channel} linking command`, async () => {
+      provider = channel;
+      const el = await view();
+      await click(el, 'link');
+      expect(el.shadowRoot!.textContent).to.include('Link privately');
+      expect(
+        el.shadowRoot!.querySelector('.link-code code')!.textContent
+      ).to.equal(command);
+      expect(
+        (
+          el.shadowRoot!.querySelector(
+            '.link-code sl-copy-button'
+          ) as HTMLElement & { value: string }
+        ).value
+      ).to.equal(command);
+    });
+  }
   it('reports denied and expired linking without exposing proof', async () => {
     const el = await view();
     denied = true;
