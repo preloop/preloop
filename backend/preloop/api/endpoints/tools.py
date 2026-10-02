@@ -61,6 +61,7 @@ from preloop.tools.builtin_defs import (
     RUN_FLOW_TOOL,
     SEARCH_SESSIONS_TOOL,
     SEND_NOTE_TOOL,
+    TOOL_NAME_ALIASES,
     UPDATE_ISSUE_DESCRIPTION,
     UPDATE_ISSUE_SCHEMA,
 )
@@ -453,6 +454,8 @@ BUILTIN_TOOLS = [
         },
     },
 ]
+
+TOOL_NAME_ALIASES: Dict[str, str] = TOOL_NAME_ALIASES
 
 
 class ToolUsageStatsResponse(BaseModel):

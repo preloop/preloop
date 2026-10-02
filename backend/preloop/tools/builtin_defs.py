@@ -731,3 +731,8 @@ UPDATE_ISSUE_SCHEMA: Dict[str, Any] = {
     },
     "required": ["issue"],
 }
+
+TOOL_NAME_ALIASES: Dict[str, str] = {
+    "search": "search_issues",
+    "search_issues": "search",
+}

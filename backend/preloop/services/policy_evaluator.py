@@ -38,6 +38,7 @@ from preloop.services.subject_governance import (
     get_scoped_tool_rules,
     is_tool_enabled_for_subject,
 )
+from preloop.tools.builtin_defs import TOOL_NAME_ALIASES
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -825,7 +826,7 @@ def evaluate_policy(
         subject_context=subject_context or {},
     )
     if not scoped_rules:
-        alias = {"search": "search_issues", "search_issues": "search"}.get(tool_name)
+        alias = TOOL_NAME_ALIASES.get(tool_name)
         if alias:
             scoped_rules = get_scoped_tool_rules(
                 account_meta,
@@ -843,9 +844,7 @@ def evaluate_policy(
             db, account_id=account_id, tool_name=tool_name
         )
         if not tool_config:
-            alias = {"search": "search_issues", "search_issues": "search"}.get(
-                tool_name
-            )
+            alias = TOOL_NAME_ALIASES.get(tool_name)
             if alias:
                 tool_config = crud_tool_configuration.get_by_tool_name(
                     db, account_id=account_id, tool_name=alias
@@ -1407,7 +1406,7 @@ async def evaluate_policy_async(
         subject_context=subject_context or {},
     )
     if not scoped_rules:
-        alias = {"search": "search_issues", "search_issues": "search"}.get(tool_name)
+        alias = TOOL_NAME_ALIASES.get(tool_name)
         if alias:
             scoped_rules = get_scoped_tool_rules(
                 account_meta_data,
@@ -1425,9 +1424,7 @@ async def evaluate_policy_async(
             db, account_id=account_id, tool_name=tool_name
         )
         if not tool_config:
-            alias = {"search": "search_issues", "search_issues": "search"}.get(
-                tool_name
-            )
+            alias = TOOL_NAME_ALIASES.get(tool_name)
             if alias:
                 tool_config = await get_tool_config_by_tool_name_async(
                     db, account_id=account_id, tool_name=alias
