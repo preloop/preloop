@@ -1,11 +1,11 @@
+import {
+  renderSessionApproval,
+  renderSessionActivity,
+} from './session-approval-presentation';
 import './session-tool-card';
 import './session-approval-card';
 import './session-live-activity';
-import {
-  retainSessionApprovalForms,
-  type SessionLiveActivity,
-  type SessionApprovalState,
-} from './session-live-activity';
+import { type SessionApprovalState } from './session-live-activity';
 import {
   sessionTools,
   sessionTimelineTime,
@@ -92,44 +92,24 @@ export class SessionChatView extends LitElement {
     author: '',
     now: Date.now(),
   };
-  private jumpApproval(id: string): void {
-    const row = [
-      ...this.renderRoot.querySelectorAll<HTMLElement>('[data-approval-id]'),
-    ].find((r) => r.dataset.approvalId === id);
-    row?.scrollIntoView({ block: 'center' });
-    row?.focus({ preventScroll: true });
-  }
   private renderApproval(request: ApprovalRequest) {
-    return html`<div tabindex="-1" data-approval-id=${request.id}>
-      <session-approval-card
-        .request=${request}
-        .canDecide=${this.approvalState.canDecide}
-        .author=${this.approvalState.author}
-        .now=${this.approvalState.now}
-        @session-approval-updated=${(event: CustomEvent<ApprovalRequest>) => this.renderRoot.querySelector<SessionLiveActivity>('session-live-activity')?.updateRequest(event.detail)}
-      ></session-approval-card>
-    </div>`;
+    return renderSessionApproval(this, this.approvalState, request);
   }
   @property({ type: Boolean }) liveEnabled = true;
   @property({ type: Boolean }) ended = false;
   private renderActivity() {
     if (!this.liveEnabled) return nothing;
-    return html`<session-live-activity
-      .sessionId=${this.sessionId}
-      .events=${this.events}
-      .activity=${this.activity}
-      .ended=${this.ended}
-      @session-approvals-changed=${(
-        event: CustomEvent<SessionApprovalState>
-      ) => {
-        this.approvalState = retainSessionApprovalForms(
-          this.approvalState,
-          event.detail
-        );
-      }}
-      @session-approval-jump=${(event: CustomEvent<{ id: string }>) => this.jumpApproval(event.detail.id)}
-      @session-live-reconcile=${() => this.dispatchEvent(new CustomEvent('session-live-reload', { bubbles: true, composed: true }))}
-    ></session-live-activity>`;
+    return renderSessionActivity(
+      this,
+      this.sessionId,
+      this.events,
+      this.activity,
+      this.ended,
+      this.approvalState,
+      (state) => {
+        this.approvalState = state;
+      }
+    );
   }
   private get displayItems(): Array<
     | TranscriptItem

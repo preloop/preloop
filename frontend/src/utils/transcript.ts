@@ -373,7 +373,11 @@ export function buildConversation(
   for (const event of gatewayEvents) {
     const scan = collectRawToolResultPrefixes(event);
     const toolResultPrefixes = scan.prefixes;
-    if (toolResultPrefixes === null && !Array.isArray(event.payload?.tools))
+    if (
+      toolResultPrefixes === null &&
+      event.type !== 'model_gateway_request_started' &&
+      !Array.isArray(event.payload?.tools)
+    )
       stats.eventsWithoutRawBody += 1;
     else if (scan.unusableToolResults > 0) {
       stats.eventsWithPartialToolResults += 1;

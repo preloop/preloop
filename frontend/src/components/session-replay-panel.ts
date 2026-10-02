@@ -1,11 +1,11 @@
+import {
+  renderSessionApproval,
+  renderSessionActivity,
+} from './session-approval-presentation';
 import './session-tool-card';
 import './session-approval-card';
 import './session-live-activity';
-import {
-  retainSessionApprovalForms,
-  type SessionLiveActivity,
-  type SessionApprovalState,
-} from './session-live-activity';
+import { type SessionApprovalState } from './session-live-activity';
 import {
   sessionTools,
   sessionTimelineTime,
@@ -207,42 +207,22 @@ export class SessionReplayPanel extends LitElement {
     author: '',
     now: Date.now(),
   };
-  private jumpApproval(id: string): void {
-    const row = [
-      ...this.renderRoot.querySelectorAll<HTMLElement>('[data-approval-id]'),
-    ].find((r) => r.dataset.approvalId === id);
-    row?.scrollIntoView({ block: 'center' });
-    row?.focus({ preventScroll: true });
-  }
   private renderApproval(request: ApprovalRequest) {
-    return html`<div tabindex="-1" data-approval-id=${request.id}>
-      <session-approval-card
-        .request=${request}
-        .canDecide=${this.approvalState.canDecide}
-        .author=${this.approvalState.author}
-        .now=${this.approvalState.now}
-        @session-approval-updated=${(event: CustomEvent<ApprovalRequest>) => this.renderRoot.querySelector<SessionLiveActivity>('session-live-activity')?.updateRequest(event.detail)}
-      ></session-approval-card>
-    </div>`;
+    return renderSessionApproval(this, this.approvalState, request);
   }
   private renderActivity() {
     if (this.replayMode === 'conversation') return nothing;
-    return html`<session-live-activity
-      .sessionId=${this.session?.id || ''}
-      .events=${this.events}
-      .activity=${this.activity}
-      .ended=${Boolean(this.session?.endedAt)}
-      @session-approvals-changed=${(
-        event: CustomEvent<SessionApprovalState>
-      ) => {
-        this.approvalState = retainSessionApprovalForms(
-          this.approvalState,
-          event.detail
-        );
-      }}
-      @session-approval-jump=${(event: CustomEvent<{ id: string }>) => this.jumpApproval(event.detail.id)}
-      @session-live-reconcile=${() => this.dispatchEvent(new CustomEvent('session-live-reload', { bubbles: true, composed: true }))}
-    ></session-live-activity>`;
+    return renderSessionActivity(
+      this,
+      this.session?.id || '',
+      this.events,
+      this.activity,
+      Boolean(this.session?.endedAt),
+      this.approvalState,
+      (state) => {
+        this.approvalState = state;
+      }
+    );
   }
   @property({ type: Object })
   session: ObservedSession | null = null;
@@ -4446,6 +4426,7 @@ export class SessionReplayPanel extends LitElement {
 
   private getChatTurns(): ChatTurn[] {
     const events = this.getChatEvents();
+    const tools = sessionTools(this.events, this.activity);
     const seenSignatures = new Set<string>();
     const eventTurns: ChatTurn[] = [];
     const idleExpiryById = this.getIdleExpiryByEventId();
@@ -4465,6 +4446,16 @@ export class SessionReplayPanel extends LitElement {
         if (text && seenSignatures.has(signature)) return;
         if (text) seenSignatures.add(signature);
         const isToolRelated = this.messageIsToolRelated(message);
+        if (
+          isToolRelated &&
+          message.tool_call_ids?.length &&
+          message.tool_call_ids.every((id) =>
+            tools.some(
+              (tool) => tool.callId === id && tool.result !== undefined
+            )
+          )
+        )
+          return;
         if (isToolRelated) toolCallCount += 1;
         deltaMessages.push({
           ...message,
