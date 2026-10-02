@@ -2,13 +2,14 @@
 
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Iterator
+from typing import Any, Callable, Iterator
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete, select, text
+from sqlalchemy import Engine, create_engine, delete, event, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +28,59 @@ PAIR = TokenPair(
     "synthetic-refresh",
     datetime.now(timezone.utc) + timedelta(hours=1),
 )
+
+
+class LockWaiter:
+    """Observe actual PostgreSQL lock contention by the selected worker session."""
+
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+        self.thread_id: int | None = None
+        self.pid: int | None = None
+        self.ready = threading.Event()
+
+    def __enter__(self) -> "LockWaiter":
+        event.listen(self.engine, "before_cursor_execute", self.capture)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        event.remove(self.engine, "before_cursor_execute", self.capture)
+
+    def capture(
+        self,
+        connection: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        if threading.get_ident() == self.thread_id and "FOR UPDATE" in statement:
+            self.pid = connection.connection.driver_connection.info.backend_pid
+            self.ready.set()
+
+    def run(self, operation: Callable[[], Any]) -> Any:
+        self.thread_id = threading.get_ident()
+        return operation()
+
+    def wait_until_blocked(self) -> None:
+        assert self.ready.wait(5), "worker never attempted its row lock"
+        deadline = time.monotonic() + 5
+        with self.engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as connection:
+            while time.monotonic() < deadline:
+                blocked = connection.execute(
+                    text(
+                        "SELECT wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0 "
+                        "FROM pg_stat_activity WHERE pid = :pid"
+                    ),
+                    {"pid": self.pid},
+                ).scalar()
+                if blocked:
+                    return
+                time.sleep(0.01)
+        raise AssertionError("PostgreSQL never observed the worker waiting on a lock")
 
 
 @pytest.fixture
@@ -255,8 +309,12 @@ def test_two_independent_refresh_sessions_reread_version(storage: tuple) -> None
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(rotate)
         assert entered.wait(5)
-        second = pool.submit(rotate)
-        release.set()
+        with LockWaiter(crud._engine) as waiter:
+            second = pool.submit(waiter.run, rotate)
+            try:
+                waiter.wait_until_blocked()
+            finally:
+                release.set()
         assert first.result(timeout=10)["rotation_version"] == 1
         with pytest.raises(OAuthConflictError):
             second.result(timeout=10)
@@ -405,9 +463,12 @@ def test_configuration_replacement_waits_for_rotation_and_invalidates_pending(
             refresh=refresh,
         )
         assert entered.wait(5)
-        replacement = pool.submit(replace)
-        assert not replacement.done()
-        release.set()
+        with LockWaiter(crud._engine) as waiter:
+            replacement = pool.submit(waiter.run, replace)
+            try:
+                waiter.wait_until_blocked()
+            finally:
+                release.set()
         rotation.result(timeout=10)
         assert replacement.result(timeout=10)["version"] == 2
     with pytest.raises(OAuthConflictError):
@@ -521,13 +582,17 @@ def test_disconnect_waits_for_inflight_rotation_and_erases_rotated_pair(
             refresh=refresh,
         )
         assert entered.wait(5)
-        disconnect = pool.submit(
-            crud.disconnect,
-            account_id=owners[0][0],
-            grant_id=grant["id"],
-            expected_version=1,
-        )
-        release.set()
+        with LockWaiter(crud._engine) as waiter:
+            disconnect = pool.submit(
+                waiter.run,
+                lambda: crud.disconnect(
+                    account_id=owners[0][0], grant_id=grant["id"], expected_version=1
+                ),
+            )
+            try:
+                waiter.wait_until_blocked()
+            finally:
+                release.set()
         rotation.result(timeout=10)
         disconnect.result(timeout=10)
     row = crud.get_grant(account_id=owners[0][0], grant_id=grant["id"])
@@ -599,3 +664,131 @@ def test_disconnected_tracker_cannot_reconnect_to_another_instance(
         )
     row = crud.get_grant(account_id=owners[0][0], grant_id=pending_grant["id"])
     assert row["status"] == "pending" and row["tracker_id"] is None
+
+
+def test_reconnect_waits_for_rotation_then_replaces_pair_atomically(
+    storage: tuple,
+) -> None:
+    crud, owners = storage
+    _, grant, config = active(crud, owners[0])
+    binding, _, _ = pending(crud, owners[0], config)
+    entered, release = threading.Event(), threading.Event()
+
+    def refresh(*_: object) -> TokenPair:
+        entered.set()
+        assert release.wait(5)
+        return TokenPair("intermediate-rotation", "intermediate-refresh")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        rotation = pool.submit(
+            crud.rotate,
+            account_id=owners[0][0],
+            grant_id=grant["id"],
+            expected_version=0,
+            refresh=refresh,
+        )
+        assert entered.wait(5)
+        with LockWaiter(crud._engine) as waiter:
+            reconnect = pool.submit(
+                waiter.run,
+                lambda: crud.complete_connection(
+                    **binding,
+                    tracker_name="Concurrent reconnect",
+                    tracker_id=grant["tracker_id"],
+                    expected_rotation_version=1,
+                ),
+            )
+            try:
+                waiter.wait_until_blocked()
+            finally:
+                release.set()
+        assert rotation.result(timeout=10)["rotation_version"] == 1
+        assert reconnect.result(timeout=10) == grant["tracker_id"]
+    with crud._session() as db:
+        row = db.get(models.OAuthToken, grant["id"])
+        assert row.rotation_version == 2
+        assert decrypt_value(row.access_token_encrypted) == PAIR.access_token
+        assert decrypt_value(row.refresh_token_encrypted) == PAIR.refresh_token
+
+    # The old refresh version cannot overwrite the reconnected pair or invoke I/O.
+    def stale_provider(*_: object) -> TokenPair:
+        pytest.fail("stale rotation must not invoke provider")
+
+    with pytest.raises(OAuthConflictError):
+        crud.rotate(
+            account_id=owners[0][0],
+            grant_id=grant["id"],
+            expected_version=1,
+            refresh=stale_provider,
+        )
+
+
+@pytest.mark.parametrize("transition", ["reconnect", "disconnect"])
+def test_stale_rotation_waiting_on_lifecycle_write_cannot_invoke_provider(
+    storage: tuple, transition: str
+) -> None:
+    crud, owners = storage
+    _, grant, config = active(crud, owners[0])
+    binding, _, _ = pending(crud, owners[0], config)
+    written, release = threading.Event(), threading.Event()
+    writer_thread = []
+
+    def hold_uncommitted_write(
+        connection: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        if writer_thread == [threading.get_ident()] and statement.startswith(
+            "UPDATE oauth_token "
+        ):
+            written.set()
+            assert release.wait(5)
+
+    def lifecycle_write() -> None:
+        writer_thread.append(threading.get_ident())
+        if transition == "reconnect":
+            crud.complete_connection(
+                **binding,
+                tracker_name="Reconnect",
+                tracker_id=grant["tracker_id"],
+                expected_rotation_version=0,
+            )
+        else:
+            crud.disconnect(
+                account_id=owners[0][0], grant_id=grant["id"], expected_version=0
+            )
+
+    def provider(*_: object) -> TokenPair:
+        pytest.fail("stale rotation must not reach provider I/O")
+
+    event.listen(crud._engine, "after_cursor_execute", hold_uncommitted_write)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            lifecycle = pool.submit(lifecycle_write)
+            assert written.wait(5)
+            with LockWaiter(crud._engine) as waiter:
+                rotation = pool.submit(
+                    waiter.run,
+                    lambda: crud.rotate(
+                        account_id=owners[0][0],
+                        grant_id=grant["id"],
+                        expected_version=0,
+                        refresh=provider,
+                    ),
+                )
+                try:
+                    waiter.wait_until_blocked()
+                finally:
+                    release.set()
+            lifecycle.result(timeout=10)
+            with pytest.raises(OAuthConflictError):
+                rotation.result(timeout=10)
+    finally:
+        release.set()
+        event.remove(crud._engine, "after_cursor_execute", hold_uncommitted_write)
+    row = crud.get_grant(account_id=owners[0][0], grant_id=grant["id"])
+    assert row["rotation_version"] == 1
+    assert row["status"] == ("active" if transition == "reconnect" else "disconnected")
