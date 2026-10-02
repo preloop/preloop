@@ -1026,3 +1026,8 @@ GET_ARTIFACT_TOOL: Dict[str, Any] = {
         "required": ["artifact_id"],
     },
 }
+
+TOOL_NAME_ALIASES: Dict[str, str] = {
+    "search": "search_issues",
+    "search_issues": "search",
+}

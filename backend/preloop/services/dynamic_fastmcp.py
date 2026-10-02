@@ -29,11 +29,18 @@ from preloop.services.dynamic_mcp_server import (
     get_tracker_types,
 )
 from preloop.services.mcp_client_pool import get_mcp_client_pool
-from preloop.models.crud import crud_mcp_server, crud_tool_configuration
+from preloop.models.crud import (
+    crud_account,
+    crud_mcp_server,
+    crud_tool_configuration,
+)
 from preloop.models.db.session import get_db_session as get_db
-from preloop.api.endpoints.tools import BUILTIN_TOOLS
+from preloop.api.endpoints.tools import BUILTIN_TOOLS, TOOL_NAME_ALIASES
 from preloop.services import kill_switch as kill_switch_service
-from preloop.services.subject_governance import is_tool_enabled_for_subject
+from preloop.services.subject_governance import (
+    get_scoped_tool_rules,
+    is_tool_enabled_for_subject,
+)
 from preloop.services.sensitive_data import tool_policy as sensitive_tool_policy
 from preloop.services.sensitive_data.storage import (
     StorageScope,
@@ -1235,6 +1242,10 @@ class DynamicFastMCP(FastMCP):
         # (allowed_flow_tools) that opts into exactly the tools the flow
         # needs, so account-level disables must not break preset flows.
         if user_context.allowed_flow_tools is None:
+            subject_context = {
+                "api_key_id": user_context.api_key_id,
+                "managed_agent_id": getattr(user_context, "managed_agent_id", None),
+            }
             before_count = len(available_tools)
             enabled_filtered = []
             for tool in available_tools:
@@ -1253,6 +1264,10 @@ class DynamicFastMCP(FastMCP):
                             "(disabled by tool configuration)"
                         )
                 elif meta.get("default_enabled", True):
+                    enabled_filtered.append(tool)
+                elif tool.name == "search" and get_scoped_tool_rules(
+                    account_meta, tool_name="search", subject_context=subject_context
+                ):
                     enabled_filtered.append(tool)
                 else:
                     logger.info(
@@ -1273,10 +1288,9 @@ class DynamicFastMCP(FastMCP):
             original_count = len(available_tools)
             allowed = set(user_context.allowed_flow_tools)
             # Backward-compatible alias matching (#1044): search and search_issues
-            if "search" in allowed:
-                allowed.add("search_issues")
-            if "search_issues" in allowed:
-                allowed.add("search")
+            for alias_src, alias_dst in TOOL_NAME_ALIASES.items():
+                if alias_src in allowed:
+                    allowed.add(alias_dst)
             available_tools = [tool for tool in available_tools if tool.name in allowed]
             logger.info(
                 f"Flow execution restriction: filtered {original_count} tools down to "
@@ -1917,13 +1931,16 @@ async def {internal_name}({params_str}):
                                 requires_just = True
                             if tc.tool_source == "builtin":
                                 builtin_enabled = tc.is_enabled
-                        return requires_just, builtin_enabled
+                        acc = crud_account.get(db, id=user_context.account_id)
+                        account_meta = getattr(acc, "meta_data", {}) or {}
+                        return requires_just, builtin_enabled, account_meta
                     finally:
                         db.close()
 
                 (
                     requires_justification,
                     builtin_explicit_enabled,
+                    call_account_meta,
                 ) = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(None, _check_tool_config),
                     timeout=30,
@@ -1941,9 +1958,25 @@ async def {internal_name}({params_str}):
                     builtin_call_meta is not None
                     and user_context.allowed_flow_tools is None
                 ):
+                    has_scoped_search_rule = False
+                    if name == "search" and builtin_explicit_enabled is None:
+                        call_subject_context = {
+                            "api_key_id": user_context.api_key_id,
+                            "managed_agent_id": getattr(
+                                user_context, "managed_agent_id", None
+                            ),
+                        }
+                        has_scoped_search_rule = bool(
+                            get_scoped_tool_rules(
+                                call_account_meta,
+                                tool_name="search",
+                                subject_context=call_subject_context,
+                            )
+                        )
                     is_disabled = builtin_explicit_enabled is False or (
                         builtin_explicit_enabled is None
                         and not builtin_call_meta.get("default_enabled", True)
+                        and not has_scoped_search_rule
                     )
                     if is_disabled:
                         logger.warning(f"Blocked call to disabled builtin tool: {name}")
