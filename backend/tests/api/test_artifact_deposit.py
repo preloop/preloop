@@ -325,6 +325,60 @@ def test_error_codes(client, db_session, test_user, monkeypatch):
     assert _activity_rows(db_session, session.id) == []
 
 
+def test_resource_link_without_bytes_is_content_required(client, db_session, test_user):
+    session = _session(db_session, test_user.account_id, "deposit-link")
+    token = _token(db_session, test_user, runtime_session_id=session.id)
+
+    created = client.post(
+        f"{BASE}/{session.id}/artifacts",
+        headers=_auth(token),
+        json={
+            "name": "call.vtt",
+            "content": {
+                "type": "resource_link",
+                "uri": "https://example.com/call.vtt",
+                "name": "call.vtt",
+                "mimeType": "text/vtt",
+            },
+        },
+    )
+
+    assert created.status_code == 422
+    assert created.json()["detail"] == "artifact_content_required"
+    assert _rows(db_session, session.id) == []
+
+
+def test_exhausted_storage_budget_is_507(client, db_session, test_user, monkeypatch):
+    session = _session(db_session, test_user.account_id, "deposit-budget")
+    token = _token(db_session, test_user, runtime_session_id=session.id)
+    monkeypatch.setattr(settings, "runtime_session_artifact_account_max_bytes", 10)
+
+    created = client.post(
+        f"{BASE}/{session.id}/artifacts",
+        headers=_auth(token),
+        json={"name": "n.txt", "content": {"type": "text", "text": "hello world"}},
+    )
+
+    assert created.status_code == 507
+    assert created.json()["detail"] == "storage_budget_exhausted"
+    assert _rows(db_session, session.id) == []
+    assert _activity_rows(db_session, session.id) == []
+
+
+def test_list_refuses_an_unknown_kind(client, db_session, test_user):
+    session = _session(db_session, test_user.account_id, "deposit-list-kind")
+    token = _token(db_session, test_user, runtime_session_id=session.id)
+    url = f"{BASE}/{session.id}/artifacts"
+
+    typo = client.get(url, headers=_auth(token), params={"kind": "transript"})
+    known = client.get(url, headers=_auth(token), params={"kind": "transcript"})
+
+    assert typo.status_code == 422
+    assert typo.json()["detail"] == "artifact_kind_invalid"
+    assert known.status_code == 200
+    assert known.json()["items"] == []
+
+
 def test_request_body_over_the_limit_is_refused_before_parsing(
     client, db_session, test_user, monkeypatch
 ):
@@ -543,6 +597,26 @@ def test_on_stored_hooks_run_after_commit(client, db_session, test_user, monkeyp
 
     assert created.status_code == 201
     assert [str(i) for i in seen] == [created.json()["id"]]
+
+
+def test_on_stored_hooks_do_not_run_on_an_idempotent_replay(
+    client, db_session, test_user, monkeypatch
+):
+    session = _session(db_session, test_user.account_id, "deposit-hook-replay")
+    token = _token(db_session, test_user, runtime_session_id=session.id)
+    seen = []
+    monkeypatch.setattr(
+        artifact_deposit, "ON_STORED", [lambda db, artifact: seen.append(artifact.id)]
+    )
+    headers = {**_auth(token), "Idempotency-Key": "note-1"}
+    body = {"name": "n.txt", "content": {"type": "text", "text": "hello"}}
+
+    first = client.post(f"{BASE}/{session.id}/artifacts", headers=headers, json=body)
+    second = client.post(f"{BASE}/{session.id}/artifacts", headers=headers, json=body)
+
+    assert second.headers.get("Idempotent-Replayed") == "true"
+    assert second.json()["id"] == first.json()["id"]
+    assert [str(i) for i in seen] == [first.json()["id"]]
 
 
 def test_legal_hold_marks_the_deposit_held(client, db_session, test_user):
