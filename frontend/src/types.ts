@@ -221,6 +221,7 @@ export interface TextToSpeechRequest {
 }
 
 export interface FlowGatewayConversationPreviewMessage {
+  tool_call_ids?: string[];
   source?: string | null;
   role?: string | null;
   text?: string | null;
@@ -911,6 +912,7 @@ export interface RuntimeSessionUpdateRequest {
 }
 
 export interface RuntimeSessionActivityItem {
+  activity_id?: string | null;
   activity_type:
     | 'model_interaction'
     | 'tool_call'

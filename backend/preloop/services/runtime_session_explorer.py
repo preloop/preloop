@@ -981,6 +981,7 @@ class RuntimeSessionExplorerService:
         if activity_rows:
             items.extend(
                 RuntimeSessionActivityItem(
+                    activity_id=str(activity.id),
                     activity_type=activity.activity_type,
                     timestamp=self._normalize_timestamp(activity.timestamp),
                     title=(

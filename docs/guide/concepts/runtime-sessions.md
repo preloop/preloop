@@ -58,3 +58,33 @@ Flow execution detail also includes a **Gateway Events** tab for execution-scope
 - [AI Model Gateway](model-gateway.md)
 - [Agent Control Runtime Adapters](../integrations/agent-control-runtime-adapters.md)
 - [Quick Start: CLI onboarding](../quickstart-cli.md)
+
+## Following live work and decisions
+
+Talk, Conversation and Transcript share a live activity line and inline approval
+cards. `Model processing` describes an observed request with a stable request ID;
+`Tool requested` describes a model-emitted call, and `Running` requires executor
+start evidence. Transport reconnection is displayed separately. A stale unmatched
+start becomes `Activity unavailable` rather than claiming continuous processing.
+
+Captured tools appear by name with a readable command, path or arguments summary.
+Expand a card to inspect formatted Arguments and Result. Missing, redacted and
+truncated captures remain marked; a completed model request does not imply that
+its requested tool ran successfully.
+
+Pending approvals load for the selected session, including pending requests older
+than the first history page. Use **Next pending approval** while reading older
+history. Approve, Deny, question answers and schema forms stay in place; denial
+still asks for confirmation. A recorded quorum vote can remain pending until the
+remaining approvers decide. Resolved cards retain their outcome and attribution.
+Viewing and deciding require the existing approval permissions, and the full
+approval page remains available through **Approval details**.
+
+The following desktop example uses synthetic session and approval data:
+
+![Named tools and pending approval in a synthetic session](../../assets/screenshots/sessions/live-session-after-desktop.png)
+
+Screenshot reproduction: run local Vite servers for the base and implementation
+revisions, then from `frontend` run
+`PRELOOP_DISABLE_TELEMETRY=true node scripts/capture-live-session.mjs http://127.0.0.1:5190 http://127.0.0.1:5189`.
+The script intercepts all API reads and uses a fixed clock and generic fixtures.

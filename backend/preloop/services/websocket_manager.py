@@ -355,6 +355,7 @@ class WebSocketManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.connection_accounts: Dict[str, str] = {}  # connection_id -> account_id
+        self.approval_visibility: Dict[str, bool] = {}
         self.connection_topics: Dict[str, Set[str]] = {}  # connection_id -> topics
 
     async def connect(self, websocket: WebSocket) -> str:
@@ -476,6 +477,7 @@ class WebSocketManager:
 
         if connection_id in self.connection_accounts:
             del self.connection_accounts[connection_id]
+        self.approval_visibility.pop(connection_id, None)
         self.connection_topics.pop(connection_id, None)
 
         logger.info(f"Total active connections: {len(self.active_connections)}")
@@ -578,6 +580,10 @@ class WebSocketManager:
                 conn_account = self.connection_accounts.get(connection_id)
                 if conn_account != account_id:
                     continue
+            if topic == "approvals" and not self.approval_visibility.get(
+                connection_id, False
+            ):
+                continue
             if not self._accepts_topic(connection_id, topic):
                 continue
             try:
