@@ -5,6 +5,7 @@ import threading
 import time
 import uuid
 from contextlib import closing
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 from fastapi import WebSocket
@@ -347,6 +348,44 @@ async def persist_execution_log(execution_id: str, log_data: dict) -> None:
     )
 
 
+@dataclass(frozen=True)
+class SessionStreamFilter:
+    """What one session-attached socket may receive (#1149).
+
+    The account filter in :meth:`WebSocketManager.broadcast_json` still runs
+    first; this narrows an account's events to one session, or to one flow
+    execution, and withholds approval payloads from a viewer who cannot read
+    approvals.
+    """
+
+    runtime_session_id: str
+    execution_id: Optional[str] = None
+    approvals_visible: bool = False
+
+    def accepts(self, data: dict, topic: Optional[str]) -> bool:
+        """Return whether ``data`` belongs to the attached session."""
+        if topic == "approvals" and not self.approvals_visible:
+            return False
+        payload = data.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        for value in (
+            data.get("runtime_session_id"),
+            payload.get("runtime_session_id"),
+        ):
+            if value is not None and str(value) == self.runtime_session_id:
+                return True
+        if self.execution_id is None:
+            return False
+        for value in (
+            data.get("execution_id"),
+            payload.get("execution_id"),
+            payload.get("flow_execution_id"),
+        ):
+            if value is not None and str(value) == self.execution_id:
+                return True
+        return False
+
+
 class WebSocketManager:
     """
     Manages WebSocket connections for real-time updates with account-based filtering.
@@ -356,6 +395,8 @@ class WebSocketManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.connection_accounts: Dict[str, str] = {}  # connection_id -> account_id
         self.connection_topics: Dict[str, Set[str]] = {}  # connection_id -> topics
+        # connection_id -> filter, for sockets attached to one session
+        self.session_streams: Dict[str, "SessionStreamFilter"] = {}
 
     async def connect(self, websocket: WebSocket) -> str:
         """
@@ -477,6 +518,7 @@ class WebSocketManager:
         if connection_id in self.connection_accounts:
             del self.connection_accounts[connection_id]
         self.connection_topics.pop(connection_id, None)
+        self.session_streams.pop(connection_id, None)
 
         logger.info(f"Total active connections: {len(self.active_connections)}")
 
@@ -579,6 +621,9 @@ class WebSocketManager:
                 if conn_account != account_id:
                     continue
             if not self._accepts_topic(connection_id, topic):
+                continue
+            stream = self.session_streams.get(connection_id)
+            if stream is not None and not stream.accepts(data, topic):
                 continue
             try:
                 await connection.send_text(encoded)

@@ -99,7 +99,9 @@ preloop sessions list --agent "Release worker" --active -o id | head -1 \
 Narrow the list with `--agent <id|name>`, `--kind claude-code`, `--since 2h`,
 `--parent <session-id>` (the sessions a conductor spawned) and
 `--execution <id>`. The server applies every filter across the account. See
-[the CLI reference](cli.md#sessions).
+[the CLI reference](cli.md#sessions). To watch the session and steer it from
+the same terminal, attach to it:
+[Attaching to a session from the terminal](sessions-attach.md).
 
 API:
 

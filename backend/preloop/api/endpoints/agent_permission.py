@@ -8,7 +8,8 @@ decision (or timeout) and returns a simple allow/deny.
 """
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
@@ -23,7 +24,11 @@ from preloop.api.auth.jwt import (
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 from preloop.models import models
-from preloop.models.crud import crud_api_key, crud_runtime_session
+from preloop.models.crud import (
+    crud_api_key,
+    crud_managed_agent,
+    crud_runtime_session,
+)
 from preloop.models.db.session import get_session_factory
 from preloop.services import operator_notes
 from preloop.services.agent_permission_service import request_agent_permission
@@ -163,6 +168,148 @@ def _origin_runtime_session_id(
         return None
 
 
+def _current_agent_session_id(identity: PermissionIdentity) -> Optional[UUID]:
+    """Return the managed agent's current open session, account scoped.
+
+    Never raises: without a session the check still decides the call, it is
+    only unattributed, which is how it behaved before.
+    """
+    try:
+        with get_session_factory()() as db:
+            agent = crud_managed_agent.get_for_account(
+                db,
+                account_id=identity.account_id,
+                agent_id=str(identity.managed_agent_id),
+            )
+            if agent is None or agent.runtime_session_id is None:
+                return None
+            session = crud_runtime_session.get_account_session(
+                db,
+                account_id=identity.account_id,
+                runtime_session_id=agent.runtime_session_id,
+            )
+            if session is None or session.ended_at is not None:
+                return None
+            return session.id
+    except Exception:
+        logger.warning("Agent session lookup failed on permission check", exc_info=True)
+        return None
+
+
+def _records_native_tool_call(payload: "AgentPermissionCheckRequest") -> bool:
+    """Whether this check is the one record of its tool call.
+
+    Codex asks twice for an escalated call: a PreToolUse rules check and then
+    a PermissionRequest. The first already recorded the call; the approval
+    the second raises is its own timeline item.
+    """
+    source = (payload.source or "").strip()
+    return not (
+        source == "codex_cli" and payload.evaluation_phase == "permission_request"
+    )
+
+
+def _native_tool_status(
+    decision: str, approval_request_id: Optional[str], timed_out: bool
+) -> str:
+    """Name the outcome of a native permission check for the timeline."""
+    if approval_request_id:
+        if decision == "allow":
+            return "approved"
+        return "timed_out" if timed_out else "declined"
+    return "allowed" if decision == "allow" else "denied"
+
+
+def _record_native_tool_call(
+    identity: PermissionIdentity,
+    *,
+    runtime_session_id: Any,
+    payload: "AgentPermissionCheckRequest",
+    decision: str,
+    reason: Optional[str],
+    approval_request_id: Optional[str],
+    timed_out: bool,
+    elapsed_ms: int,
+) -> None:
+    """Put one native tool call on its session timeline and live stream (#1149).
+
+    MCP calls through Preloop were already recorded and broadcast; a native
+    call decided by a hook was neither, so a watcher saw approvals but not
+    the calls around them. The row has the same shape as an MCP tool call:
+    tool name, outcome, and an arguments summary of key names and sizes only,
+    never the values. The live event is the ``runtime_session_updated`` event
+    MCP calls already emit, with the decision fields added.
+
+    Never raises: the decision has been made and must reach the agent.
+    """
+    from preloop.models.crud import crud_runtime_session_activity
+    from preloop.services.account_realtime import (
+        ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+        build_account_event,
+        emit_account_event,
+    )
+    from preloop.services.dynamic_fastmcp import (
+        _bounded_summary,
+        _hash_arguments,
+        _summarize_arguments,
+    )
+
+    arguments = dict(payload.tool_input or {})
+    source = (payload.source or "").strip() or "native"
+    status_label = _native_tool_status(decision, approval_request_id, timed_out)
+    metadata: dict[str, Any] = {
+        "origin": "native_hook",
+        "source": source,
+        "decision": decision,
+        "evaluation_phase": payload.evaluation_phase,
+        "duration_ms": elapsed_ms,
+        "arguments_summary": _summarize_arguments(arguments),
+        "arguments_hash": _hash_arguments(arguments),
+    }
+    if approval_request_id:
+        metadata["approval_request_id"] = approval_request_id
+    try:
+        with get_session_factory()() as db:
+            activity = crud_runtime_session_activity.log_tool_call(
+                db,
+                account_id=identity.account_id,
+                runtime_session_id=runtime_session_id,
+                api_key_id=identity.api_key_id,
+                server_name=source,
+                tool_name=(payload.tool_name or "")[:255] or None,
+                status=status_label,
+                summary=_bounded_summary(reason),
+                metadata=metadata,
+            )
+            timestamp = activity.timestamp.isoformat() if activity.timestamp else None
+            activity_id = str(activity.id)
+    except Exception:
+        logger.warning("Recording the native tool call failed", exc_info=True)
+        return
+    emit_account_event(
+        build_account_event(
+            account_id=identity.account_id,
+            topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+            event_type="runtime_session_updated",
+            payload={
+                "runtime_session_id": str(runtime_session_id),
+                "runtime_principal_type": identity.runtime_principal_type,
+                "runtime_principal_id": identity.runtime_principal_id,
+                "runtime_principal_name": identity.managed_agent_name,
+                "last_activity_at": timestamp,
+                "activity_id": activity_id,
+                "activity_type": "tool_call",
+                "tool_name": payload.tool_name,
+                "server_name": source,
+                "status": status_label,
+                "summary": _bounded_summary(reason),
+                "metadata": metadata,
+            },
+            runtime_session_id=str(runtime_session_id),
+        )
+    )
+
+
 #: Longest working directory stored on a session; matches the column.
 MAX_SESSION_CWD_CHARS = 1024
 
@@ -193,27 +340,39 @@ def _record_session_cwd(
         logger.warning("Recording the session cwd failed", exc_info=True)
 
 
-def _claim_operator_note(identity: PermissionIdentity) -> Optional[str]:
+def _claim_operator_note(
+    identity: PermissionIdentity, origin_session_id: Optional[str] = None
+) -> Optional[str]:
     """Claim this session's pending operator notes for the hook channel.
+
+    The hook's own conversation can be recorded as a session of its own (the
+    origin session, from the hook's ``session_id``), and that is the session
+    an operator finds in ``preloop sessions list`` and attaches to. Notes
+    addressed to it are claimed too, after the credential's session.
 
     Never raises: a note is a bonus on this route, and a store problem must
     not turn a permission check into a denied tool call.
     """
     if identity.managed_agent_id is None:
         return None
+    session_ids: list[Optional[str]] = [
+        str(identity.runtime_session_id) if identity.runtime_session_id else None
+    ]
+    if origin_session_id and origin_session_id not in session_ids:
+        session_ids.append(origin_session_id)
     try:
         with get_session_factory()() as db:
-            notes = operator_notes.claim_pending_notes(
-                db,
-                account_id=identity.account_id,
-                managed_agent_id=str(identity.managed_agent_id),
-                runtime_session_id=(
-                    str(identity.runtime_session_id)
-                    if identity.runtime_session_id
-                    else None
-                ),
-                channel=operator_notes.CHANNEL_HOOK,
-            )
+            notes: list[Any] = []
+            for session_id in session_ids:
+                notes.extend(
+                    operator_notes.claim_pending_notes(
+                        db,
+                        account_id=identity.account_id,
+                        managed_agent_id=str(identity.managed_agent_id),
+                        runtime_session_id=session_id,
+                        channel=operator_notes.CHANNEL_HOOK,
+                    )
+                )
             return operator_notes.render_notes_block(notes) if notes else None
     except Exception:
         logger.warning("Operator note claim failed on permission check", exc_info=True)
@@ -379,6 +538,18 @@ async def agent_permission_check(
     # Preserve the existing credential/binding checks, but keep all ORM access
     # and pool waits off the event loop. No session survives this await.
     identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    if identity.runtime_session_id is None and identity.managed_agent_id is not None:
+        # A durable hook credential names the agent but no session. Without a
+        # session, a note sent to the agent's session is never claimed here,
+        # an approval is unattributed and the call is invisible to anyone
+        # watching the session. Use the agent's current open session, the
+        # same one ``notes send --agent`` resolves to.
+        agent_session_id = await run_db_off_loop(
+            lambda: _current_agent_session_id(identity)
+        )
+        if agent_session_id is not None:
+            identity = replace(identity, runtime_session_id=agent_session_id)
+    started = time.monotonic()
 
     tool_input = dict(payload.tool_input or {})
     # Caller-supplied tool arguments must never carry the trust markers: only
@@ -424,7 +595,9 @@ async def agent_permission_check(
     # Claimed before the approval wait, in its own short-lived session, so no
     # connection is held while a human decides. Delivery is recorded here even
     # if the tool call is then denied: the agent read the note either way.
-    operator_note = await run_db_off_loop(lambda: _claim_operator_note(identity))
+    operator_note = await run_db_off_loop(
+        lambda: _claim_operator_note(identity, origin_session_id=origin_id)
+    )
 
     decision, reason, request_id, timed_out = await request_agent_permission(
         base_url=_permission_check_base_url(),
@@ -441,6 +614,21 @@ async def agent_permission_check(
         client_decision=payload.client_decision,
         evaluation_phase=payload.evaluation_phase,
     )
+    activity_session_id = origin_id or identity.runtime_session_id
+    if activity_session_id is not None and _records_native_tool_call(payload):
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        await run_db_off_loop(
+            lambda: _record_native_tool_call(
+                identity,
+                runtime_session_id=activity_session_id,
+                payload=payload,
+                decision=decision,
+                reason=reason,
+                approval_request_id=request_id,
+                timed_out=timed_out,
+                elapsed_ms=elapsed_ms,
+            )
+        )
     return AgentPermissionCheckResponse(
         decision=decision,
         reason=reason,
