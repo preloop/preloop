@@ -329,3 +329,15 @@ MCP firewall. It owns persisted session references and bounds turns, duration an
 token/context consumption. Native and MCP tool execution require explicit
 Preloop permission decisions; background subagents and outbound channel tools
 are disabled. See its README for supported limits and installation.
+
+### Authenticated chat operations
+
+Chat connections authenticate provider ingress before persisting a tenant-owned
+receipt. Expiring single-use proofs bind provider users to Preloop users. The
+separate chat worker consumes a leased PostgreSQL ingress/outbox, delegates a
+fixed read-tool registry and explicit human commands to existing authorized APIs,
+and routes the account default model through the existing gateway. Protected
+replies revalidate actor, permissions, resource access, and scoped read snapshots
+before private provider delivery. Ambiguous writes become observable uncertain
+work rather than automatic duplicate operations. See
+[Chat connections](docs/chat-connections.md) for setup and operational limits.

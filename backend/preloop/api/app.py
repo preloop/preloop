@@ -246,7 +246,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     service_role = os.getenv("PRELOOP_SERVICE_ROLE", "all").lower()
     is_testing = os.getenv("TESTING") == "true"
     is_api_role = service_role in {"all", "api"}
-    is_gateway_role = service_role in {"all", "gateway"}
+    is_gateway_role = service_role in {"all", "gateway", "chat"}
 
     # Initialize Sentry if DSN is configured
     init_sentry()
@@ -1200,6 +1200,10 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         tags=["Agent Permissions"],
     )
+    from preloop.api.endpoints import chat
+
+    app.include_router(chat.router, prefix="/api/v1")
+
     # Operator notes: authored on the console/CLI half (session auth), and
     # pulled on the harness half (runtime bearer, authenticated in-route).
     app.include_router(
@@ -1438,8 +1442,8 @@ def create_app() -> FastAPI:
     )
 
     service_role = os.getenv("PRELOOP_SERVICE_ROLE", "all").lower()
-    is_api_role = service_role in {"all", "api"}
-    is_gateway_role = service_role in {"all", "gateway"}
+    is_api_role = service_role in {"all", "api", "chat"}
+    is_gateway_role = service_role in {"all", "gateway", "chat"}
 
     # Add profiling middleware only for core API
     if is_api_role:

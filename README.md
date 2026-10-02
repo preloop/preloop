@@ -238,3 +238,7 @@ account; switching accounts and authentication retain the requested window.
 Nanobot can run as a governed managed employee through the optional
 [Nanobot integration](runtime-plugins/nanobot-preloop/README.md), with bounded
 conversations and DeepSeek or another authorized model through Preloop.
+
+Chat assistant connections for Slack, Mattermost, and Discord are described in
+[Chat connections](docs/chat-connections.md), including identity linking, scoped
+questions, approval votes, operator notes, and the separate durable worker.

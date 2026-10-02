@@ -12820,6 +12820,208 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/chat/connections:
+    get:
+      tags:
+      - Chat
+      summary: List Connections
+      operationId: list_connections_api_v1_chat_connections_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response List Connections Api V1 Chat Connections Get
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - Chat
+      summary: Create Connection
+      operationId: create_connection_api_v1_chat_connections_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Create Connection Api V1 Chat Connections Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/chat/connections/{connection_id}:
+    patch:
+      tags:
+      - Chat
+      summary: Update Connection
+      operationId: update_connection_api_v1_chat_connections__connection_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Connection Api V1 Chat Connections  Connection
+                  Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/connections/{connection_id}/link-code:
+    post:
+      tags:
+      - Chat
+      summary: Create Link Code
+      operationId: create_link_code_api_v1_chat_connections__connection_id__link_code_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Create Link Code Api V1 Chat Connections  Connection
+                  Id  Link Code Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/connections/{connection_id}/identity:
+    delete:
+      tags:
+      - Chat
+      summary: Unlink Identity
+      operationId: unlink_identity_api_v1_chat_connections__connection_id__identity_delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/connections/{connection_id}/deliveries:
+    get:
+      tags:
+      - Chat
+      summary: List Deliveries
+      operationId: list_deliveries_api_v1_chat_connections__connection_id__deliveries_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Deliveries Api V1 Chat Connections  Connection
+                  Id  Deliveries Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/ingress/{connection_id}:
+    post:
+      tags:
+      - Chat
+      summary: Ingest
+      operationId: ingest_api_v1_chat_ingress__connection_id__post
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Ingest Api V1 Chat Ingress  Connection Id  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/operator-notes:
     post:
       tags:
@@ -18978,6 +19180,62 @@ components:
         \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
         \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
         \ 1000 && args.approved == false\""
+    ConnectionCreate:
+      properties:
+        provider:
+          type: string
+          enum:
+          - slack
+          - mattermost
+          - discord
+          title: Provider
+        workspace_id:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Workspace Id
+        name:
+          type: string
+          maxLength: 120
+          minLength: 1
+          title: Name
+        verification_secret:
+          type: string
+          maxLength: 1024
+          minLength: 1
+          title: Verification Secret
+        bot_token:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Bot Token
+        bot_user_id:
+          type: string
+          maxLength: 256
+          title: Bot User Id
+          default: ''
+        base_url:
+          type: string
+          maxLength: 2048
+          title: Base Url
+          default: ''
+      type: object
+      required:
+      - provider
+      - workspace_id
+      - name
+      - verification_secret
+      - bot_token
+      title: ConnectionCreate
+    ConnectionUpdate:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: ConnectionUpdate
     ContinuationAdoptRequest:
       properties:
         recovery_mode:
@@ -25822,6 +26080,19 @@ components:
         ``agent`` in the second case and is always derived server side.'
     OperatorNoteCreate:
       properties:
+        source:
+          type: string
+          enum:
+          - api
+          - chat
+          title: Source
+          default: api
+        correlation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Correlation Id
         text:
           type: string
           maxLength: 4096
