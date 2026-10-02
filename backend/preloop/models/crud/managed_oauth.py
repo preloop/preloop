@@ -193,6 +193,8 @@ class CRUDManagedOAuth:
         context: str = "",
     ) -> dict:
         """Create a tenant-owned consumer with a dedicated encrypted secret reference."""
+        if provider not in {kind.value for kind in models.TrackerType}:
+            raise ValueError("Unsupported tracker provider")
         canonical = canonical_instance(instance)
         canonical_instance(callback_uri)
         with self._session() as db, db.begin():
@@ -220,7 +222,7 @@ class CRUDManagedOAuth:
         client_secret: str | None,
         callback_uri: str,
         selected_permissions: list[str],
-        enabled: bool = True,
+        enabled: bool | None = None,
     ) -> dict:
         """Replace consumer credentials and invalidate all old-version handshakes/grants.
 
@@ -237,13 +239,14 @@ class CRUDManagedOAuth:
             self._set_secret(db, row, client_secret)
             row.callback_uri = callback_uri
             row.selected_permissions = selected_permissions
-            row.enabled = enabled
+            if enabled is not None:
+                row.enabled = enabled
             transactions = db.scalars(
                 select(models.OAuthConnectionTransaction)
                 .where(
                     models.OAuthConnectionTransaction.configuration_id == row.id,
                     models.OAuthConnectionTransaction.status.in_(
-                        ("pending", "claimed")
+                        ("pending", "claimed", "completed")
                     ),
                 )
                 .with_for_update()
@@ -253,6 +256,21 @@ class CRUDManagedOAuth:
                 transaction.pkce_verifier_encrypted = None
                 transaction.pending_grant_id = None
             db.flush()
+            tracker_ids = select(models.OAuthToken.tracker_id).where(
+                models.OAuthToken.configuration_id == row.id,
+                models.OAuthToken.account_id == account_id,
+            )
+            trackers = db.scalars(
+                select(models.Tracker)
+                .where(
+                    models.Tracker.id.in_(tracker_ids),
+                    models.Tracker.account_id == account_id,
+                )
+                .order_by(models.Tracker.id)
+                .with_for_update()
+            ).all()
+            for tracker in trackers:
+                tracker.is_active = False
             grants = db.scalars(
                 select(models.OAuthToken)
                 .where(models.OAuthToken.configuration_id == row.id)
@@ -672,13 +690,17 @@ class CRUDManagedOAuth:
             self._config(db, account_id, configuration_id)
             tracker_id = db.scalar(
                 select(models.OAuthToken.tracker_id).where(
-                    models.OAuthToken.id == grant_id
+                    models.OAuthToken.id == grant_id,
+                    models.OAuthToken.account_id == account_id,
                 )
             )
             tracker = (
                 db.scalar(
                     select(models.Tracker)
-                    .where(models.Tracker.id == tracker_id)
+                    .where(
+                        models.Tracker.id == tracker_id,
+                        models.Tracker.account_id == account_id,
+                    )
                     .with_for_update()
                 )
                 if tracker_id

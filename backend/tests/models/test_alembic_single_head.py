@@ -270,4 +270,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert share_tag_rule.down_revision == "20260928_person_constraints"
     issue_cost_accuracy = script.get_revision("20260927_issue_cost_accuracy")
     assert issue_cost_accuracy.down_revision == "20260928_share_tag_rule"
-    assert script.get_heads() == ["20260927_issue_cost_accuracy"]
+    assert (
+        script.get_revision("20261002_managed_oauth").down_revision
+        == "20260927_issue_cost_accuracy"
+    )
+    assert script.get_heads() == ["20261002_managed_oauth"]

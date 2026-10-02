@@ -792,3 +792,110 @@ def test_stale_rotation_waiting_on_lifecycle_write_cannot_invoke_provider(
     row = crud.get_grant(account_id=owners[0][0], grant_id=grant["id"])
     assert row["rotation_version"] == 1
     assert row["status"] == ("active" if transition == "reconnect" else "disconnected")
+
+
+def test_configuration_replacement_invalidates_completed_callback_and_tracker(
+    storage: tuple,
+) -> None:
+    crud, owners = storage
+    binding, grant, config = active(crud, owners[0])
+    crud.replace_configuration(
+        account_id=owners[0][0],
+        configuration_id=config["id"],
+        expected_version=1,
+        client_id="replacement",
+        client_secret="synthetic-client-secret",
+        callback_uri=CALLBACK,
+        selected_permissions=[],
+    )
+    with pytest.raises(OAuthConflictError):
+        crud.complete_connection(**binding, tracker_name="Stale completed callback")
+    with crud._session() as db:
+        assert db.get(models.Tracker, grant["tracker_id"]).is_active is False
+    new_binding, _, _ = pending(crud, owners[0], config)
+    assert (
+        crud.complete_connection(
+            **new_binding,
+            tracker_name="Reconnect",
+            tracker_id=grant["tracker_id"],
+            expected_rotation_version=1,
+        )
+        == grant["tracker_id"]
+    )
+    with crud._session() as db:
+        assert db.get(models.Tracker, grant["tracker_id"]).is_active is True
+
+
+def test_credential_replacement_preserves_disabled_configuration(
+    storage: tuple,
+) -> None:
+    crud, owners = storage
+    config = configuration(crud, owners[0][0])
+    args = dict(
+        account_id=owners[0][0],
+        configuration_id=config["id"],
+        client_id="replacement",
+        client_secret="synthetic",
+        callback_uri=CALLBACK,
+        selected_permissions=[],
+    )
+    crud.replace_configuration(**args, expected_version=1, enabled=False)
+    assert crud.replace_configuration(**args, expected_version=2)["enabled"] is False
+    with pytest.raises(OAuthConflictError):
+        crud.begin_connection(
+            account_id=owners[0][0],
+            user_id=owners[0][1],
+            session_id="session",
+            configuration_id=config["id"],
+            return_path="/trackers",
+        )
+    assert (
+        crud.replace_configuration(**args, expected_version=3, enabled=True)["enabled"]
+        is True
+    )
+
+
+def test_unknown_provider_is_rejected_before_persisting_consumer(
+    storage: tuple,
+) -> None:
+    crud, owners = storage
+    with pytest.raises(ValueError, match="Unsupported tracker provider"):
+        crud.create_configuration(
+            account_id=owners[0][0],
+            provider="unknown-provider",
+            instance="https://example.com",
+            client_id="client",
+            client_secret="secret",
+            callback_uri=CALLBACK,
+            selected_permissions=[],
+        )
+    with crud._session() as db:
+        assert (
+            db.scalar(
+                select(models.OAuthProviderConfiguration).where(
+                    models.OAuthProviderConfiguration.account_id == owners[0][0]
+                )
+            )
+            is None
+        )
+        assert (
+            db.scalar(
+                select(models.SecretReference).where(
+                    models.SecretReference.account_id == owners[0][0]
+                )
+            )
+            is None
+        )
+
+
+def test_cross_tenant_disconnect_is_opaque_and_preserves_grant(storage: tuple) -> None:
+    crud, owners = storage
+    _, grant, _ = active(crud, owners[0])
+    with pytest.raises(OAuthConflictError):
+        crud.disconnect(
+            account_id=owners[1][0], grant_id=grant["id"], expected_version=0
+        )
+    assert (
+        crud.get_grant(account_id=owners[0][0], grant_id=grant["id"])["status"]
+        == "active"
+    )

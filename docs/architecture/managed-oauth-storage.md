@@ -15,7 +15,10 @@ Grant tokens remain encrypted in `OAuthToken`, never copied into tracker
 `api_key` or `SecretReference`. Configuration metadata excludes the secret reference.
 Provider/instance/context are immutable consumer identity; use a new configuration
 to change them. Credential/callback/permission replacement increments the version,
-invalidates unfinished handshakes, erases old grant secrets and requires reconnect.
+invalidates old handshakes (including completed callback retries), erases old grant
+secrets, disables their trackers and requires reconnect. Omitted `enabled` preserves
+the configuration's existing state. Unsupported tracker providers are rejected at
+configuration creation.
 It does not delete the provider consumer.
 
 `begin_connection` returns metadata and a cryptographically random state once.
