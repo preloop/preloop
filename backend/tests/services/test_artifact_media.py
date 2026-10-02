@@ -126,6 +126,12 @@ def test_shapes_mapping_agrees_with_the_kind_table() -> None:
     kind added here cannot silently map to the wrong OTel modality."""
     for kind in media.ARTIFACT_KINDS:
         assert shapes.modality_for(kind) == media.KIND_MODALITY[kind]
-    for content_type in ("image/png", "audio/wav", "video/mp4", "text/vtt",
-                         "text/markdown", "application/zip"):
+    for content_type in (
+        "image/png",
+        "audio/wav",
+        "video/mp4",
+        "text/vtt",
+        "text/markdown",
+        "application/zip",
+    ):
         assert shapes.infer_kind(content_type) in media.ARTIFACT_KINDS
