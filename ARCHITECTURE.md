@@ -51,6 +51,15 @@ tables. Each issue row, summary and unassigned bucket also states `cost_coverage
 unpriced subscription-backed run is never read as a free ticket; see
 [Cost per issue](docs/architecture/cost.md#cost-and-cycle-time-per-tracker-issue).
 
+Bitbucket Data Center uses the separate `bitbucket_dc` adapter, gated off by
+default. Its REST transport enforces administrator-approved HTTPS instances,
+context paths, connection-time destination validation and verified TLS; user PATs
+use tracker SecretReference encryption through CRUD. Repository numeric IDs
+remain stable when slugs change. DC repository/review support targets the 10.2
+LTS contract with synthetic fixtures; Jira remains the issue host. OAuth,
+webhooks and execution/publication routing are separate integrations. See the
+[deployment and validation guide](docs/guide/bitbucket-data-center.md).
+
 ## High-Level Architecture
 
 ```mermaid
