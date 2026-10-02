@@ -292,6 +292,7 @@ class SessionSearchArtifactRef(BaseModel):
     kind: Optional[str] = None
     name: Optional[str] = None
     content_type: Optional[str] = None
+    tool_name: Optional[str] = None
     labels: Dict[str, Any] = Field(default_factory=dict)
     cue_start: Optional[float] = None
     text_truncated: bool = False

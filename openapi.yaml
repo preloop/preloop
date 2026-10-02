@@ -30345,6 +30345,11 @@ components:
           - type: string
           - type: 'null'
           title: Content Type
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
         labels:
           additionalProperties: true
           type: object

@@ -1206,6 +1206,46 @@ describe('RuntimeSessionsView', () => {
       );
     });
 
+    it('does not repeat the tool_name and labels header lines of an artifact hit', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () => {
+        const body = searchResponse();
+        body.results[0].snippets = [
+          {
+            document_id: 'doc-artifact-tool',
+            runtime_session_id: 'runtime-session-2',
+            source_kind: 'artifact',
+            source_id: 'artifact-2',
+            chunk_index: 0,
+            occurred_at: '2026-03-09T19:00:00Z',
+            role: 'artifact',
+            rank: 0.5,
+            redaction_state: 'clear',
+            text: 'name: dock-call.vtt\ntool_name: record_call\nlabels: site=nord\nReceiving Lead: a <mark>damaged</mark> pallet',
+            artifact: {
+              artifact_id: 'artifact-2',
+              activity_id: 'activity-artifact-2',
+              kind: 'transcript',
+              name: 'dock-call.vtt',
+              content_type: 'text/vtt',
+              tool_name: 'record_call',
+              labels: { site: 'nord' },
+              cue_start: null,
+              text_truncated: false,
+            },
+          },
+        ];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = await renderedSearch();
+      const body =
+        snippetButtons(element)[0].querySelector('.snippet-text')!.textContent!;
+      expect(body.trim()).to.equal('Receiving Lead: a damaged pallet');
+    });
+
     it('formats cue starts past an hour', () => {
       expect(formatCueStart(0)).to.equal('0:00');
       expect(formatCueStart(3725.9)).to.equal('1:02:05');

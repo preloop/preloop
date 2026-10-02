@@ -558,6 +558,7 @@ export interface SessionSearchArtifactRef {
   kind: string | null;
   name: string | null;
   content_type: string | null;
+  tool_name?: string | null;
   labels: Record<string, unknown>;
   /** Start in seconds of the transcript cue the chunk begins in. */
   cue_start: number | null;

@@ -115,6 +115,7 @@ export function artifactHeaderLines(
     'kind: artifact',
     artifact.kind ? `artifact_kind: ${artifact.kind}` : '',
     artifact.name ? `name: ${artifact.name}` : '',
+    artifact.tool_name ? `tool_name: ${artifact.tool_name}` : '',
     labels ? `labels: ${labels}` : '',
   ].filter(Boolean);
 }

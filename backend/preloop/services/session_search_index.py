@@ -680,7 +680,13 @@ def index_artifact_text(
                     artifact.kind, artifact.content_type, data
                 )
         _record_text_status(artifact, extracted)
-        db.flush()
+        # Commit the status on its own: the chunk write below returns without
+        # committing when indexing is off or it fails, and the request session
+        # is closed with a rollback.
+        if commit:
+            db.commit()
+        else:
+            db.flush()
     except Exception:  # noqa: BLE001 - indexing never fails its caller
         logger.warning(
             "Artifact text extraction failed for %s", artifact.id, exc_info=True
@@ -751,18 +757,6 @@ def index_artifact_text(
         commit=commit,
         max_chunks=ARTIFACT_MAX_CHUNKS,
         chunk_meta=chunk_meta,
-    )
-
-
-def drop_artifact_chunks(db: Session, *, artifact_ids: Sequence[Any]) -> int:
-    """Delete the chunks of artifacts whose bytes are gone.
-
-    Called when an artifact expires or is evicted: the corpus is a second
-    copy of the text, and it must not outlive the first. Runs in the
-    caller's transaction and raises, like the purge it is part of.
-    """
-    return crud_session_search_document.delete_for_sources(
-        db, source_kind=SOURCE_KIND_ARTIFACT, source_ids=list(artifact_ids)
     )
 
 

@@ -246,6 +246,7 @@ def _artifact_ref(snippet: RankedSnippet) -> Optional[SessionSearchArtifactRef]:
         kind=meta.get("kind"),
         name=meta.get("name"),
         content_type=meta.get("content_type"),
+        tool_name=meta.get("tool_name"),
         labels=dict(meta.get("labels") or {}),
         cue_start=meta.get("cue_start"),
         text_truncated=bool(meta.get("text_truncated")),

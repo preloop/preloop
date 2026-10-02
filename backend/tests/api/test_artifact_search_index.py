@@ -196,6 +196,36 @@ def test_label_filter_excludes_other_sites(client, warehouse):
     assert _search(client, "pallet", label=["site:nord", "site:sued"])["total"] == 0
 
 
+def test_tags_label_filter_matches_one_tag_of_the_array(client, db_session, test_user):
+    session = _session(db_session, test_user.account_id, "tags-filter")
+    headers = _token(db_session, test_user, session.id)
+    tagged = _deposit(
+        client,
+        headers,
+        session.id,
+        name="handover.txt",
+        mime="text/plain",
+        text="damaged pallet at dock four",
+        labels={"tags": ["handover", "dock"]},
+        kind="transcript",
+    )
+    _deposit(
+        client,
+        headers,
+        session.id,
+        name="other.txt",
+        mime="text/plain",
+        text="damaged pallet at dock five",
+        labels={"tags": ["inventory"]},
+        kind="transcript",
+    )
+    body = _search(client, "pallet", label=["tags:handover"])
+    assert {s["artifact"]["artifact_id"] for s in _artifact_snippets(body)} == {
+        tagged["id"]
+    }
+    assert _search(client, "pallet", label=["tags:hand"])["total"] == 0
+
+
 def test_kind_filter(client, warehouse):
     body = _search(client, '"damaged pallet"', kind="document")
     assert {s["artifact"]["artifact_id"] for s in _artifact_snippets(body)} == {
@@ -384,6 +414,11 @@ def test_kill_switch_writes_no_chunks_and_keeps_text_status(
     )
     assert _chunks(db_session, created["id"]) == []
     assert nudges == []
+    # The request session is closed with a rollback; only what was committed
+    # survives it. The test client shares this session, so roll back the same
+    # way before reading, or a flushed-only status would look persisted.
+    db_session.rollback()
+    db_session.expire_all()
     row = db_session.get(models.RuntimeSessionArtifact, created["id"])
     assert row.text_status == "extracted"
 
