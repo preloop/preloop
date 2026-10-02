@@ -11,6 +11,7 @@ from uuid import UUID
 
 from fastmcp import Context
 from fastmcp.tools import FunctionTool
+from fastmcp.tools.tool import ToolResult
 
 from preloop.services.approval_helper import require_approval
 from preloop.services.dynamic_fastmcp import (
@@ -22,6 +23,7 @@ from preloop.services.dynamic_fastmcp import (
 )
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
+    DEPOSIT_ARTIFACT_TOOL,
     GET_EXECUTION_TOOL,
     GET_ISSUE_DESCRIPTION,
     GET_ISSUE_SCHEMA,
@@ -1330,6 +1332,90 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     # authority, so the advertised shape cannot drift from the REST list.
     search_sessions_tool.parameters = deepcopy(SEARCH_SESSIONS_TOOL["schema"])
     mcp.add_tool(search_sessions_tool)
+
+    # Register Tool 7h: deposit_artifact (shared metadata:
+    # tools.builtin_defs.DEPOSIT_ARTIFACT_TOOL). An agent stores a file, image
+    # or text on its own runtime session (#1081). The session comes from the
+    # session-bound credential; storage, the timeline row and every error
+    # code are the #1080 deposit service, via services.artifact_mcp_tools.
+    async def deposit_artifact(
+        content: dict,
+        name: str,
+        kind: str | None = None,
+        labels: dict | None = None,
+        parent_artifact_id: str | None = None,
+        activity_id: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Store one MCP content block as an artifact on the caller's session.
+
+        Returns:
+            A CallToolResult with a resource_link to the artifact and the
+            artifact descriptor as structuredContent, or a tool error whose
+            text starts with the stable error code.
+        """
+        from mcp.types import ResourceLink, TextContent
+
+        from preloop.models.db import session as db_session_module
+        from preloop.services import artifact_mcp_tools
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from anyio import to_thread
+
+        user_context = get_current_user_context()
+        if not user_context:
+            outcome = artifact_mcp_tools.error(artifact_mcp_tools.ERROR_NO_SESSION)
+        else:
+            arguments = {
+                "content": content,
+                "name": name,
+                "kind": kind,
+                "labels": labels,
+                "parent_artifact_id": parent_artifact_id,
+                "activity_id": activity_id,
+            }
+            approved, denial = await require_approval(
+                tool_name=DEPOSIT_ARTIFACT_TOOL["name"],
+                tool_source="builtin",
+                account_id=user_context.account_id,
+                arguments={k: v for k, v in arguments.items() if k != "content"},
+                ctx=ctx,
+                workflow_id=_rule_workflow_id_var.get(None),
+                correlation_id=_correlation_id_var.get(None),
+                justification=_justification_var.get(None),
+            )
+            if not approved:
+                return ToolResult(
+                    content=[TextContent(type="text", text=str(denial))],
+                    is_error=True,
+                )
+
+            def _run():
+                db = next(db_session_module.get_db_session())
+                try:
+                    return artifact_mcp_tools.deposit_from_mcp(
+                        db, user_context=user_context, arguments=arguments
+                    )
+                finally:
+                    db.close()
+
+            outcome = await to_thread.run_sync(_run)
+
+        blocks: list = [TextContent(type="text", text=outcome.text)]
+        if outcome.content_block is not None:
+            blocks = [ResourceLink.model_validate(outcome.content_block)]
+        return ToolResult(
+            content=blocks,
+            structured_content=outcome.structured,
+            is_error=outcome.is_error,
+        )
+
+    deposit_artifact_tool = FunctionTool.from_function(
+        deposit_artifact,
+        description=DEPOSIT_ARTIFACT_TOOL["description"],
+        output_schema=None,
+    )
+    deposit_artifact_tool.parameters = deepcopy(DEPOSIT_ARTIFACT_TOOL["schema"])
+    mcp.add_tool(deposit_artifact_tool)
 
     # Register Tool 8: add_comment
     @mcp.tool()
