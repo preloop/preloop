@@ -60,6 +60,7 @@ ERROR_ACTIVITY_INVALID = "artifact_activity_invalid"
 ERROR_IDEMPOTENCY_KEY_INVALID = "artifact_idempotency_key_invalid"
 ERROR_LABEL_FILTER_INVALID = "artifact_label_filter_invalid"
 ERROR_CURSOR_INVALID = "artifact_cursor_invalid"
+ERROR_KIND_INVALID = "artifact_kind_invalid"
 
 _STATUS_BY_CODE: dict[str, int] = {
     ERROR_TOO_LARGE: 413,
@@ -370,10 +371,14 @@ def list_artifacts(
     """One page of a session's artifacts, newest first.
 
     Raises:
-        ArtifactDepositError: 422 for a bad label filter, cursor or limit.
+        ArtifactDepositError: 422 for a bad kind, label filter, cursor or
+            limit. An unknown kind is an error, not an empty page, so a typo
+            is not mistaken for "no artifacts of that kind".
     """
     if not 1 <= limit <= LIST_LIMIT_MAX:
         raise ArtifactDepositError(422, "artifact_limit_invalid")
+    if kind is not None and kind not in ARTIFACT_KINDS:
+        raise ArtifactDepositError(422, ERROR_KIND_INVALID)
     try:
         label_filter = parse_label_filters(labels)
         before = decode_cursor(cursor) if cursor else None

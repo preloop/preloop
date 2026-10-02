@@ -237,9 +237,9 @@ async def _parse_multipart(request: Request, body: bytes):
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ArtifactDepositError(422, artifact_deposit.ERROR_CONTENT_REQUIRED)
+        # ``metadata`` is a plain form field: with ``max_files=1`` a second
+        # file part is refused by Starlette before this point.
         raw_meta = form.get("metadata")
-        if isinstance(raw_meta, UploadFile):
-            raw_meta = (await raw_meta.read()).decode("utf-8", "replace")
         try:
             fields = ArtifactDepositMetadata.model_validate(
                 json.loads(raw_meta) if raw_meta else {}
