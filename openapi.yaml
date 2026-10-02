@@ -30333,6 +30333,61 @@ components:
         are all "this saved question changed", and splitting them into three
 
         routes would say nothing extra.'
+    SessionSearchArtifactRef:
+      properties:
+        artifact_id:
+          type: string
+          title: Artifact Id
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        content_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Type
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        labels:
+          additionalProperties: true
+          type: object
+          title: Labels
+        cue_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cue Start
+        text_truncated:
+          type: boolean
+          title: Text Truncated
+          default: false
+      type: object
+      required:
+      - artifact_id
+      title: SessionSearchArtifactRef
+      description: 'The artifact an ``artifact`` chunk came from, enough to open it.
+
+
+        ``activity_id`` is the timeline row the deposit wrote, so a console can
+
+        land on that row; ``cue_start`` is the start in seconds of the transcript
+
+        cue the chunk begins in, when the transcript was timed.'
     SessionSearchDegraded:
       properties:
         keyword:
@@ -30433,7 +30488,27 @@ components:
           - type: 'null'
           title: Source Kind
           description: 'One corpus source kind: gateway_interaction, transcript_message,
-            tool_call, browser_step, operator_note, session_summary, flow_log.'
+            tool_call, browser_step, operator_note, session_summary, flow_log, artifact.'
+        kind:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Kind
+          description: Artifact kind, for example transcript or document. Restricts
+            the search to artifact chunks.
+        label:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 16
+          - type: 'null'
+          title: Label
+          description: Artifact label filters as key:value, for example site:nord.
+            Repeatable; every one must match (AND). tags:x matches an artifact whose
+            tags include x. Restricts the search to artifact chunks.
       additionalProperties: false
       type: object
       title: SessionSearchFilters
@@ -30794,6 +30869,12 @@ components:
           description: Cosine similarity between the query vector and this chunk.
             Null for a chunk the vector half never scored, because a keyword match
             has no similarity to report.
+        artifact:
+          anyOf:
+          - $ref: '#/components/schemas/SessionSearchArtifactRef'
+          - type: 'null'
+          description: 'Set when source_kind is artifact: the artifact id, its timeline
+            activity id, kind, name, labels and the transcript cue start.'
       type: object
       required:
       - document_id

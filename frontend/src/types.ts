@@ -551,6 +551,20 @@ export interface AccountRuntimeSessionDetailResponse {
  */
 export type SessionSearchMode = 'keyword' | 'semantic' | 'hybrid';
 
+/** The artifact an `artifact` search chunk came from (#1082). */
+export interface SessionSearchArtifactRef {
+  artifact_id: string;
+  activity_id: string | null;
+  kind: string | null;
+  name: string | null;
+  content_type: string | null;
+  tool_name?: string | null;
+  labels: Record<string, unknown>;
+  /** Start in seconds of the transcript cue the chunk begins in. */
+  cue_start: number | null;
+  text_truncated: boolean;
+}
+
 export interface SessionSearchSnippet {
   document_id: string;
   runtime_session_id: string;
@@ -562,6 +576,7 @@ export interface SessionSearchSnippet {
   rank: number;
   redaction_state: string;
   text: string | null;
+  artifact?: SessionSearchArtifactRef | null;
 }
 
 export interface SessionSearchResult {
