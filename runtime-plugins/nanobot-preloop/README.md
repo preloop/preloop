@@ -89,3 +89,19 @@ PRELOOP_DISABLE_TELEMETRY=true \
 PYTHONPATH=backend:runtime-plugins/nanobot-preloop/src \
 python runtime-plugins/nanobot-preloop/tests/sdk_fixture.py
 ```
+
+Command receipts are stored beside session ownership in a separate mode-0600
+ledger. A file lock and fsynced atomic replacement persist intent before execution.
+Duplicate running commands are acknowledged without starting another turn;
+completed commands replay completion status and their native session reference.
+Reply bodies, prompts, operator metadata and credentials are excluded from this
+ledger, so replay does not resend the original reply body. Reusing a command ID
+with different input is rejected. Pending receipts after a crash, and failed or
+cancelled turns whose effects may already have occurred, return `outcome_unknown`
+and never execute again automatically. Receipts are retained; reaching the
+configured hard capacity of 100000 commands refuses new work rather than evicting
+replay protection. Preserve this ledger when retaining runtime history.
+
+Command duration includes time waiting for another turn. An ISO timestamp with
+an explicit timezone in `metadata.expires_at` (or `run_limits.expires_at`) can
+shorten that deadline; expired work never starts.

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import fcntl
+import hashlib
+import os
 import json
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -147,6 +151,7 @@ class NanobotRuntime:
         self.command_sessions: dict[str, str] = {}
         self.lock = asyncio.Lock()
         self.owner = config.runtime_principal_id
+        self.inflight_commands: set[str] = set()
         self.sessions: set[str] = set()
         if state.exists():
             document = json.loads(state.read_text())
@@ -169,7 +174,137 @@ class NanobotRuntime:
         temporary.chmod(0o600)
         temporary.replace(self.state)
 
+    def _receipt(
+        self, key: str, fingerprint: str, update: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Atomically claim/read an intent across processes, without payload secrets."""
+        path = self.state.with_name(self.state.name + ".receipts.json")
+        lock_path = path.with_suffix(".lock")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            ledger = {"owner": self.owner, "commands": {}}
+            if path.exists():
+                ledger = json.loads(path.read_text())
+                if ledger.get("owner") != self.owner or not isinstance(
+                    ledger.get("commands"), dict
+                ):
+                    raise ValueError("command receipt store is invalid or foreign")
+            receipts = ledger["commands"]
+            previous = receipts.get(key)
+            if previous is not None and previous.get("fingerprint") != fingerprint:
+                raise ValueError("command ID reused with different input")
+            if update is None and previous is not None:
+                return previous
+            if previous is None and len(receipts) >= 100000:
+                raise ValueError("command receipt capacity exceeded")
+            receipts[key] = {
+                "fingerprint": fingerprint,
+                **(update or {"state": "pending"}),
+            }
+            temporary = path.with_name(path.name + f".{uuid4()}.tmp")
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                json.dump(ledger, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            return previous
+
     async def handle_send_message(self, command: OperatorCommand) -> AgentControlResult:
+        """Deduplicate durable intents and bound queue wait plus execution."""
+        started = asyncio.get_running_loop().time()
+        if not command.command_id or len(command.command_id) > 200:
+            raise ValueError("command ID must contain from 1 to 200 characters")
+        key = hashlib.sha256(command.command_id.encode()).hexdigest()
+        # Only a one-way digest is persisted, never input, gateway credentials,
+        # operator metadata or reply text. Credential rotation is excluded so
+        # retrying the same command does not invalidate its receipt.
+        identity = asdict(command)
+        metadata = dict(identity["metadata"])
+        gateway = metadata.get("gateway")
+        if isinstance(gateway, dict):
+            metadata["gateway"] = {
+                name: value for name, value in gateway.items() if name != "api_key"
+            }
+        identity["metadata"] = metadata
+        fingerprint = hashlib.sha256(
+            json.dumps(identity, sort_keys=True).encode()
+        ).hexdigest()
+        existing = self._receipt(key, fingerprint)
+        if existing is not None:
+            state = existing["state"]
+            return AgentControlResult(
+                status="completed"
+                if state == "completed"
+                else (
+                    "accepted"
+                    if state == "accepted" or key in self.inflight_commands
+                    else "failed"
+                ),
+                session_reference=existing.get("session_reference"),
+                metadata={
+                    "receipt_replayed": True,
+                    "receipt_state": "in_progress"
+                    if key in self.inflight_commands
+                    else ("outcome_unknown" if state == "pending" else state),
+                    "native_session_id": existing.get("session_reference"),
+                },
+            )
+        self.inflight_commands.add(key)
+        try:
+            limits = command.metadata.get("run_limits", {})
+            if not isinstance(limits, dict):
+                raise ValueError("run_limits must be an object")
+            seconds = limits.get(
+                "timeout_seconds",
+                limits.get(
+                    "max_duration_seconds", command.metadata.get("timeout_seconds", 300)
+                ),
+            )
+            if type(seconds) not in {int, float} or not 1 <= seconds <= 3600:
+                raise ValueError("timeout_seconds must be from 1 to 3600")
+            seconds -= asyncio.get_running_loop().time() - started
+            if seconds <= 0:
+                raise TimeoutError("command duration expired before execution")
+            expiry = command.metadata.get("expires_at", limits.get("expires_at"))
+            if expiry is not None:
+                if not isinstance(expiry, str):
+                    raise ValueError("command expiry must be an ISO timestamp")
+                deadline = datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+                if deadline.tzinfo is None:
+                    raise ValueError("command expiry must include a timezone")
+                seconds = min(seconds, (deadline - datetime.now(UTC)).total_seconds())
+                if seconds <= 0:
+                    raise TimeoutError("command expired before execution")
+            # The outer timeout begins before waiting for the shared loop lock.
+            result = await asyncio.wait_for(self._execute_message(command), seconds)
+            self._receipt(
+                key,
+                fingerprint,
+                {
+                    "state": "completed"
+                    if result.status == "completed"
+                    else "accepted",
+                    "session_reference": result.session_reference,
+                },
+            )
+            return result
+        except BaseException:
+            # A cancelled/failed execution can have performed effects already.
+            # Retain its intent permanently and never retry automatically.
+            self._receipt(key, fingerprint, {"state": "outcome_unknown"})
+            raise
+        finally:
+            self.inflight_commands.discard(key)
+
+    async def _execute_message(self, command: OperatorCommand) -> AgentControlResult:
         """Start or resume an owned session; refuse foreign references."""
         if command.interrupt:
             reference = command.session_reference or self.command_sessions.get(

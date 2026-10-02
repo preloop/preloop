@@ -341,3 +341,153 @@ async def test_control_receives_interrupt_while_original_command_runs(
         for item in envelopes
     )
     assert not runtime.active
+
+
+@pytest.mark.asyncio
+async def test_receipt_completed_replay_restart_changed_input_and_no_secrets(
+    tmp_path: Path,
+) -> None:
+    loop = FakeLoop()
+    loop.process_direct.return_value = "sensitive-output-secret"
+    state = tmp_path / "state.json"
+    runtime = NanobotRuntime(validate_document(document()), loop, state)
+    command = OperatorCommand(
+        "durable",
+        "private-input-secret",
+        metadata={"private": "metadata-secret"},
+        session_mode="new",
+    )
+    original = await runtime.handle_send_message(command)
+    replay = await runtime.handle_send_message(command)
+    assert replay.status == "completed"
+    assert replay.session_reference == original.session_reference
+    assert replay.reply_text == ""
+    assert replay.metadata["receipt_replayed"] is True
+    assert loop.process_direct.await_count == 1
+    restarted_loop = FakeLoop()
+    restarted = NanobotRuntime(runtime.config, restarted_loop, state)
+    assert (await restarted.handle_send_message(command)).status == "completed"
+    restarted_loop.process_direct.assert_not_awaited()
+    with pytest.raises(ValueError, match="different input"):
+        await restarted.handle_send_message(
+            OperatorCommand("durable", "changed", session_mode="new")
+        )
+    receipt = state.with_name(state.name + ".receipts.json")
+    stored = receipt.read_text()
+    for secret in [
+        "private-input-secret",
+        "metadata-secret",
+        "runtime-secret",
+        "sensitive-output-secret",
+    ]:
+        assert secret not in stored
+    assert receipt.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.asyncio
+async def test_receipt_inflight_duplicate_and_crash_unknown_never_execute(
+    tmp_path: Path,
+) -> None:
+    loop = FakeLoop()
+    entered = asyncio.Event()
+
+    async def work(*args: object, **kwargs: object) -> str:
+        entered.set()
+        await asyncio.Event().wait()
+        return ""
+
+    loop.process_direct.side_effect = work
+    state = tmp_path / "state.json"
+    runtime = NanobotRuntime(validate_document(document()), loop, state)
+    command = OperatorCommand("effectful", "work", session_mode="new")
+    first = asyncio.create_task(runtime.handle_send_message(command))
+    await entered.wait()
+    duplicate = await runtime.handle_send_message(command)
+    assert duplicate.status == "accepted"
+    assert duplicate.metadata["receipt_state"] == "in_progress"
+    assert loop.process_direct.await_count == 1
+    # A separate runtime seeing the durable pending intent cannot know whether
+    # effects completed before an abrupt exit, even while the first still lives.
+    other_loop = FakeLoop()
+    restarted = NanobotRuntime(runtime.config, other_loop, state)
+    unknown = await restarted.handle_send_message(command)
+    assert unknown.status == "failed"
+    assert unknown.metadata["receipt_state"] == "outcome_unknown"
+    other_loop.process_direct.assert_not_awaited()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert (await runtime.handle_send_message(command)).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_queue_wait_and_expiry_never_start_effects(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    loop = FakeLoop()
+    runtime = NanobotRuntime(
+        validate_document(document()), loop, tmp_path / "state.json"
+    )
+    await runtime.lock.acquire()
+    command = OperatorCommand(
+        "queued", "work", metadata={"timeout_seconds": 1}, session_mode="new"
+    )
+    try:
+        with pytest.raises(TimeoutError):
+            await runtime.handle_send_message(command)
+    finally:
+        runtime.lock.release()
+    loop.process_direct.assert_not_awaited()
+    assert (await runtime.handle_send_message(command)).status == "failed"
+    expiry = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    with pytest.raises(TimeoutError, match="expired"):
+        await runtime.handle_send_message(
+            OperatorCommand(
+                "expired", "work", metadata={"expires_at": expiry}, session_mode="new"
+            )
+        )
+    loop.process_direct.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_abrupt_worker_exit_retains_intent_before_effect(tmp_path: Path) -> None:
+    import os
+    import subprocess
+    import sys
+
+    state, effect = tmp_path / "state.json", tmp_path / "effect.txt"
+    script = """
+import asyncio, os, sys
+from pathlib import Path
+from types import SimpleNamespace
+from preloop.integrations.agent_control import OperatorCommand
+from preloop_nanobot_plugin.runtime import NanobotRuntime, validate_document
+async def execute(*args, **kwargs):
+    Path(sys.argv[2]).write_text("effect performed")
+    os._exit(17)
+loop = SimpleNamespace(tools=SimpleNamespace(), provider=None,
+    sessions=SimpleNamespace(get_or_create=lambda _: SimpleNamespace(messages=[])),
+    process_direct=execute)
+config = validate_document({'preloop': {'control': {
+    'control_ws_url': 'wss://example.com/api/v1/agents/control/ws',
+    'bearer_token': 'runtime-secret', 'runtime_principal_id': 'worker-a'}}})
+runtime = NanobotRuntime(config, loop, Path(sys.argv[1]))
+asyncio.run(runtime.handle_send_message(OperatorCommand('crashed', 'work', session_mode='new')))
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", script, str(state), str(effect)],
+        env={**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert process.returncode == 17, process.stderr
+    assert effect.read_text() == "effect performed"
+    loop = FakeLoop()
+    restarted = NanobotRuntime(validate_document(document()), loop, state)
+    replay = await restarted.handle_send_message(
+        OperatorCommand("crashed", "work", session_mode="new")
+    )
+    assert replay.status == "failed"
+    assert replay.metadata["receipt_state"] == "outcome_unknown"
+    loop.process_direct.assert_not_awaited()
