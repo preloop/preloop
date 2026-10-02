@@ -258,6 +258,9 @@ def deposit(
     parent_uuid = _optional_uuid(parent_artifact_id, "artifact_parent_invalid")
     agent_id = _uuid_or_none(resolve_managed_agent_id_for_context(db, auth))
     plaintext = payload.data if payload.data is not None else payload.text.encode()
+    # Labels from the block's ``_meta["preloop.dev/artifact"]`` count, like
+    # its ``name``; top-level ``labels`` win per key.
+    merged_labels = {**payload.labels, **(labels or {})}
     request_id = uuid.uuid4().hex
 
     try:
@@ -273,7 +276,7 @@ def deposit(
             manifest={_REQUEST_ID_KEY: request_id},
             activity_id=activity_uuid,
             name=name or payload.name,
-            labels=labels,
+            labels=merged_labels,
             producer=producer,
             agent_id=agent_id,
             tool_name=tool_name,
