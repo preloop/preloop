@@ -1381,6 +1381,9 @@ export class RuntimeSessionsView extends LitElement {
     this.focusTurnId = this.snippetJumpsToTurn(snippet)
       ? snippet.source_id
       : null;
+    // A snippet lands on its own turn; an ?artifact= from an earlier landing
+    // (possibly of another session) must not ride along in the URL.
+    this.focusArtifactId = null;
     this.syncUrl({ push: true });
   }
 

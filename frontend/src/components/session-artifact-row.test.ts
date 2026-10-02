@@ -18,6 +18,7 @@ import type {
   RuntimeSessionArtifactDescriptor,
 } from '../types';
 import { heldSessionArtifactCount } from '../utils/session-artifacts';
+import { listRuntimeSessionArtifacts, SESSION_ARTIFACT_LIST_CAP } from '../api';
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const TRANSCRIPT = 'a0000000-0000-4000-8000-000000000001';
@@ -150,6 +151,35 @@ function descriptor(spec: Spec): RuntimeSessionArtifactDescriptor {
 }
 
 const ROWS = SPECS.map(row);
+
+const STEP_SHOT = 'a0000000-0000-4000-8000-000000000006';
+
+/** A browser step whose screenshot is an artifact with no `artifact` row. */
+const BROWSER_STEP: RuntimeSessionActivityItem = {
+  ...row(SPECS[2]),
+  activity_type: 'browser_step',
+  title: 'click #submit',
+  summary: 'click #submit',
+  server_name: 'browser_steps',
+  metadata: {
+    action: 'click',
+    target: '#submit',
+    url: 'https://shop.example/checkout',
+    source: 'api',
+    step_index: 1,
+    screenshot: { artifact_id: STEP_SHOT, availability: 'available' },
+  },
+};
+const STEP_SHOT_DESCRIPTOR: RuntimeSessionArtifactDescriptor = {
+  ...descriptor({
+    id: STEP_SHOT,
+    kind: 'screenshot',
+    name: 'step-1.png',
+    contentType: 'image/png',
+    at: '2026-10-01T10:00:05Z',
+  }),
+  producer: 'browser_steps',
+};
 const DESCRIPTORS = Object.fromEntries(
   SPECS.map((spec) => [spec.id, descriptor(spec)])
 );
@@ -202,10 +232,14 @@ describe('artifacts in the session timeline', () => {
   let connectStub: sinon.SinonStub;
   let subscribeStub: sinon.SinonStub;
   let artifactList: RuntimeSessionArtifactDescriptor[];
+  let activityRows: RuntimeSessionActivityItem[];
+  let audioFailures: number;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     artifactList = Object.values(DESCRIPTORS).reverse();
+    activityRows = ROWS;
+    audioFailures = 0;
     connectStub = sinon.stub(unifiedWebSocketManager, 'connect').resolves();
     subscribeStub = sinon
       .stub(unifiedWebSocketManager, 'subscribe')
@@ -228,7 +262,14 @@ describe('artifacts in the session timeline', () => {
       if (url.includes(`/artifacts/${SHOT}`)) {
         return new Response(new Blob([PNG], { type: 'image/png' }));
       }
+      if (url.includes(`/artifacts/${STEP_SHOT}`)) {
+        return new Response(new Blob([PNG], { type: 'image/png' }));
+      }
       if (url.includes(`/artifacts/${AUDIO}`)) {
+        if (audioFailures > 0) {
+          audioFailures -= 1;
+          return json({ detail: 'boom' }, 500);
+        }
         return new Response(
           new Blob([new Uint8Array(8)], { type: 'audio/ogg' })
         );
@@ -236,7 +277,7 @@ describe('artifacts in the session timeline', () => {
       if (url.includes('/artifacts?')) {
         return json({ items: artifactList, next_cursor: null });
       }
-      if (url.includes('/activity')) return json({ items: ROWS });
+      if (url.includes('/activity')) return json({ items: activityRows });
       if (url.includes('/gateway-events')) {
         return json({ logs: EVENTS, pagination: { has_more: false } });
       }
@@ -631,5 +672,206 @@ describe('artifacts in the session timeline', () => {
     panel.artifactKindFilter = 'audio';
     await panel.updateComplete;
     expect(panel.shadowRoot!.querySelectorAll('.chat-turn')).to.have.length(1);
+  });
+  it('a failed audio load shows the error and Play retries it', async () => {
+    audioFailures = 1;
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .sessionId=${SESSION_ID}
+        .events=${[]}
+        .activity=${[ROWS[3]]}
+        .artifacts=${DESCRIPTORS}
+      ></session-chat-view>
+    `);
+    const audio = el.shadowRoot!.querySelector(
+      'session-artifact-row'
+    ) as SessionArtifactRow;
+    const play = () =>
+      audio.shadowRoot!.querySelector(
+        '[data-testid="artifact-play"]'
+      ) as HTMLButtonElement;
+    play().click();
+    await waitUntil(() =>
+      audio.shadowRoot!.querySelector('[data-testid="artifact-audio-error"]')
+    );
+    expect(play().disabled).to.equal(false);
+    expect(play().textContent!.trim()).to.equal('Play audio');
+    expect(heldSessionArtifactCount()).to.equal(0);
+
+    play().click();
+    await waitUntil(() =>
+      audio.shadowRoot!.querySelector('[data-testid="artifact-audio"]')
+    );
+    expect(
+      audio.shadowRoot!.querySelector('[data-testid="artifact-audio-error"]')
+    ).to.equal(null);
+    el.remove();
+    expect(heldSessionArtifactCount()).to.equal(0);
+  });
+
+  it('the screenshot filter keeps browser steps whose screenshot the header counted', async () => {
+    activityRows = [BROWSER_STEP];
+    artifactList = [STEP_SHOT_DESCRIPTOR];
+    const el = await fixture<PreloopSessionObserver>(html`
+      <preloop-session-observer
+        .sessions=${[
+          {
+            id: SESSION_ID,
+            session_source_type: 'claude_code',
+            runtime_principal_name: 'Call agent',
+            started_at: '2026-10-01T10:00:00Z',
+            last_activity_at: '2026-10-01T10:00:08Z',
+            total_requests: 2,
+          },
+        ]}
+        defaultReplayMode="conversation"
+      ></preloop-session-observer>
+    `);
+    const summaryEl = () =>
+      el.shadowRoot!.querySelector(
+        'session-artifact-summary'
+      ) as SessionArtifactSummary | null;
+    await waitUntil(
+      () => summaryEl()?.shadowRoot?.querySelector('button.kind'),
+      'kind button never rendered',
+      { timeout: 4000 }
+    );
+    const summary = summaryEl()!.shadowRoot!;
+    expect(summary.textContent!.replace(/\s+/g, ' ')).to.contain('Artifacts 1');
+    const chat = el.shadowRoot!.querySelector(
+      'session-chat-view'
+    ) as SessionChatView;
+    const steps = () =>
+      chat.shadowRoot!.querySelectorAll('.browser-step-item').length;
+    await waitUntil(() => steps() === 1, 'browser step never rendered');
+
+    (summary.querySelector('button.kind') as HTMLButtonElement).click();
+    await el.updateComplete;
+    await chat.updateComplete;
+    expect(steps()).to.equal(1);
+
+    chat.artifactKindFilter = 'transcript';
+    await chat.updateComplete;
+    expect(steps()).to.equal(0);
+
+    const panel = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        .session=${{ id: SESSION_ID, canLoadEvents: true } as any}
+        .events=${[]}
+        .activity=${[BROWSER_STEP, ...ROWS]}
+        .artifacts=${{ ...DESCRIPTORS, [STEP_SHOT]: STEP_SHOT_DESCRIPTOR }}
+        .artifactKindFilter=${'screenshot'}
+        replayMode="timeline"
+      ></session-replay-panel>
+    `);
+    await panel.updateComplete;
+    // Two deposited screenshots plus the browser step.
+    expect(panel.shadowRoot!.querySelectorAll('.chat-turn')).to.have.length(3);
+  });
+
+  it('landing on the same ?artifact= again after it was cleared scrolls again', async () => {
+    const el = await fixture<PreloopSessionObserver>(html`
+      <preloop-session-observer
+        .sessions=${[
+          {
+            id: SESSION_ID,
+            session_source_type: 'claude_code',
+            runtime_principal_name: 'Call agent',
+            started_at: '2026-10-01T10:00:00Z',
+            last_activity_at: '2026-10-01T10:00:08Z',
+            total_requests: 2,
+          },
+        ]}
+        .focusArtifactId=${SUMMARY}
+        defaultReplayMode="conversation"
+      ></preloop-session-observer>
+    `);
+    const spy = sinon.spy(el as any, 'scrollToArtifact');
+    const chat = () => el.shadowRoot!.querySelector('session-chat-view');
+    await waitUntil(
+      () =>
+        chat()?.shadowRoot &&
+        deepQueryAll(chat()!.shadowRoot!, 'session-artifact-row[highlighted]')
+          .length === 1,
+      'row never highlighted',
+      { timeout: 4000 }
+    );
+    spy.resetHistory();
+    el.focusArtifactId = null;
+    await el.updateComplete;
+    el.focusArtifactId = SUMMARY;
+    await el.updateComplete;
+    await waitUntil(() => spy.calledWith(SUMMARY), 'did not land again');
+    spy.restore();
+  });
+
+  it('the header says Artifacts 1000+ when the list hit its cap', async () => {
+    const el = await fixture<SessionArtifactSummary>(html`
+      <session-artifact-summary
+        .counts=${{ screenshot: 1000 }}
+        .truncated=${true}
+      ></session-artifact-summary>
+    `);
+    expect(el.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.contain(
+      'Artifacts 1000+'
+    );
+  });
+});
+
+describe('listRuntimeSessionArtifacts', () => {
+  let fetchStub: sinon.SinonStub;
+  const page = (n: number, offset: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: `art-${offset + i}` }));
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    fetchStub = sinon.stub(window, 'fetch');
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+    localStorage.clear();
+  });
+
+  const cursors = () =>
+    fetchStub
+      .getCalls()
+      .map((c) => new URL(String(c.args[0]), location.origin))
+      .map((u) => u.searchParams.get('cursor'));
+
+  it('follows next_cursor across pages until it is null', async () => {
+    fetchStub
+      .onCall(0)
+      .resolves(json({ items: page(200, 0), next_cursor: 'c1' }));
+    fetchStub
+      .onCall(1)
+      .resolves(json({ items: page(50, 200), next_cursor: null }));
+    const out = await listRuntimeSessionArtifacts(SESSION_ID);
+    expect(out.items).to.have.length(250);
+    expect(out.truncated).to.equal(false);
+    expect(cursors()).to.deep.equal([null, 'c1']);
+  });
+
+  it('stops at the cap and reports truncated', async () => {
+    let call = 0;
+    fetchStub.callsFake(async () => {
+      call += 1;
+      return json({ items: page(200, call * 200), next_cursor: `c${call}` });
+    });
+    const out = await listRuntimeSessionArtifacts(SESSION_ID);
+    expect(out.items).to.have.length(SESSION_ARTIFACT_LIST_CAP);
+    expect(out.truncated).to.equal(true);
+    expect(fetchStub.callCount).to.equal(SESSION_ARTIFACT_LIST_CAP / 200);
+  });
+
+  it('ends the walk when the cursor does not advance', async () => {
+    fetchStub
+      .onCall(0)
+      .resolves(json({ items: page(200, 0), next_cursor: 'same' }));
+    fetchStub.resolves(json({ items: page(200, 200), next_cursor: 'same' }));
+    const out = await listRuntimeSessionArtifacts(SESSION_ID);
+    expect(fetchStub.callCount).to.equal(2);
+    expect(out.items).to.have.length(400);
+    expect(out.truncated).to.equal(false);
   });
 });

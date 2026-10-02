@@ -44,6 +44,7 @@ import {
   artifactRowKey,
   artifactRowMetadata,
   artifactView,
+  browserStepHasScreenshot,
   browserStepKey,
   isArtifactRow,
   isBrowserStep,
@@ -4558,6 +4559,12 @@ export class SessionReplayPanel extends LitElement {
 
   private turnPassesTypeFilter(turn: ChatTurn): boolean {
     if (this.artifactKindFilter) {
+      if (turn.browserStep) {
+        return (
+          this.artifactKindFilter === 'screenshot' &&
+          browserStepHasScreenshot(turn.browserStep)
+        );
+      }
       return this.turnArtifactGroup(turn) === this.artifactKindFilter;
     }
     if (this.chatTypeFilter === 'all') return true;

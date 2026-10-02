@@ -135,6 +135,17 @@ export function browserStepMetadata(
   return (item.metadata ?? {}) as BrowserStepMetadata;
 }
 
+/**
+ * True when a browser step stored a screenshot artifact. Those screenshots are
+ * in the artifact list (and the header count) without an `artifact` row, so
+ * the screenshot kind filter keeps the step itself.
+ */
+export function browserStepHasScreenshot(
+  item: RuntimeSessionActivityItem
+): boolean {
+  return Boolean(browserStepMetadata(item).screenshot?.artifact_id);
+}
+
 /** Stable DOM-safe key for one step, used for scrolling and viewer paging. */
 export function browserStepKey(item: RuntimeSessionActivityItem): string {
   const meta = browserStepMetadata(item);

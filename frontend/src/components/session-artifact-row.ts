@@ -52,6 +52,7 @@ export class SessionArtifactRow extends LitElement {
   @state() private expanded = false;
   @state() private expanding = false;
   @state() private audio: SessionArtifactLoad | null = null;
+  @state() private audioLoading = false;
   /** Availability learnt from a 410 after the row was rendered. */
   @state() private goneAs: string | null = null;
   @state() private copied = false;
@@ -284,10 +285,17 @@ export class SessionArtifactRow extends LitElement {
 
   private async playAudio(): Promise<void> {
     const artifact = this.artifact;
-    if (!artifact || this.audio) return;
-    this.audio = { status: 'error', message: 'Loading audio...' };
+    if (!artifact || this.audioLoading || this.audio?.status === 'ok') return;
+    this.audioLoading = true;
     this.audioHeld = { sessionId: this.sessionId, artifactId: artifact.id };
     const result = await acquireSessionArtifact(this.sessionId, artifact.id);
+    this.audioLoading = false;
+    if (result.status === 'error') {
+      // Drop the failed load from the shared cache so Play can retry it.
+      this.releaseAudio();
+      this.audio = result;
+      return;
+    }
     if (result.status === 'gone') this.goneAs = result.availability;
     this.audio = result;
     await this.updateComplete;
@@ -296,10 +304,10 @@ export class SessionArtifactRow extends LitElement {
   }
 
   private releaseAudio(): void {
+    this.audio = null;
     if (!this.audioHeld) return;
     releaseSessionArtifact(this.audioHeld.sessionId, this.audioHeld.artifactId);
     this.audioHeld = null;
-    this.audio = null;
   }
 
   private async download(): Promise<void> {
@@ -447,16 +455,18 @@ ${shown}${more ? '\n...' : ''}</pre>
         <button
           class="link"
           data-testid="artifact-play"
-          ?disabled=${Boolean(load)}
+          ?disabled=${this.audioLoading}
           @click=${() => this.playAudio()}
         >
-          ${load ? 'Loading audio...' : 'Play audio'}
+          ${this.audioLoading ? 'Loading audio...' : 'Play audio'}
         </button>
         <button class="link" @click=${() => this.download()}>Download</button>
       </div>
       ${
-        load?.status === 'error' && load.message !== 'Loading audio...'
-          ? html`<div class="error">${load.message}</div>`
+        load?.status === 'error'
+          ? html`<div class="error" data-testid="artifact-audio-error">
+              ${load.message}
+            </div>`
           : nothing
       }`;
   }

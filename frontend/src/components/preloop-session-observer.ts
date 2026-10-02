@@ -1016,6 +1016,8 @@ export class PreloopSessionObserver extends LitElement {
     this.artifactViewerIndex = -1;
     this.artifactKindFilter = null;
     this.highlightedArtifactId = null;
+    // A later link to an artifact of this or another session lands again.
+    this.landedArtifactId = null;
     this.dispatchEvent(
       new CustomEvent('session-selected', {
         detail: { sessionId },
@@ -1975,8 +1977,11 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   updated(changed: Map<string | number | symbol, unknown>): void {
-    if (changed.has('focusArtifactId') && this.focusArtifactId) {
-      void this.landOnFocusArtifact();
+    if (changed.has('focusArtifactId')) {
+      // Cleared (another session picked, or Back to a URL without it): forget
+      // the last landing so returning to the same ?artifact= lands again.
+      if (this.focusArtifactId) void this.landOnFocusArtifact();
+      else this.landedArtifactId = null;
     }
     if (
       changed.has('focusTurnId') &&

@@ -40,6 +40,7 @@ import {
   artifactRowKey,
   artifactRowMetadata,
   artifactView,
+  browserStepHasScreenshot,
   browserStepKey,
   type ArtifactKindGroup,
 } from '../utils/session-artifacts';
@@ -968,6 +969,12 @@ ${
 
   private passesArtifactFilter(item: TranscriptItem): boolean {
     if (!this.artifactKindFilter) return true;
+    if (item.type === 'browser_step') {
+      return (
+        this.artifactKindFilter === 'screenshot' &&
+        browserStepHasScreenshot(item.activity)
+      );
+    }
     if (item.type !== 'artifact') return false;
     const meta = artifactRowMetadata(item.activity);
     const view = meta
