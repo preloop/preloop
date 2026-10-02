@@ -1877,6 +1877,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 _approved_comment_var,
                                 _approved_id_var,
                                 _bypass_approval_var,
+                                post_approval_exec_outcome,
                             )
 
                             _bypass_approval_var.set(True)
@@ -1912,6 +1913,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 _approved_comment_var.set(None)
                                 _approved_answer_var.set(None)
                                 _approved_id_var.set(None)
+
+                            # An upstream isError result is not "executed".
+                            exec_status, exec_error = post_approval_exec_outcome(
+                                tool_result
+                            )
 
                             # Normalise the result to a JSON-safe dict
                             if hasattr(tool_result, "model_dump"):
