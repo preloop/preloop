@@ -215,8 +215,8 @@ async def test_execution_gateway_credentials_scoped_to_turn(
     scoped_loop = FakeLoop()
     captured = []
 
-    def factory(doc: dict, state: Path) -> SimpleNamespace:
-        captured.append(doc)
+    def factory(doc: dict, state: Path, *, model_base_url: str) -> SimpleNamespace:
+        captured.append({**doc, "model_base_url": model_base_url})
         return SimpleNamespace(loop=scoped_loop)
 
     monkeypatch.setattr(module, "build_runtime", factory)
@@ -240,6 +240,35 @@ async def test_execution_gateway_credentials_scoped_to_turn(
     assert captured[0]["preloop"]["control"]["bearer_token"] == "execution-secret"
     assert runtime.loop is loop
     assert scoped_loop.process_direct.await_count == 1
+    split_gateway = {
+        **gateway,
+        "api_url": "https://example.com",
+        "base_url": "https://gateway.example.com/openai/v1",
+    }
+    await runtime.handle_send_message(
+        OperatorCommand(
+            "split", "run", metadata={"gateway": split_gateway}, session_mode="new"
+        )
+    )
+    assert captured[-1]["model_base_url"] == split_gateway["base_url"]
+    assert (
+        captured[-1]["preloop"]["control"]["control_ws_url"]
+        == document()["preloop"]["control"]["control_ws_url"]
+    )
+    for index, bad in enumerate(
+        [
+            {**split_gateway, "api_url": "https://foreign.example.com"},
+            {**split_gateway, "base_url": "http://gateway.example.com/openai/v1"},
+            {
+                **split_gateway,
+                "base_url": "https://user:pass@gateway.example.com/openai/v1",
+            },
+        ]
+    ):
+        with pytest.raises(ValueError):
+            await runtime.handle_send_message(
+                OperatorCommand(f"invalid-{index}", "run", metadata={"gateway": bad})
+            )
     gateway["base_url"] = "https://other.example.com/openai/v1"
     with pytest.raises(ValueError, match="enrolled instance"):
         await runtime.handle_send_message(

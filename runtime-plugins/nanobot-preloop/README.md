@@ -60,7 +60,11 @@ memory consolidation is cancelled when a turn ends.
 100000, ceiling 1000000). Recent history, input and outgoing model context also
 have fixed size ceilings. Flow dispatch supplies `metadata.gateway` with an execution-scoped credential,
 model and instance gateway URL. Both model and MCP connections use this
-credential for that turn; it never replaces the enrolled credential.
+credential for that turn; it never replaces the enrolled credential. Split-service
+deployments can supply a separate HTTPS model gateway in `gateway.base_url`
+when `gateway.api_url` explicitly matches the enrolled API origin. MCP and native
+permission checks stay on that API origin; model traffic alone uses the dedicated
+gateway.
 `max_duration_seconds` aliases the timeout; `max_history_chars` can lower the
 history ceiling. Monetary run limits (`max_usd`) require this execution-scoped
 gateway, whose existing Flow policy enforces spending. Interactive messages

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from nanobot.providers.base import LLMResponse
 
@@ -56,7 +57,60 @@ async def main() -> None:
         )
         assert first.reply_text == second.reply_text == "Completed local fixture."
         assert first.session_reference == second.session_reference
-        print("Pinned SDK lifecycle fixture passed; no external request sent.")
+        original_loop = runtime.loop
+
+        def offline_scoped_runtime(scoped_document, state, *, model_base_url):
+            scoped = build_runtime(
+                scoped_document, state, model_base_url=model_base_url
+            )
+            assert scoped.config.bearer_token == "synthetic-execution-token"
+            assert scoped.loop.tools.config.bearer_token == "synthetic-execution-token"
+            assert (
+                scoped.loop.provider.provider._client.api_key
+                == "synthetic-execution-token"
+            )
+            assert (
+                str(scoped.loop.provider.provider._client.base_url)
+                == "https://gateway.example.com/openai/v1/"
+            )
+            scoped.loop.provider.provider = OfflineProvider()
+            scoped.loop._mcp_servers = {}
+            return scoped
+
+        with patch(
+            "preloop_nanobot_plugin.runtime.build_runtime",
+            side_effect=offline_scoped_runtime,
+        ):
+            employee = await runtime.handle_send_message(
+                OperatorCommand(
+                    "employee-fixture",
+                    "Process the example issue.",
+                    session_mode="new",
+                    metadata={
+                        "employee_task_key": "example-task",
+                        "gateway": {
+                            "api_key": "synthetic-execution-token",
+                            "base_url": "https://gateway.example.com/openai/v1",
+                            "api_url": "https://example.com",
+                            "model": "deepseek-chat",
+                        },
+                        "run_limits": {
+                            "max_turns": 10,
+                            "max_total_tokens": 32000,
+                            "max_usd": 2,
+                            "max_history_chars": 64000,
+                            "timeout_seconds": 300,
+                        },
+                    },
+                )
+            )
+        assert employee.reply_text == "Completed local fixture."
+        assert employee.session_reference != first.session_reference
+        assert runtime.loop is original_loop
+        assert runtime.config.bearer_token == "synthetic-runtime-token"
+        print(
+            "Pinned SDK lifecycle and scoped employee fixtures passed; no external request sent."
+        )
 
 
 if __name__ == "__main__":

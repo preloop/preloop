@@ -340,10 +340,30 @@ class NanobotRuntime:
                 + endpoint.netloc
                 + "/openai/v1"
             )
-            if gateway.get("base_url", "").rstrip("/") != expected:
-                raise ValueError(
-                    "execution gateway must belong to the enrolled instance"
-                )
+            model_url = gateway.get("base_url")
+            api_url = gateway.get("api_url", expected.removesuffix("/openai/v1"))
+            if not isinstance(model_url, str) or not isinstance(api_url, str):
+                raise ValueError("execution gateway endpoints must be strings")
+            if api_url.rstrip("/") != expected.removesuffix("/openai/v1"):
+                raise ValueError("execution API must belong to the enrolled instance")
+            if model_url.rstrip("/") != expected:
+                # The authenticated server can route models to a dedicated
+                # gateway. Tools remain on the enrolled API origin. Older
+                # payloads without explicit API binding cannot redirect models.
+                target = urlsplit(model_url)
+                if (
+                    "api_url" not in gateway
+                    or target.scheme != "https"
+                    or not target.hostname
+                    or target.username
+                    or target.password
+                    or target.query
+                    or target.fragment
+                    or target.path.rstrip("/") != "/openai/v1"
+                ):
+                    raise ValueError(
+                        "execution gateway must belong to the enrolled instance"
+                    )
             if (
                 not isinstance(gateway.get("api_key"), str)
                 or not gateway["api_key"]
@@ -398,6 +418,7 @@ class NanobotRuntime:
                         "workspace": str(self.loop.workspace),
                     },
                     self.state,
+                    model_base_url=gateway["base_url"],
                 )
                 self.loop = scoped.loop
             if isinstance(self.loop.provider, BoundedProvider):
@@ -456,7 +477,9 @@ class NanobotRuntime:
             task.cancel()
 
 
-def build_runtime(document: dict[str, Any], state: Path) -> NanobotRuntime:
+def build_runtime(
+    document: dict[str, Any], state: Path, *, model_base_url: str | None = None
+) -> NanobotRuntime:
     """Construct the pinned SDK runtime with gateway-only model and MCP routing."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
@@ -472,7 +495,9 @@ def build_runtime(document: dict[str, Any], state: Path) -> NanobotRuntime:
     workspace = Path(document.get("workspace", "~/.nanobot/workspace")).expanduser()
     workspace.mkdir(parents=True, exist_ok=True)
     provider = CustomProvider(
-        api_key=config.bearer_token, api_base=f"{base}/openai/v1", default_model=model
+        api_key=config.bearer_token,
+        api_base=model_base_url or f"{base}/openai/v1",
+        default_model=model,
     )
     # No arbitrary stdio/remote MCP endpoints: Preloop is the sole MCP server.
     mcp = {
