@@ -511,3 +511,25 @@ function fakeSocket({ open = true } = {}) {
     },
   };
 }
+
+test("durable employee receipt replays after sidecar restart without effects", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-employee-"));
+  try {
+    const config = { ...baseConfig, employee_state_path: path.join(directory, "state.json") };
+    const state = { starts: [], resumes: [], runs: 0, texts: [] };
+    const command = {type: "command", name: "send_message", message_id: "durable-example",
+      payload: {text: "review", start_new_session: true}};
+    const replies = [];
+    const socket = {OPEN: 1, readyState: 1, send: value => replies.push(JSON.parse(value))};
+    const first = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+    first.configure(config);
+    await first.handleFrame(socket, JSON.stringify(command));
+    const restarted = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+    restarted.configure(config);
+    await restarted.handleFrame(socket, JSON.stringify(command));
+    assert.equal(state.runs, 1);
+    assert.equal(replies[0].payload.native_session_id, replies[1].payload.native_session_id);
+    const stored = await fs.readFile(config.employee_state_path, "utf8");
+    assert.equal(stored.includes(config.bearer_token), false);
+  } finally { await fs.rm(directory, {recursive: true, force: true}); }
+});

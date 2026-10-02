@@ -16,6 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import WebSocket from "ws";
@@ -102,7 +103,7 @@ const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** Bound on the message_id dedupe memory. */
-const DEDUPE_CAPACITY = 1_000;
+
 
 type StoredCommandOutcome = {
   name: "command_result" | "command_error";
@@ -123,6 +124,33 @@ export class PreloopCodexSidecar {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private commandOutcomes = new Map<string, StoredCommandOutcome>();
+  private ledgerLoaded = false;
+
+  private ledgerPath(): string | undefined {
+    const config = this.verify();
+    return config.employee_state_path ?? (this.configPath ? this.configPath + ".employees.json" : undefined);
+  }
+
+  private loadLedger(): void {
+    if (this.ledgerLoaded) return;
+    const file = this.ledgerPath();
+    if (file && fs.existsSync(file)) {
+      const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (stored.principal !== this.verify().runtime_principal_id) throw new Error("Employee ledger principal mismatch");
+      this.commandOutcomes = new Map(stored.outcomes);
+    }
+    this.ledgerLoaded = true;
+  }
+
+  private saveLedger(): void {
+    const file = this.ledgerPath();
+    if (!file) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const temporary = file + ".tmp";
+    fs.writeFileSync(temporary, JSON.stringify({ principal: this.verify().runtime_principal_id,
+      outcomes: [...this.commandOutcomes] }), { mode: 0o600 });
+    fs.renameSync(temporary, file);
+  }
   private inFlightMessageIds = new Set<string>();
   private logger: (message: string) => void = () => {};
 
@@ -177,6 +205,7 @@ export class PreloopCodexSidecar {
       `sidecar starting (pid ${process.pid}, config ${this.configPath ?? defaultConfigPath()})`,
     );
     const config = this.verify();
+    config.employee_state_path ??= (this.configPath ?? defaultConfigPath()) + ".employees.json";
     if (config.enabled === false) {
       throw new Error("preloop-control is disabled (enabled=false)");
     }
@@ -321,10 +350,12 @@ export class PreloopCodexSidecar {
       });
       return;
     }
+    this.loadLedger();
     // Redelivered commands (reconnect replay) must not run twice. Dedupe
     // only after a terminal success/error, and replay that stored outcome
     // instead of a bare "duplicate" so a failed command is never silently
     // converted into already-handled.
+    if (command.message_id && this.inFlightMessageIds.has(command.message_id)) return;
     if (command.message_id && this.commandOutcomes.has(command.message_id)) {
       const outcome = this.commandOutcomes.get(command.message_id)!;
       this.sendOn(socket, {
@@ -340,6 +371,10 @@ export class PreloopCodexSidecar {
     }
     if (command.message_id) {
       this.inFlightMessageIds.add(command.message_id);
+      this.rememberOutcome(command.message_id, { name: "command_error", payload: {
+        command_id: command.message_id, status: "failed",
+        error: "Worker restarted during task; effects may have occurred. Review before retry.",
+      }});
     }
     try {
       const result = await this.dispatch(command);
@@ -426,7 +461,12 @@ export class PreloopCodexSidecar {
     }
 
     if (payload.interrupt) {
-      await this.sessions.interrupt(targetSessionId ?? resumeSessionId);
+      const targetCommandId = payload.metadata?.["target_command_id"];
+      if (payload.session_mode === "existing" && !targetSessionId && !resumeSessionId && typeof targetCommandId !== "string") {
+        throw new Error("Existing-session interrupt requires an owned command or session");
+      }
+      await this.sessions.interrupt(targetSessionId ?? resumeSessionId,
+        typeof targetCommandId === "string" ? targetCommandId : undefined);
       return "interrupted";
     }
 
@@ -474,6 +514,7 @@ export class PreloopCodexSidecar {
     try {
       return await this.sessions.sendMessage({
         text,
+        commandId: command.message_id,
         targetSessionId,
         resumeSessionId,
         metadata: payload.metadata,
@@ -542,12 +583,7 @@ export class PreloopCodexSidecar {
       return;
     }
     this.commandOutcomes.set(messageId, outcome);
-    if (this.commandOutcomes.size > DEDUPE_CAPACITY) {
-      const oldest = this.commandOutcomes.keys().next().value;
-      if (oldest !== undefined) {
-        this.commandOutcomes.delete(oldest);
-      }
-    }
+    this.saveLedger();
   }
 
   private sendSessionActivity(activity: SessionActivity): void {
@@ -630,6 +666,7 @@ function commandResultPayload(
       result: result.reply_text,
       reply_text: result.reply_text,
       session_id: result.session_id,
+      native_session_id: result.session_id,
     };
     const metadata: Record<string, unknown> = {};
     if (result.usage) {

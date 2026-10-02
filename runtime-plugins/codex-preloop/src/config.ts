@@ -14,6 +14,9 @@ import path from "node:path";
  * stays reserved for Codex.
  */
 export type ControlConfig = {
+  employee_state_path?: string;
+  codex_gateway_api_key?: string;
+  codex_gateway_base_url?: string;
   enabled?: boolean;
   protocol?: string;
   runtime?: string;

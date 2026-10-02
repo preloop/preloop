@@ -71,6 +71,7 @@ export type SendMessageParams = {
   cwd?: string;
   /** Force `startThread` even when the envelope names a session. */
   startNewSession?: boolean;
+  commandId?: string;
 };
 
 type OwnedThread = {
@@ -85,11 +86,12 @@ type OwnedThread = {
 /** Options passed to `new Codex(...)`. Approval policy is intentionally absent. */
 export function clientOptionsFor(
   config: ControlConfig,
-): { codexPathOverride?: string } {
-  if (config.codex_path && config.codex_path.trim() !== "") {
-    return { codexPathOverride: config.codex_path };
-  }
-  return {};
+): { codexPathOverride?: string; apiKey?: string; baseUrl?: string } {
+  return {
+    ...(config.codex_path ? { codexPathOverride: config.codex_path } : {}),
+    ...(config.codex_gateway_api_key ? { apiKey: config.codex_gateway_api_key } : {}),
+    ...(config.codex_gateway_base_url ? { baseUrl: config.codex_gateway_base_url } : {}),
+  };
 }
 
 export function threadOptionsFor(
@@ -134,7 +136,7 @@ export const sdkCodexClientFactory: CodexClientFactory = (config) => {
           return client;
         }
         const sdk = (await import("@openai/codex-sdk")) as {
-          Codex: new (options?: { codexPathOverride?: string }) => {
+          Codex: new (options?: { codexPathOverride?: string; apiKey?: string; baseUrl?: string }) => {
             startThread(options?: Record<string, unknown>): SdkThread;
             resumeThread(
               id: string,
@@ -213,6 +215,7 @@ export async function ensureSdkClient(
 
 export class SessionManager {
   private sessions = new Map<string, OwnedThread>();
+  private commandSessions = new Map<string, OwnedThread>();
   private client?: CodexClient;
   private clientPromise?: Promise<CodexClient>;
 
@@ -265,8 +268,13 @@ export class SessionManager {
       session = this.find(resume);
     }
     if (!session) {
-      const client = await this.clientOrLoad();
-      const options = threadOptionsFor(this.config, cwd);
+      const gateway = params.metadata?.["gateway"] as Record<string, string> | undefined;
+      const taskConfig = gateway ? {
+        ...this.config, codex_gateway_api_key: gateway.api_key,
+        codex_gateway_base_url: gateway.base_url, codex_model: gateway.model,
+      } : this.config;
+      const client = gateway ? await ensureSdkClient(this.clientFactory, taskConfig) : await this.clientOrLoad();
+      const options = threadOptionsFor(taskConfig, cwd);
       const resumeId =
         !params.startNewSession && resume && !this.find(resume)
           ? resume
@@ -281,7 +289,15 @@ export class SessionManager {
       };
       this.remember(session);
     }
-    const timeoutMs = this.config.turn_timeout_ms ?? DEFAULT_TURN_TIMEOUT_MS;
+    if (params.commandId) this.commandSessions.set(params.commandId, session);
+    const limits = params.metadata?.["run_limits"] as Record<string, number> | undefined;
+    if (limits?.max_history_chars && params.text.length > limits.max_history_chars) {
+      throw new Error("Employee prompt exceeds configured context limit");
+    }
+    const configuredTimeout = this.config.turn_timeout_ms ?? DEFAULT_TURN_TIMEOUT_MS;
+    const timeoutMs = limits?.timeout_seconds
+      ? Math.min(configuredTimeout, limits.timeout_seconds * 1000)
+      : configuredTimeout;
     // One run at a time per thread. A second send_message waits instead of
     // replacing session.controller (which would hide the first turn from
     // interrupt) or calling thread.run twice on a live SDK thread.
@@ -357,8 +373,8 @@ export class SessionManager {
   }
 
   /** Abort the in-flight run on an owned thread. */
-  async interrupt(targetSessionId?: string): Promise<void> {
-    const session = targetSessionId
+  async interrupt(targetSessionId?: string, commandId?: string): Promise<void> {
+    const session = commandId ? this.commandSessions.get(commandId) : targetSessionId
       ? this.find(targetSessionId)
       : this.mostRecent();
     if (!session || !session.controller) {

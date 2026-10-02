@@ -381,7 +381,8 @@ async def test_stop_sends_interrupt_and_marks_failed(
     assert dispatched["interrupt"] is True
     assert dispatched["start_new_session"] is False
     assert dispatched["target_session_id"] is None
-    assert dispatched["session_mode"] == "current"
+    assert dispatched["session_mode"] == "existing"
+    assert dispatched["metadata"]["target_command_id"] == record.command_id
     assert dispatched["require_delivery"] is True
     mark.assert_called_once()
     assert mark.call_args.kwargs["failed"] is True
@@ -707,3 +708,59 @@ def test_sanitize_agent_control_result_payload_preserves_large_outputs() -> None
     guarded = _sanitize_agent_control_result_payload(supplied)
     assert guarded["reply_text"] == "ok"
     assert guarded["payload"] == {"_omitted": "result_too_large", "type": "dict"}
+
+
+@pytest.mark.asyncio
+async def test_employee_gateway_is_scoped_and_history_is_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+    connected_patches,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    agent = _agent(agent_kind="nanobot")
+    executor = _executor(
+        agent_id=agent.id,
+        account_id=agent.account_id,
+        limits={"max_turns": 5, "max_total_tokens": 10000, "max_usd": 1},
+    )
+    dispatch = AsyncMock(
+        return_value=SimpleNamespace(
+            command_id="employee-command", local_delivery=True, subject=None
+        )
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_managed_agent.get_for_account",
+        lambda *args, **kwargs: agent,
+    )
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.dispatch_operator_message", dispatch
+    )
+    context = {
+        "prompt": "Synthetic task",
+        "execution_id": str(executor.execution.id),
+        "trigger_event_data": {
+            "employee": {"managed_agent_id": str(agent.id), "task_key": "task-example"}
+        },
+        "model_gateway_enabled": True,
+        "model_gateway_token": "synthetic-scoped-token",
+        "model_gateway_url": "https://example.com/openai/v1",
+        "model_gateway_model_alias": "deepseek/example",
+    }
+    await executor.start(context)
+    metadata = dispatch.await_args.kwargs["metadata"]
+    assert metadata["gateway"]["api_key"] == "synthetic-scoped-token"
+    assert metadata["run_limits"]["max_turns"] == 5
+    from preloop.agents.agent_control import crud_runtime_session_activity
+
+    history = crud_runtime_session_activity.log_agent_control_message.call_args.kwargs[
+        "metadata"
+    ]
+    assert "synthetic-scoped-token" not in str(history)
+    dispatch.reset_mock()
+    with pytest.raises(AgentStartError, match="execution-scoped"):
+        await executor.start(context | {"model_gateway_token": None})
+    dispatch.assert_not_awaited()
+    context["trigger_event_data"]["employee"]["managed_agent_id"] = str(uuid4())
+    with pytest.raises(AgentStartError, match="another agent"):
+        await executor.start(context)
+    dispatch.assert_not_awaited()
