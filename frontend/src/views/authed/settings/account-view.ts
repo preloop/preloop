@@ -544,6 +544,19 @@ export class AccountView extends LitElement {
   }
 
   /**
+   * Timeline placeholders for evicted or expired screenshots link here with
+   * `#session-artifact-storage`; bring the card into view once it renders.
+   */
+  private _scrollToArtifactStorageWhenLinked(): void {
+    if (window.location.hash !== '#session-artifact-storage') return;
+    void this.updateComplete.then(() => {
+      this.renderRoot
+        .querySelector('#session-artifact-storage')
+        ?.scrollIntoView({ block: 'start' });
+    });
+  }
+
+  /**
    * Kinds other than screenshot and recording that hold bytes. Shown with the
    * raw kind name until display labels land (#1083); unknown future kinds
    * render the same way instead of breaking the card.
@@ -562,19 +575,6 @@ export class AccountView extends LitElement {
   private _kindLabel(kind: string): string {
     const words = kind.replace(/_/g, ' ');
     return words.charAt(0).toUpperCase() + words.slice(1);
-  }
-
-  /**
-   * Timeline placeholders for evicted or expired screenshots link here with
-   * `#session-artifact-storage`; bring the card into view once it renders.
-   */
-  private _scrollToArtifactStorageWhenLinked(): void {
-    if (window.location.hash !== '#session-artifact-storage') return;
-    void this.updateComplete.then(() => {
-      this.renderRoot
-        .querySelector('#session-artifact-storage')
-        ?.scrollIntoView({ block: 'start' });
-    });
   }
 
   private _renderSessionArtifactUsage() {
