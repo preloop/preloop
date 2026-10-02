@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import types
 import uuid
 
 import httpx
@@ -19,6 +20,7 @@ from mcp.client.streamable_http import streamablehttp_client
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.models.crud import crud_api_key
 from preloop.services import artifact_deposit, artifact_mcp_tools
 from preloop.services.artifact_media import ARTIFACT_KINDS
 from preloop.tools.builtin_defs import DEPOSIT_ARTIFACT_KINDS, DEPOSIT_ARTIFACT_TOOL
@@ -268,6 +270,21 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
             assert odd.isError, malformed
             assert odd.content[0].text.startswith("artifact_link_outside_session")
 
+        # urlparse raises ValueError on an invalid IPv6 netloc.
+        unparsable = await mcp.call_tool(
+            TOOL,
+            {
+                "name": "x",
+                "content": {"type": "resource_link", "uri": "https://[", "name": "x"},
+            },
+        )
+        assert unparsable.isError
+        assert unparsable.content[0].text.startswith("artifact_link_outside_session")
+        assert (
+            unparsable.structuredContent["error"]["code"]
+            == "artifact_link_outside_session"
+        )
+
         bad = await mcp.call_tool(
             TOOL,
             {"name": "x", "content": {"type": "image", "data": "%%%"}},
@@ -288,6 +305,42 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
 def _link(result):
     block = result.content[0]
     return {"uri": str(block.uri), "name": block.name, "mimeType": block.mimeType}
+
+
+def test_auth_context_only_trusts_a_key_of_the_users_own_account(
+    db_session, test_user, test_viewer_user
+):
+    """The key binding is read through CRUD, scoped to the caller's account."""
+    own_session = _session(db_session, test_user.account_id, "mcp-1081-own")
+    foreign_session = _session(db_session, test_viewer_user.account_id, "mcp-1081-x")
+    own_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="own",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={"runtime_session_id": str(own_session.id)},
+    )
+    foreign_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="foreign",
+        account_id=test_viewer_user.account_id,
+        user_id=test_viewer_user.id,
+        context_data={"runtime_session_id": str(foreign_session.id)},
+    )
+
+    def ctx(key):
+        return types.SimpleNamespace(user_id=str(test_user.id), api_key_id=str(key.id))
+
+    own = artifact_mcp_tools.auth_from_user_context(db_session, ctx(own_key))
+    assert str(own.runtime_session_id) == str(own_session.id)
+    foreign = artifact_mcp_tools.auth_from_user_context(db_session, ctx(foreign_key))
+    assert foreign.api_key is None
+    assert foreign.runtime_session_id is None
+
+    with pytest.raises(artifact_deposit.ArtifactDepositError):
+        artifact_mcp_tools.auth_from_user_context(
+            db_session, types.SimpleNamespace(user_id="not-a-uuid", api_key_id=None)
+        )
 
 
 @pytest.mark.parametrize(

@@ -28,7 +28,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
-from preloop.models import models
+from preloop.models.crud import crud_api_key, crud_user
 from preloop.models.crud import runtime_session_artifact as crud_artifact
 from preloop.services import artifact_deposit
 from preloop.services import artifact_shapes as shapes
@@ -100,13 +100,16 @@ def auth_from_user_context(db: Session, user_context: Any) -> ModelGatewayAuthCo
     user and key rows by id so the session binding is read from the key, as
     the REST route does.
     """
-    user = db.get(models.User, _uuid(getattr(user_context, "user_id", None)))
+    user_id = _uuid(getattr(user_context, "user_id", None))
+    user = crud_user.get(db, user_id) if user_id is not None else None
     if user is None:
         raise ArtifactDepositError(401, ERROR_NO_SESSION)
     api_key = None
     api_key_id = _uuid(getattr(user_context, "api_key_id", None))
     if api_key_id is not None:
-        api_key = db.get(models.ApiKey, api_key_id)
+        # Scoped to the user's account: a key id from another account never
+        # lends its session binding.
+        api_key = crud_api_key.get(db, api_key_id, account_id=user.account_id)
     return ModelGatewayAuthContext(token=NO_BEARER_TOKEN, user=user, api_key=api_key)
 
 
@@ -204,7 +207,11 @@ def _payload_from_link(
 ) -> tuple[shapes.ArtifactPayload, str]:
     """Copy an artifact of the caller's own session, for re-labelling."""
     uri = block.get("uri")
-    match = _ARTIFACT_PATH.search(urlparse(uri).path if isinstance(uri, str) else "")
+    try:
+        path = urlparse(uri).path if isinstance(uri, str) else ""
+    except ValueError:  # e.g. "https://[" is an invalid IPv6 netloc
+        raise ArtifactDepositError(403, ERROR_LINK_OUTSIDE_SESSION) from None
+    match = _ARTIFACT_PATH.search(path)
     if match is None or match["session"].lower() != str(session_id).lower():
         raise ArtifactDepositError(403, ERROR_LINK_OUTSIDE_SESSION)
     # The pattern admits 36 chars of [0-9a-f-] that are not a real UUID; refuse
