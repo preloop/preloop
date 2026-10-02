@@ -245,3 +245,39 @@ def test_token_decide_keeps_working(client, db_session, test_user, token_service
     )
     assert response.status_code == 200
     assert response.json()["status"] == "declined"
+
+
+def test_token_decide_without_action_is_422(
+    client, db_session, test_user, token_service
+):
+    row = _pending(db_session, test_user)
+    response = client.post(
+        f"/approval/{row.id}/decide", params={"token": TOKEN}, json={"comment": "?"}
+    )
+    assert response.status_code == 422
+    assert "/approve" in response.json()["detail"]
+    token_service.approve_request.assert_not_called()
+    token_service.decline_request.assert_not_called()
+
+
+def test_token_unknown_path_is_404(client, db_session, test_user, token_service):
+    row = _pending(db_session, test_user)
+    response = client.post(f"/approval/{row.id}/accept", params={"token": TOKEN})
+    assert response.status_code == 404
+    token_service.approve_request.assert_not_called()
+
+
+def test_token_path_wins_over_a_body_action(
+    client, db_session, test_user, token_service
+):
+    """On /decline the path is the decision; a stray body action is ignored."""
+    row = _pending(db_session, test_user)
+    token_service.decline_request.return_value = _resolved(row, "declined")
+    response = client.post(
+        f"/approval/{row.id}/decline",
+        params={"token": TOKEN},
+        json={"action": "approve"},
+    )
+    assert response.status_code == 200
+    token_service.approve_request.assert_not_called()
+    token_service.decline_request.assert_awaited_once()

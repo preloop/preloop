@@ -1,8 +1,6 @@
 """Public approval endpoints (token-based authentication, no login required)."""
 
 import uuid
-
-import anyio
 import logging
 from datetime import datetime
 from typing import List, Optional, Sequence
@@ -195,73 +193,68 @@ def get_approval_request_public(
     return _to_public_request(approval_request, history)
 
 
-@router.post("/{request_id}/decide")
-async def decide_approval_request_public(
-    request_id: uuid.UUID,
-    decision: ApprovalDecisionRequest,
-    token: str = Query(..., description="Approval token"),
-    db_sync: Session = Depends(get_db_session),
-) -> ApprovalRequestPublic:
-    """Approve or decline an approval request using token (no authentication required).
-
-    Args:
-        request_id: UUID of the approval request
-        decision: Approval decision (approve/decline) and optional comment
-        token: Secure token from the approval link
-        db_sync: Synchronous database session for validation
-
-    Returns:
-        Updated approval request
-
-    Raises:
-        HTTPException: If token is invalid, request not found, or already resolved
-    """
-    return await _decide_with_token(request_id, decision, token, db_sync)
-
-
 class TokenDecisionBody(BaseModel):
-    """Optional body for the token /approve and /decline routes."""
+    """Body of a token decision. Optional on /approve and /decline.
 
+    ``action`` is required on /decide only, where the path does not name the
+    decision; on /approve and /decline the path is the decision.
+    """
+
+    action: Optional[str] = None
     comment: Optional[str] = None
     answer: Optional[dict] = None
 
 
-@router.post("/{request_id}/approve")
-def approve_approval_request_public(
+#: Path segments that decide. /approve and /decline are what the generic
+#: webhook payload advertises as decision.approve_url and decision.decline_url.
+_TOKEN_DECISION_ROUTES = ("approve", "decline", "decide")
+
+
+# One async route serves all three paths. Separate handlers would each hold a
+# synchronous Session on the event loop (see the ratchet in
+# tests/api/test_event_loop_pool_wait.py); the shared body offloads its sync
+# reads with run_db_off_loop instead.
+@router.post("/{request_id}/{route}")
+async def decide_approval_request_public(
     request_id: uuid.UUID,
+    route: str,
     token: str = Query(..., description="Approval token"),
     body: Optional[TokenDecisionBody] = None,
     db_sync: Session = Depends(get_db_session),
 ) -> ApprovalRequestPublic:
-    """Approve with the token from the webhook or email link. Body is optional.
+    """Approve or decline with the token from the link (no login required).
 
-    This is the URL a webhook receiver calls to approve: the path names the
-    decision, the token in the query string is the only credential.
+    - ``POST /approval/{id}/approve?token=...``, body optional
+      ``{"comment": "...", "answer": {...}}``
+    - ``POST /approval/{id}/decline?token=...``, body optional
+      ``{"comment": "..."}``
+    - ``POST /approval/{id}/decide?token=...`` with
+      ``{"action": "approve" | "decline", "comment": "..."}``
+
+    Raises:
+        HTTPException: 404 for an unknown path, id or token; 422 if /decide
+            has no action; 400 for an invalid action or a resolved request.
     """
+    if route not in _TOKEN_DECISION_ROUTES:
+        raise HTTPException(status_code=404, detail="Not Found")
     body = body or TokenDecisionBody()
+    if route == "decide":
+        if body.action is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "'action' ('approve' or 'decline') is required on /decide. "
+                    "Or POST to /approve or /decline, which need no body."
+                ),
+            )
+        action = body.action
+    else:
+        # The path names the decision; a body action is not consulted.
+        action = route
     decision = ApprovalDecisionRequest(
-        action="approve", comment=body.comment, answer=body.answer
+        action=action, comment=body.comment, answer=body.answer
     )
-    # A sync handler runs on the threadpool; the shared path is async because
-    # ApprovalService is, and it offloads its own sync database work.
-    return anyio.from_thread.run(
-        _decide_with_token, request_id, decision, token, db_sync
-    )
-
-
-@router.post("/{request_id}/decline")
-def decline_approval_request_public(
-    request_id: uuid.UUID,
-    token: str = Query(..., description="Approval token"),
-    body: Optional[TokenDecisionBody] = None,
-    db_sync: Session = Depends(get_db_session),
-) -> ApprovalRequestPublic:
-    """Decline with the token from the webhook or email link. Body is optional."""
-    body = body or TokenDecisionBody()
-    decision = ApprovalDecisionRequest(action="decline", comment=body.comment)
-    return anyio.from_thread.run(
-        _decide_with_token, request_id, decision, token, db_sync
-    )
+    return await _decide_with_token(request_id, decision, token, db_sync)
 
 
 async def _decide_with_token(
