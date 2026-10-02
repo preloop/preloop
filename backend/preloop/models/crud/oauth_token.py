@@ -35,6 +35,7 @@ class CRUDOAuthToken(CRUDBase[OAuthToken]):
             db.query(self.model)
             .filter(
                 self.model.provider == provider,
+                self.model.auth_mode.is_(None),
                 self.model.user_id == user_id,
                 self.model.installation_id == installation_id,
             )
@@ -62,6 +63,7 @@ class CRUDOAuthToken(CRUDBase[OAuthToken]):
             db.query(self.model)
             .filter(
                 self.model.provider == provider,
+                self.model.auth_mode.is_(None),
                 self.model.user_id == user_id,
             )
             .first()

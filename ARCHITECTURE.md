@@ -287,3 +287,6 @@ on failure. Before returning success, the API checks the account's registered
 agent and selected model binding through CRUD. Credentials stay in request
 memory; audit events contain deployment identifiers and outcomes. See
 [operator configuration](docs/operations/agent-deployment.md).
+
+Managed tracker OAuth persistence uses the [provider-neutral storage contract](docs/architecture/managed-oauth-storage.md),
+with tenant-bound connection transactions and serialized token-pair rotation.
