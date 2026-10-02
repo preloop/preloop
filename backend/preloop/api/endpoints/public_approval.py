@@ -26,6 +26,9 @@ from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
 
+#: Channel recorded for decisions made with the approval token URL.
+TOKEN_URL_DECISION_CHANNEL = "token_url"
+
 router = APIRouter(prefix="/approval", tags=["public-approval"])
 
 # One fixed sentence for every internal failure on the decision path. The
@@ -329,12 +332,15 @@ async def _decide_with_token(
                     or decision.comment
                 )
                 updated_request = await approval_service.approve_request(
-                    request_id, comment, channel="token link", structured_answer=answer
+                    request_id,
+                    comment,
+                    channel=TOKEN_URL_DECISION_CHANNEL,
+                    structured_answer=answer,
                 )
             else:
                 logger.info(f"Declining request {request_id}")
                 updated_request = await approval_service.decline_request(
-                    request_id, decision.comment, channel="token link"
+                    request_id, decision.comment, channel=TOKEN_URL_DECISION_CHANNEL
                 )
         except HTTPException:
             raise
