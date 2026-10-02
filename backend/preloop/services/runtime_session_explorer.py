@@ -54,6 +54,11 @@ from preloop.schemas.gateway_usage import (
     RuntimeSessionSummary,
 )
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
+from preloop.utils.agent_kind import (
+    AGENT_KIND_SHAPE_ERROR,
+    is_valid_agent_kind,
+    normalize_agent_kind,
+)
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -210,13 +215,17 @@ class RuntimeSessionExplorerService:
             filter that was not asked for.
         """
         agent = (agent or "").strip() or None
-        kind = (agent_kind or "").strip().lower().replace("-", "_") or None
+        # The same fold the stored kind went through, so the filter cannot
+        # drift from it: case, spaces, hyphens and underscores are one kind.
+        kind = normalize_agent_kind(agent_kind) or None
+        if kind is not None and not is_valid_agent_kind(kind):
+            raise HTTPException(status_code=422, detail=AGENT_KIND_SHAPE_ERROR)
         if agent is None and kind is None:
             return None, None
 
         agents = self._account_managed_agents(account)
         if agent is not None:
-            by_id = [row for row in agents if str(row.id) == agent]
+            by_id = [row for row in agents if str(row.id).lower() == agent.lower()]
             matches = by_id or [
                 row
                 for row in agents

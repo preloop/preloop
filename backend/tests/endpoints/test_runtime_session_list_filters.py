@@ -288,3 +288,33 @@ def test_rows_carry_agent_cwd_tool_and_approval_labels(
     assert second["managed_agent_id"] is None
     assert second["cwd"] is None
     assert second["pending_approval_count"] == 0
+
+
+def test_kind_filter_uses_the_stored_kind_fold_and_rejects_bad_shapes(
+    client: Any, db_session: Session, account_id: Any
+) -> None:
+    gemini = _agent(db_session, account_id, "Gemini", "gemini_cli")
+    governed = _session(
+        db_session, account_id, "g1", source_type="managed_agent", agent=gemini
+    )
+
+    for spelling in ("gemini_cli", "Gemini CLI", "gemini-cli"):
+        response = client.get(
+            "/api/v1/runtime-sessions", params={"agent_kind": spelling}
+        )
+        assert _ids(response) == {str(governed.id)}, spelling
+    refused = client.get(
+        "/api/v1/runtime-sessions", params={"agent_kind": "gemini/cli"}
+    )
+    assert refused.status_code == 422
+
+
+def test_agent_id_matches_in_any_case(
+    client: Any, db_session: Session, account_id: Any
+) -> None:
+    worker = _agent(db_session, account_id, "Upper", "codex")
+    owned = _session(db_session, account_id, "up", agent=worker)
+
+    response = client.get(f"/api/v1/runtime-sessions?agent={str(worker.id).upper()}")
+
+    assert _ids(response) == {str(owned.id)}

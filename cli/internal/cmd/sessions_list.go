@@ -54,7 +54,7 @@ const (
 
 	sessionShortIDLength = 8
 
-	sessionsListHint = "Steer: preloop notes send --session <id>. Watch: preloop sessions attach <id>."
+	sessionsListHint = "Steer: preloop notes send --session <id>."
 )
 
 // sessionsListIsTerminal is swapped by tests; the hint line is for people.
@@ -242,10 +242,12 @@ func sessionsListOptionsFrom() (sessionsListOptions, error) {
 	return opts, nil
 }
 
-// normalizeAgentKind maps the spelling people type to the server's kind:
-// claude-code and Claude_Code are both claude_code.
+// normalizeAgentKind maps the spelling people type to the server's kind, with
+// the same fold the server applies to stored kinds: "Claude Code",
+// claude-code and Claude_Code are all claude_code.
 func normalizeAgentKind(kind string) string {
-	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(kind)), "-", "_")
+	folded := strings.ToLower(strings.TrimSpace(kind))
+	return strings.NewReplacer(" ", "_", "-", "_").Replace(folded)
 }
 
 // parseSinceDuration reads a Go duration, plus a whole-day "d" suffix because
@@ -391,6 +393,9 @@ func writeSessionsTable(out io.Writer, rows []runtimeSessionRow, titles []string
 			strconv.Itoa(row.PendingApprovalCount),
 			titles[index],
 		)
+		for i, column := range columns {
+			columns[i] = terminalSafe(column)
+		}
 		fmt.Fprintln(writer, strings.Join(columns, "\t")) //nolint:errcheck
 	}
 	return writer.Flush()
@@ -514,6 +519,23 @@ func relativeTime(value api.Time, now time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(elapsed.Hours()/24))
 	}
+}
+
+// terminalSafe makes agent-reported text safe to print as one table cell.
+//
+// Titles, agent names and the hook-reported cwd are written by the agent, not
+// by Preloop. A newline would shift every following row and an escape
+// sequence would be interpreted by the operator's terminal, so control
+// characters (C0, DEL and C1, which include ESC and the tab that separates
+// columns) become a visible U+FFFD. --json is unaffected: its encoder escapes
+// them.
+func terminalSafe(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || (r >= 0x7f && r < 0xa0) {
+			return '\uFFFD'
+		}
+		return r
+	}, value)
 }
 
 func dashIfEmpty(value string) string {

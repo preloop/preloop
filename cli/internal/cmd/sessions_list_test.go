@@ -388,3 +388,38 @@ func TestParseSinceDurationAcceptsDays(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionsListNeutralisesControlCharactersInCells(t *testing.T) {
+	newSessionsListFake(t, func(url.Values) string {
+		return `{"total": 2, "items": [
+		  {"id": "aaaaaaaa-1111-4111-8111-111111111111", "session_source_type": "claude_code",
+		   "title": "fix\nbbbbbbbb  Fake  row\u001b]0;owned\u0007", "started_at": "2026-10-02T11:00:00"},
+		  {"id": "cccccccc-3333-4333-8333-333333333333", "session_source_type": "codex",
+		   "cwd": "/work/evil\u001b[2J\tdir", "managed_agent_name": "Bad\u009bName", "started_at": "2026-10-02T11:00:00"}
+		]}`
+	})
+
+	stdout, _, err := runSessionsListCommand(t)
+	if err != nil {
+		t.Fatalf("sessions list failed: %v", err)
+	}
+	if lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n"); len(lines) != 3 {
+		t.Fatalf("an embedded newline must not add a row, got %d lines:\n%q", len(lines), stdout)
+	}
+	for _, forbidden := range []string{"\x1b", "\x07", "\u009b", "\t"} {
+		if strings.Contains(stdout, forbidden) {
+			t.Errorf("control character %q reached the terminal:\n%q", forbidden, stdout)
+		}
+	}
+	if !strings.Contains(stdout, "fix�bbbbbbbb") || !strings.Contains(stdout, "evil�[2J�dir") {
+		t.Errorf("control characters must be visible placeholders:\n%s", stdout)
+	}
+}
+
+func TestNormalizeAgentKindMatchesTheServerFold(t *testing.T) {
+	for input, want := range map[string]string{"Claude Code": "claude_code", "claude-code": "claude_code", " Gemini_CLI ": "gemini_cli"} {
+		if got := normalizeAgentKind(input); got != want {
+			t.Errorf("normalizeAgentKind(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
