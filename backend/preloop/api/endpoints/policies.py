@@ -31,6 +31,7 @@ from preloop.api.common import get_account_for_user
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
+from preloop.models.schemas.mcp_server import redact_snapshot_credentials
 from preloop.services.policy import (
     ModelIORule,
     PolicyApplier,
@@ -768,30 +769,6 @@ def _snapshot_to_metadata(snapshot) -> PolicyVersionMetadata:
     )
 
 
-def _redact_snapshot_data(snapshot_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Mask MCP server credentials in a snapshot before it leaves the API.
-
-    Snapshots store credentials so rollback can restore them; responses must not.
-    """
-    from preloop.models.schemas.mcp_server import redact_auth_config
-
-    if not isinstance(snapshot_data, dict):
-        return snapshot_data
-    servers = snapshot_data.get("mcp_servers")
-    if not isinstance(servers, list):
-        return snapshot_data
-    redacted = dict(snapshot_data)
-    redacted["mcp_servers"] = [
-        (
-            {**server, "auth_config": redact_auth_config(server["auth_config"])}
-            if isinstance(server, dict) and server.get("auth_config")
-            else server
-        )
-        for server in servers
-    ]
-    return redacted
-
-
 def _snapshot_to_full(snapshot) -> PolicyVersionFull:
     """Convert a PolicySnapshot to PolicyVersionFull with credentials masked."""
     return PolicyVersionFull(
@@ -805,7 +782,7 @@ def _snapshot_to_full(snapshot) -> PolicyVersionFull:
         tools_count=snapshot.tools_count,
         created_at=snapshot.created_at.isoformat(),
         created_by_user_id=snapshot.created_by_user_id,
-        snapshot_data=_redact_snapshot_data(snapshot.snapshot_data),
+        snapshot_data=redact_snapshot_credentials(snapshot.snapshot_data),
     )
 
 

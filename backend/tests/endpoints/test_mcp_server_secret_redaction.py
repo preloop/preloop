@@ -177,3 +177,32 @@ def test_policy_version_response_masks_snapshot_credentials():
     }
     # Stored snapshot keeps credentials so rollback still works.
     assert snapshot.snapshot_data["mcp_servers"][0]["auth_config"] == {"token": SECRET}
+
+
+def test_api_key_header_name_stays_readable():
+    redacted = redact_auth_config({"api_key": "k-value", "key_name": "X-API-Key"})
+    assert redacted == {"api_key": REDACTED_STRING, "key_name": "X-API-Key"}
+
+
+def test_rollback_diff_masks_snapshot_credentials(db_session, test_user):
+    from preloop.services.policy_version_service import PolicyVersionService
+
+    server = _bearer_server(db_session, test_user)
+    service = PolicyVersionService(db_session, str(test_user.account_id))
+    snap = service.create_snapshot(set_active=False)
+    # Drop the server so the rollback diff carries the snapshot definition.
+    db_session.delete(server)
+    db_session.commit()
+
+    with patch("preloop.services.policy_version_service.PolicyApplier") as applier:
+        applier.return_value.apply.return_value = MagicMock(success=True, errors=[])
+        preview, ok, _ = service.rollback_to_snapshot(snap.id, preview_only=True)
+        assert ok is True
+        assert SECRET not in preview.model_dump_json()
+
+        applied, ok, _ = service.rollback_to_snapshot(snap.id)
+        assert ok is True
+        assert SECRET not in applied.model_dump_json()
+        # The rollback itself still applies the stored credentials.
+        applied_policy = applier.return_value.apply.call_args.args[0]
+        assert applied_policy.mcp_servers[0].auth_config == {"token": SECRET}

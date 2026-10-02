@@ -15,7 +15,7 @@ NON_SECRET_AUTH_CONFIG_KEYS = frozenset(
         "authorization_endpoint",
         "client_id",
         "expires_at",
-        "header_name",
+        "key_name",
         "registration_endpoint",
         "scope",
         "scopes",
@@ -59,6 +59,35 @@ def redact_auth_config(auth_config: Any) -> Any:
     if isinstance(auth_config, list):
         return [redact_auth_config(item) for item in auth_config]
     return auth_config
+
+
+def redact_snapshot_credentials(snapshot_data: Any) -> Any:
+    """Mask ``mcp_servers[].auth_config`` secrets in a policy snapshot copy.
+
+    Snapshots store credentials so rollback can restore them. Anything that
+    leaves the API (version detail, rollback diff) must use this copy.
+
+    Args:
+        snapshot_data: A stored policy snapshot dict.
+
+    Returns:
+        A copy with MCP server secrets masked. The input is not modified.
+    """
+    if not isinstance(snapshot_data, dict):
+        return snapshot_data
+    servers = snapshot_data.get("mcp_servers")
+    if not isinstance(servers, list):
+        return snapshot_data
+    redacted = dict(snapshot_data)
+    redacted["mcp_servers"] = [
+        (
+            {**server, "auth_config": redact_auth_config(server["auth_config"])}
+            if isinstance(server, dict) and server.get("auth_config")
+            else server
+        )
+        for server in servers
+    ]
+    return redacted
 
 
 def is_redaction_marker(auth_config: Any) -> bool:
