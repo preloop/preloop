@@ -5,6 +5,7 @@ Regression: an upstream ``isError`` result lost ``isError`` and
 ``executed`` for upstream errors, raised HTTP 401s and approval declines.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -295,3 +296,68 @@ async def test_client_call_tool_keeps_is_error_and_structured_content():
     assert [item.text for item in result] == ["denied"]
     assert result.is_error is True
     assert result.structured_content == DENIED
+
+
+async def test_text_only_upstream_error_reason_comes_from_content(
+    monkeypatch, user_context
+):
+    """Without structuredContent the reason is taken from the text blocks."""
+    upstream = UpstreamToolContent(
+        [types.TextContent(type="text", text="token expired for this scope")],
+        is_error=True,
+    )
+    mcp, _, audit_service, _ = _setup(monkeypatch, user_context, upstream=upstream)
+    calls = []
+    audit_service.log_tool_call_async = lambda **kwargs: calls.append(kwargs)
+
+    await mcp.call_tool("safe_tool", {"ok": "yes"})
+
+    assert calls[0]["result"] == "upstream_error"
+    assert calls[0]["error_code"] == "tool_error"
+    assert calls[0]["error_reason"] == "token expired for this scope"
+
+
+@pytest.mark.parametrize("payload_status", ["pending_approval", "parked_for_human"])
+async def test_pending_approval_is_not_audited_as_declined(
+    monkeypatch, user_context, payload_status
+):
+    """An approval that is still open is pending, not declined."""
+    mcp, client, audit_service, _ = _setup(monkeypatch, user_context, upstream=[])
+    monkeypatch.setattr(
+        "preloop.services.approval_helper.require_approval",
+        AsyncMock(
+            return_value=(
+                False,
+                json.dumps({"status": payload_status, "request_id": "r1"}),
+            )
+        ),
+    )
+
+    await mcp.call_tool("safe_tool", {"ok": "yes"})
+
+    client.call_tool.assert_not_called()
+    assert _audit_kwargs(audit_service)["result"] == "pending_approval"
+
+
+async def test_post_approval_replay_reports_upstream_error(monkeypatch, user_context):
+    """The async-poll replay path records upstream_error, not executed."""
+    from preloop.services.dynamic_fastmcp import post_approval_exec_outcome
+
+    upstream = UpstreamToolContent(
+        [types.TextContent(type="text", text="denied")],
+        is_error=True,
+        structured_content=DENIED,
+    )
+    mcp, _, _, _ = _setup(monkeypatch, user_context, upstream=upstream)
+    internal = f"account_{user_context.account_id.replace('-', '_')}_safe_tool"
+
+    tool_result = await mcp.call_registered_tool_without_policy(
+        internal, {"ok": "yes"}, account_id=user_context.account_id
+    )
+    status, error = post_approval_exec_outcome(tool_result)
+
+    assert status == "upstream_error"
+    assert error == "insufficient_scope: scope not granted"
+    # Stamps are cleared, so a later success is not misread.
+    ok = ToolResult(content=[types.TextContent(type="text", text="ok")])
+    assert post_approval_exec_outcome(ok) == ("executed", None)

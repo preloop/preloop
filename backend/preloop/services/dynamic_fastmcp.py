@@ -206,6 +206,9 @@ AUDIT_TOOL_CALL_EXECUTED = "executed"
 AUDIT_TOOL_CALL_UPSTREAM_ERROR = "upstream_error"
 AUDIT_TOOL_CALL_DECLINED = "declined"
 AUDIT_TOOL_CALL_FAILED = "failed"
+# Approval still open (async polling or parked): not forwarded, not declined.
+AUDIT_TOOL_CALL_PENDING_APPROVAL = "pending_approval"
+_PENDING_APPROVAL_PAYLOAD_STATUSES = frozenset({"pending_approval", "parked_for_human"})
 
 # Wrapper outcome stamped when the upstream server answered with an error.
 _WRAPPER_OUTCOME_UPSTREAM_ERROR = "upstream_error"
@@ -273,7 +276,7 @@ def _proxied_upstream_result(text: str, upstream: Any) -> Any:
     if is_error:
         _tool_outcome_var.set(_WRAPPER_OUTCOME_UPSTREAM_ERROR)
         _tool_error_detail_var.set(
-            _upstream_error_detail(getattr(upstream, "content", None), structured)
+            _upstream_error_detail(list(upstream or []), structured)
         )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
@@ -320,6 +323,20 @@ def _record_mcp_server_error(server_id: str, message: str) -> None:
         logger.debug("Failed to record MCP server last_error", exc_info=True)
 
 
+def _is_pending_approval_payload(text: Optional[str]) -> bool:
+    """True for the async-polling / parked payload ``require_approval`` returns."""
+    if not text or not text.lstrip().startswith("{"):
+        return False
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") in _PENDING_APPROVAL_PAYLOAD_STATUSES
+    )
+
+
 def _audit_tool_call_outcome(
     *,
     exec_status: str,
@@ -332,14 +349,39 @@ def _audit_tool_call_outcome(
     code, reason = error_detail or (None, None)
     if exec_status == "failed":
         return AUDIT_TOOL_CALL_FAILED, code, reason or _short_reason(exec_error)
-    error_text = _short_reason(_tool_result_error_text(result))
+    full_error_text = _tool_result_error_text(result)
+    error_text = _short_reason(full_error_text)
     if wrapper_outcome == _WRAPPER_OUTCOME_UPSTREAM_ERROR:
         return AUDIT_TOOL_CALL_UPSTREAM_ERROR, code, reason or error_text
+    if wrapper_outcome == TOOL_CALL_STATUS_REFUSED and _is_pending_approval_payload(
+        full_error_text
+    ):
+        return AUDIT_TOOL_CALL_PENDING_APPROVAL, None, None
     if wrapper_outcome == TOOL_CALL_STATUS_REFUSED:
         return AUDIT_TOOL_CALL_DECLINED, code, reason or error_text
     if wrapper_outcome == TOOL_CALL_STATUS_FAILED or error_text is not None:
         return AUDIT_TOOL_CALL_FAILED, code, reason or error_text
     return AUDIT_TOOL_CALL_EXECUTED, None, None
+
+
+def post_approval_exec_outcome(tool_result: Any) -> tuple[str, Optional[str]]:
+    """Status and error for a tool replayed after approval (async-poll path).
+
+    That path calls the tool without the governed ``call_tool`` finally, so
+    read and clear the wrapper stamps here: an upstream ``isError`` result is
+    ``upstream_error``, any other error result is ``failed``.
+    """
+    wrapper_outcome = _tool_outcome_var.get(None)
+    code, reason = _tool_error_detail_var.get(None) or (None, None)
+    _tool_outcome_var.set(None)
+    _tool_error_detail_var.set(None)
+    if getattr(tool_result, "is_error", False) is not True:
+        return AUDIT_TOOL_CALL_EXECUTED, None
+    reason = reason or _short_reason(_tool_result_error_text(tool_result))
+    error = f"{code}: {reason}" if code and reason else (code or reason)
+    if wrapper_outcome == _WRAPPER_OUTCOME_UPSTREAM_ERROR:
+        return AUDIT_TOOL_CALL_UPSTREAM_ERROR, error
+    return AUDIT_TOOL_CALL_FAILED, error
 
 
 def _audit_error_kwargs(

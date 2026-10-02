@@ -887,6 +887,8 @@ export class AuditView extends AuthedElement {
         return { variant: 'danger', label: 'Failed' };
       case 'upstream_error':
         return { variant: 'danger', label: 'Upstream Error' };
+      case 'pending_approval':
+        return { variant: 'warning', label: 'Approval Pending' };
       case 'budget_denied':
         return { variant: 'danger', label: 'Budget Denied' };
       case 'success':
@@ -1677,6 +1679,9 @@ export class AuditView extends AuthedElement {
       } else if (executionSubevent.status === 'failed') {
         const err = executionSubevent.details?.error;
         story += `The tool then failed${err ? ` — ${err}` : ''}.`;
+      } else if (executionSubevent.status === 'upstream_error') {
+        const err = executionSubevent.details?.error;
+        story += `The upstream server then returned an error${err ? `: ${err}` : ''}.`;
       }
     } else if (
       group.outcome === 'upstream_error' ||
