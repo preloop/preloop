@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from sqlalchemy.orm import Session
 
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import crud_approval_event, crud_approval_request
 from preloop.models.db.session import get_async_db_session, get_db_session
 from preloop.models.models.approval_event import ApprovalEvent
@@ -192,30 +193,82 @@ def get_approval_request_public(
     return _to_public_request(approval_request, history)
 
 
-@router.post("/{request_id}/decide")
+class TokenDecisionBody(BaseModel):
+    """Body of a token decision. Optional on /approve and /decline.
+
+    ``action`` is required on /decide only, where the path does not name the
+    decision; on /approve and /decline the path is the decision.
+    """
+
+    action: Optional[str] = None
+    comment: Optional[str] = None
+    answer: Optional[dict] = None
+
+
+#: Path segments that decide. /approve and /decline are what the generic
+#: webhook payload advertises as decision.approve_url and decision.decline_url.
+_TOKEN_DECISION_ROUTES = ("approve", "decline", "decide")
+
+
+# One async route serves all three paths. Separate handlers would each hold a
+# synchronous Session on the event loop (see the ratchet in
+# tests/api/test_event_loop_pool_wait.py); the shared body offloads its sync
+# reads with run_db_off_loop instead.
+@router.post("/{request_id}/{route}")
 async def decide_approval_request_public(
     request_id: uuid.UUID,
-    decision: ApprovalDecisionRequest,
+    route: str,
     token: str = Query(..., description="Approval token"),
+    body: Optional[TokenDecisionBody] = None,
     db_sync: Session = Depends(get_db_session),
 ) -> ApprovalRequestPublic:
-    """Approve or decline an approval request using token (no authentication required).
+    """Approve or decline with the token from the link (no login required).
 
-    Args:
-        request_id: UUID of the approval request
-        decision: Approval decision (approve/decline) and optional comment
-        token: Secure token from the approval link
-        db_sync: Synchronous database session for validation
-
-    Returns:
-        Updated approval request
+    - ``POST /approval/{id}/approve?token=...``, body optional
+      ``{"comment": "...", "answer": {...}}``
+    - ``POST /approval/{id}/decline?token=...``, body optional
+      ``{"comment": "..."}``
+    - ``POST /approval/{id}/decide?token=...`` with
+      ``{"action": "approve" | "decline", "comment": "..."}``
 
     Raises:
-        HTTPException: If token is invalid, request not found, or already resolved
+        HTTPException: 404 for an unknown path, id or token; 422 if /decide
+            has no action; 400 for an invalid action or a resolved request.
     """
+    if route not in _TOKEN_DECISION_ROUTES:
+        raise HTTPException(status_code=404, detail="Not Found")
+    body = body or TokenDecisionBody()
+    if route == "decide":
+        if body.action is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "'action' ('approve' or 'decline') is required on /decide. "
+                    "Or POST to /approve or /decline, which need no body."
+                ),
+            )
+        action = body.action
+    else:
+        # The path names the decision; a body action is not consulted.
+        action = route
+    decision = ApprovalDecisionRequest(
+        action=action, comment=body.comment, answer=body.answer
+    )
+    return await _decide_with_token(request_id, decision, token, db_sync)
+
+
+async def _decide_with_token(
+    request_id: uuid.UUID,
+    decision: ApprovalDecisionRequest,
+    token: str,
+    db_sync: Session,
+) -> ApprovalRequestPublic:
+    """Shared body of every token-authenticated decision route."""
     # Validate token using CRUD layer (sync)
-    approval_request = crud_approval_request.get_by_id_and_token(
-        db_sync, request_id=str(request_id), token=token
+    approval_request = await run_db_off_loop(
+        lambda: crud_approval_request.get_by_id_and_token(
+            db_sync, request_id=str(request_id), token=token
+        )
     )
 
     if not approval_request:
@@ -309,8 +362,11 @@ async def decide_approval_request_public(
 
         # Re-query the timeline so the token page keeps Workflow History
         # after a decision instead of replacing it with the default [].
-        db_sync.expire_all()
-        history = crud_approval_event.get_by_request(
-            db_sync, approval_request_id=updated_request.id
-        )
+        def _history() -> List[ApprovalEvent]:
+            db_sync.expire_all()
+            return crud_approval_event.get_by_request(
+                db_sync, approval_request_id=updated_request.id
+            )
+
+        history = await run_db_off_loop(_history)
         return _to_public_request(updated_request, history)

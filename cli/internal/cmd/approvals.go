@@ -276,7 +276,7 @@ func runApprovalsApprove(cmd *cobra.Command, args []string) error {
 
 	request := map[string]string{}
 	if reason != "" {
-		request["reason"] = reason
+		request["comment"] = reason
 	}
 
 	var result ApprovalRequest
@@ -311,7 +311,7 @@ func runApprovalsDeny(cmd *cobra.Command, args []string) error {
 
 	request := map[string]string{}
 	if reason != "" {
-		request["reason"] = reason
+		request["comment"] = reason
 	}
 
 	var result ApprovalRequest

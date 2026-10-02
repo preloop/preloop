@@ -320,6 +320,29 @@ def get_approval_request_history(
     return response
 
 
+def _decision_for_path(
+    decision: Optional[ApprovalDecision], *, approving: bool
+) -> ApprovalDecision:
+    """Normalize the body of /approve or /decline, where the path is the decision.
+
+    The body is optional. ``approved`` may still be sent by older callers; if
+    it is, it must agree with the path, so a contradictory request is refused
+    instead of silently doing the opposite of what one half of it says.
+    """
+    decision = decision or ApprovalDecision()
+    if decision.approved is not None and decision.approved != approving:
+        route = "approve" if approving else "decline"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'approved': {str(decision.approved).lower()} contradicts "
+                f"/{route}. Omit 'approved', or use /decide."
+            ),
+        )
+    decision.approved = approving
+    return decision
+
+
 @router.get("", response_model=list[ApprovalRequestResponse])
 @require_permission("view_approvals")
 def list_approval_requests(
@@ -363,8 +386,8 @@ def list_approval_requests(
 @require_permission("decide_approvals")
 async def approve_request(
     request_id: uuid.UUID,
-    decision: ApprovalDecision,
     request: Request,
+    decision: Optional[ApprovalDecision] = None,
     current_user: User = Depends(get_current_active_user),
     # Required by @require_permission (fail-closed checks kwargs["db"]).
     # Handler body uses get_async_db_session() for ApprovalService work.
@@ -385,6 +408,7 @@ async def approve_request(
         HTTPException: If request not found or unauthorized
     """
     _ = db  # Injected for @require_permission; not used by handler body.
+    decision = _decision_for_path(decision, approving=True)
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
@@ -445,8 +469,8 @@ async def approve_request(
 @require_permission("decide_approvals")
 async def decline_request(
     request_id: uuid.UUID,
-    decision: ApprovalDecision,
     request: Request,
+    decision: Optional[ApprovalDecision] = None,
     current_user: User = Depends(get_current_active_user),
     # Required by @require_permission (fail-closed checks kwargs["db"]).
     # Handler body uses get_async_db_session() for ApprovalService work.
@@ -467,6 +491,7 @@ async def decline_request(
         HTTPException: If request not found or unauthorized
     """
     _ = db  # Injected for @require_permission; not used by handler body.
+    decision = _decision_for_path(decision, approving=False)
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 
@@ -544,6 +569,15 @@ async def decide_request(
         HTTPException: If request not found or unauthorized
     """
     _ = db  # Injected for @require_permission; not used by handler body.
+    if decision.approved is None:
+        # /decide is the one route whose path does not name the decision.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "'approved' (true or false) is required on /decide. "
+                "Or POST to /approve or /decline, which need no body."
+            ),
+        )
     # Get base URL from request
     base_url = os.getenv("PRELOOP_URL", str(request.base_url).rstrip("/"))
 

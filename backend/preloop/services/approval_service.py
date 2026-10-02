@@ -1936,7 +1936,8 @@ class ApprovalService:
                     else None
                 ),
                 # "review" is the honest name: the link opens the approval
-                # page, it does not decide anything. Decisions are taken with
+                # page, it does not decide anything. A receiving system decides
+                # with the token URLs under "decision" below, or with
                 # POST /api/v1/approval-requests/{id}/approve or /decline.
                 # "approve", "decline" and "view" are the same URL and always
                 # were; they stay for receivers that read those keys today and
@@ -1946,6 +1947,22 @@ class ApprovalService:
                     "approve": review_url,  # deprecated, same page as review
                     "decline": review_url,  # deprecated, same page as review
                     "view": review_url,  # deprecated, same page as review
+                },
+                # Machine-callable decision URLs. "actions" above are pages
+                # for a person; these are what a receiving system calls to
+                # answer. POST, no Authorization header: the token in the
+                # query string is the credential. Body is optional:
+                # {"comment": "..."} (approve also takes "answer").
+                "decision": {
+                    "method": "POST",
+                    "approve_url": urljoin(
+                        self.base_url,
+                        f"/approval/{approval_request.id}/approve?token={token}",
+                    ),
+                    "decline_url": urljoin(
+                        self.base_url,
+                        f"/approval/{approval_request.id}/decline?token={token}",
+                    ),
                 },
             }
 
