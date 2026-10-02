@@ -51,10 +51,11 @@ inside one repository. Other wildcards are not supported. Ordinary tracker Flows
 retain their existing behavior. Existing project and organization trigger filters
 continue to apply before employee intake.
 
-The trusted chat connection service calls
+Additional trusted adapters can call
 `preloop.services.employee_events.ingest_employee_event` after provider
-verification. It supplies account/source/connection identity independently of
-message text. The returned execution ID and `PENDING` status acknowledge durable
+verification, supplying account/source/connection identity independently of
+message text. Chat assistant connections handle linked human commands separately;
+the Discord bridge below supplies employee channel and membership events. The returned execution ID and `PENDING` status acknowledge durable
 intake; they do not claim that the task completed. Read execution status, failure,
 model usage, approvals and history through the existing Flow APIs/console.
 

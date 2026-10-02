@@ -868,6 +868,7 @@ def _register_control_plane_routes(
         copilot_usage,
         cost,
         event_webhooks,
+        employee_events,
         issue_costs,
         exports,
         features,
@@ -1146,6 +1147,7 @@ def _register_control_plane_routes(
     )
     # Note: Issue duplicates endpoint is now loaded via plugins/analytics
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
+    app.include_router(employee_events.router, prefix="/api/v1")
     from preloop.api.endpoints import flow_artifacts, publication_credentials
 
     app.include_router(flow_artifacts.router, prefix="/api/v1", tags=["Flow artifacts"])

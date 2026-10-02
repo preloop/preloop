@@ -26,11 +26,16 @@ def normalize_discord_event(
     channel_ids: frozenset[str],
 ) -> dict[str, Any] | None:
     """Select configured guild/channels and exclude bot or webhook replies."""
-    if data.get("guild_id") != guild_id:
+    if not isinstance(data, dict) or data.get("guild_id") != guild_id:
         return None
     if name == "GUILD_MEMBER_ADD":
         user = data.get("user", {})
-        if user.get("bot") or not user.get("id") or not data.get("joined_at"):
+        if (
+            not isinstance(user, dict)
+            or user.get("bot")
+            or not user.get("id")
+            or not data.get("joined_at")
+        ):
             return None
         return {
             "event_id": f"join:{guild_id}:{user['id']}:{data['joined_at']}",
@@ -45,7 +50,8 @@ def normalize_discord_event(
     if name == "MESSAGE_CREATE":
         author = data.get("author", {})
         if (
-            data.get("channel_id") not in channel_ids
+            not isinstance(author, dict)
+            or data.get("channel_id") not in channel_ids
             or author.get("bot")
             or data.get("webhook_id")
             or not data.get("id")
@@ -103,7 +109,10 @@ async def run_bridge(
         session_id, sequence = checkpoint.get("session_id"), checkpoint.get("sequence")
         gateway = checkpoint.get("gateway", gateway)
 
+    acknowledged_sequence = sequence
+
     def save_checkpoint() -> None:
+        nonlocal acknowledged_sequence
         state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = state_path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as output:
@@ -121,6 +130,7 @@ async def run_bridge(
             output.flush()
             os.fsync(output.fileno())
         temporary.replace(state_path)
+        acknowledged_sequence = sequence
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as client:
         while True:
@@ -216,7 +226,7 @@ async def run_bridge(
                                     await asyncio.sleep(min(2**attempt, 16))
                                 else:
                                     # Resume before this event so transport failure cannot lose it.
-                                    sequence = max(0, (sequence or 1) - 1)
+                                    sequence = acknowledged_sequence
                                     raise aiohttp.ClientConnectionError(
                                         "Employee ingress unavailable"
                                     )
@@ -225,6 +235,10 @@ async def run_bridge(
                         beat.cancel()
                         await asyncio.gather(beat, return_exceptions=True)
             except (aiohttp.ClientError, asyncio.TimeoutError):
+                # A failed POST may have accepted the event or may never have
+                # reached ingress. Resume from the durable acknowledgement;
+                # intake deduplicates accepted events. Never skip the failed one.
+                sequence = acknowledged_sequence
                 await asyncio.sleep(5)
 
 
