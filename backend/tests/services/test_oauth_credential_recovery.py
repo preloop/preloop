@@ -251,6 +251,25 @@ def test_terminal_error_names_credential_only_recovery(
     assert "onboarding" not in message
 
 
+@pytest.mark.parametrize("stored", ["[]", "null", '"not-an-object"', "not-json"])
+def test_fresh_login_can_repair_malformed_stored_credential(
+    oauth_model: models.AIModel, stored: str
+) -> None:
+    """Credential-only recovery must work even when the rejected payload is corrupt."""
+    service = SecretService()
+    secret = oauth_model.credentials_secret
+    secret.status = "error"
+    secret.meta_data["last_refresh_code"] = "invalid_grant"
+    secret.encrypted_value = encrypt_value(stored)
+    incoming = json.dumps(
+        {
+            "type": secret.meta_data["credential_type"],
+            "refresh": "synthetic-new-login",
+        }
+    )
+    assert service._validate_oauth_replacement(secret, incoming) == []
+
+
 def test_transient_error_does_not_request_provider_login() -> None:
     error = CredentialRefreshError("synthetic", provider="anthropic", status_code=503)
     message = error.recovery_message()

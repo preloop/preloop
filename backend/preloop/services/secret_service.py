@@ -418,12 +418,16 @@ class SecretService:
             and metadata.get("last_refresh_code") in TERMINAL_OAUTH_REFRESH_CODES
             and secret_ref.encrypted_value
         ):
-            current = json.loads(decrypt_value(secret_ref.encrypted_value))
-            failed_refresh = str(current.get("refresh") or "").strip()
-            if failed_refresh:
-                failed_hash = self._refresh_token_fingerprint(failed_refresh)
-                if failed_hash not in history:
-                    history.append(failed_hash)
+            try:
+                current = json.loads(decrypt_value(secret_ref.encrypted_value))
+            except (TypeError, ValueError):
+                current = None
+            if isinstance(current, dict):
+                failed_refresh = str(current.get("refresh") or "").strip()
+                if failed_refresh:
+                    failed_hash = self._refresh_token_fingerprint(failed_refresh)
+                    if failed_hash not in history:
+                        history.append(failed_hash)
         if fingerprint in history:
             raise ValueError(
                 "This subscription refresh token has already been consumed or revoked. "

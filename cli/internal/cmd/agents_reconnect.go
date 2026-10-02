@@ -33,6 +33,43 @@ Examples:
 	RunE: runAgentsReconnect,
 }
 
+// These seams keep command tests away from browsers and real credential stores.
+var runReconnectSubscriptionLogin = func(cmd *cobra.Command, args []string) error {
+	login := exec.Command(args[0], args[1:]...)
+	login.Stdin = cmd.InOrStdin()
+	login.Stdout = cmd.OutOrStdout()
+	login.Stderr = cmd.ErrOrStderr()
+	return login.Run()
+}
+
+var readReconnectSubscriptionCredential = func(agent AgentConfig) map[string]interface{} {
+	if isClaudeCodeAgent(agent) {
+		credential, _ := resolveClaudeOAuthCredential()
+		if runtime.GOOS == "darwin" {
+			native, _ := resolveClaudeKeychainOAuthCredential()
+			credential = selectClaudeReconnectCredential(credential, native, true)
+		}
+		if credential != nil {
+			return credential.Payload()
+		}
+	} else if isCodexCLIAgent(agent) {
+		credential, _ := resolveCodexOAuthCredential()
+		if credential != nil {
+			return credential.Payload()
+		}
+	}
+	return nil
+}
+
+func selectClaudeReconnectCredential(file, keychain *claudeOAuthCredential, darwin bool) *claudeOAuthCredential {
+	// Claude's native macOS login writes the Keychain. An old credential file
+	// must not hide the login the operator just completed there.
+	if darwin && keychain != nil {
+		return keychain
+	}
+	return file
+}
+
 func init() {
 	agentsCmd.AddCommand(agentsReconnectCmd)
 	agentsReconnectCmd.Flags().Bool("from-local", false, "Use a fresh local subscription login without opening sign-in")
@@ -85,33 +122,11 @@ func runAgentsReconnect(cmd *cobra.Command, args []string) error {
 	}
 	fromLocal, _ := cmd.Flags().GetBool("from-local")
 	if !fromLocal {
-		login := exec.Command(loginArgs[0], loginArgs[1:]...)
-		login.Stdin = cmd.InOrStdin()
-		login.Stdout = cmd.OutOrStdout()
-		login.Stderr = cmd.ErrOrStderr()
-		if err := login.Run(); err != nil {
+		if err := runReconnectSubscriptionLogin(cmd, loginArgs); err != nil {
 			return fmt.Errorf("subscription sign-in failed: %w", err)
 		}
 	}
-	payload := map[string]interface{}{}
-	if wantType == anthropicClaudeCodeOAuthCredentialType {
-		credential, _ := resolveClaudeOAuthCredential()
-		// Claude's native macOS login writes the Keychain. An old credential
-		// file must not hide the login the operator just completed there.
-		if runtime.GOOS == "darwin" {
-			if native, _ := resolveClaudeKeychainOAuthCredential(); native != nil {
-				credential = native
-			}
-		}
-		if credential != nil {
-			payload = credential.Payload()
-		}
-	} else {
-		credential, _ := resolveCodexOAuthCredential()
-		if credential != nil {
-			payload = credential.Payload()
-		}
-	}
+	payload := readReconnectSubscriptionCredential(agent)
 	if err := validateReconnectCredential(payload); err != nil {
 		return fmt.Errorf("%w; run %s and retry with --from-local", err, strings.Join(loginArgs, " "))
 	}
