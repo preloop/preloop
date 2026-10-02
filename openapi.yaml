@@ -4214,9 +4214,10 @@ paths:
       summary: List Approval Requests
       description: "List approval requests for the current account.\n\nArgs:\n   \
         \ status: Filter by status (pending, approved, declined, etc.)\n    execution_id:\
-        \ Filter by execution ID\n    limit: Maximum number of results\n    skip:\
-        \ Number of results to skip\n    current_user: Current authenticated user\n\
-        \nReturns:\n    List of approval requests"
+        \ Filter by execution ID\n    runtime_session_id: Filter by a validated runtime\
+        \ session ID\n    limit: Maximum number of results\n    skip: Number of results\
+        \ to skip\n    current_user: Current authenticated user\n\nReturns:\n    List\
+        \ of approval requests"
       operationId: list_approval_requests_api_v1_approval_requests_get
       security:
       - bearerAuth: []
@@ -4241,12 +4242,24 @@ paths:
           description: Filter by execution ID
           title: Execution Id
         description: Filter by execution ID
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Filter by runtime session ID
+          title: Runtime Session Id
+        description: Filter by runtime session ID
       - name: limit
         in: query
         required: false
         schema:
           type: integer
           maximum: 100
+          minimum: 1
           description: Maximum number of results
           default: 50
           title: Limit
@@ -4256,6 +4269,7 @@ paths:
         required: false
         schema:
           type: integer
+          minimum: 0
           description: Number of results to skip
           default: 0
           title: Skip
@@ -27905,6 +27919,11 @@ components:
       title: RunnerResponse
     RuntimeSessionActivityItem:
       properties:
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
         activity_type:
           type: string
           title: Activity Type

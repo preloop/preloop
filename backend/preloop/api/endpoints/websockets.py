@@ -4,28 +4,29 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid_sync
 from preloop.api.auth.key_scopes import api_key_allowed_on_channel
 from preloop.services.db_executor import detach_user, run_db_async
 from preloop.models.crud import crud_flow, crud_flow_execution
-from preloop.models.models import User
+from preloop.models import models
 from preloop.services.activity_tracker import handle_activity
 from preloop.services.session_manager import session_manager
 from preloop.services.websocket_manager import manager
 from preloop.sync.services.event_bus import EventBus, get_nats_client
 from preloop.utils import get_client_ip
+from preloop.utils.permissions import require_permission
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-async def _resolve_token_user(token: str) -> Optional[User]:
+async def _resolve_token_user(token: str) -> Optional[models.User]:
     """Validate a token using a short-lived database session."""
 
-    def _lookup(db: Session) -> Optional[User]:
+    def _lookup(db: Session) -> Optional[models.User]:
         user = get_user_from_token_if_valid_sync(token, db)
         if user is not None and not api_key_allowed_on_channel(
             getattr(user, "_auth_api_key", None), "console websocket"
@@ -34,6 +35,30 @@ async def _resolve_token_user(token: str) -> Optional[User]:
         return detach_user(db, user)
 
     return await run_db_async(_lookup)
+
+
+@require_permission("view_approvals")
+def _approval_visibility(*, current_user: models.User, db: Session) -> bool:
+    """Apply the same OSS, RBAC and account authorizer as approval REST reads."""
+    return True
+
+
+async def _set_approval_visibility(connection_id: str, user: models.User) -> None:
+    """Fail closed before sending any approval payload, including legacy sockets."""
+    manager.approval_visibility[connection_id] = False
+
+    def check(db: Session) -> bool:
+        return _approval_visibility(current_user=user, db=db)
+
+    try:
+        manager.approval_visibility[connection_id] = await run_db_async(check)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            logger.warning(
+                "Approval websocket authorization unavailable", exc_info=True
+            )
+    except Exception:
+        logger.warning("Approval websocket authorization failed", exc_info=True)
 
 
 @router.websocket("/ws")
@@ -91,6 +116,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # Connect with account_id for filtering
     connection_id = await manager.connect_with_account(websocket, str(user.account_id))
+    await _set_approval_visibility(connection_id, user)
 
     logger.info(
         f"WebSocket session {session.id} established for {user.username} "
@@ -384,6 +410,7 @@ async def unified_websocket(websocket: WebSocket):
             manager_connection_id = await manager.connect_with_account(
                 websocket, str(user.account_id)
             )
+            await _set_approval_visibility(manager_connection_id, user)
         else:
             # For anonymous users, register without account filtering
             manager_connection_id = str(session.connection_id)
@@ -469,12 +496,13 @@ async def unified_websocket(websocket: WebSocket):
                         manager_connection_id
                         and manager_connection_id in manager.active_connections
                     ):
-                        del manager.active_connections[manager_connection_id]
+                        manager.disconnect(manager_connection_id)
 
                     # Register with account filtering for broadcast messages
                     manager_connection_id = await manager.connect_with_account(
                         websocket, str(user.account_id)
                     )
+                    await _set_approval_visibility(manager_connection_id, user)
                     for topic in subscribed_topics:
                         manager.subscribe(manager_connection_id, topic)
 

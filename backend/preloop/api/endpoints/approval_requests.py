@@ -3,7 +3,7 @@
 import logging
 import os
 import uuid
-from typing import AsyncGenerator, Optional, Union
+from typing import Annotated, AsyncGenerator, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -325,8 +325,11 @@ def get_approval_request_history(
 def list_approval_requests(
     status: Optional[str] = Query(None, description="Filter by status"),
     execution_id: Optional[str] = Query(None, description="Filter by execution ID"),
-    limit: int = Query(50, le=100, description="Maximum number of results"),
-    skip: int = Query(0, description="Number of results to skip"),
+    runtime_session_id: Annotated[
+        Optional[uuid.UUID], Query(description="Filter by runtime session ID")
+    ] = None,
+    limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
+    skip: int = Query(0, ge=0, description="Number of results to skip"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> list[ApprovalRequestResponse]:
@@ -335,6 +338,7 @@ def list_approval_requests(
     Args:
         status: Filter by status (pending, approved, declined, etc.)
         execution_id: Filter by execution ID
+        runtime_session_id: Filter by a validated runtime session ID
         limit: Maximum number of results
         skip: Number of results to skip
         current_user: Current authenticated user
@@ -347,6 +351,7 @@ def list_approval_requests(
         db,
         account_id=current_user.account_id,
         execution_id=execution_id,
+        runtime_session_id=str(runtime_session_id) if runtime_session_id else None,
         status=status,
         skip=skip,
         limit=limit,
