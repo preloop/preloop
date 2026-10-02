@@ -662,6 +662,7 @@ export class CostView extends AuthedElement {
     this.digestAccountId = link.accountId;
     this.digestNotice = link.error;
     this.digestBlocked = link.blocked;
+    if (!link.period && !link.accountId) this.activeAccountLabel = '';
     this.selectedRange = this.loadStoredDateRange();
     this.summary = null;
   }
@@ -813,11 +814,23 @@ export class CostView extends AuthedElement {
     ) {
       return;
     }
+    const hadDigestContext =
+      this.digestPeriod !== null ||
+      this.digestAccountId !== null ||
+      this.digestNotice !== null;
     this.digestPeriod = null;
     this.digestAccountId = null;
     this.digestNotice = null;
     this.digestBlocked = false;
-    window.history.pushState({}, '', withoutDigestPeriod(window.location.href));
+    this.activeAccountLabel = '';
+    // Only leaving digest mode changes the URL; ordinary preset changes must
+    // not stack no-op history entries.
+    if (hadDigestContext)
+      window.history.pushState(
+        {},
+        '',
+        withoutDigestPeriod(window.location.href)
+      );
     this.selectedRange = value;
     this.previousRangeSummary = null;
     this.persistDateRange(value);

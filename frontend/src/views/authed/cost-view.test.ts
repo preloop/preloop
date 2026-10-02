@@ -1832,6 +1832,31 @@ describe('CostView', () => {
     expect(last.searchParams.get('start_date')).to.equal(digestStart);
   });
 
+  it('ordinary preset changes add no history entry and leaving digest mode drops the account label', async () => {
+    localStorage.setItem('preloop.cost.dateRange', 'last-30');
+    window.history.replaceState({}, '', digestUrl);
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    await settled(element);
+    expect(element.shadowRoot?.textContent).to.contain('Active account:');
+    const pushSpy = sinon.spy(window.history, 'pushState');
+    try {
+      const select = element.shadowRoot?.querySelector('time-range-select');
+      select?.dispatchEvent(
+        new CustomEvent('range-change', { detail: { value: 'last-7' } })
+      );
+      await settled(element);
+      expect(pushSpy.callCount).to.equal(1);
+      expect(element.shadowRoot?.textContent).not.to.contain('Active account:');
+      select?.dispatchEvent(
+        new CustomEvent('range-change', { detail: { value: 'last-30' } })
+      );
+      await settled(element);
+      expect(pushSpy.callCount).to.equal(1);
+    } finally {
+      pushSpy.restore();
+    }
+  });
+
   it('blocks mismatched accounts before every analytics request and rechecks after switching', async () => {
     accountPayload.id = '00000000-0000-4000-8000-000000000002';
     window.history.replaceState({}, '', digestUrl);
