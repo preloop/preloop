@@ -24,6 +24,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths and rejects non-local ones. Gateway usage CRUD adds full-window
   model and agent rankings with unknown and remainder totals.
 
+- **Session artifacts guide.** `docs/guide/artifacts.md` covers kinds and
+  caps, labels, the MCP and REST deposit paths with tested examples, where
+  artifacts appear, retention and budget, the standards mapping and every
+  error code. The browser agents page now says what the console shows and
+  that Playwright MCP `--image-responses omit` yields steps without
+  screenshots (#1090).
+- **`deposit_artifact` MCP tool.** An agent stores a file, image, transcript
+  or text on its own runtime session through the MCP endpoint alone; it
+  shows up in the session's artifact list and timeline. Takes one MCP
+  content block, answers with a `resource_link` and the artifact descriptor,
+  and reports refusals with the same codes as the REST deposit API.
+  Default-off: enable it on the Tools page or in a flow's
+  `allowed_mcp_tools`. See `docs/architecture/mcp.md` (#1081).
 - **`preloop flow trigger --stop-on-interrupt`.** When `--wait` is
   interrupted by SIGINT or SIGTERM, the CLI stops the execution on the
   server (one stop request), prints the execution id and final status, and

@@ -47,6 +47,9 @@ SOURCE_KIND_BROWSER_STEP = "browser_step"
 SOURCE_KIND_OPERATOR_NOTE = "operator_note"
 SOURCE_KIND_SESSION_SUMMARY = "session_summary"
 SOURCE_KIND_FLOW_LOG = "flow_log"
+#: A stored session artifact (#1082): transcript and document text, or the
+#: name, labels and tool of any other kind. ``source_id`` is the artifact id.
+SOURCE_KIND_ARTIFACT = "artifact"
 
 SOURCE_KINDS = (
     SOURCE_KIND_GATEWAY_INTERACTION,
@@ -56,6 +59,7 @@ SOURCE_KINDS = (
     SOURCE_KIND_OPERATOR_NOTE,
     SOURCE_KIND_SESSION_SUMMARY,
     SOURCE_KIND_FLOW_LOG,
+    SOURCE_KIND_ARTIFACT,
 )
 
 #: Content stored verbatim after sanitising, nothing was masked.

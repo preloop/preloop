@@ -176,6 +176,7 @@ nav:
       - Operator notes: guide/operator-notes.md
 
   - Sessions, search and audit:
+      - Session artifacts: guide/artifacts.md
       - Session search for agents: guide/agent-session-search.md
       - Saved session searches: guide/session-saved-searches.md
       - Session search audit: guide/session-search-audit.md

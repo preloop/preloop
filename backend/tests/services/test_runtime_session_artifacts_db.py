@@ -62,10 +62,12 @@ def _store(
         "source": "browser_use",
         "source_ref": "step-1",
         "content_type": "image/png",
-        "plaintext": b"unpublished-screenshot-bytes",
+        "plaintext": b"\x89PNG\r\n\x1a\n" + b"unpublished-screenshot-bytes",
         "manifest": {"step_index": 1},
         "activity_id": scope["activity_id"],
     }
+    if overrides.get("kind") == "recording" and "plaintext" not in overrides:
+        payload["plaintext"] = b"\x1a\x45\xdf\xa3" + b"unpublished-recording-bytes"
     payload.update(overrides)
     return crud.store(db_session, **payload)
 
@@ -95,12 +97,14 @@ def test_store_same_source_ref_is_idempotent(
     second = _store(
         db_session,
         scope,
-        plaintext=b"a-different-screenshot",
+        plaintext=b"\x89PNG\r\n\x1a\n" + b"a-different-screenshot",
         manifest={"step_index": 99},
     )
     assert second.id == first.id
     assert _count(db_session, scope) == 1
-    assert crud.decrypt(second) == b"unpublished-screenshot-bytes"
+    assert (
+        crud.decrypt(second) == b"\x89PNG\r\n\x1a\n" + b"unpublished-screenshot-bytes"
+    )
     assert second.manifest == {"step_index": 1}
 
     other_kind = _store(db_session, scope, kind="recording", content_type="video/webm")
@@ -132,7 +136,7 @@ def test_decrypt_round_trip_ciphertext_differs_from_plaintext(
     db_session: Session, scope: dict[str, Any]
 ) -> None:
     """Stored ciphertext decrypts to the plaintext and is not the plaintext."""
-    plaintext = b"unpublished-screenshot-bytes"
+    plaintext = b"\x89PNG\r\n\x1a\n" + b"unpublished-screenshot-bytes"
     stored = _store(db_session, scope, plaintext=plaintext)
     db_session.refresh(stored)
     ciphertext = bytes(stored.ciphertext)
@@ -158,7 +162,7 @@ def test_mark_unavailable_clears_ciphertext_and_bytes(
     db_session: Session, scope: dict[str, Any]
 ) -> None:
     """Evicting an artifact drops its ciphertext and its byte totals."""
-    plaintext = b"unpublished-screenshot-bytes"
+    plaintext = b"\x89PNG\r\n\x1a\n" + b"unpublished-screenshot-bytes"
     stored = _store(db_session, scope, plaintext=plaintext)
     assert crud.account_bytes(db_session, account_id=scope["account_id"]) == len(
         plaintext
@@ -219,7 +223,7 @@ def test_oversized_plaintext_writes_nothing(
         kind="recording",
         content_type="video/webm",
         source_ref="clip-1",
-        plaintext=b"123456",
+        plaintext=b"\x1a\x45\xdf\xa3" + b"12",
     )
     assert recording.size_bytes == 6
     with pytest.raises(ValueError, match="artifact_too_large"):

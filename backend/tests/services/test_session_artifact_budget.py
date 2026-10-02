@@ -67,7 +67,7 @@ def _recording(
         source="browser_use",
         source_ref=source_ref,
         content_type="video/webm",
-        plaintext=b"x" * _CHUNK,
+        plaintext=b"\x1a\x45\xdf\xa3" + b"x" * (_CHUNK - 4),
         manifest={},
         activity_id=activity_id,
     )
@@ -210,7 +210,7 @@ def test_recording_is_evicted_before_an_older_screenshot(
         source="browser_use",
         source_ref="step-1",
         content_type="image/png",
-        plaintext=b"x" * _CHUNK,
+        plaintext=b"\x89PNG\r\n\x1a\n" + b"x" * (_CHUNK - 8),
         manifest={},
         activity_id=step.id,
     )
@@ -256,7 +256,7 @@ def test_screenshot_eviction_marks_the_browser_step(
         source="browser_use",
         source_ref="step-1",
         content_type="image/png",
-        plaintext=b"x" * _CHUNK,
+        plaintext=b"\x89PNG\r\n\x1a\n" + b"x" * (_CHUNK - 8),
         manifest={},
         activity_id=step.id,
     )
@@ -268,7 +268,7 @@ def test_screenshot_eviction_marks_the_browser_step(
         source="browser_use",
         source_ref="step-2",
         content_type="image/png",
-        plaintext=b"y" * _CHUNK,
+        plaintext=b"\x89PNG\r\n\x1a\n" + b"y" * (_CHUNK - 8),
         manifest={},
     )
     db_session.refresh(step)
@@ -291,7 +291,7 @@ def test_exhausted_budget_publishes_nothing(
         source="browser_use",
         source_ref="clip-small",
         content_type="video/webm",
-        plaintext=b"x" * 40,
+        plaintext=b"\x1a\x45\xdf\xa3" + b"x" * 36,
         manifest={},
     )
     with pytest.raises(ValueError, match="storage_budget_exhausted"):
@@ -303,7 +303,7 @@ def test_exhausted_budget_publishes_nothing(
             source="browser_use",
             source_ref="clip-large",
             content_type="video/webm",
-            plaintext=b"y" * 120,
+            plaintext=b"\x1a\x45\xdf\xa3" + b"y" * 116,
             manifest={},
         )
     assert emitted == []
