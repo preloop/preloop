@@ -163,6 +163,36 @@ def _origin_runtime_session_id(
         return None
 
 
+#: Longest working directory stored on a session; matches the column.
+MAX_SESSION_CWD_CHARS = 1024
+
+
+def _record_session_cwd(
+    identity: PermissionIdentity, runtime_session_id: Any, cwd: str
+) -> None:
+    """Remember the working directory the hook reported for its session.
+
+    The session list uses it to label sessions that have no title yet, so two
+    runs started in the same second can be told apart (#1148). One guarded
+    UPDATE: it writes only when the value changed, is bounded to the caller's
+    account, and never raises, because a label must not turn a permission
+    check into a denied tool call.
+    """
+    value = cwd.strip()[:MAX_SESSION_CWD_CHARS]
+    if not value:
+        return
+    try:
+        with get_session_factory()() as db:
+            db.query(models.RuntimeSession).filter(
+                models.RuntimeSession.id == runtime_session_id,
+                models.RuntimeSession.account_id == identity.account_id,
+                models.RuntimeSession.cwd.is_distinct_from(value),
+            ).update({models.RuntimeSession.cwd: value}, synchronize_session=False)
+            db.commit()
+    except Exception:
+        logger.warning("Recording the session cwd failed", exc_info=True)
+
+
 def _claim_operator_note(identity: PermissionIdentity) -> Optional[str]:
     """Claim this session's pending operator notes for the hook channel.
 
@@ -362,6 +392,7 @@ async def agent_permission_check(
             "session_id": (payload.session_id or "").strip() or None,
             "model": (payload.model or "").strip() or None,
         }
+    origin_id: Optional[str] = None
     if payload.session_id and payload.session_id.strip():
         origin_id = await run_db_off_loop(
             lambda: _origin_runtime_session_id(
@@ -372,6 +403,11 @@ async def agent_permission_check(
             tool_input["_preloop_origin"]["runtime_session_id"] = origin_id
     if payload.cwd:
         tool_input["cwd"] = payload.cwd
+        cwd_session_id = origin_id or identity.runtime_session_id
+        if cwd_session_id is not None:
+            await run_db_off_loop(
+                lambda: _record_session_cwd(identity, cwd_session_id, payload.cwd)
+            )
     # The approval model intentionally has no adapter column. Preserve the
     # non-sensitive origin alongside the native tool input so approver
     # surfaces can distinguish the adapter without a schema migration.
