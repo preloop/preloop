@@ -10,14 +10,31 @@ from typing import Any, Optional, Union
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..models.runtime_session_optimization_result import (
-    RuntimeSessionOptimizationResult,
-)
+from preloop.models import models
+
 from .base import CRUDBase
+
+RuntimeSessionOptimizationResult = models.RuntimeSessionOptimizationResult
 
 
 class CRUDRuntimeSessionOptimizationResult(CRUDBase[RuntimeSessionOptimizationResult]):
     """CRUD operations for cached optimization responses."""
+
+    def list_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        limit: int = 500,
+    ) -> list[RuntimeSessionOptimizationResult]:
+        """Return the existing bounded newest-first suggestion population."""
+        return (
+            db.query(self.model)
+            .filter(self.model.account_id == account_id)
+            .order_by(self.model.updated_at.desc())
+            .limit(limit)
+            .all()
+        )
 
     def get_by_scope(
         self,

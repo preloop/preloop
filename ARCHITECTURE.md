@@ -287,3 +287,12 @@ on failure. Before returning success, the API checks the account's registered
 agent and selected model binding through CRUD. Credentials stay in request
 memory; audit events contain deployment identifiers and outcomes. See
 [operator configuration](docs/operations/agent-deployment.md).
+
+Cost digest consumers use full-window CRUD aggregates for model and agent
+request rankings. SQL window totals preserve unknown activity and remaining
+known groups while returning at most three named entries plus a bucket row.
+Agent attribution prefers the account-owned direct managed principal, then
+an account-owned session's managed agent, then a named principal. Account
+constraints and scalar session association prevent cross-account labels and
+join fan-out. Console exact-period links preserve UTC microseconds and use
+normal authenticated account scoping; URL account context grants no access.

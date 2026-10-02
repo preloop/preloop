@@ -1,3 +1,8 @@
+import {
+  parseDigestLink,
+  withoutDigestPeriod,
+  type DigestPeriod,
+} from '../../utils/digest-period';
 import { html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -7,6 +12,7 @@ import {
   deleteModelPriceOverride,
   updateModelPriceOverride,
   getAccountAgents,
+  getAccountDetails,
   getAIModels,
   getBudgetPolicies,
   getCostAnalyticsSummary,
@@ -164,6 +170,16 @@ export class CostView extends AuthedElement {
   @state() private loading = true;
   @state() private saving = false;
   @state() private error: string | null = null;
+  @state() private digestPeriod: DigestPeriod | null = null;
+  @state() private digestNotice: string | null = null;
+  @state() private digestBlocked = false;
+  @state() private activeAccountLabel = '';
+  private digestAccountId: string | null = null;
+  private readonly restoreUrlPeriod = () => {
+    this.readUrlPeriod();
+    void this.load();
+  };
+
   @state() private selectedRange: DateRangePreset = 'last-30';
   @state() private budgetDialogOpen = false;
   @state() private priceDialogOpen = false;
@@ -635,11 +651,25 @@ export class CostView extends AuthedElement {
     this.requestedPanel = new URLSearchParams(window.location.search).get(
       'panel'
     );
+    this.readUrlPeriod();
+    window.addEventListener('popstate', this.restoreUrlPeriod);
     void this.load();
+  }
+
+  private readUrlPeriod() {
+    const link = parseDigestLink(window.location.search);
+    this.digestPeriod = link.period;
+    this.digestAccountId = link.accountId;
+    this.digestNotice = link.error;
+    this.digestBlocked = link.blocked;
+    if (!link.period && !link.accountId) this.activeAccountLabel = '';
+    this.selectedRange = this.loadStoredDateRange();
+    this.summary = null;
   }
 
   disconnectedCallback() {
     ++this.loadGeneration;
+    window.removeEventListener('popstate', this.restoreUrlPeriod);
     super.disconnectedCallback();
   }
 
@@ -685,6 +715,7 @@ export class CostView extends AuthedElement {
   private getDateParams(
     range: DateRangePreset = this.selectedRange
   ): DateRangeParams {
+    if (this.digestPeriod) return { ...this.digestPeriod };
     const window = resolveTimeRange(range);
     return {
       startDate: window.startDate as string,
@@ -774,9 +805,32 @@ export class CostView extends AuthedElement {
     const detail = (event as CustomEvent<{ value?: string }>).detail;
     const value = (detail?.value ??
       (event.target as HTMLSelectElement).value) as DateRangePreset;
-    if (!DATE_RANGE_PRESETS.includes(value) || value === this.selectedRange) {
+    if (
+      !DATE_RANGE_PRESETS.includes(value) ||
+      (value === this.selectedRange &&
+        !this.digestPeriod &&
+        !this.digestAccountId &&
+        !this.digestNotice)
+    ) {
       return;
     }
+    const hadDigestContext =
+      this.digestPeriod !== null ||
+      this.digestAccountId !== null ||
+      this.digestNotice !== null;
+    this.digestPeriod = null;
+    this.digestAccountId = null;
+    this.digestNotice = null;
+    this.digestBlocked = false;
+    this.activeAccountLabel = '';
+    // Only leaving digest mode changes the URL; ordinary preset changes must
+    // not stack no-op history entries.
+    if (hadDigestContext)
+      window.history.pushState(
+        {},
+        '',
+        withoutDigestPeriod(window.location.href)
+      );
     this.selectedRange = value;
     this.previousRangeSummary = null;
     this.persistDateRange(value);
@@ -799,21 +853,47 @@ export class CostView extends AuthedElement {
     this.budgetContextReady = false;
     this.pricingContextReady = false;
     this.overrideRemoved = null;
-    void this.loadContext(generation);
+    if (this.digestPeriod || this.digestAccountId || this.digestBlocked)
+      this.summary = null;
     try {
+      if (this.digestBlocked) {
+        this.loading = false;
+        return;
+      }
+      // Resolve the authenticated account before any window-specific request.
+      // Never send the URL's account id to an analytics endpoint.
+      if (this.digestAccountId || this.digestPeriod) {
+        const account = await getAccountDetails();
+        if (generation !== this.loadGeneration) return;
+        this.activeAccountLabel = account.organization_name || account.id;
+        if (
+          this.digestAccountId &&
+          account.id.toLowerCase() !== this.digestAccountId
+        ) {
+          this.digestNotice =
+            'This digest belongs to a different account. Switch accounts to view it';
+          this.digestBlocked = true;
+          this.loading = false;
+          return;
+        }
+      }
+      void this.loadContext(generation);
       const summary = await getCostAnalyticsSummary({
         ...period,
         includeBreakdown: false,
       });
       if (generation !== this.loadGeneration) return;
       this.summary = summary;
-      this.currentPeriod = {
-        startDate: summary.period_start,
-        endDate: summary.period_end,
-      };
+      this.currentPeriod = this.digestPeriod
+        ? { ...period }
+        : {
+            startDate: summary.period_start,
+            endDate: summary.period_end,
+          };
       this.loadedAt = new Date().toISOString();
       this.loading = false;
-      void this.loadPreviousRangeSummary(generation, range);
+      if (!this.digestPeriod)
+        void this.loadPreviousRangeSummary(generation, range);
       void this.loadTab(this.activeTab, generation);
       if (summary.imported_usage?.event_count)
         void this.loadTab('imported', generation);
@@ -1165,7 +1245,9 @@ export class CostView extends AuthedElement {
    * The short form of the selected range, for stat labels ("$ est. · 30d").
    */
   private rangeChipLabel(): string {
-    return timeRangeShortLabel(this.selectedRange);
+    return this.digestPeriod
+      ? 'Digest period'
+      : timeRangeShortLabel(this.selectedRange);
   }
 
   /**
@@ -1175,6 +1257,8 @@ export class CostView extends AuthedElement {
    * actually given.
    */
   private rangeWindowLabel(): string {
+    if (this.digestPeriod)
+      return `Digest period: ${this.digestPeriod.startDate} to ${this.digestPeriod.endDate} (UTC; end exclusive)`;
     const params = this.getDateParams();
     const start = new Date(this.summary?.period_start || params.startDate);
     const end = new Date(this.summary?.period_end || params.endDate);
@@ -1219,7 +1303,7 @@ export class CostView extends AuthedElement {
   }
 
   private getProjectedPeriodCost(): number | null {
-    if (!this.summary) return null;
+    if (!this.summary || this.digestPeriod) return null;
     const now = new Date();
     if (this.selectedRange === 'today') {
       const dayStart = new Date(this.getDateParams('today').startDate);
@@ -1276,6 +1360,7 @@ export class CostView extends AuthedElement {
   }
 
   private spendComparisonDetail(): string {
+    if (this.digestPeriod) return 'Gateway estimate for this interval';
     const previousCost = this.previousRangeSummary?.estimated_cost;
     if (previousCost === null || previousCost === undefined) {
       return `Compared to ${this.previousRangeLabel()}`;
@@ -1538,7 +1623,7 @@ export class CostView extends AuthedElement {
         <div class="metric-card">
           <div class="metric-label">
             ${
-              this.selectedRange === 'this-month'
+              !this.digestPeriod && this.selectedRange === 'this-month'
                 ? 'Month to date'
                 : `$ est. · ${this.rangeChipLabel()}`
             }
@@ -3509,11 +3594,13 @@ export class CostView extends AuthedElement {
           description="Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend."
         ></view-header>
 
+        ${this.activeAccountLabel ? html`<p>Active account: ${this.activeAccountLabel}</p>` : nothing}
+        ${this.digestNotice ? html`<sl-alert open variant="warning">${this.digestNotice}</sl-alert>` : nothing}
         <div class="toolbar">
           <time-range-select
             ariaLabel="Cost date range"
-            .value=${this.selectedRange}
-            .options=${DATE_RANGE_OPTIONS}
+            .value=${this.digestPeriod ? 'digest' : this.selectedRange}
+            .options=${this.digestPeriod ? [{ value: 'digest', label: 'Digest period' }, ...DATE_RANGE_OPTIONS] : DATE_RANGE_OPTIONS}
             @range-change=${this.handleRangeChange}
           ></time-range-select>
           <span class="range-window" title=${this.rangeWindowTitle()}

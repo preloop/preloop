@@ -225,3 +225,8 @@ Execution environment profiles and hosted checkpoint recovery are documented in 
 Operators can enable verified SSH and GCP agent deployment from the console.
 See [remote agent deployment](docs/operations/agent-deployment.md) for host-key
 verification, dedicated cloud credentials, and proxy timeout configuration.
+
+Cost links can carry an exact UTC `start_date` / `end_date` interval, with an
+optional `account_id` context. The console displays a **Digest period** without
+changing the saved preset. Account context is checked against the signed-in
+account; switching accounts and authentication retain the requested window.

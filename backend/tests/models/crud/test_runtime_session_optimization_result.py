@@ -131,3 +131,43 @@ def test_upsert_retries_after_unique_constraint_race(
     assert existing.model_id == "model-2"
     assert existing.response == response
     db_session.rollback.assert_called_once()
+
+
+def test_list_for_account_is_scoped_newest_first_and_limited(
+    db_session, create_account
+) -> None:
+    """list_for_account returns this account's results newest first, capped."""
+    account = create_account()
+    other = create_account()
+    session = _create_runtime_session(db_session, account.id)
+    other_session = _create_runtime_session(db_session, other.id)
+    db_session.commit()
+    created = [
+        crud_runtime_session_optimization_result.upsert(
+            db_session,
+            account_id=account.id,
+            runtime_session_id=session.id,
+            scope_hash=f"scope-{index}",
+            model_id=None,
+            response={"suggestions": []},
+        )
+        for index in range(3)
+    ]
+    crud_runtime_session_optimization_result.upsert(
+        db_session,
+        account_id=other.id,
+        runtime_session_id=other_session.id,
+        scope_hash="scope-other",
+        model_id=None,
+        response={"suggestions": []},
+    )
+    base = datetime(2026, 9, 1, tzinfo=UTC)
+    for offset, row in enumerate(created):
+        row.updated_at = base.replace(day=1 + offset)
+    db_session.flush()
+
+    rows = crud_runtime_session_optimization_result.list_for_account(
+        db_session, account_id=account.id, limit=2
+    )
+
+    assert [row.id for row in rows] == [created[2].id, created[1].id]

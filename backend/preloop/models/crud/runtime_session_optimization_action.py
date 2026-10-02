@@ -10,14 +10,47 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from ..models.runtime_session_optimization_action import (
-    RuntimeSessionOptimizationAction,
-)
+from preloop.models import models
+
 from .base import CRUDBase
+
+RuntimeSessionOptimizationAction = models.RuntimeSessionOptimizationAction
 
 
 class CRUDRuntimeSessionOptimizationAction(CRUDBase[RuntimeSessionOptimizationAction]):
     """CRUD operations for applied optimization actions."""
+
+    def list_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> list[RuntimeSessionOptimizationAction]:
+        """Read applied actions in an account-scoped optional exact window."""
+        query = db.query(self.model).filter(self.model.account_id == account_id)
+        if start is not None:
+            query = query.filter(self.model.created_at >= start)
+        if end is not None:
+            query = query.filter(self.model.created_at < end)
+        return query.all()
+
+    def list_applied_pairs(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+    ) -> set[tuple[str, str]]:
+        """Return ``(runtime_session_id, suggestion_id)`` pairs already applied.
+
+        Projects only the two identifying columns so callers that just need
+        to skip applied suggestions do not materialize full action rows.
+        """
+        rows = db.query(self.model.runtime_session_id, self.model.suggestion_id).filter(
+            self.model.account_id == account_id
+        )
+        return {(str(session_id), suggestion_id) for session_id, suggestion_id in rows}
 
     def create_applied(
         self,
