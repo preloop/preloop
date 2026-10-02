@@ -207,9 +207,12 @@ def _payload_from_link(
     match = _ARTIFACT_PATH.search(urlparse(uri).path if isinstance(uri, str) else "")
     if match is None or match["session"].lower() != str(session_id).lower():
         raise ArtifactDepositError(403, ERROR_LINK_OUTSIDE_SESSION)
-    source = crud_artifact.get(
-        db, account_id=auth.account_id, artifact_id=UUID(match["artifact"])
-    )
+    # The pattern admits 36 chars of [0-9a-f-] that are not a real UUID; refuse
+    # those as a foreign link instead of letting ValueError escape the tool.
+    artifact_id = _uuid(match["artifact"])
+    if artifact_id is None:
+        raise ArtifactDepositError(403, ERROR_LINK_OUTSIDE_SESSION)
+    source = crud_artifact.get(db, account_id=auth.account_id, artifact_id=artifact_id)
     if source is None or str(source.runtime_session_id) != str(session_id).lower():
         raise ArtifactDepositError(403, ERROR_LINK_OUTSIDE_SESSION)
     try:
