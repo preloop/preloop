@@ -246,3 +246,68 @@ def test_models_preserve_alias_identity_ties_unknown_and_remainders(
     assert rows[-1]["request_count"] == 2
     assert rows[-1]["other_count"] == 1
     assert rows[-1]["total_count"] == 6
+
+
+def test_null_empty_alias_and_provider_identities_stay_distinct(
+    db_session: Session, test_user: models.User
+) -> None:
+    account = test_user.account_id
+    own = models.AIModel(
+        account_id=account,
+        name="Fallback model",
+        provider_name="example",
+        model_identifier="own",
+    )
+    db_session.add(own)
+    db_session.flush()
+    # Null and empty aliases keep the tuple identity even when both fall back
+    # to the same stored model name; provider identity is never merged by a
+    # shared display label.
+    usage(db_session, account, model_alias=None, ai_model_id=own.id)
+    usage(db_session, account, model_alias="", ai_model_id=own.id)
+    usage(db_session, account, model_alias="same", provider_name="provider-a")
+    usage(db_session, account, model_alias="same", provider_name="provider-b")
+    db_session.flush()
+    rows = crud_api_usage.get_gateway_usage_by_model(
+        db_session,
+        account_id=str(account),
+        start_date=START,
+        end_date=END,
+        digest_ranking=True,
+    )
+    named = [row for row in rows if row["name"] is not None]
+    assert len({row["identity"] for row in named}) == 3
+    assert len({row["name"] for row in named}) == 3
+    assert rows[-1]["other_count"] == 1
+    assert rows[-1]["request_count"] == 0
+    assert rows[-1]["total_count"] == 4
+
+
+def test_all_unknown_population_returns_only_the_bucket(
+    db_session: Session, test_user: models.User
+) -> None:
+    account = test_user.account_id
+    # A harness/source type alone, or a principal without a stable type, is
+    # not a named agent; rows without alias or model are unknown models.
+    usage(db_session, account, model_alias=None, runtime_principal_type="example")
+    usage(
+        db_session,
+        account,
+        model_alias=None,
+        runtime_principal_id="orphan",
+        runtime_principal_name="Incomplete",
+    )
+    db_session.flush()
+    agents = ranking(db_session, account)
+    model_rows = crud_api_usage.get_gateway_usage_by_model(
+        db_session,
+        account_id=str(account),
+        start_date=START,
+        end_date=END,
+        digest_ranking=True,
+    )
+    for rows in (agents, model_rows):
+        assert len(rows) == 1
+        assert rows[0]["name"] is None
+        assert rows[0]["request_count"] == rows[0]["total_count"] == 2
+        assert rows[0]["other_count"] == 0
