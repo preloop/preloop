@@ -15,6 +15,11 @@ units for authentication, preparation and accounting. Provider waits and stream
 pulls retain no Session. See [Gateway database ownership](docs/architecture/gateway.md#gateway-database-ownership)
 for protocol boundaries, cancellation and the serialized OAuth rotation exception.
 
+Claude/Codex subscription recovery preserves agent enrollment through
+`preloop agents reconnect`. Credential imports serialize with rotation and reject
+recently consumed refresh tokens; provider-declared invalid grants require fresh
+authorization. See [OAuth credential recovery](docs/architecture/gateway.md#gateway-database-ownership).
+
 The [account kill switch](docs/guide/account-kill-switch.md) serializes halt transitions and runtime admission on the account row. Audit records and durable execution stop intent share the transition transaction. Monitors and recovery workers distinguish a stop request from confirmed runtime termination; approval deadlines recover once by their actual frozen interval.
 
 Database worker ownership, row-lock compatibility, and cancellation rules are

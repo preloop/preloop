@@ -4362,12 +4362,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "OpenAI Codex OAuth credentials could not be refreshed. "
-                    'Run `preloop agents sync-credentials "Codex CLI"` to '
-                    "push the local ChatGPT login, or run `codex login` on "
-                    "the agent host and rerun onboarding."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -5665,10 +5660,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="anthropic",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -6319,10 +6311,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -6930,10 +6919,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         supports_ambient = _supports_ambient_provider_credentials(ai_model)
@@ -7356,10 +7342,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         supports_ambient = _supports_ambient_provider_credentials(ai_model)

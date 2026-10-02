@@ -89,6 +89,18 @@ login into Preloop, delete the local `auth.json`, and keep
 `requires_openai_auth = false` (the default) on the Preloop model provider in
 `~/.codex/config.toml`, so only Preloop refreshes the grant.
 
+If the provider has already revoked the grant, synchronization cannot repair it.
+Run `preloop agents reconnect "Codex CLI"` to sign in and replace only the stored
+subscription credential, preserving the enrollment and configuration. After a
+separate `codex login`, use `preloop agents reconnect "Codex CLI" --from-local`.
+Update the CLI if this command is not in your installed release. Recovery uploads
+the bundle to one credential and attaches legacy split model rows to that owner;
+it never creates multiple stored copies of the rotating token. The server rejects
+recently consumed refresh tokens and stops retrying provider-declared invalid
+grants until fresh credentials are supplied. Transient failures remain retryable.
+Independent hosts and instances should obtain separate authorization grants;
+the hook cannot make concurrent refreshes by independent holders atomic.
+
 To push a Codex login through the API yourself, send `PUT /api/v1/ai-models/{id}`
 with `credential_type: "oauth_openai_codex"` and a `credential_payload` in
 Preloop's shape, not the key names from `auth.json`:

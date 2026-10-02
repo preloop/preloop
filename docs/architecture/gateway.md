@@ -80,6 +80,17 @@ credential Session and close it even on preparation failure. Already-loaded
 usage/runtime rows remain local to the same synchronous accounting worker;
 credential-bearing model rows are replaced with snapshots before summary I/O.
 
+Credential replacement takes the same account-scoped secret row lock and reloads
+committed state before writing. Successful Claude/Codex rotations retain a bounded
+history of 64 consumed refresh-token SHA-256 hashes in secret metadata. Imports of
+those tokens are rejected, including unexpired local access bundles. Terminal
+provider failures are reused without resubmitting the rejected grant; transient
+failures remain retryable. `preloop agents reconnect` replaces credentials in
+place, clears terminal failure state, and consolidates that enrollment's legacy
+split subscription model rows onto one secret. It preserves enrollment identity
+and local configuration. This coordinates one Preloop instance; separate provider
+grants are required for independent refresh owners on other hosts or instances.
+
 Internal replay, optimization and other caller-owned gateways keep their original
 Session and transaction boundaries. This ownership refactor adds neither atomic
 spend reservations nor provider-effect/retry deduplication.
