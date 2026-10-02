@@ -49,30 +49,28 @@ logger = logging.getLogger(__name__)
 AUTHENTICATED_DECISION_CHANNEL = "console"
 #: Decisions made with an API key (CLI, scripts, receiving systems).
 API_DECISION_CHANNEL = "api"
-#: Header a first-party client sets to name itself. Only labels a session;
-#: it grants nothing, so a wrong value can only mislabel the caller's own
-#: decision, and an API key always records as ``api``.
-CLIENT_HEADER = "x-preloop-client"
-_SESSION_CLIENT_CHANNELS = frozenset({"console", "mobile", "slack"})
-_MOBILE_USER_AGENT_MARKERS = ("preloopai", "preloop-mobile", "expo")
+#: The iOS app's requests carry URLSession's default user agent, which
+#: starts with the app's bundle name ("PreloopAI/<build> CFNetwork/...").
+_MOBILE_USER_AGENT_MARKER = "preloopai"
 
 
 def _decision_channel(request: Request, current_user: User) -> str:
     """Name the surface an authenticated decision came through.
 
-    ``api`` when the caller authenticated with an API key; otherwise the
-    first-party client's own label (``console``, ``mobile``, ``slack``),
-    then the mobile app's user agent, then ``console``.
+    ``api`` when the caller authenticated with an API key: that comes from
+    the credential itself. For a browser or app session it is ``mobile``
+    when the request comes from the mobile app, else ``console``. The
+    session label is a hint about the surface, not an authorization fact;
+    who decided is recorded separately from the authenticated user.
     """
     # Read the instance dict: the attribute is only set by API-key auth.
-    if vars(current_user).get("_auth_api_key") is not None:
+    if getattr(current_user, "__dict__", {}).get("_auth_api_key") is not None:
         return API_DECISION_CHANNEL
     headers = getattr(request, "headers", None) or {}
-    declared = (headers.get(CLIENT_HEADER) or "").strip().lower()
-    if declared in _SESSION_CLIENT_CHANNELS:
-        return declared
-    user_agent = (headers.get("user-agent") or "").lower()
-    if any(marker in user_agent for marker in _MOBILE_USER_AGENT_MARKERS):
+    user_agent = headers.get("user-agent")
+    if isinstance(user_agent, str) and user_agent.lower().startswith(
+        _MOBILE_USER_AGENT_MARKER
+    ):
         return "mobile"
     return AUTHENTICATED_DECISION_CHANNEL
 

@@ -110,27 +110,23 @@ def test_api_key_decision_is_recorded_as_api():
 
 def test_session_decision_channels():
     assert approval_requests._decision_channel(_http(), _user()) == "console"
+    ios = "PreloopAI/412 CFNetwork/1568.100.1 Darwin/24.0.0"
     assert (
-        approval_requests._decision_channel(
-            _http({"x-preloop-client": "mobile"}), _user()
-        )
+        approval_requests._decision_channel(_http({"user-agent": ios}), _user())
         == "mobile"
     )
+    browser = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) Safari/604.1"
+    assert (
+        approval_requests._decision_channel(_http({"user-agent": browser}), _user())
+        == "console"
+    )
+
+
+def test_a_self_declared_client_header_is_not_trusted():
+    """A session cannot relabel its own decision by sending a header."""
     assert (
         approval_requests._decision_channel(
             _http({"x-preloop-client": "slack"}), _user()
-        )
-        == "slack"
-    )
-    assert (
-        approval_requests._decision_channel(
-            _http({"user-agent": "PreloopAI/3.1 (iOS)"}), _user()
-        )
-        == "mobile"
-    )
-    assert (
-        approval_requests._decision_channel(
-            _http({"x-preloop-client": "anything"}), _user()
         )
         == "console"
     )

@@ -154,7 +154,7 @@ There are two kinds of URL in the payload:
 
 `summary` is the one-line ask to show a person. It is never null: when no model summary is available it is built from the tool name and its redacted arguments.
 
-When the request is decided, the timeline records the channel it came through: `console`, `mobile`, `slack` (sessions), `api` (an API key, such as the CLI or your service), or `token_url` (the `decision` URLs above).
+When the request is decided, the timeline records the channel it came through: `api` (an API key, such as the CLI or your service), `token_url` (the `decision` URLs above, or a review link opened without signing in), `mobile` (the mobile app) or `console` (a signed-in browser, including the page a Slack or Mattermost Review button opens).
 
 Sensitive argument values are [redacted](../../security/redaction.md). The token in these URLs decides the request, so treat the payload as a secret.
 

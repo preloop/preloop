@@ -1192,13 +1192,16 @@ def _response_with_new_webhook_secret(db: Session, workflow: Any) -> Any:
     from preloop.services.event_webhooks.approval_shim import ensure_webhook_secret
 
     secret = ensure_webhook_secret(workflow)
-    if secret:
-        db.add(workflow)
-        db.commit()
-        db.refresh(workflow)
+    if not secret:
+        return ApprovalWorkflowResponse.model_validate(workflow)
+    db.add(workflow)
+    db.flush()
+    # Build the response before committing, so a serialization failure rolls
+    # the secret back with everything else instead of persisting a secret the
+    # caller never saw.
     response = ApprovalWorkflowResponse.model_validate(workflow)
-    if secret:
-        response.webhook_secret = secret
+    response.webhook_secret = secret
+    db.commit()
     return response
 
 

@@ -140,14 +140,24 @@ def _call_summary_model(
         text = text[1:-1].strip()
     if len(text) > SUMMARY_MAX_CHARS:
         text = text[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
-    if not _is_sentence(text):
+    if _is_argument_fragment(text, tool_args):
         raise ValueError("approval summary is a fragment, not a sentence")
     return text
 
 
-def _is_sentence(text: str) -> bool:
-    """True when the text has at least two words (not a lone fragment)."""
-    return len(text.split()) >= 2
+def _is_argument_fragment(text: str, tool_args: dict[str, Any]) -> bool:
+    """True when the text is a lone piece of an argument value.
+
+    A summary such as ``sandbox.examp`` (the middle of an identifier
+    argument) is what a cut-off completion leaves behind. A one-word ask
+    or a summary in a language written without spaces is kept: only a
+    single token that also appears inside the arguments is rejected.
+    """
+    token = text.strip().strip(".?!")
+    if not token or any(ch.isspace() for ch in token):
+        return False
+    serialized = json.dumps(tool_args, ensure_ascii=False, default=str)
+    return token in serialized
 
 
 def fallback_approval_summary(

@@ -371,7 +371,7 @@ def send_webhook_notice(
         return False
     target = resolve_webhook_target(workflow)
     endpoint = sync_shim_endpoint(db, workflow)
-    if endpoint is None or target is None or target[0] not in WEBHOOK_APPROVAL_TYPES:
+    if endpoint is None or target is None:
         # The workflow has no URL. Keep the shim's deactivation of a stale
         # endpoint, as the approval path does, instead of losing it when the
         # short-lived session closes.

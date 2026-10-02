@@ -217,6 +217,13 @@ def test_summary_fragment_is_rejected(monkeypatch):
         _call(monkeypatch, _completion("sandbox.examp"))
 
 
+def test_one_word_and_unspaced_summaries_are_kept(monkeypatch):
+    assert _call(monkeypatch, _completion("Deploy?")) == "Deploy?"
+    assert _call(monkeypatch, _completion("週次サマリーを許可しますか")) == (
+        "週次サマリーを許可しますか"
+    )
+
+
 def test_summary_sentence_is_kept(monkeypatch):
     text = "Allow the agent to read the weekly summary for this owner?"
     assert _call(monkeypatch, _completion(text)) == text
