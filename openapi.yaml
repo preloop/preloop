@@ -24121,7 +24121,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -24174,7 +24176,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -24248,7 +24252,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
