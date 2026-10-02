@@ -312,7 +312,7 @@ class AgentControlExecutor(AgentExecutor):
                 **limits,
                 "max_duration_seconds": self._timeout_seconds(),
                 "max_history_chars": min(
-                    limits.get("max_total_tokens", 32768) * 4, 131072
+                    limits.get("max_total_tokens", 32768) * 4, 64000
                 ),
             }
         trigger = dispatch_context.get("trigger_event_data")
@@ -336,7 +336,14 @@ class AgentControlExecutor(AgentExecutor):
                     "Employee tasks require an execution-scoped model gateway",
                     category="runner_error",
                 )
+            from preloop.config import settings
+
+            gateway["api_url"] = settings.preloop_url
             metadata["gateway"] = gateway
+            metadata["mcp_enabled"] = bool(
+                dispatch_context.get("allowed_mcp_servers")
+                or dispatch_context.get("allowed_mcp_tools")
+            )
             metadata["run_limits"]["timeout_seconds"] = self._timeout_seconds()
         try:
             dispatched = await dispatch_operator_message(

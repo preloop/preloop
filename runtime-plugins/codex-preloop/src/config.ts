@@ -15,6 +15,10 @@ import path from "node:path";
  */
 export type ControlConfig = {
   employee_state_path?: string;
+  preloop_cli_path?: string;
+  codex_employee_api_url?: string;
+  codex_employee_scoped?: boolean;
+  codex_employee_mcp_enabled?: boolean;
   codex_gateway_api_key?: string;
   codex_gateway_base_url?: string;
   enabled?: boolean;

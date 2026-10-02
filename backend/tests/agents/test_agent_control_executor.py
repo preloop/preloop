@@ -721,7 +721,7 @@ async def test_employee_gateway_is_scoped_and_history_is_redacted(
     executor = _executor(
         agent_id=agent.id,
         account_id=agent.account_id,
-        limits={"max_turns": 5, "max_total_tokens": 10000, "max_usd": 1},
+        limits={"max_turns": 5, "max_total_tokens": 32000, "max_usd": 1},
     )
     dispatch = AsyncMock(
         return_value=SimpleNamespace(
@@ -750,6 +750,7 @@ async def test_employee_gateway_is_scoped_and_history_is_redacted(
     metadata = dispatch.await_args.kwargs["metadata"]
     assert metadata["gateway"]["api_key"] == "synthetic-scoped-token"
     assert metadata["run_limits"]["max_turns"] == 5
+    assert metadata["run_limits"]["max_history_chars"] <= 64000
     from preloop.agents.agent_control import crud_runtime_session_activity
 
     history = crud_runtime_session_activity.log_agent_control_message.call_args.kwargs[

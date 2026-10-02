@@ -136,7 +136,12 @@ export class PreloopCodexSidecar {
     const file = this.ledgerPath();
     if (file && fs.existsSync(file)) {
       const stored = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (stored.principal !== this.verify().runtime_principal_id) throw new Error("Employee ledger principal mismatch");
+      const config = this.verify();
+      if (stored.principal !== config.runtime_principal_id
+          || stored.managedAgent !== config.managed_agent_id
+          || stored.controlURL !== config.control_ws_url) {
+        throw new Error("Employee ledger principal or account origin mismatch");
+      }
       this.commandOutcomes = new Map(stored.outcomes);
     }
     this.ledgerLoaded = true;
@@ -147,9 +152,19 @@ export class PreloopCodexSidecar {
     if (!file) return;
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const temporary = file + ".tmp";
-    fs.writeFileSync(temporary, JSON.stringify({ principal: this.verify().runtime_principal_id,
-      outcomes: [...this.commandOutcomes] }), { mode: 0o600 });
+    const config = this.verify();
+    const descriptor = fs.openSync(temporary, "w", 0o600);
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify({ principal: config.runtime_principal_id,
+        managedAgent: config.managed_agent_id, controlURL: config.control_ws_url,
+        outcomes: [...this.commandOutcomes] }));
+      fs.fsyncSync(descriptor);
+    } finally { fs.closeSync(descriptor); }
     fs.renameSync(temporary, file);
+    if (process.platform !== "win32") {
+      const directory = fs.openSync(path.dirname(file), "r");
+      try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+    }
   }
   private inFlightMessageIds = new Set<string>();
   private logger: (message: string) => void = () => {};
@@ -173,6 +188,12 @@ export class PreloopCodexSidecar {
   }
 
   configure(config: ControlConfig): void {
+    const previous = this.controlConfig;
+    const changed = previous && (previous.runtime_principal_id !== config.runtime_principal_id
+      || previous.managed_agent_id !== config.managed_agent_id
+      || previous.control_ws_url !== config.control_ws_url);
+    if (changed && this.inFlightMessageIds.size) throw new Error("Cannot replace employee identity during a running command");
+    if (changed) { this.ledgerLoaded = false; this.commandOutcomes.clear(); }
     this.controlConfig = config;
   }
 

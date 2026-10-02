@@ -153,3 +153,34 @@ for both Codex and Nanobot employee identities. Existing
 acknowledgement and reconnect. Nanobot's runtime plugin tests exercise the actual
 supported Nanobot SDK seam with a synthetic provider. These fixtures verify local
 contracts; they do not certify a live provider's credentials or bot connectivity.
+
+## Updating employee runtimes
+
+Install the matching Preloop CLI and Codex sidecar together. For a development
+CLI use the sanctioned `cd cli && make install-local`; deploy the sidecar built
+from the same checkout using its normal plugin installation workflow. Do not copy
+a binary over an existing CLI executable. Employee mode probes for the new
+`permission-hook --require-flow-credential` capability and fails closed before
+launching Codex when an older CLI is installed. This keeps an old hook from
+falling back to a broad managed-agent credential. Testing/building the checkout
+does not update an installed CLI or running sidecar.
+
+Each Codex employee task gets a private `CODEX_HOME` with scoped provider/MCP
+configuration and mandatory scoped native permission hooks. Credentials stay in
+the subprocess environment, never in config files or command arguments. Curated
+global AGENTS guidance, repository instructions and independent native hooks are
+preserved, along with the explicit native approval policy and configured sandbox.
+Broad auth/provider/MCP configuration and unrelated credential environment values
+are not inherited. Task homes retain native session history in the private host
+runtime temporary directory; do not delete one while its task runs. Subsequent
+independent events start fresh sessions. The backend does not resume a prior task
+from this temporary home after a host restart; it reports uncertain interrupted
+work through the durable receipt, allowing an operator to review before retry.
+
+The execution model URL and the API/MCP URL may use separate hosts. The
+controller supplies `gateway.api_url` from `PRELOOP_URL`; set this to the API
+origin used for runtime enrollment. The runtime verifies that API URL against
+its enrolled control origin. Model calls use the supplied gateway URL, while
+native permission and MCP calls use the verified API origin with the same scoped
+execution token. Employee tokens also bind the owned managed agent, so suspending
+that identity or revoking the token prevents further native, model and MCP calls.

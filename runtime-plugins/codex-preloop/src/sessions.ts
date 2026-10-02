@@ -6,6 +6,7 @@
 // The SDK implementation below is the only one shipped today.
 
 import os from "node:os";
+import { employeeClientOptionsFor } from "./employee.js";
 
 import type { ControlConfig } from "./config.js";
 import { resolveSandboxMode } from "./config.js";
@@ -86,7 +87,8 @@ type OwnedThread = {
 /** Options passed to `new Codex(...)`. Approval policy is intentionally absent. */
 export function clientOptionsFor(
   config: ControlConfig,
-): { codexPathOverride?: string; apiKey?: string; baseUrl?: string } {
+): { codexPathOverride?: string; apiKey?: string; baseUrl?: string; env?: Record<string, string>; config?: Record<string, unknown> } {
+  if (config.codex_employee_scoped) return employeeClientOptionsFor(config);
   return {
     ...(config.codex_path ? { codexPathOverride: config.codex_path } : {}),
     ...(config.codex_gateway_api_key ? { apiKey: config.codex_gateway_api_key } : {}),
@@ -136,7 +138,7 @@ export const sdkCodexClientFactory: CodexClientFactory = (config) => {
           return client;
         }
         const sdk = (await import("@openai/codex-sdk")) as {
-          Codex: new (options?: { codexPathOverride?: string; apiKey?: string; baseUrl?: string }) => {
+          Codex: new (options?: ReturnType<typeof clientOptionsFor>) => {
             startThread(options?: Record<string, unknown>): SdkThread;
             resumeThread(
               id: string,
@@ -270,7 +272,10 @@ export class SessionManager {
     if (!session) {
       const gateway = params.metadata?.["gateway"] as Record<string, string> | undefined;
       const taskConfig = gateway ? {
-        ...this.config, codex_gateway_api_key: gateway.api_key,
+        ...this.config, codex_employee_scoped: true,
+        codex_employee_mcp_enabled: params.metadata?.["mcp_enabled"] === true,
+        codex_employee_api_url: gateway.api_url,
+        codex_gateway_api_key: gateway.api_key,
         codex_gateway_base_url: gateway.base_url, codex_model: gateway.model,
       } : this.config;
       const client = gateway ? await ensureSdkClient(this.clientFactory, taskConfig) : await this.clientOrLoad();

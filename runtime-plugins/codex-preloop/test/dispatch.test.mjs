@@ -533,3 +533,21 @@ test("durable employee receipt replays after sidecar restart without effects", a
     assert.equal(stored.includes(config.bearer_token), false);
   } finally { await fs.rm(directory, {recursive: true, force: true}); }
 });
+
+test("receipt ledger refuses the same principal under another managed identity or origin", async () => {
+ const directory = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-receipt-scope-"));
+ try {
+  const config = {...baseConfig, managed_agent_id:"owned-agent", employee_state_path:path.join(directory,"ledger.json")};
+  const state = {starts:[], resumes:[], runs:0, texts:[]};
+  const command = JSON.stringify({type:"command", name:"send_message", message_id:"scoped-receipt", payload:{text:"synthetic", start_new_session:true}});
+  const first = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+  first.configure(config);
+  await first.handleFrame(fakeSocket(),command);
+  for (const override of [{managed_agent_id:"other-agent"},{control_ws_url:"wss://foreign.example.com/api/v1/agents/control/ws"}]) {
+   const changed = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+   changed.configure({...config,...override});
+   await assert.rejects(changed.handleFrame(fakeSocket(),command),/account origin mismatch/);
+  }
+  assert.equal(state.runs,1);
+ } finally {await fs.rm(directory,{recursive:true,force:true});}
+});
