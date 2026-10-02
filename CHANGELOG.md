@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Subscription reconnect without re-onboarding.** `preloop agents reconnect
+  "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
+  credentials while preserving enrollment, policy and configuration. Working
+  server credentials are preserved during repeated onboarding; credential imports
+  serialize with refresh and reject recently consumed tokens. Invalid grants stop
+  retrying until re-authorized, and gateway errors distinguish those from transient
+  provider failures.
+
 - **Exact digest periods in Cost.** `/console/cost` accepts an
   `account_id`, `start_date` and `end_date` link (UTC, microsecond
   precision) and shows that window without changing the saved preset;

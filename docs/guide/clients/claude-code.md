@@ -30,6 +30,33 @@ The installer discovers local agents, walks you through login/signup, and offers
 
 <!-- TODO screenshot: `claude-cli-version.png` -->
 
+## Subscription credential recovery
+
+Preloop refreshes an onboarded Claude subscription automatically. Re-onboarding
+reuses a working server credential even when the local access token has not yet
+expired: access-token expiry does not prove a rotating refresh token is usable.
+The server also rejects re-imports of refresh tokens it has recently consumed.
+
+If Anthropic rejects the grant with `invalid_grant`, obtain a fresh subscription
+authorization without rebuilding the enrollment:
+
+```bash
+preloop agents reconnect "Claude Code"
+```
+
+This opens Claude's subscription sign-in and replaces only the server credential.
+If you already signed in with `claude auth login --claudeai`, use
+`preloop agents reconnect "Claude Code" --from-local`. Identity, policy, gateway
+configuration and backups are preserved. Update the Preloop CLI if the command
+is missing from your installed release.
+
+Independent hosts or Preloop instances should authorize separate provider grants.
+Copying a login bundle between them creates competing refresh owners. Refresh
+locks coordinate workers within one Preloop instance; they cannot coordinate a
+native client or a separate instance holding a copy of the same provider grant.
+Provider revocation still requires a new sign-in; transient refresh failures can
+be retried without reconnecting.
+
 ---
 
 ## Onboard Claude Code
