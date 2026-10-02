@@ -58,3 +58,11 @@ def test_glitchtip_hmac_verification_and_bounded_payload(monkeypatch):
     assert kwargs["event_id"] == "event-example"
     assert client.post(url, content=b"x" * 65537, headers=headers).status_code == 413
     intake.assert_awaited_once()
+
+
+def test_application_registers_signed_ingress_without_bearer_schema():
+    from preloop.api.app import create_app
+
+    schema = create_app().openapi()
+    operation = schema["paths"]["/api/v1/employee-events/{flow_id}"]["post"]
+    assert not operation.get("security")

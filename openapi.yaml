@@ -10243,8 +10243,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - bearerAuth: []
   /api/v1/flows:
     post:
       tags:

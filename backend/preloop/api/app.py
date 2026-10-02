@@ -1527,6 +1527,8 @@ def create_app() -> FastAPI:
             "/api/v1/billing/plans",
             "/api/v1/billing/create-checkout-session",
             "/api/v1/webhooks/flows",
+            "/api/v1/employee-events/",
+            "/api/v1/chat/ingress/",
             "/",
             "/static",
             "/register",
