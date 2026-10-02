@@ -232,3 +232,7 @@ Cost links can carry an exact UTC `start_date` / `end_date` interval, with an
 optional `account_id` context. The console displays a **Digest period** without
 changing the saved preset. Account context is checked against the signed-in
 account; switching accounts and authentication retain the requested window.
+
+Nanobot can run as a governed managed employee through the optional
+[Nanobot integration](runtime-plugins/nanobot-preloop/README.md), with bounded
+conversations and DeepSeek or another authorized model through Preloop.

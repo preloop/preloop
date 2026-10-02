@@ -318,3 +318,12 @@ an account-owned session's managed agent, then a named principal. Account
 constraints and scalar session association prevent cross-account labels and
 join fan-out. Console exact-period links preserve UTC microseconds and use
 normal authenticated account scoping; URL account context grants no access.
+
+### Nanobot managed runtime
+
+The optional `runtime-plugins/nanobot-preloop` process embeds a pinned Nanobot
+Python SDK and reuses Agent Control, runtime enrollment, the model gateway and
+MCP firewall. It owns persisted session references and bounds turns, duration and
+token/context consumption. Native and MCP tool execution require explicit
+Preloop permission decisions; background subagents and outbound channel tools
+are disabled. See its README for supported limits and installation.
