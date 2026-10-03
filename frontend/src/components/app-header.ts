@@ -32,6 +32,16 @@ export class AppHeader extends LitElement {
   @state()
   private registrationEnabled = true;
 
+  // The same callback identity must be removed when the header disconnects.
+  // Window otherwise keeps the header (and its detached parent tree) alive.
+  private readonly handleAuthChange = (): void => {
+    void this.checkAuth();
+  };
+
+  private readonly handleLocationChange = (): void => {
+    this.requestUpdate();
+  };
+
   static styles = css`
     :host {
       display: block;
@@ -107,8 +117,8 @@ export class AppHeader extends LitElement {
     super.connectedCallback();
     this.checkAuth();
     this.checkBillingEnabled();
-    window.addEventListener('auth-change', () => this.checkAuth());
-    window.addEventListener(LOCATION_CHANGED, () => this.requestUpdate());
+    window.addEventListener('auth-change', this.handleAuthChange);
+    window.addEventListener(LOCATION_CHANGED, this.handleLocationChange);
   }
 
   async checkBillingEnabled() {
@@ -132,8 +142,8 @@ export class AppHeader extends LitElement {
   }
 
   disconnectedCallback() {
-    window.removeEventListener('auth-change', () => this.checkAuth());
-    window.removeEventListener(LOCATION_CHANGED, () => this.requestUpdate());
+    window.removeEventListener('auth-change', this.handleAuthChange);
+    window.removeEventListener(LOCATION_CHANGED, this.handleLocationChange);
     super.disconnectedCallback();
   }
 
