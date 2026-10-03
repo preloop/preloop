@@ -437,6 +437,21 @@ class FlowExecutionListResponse(ExecutionModelProjection):
             "carries one."
         ),
     )
+    trigger_subject_ci: Optional[str] = Field(
+        None,
+        description=(
+            "Human-readable CI provider that dispatched this execution (e.g. "
+            "'GitHub Actions'), when a CI job triggered it with a 'ci' "
+            "provenance block. Null for runs a person or webhook started."
+        ),
+    )
+    trigger_subject_ci_url: Optional[str] = Field(
+        None,
+        description=(
+            "Link to the CI run that dispatched this execution, when the CI "
+            "provenance block carries a run URL."
+        ),
+    )
     runner: ExecutionRunnerSummary = Field(
         default_factory=_unknown_runner_summary,
         description=(
