@@ -28,7 +28,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20261003_issue_extid_unique"
-down_revision = "20261003_resume_root_idx"
+down_revision = "20261002_managed_oauth"
 branch_labels = None
 depends_on = None
 
