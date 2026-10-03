@@ -5373,8 +5373,11 @@ class FlowExecutionOrchestrator:
 
         One line per run, printed by the post-execution git block right where
         it would otherwise push. Kept as a fact about the run, not a verdict:
-        a successful review flow legitimately commits nothing, and only the
-        terminal classification combines this with an explicit agent failure.
+        a successful review flow legitimately commits nothing. The terminal
+        path combines it with other facts: with an explicit agent failure it
+        is ``agent_no_progress``; on a fresh run configured to open a pull
+        request that ended without one it names the ``publication_missing``
+        reason (see ``_missing_publication_reason``).
 
         Args:
             line: The ``PRELOOP_NO_COMMITS <branch>`` line as printed.
