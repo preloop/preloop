@@ -820,6 +820,12 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
     if not isinstance(payload, dict):
         payload = {}
 
+    # A CI-dispatched run declares where it came from up front, so read the
+    # provenance before the early returns below. Those returns handle runs a
+    # person (or the scheduler) started; a run carrying a ``ci`` block is not
+    # one of those and must keep its real event label and CI hint.
+    ci = _ci_provenance(event_data.get("ci"))
+
     # A scheduled run and a manual run carry no repo and no reference, so
     # they render their own line: the label plus the one fact that tells two
     # runs of the same flow apart (which schedule, or which person).
@@ -833,8 +839,12 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
             parts["text"] = "Scheduled"
         return parts
 
-    if source in ("manual", "api", "console") or (
-        not source and (event_data.get("test_mode") or event_data.get("triggered_by"))
+    if not ci and (
+        source in ("manual", "api", "console")
+        or (
+            not source
+            and (event_data.get("test_mode") or event_data.get("triggered_by"))
+        )
     ):
         return _manual_subject(event_data)
 
@@ -848,8 +858,6 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
         parts = _bitbucket_subject(payload)
     else:
         parts = {}
-
-    ci = _ci_provenance(event_data.get("ci"))
 
     # Drop keys that resolved to None so the stored blob stays compact.
     parts = {key: value for key, value in parts.items() if value}

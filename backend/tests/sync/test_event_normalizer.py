@@ -806,6 +806,47 @@ class TestExtractTriggerSubject:
 
         assert subject["ci"] == "My Internal Bot"
 
+    def test_ci_dispatched_api_run_keeps_the_event_label(self):
+        """An ``api``-source run with a ``ci`` block is not a manual test run.
+
+        The generic CLI route does not require a tracker ``source``, so a CI
+        job that triggers with ``source: "api"`` and a ``ci`` block must keep
+        its real event label and name the CI instead of falling into the
+        manual early return that would render "Manual Test Run".
+        """
+        subject = extract_trigger_subject(
+            {
+                "source": "api",
+                "type": "pull_request_updated",
+                "test_mode": True,
+                "ci": {
+                    "provider": "github-actions",
+                    "run_url": "https://github.com/preloop/preloop/actions/runs/1",
+                },
+            }
+        )
+
+        assert subject["text"] == "Pull Request Updated"
+        assert subject["ci"] == "GitHub Actions"
+        assert subject["ci_url"] == "https://github.com/preloop/preloop/actions/runs/1"
+        assert "Manual Test Run" not in subject["text"]
+
+    def test_ci_dispatched_run_without_source_keeps_the_event_label(self):
+        """A source-less payload carrying ``ci`` is not a manual run either."""
+        subject = extract_trigger_subject(
+            {
+                "type": "pull_request_updated",
+                "test_mode": True,
+                "triggered_by": "ci",
+                "ci": {"provider": "github-actions"},
+            }
+        )
+
+        assert subject["text"] == "Pull Request Updated"
+        assert subject["ci"] == "GitHub Actions"
+        assert "ci_url" not in subject
+        assert "Manual Test Run" not in subject["text"]
+
     def test_unknown_source_still_yields_event_label(self):
         """An unrecognised trigger source degrades to the event label alone."""
         subject = extract_trigger_subject(

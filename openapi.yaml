@@ -17900,6 +17900,21 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        trigger_subject_ci:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci
+          description: Human-readable CI provider that dispatched this execution (e.g.
+            'GitHub Actions'), when a CI job triggered it with a 'ci' provenance block.
+            Null for runs a person or webhook started.
+        trigger_subject_ci_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci Url
+          description: Link to the CI run that dispatched this execution, when the
+            CI provenance block carries a run URL.
         runner:
           $ref: '#/components/schemas/ExecutionRunnerSummary'
           description: Where this execution ran. List rows carry kind and name; detail
@@ -20334,6 +20349,21 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        trigger_subject_ci:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci
+          description: Human-readable CI provider that dispatched this execution (e.g.
+            'GitHub Actions'), when a CI job triggered it with a 'ci' provenance block.
+            Null for runs a person or webhook started.
+        trigger_subject_ci_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci Url
+          description: Link to the CI run that dispatched this execution, when the
+            CI provenance block carries a run URL.
         runner:
           $ref: '#/components/schemas/ExecutionRunnerSummary'
           description: Where this execution ran. List rows carry kind and name; detail
@@ -20844,6 +20874,21 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        trigger_subject_ci:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci
+          description: Human-readable CI provider that dispatched this execution (e.g.
+            'GitHub Actions'), when a CI job triggered it with a 'ci' provenance block.
+            Null for runs a person or webhook started.
+        trigger_subject_ci_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci Url
+          description: Link to the CI run that dispatched this execution, when the
+            CI provenance block carries a run URL.
         runner:
           $ref: '#/components/schemas/ExecutionRunnerSummary'
           description: Where this execution ran. List rows carry kind and name; detail
