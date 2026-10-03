@@ -15,6 +15,7 @@ import {
   createBudgetPolicy,
   getAccountAgent,
   getAccountRuntimeSessionActivityTimeline,
+  listRuntimeSessionArtifacts,
   getAccountRuntimeSessionDetail,
   getAccountRuntimeSessions,
   getAIModels,
@@ -39,6 +40,7 @@ import type {
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
   RuntimeSessionActivityItem,
+  RuntimeSessionArtifactDescriptor,
   RuntimeSessionCacheSummary,
   RuntimeSessionRequestItem,
   RuntimeSessionSummary,
@@ -75,10 +77,16 @@ import './session-request-timeline';
 import './similar-sessions-panel';
 import './browser-step-strip';
 import './artifact-image-viewer';
+import './session-artifact-summary';
 import {
+  artifactKindGroup,
+  artifactRowMetadata,
+  artifactView,
   browserStepKey,
   browserStepViewerImages,
+  isArtifactRow,
   sortBrowserSteps,
+  type ArtifactKindGroup,
 } from '../utils/session-artifacts';
 import { consoleDialogStyles } from '../styles/console-dialog';
 
@@ -218,6 +226,13 @@ export class PreloopSessionObserver extends LitElement {
   @property({ type: String })
   focusTurnId: string | null = null;
 
+  /**
+   * Artifact to land on (`?artifact=<id>`, a search hit): the timeline
+   * scrolls to its row and highlights it once the session has loaded.
+   */
+  @property({ type: String })
+  focusArtifactId: string | null = null;
+
   /** Optional override for the sidebar's no-sessions message. */
   @property({ type: String })
   emptyText = '';
@@ -267,6 +282,26 @@ export class PreloopSessionObserver extends LitElement {
   /** Index into the active session's browser steps shown full size, or -1. */
   @state()
   private browserStepViewerIndex = -1;
+  /** Artifact descriptors per session, by artifact id. */
+  @state()
+  private loadedArtifacts: Record<
+    string,
+    {
+      byId: Record<string, RuntimeSessionArtifactDescriptor>;
+      truncated: boolean;
+    }
+  > = {};
+  /** Header kind filter applied to the timeline, or null. */
+  @state()
+  private artifactKindFilter: ArtifactKindGroup | null = null;
+  /** Index into the active session's image artifacts shown full size, or -1. */
+  @state()
+  private artifactViewerIndex = -1;
+  /** Artifact row highlighted after a `?artifact=` landing or a lineage jump. */
+  @state()
+  private highlightedArtifactId: string | null = null;
+  /** `focusArtifactId` already scrolled to, so live reloads do not re-jump. */
+  private landedArtifactId: string | null = null;
 
   @state()
   private loadedRequests: Record<string, RuntimeSessionRequestItem[]> = {};
@@ -978,6 +1013,11 @@ export class PreloopSessionObserver extends LitElement {
       this.maybeResumeOptimizationJob(sessionId);
     }
     this.browserStepViewerIndex = -1;
+    this.artifactViewerIndex = -1;
+    this.artifactKindFilter = null;
+    this.highlightedArtifactId = null;
+    // A later link to an artifact of this or another session lands again.
+    this.landedArtifactId = null;
     this.dispatchEvent(
       new CustomEvent('session-selected', {
         detail: { sessionId },
@@ -1039,6 +1079,7 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedActivity,
         [sessionId]: activity.items || [],
       };
+      void this.loadArtifacts(sessionId);
     } catch (error) {
       console.error('Failed to load selected session:', error);
       this.error =
@@ -1650,6 +1691,178 @@ export class PreloopSessionObserver extends LitElement {
       : [];
   }
 
+  /**
+   * Load the session's artifact descriptors for the header count and the
+   * row details the timeline metadata lacks (sha256, lineage, availability).
+   * A failure leaves the rows on their timeline metadata alone.
+   */
+  private async loadArtifacts(sessionId: string): Promise<void> {
+    try {
+      const { items, truncated } = await listRuntimeSessionArtifacts(sessionId);
+      const byId: Record<string, RuntimeSessionArtifactDescriptor> = {};
+      for (const item of items) byId[item.id] = item;
+      this.loadedArtifacts = {
+        ...this.loadedArtifacts,
+        [sessionId]: { byId, truncated },
+      };
+    } catch (error) {
+      console.warn('Could not list session artifacts:', error);
+    }
+    if (sessionId === this.activeSessionId) void this.landOnFocusArtifact();
+  }
+
+  private get activeArtifacts(): Record<
+    string,
+    RuntimeSessionArtifactDescriptor
+  > {
+    return this.activeSessionId
+      ? this.loadedArtifacts[this.activeSessionId]?.byId || {}
+      : {};
+  }
+
+  /** Artifact rows of the active session, in time order. */
+  private get activeArtifactRows(): RuntimeSessionActivityItem[] {
+    return this.activeActivity
+      .filter((item) => isArtifactRow(item) && artifactRowMetadata(item))
+      .sort(
+        (left, right) =>
+          new Date(left.timestamp || 0).getTime() -
+          new Date(right.timestamp || 0).getTime()
+      );
+  }
+
+  /**
+   * Header counts per kind group: from the artifact list when it loaded,
+   * which also counts artifacts attached to browser steps, else from the
+   * timeline rows.
+   */
+  private get activeArtifactCounts(): Partial<
+    Record<ArtifactKindGroup, number>
+  > {
+    const counts: Partial<Record<ArtifactKindGroup, number>> = {};
+    const listed = this.activeSessionId
+      ? this.loadedArtifacts[this.activeSessionId]
+      : undefined;
+    const groups = listed
+      ? Object.values(listed.byId).map((item) =>
+          artifactKindGroup(item.kind, item.content_type)
+        )
+      : this.activeArtifactRows.map(
+          (item) => artifactView(item, null)?.group || 'other'
+        );
+    for (const group of groups) counts[group] = (counts[group] || 0) + 1;
+    return counts;
+  }
+
+  /** Image artifact rows the shared viewer can page through. */
+  private get activeImageArtifacts() {
+    const byId = this.activeArtifacts;
+    return this.activeArtifactRows
+      .map((item) => artifactView(item, byId[artifactRowMetadata(item)!.id]))
+      .filter((view) => view?.group === 'screenshot')
+      .map((view) => ({
+        key: view!.id,
+        artifactId: view!.id,
+        availability: view!.availability,
+        title: view!.name,
+        caption: view!.kind,
+      }));
+  }
+
+  private openArtifactViewer(artifactId: string): void {
+    const index = this.activeImageArtifacts.findIndex(
+      (image) => image.artifactId === artifactId
+    );
+    if (index >= 0) this.artifactViewerIndex = index;
+  }
+
+  /** The element that shows the timeline in the current mode. */
+  private get timelineHost():
+    (Element & { scrollToArtifact?: (id: string) => boolean }) | null {
+    if (this.requestsView) return null;
+    const selector =
+      this.replayMode === 'conversation'
+        ? 'session-chat-view'
+        : 'session-replay-panel';
+    return this.renderRoot.querySelector(selector);
+  }
+
+  /** Scroll to an artifact row and highlight it; false if it is not shown. */
+  private async scrollToArtifact(artifactId: string): Promise<boolean> {
+    if (
+      this.artifactKindFilter &&
+      artifactKindGroup(this.activeArtifacts[artifactId]?.kind) !==
+        this.artifactKindFilter
+    ) {
+      this.artifactKindFilter = null;
+    }
+    this.highlightedArtifactId = artifactId;
+    await this.updateComplete;
+    const host = this.timelineHost as
+      (LitElement & { scrollToArtifact?: (id: string) => boolean }) | null;
+    if (host && 'updateComplete' in host) await host.updateComplete;
+    return Boolean(host?.scrollToArtifact?.(artifactId));
+  }
+
+  private async landOnFocusArtifact(): Promise<void> {
+    const id = this.focusArtifactId;
+    if (!id || this.landedArtifactId === id) return;
+    const present = this.activeArtifactRows.some(
+      (item) => artifactRowMetadata(item)?.id === id
+    );
+    if (!present) return;
+    this.landedArtifactId = id;
+    await this.scrollToArtifact(id);
+  }
+
+  private setArtifactKindFilter(kind: ArtifactKindGroup | null): void {
+    this.artifactKindFilter = kind;
+    if (!kind) return;
+    // Bring the first matching row into view.
+    const first = this.activeArtifactRows.find(
+      (item) =>
+        artifactView(item, this.activeArtifacts[artifactRowMetadata(item)!.id])
+          ?.group === kind
+    );
+    const id = first ? artifactRowMetadata(first)?.id : null;
+    if (id) {
+      void this.updateComplete.then(() =>
+        this.timelineHost?.scrollToArtifact?.(id)
+      );
+    }
+  }
+
+  private renderArtifactSummary() {
+    if (!this.activeSessionId || !this.activeSession) return nothing;
+    return html`<session-artifact-summary
+      style="margin-bottom: var(--sl-spacing-small);"
+      .counts=${this.activeArtifactCounts}
+      .truncated=${
+        this.loadedArtifacts[this.activeSessionId]?.truncated ?? false
+      }
+      .activeKind=${this.artifactKindFilter}
+      @artifact-kind-filter=${(
+        event: CustomEvent<{ kind: ArtifactKindGroup | null }>
+      ) => this.setArtifactKindFilter(event.detail.kind)}
+    ></session-artifact-summary>`;
+  }
+
+  private renderArtifactViewer() {
+    const images = this.activeImageArtifacts;
+    if (!images.length || !this.activeSessionId) return nothing;
+    return html`<artifact-image-viewer
+      .sessionId=${this.activeSessionId}
+      .images=${images}
+      .index=${this.artifactViewerIndex}
+      @viewer-close=${() => {
+        this.artifactViewerIndex = -1;
+      }}
+      @viewer-navigate=${(event: CustomEvent<{ index: number }>) => {
+        this.artifactViewerIndex = event.detail.index;
+      }}
+    ></artifact-image-viewer>`;
+  }
+
   /** Browser steps of the active session, in time order. */
   private get activeBrowserSteps(): RuntimeSessionActivityItem[] {
     return sortBrowserSteps(this.activeActivity);
@@ -1764,6 +1977,12 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   updated(changed: Map<string | number | symbol, unknown>): void {
+    if (changed.has('focusArtifactId')) {
+      // Cleared (another session picked, or Back to a URL without it): forget
+      // the last landing so returning to the same ?artifact= lands again.
+      if (this.focusArtifactId) void this.landOnFocusArtifact();
+      else this.landedArtifactId = null;
+    }
     if (
       changed.has('focusTurnId') &&
       this.focusTurnId &&
@@ -1886,6 +2105,9 @@ export class PreloopSessionObserver extends LitElement {
         @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
+        .artifacts=${this.activeArtifacts}
+        .artifactKindFilter=${this.artifactKindFilter}
+        .highlightArtifactId=${this.highlightedArtifactId}
         .loading=${
           this.activeSessionId !== null &&
           this.loadingSessionId === this.activeSessionId
@@ -2137,9 +2359,13 @@ export class PreloopSessionObserver extends LitElement {
         class="content"
         @browser-step-open=${(event: CustomEvent<{ key: string }>) =>
           this.openBrowserStepViewer(event.detail.key)}
+        @artifact-open=${(event: CustomEvent<{ artifactId: string }>) =>
+          this.openArtifactViewer(event.detail.artifactId)}
+        @artifact-scrub=${(event: CustomEvent<{ artifactId: string }>) =>
+          void this.scrollToArtifact(event.detail.artifactId)}
       >
         ${this.renderToolbar()} ${this.renderOptimizeHint()}
-        ${this.renderBrowserStepStrip()}
+        ${this.renderArtifactSummary()} ${this.renderBrowserStepStrip()}
         ${
           this.error
             ? html`
@@ -2263,6 +2489,9 @@ export class PreloopSessionObserver extends LitElement {
               : []
           }
           .activity=${this.activeActivity}
+          .artifacts=${this.activeArtifacts}
+          .artifactKindFilter=${this.artifactKindFilter}
+          .highlightArtifactId=${this.highlightedArtifactId}
           .focusEventId=${this.focusTurnId}
           .replayMode=${this.replayMode}
           .loading=${
@@ -2367,7 +2596,7 @@ export class PreloopSessionObserver extends LitElement {
               `
             : nothing
         }
-        ${this.renderBrowserStepViewer()}
+        ${this.renderBrowserStepViewer()} ${this.renderArtifactViewer()}
       </div>
     `;
 

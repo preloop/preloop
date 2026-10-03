@@ -531,6 +531,9 @@ def merge_managed_agents(
         now = _utc_now()
         tags = dict(duplicate.tags or {})
         tags["merged_into"] = str(survivor.id)
+        # The merge time, kept apart from ``lifecycle_updated_at`` which any
+        # later lifecycle write (resume, re-enroll) would move.
+        tags["merged_at"] = now.replace(tzinfo=UTC).isoformat()
         duplicate.tags = tags
         flag_modified(duplicate, "tags")
         duplicate.lifecycle_state = "decommissioned"

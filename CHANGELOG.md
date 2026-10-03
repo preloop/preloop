@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   H5, which may now add buckets in the request's own account. The Cost page
   gains a Teams tab and team names on budget rows, shown only when the server
   advertises `team_budgets` and `team_management` (#1174).
+- Webhooks: new `agent.onboarded` event (#1161). It fires once per managed-agent
+  enrollment, the first time the enrollment is validated, with `outcome`
+  `created`, `relinked` or `merged`. The payload names the agent, its owner
+  and whether MCP and the model gateway were rewritten; it carries no
+  hostname, OS user name, config path or server URL.
+
 - **OTLP attribute stability policy.** `docs/guide/otlp-attribute-stability.md`
   lists the stable `preloop.*` span attributes and metrics, the experimental
   `gen_ai.*` names, and the deprecation window for renames (CHANGELOG
