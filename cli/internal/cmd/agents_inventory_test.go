@@ -17,10 +17,13 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func inventoryTestDependencies(t *testing.T, home string) inventoryProbeDependencies {
 	t.Helper()
+	testenv.SetHome(t, home)
 	return inventoryProbeDependencies{
 		Home: func() (string, error) { return home, nil },
 		Stat: func(path string) (os.FileInfo, error) {
@@ -265,7 +268,7 @@ func resetInventoryCommand(t *testing.T) {
 func TestInventoryCommandIsOfflineWithAuthenticatedTelemetryEnabledFixture(t *testing.T) {
 	resetInventoryCommand(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "false") // Transport is a spy; no telemetry can leave the process.
 	t.Setenv("PRELOOP_TOKEN", "synthetic-token")
 	t.Setenv("PRELOOP_URL", "https://example.com")
@@ -390,7 +393,7 @@ func TestInventoryRejectsConflictingFlagsBeforeProbing(t *testing.T) {
 func TestSafeDiscoveryJSONCommandDoesNotPromptOrLeakMalformedConfig(t *testing.T) {
 	resetInventoryCommand(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.SetHome(t, home)
 	t.Setenv("PRELOOP_TOKEN", "")
 	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "false") // All transport is a spy.
 	network := &inventoryNetworkSpy{}
