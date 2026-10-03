@@ -360,6 +360,14 @@ class FlowExecution(Base):
     trigger_subject: Mapped[Optional[str]] = query_expression()
     trigger_subject_url: Mapped[Optional[str]] = query_expression()
 
+    # Human-readable CI provider (e.g. "GitHub Actions") and the link back to
+    # the CI run that dispatched this execution, for runs a CI job triggered
+    # with a ``ci`` provenance block. Projected out of the subject the same
+    # way ``trigger_subject``/``trigger_subject_url`` are; None on runs a
+    # person or webhook started, and on any query that does not request them.
+    trigger_subject_ci: Mapped[Optional[str]] = query_expression()
+    trigger_subject_ci_url: Mapped[Optional[str]] = query_expression()
+
     # The label the caller passed to run_flow ("lint the diff"), for tree
     # views that answer "what was this child asked to do?".
     #

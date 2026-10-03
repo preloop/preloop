@@ -734,6 +734,59 @@ def _manual_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return parts
 
 
+# Human-readable names for the CI providers a CI-dispatched trigger may
+# declare in its ``ci`` block. Anything unknown falls back to title-casing,
+# so a future provider still renders readably rather than as a raw slug.
+_CI_PROVIDER_LABELS: Dict[str, str] = {
+    "github-actions": "GitHub Actions",
+    "gitlab": "GitLab CI",
+    "gitlab-ci": "GitLab CI",
+    "gitlab-ci-cd": "GitLab CI",
+    "jenkins": "Jenkins",
+    "circleci": "CircleCI",
+    "circle-ci": "CircleCI",
+    "buildkite": "Buildkite",
+    "bitbucket": "Bitbucket Pipelines",
+    "bitbucket-pipelines": "Bitbucket Pipelines",
+    "azure-pipelines": "Azure Pipelines",
+    "azure-devops": "Azure DevOps",
+    "teamcity": "TeamCity",
+    "travis": "Travis CI",
+    "travis-ci": "Travis CI",
+}
+
+
+def _ci_provenance(ci: Any) -> Dict[str, str]:
+    """Read the ``ci`` provenance block a CI-dispatched trigger carries.
+
+    A CI job that calls ``preloop flow trigger`` with a full tracker payload
+    marks where it came from with a top-level ``ci`` block
+    (``{"provider": "github-actions", "run_url": ...}``). The provider lets
+    the subject say who dispatched it; the run URL links back to the job.
+
+    Args:
+        ci: The ``ci`` object from the trigger body, or anything else.
+
+    Returns:
+        ``{"label": "<human provider>", "url": "<run url>"}`` when a provider
+        was declared, else ``{}``. ``url`` is omitted when absent or not a
+        non-empty string.
+    """
+    if not isinstance(ci, dict):
+        return {}
+    provider = str(ci.get("provider") or "").strip()
+    if not provider:
+        return {}
+    label = _CI_PROVIDER_LABELS.get(provider.lower())
+    if not label:
+        label = provider.replace("-", " ").replace("_", " ").title()
+    parts: Dict[str, str] = {"label": label}
+    run_url = ci.get("run_url")
+    if isinstance(run_url, str) and run_url.strip():
+        parts["url"] = run_url.strip()
+    return parts
+
+
 def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Build a compact, human-readable subject for a flow execution.
 
@@ -796,11 +849,16 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
     else:
         parts = {}
 
+    ci = _ci_provenance(event_data.get("ci"))
+
     # Drop keys that resolved to None so the stored blob stays compact.
     parts = {key: value for key, value in parts.items() if value}
 
     label = humanize_event_type(event_type)
-    if event_data.get("test_mode"):
+    # A run a person started from the console or CLI reads "Manual Test Run".
+    # A CI-dispatched run carries its own provenance block, so it keeps the
+    # real event label (e.g. "Pull Request Updated") and names the CI instead.
+    if event_data.get("test_mode") and not ci:
         label = "Manual Test Run"
     if label:
         parts["event"] = label
@@ -820,6 +878,10 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
         return None
 
     parts["text"] = _SUBJECT_SEPARATOR.join(segments)
+    if ci:
+        parts["ci"] = ci["label"]
+        if ci.get("url"):
+            parts["ci_url"] = ci["url"]
     return parts
 
 
