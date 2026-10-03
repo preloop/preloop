@@ -14,6 +14,8 @@ from preloop.config import get_settings, Settings
 from preloop.schemas.issue import IssueResponse, IssueUpdate
 from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.model_credentials import (
+    AuxApiKeyMissingError,
+    build_aux_openai_client,
     get_aux_openai_sdk_extra_kwargs,
     resolve_model_call_credentials,
 )
@@ -129,16 +131,17 @@ def _calculate_issue_compliance(
 
     try:
         creds_kwargs = resolve_model_call_credentials(default_model, db=db)
-        api_key = creds_kwargs.get("api_key")
-        if not api_key:
-            api_key = os.getenv("OPENAI_API_KEY")
-
-        if not api_key:
+        try:
+            client = build_aux_openai_client(
+                openai,
+                default_model,
+                creds_kwargs,
+                static_key_fallback=os.getenv("OPENAI_API_KEY"),
+            )
+        except AuxApiKeyMissingError:
             raise HTTPException(
                 status_code=500, detail="OpenAI API key not configured."
-            )
-
-        client = openai.OpenAI(api_key=api_key)
+            ) from None
         aux_extras = get_aux_openai_sdk_extra_kwargs(
             default_model,
             call_site_kwargs={
@@ -305,14 +308,18 @@ def get_compliance_improvement_suggestion(
     )
 
     creds_kwargs = resolve_model_call_credentials(default_model, db=db)
-    api_key = creds_kwargs.get("api_key")
-    if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
-
-    client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+    try:
+        client = build_aux_openai_client(
+            openai,
+            default_model,
+            creds_kwargs,
+            include_api_base=True,
+            static_key_fallback=os.getenv("OPENAI_API_KEY"),
+        )
+    except AuxApiKeyMissingError:
+        raise HTTPException(
+            status_code=500, detail="OpenAI API key not configured."
+        ) from None
     compliance_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

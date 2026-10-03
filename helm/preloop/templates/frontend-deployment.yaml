@@ -28,6 +28,9 @@ spec:
       {{- end }}
       labels:
         {{- include "preloop.selectorLabels" . | nindent 8 }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         app.kubernetes.io/component: console
         app: console
     spec:
