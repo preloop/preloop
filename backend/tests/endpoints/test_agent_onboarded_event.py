@@ -266,3 +266,70 @@ def test_mcp_only_onboarding_is_not_gateway_routed(
     data = _events(db_session, test_user)[0]["data"]
     assert data["mcp_rewritten"] is True
     assert data["gateway_routed"] is False
+
+
+def test_later_lifecycle_write_on_a_merged_duplicate_is_not_a_new_merge(
+    client, db_session, test_user, endpoint
+):
+    survivor = _make_agent(db_session, test_user, source_id="codex-surv-resume")
+    duplicate = _make_agent(db_session, test_user, source_id="codex-dup-resume")
+    merge = client.post(
+        f"/api/v1/agents/{survivor.id}/merge",
+        json={"duplicate_agent_id": str(duplicate.id), "dry_run": False},
+    )
+    assert merge.status_code == 200, merge.text
+    _validate(client, survivor.id, _enroll(client, survivor.id))
+
+    # An operator resumes the merged duplicate: its lifecycle stamp moves,
+    # the merge time does not.
+    db_session.refresh(duplicate)
+    assert duplicate.tags["merged_at"]
+    duplicate.lifecycle_state = "active"
+    duplicate.lifecycle_updated_at = datetime.now(UTC).replace(tzinfo=None)
+    db_session.commit()
+
+    _validate(client, survivor.id, _enroll(client, survivor.id))
+
+    outcomes = [e["data"]["outcome"] for e in _events(db_session, test_user)]
+    assert outcomes == ["merged", "relinked"]
+
+
+def test_duplicate_merged_before_the_merged_at_tag_still_counts(
+    client, db_session, test_user, endpoint
+):
+    survivor = _make_agent(db_session, test_user, source_id="codex-surv-legacy")
+    _make_agent(
+        db_session,
+        test_user,
+        source_id="codex-dup-legacy",
+        lifecycle_state="decommissioned",
+        tags={"merged_into": str(survivor.id)},
+    )
+
+    _validate(client, survivor.id, _enroll(client, survivor.id))
+
+    assert _events(db_session, test_user)[0]["data"]["outcome"] == "merged"
+
+
+def test_enrollment_created_already_validated_fires_once(
+    client, db_session, test_user, endpoint
+):
+    agent = _make_agent(db_session, test_user, source_id="codex-born-validated")
+    response = client.post(
+        f"/api/v1/agents/{agent.id}/enrollments",
+        json={
+            "enrollment_type": "cli_managed_config",
+            "adapter_key": "codex",
+            "status": "validated",
+            "validation_result": {"mcp_proxy_configured": True},
+        },
+    )
+    assert response.status_code == 201
+    enrollment_id = response.json()["id"]
+
+    _validate(client, agent.id, enrollment_id)
+
+    events = _events(db_session, test_user)
+    assert len(events) == 1
+    assert events[0]["data"]["enrollment_id"] == enrollment_id
+    assert events[0]["data"]["outcome"] == "created"

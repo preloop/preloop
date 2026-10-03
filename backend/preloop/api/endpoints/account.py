@@ -2058,8 +2058,20 @@ async def create_account_managed_agent_enrollment(
         last_applied_at=payload.last_applied_at,
         last_validated_at=payload.last_validated_at,
         last_restored_at=payload.last_restored_at,
-        commit=True,
+        commit=False,
     )
+    # A row normally arrives ``applied`` and is onboarded by the validate
+    # call. One that arrives already ``validated`` is onboarded now, or it
+    # would never emit: the validate endpoint skips an already-validated row.
+    if enrollment.status == ENROLLMENT_STATUS_VALIDATED:
+        _emit_agent_onboarded(
+            db,
+            account_id=str(account.id),
+            enrollment=enrollment,
+            actor_user_id=current_user.id,
+        )
+    db.commit()
+    db.refresh(enrollment)
     emit_account_event(
         build_account_event(
             account_id=str(account.id),

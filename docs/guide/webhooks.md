@@ -101,7 +101,8 @@ it is documented in
 
 `agent.onboarded` fires when an enrollment first reaches `validated`, not
 when the enrollment row is created: a config that was written but never
-checked is not governed yet. The event id is deterministic on the enrollment,
+checked is not governed yet. (A row created through the API already in
+`validated` status counts as validated at creation and emits then.) The event id is deterministic on the enrollment,
 so validating the same enrollment again does not produce a second event.
 `outcome` says how the agent relates to agents Preloop already governed:
 `created` for its first onboarding, `relinked` when an earlier enrollment of
