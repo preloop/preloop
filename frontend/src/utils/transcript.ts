@@ -110,12 +110,24 @@ export interface TranscriptToolItem {
   call: LiveToolCall;
 }
 
+/**
+ * One `artifact` activity (deposit API), kept top level like browser steps so
+ * artifacts sit in time order between the turns around them.
+ */
+export interface TranscriptArtifactItem {
+  type: 'artifact';
+  key: string;
+  timestamp: string | null;
+  activity: RuntimeSessionActivityItem;
+}
+
 export type TranscriptItem =
   | TranscriptMessageItem
   | TranscriptStepGroupItem
   | TranscriptDividerItem
   | TranscriptBrowserStepItem
-  | TranscriptToolItem;
+  | TranscriptToolItem
+  | TranscriptArtifactItem;
 
 export interface TranscriptStats {
   promptCount: number;
@@ -132,6 +144,8 @@ export interface TranscriptStats {
    *  tool-result items yielded no matchable text — exact detection is only
    *  partial there, so those results may still render as user prompts. */
   eventsWithPartialToolResults: number;
+  /** A gateway `tool_activity` collection dropped entries at its cap. */
+  toolActivityTruncated: boolean;
   totalEvents: number;
 }
 
@@ -341,7 +355,8 @@ type Atom =
   | { type: 'step'; step: TranscriptStep; order: number }
   | { type: 'divider'; item: TranscriptDividerItem; order: number }
   | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number }
-  | { type: 'tool'; item: TranscriptToolItem; order: number };
+  | { type: 'tool'; item: TranscriptToolItem; order: number }
+  | { type: 'artifact'; item: TranscriptArtifactItem; order: number };
 
 function atomTime(atom: Atom): number {
   const timestamp =
@@ -372,6 +387,7 @@ export function buildConversation(
     toolCallCount: 0,
     eventsWithoutRawBody: 0,
     eventsWithPartialToolResults: 0,
+    toolActivityTruncated: false,
     totalEvents: 0,
   };
 
@@ -551,7 +567,9 @@ export function buildConversation(
   // Named tool rows, from gateway `tool_activity` entries and native
   // `tool_call` rows. These are top level, never folded into a step group: a
   // generic "3 steps" count is what made a running session unreadable.
-  for (const call of normalizeToolCalls(gatewayEvents, activity)) {
+  const normalizedTools = normalizeToolCalls(gatewayEvents, activity);
+  stats.toolActivityTruncated = normalizedTools.truncated;
+  for (const call of normalizedTools) {
     stats.toolCallCount += 1;
     atoms.push({
       type: 'tool',
@@ -574,6 +592,19 @@ export function buildConversation(
         order: order++,
         item: {
           type: 'browser_step',
+          key,
+          timestamp: item.timestamp || null,
+          activity: item,
+        },
+      });
+      continue;
+    }
+    if (activityType === 'artifact') {
+      atoms.push({
+        type: 'artifact',
+        order: order++,
+        item: {
+          type: 'artifact',
           key,
           timestamp: item.timestamp || null,
           activity: item,
@@ -667,7 +698,8 @@ export function buildConversation(
     if (
       atom.type === 'divider' ||
       atom.type === 'browser_step' ||
-      atom.type === 'tool'
+      atom.type === 'tool' ||
+      atom.type === 'artifact'
     ) {
       closeSteps();
       items.push(atom.item);

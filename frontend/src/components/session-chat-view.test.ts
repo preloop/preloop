@@ -936,4 +936,28 @@ describe('session-chat-view live tools and activity', () => {
         .getAttribute('data-status')
     ).to.equal('idle');
   });
+
+  it('says when tool_activity dropped calls', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          {
+            id: 'e2',
+            execution_id: 'exec-1',
+            timestamp: '2026-08-06T10:00:05Z',
+            type: 'model_gateway_call',
+            payload: {
+              outcome: 'success',
+              tool_activity: { entries: [CALL], truncated: true },
+            },
+          } as FlowGatewayEvent,
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="tool-activity-truncated"]')
+        ?.textContent
+    ).to.contain('truncated');
+  });
 });

@@ -1,3 +1,5 @@
+import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
+
 /**
  * Shared live-session state for the console's session surfaces.
  *
@@ -231,25 +233,20 @@ function entryId(entry: GatewayToolActivityEntry): string | null {
  *
  * Entries with no stable id are scoped to the row that produced them, so two
  * id-less calls in the same turn stay two rows instead of collapsing.
+ *
+ * The returned array also carries `truncated` when any `tool_activity`
+ * collection said the producer dropped entries. Callers that only iterate
+ * the rows still work; the flag is how a transcript says some calls are
+ * missing instead of looking complete.
  */
+export type NormalizedToolCalls = LiveToolCall[] & { truncated: boolean };
+
 export function normalizeToolCalls(
-  events: Array<{
-    id: string;
-    type: string;
-    timestamp: string | null;
-    payload: Record<string, unknown>;
-  }>,
-  activity: Array<{
-    activity_type: string;
-    timestamp: string;
-    tool_name: string | null;
-    server_name: string | null;
-    status: string | null;
-    summary: string | null;
-    metadata?: Record<string, unknown>;
-  }> = []
-): LiveToolCall[] {
+  events: FlowGatewayEvent[],
+  activity: RuntimeSessionActivityItem[] = []
+): NormalizedToolCalls {
   const byKey = new Map<string, ToolAccumulator>();
+  let collectionTruncated = false;
 
   const ensure = (
     key: string,
@@ -299,7 +296,9 @@ export function normalizeToolCalls(
   for (const event of orderedEvents) {
     const activityPayload = event.payload?.tool_activity;
     if (!isRecord(activityPayload)) continue;
-    const entries = (activityPayload as GatewayToolActivity).entries;
+    const collected = activityPayload as GatewayToolActivity;
+    if (collected.truncated === true) collectionTruncated = true;
+    const entries = collected.entries;
     if (!Array.isArray(entries)) continue;
     const at = parseTime(event.timestamp);
 
@@ -390,12 +389,13 @@ export function normalizeToolCalls(
     }
   }
 
-  return Array.from(byKey.values()).map(
+  const calls = Array.from(byKey.values()).map(
     ({ call, hasCall, hasResult, isError, firstAt, lastAt }) => {
       const resolved: LiveToolCall = { ...call };
       if (isError === true) resolved.state = 'failed';
       else if (hasResult) resolved.state = 'completed';
-      else if (hasCall) resolved.state = 'requested';
+      else if (hasCall)
+        resolved.state = resolved.state === 'running' ? 'running' : 'requested';
       else
         resolved.state =
           resolved.state === 'unknown' ? 'unknown' : resolved.state;
@@ -412,6 +412,7 @@ export function normalizeToolCalls(
       return resolved;
     }
   );
+  return Object.assign(calls, { truncated: collectionTruncated });
 }
 
 /** The one-line session status shown above a conversation or transcript. */
@@ -443,16 +444,8 @@ export interface LiveSessionState {
 }
 
 export interface LiveSessionInput {
-  events: Array<{
-    type: string;
-    timestamp: string | null;
-    payload: Record<string, unknown>;
-  }>;
-  activity?: Array<{
-    activity_type: string;
-    timestamp: string;
-    status: string | null;
-  }>;
+  events: FlowGatewayEvent[];
+  activity?: RuntimeSessionActivityItem[];
   /** Requests from THIS session only; the caller is responsible for scoping. */
   pendingApprovals?: Array<{ status: string }>;
   connected?: boolean | null;

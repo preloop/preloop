@@ -306,6 +306,23 @@ describe('normalizeToolCalls', () => {
     expect(formatDuration(calls[0].durationMs)).to.equal('1.0s');
   });
 
+  it('keeps a native running row running after the call half is seen', () => {
+    expect(
+      normalizeToolCalls([], [activity({ status: 'running' })])[0].state
+    ).to.equal('running');
+  });
+
+  it('reports a tool_activity collection that dropped entries', () => {
+    const calls = normalizeToolCalls([
+      gatewayEvent('e1', '2026-10-02T09:00:05Z', {
+        tool_activity: { entries: [toolEntry()], truncated: true },
+      }),
+    ]);
+
+    expect(calls.truncated).to.equal(true);
+    expect(calls).to.have.length(1);
+  });
+
   it('reports no duration for a native row with no start marker', () => {
     const [call] = normalizeToolCalls(
       [],

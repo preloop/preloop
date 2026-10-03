@@ -544,9 +544,12 @@ export class AgentTalkView extends LitElement {
    */
   private handleApprovalActivity(message: {
     payload?: Record<string, unknown>;
+    runtime_session_id?: string;
   }): void {
     const payload = message?.payload ?? {};
-    const sessionId = payload.runtime_session_id as string | undefined;
+    const sessionId =
+      (payload.runtime_session_id as string | undefined) ??
+      message?.runtime_session_id;
     if (!sessionId || sessionId !== this.sessionId) return;
     void this.loadApprovals();
   }

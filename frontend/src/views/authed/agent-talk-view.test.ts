@@ -7,6 +7,10 @@ import { TALK_CHANNEL_NAME } from '../../utils/talk-channel';
 import type { TalkChannelMessage } from '../../utils/talk-channel';
 import { TALK_MESSAGE_SENT_EVENT } from '../../components/talk-composer';
 import type { TalkComposer } from '../../components/talk-composer';
+import {
+  ConnectionState,
+  unifiedWebSocketManager,
+} from '../../services/unified-websocket-manager';
 
 const AGENT = {
   id: 'agent-1',
@@ -361,6 +365,46 @@ describe('agent-talk-view approvals', () => {
     expect(chat!.pendingApprovals?.map((row) => row.id)).to.deep.equal([
       'req-1',
     ]);
+    el.remove();
+  });
+
+  it('reloads approvals when a flat approval_created event arrives', async () => {
+    const callbacks = new Map<
+      string,
+      (message: Record<string, unknown>) => void
+    >();
+    sinon
+      .stub(unifiedWebSocketManager, 'subscribe')
+      .callsFake((topic: string, callback: (message: unknown) => void) => {
+        callbacks.set(
+          topic,
+          callback as (message: Record<string, unknown>) => void
+        );
+        return () => {
+          callbacks.delete(topic);
+        };
+      });
+    sinon
+      .stub(unifiedWebSocketManager, 'getState')
+      .returns(ConnectionState.CONNECTED);
+    sinon
+      .stub(unifiedWebSocketManager, 'onStateChange')
+      .returns(() => undefined);
+    sinon.stub(unifiedWebSocketManager, 'connect').resolves();
+
+    const el = document.createElement('agent-talk-view') as AgentTalkView;
+    el.onBeforeEnter({ params: { agentId: 'agent-1' }, search: '' });
+    document.body.append(el);
+    await waitUntil(() => approvalCalls().length > 0);
+    const before = approvalCalls().length;
+    const onApproval = callbacks.get('approvals');
+    expect(onApproval, 'approvals subscription').to.not.equal(undefined);
+    onApproval!({
+      type: 'approval_created',
+      runtime_session_id: 'sess-1',
+    });
+    await waitUntil(() => approvalCalls().length > before);
+    expect(approvalCalls().at(-1)).to.contain('runtime_session_id=sess-1');
     el.remove();
   });
 });

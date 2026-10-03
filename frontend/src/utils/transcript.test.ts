@@ -623,6 +623,27 @@ describe('buildConversation tool rows', () => {
     expect(items.filter((item) => item.type === 'tool')).to.have.length(0);
     expect(items.filter((item) => item.type === 'message')).to.have.length(2);
   });
+
+  it('records a tool_activity collection that was truncated', () => {
+    const { stats } = buildConversation([
+      toolEvent('e1', '2026-10-02T10:00:05Z', [TOOL_CALL]),
+    ]);
+    expect(stats.toolActivityTruncated).to.equal(false);
+
+    const truncated = buildConversation([
+      {
+        id: 'e2',
+        execution_id: 'exec-1',
+        timestamp: '2026-10-02T10:00:06Z',
+        type: 'model_gateway_call',
+        payload: {
+          outcome: 'success',
+          tool_activity: { entries: [TOOL_CALL], truncated: true },
+        },
+      } as FlowGatewayEvent,
+    ]);
+    expect(truncated.stats.toolActivityTruncated).to.equal(true);
+  });
 });
 
 describe('transient live coverage', () => {
