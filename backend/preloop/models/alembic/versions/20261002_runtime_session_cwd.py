@@ -1,7 +1,7 @@
 """Record the working directory a hook reported for a runtime session.
 
 Revision ID: 20261002_runtime_session_cwd
-Revises: 20260927_issue_cost_accuracy
+Revises: 20261001_artifact_kinds_labels
 Create Date: 2026-10-02
 
 Additive only. ``runtime_session.cwd`` holds the last working directory a
@@ -17,7 +17,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20261002_runtime_session_cwd"
-down_revision = "20260927_issue_cost_accuracy"
+down_revision = "20261001_artifact_kinds_labels"
 branch_labels = None
 depends_on = None
 

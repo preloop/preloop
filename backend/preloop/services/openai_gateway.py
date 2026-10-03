@@ -902,6 +902,7 @@ def gateway_database_scope(operation: Callable[..., Any]) -> Callable[..., Any]:
 
     @wraps(operation)
     def scoped(self: OpenAIGatewayService, *args: Any, **kwargs: Any) -> Any:
+        self._live_request_id = None
         try:
             result = operation(self, *args, **kwargs)
             self.release_db_for_wait()
@@ -918,6 +919,8 @@ class OpenAIGatewayService:
     # __new__ construction (tests, factories) skips __init__. Default keeps
     # release_db_for_wait from crashing on a missing attribute.
     _owns_db_session: bool = False
+    # Service instances are scoped to one HTTP request, including its stream.
+    _live_request_id: Optional[str] = None
 
     def __init__(
         self,
@@ -1586,6 +1589,7 @@ class OpenAIGatewayService:
         from preloop.services.model_gateway_events import build_account_event
         from preloop.services.account_realtime import ACCOUNT_TOPIC_GATEWAY_ACTIVITY
 
+        self._live_request_id = str(uuid4())
         runtime_session_id = self._resolve_runtime_session()
         managed_agent_id = self._resolve_managed_agent_id()
 
@@ -1595,6 +1599,7 @@ class OpenAIGatewayService:
                 topic=ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
                 event_type="model_gateway_request_started",
                 payload={
+                    "request_id": self._live_request_id,
                     "status_code": 202,  # accepted, waiting
                     "outcome": "pending",
                     "duration": 0,
@@ -1606,7 +1611,6 @@ class OpenAIGatewayService:
                         "endpoint_kind": endpoint_kind,
                         "requested_model": requested_model,
                     },
-                    "request": request_payload,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
                 runtime_session_id=runtime_session_id,
@@ -4362,12 +4366,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "OpenAI Codex OAuth credentials could not be refreshed. "
-                    'Run `preloop agents sync-credentials "Codex CLI"` to '
-                    "push the local ChatGPT login, or run `codex login` on "
-                    "the agent host and rerun onboarding."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -5665,10 +5664,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="anthropic",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -6319,10 +6315,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -6930,10 +6923,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         supports_ambient = _supports_ambient_provider_credentials(ai_model)
@@ -7356,10 +7346,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         supports_ambient = _supports_ambient_provider_credentials(ai_model)
@@ -9515,6 +9502,7 @@ class OpenAIGatewayService:
             runtime_principal_name=runtime_principal.get("name"),
             rate_limit_retry_after_ms=rate_limit_retry_after_ms,
             meta_data={
+                "request_id": getattr(self, "_live_request_id", None),
                 "endpoint_kind": endpoint_kind,
                 "requested_model": requested_model,
                 "gateway_provider": runtime.model_gateway_provider,

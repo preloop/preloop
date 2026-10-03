@@ -4,6 +4,7 @@ import sinon from 'sinon';
 
 import './runtime-sessions-view';
 import type { RuntimeSessionsView } from './runtime-sessions-view';
+import { formatCueStart } from './runtime-sessions-view';
 
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
@@ -1047,7 +1048,7 @@ describe('RuntimeSessionsView', () => {
       await (toolbar as any).updateComplete;
       const input = toolbar.shadowRoot!.querySelector('sl-input.search-input')!;
       expect(input.getAttribute('placeholder')).to.equal(
-        'Search prompts, responses, and tool calls'
+        'Search prompts, responses, tool calls, and artifacts'
       );
       expect(input.getAttribute('label')).to.equal('Search session content');
     });
@@ -1143,6 +1144,111 @@ describe('RuntimeSessionsView', () => {
       expect(new URLSearchParams(window.location.search).get('turn')).to.equal(
         null
       );
+    });
+
+    it('shows an artifact hit with its kind, name, labels and cue time, and opens the session with its deposit row in the location', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () => {
+        const body = searchResponse();
+        body.results[0].snippets = [
+          {
+            document_id: 'doc-artifact',
+            runtime_session_id: 'runtime-session-2',
+            source_kind: 'artifact',
+            source_id: 'artifact-1',
+            chunk_index: 0,
+            occurred_at: '2026-03-09T19:00:00Z',
+            role: 'artifact',
+            rank: 0.5,
+            redaction_state: 'clear',
+            text: 'nord-late.vtt\nlabels: site=nord tags=handover dock\nReceiving Lead: Reporting a <mark>damaged</mark> <mark>pallet</mark>',
+            artifact: {
+              artifact_id: 'artifact-1',
+              activity_id: 'activity-artifact-1',
+              kind: 'transcript',
+              name: 'nord-late.vtt',
+              content_type: 'text/vtt',
+              labels: { site: 'nord', tags: ['handover', 'dock'] },
+              cue_start: 65.5,
+              text_truncated: false,
+            },
+          },
+        ];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = await renderedSearch();
+      const button = snippetButtons(element)[0];
+      expect(button.textContent).to.contain('Transcript · nord-late.vtt');
+      const labels = Array.from(
+        button.querySelectorAll('[data-testid="snippet-artifact-label"]')
+      ).map((node) => node.textContent!.trim());
+      expect(labels).to.deep.equal(['site: nord', 'tags: handover, dock']);
+      expect(
+        button.querySelector('[data-testid="snippet-cue-start"]')!.textContent
+      ).to.contain('from 1:05');
+      // The timeline does not draw artifact rows yet, so no jump is claimed.
+      expect(button.textContent).to.contain('Opens the session');
+      // The header lines the badges already show are not repeated.
+      const body = button.querySelector('.snippet-text')!.textContent!;
+      expect(body.trim()).to.equal(
+        'Receiving Lead: Reporting a damaged pallet'
+      );
+
+      button.click();
+      await element.updateComplete;
+      expect((element as any).selectedSessionId).to.equal('runtime-session-2');
+      expect((element as any).focusTurnId).to.equal('activity-artifact-1');
+      expect(new URLSearchParams(window.location.search).get('turn')).to.equal(
+        'activity-artifact-1'
+      );
+    });
+
+    it('does not repeat the tool_name and labels header lines of an artifact hit', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () => {
+        const body = searchResponse();
+        body.results[0].snippets = [
+          {
+            document_id: 'doc-artifact-tool',
+            runtime_session_id: 'runtime-session-2',
+            source_kind: 'artifact',
+            source_id: 'artifact-2',
+            chunk_index: 0,
+            occurred_at: '2026-03-09T19:00:00Z',
+            role: 'artifact',
+            rank: 0.5,
+            redaction_state: 'clear',
+            text: 'name: dock-call.vtt\ntool_name: record_call\nlabels: site=nord\nReceiving Lead: a <mark>damaged</mark> pallet',
+            artifact: {
+              artifact_id: 'artifact-2',
+              activity_id: 'activity-artifact-2',
+              kind: 'transcript',
+              name: 'dock-call.vtt',
+              content_type: 'text/vtt',
+              tool_name: 'record_call',
+              labels: { site: 'nord' },
+              cue_start: null,
+              text_truncated: false,
+            },
+          },
+        ];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = await renderedSearch();
+      const body =
+        snippetButtons(element)[0].querySelector('.snippet-text')!.textContent!;
+      expect(body.trim()).to.equal('Receiving Lead: a damaged pallet');
+    });
+
+    it('formats cue starts past an hour', () => {
+      expect(formatCueStart(0)).to.equal('0:00');
+      expect(formatCueStart(3725.9)).to.equal('1:02:05');
     });
 
     it('does not claim nothing matched before a search has run', async () => {

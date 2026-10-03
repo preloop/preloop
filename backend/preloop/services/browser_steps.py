@@ -37,6 +37,7 @@ from preloop.services.account_realtime import (
     build_account_event,
     emit_account_event,
 )
+from preloop.services.artifact_media import is_declared_image
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.session_search_index import index_browser_step, request_embedding
 
@@ -49,13 +50,7 @@ def _is_declared_image(content_type: str, data: bytes) -> bool:
     The artifact route serves stored bytes with the stored media type, so a
     payload that is not the declared image is refused at ingest.
     """
-    if content_type == "image/png":
-        return data.startswith(b"\x89PNG\r\n\x1a\n")
-    if content_type == "image/jpeg":
-        return data.startswith(b"\xff\xd8\xff")
-    if content_type == "image/webp":
-        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
-    return False
+    return is_declared_image(content_type, data)
 
 
 def decode_screenshot(
@@ -169,6 +164,7 @@ def attach_screenshot(
             "action": metadata.get("action"),
         },
         activity_id=activity.id,
+        producer="browser_steps",
         commit=False,
     )
     # Reassign the dict: in-place edits of a JSONB value are not tracked.

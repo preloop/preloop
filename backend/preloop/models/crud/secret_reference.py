@@ -12,6 +12,18 @@ from .base import CRUDBase
 class CRUDSecretReference(CRUDBase[models.SecretReference]):
     """CRUD class for SecretReference operations."""
 
+    def get_for_update(
+        self, db: Session, *, secret_id: UUID, account_id: Optional[UUID]
+    ) -> Optional[models.SecretReference]:
+        """Read an account's current credential while excluding refresh writers."""
+        return (
+            db.query(self.model)
+            .filter(self.model.id == secret_id, self.model.account_id == account_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+
     def inspect_for_refresh(
         self,
         db: Session,

@@ -253,6 +253,15 @@ def _issue_updated_at(issue: Any) -> Optional[str]:
     return str(value)
 
 
+def _reject_dc_execution(tracker: Any) -> None:
+    """DC execution/publication routing is intentionally not supported yet."""
+    if (getattr(tracker, "tracker_type", "") or "").lower() == "bitbucket_dc":
+        raise _http(
+            400,
+            "Bitbucket Data Center execution/publication routing is unsupported.",
+        )
+
+
 def _repository_clone_fields(project: Any, tracker: Any) -> Dict[str, Any]:
     """Clone keys the orchestrator/container read when repositories is empty.
 
@@ -264,6 +273,7 @@ def _repository_clone_fields(project: Any, tracker: Any) -> Dict[str, Any]:
     """
     slug = project.slug or project.name or ""
     name = project.name or (slug.split("/")[-1] if slug else "")
+    _reject_dc_execution(tracker)
     tracker_type = (getattr(tracker, "tracker_type", "") or "").lower()
     default_branch = _default_branch(project)
     if "bitbucket" in tracker_type:
@@ -413,6 +423,7 @@ def _tracker_kind_for_issue_payload(tracker: Any, *, git_only: bool) -> str:
     Implementer runs require GitHub or GitLab. Triage may also run on
     Jira or other issue trackers using the same normalized packet.
     """
+    _reject_dc_execution(tracker)
     tracker_type = (getattr(tracker, "tracker_type", "") or "").lower()
     if "gitlab" in tracker_type:
         return "gitlab"
@@ -554,6 +565,7 @@ def build_pull_request_trigger_payload(
     build ``object_attributes`` (title, description, author, url, branches).
     GitLab already uses ``object_attributes`` with those same keys.
     """
+    _reject_dc_execution(tracker)
     tracker_type = (getattr(tracker, "tracker_type", "") or "github").lower()
     if tracker_type not in ("github", "gitlab", "bitbucket"):
         if "gitlab" in tracker_type:
@@ -709,6 +721,7 @@ async def _fetch_pull_request_detail(
     from preloop.api.common import get_tracker_client
     from preloop.sync.exceptions import TrackerError
 
+    _reject_dc_execution(tracker)
     tracker_type = (getattr(tracker, "tracker_type", "") or "").lower()
     try:
         client = await get_tracker_client(organization.id, project.id, db, current_user)

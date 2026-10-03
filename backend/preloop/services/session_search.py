@@ -55,6 +55,7 @@ from preloop.models.crud import (
     crud_session_search_document,
 )
 from preloop.models.models.session_embedding_setting import source_kinds_for_scope
+from preloop.models.models.session_search_document import SOURCE_KIND_ARTIFACT
 from preloop.models.crud.session_search_document import (
     MATCH_REASON_BOTH,
     MATCH_REASON_KEYWORD,
@@ -83,6 +84,7 @@ from preloop.schemas.session_search import (
     DEGRADED_SEMANTIC_NO_VECTORS,
     DEGRADED_SEMANTIC_NOT_ENABLED,
     DEGRADED_SEMANTIC_PROVIDER_ERROR,
+    SessionSearchArtifactRef,
     SessionSearchDegraded,
     SessionSearchMode,
     SessionSearchRequest,
@@ -218,6 +220,36 @@ def _to_crud_filters(request: SessionSearchRequest) -> CrudSessionSearchFilters:
         api_key_id=filters.api_key_id,
         flow_id=filters.flow_id,
         source_kind=filters.source_kind,
+        artifact_kind=filters.kind,
+        artifact_labels=_label_terms(filters.label or ()),
+    )
+
+
+def _label_terms(values: Sequence[str]) -> Optional[List[Dict[str, Any]]]:
+    """One JSONB containment term per ``key:value`` filter, ANDed."""
+    terms: List[Dict[str, Any]] = []
+    for raw in values:
+        key, _sep, value = raw.partition(":")
+        key, value = key.strip(), value.strip()
+        terms.append({key: [value]} if key == "tags" else {key: value})
+    return terms or None
+
+
+def _artifact_ref(snippet: RankedSnippet) -> Optional[SessionSearchArtifactRef]:
+    """The artifact identity an ``artifact`` chunk carries, if any."""
+    meta = snippet.meta_data or {}
+    if snippet.source_kind != SOURCE_KIND_ARTIFACT or not meta.get("artifact_id"):
+        return None
+    return SessionSearchArtifactRef(
+        artifact_id=str(meta["artifact_id"]),
+        activity_id=meta.get("activity_id"),
+        kind=meta.get("kind"),
+        name=meta.get("name"),
+        content_type=meta.get("content_type"),
+        tool_name=meta.get("tool_name"),
+        labels=dict(meta.get("labels") or {}),
+        cue_start=meta.get("cue_start"),
+        text_truncated=bool(meta.get("text_truncated")),
     )
 
 
@@ -322,6 +354,7 @@ def _snippet_to_schema(snippet: RankedSnippet) -> SessionSearchSnippet:
         text=snippet.text,
         match_reason=snippet.match_reason,
         similarity=snippet.similarity,
+        artifact=_artifact_ref(snippet),
     )
 
 
@@ -402,6 +435,7 @@ def _semantic_snippets(
             text=texts.get(str(hit.document_id)),
             match_reason=MATCH_REASON_SEMANTIC,
             similarity=hit.similarity,
+            meta_data=hit.meta_data,
         )
         for hit in hits
     ]

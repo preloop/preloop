@@ -1,6 +1,7 @@
 """CRUD operations for ApiUsage model."""
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import logging
 from types import SimpleNamespace
 import uuid
@@ -1357,6 +1358,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         api_key_id: Optional[str] = None,
         ai_model_ids: Optional[Sequence[str]] = None,
         failed_since: Optional[Mapping[str, datetime]] = None,
+        digest_ranking: bool = False,
         limit: Optional[int] = 20,
         account_ids: Optional[Sequence[str]] = None,
     ) -> List[Dict[str, Any]]:
@@ -1384,6 +1386,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 pass over the usage table: the count is another conditional
                 SUM in this aggregate, so it costs no extra query. Models
                 absent from the mapping get ``0``.
+            digest_ranking: Return the full-window top three named model
+                identities plus a bucket row with unknown, remaining and total
+                request counts, rather than the normal cost breakdown shape.
             limit: Maximum number of grouped rows, ordered by request count
                 descending. Pass ``None`` to return every group — required by
                 callers that SUM the result (e.g. spend caps), since a
@@ -1501,6 +1506,47 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         if ai_model_ids is not None:
             query = query.filter(ApiUsage.ai_model_id.in_(list(ai_model_ids)))
 
+        if digest_ranking:
+            # Labels are joined once, scoped to the owning account. Preserve
+            # the existing (model, alias, provider) identity for known groups.
+            model_name = func.coalesce(
+                func.nullif(func.trim(ApiUsage.model_alias), ""),
+                func.nullif(func.trim(models.AIModel.name), ""),
+            )
+            known = model_name.isnot(None)
+            identity = case(
+                (
+                    known,
+                    cast(
+                        func.json_build_array(
+                            cast(ApiUsage.ai_model_id, String),
+                            ApiUsage.model_alias,
+                            ApiUsage.provider_name,
+                        ),
+                        String,
+                    ),
+                ),
+                else_="",
+            )
+            grouped = (
+                query.outerjoin(
+                    models.AIModel,
+                    and_(
+                        models.AIModel.id == ApiUsage.ai_model_id,
+                        models.AIModel.account_id == ApiUsage.account_id,
+                    ),
+                )
+                .with_entities(
+                    identity.label("identity"),
+                    model_name.label("name"),
+                    literal_column("NULL").label("agent_id"),
+                    func.count(ApiUsage.id).label("request_count"),
+                )
+                .group_by(identity, model_name)
+                .subquery()
+            )
+            return self._gateway_ranking(db, grouped)
+
         query = query.group_by(
             ApiUsage.ai_model_id, ApiUsage.model_alias, ApiUsage.provider_name
         ).order_by(func.count(ApiUsage.id).desc())
@@ -1527,6 +1573,210 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             }
             for row in rows
         ]
+
+    def _gateway_ranking(self, db: Session, grouped: Any) -> List[Dict[str, Any]]:
+        """Return three known identities and a total-bearing unknown bucket.
+
+        Window totals retain the entire population while the result is bounded
+        to four rows. Unknown labels never occupy a known identity's slot.
+        """
+        known = grouped.c.name.isnot(None)
+        ranked = db.query(
+            grouped,
+            func.row_number()
+            .over(
+                partition_by=known,
+                order_by=(grouped.c.request_count.desc(), grouped.c.identity.asc()),
+            )
+            .label("rank"),
+            func.sum(grouped.c.request_count).over().label("total"),
+            func.sum(case((known, 0), else_=grouped.c.request_count))
+            .over()
+            .label("unknown"),
+        ).subquery()
+        rows = (
+            db.query(ranked)
+            .filter(
+                or_(
+                    and_(ranked.c.name.isnot(None), ranked.c.rank <= 3),
+                    and_(ranked.c.name.is_(None), ranked.c.rank == 1),
+                )
+            )
+            .order_by(ranked.c.name.is_(None), ranked.c.rank)
+            .all()
+        )
+        if not rows:
+            return []
+        entries = [
+            {
+                "identity": row.identity,
+                "name": row.name,
+                "agent_id": str(row.agent_id) if row.agent_id else None,
+                "request_count": int(row.request_count),
+            }
+            for row in rows
+            if row.name is not None
+        ]
+        # Same display label does not collapse distinct stable identities.
+        duplicate_names = {
+            entry["name"]
+            for entry in entries
+            if sum(other["name"] == entry["name"] for other in entries) > 1
+        }
+        for entry in entries:
+            if entry["name"] in duplicate_names:
+                entry["name"] += (
+                    f" ({sha256(entry['identity'].encode()).hexdigest()[:8]})"
+                )
+        total = int(rows[0].total)
+        unknown = int(rows[0].unknown)
+        other = total - unknown - sum(entry["request_count"] for entry in entries)
+        return entries + [
+            {
+                "identity": "",
+                "name": None,
+                "agent_id": None,
+                "request_count": unknown,
+                "other_count": other,
+                "total_count": total,
+            }
+        ]
+
+    def get_gateway_usage_by_agent(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> List[Dict[str, Any]]:
+        """Rank agents over every qualifying request in the exact window.
+
+        Direct account-owned managed principals take precedence over a
+        session's managed agent, then named stored principals. Account-scoped
+        scalar session resolution prevents even legacy duplicate associations
+        from multiplying requests. No flow association creates an extra row.
+        """
+        direct = aliased(ManagedAgent)
+        session_agent = aliased(ManagedAgent)
+        canonical_principal = and_(
+            ApiUsage.runtime_principal_type == "managed_agent",
+            cast(ManagedAgent.id, String) == ApiUsage.runtime_principal_id,
+        )
+        canonical_agent_id = (
+            select(ManagedAgent.id)
+            .where(ManagedAgent.account_id == ApiUsage.account_id, canonical_principal)
+            .correlate(ApiUsage)
+            .scalar_subquery()
+        )
+        source_agent_id = (
+            select(ManagedAgent.id)
+            .where(
+                ManagedAgent.account_id == ApiUsage.account_id,
+                ManagedAgent.session_source_type == ApiUsage.runtime_principal_type,
+                ManagedAgent.session_source_id == ApiUsage.runtime_principal_id,
+            )
+            .correlate(ApiUsage)
+            .scalar_subquery()
+        )
+        direct_agent_id = func.coalesce(canonical_agent_id, source_agent_id)
+        session_agent_id = (
+            select(ManagedAgent.id)
+            .where(
+                ManagedAgent.account_id == account_id,
+                ManagedAgent.runtime_session_id == RuntimeSession.id,
+            )
+            .order_by(ManagedAgent.id)
+            .limit(1)
+            .correlate(RuntimeSession)
+            .scalar_subquery()
+        )
+        managed_id = func.coalesce(direct.id, session_agent.id)
+        usage_named = and_(
+            func.nullif(func.trim(ApiUsage.runtime_principal_type), "").isnot(None),
+            func.nullif(func.trim(ApiUsage.runtime_principal_id), "").isnot(None),
+            func.nullif(func.trim(ApiUsage.runtime_principal_name), "").isnot(None),
+        )
+        session_named = and_(
+            func.nullif(func.trim(RuntimeSession.runtime_principal_type), "").isnot(
+                None
+            ),
+            func.nullif(func.trim(RuntimeSession.runtime_principal_id), "").isnot(None),
+            func.nullif(func.trim(RuntimeSession.runtime_principal_name), "").isnot(
+                None
+            ),
+        )
+        principal_type = case(
+            (usage_named, ApiUsage.runtime_principal_type),
+            else_=RuntimeSession.runtime_principal_type,
+        )
+        principal_id = case(
+            (usage_named, ApiUsage.runtime_principal_id),
+            else_=RuntimeSession.runtime_principal_id,
+        )
+        principal_name = case(
+            (usage_named, ApiUsage.runtime_principal_name),
+            else_=RuntimeSession.runtime_principal_name,
+        )
+        named = or_(usage_named, session_named)
+        identity = case(
+            (managed_id.isnot(None), func.concat("managed:", cast(managed_id, String))),
+            (
+                named,
+                func.concat(
+                    "principal:",
+                    cast(func.json_build_array(principal_type, principal_id), String),
+                ),
+            ),
+            else_="",
+        )
+        name = case(
+            (
+                managed_id.isnot(None),
+                func.coalesce(
+                    case(
+                        (
+                            direct.id.isnot(None),
+                            func.nullif(func.trim(direct.display_name), ""),
+                        ),
+                        else_=func.nullif(func.trim(session_agent.display_name), ""),
+                    ),
+                    func.nullif(func.trim(ApiUsage.runtime_principal_name), ""),
+                    func.nullif(func.trim(RuntimeSession.runtime_principal_name), ""),
+                    "Managed agent",
+                ),
+            ),
+            (named, principal_name),
+            else_=None,
+        )
+        grouped = (
+            db.query(
+                identity.label("identity"),
+                func.max(name).label("name"),
+                cast(managed_id, String).label("agent_id"),
+                func.count(ApiUsage.id).label("request_count"),
+            )
+            .select_from(ApiUsage)
+            .outerjoin(direct, direct.id == direct_agent_id)
+            .outerjoin(
+                RuntimeSession,
+                and_(
+                    RuntimeSession.id == ApiUsage.runtime_session_id,
+                    RuntimeSession.account_id == ApiUsage.account_id,
+                ),
+            )
+            .outerjoin(session_agent, session_agent.id == session_agent_id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.action_type == "model_gateway",
+                exclude_replay_usage_condition(),
+                ApiUsage.timestamp >= start_date,
+                ApiUsage.timestamp < end_date,
+            )
+            .group_by(identity, managed_id)
+            .subquery()
+        )
+        return self._gateway_ranking(db, grouped)
 
     def get_gateway_usage_by_flow(
         self,

@@ -284,6 +284,11 @@ class ModelGatewayEventEmitter:
             "type": "model_gateway_call",
             "payload": {
                 "api_usage_id": str(usage.id),
+                "request_id": meta_data.get("request_id"),
+                "tools": self._extract_structured_tools(
+                    request_payload, response_payload
+                ),
+                "tools_metadata_truncated": self._tool_metadata_truncated,
                 "endpoint": usage.endpoint,
                 "endpoint_kind": meta_data.get("endpoint_kind"),
                 "method": usage.method,
@@ -489,6 +494,118 @@ class ModelGatewayEventEmitter:
             ),
         }
 
+    def _extract_structured_tools(
+        self, request: Optional[dict], response: Optional[dict]
+    ) -> list[dict[str, Any]]:
+        """Retain bounded tool identities and policy-sanitized captured content.
+
+        Calls are requests, not evidence that an executor started or succeeded.
+        Stable provider call ids link accumulated history and parallel results.
+        """
+        tools: list[dict[str, Any]] = []
+        remaining_bytes = 64 * 1024
+        self._tool_metadata_truncated = False
+
+        def add(kind: str, item: dict, source: str) -> None:
+            nonlocal remaining_bytes
+            if len(tools) >= 256 or remaining_bytes < 1024:
+                self._tool_metadata_truncated = True
+                return
+            call_id = (
+                item.get("call_id")
+                or item.get("tool_call_id")
+                or item.get("tool_use_id")
+                or item.get("id")
+            )
+            function = item.get("function")
+            if not isinstance(function, dict):
+                function = item
+            name = function.get("name") if isinstance(function, dict) else None
+            value = (
+                function.get("arguments", item.get("input"))
+                if kind == "call"
+                else item.get("output", item.get("content"))
+            )
+            import json
+
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (ValueError, TypeError):
+                    pass
+            original_value = value
+            capped_value = self._cap_activity_body(value)
+            value = self._sanitize_payload(capped_value)
+            key_redacted = value != original_value and "***REDACTED***" in json.dumps(
+                value, default=str
+            )
+            payload_truncated = capped_value != original_value or (
+                value != capped_value and not key_redacted
+            )
+            if not isinstance(value, str):
+                value = json.dumps(value, ensure_ascii=False, default=str)
+            text, meta = self._sanitize_text_with_meta(value)
+            entry = {
+                "kind": kind,
+                "call_id": call_id
+                if isinstance(call_id, str) and 0 < len(call_id) <= 256
+                else None,
+                "name": str(name)[:256] if name else None,
+                "source": source,
+                "text": text,
+                "redacted": meta["redacted"] or key_redacted,
+                "truncated": meta["truncated"] or payload_truncated,
+                "is_error": item.get("is_error") is True,
+            }
+            if isinstance(text, str):
+                encoded = text.encode("utf-8")
+                limit = min(8192, remaining_bytes - 1024)
+                if len(encoded) > limit:
+                    entry["text"] = encoded[:limit].decode("utf-8", errors="ignore")
+                    entry["truncated"] = True
+            size = len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
+            if size <= remaining_bytes:
+                tools.append(entry)
+                remaining_bytes -= size
+
+        def scan(items: Any, source: str, depth: int = 0) -> None:
+            if depth > 12:
+                self._tool_metadata_truncated = True
+                return
+            if not isinstance(items, list):
+                return
+            for item in items[-256:]:
+                if len(tools) >= 256 or remaining_bytes < 1024:
+                    self._tool_metadata_truncated = True
+                    break
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type in ("function_call", "tool_use"):
+                    add("call", item, source)
+                elif (
+                    item_type in ("function_call_output", "tool_result")
+                    or item.get("role") == "tool"
+                ):
+                    add("result", item, source)
+                raw_calls = item.get("tool_calls")
+                for call in (raw_calls if isinstance(raw_calls, list) else [])[:128]:
+                    if isinstance(call, dict):
+                        add("call", call, source)
+                scan(item.get("content"), source, depth + 1)
+
+        if isinstance(response, dict):
+            scan(response.get("output"), "response")
+            scan(response.get("content"), "response")
+            raw_choices = response.get("choices")
+            for choice in (raw_choices if isinstance(raw_choices, list) else [])[:128]:
+                if isinstance(choice, dict):
+                    scan([choice.get("message")], "response")
+        if isinstance(request, dict):
+            scan(request.get("messages"), "request")
+            scan(request.get("input"), "request")
+        return tools[:256]
+
     def _build_conversation_preview(
         self,
         *,
@@ -625,6 +742,24 @@ class ModelGatewayEventEmitter:
                 content=item.get("content", item),
             )
             if preview_message:
+                call_ids = []
+                direct_id = item.get("tool_call_id") or item.get("call_id")
+                if direct_id:
+                    if isinstance(direct_id, str) and len(direct_id) <= 256:
+                        call_ids.append(direct_id)
+                content = item.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if (
+                            isinstance(block, dict)
+                            and block.get("type") == "tool_result"
+                            and block.get("tool_use_id")
+                        ):
+                            identity = block["tool_use_id"]
+                            if isinstance(identity, str) and len(identity) <= 256:
+                                call_ids.append(identity)
+                if call_ids:
+                    preview_message["tool_call_ids"] = call_ids[:128]
                 messages.append(preview_message)
         return messages
 

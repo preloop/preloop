@@ -772,3 +772,67 @@ UPDATE_ISSUE_SCHEMA: Dict[str, Any] = {
     },
     "required": ["issue"],
 }
+
+
+#: Kinds a deposit may name. Mirrors ``services.artifact_media.ARTIFACT_KINDS``
+#: (a test pins the two together); repeated here so this module stays free of
+#: service imports.
+DEPOSIT_ARTIFACT_KINDS = (
+    "screenshot",
+    "recording",
+    "screencast",
+    "audio",
+    "transcript",
+    "document",
+    "generated_file",
+    "trace",
+)
+DEPOSIT_ARTIFACT_BLOCK_TYPES = ("text", "image", "audio", "resource", "resource_link")
+
+
+DEPOSIT_ARTIFACT_TOOL: Dict[str, Any] = {
+    "name": "deposit_artifact",
+    "description": (
+        "Store a file, image, transcript or text you produced on your "
+        "current session; it is visible in the Preloop session timeline. "
+        "Pass one MCP content block. Returns a resource_link to the stored "
+        "artifact. Errors are returned by code (for example "
+        "artifact_too_large, artifact_no_session)."
+    ),
+    "source": "builtin",
+    # Default-off, like send_note: most agents never deposit, and every agent
+    # would otherwise pay this schema's tools/list context tax (#128). A flow
+    # opts in through allowed_mcp_tools, an account through the Tools page.
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "content": {
+                "type": "object",
+                "description": (
+                    "MCP ContentBlock. resource_link only for an artifact "
+                    "of this session (copies it with new labels, as child)."
+                ),
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": list(DEPOSIT_ARTIFACT_BLOCK_TYPES),
+                    }
+                },
+                "required": ["type"],
+            },
+            "name": {"type": "string", "minLength": 1, "maxLength": 255},
+            "kind": {"type": "string", "enum": list(DEPOSIT_ARTIFACT_KINDS)},
+            "labels": {
+                "type": "object",
+                "description": "labels.source_tool names the tool that made it.",
+            },
+            "parent_artifact_id": {"type": "string"},
+            "activity_id": {"type": "string"},
+        },
+        "required": ["content", "name"],
+    },
+}

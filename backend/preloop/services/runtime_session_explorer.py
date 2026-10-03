@@ -105,6 +105,10 @@ def _default_activity_title(activity: Any) -> str:
         action = metadata.get("action") or ""
         locator = metadata.get("url") or metadata.get("target") or ""
         return f"{action} {locator}"[:120]
+    if activity_type == "artifact":
+        artifact = (getattr(activity, "metadata_", None) or {}).get("artifact") or {}
+        title = f"{artifact.get('kind') or ''} {artifact.get('name') or ''}".strip()
+        return (title or "Artifact")[:120]
     return "Tool call"
 
 
@@ -1236,11 +1240,12 @@ class RuntimeSessionExplorerService:
         if activity_rows:
             items.extend(
                 RuntimeSessionActivityItem(
+                    activity_id=str(activity.id),
                     activity_type=activity.activity_type,
                     timestamp=self._normalize_timestamp(activity.timestamp),
                     title=(
                         _default_activity_title(activity)
-                        if activity.activity_type == "browser_step"
+                        if activity.activity_type in ("browser_step", "artifact")
                         else (activity.tool_name or _default_activity_title(activity))
                     ),
                     summary=activity.summary or activity.server_name,
