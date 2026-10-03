@@ -482,6 +482,31 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             query = query.with_for_update()
         return query.first()
 
+    def latest_merge_into_at(
+        self, db: Session, *, account_id: str, survivor_id: str
+    ) -> Optional[datetime]:
+        """Return when the most recent duplicate was merged into an agent.
+
+        A merge tags the duplicate with ``merged_into`` and decommissions it,
+        stamping ``lifecycle_updated_at``. That stamp is the merge time.
+
+        Args:
+            db: Database session.
+            account_id: Account the agents belong to.
+            survivor_id: Agent that absorbed the duplicates.
+
+        Returns:
+            The latest merge time, or ``None`` when nothing was merged in.
+        """
+        return (
+            db.query(func.max(self.model.lifecycle_updated_at))
+            .filter(
+                self.model.account_id == account_id,
+                self.model.tags["merged_into"].astext == str(survivor_id),
+            )
+            .scalar()
+        )
+
     def touch_last_seen_for_principal(
         self,
         db: Session,

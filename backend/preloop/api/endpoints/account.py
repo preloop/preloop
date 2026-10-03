@@ -2082,6 +2082,53 @@ async def create_account_managed_agent_enrollment(
     )
 
 
+ENROLLMENT_STATUS_VALIDATED = "validated"
+
+
+def _emit_agent_onboarded(
+    db: Session,
+    *,
+    account_id: str,
+    enrollment: Any,
+    actor_user_id: Any,
+) -> None:
+    """Enqueue ``agent.onboarded`` for an enrollment that just validated."""
+    from preloop.services.event_webhooks.emitters import (
+        agent_onboarded_outcome,
+        emit_agent_onboarded,
+    )
+
+    agent_id = str(enrollment.managed_agent_id)
+    agent = crud_managed_agent.get_for_account(
+        db, account_id=account_id, agent_id=agent_id
+    )
+    if agent is None:
+        return
+    outcome = agent_onboarded_outcome(
+        prior_onboarding_at=crud_managed_agent_enrollment.latest_prior_onboarding_at(
+            db,
+            account_id=account_id,
+            agent_id=agent_id,
+            exclude_enrollment_id=str(enrollment.id),
+        ),
+        latest_merge_at=crud_managed_agent.latest_merge_into_at(
+            db, account_id=account_id, survivor_id=agent_id
+        ),
+    )
+    mcp_rewritten, gateway_routed, _ = _managed_agent_onboarding_flags(
+        crud_managed_agent_enrollment._to_summary(enrollment)
+    )
+    emit_agent_onboarded(
+        db,
+        agent,
+        enrollment,
+        outcome=outcome,
+        actor_user_id=actor_user_id,
+        gateway_routed=gateway_routed,
+        mcp_rewritten=mcp_rewritten,
+    )
+
+
 @router.post(
     "/agents/{agent_id}/enrollments/{enrollment_id}/validate",
     response_model=ManagedAgentEnrollmentSummary,
@@ -2095,7 +2142,20 @@ async def validate_account_managed_agent_enrollment(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
-    """Persist validation state for one managed-agent enrollment."""
+    """Persist validation state for one managed-agent enrollment.
+
+    The first time an enrollment reaches ``validated`` the agent counts as
+    onboarded and ``agent.onboarded`` is enqueued in the same transaction.
+    """
+    existing = crud_managed_agent_enrollment.get_for_agent(
+        db,
+        account_id=str(account.id),
+        agent_id=agent_id,
+        enrollment_id=enrollment_id,
+    )
+    already_validated = (
+        existing is not None and existing.status == ENROLLMENT_STATUS_VALIDATED
+    )
     enrollment = crud_managed_agent_enrollment.mark_validated(
         db,
         account_id=str(account.id),
@@ -2103,13 +2163,22 @@ async def validate_account_managed_agent_enrollment(
         enrollment_id=enrollment_id,
         validation_result=payload.validation_result,
         status=payload.status,
-        commit=True,
+        commit=False,
     )
     if enrollment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Managed agent enrollment not found",
         )
+    if enrollment.status == ENROLLMENT_STATUS_VALIDATED and not already_validated:
+        _emit_agent_onboarded(
+            db,
+            account_id=str(account.id),
+            enrollment=enrollment,
+            actor_user_id=current_user.id,
+        )
+    db.commit()
+    db.refresh(enrollment)
     emit_account_event(
         build_account_event(
             account_id=str(account.id),

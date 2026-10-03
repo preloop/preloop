@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Webhooks: new `agent.onboarded` event (#1161). It fires once per managed-agent
+  enrollment, the first time the enrollment is validated, with `outcome`
+  `created`, `relinked` or `merged`. The payload names the agent, its owner
+  and whether MCP and the model gateway were rewritten; it carries no
+  hostname, OS user name, config path or server URL.
+
 - **Subscription reconnect without re-onboarding.** `preloop agents reconnect
   "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
   credentials while preserving enrollment, policy and configuration. Working
