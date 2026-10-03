@@ -16,6 +16,7 @@ from sqlalchemy import event
 from preloop.models import models
 from preloop.models.crud import (
     crud_account,
+    crud_attention_dismissal,
     crud_spend_outlier_finding,
     crud_spend_outlier_settings,
     crud_user,
@@ -1130,6 +1131,109 @@ def test_a_dismissed_finding_inside_the_window_is_marked(db_session, test_user):
     (item,) = section["items"]
     assert item["fingerprint"] == finding.fingerprint
     assert item["dismissed"] is True
+
+
+def test_a_dismissal_after_the_window_end_still_marks_the_finding(
+    db_session, test_user
+):
+    """A dismissal is read as it stands; only snoozes are window-end.
+
+    The finding was still open when the window closed and the operator
+    dismissed it afterwards, so it is reported as dismissed: ``dismissed_at``
+    is read from the finding, not from the window. Pinned so that narrowing
+    ``dismissed`` to a window-end snapshot is a deliberate change.
+    """
+    finding = _finding(
+        db_session,
+        test_user,
+        detected_at=WINDOW_END - timedelta(hours=2),
+        day=date(2026, 9, 26),
+        fingerprint=f"daily_spend|{test_user.id}|2026-09-26",
+    )
+    crud_spend_outlier_finding.set_dismissed(
+        db_session,
+        account_id=test_user.account_id,
+        item_id=finding.item_id,
+        fingerprint=finding.fingerprint,
+        dismissed_at=WINDOW_END + timedelta(hours=1),
+    )
+
+    section = build_spend_outlier_digest_section(
+        db_session,
+        test_user.account_id,
+        start=WINDOW_END - timedelta(days=1),
+        end=WINDOW_END,
+    )
+
+    (item,) = section["items"]
+    assert item["dismissed"] is True
+
+
+def test_a_snooze_still_in_force_at_the_window_end_hides_the_finding(
+    db_session, test_user
+):
+    """The other half of the same rule: a snooze is resolved at the window end.
+
+    The snooze ran out an hour after the window closed, long before this
+    section was generated. It still covers the window, so the finding is
+    reported as dismissed.
+    """
+    finding = _finding(
+        db_session,
+        test_user,
+        detected_at=WINDOW_END - timedelta(hours=2),
+        day=date(2026, 9, 26),
+        fingerprint=f"daily_spend|{test_user.id}|2026-09-26",
+    )
+    crud_attention_dismissal.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        item_id=finding.item_id,
+        fingerprint=finding.fingerprint,
+        reason="snoozed",
+        snooze_until=WINDOW_END + timedelta(hours=1),
+    )
+
+    section = build_spend_outlier_digest_section(
+        db_session,
+        test_user.account_id,
+        start=WINDOW_END - timedelta(days=1),
+        end=WINDOW_END,
+    )
+
+    (item,) = section["items"]
+    assert item["dismissed"] is True
+
+
+def test_a_snooze_that_ran_out_before_the_window_end_is_not_active(
+    db_session, test_user
+):
+    """A snooze that had already run out when the window closed hides nothing."""
+    finding = _finding(
+        db_session,
+        test_user,
+        detected_at=WINDOW_END - timedelta(hours=2),
+        day=date(2026, 9, 26),
+        fingerprint=f"daily_spend|{test_user.id}|2026-09-26",
+    )
+    crud_attention_dismissal.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        item_id=finding.item_id,
+        fingerprint=finding.fingerprint,
+        reason="snoozed",
+        snooze_until=WINDOW_END - timedelta(hours=3),
+    )
+
+    section = build_spend_outlier_digest_section(
+        db_session,
+        test_user.account_id,
+        start=WINDOW_END - timedelta(days=1),
+        end=WINDOW_END,
+    )
+
+    (item,) = section["items"]
+    assert item["dismissed"] is False
 
 
 def test_items_keep_a_stable_order(db_session, test_user):

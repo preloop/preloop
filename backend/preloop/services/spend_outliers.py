@@ -770,8 +770,13 @@ def build_spend_outlier_digest_section(
     """The weekly digest's "Spend outliers" section for one account.
 
     Called by the digest plugin, which renders it. Lists each finding
-    detected in the section's window once. Dismissals and snoozes are
-    resolved as of the window end (``dismissed`` is that snapshot).
+    detected in the section's window once.
+
+    Snoozes are resolved as of the window end, so a snooze that only runs out
+    afterwards does not hide a finding. A dismissal is read as it stands:
+    both a matching dismissal row and the finding's own ``dismissed_at``
+    count, so a finding the operator dismissed after the window ended is
+    still reported as dismissed.
 
     Without explicit bounds the window is the :data:`DIGEST_WINDOW_DAYS`
     ending at ``now``. With ``start`` and ``end`` it is exactly that window.
