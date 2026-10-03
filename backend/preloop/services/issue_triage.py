@@ -132,25 +132,33 @@ def complexity_scheme(catalogue: list[dict[str, str]]) -> ComplexityScheme:
     return ComplexityScheme(name="standard", labels=STANDARD, create_missing=True)
 
 
-def scope_revision(issue: TriageIssue, *schemes: ComplexityScheme | None) -> str:
+def scope_revision(
+    issue: TriageIssue,
+    scheme: ComplexityScheme | None,
+    *tag_schemes: ComplexityScheme | None,
+) -> str:
     """Bind scope and managed labels while allowing unrelated label edits.
 
-    With only a complexity scheme this is byte-identical to the original
-    single-family revision, so stored packets keep matching.
+    ``scheme`` is the complexity family, hashed as before. ``tag_schemes``
+    (risk, readiness) contribute only the labels of theirs that are on the
+    issue, and nothing when there are none, so an issue without risk or
+    readiness labels keeps the revision it had before those families existed.
     """
-    family = sorted({name for scheme in schemes if scheme for name in scheme.labels})
-    return sha256(
-        json.dumps(
-            [
-                issue.title,
-                issue.body,
-                issue.state,
-                family,
-                sorted(set(issue.labels) & set(family)),
-            ],
-            ensure_ascii=False,
-        ).encode()
-    ).hexdigest()
+    family = sorted(scheme.labels) if scheme else []
+    scope: list[Any] = [
+        issue.title,
+        issue.body,
+        issue.state,
+        family,
+        sorted(set(issue.labels) & set(family)),
+    ]
+    tags = sorted(
+        set(issue.labels)
+        & {name for extra in tag_schemes if extra for name in extra.labels}
+    )
+    if tags:
+        scope.append(tags)
+    return sha256(json.dumps(scope, ensure_ascii=False).encode()).hexdigest()
 
 
 def merge_assessment(body: str, assessment: str) -> str:
@@ -320,8 +328,10 @@ async def apply_triage(
             dispatch_label = None
         if dispatch_label is not None and dispatch_label not in latest.labels:
             add.append(dispatch_label)
+        # Each GitHub removal is its own intent revision; with the content
+        # write and the add, six keeps the receipt within its eight revisions.
         if len(remove) > 6:
-            raise ValueError("too_many_conflicting_complexity_labels")
+            raise ValueError("too_many_conflicting_triage_labels")
         content_changed = title != latest.title or body != latest.body
         if not content_changed and not add and not remove:
             retain_intent(

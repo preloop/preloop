@@ -181,7 +181,7 @@ triage tools: triage is an option on the standard pair.
 
 | Value | Added to the response |
 | --- | --- |
-| `label_catalog` | `label_catalog`, `complexity_scheme` |
+| `label_catalog` | `label_catalog`, `complexity_scheme`, `risk_scheme`, `readiness_scheme` |
 | `revision` | `expected_revision`, `provider_issue` |
 
 Any `include` entry also sets `triage_limitations` and `concurrency`, and makes the
@@ -190,7 +190,7 @@ a 422. Without `include`, `get_issue` performs no provider read and the triage f
 stay `None`.
 
 `update_issue` keeps its metadata parameters and adds `expected_revision`,
-`assessment` and `complexity_label`. A triage write needs both `expected_revision`
+`assessment`, `complexity_label`, `risk_label` and `readiness_label`. A triage write needs both `expected_revision`
 and `assessment`, returns the triage receipt instead of the plain update response,
 and may not be combined with `description`, `status`, `priority`, `assignee`,
 `labels`, `add_reaction` or `remove_reaction`; `title` is allowed. The triage write

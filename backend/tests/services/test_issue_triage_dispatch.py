@@ -265,3 +265,49 @@ def test_flow_agent_config_owns_the_dispatch_policy(
 ) -> None:
     flow = SimpleNamespace(id="flow", agent_config=config)
     assert dispatch_policy(flow).label_for(_request()) == expected
+
+
+def test_revision_is_unchanged_for_issues_without_risk_or_readiness_tags() -> None:
+    from preloop.services.issue_triage import complexity_scheme, scope_revision
+
+    issue = FakeProvider().issue
+    rows = [{"name": n, "description": ""} for n in STANDARD]
+    scheme = complexity_scheme(rows)
+    legacy = scope_revision(issue, scheme)
+    assert scope_revision(issue, scheme, risk_scheme(rows), readiness_scheme(rows)) == (
+        legacy
+    )
+    tagged = issue.model_copy(update={"labels": [*issue.labels, "risk:high"]})
+    assert scope_revision(tagged, scheme, risk_scheme(rows)) != legacy
+
+
+@pytest.mark.asyncio
+async def test_human_risk_edit_before_apply_is_a_conflict() -> None:
+    provider = FakeProvider(STANDARD)
+    provider.issue.labels.append("risk:medium")
+    request = await full_request(provider, readiness=None)
+    provider.issue.labels.remove("risk:medium")
+    provider.issue.labels.append("risk:high")
+    result = await apply_triage(provider, request, provider.record)
+    assert result.status == "conflict"
+    assert provider.operations == []
+
+
+@pytest.mark.asyncio
+async def test_too_many_stale_triage_labels_fail_before_any_write() -> None:
+    provider = FakeProvider()
+    names = STANDARD + STANDARD_RISK + STANDARD_READINESS
+    provider.rows = [
+        {
+            "name": n,
+            "description": f"Preloop issue {n.split(':')[0]}: {n.split(':')[1]}",
+        }
+        for n in names
+    ]
+    provider.issue.labels += [
+        n for n in names if n not in {"complexity:low", "risk:low", "readiness:ready"}
+    ]
+    result = await apply_triage(provider, await full_request(provider), provider.record)
+    assert result.status == "failed"
+    assert result.reason == "too_many_conflicting_triage_labels"
+    assert provider.operations == []
