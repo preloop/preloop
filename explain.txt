@@ -1,0 +1,45 @@
+         Sort Key: runtime_session_artifact.runtime_session_id, runtime_session_artifact.kind
+         Sort Method: quicksort  Memory: 86kB
+         Buffers: shared hit=353, local hit=1
+         ->  Bitmap Heap Scan on runtime_session_artifact  (cost=45.75..717.42 rows=180 width=41) (actual time=1.373..1.497 rows=900 loops=1)
+               Recheck Cond: (runtime_session_id = ANY ($1))
+               Filter: ((account_id = $0) AND ((availability)::text = 'available'::text))
+               Rows Removed by Filter: 100
+               Heap Blocks: exact=45
+               Buffers: shared hit=353, local hit=1
+               ->  Bitmap Index Scan on ix_runtime_session_artifact_runtime_session_id  (cost=0.00..45.70 rows=200 width=0) (actual time=1.365..1.365 rows=1000 loops=1)
+                     Index Cond: (runtime_session_id = ANY ($1))
+                     Buffers: shared hit=308
+ Planning:
+   Buffers: shared hit=203
+ Planning Time: 0.310 ms
+ Execution Time: 1.776 ms
+(34 rows)
+
+                                                                                        QUERY PLAN                                                                                         
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=7188.37..7188.38 rows=1 width=8) (actual time=11.767..11.769 rows=1 loops=1)
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on acct  (cost=0.00..28.50 rows=1850 width=16) (actual time=0.001..0.002 rows=1 loops=1)
+   ->  Hash Join  (cost=6828.67..7135.01 rows=9943 width=0) (actual time=9.869..11.564 rows=10003 loops=1)
+         Hash Cond: (runtime_session.id = runtime_session_artifact.runtime_session_id)
+         ->  Seq Scan on runtime_session  (cost=0.00..280.06 rows=10005 width=16) (actual time=0.005..0.684 rows=10005 loops=1)
+               Filter: (account_id = $0)
+         ->  Hash  (cost=6704.38..6704.38 rows=9943 width=16) (actual time=9.859..9.860 rows=10003 loops=1)
+               Buckets: 16384  Batches: 1  Memory Usage: 597kB
+               ->  HashAggregate  (cost=6604.95..6704.38 rows=9943 width=16) (actual time=8.922..9.346 rows=10003 loops=1)
+                     Group Key: runtime_session_artifact.runtime_session_id
+                     Batches: 1  Memory Usage: 913kB
+                     InitPlan 2 (returns $1)
+                       ->  Seq Scan on acct acct_1  (cost=0.00..28.50 rows=1850 width=16) (actual time=0.000..0.001 rows=1 loops=1)
+                     ->  Bitmap Heap Scan on runtime_session_artifact  (cost=694.59..6462.44 rows=45606 width=16) (actual time=0.564..5.425 rows=50005 loops=1)
+                           Recheck Cond: ((account_id = $1) AND ((kind)::text = 'transcript'::text))
+                           Filter: ((availability)::text = 'available'::text)
+                           Heap Blocks: exact=1226
+                           ->  Bitmap Index Scan on ix_runtime_session_artifact_account_kind_created  (cost=0.00..683.19 rows=50677 width=0) (actual time=0.485..0.485 rows=50005 loops=1)
+                                 Index Cond: ((account_id = $1) AND ((kind)::text = 'transcript'::text))
+ Planning Time: 0.131 ms
+ Execution Time: 11.792 ms
+(22 rows)
+
+ROLLBACK
