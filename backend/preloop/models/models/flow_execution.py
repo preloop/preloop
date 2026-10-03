@@ -19,6 +19,16 @@ from sqlalchemy.orm import Mapped, query_expression, relationship
 
 from .base import Base
 
+#: SQL for the resume chain root a repair turn stores in its trigger payload.
+#: Spelled with ``->``/``->>`` and literal keys (not SQLAlchemy's JSONB
+#: subscript with bound keys) so it is textually the expression that
+#: ``ix_flow_execution_resume_root`` indexes: an expression index is only used
+#: for a query that repeats its expression exactly. Keep it in sync with
+#: alembic revision ``20261003_resume_root_idx``.
+RESUME_ROOT_SQL = (
+    "((flow_execution.trigger_event_details -> '_resume') ->> 'resume_root')"
+)
+
 # Reserved key under which the compact, human-readable execution subject is
 # stored inside FlowExecution.trigger_event_details. Defined here (rather than
 # alongside the extraction logic in preloop.sync.event_normalizer) so the CRUD
