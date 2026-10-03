@@ -173,7 +173,7 @@ nor misses anything:
 | `{{trigger_event.payload.previous_scheduled_at}}` | Previous fire time of this schedule, computed from the schedule definition (cron, interval, daily, weekly) in its timezone, DST included. |
 | `{{trigger_event.payload.window.from}}` | Same as `previous_scheduled_at`. Treat it as inclusive. |
 | `{{trigger_event.payload.window.to}}` | Same as `scheduled_at`. Treat it as exclusive. |
-| `{{trigger_event.payload.last_successful_scheduled_at}}` | `scheduled_at` of this flow's newest run that SUCCEEDED, or empty (JSON `null`) when none has. |
+| `{{trigger_event.payload.last_successful_scheduled_at}}` | `scheduled_at` of this flow's newest run that SUCCEEDED. JSON `null` when none has; a null value does not resolve, so the placeholder then stays in the prompt as written. A prompt that uses it should say what to do in that case (for example "if this still reads as a placeholder, use window.from"). |
 
 All values are UTC, ISO 8601. Notes:
 
