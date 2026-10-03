@@ -1635,7 +1635,11 @@ class FlowExecutionOrchestrator:
             trigger_event_data=self.trigger_event_data,
             flow_id=str(self.flow_id),
             execution_id=str(self.execution_log.id) if self.execution_log else "",
-            account_id=str(self.flow.account_id) if self.flow else None,
+            account_id=(
+                str(self.flow.account_id)
+                if getattr(self.flow, "account_id", None)
+                else None
+            ),
             workspace_mode=workspace_mode(
                 agent_config=getattr(self.flow, "agent_config", None),
                 git_clone_config=getattr(self.flow, "git_clone_config", None),
