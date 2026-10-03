@@ -1,6 +1,6 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { Router, LOCATION_CHANGED } from '../router';
+import { router, Router, LOCATION_CHANGED } from '../router';
 import { CapabilityRouteGate } from '../lazy-routes';
 
 import type { LitApp } from './lit-app';
@@ -110,6 +110,96 @@ describe('LitApp routing', () => {
     } finally {
       schedule.restore();
       cancel.restore();
+    }
+  });
+
+  it('reschedules websocket startup after an early disconnect, only once', async () => {
+    const schedule = sinon.stub(window, 'requestAnimationFrame').returns(12345);
+    try {
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const parent = el.parentElement!;
+      const connect = sinon.spy(el, 'connectWebSocket');
+      const initialSchedules = schedule.callCount;
+      el.remove();
+      parent.appendChild(el);
+      await el.updateComplete;
+
+      expect(schedule.callCount).to.equal(initialSchedules + 1);
+      const callback = schedule.lastCall.args[0] as FrameRequestCallback;
+      callback(0);
+      expect(connect.callCount).to.equal(1);
+
+      el.remove();
+      parent.appendChild(el);
+      await el.updateComplete;
+      expect(schedule.callCount).to.equal(initialSchedules + 1);
+      expect(connect.callCount).to.equal(1);
+    } finally {
+      schedule.restore();
+    }
+  });
+
+  it('finishes a gated deep-link initialization after reconnecting', async () => {
+    let release!: (routes: []) => void;
+    let releaseResumed!: (routes: []) => void;
+    const pending = new Promise<[]>((resolve) => {
+      release = resolve;
+    });
+    const resumed = new Promise<[]>((resolve) => {
+      releaseResumed = resolve;
+    });
+    const sync = sinon.stub(CapabilityRouteGate.prototype, 'sync').resolves([]);
+    sync.onFirstCall().returns(pending);
+    sync.onSecondCall().returns(resumed);
+    const install = sinon.spy(router, 'setRoutes');
+    try {
+      window.history.replaceState({}, '', '/console/settings/subaccounts');
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const parent = el.parentElement!;
+      el.remove();
+      release([]);
+      parent.appendChild(el);
+      await el.updateComplete;
+      await pending;
+      await Promise.resolve();
+      // The completion from before disconnect cannot install stale routes;
+      // the fresh capability read made on reconnect must finish first.
+      expect(install.callCount).to.equal(0);
+
+      releaseResumed([]);
+      await waitUntil(
+        () => install.callCount === 1,
+        'Route initialization was lost on reconnect'
+      );
+    } finally {
+      sync.restore();
+      install.restore();
+    }
+  });
+
+  it('does not install stale gated routes into a newer app outlet', async () => {
+    let release!: (routes: []) => void;
+    const pending = new Promise<[]>((resolve) => {
+      release = resolve;
+    });
+    const sync = sinon
+      .stub(CapabilityRouteGate.prototype, 'sync')
+      .returns(pending);
+    const install = sinon.spy(router, 'setRoutes');
+    try {
+      window.history.replaceState({}, '', '/console/settings/subaccounts');
+      await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const current = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      release([]);
+      await pending;
+      await Promise.resolve();
+      expect(install.callCount).to.equal(1);
+      expect(router.getOutlet()).to.equal(
+        current.shadowRoot!.querySelector('main')
+      );
+    } finally {
+      sync.restore();
+      install.restore();
     }
   });
 
