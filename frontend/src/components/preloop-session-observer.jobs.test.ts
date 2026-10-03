@@ -156,6 +156,7 @@ describe('PreloopSessionObserver — async optimization jobs', () => {
         if (url.includes('/activity')) {
           return jsonResponse({ items: [] });
         }
+        if (url.includes('/approval-requests')) return jsonResponse([]);
         return jsonResponse({});
       }
     );

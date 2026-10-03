@@ -28,6 +28,8 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
 } from '../types';
+import type { LiveToolCall } from './live-session';
+import { normalizeToolCalls } from './live-session';
 
 export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
@@ -92,6 +94,23 @@ export interface TranscriptBrowserStepItem {
 }
 
 /**
+ * One named tool invocation, rendered as its own card in chronological
+ * context.
+ *
+ * Tool calls used to be folded into the anonymous step groups above, which is
+ * exactly what made a session unreadable while it was running: "3 steps —
+ * 2 tool calls, 1 tool result" says nothing about which tool is blocking. The
+ * rows here keep the name, the lifecycle state and the deciding argument
+ * visible without expanding anything.
+ */
+export interface TranscriptToolItem {
+  type: 'tool';
+  key: string;
+  timestamp: string | null;
+  call: LiveToolCall;
+}
+
+/**
  * One `artifact` activity (deposit API), kept top level like browser steps so
  * artifacts sit in time order between the turns around them.
  */
@@ -107,6 +126,7 @@ export type TranscriptItem =
   | TranscriptStepGroupItem
   | TranscriptDividerItem
   | TranscriptBrowserStepItem
+  | TranscriptToolItem
   | TranscriptArtifactItem;
 
 export interface TranscriptStats {
@@ -124,6 +144,8 @@ export interface TranscriptStats {
    *  tool-result items yielded no matchable text — exact detection is only
    *  partial there, so those results may still render as user prompts. */
   eventsWithPartialToolResults: number;
+  /** A gateway `tool_activity` collection dropped entries at its cap. */
+  toolActivityTruncated: boolean;
   totalEvents: number;
 }
 
@@ -333,6 +355,7 @@ type Atom =
   | { type: 'step'; step: TranscriptStep; order: number }
   | { type: 'divider'; item: TranscriptDividerItem; order: number }
   | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number }
+  | { type: 'tool'; item: TranscriptToolItem; order: number }
   | { type: 'artifact'; item: TranscriptArtifactItem; order: number };
 
 function atomTime(atom: Atom): number {
@@ -364,6 +387,7 @@ export function buildConversation(
     toolCallCount: 0,
     eventsWithoutRawBody: 0,
     eventsWithPartialToolResults: 0,
+    toolActivityTruncated: false,
     totalEvents: 0,
   };
 
@@ -540,29 +564,28 @@ export function buildConversation(
     });
   }
 
+  // Named tool rows, from gateway `tool_activity` entries and native
+  // `tool_call` rows. These are top level, never folded into a step group: a
+  // generic "3 steps" count is what made a running session unreadable.
+  const normalizedTools = normalizeToolCalls(gatewayEvents, activity);
+  stats.toolActivityTruncated = normalizedTools.truncated;
+  for (const call of normalizedTools) {
+    stats.toolCallCount += 1;
+    atoms.push({
+      type: 'tool',
+      order: order++,
+      item: {
+        type: 'tool',
+        key: `tool:${call.key}`,
+        timestamp: call.timestamp,
+        call,
+      },
+    });
+  }
+
   for (const [index, item] of activity.entries()) {
     const activityType = (item.activity_type || '').toLowerCase();
     const key = `activity:${index}:${item.timestamp || ''}`;
-    if (activityType === 'tool_call') {
-      stats.toolCallCount += 1;
-      atoms.push({
-        type: 'step',
-        order: order++,
-        step: {
-          key,
-          kind: 'tool_call',
-          label: item.tool_name || item.title || 'Tool call',
-          text: item.summary || '',
-          timestamp: item.timestamp || null,
-          toolName: item.tool_name,
-          serverName: item.server_name,
-          status: item.status,
-          repositoryArgs: item.metadata ?? null,
-          detectionExact: true,
-        },
-      });
-      continue;
-    }
     if (activityType === 'browser_step') {
       atoms.push({
         type: 'browser_step',
@@ -675,6 +698,7 @@ export function buildConversation(
     if (
       atom.type === 'divider' ||
       atom.type === 'browser_step' ||
+      atom.type === 'tool' ||
       atom.type === 'artifact'
     ) {
       closeSteps();
