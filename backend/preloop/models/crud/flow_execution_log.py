@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 from sqlalchemy import select, tuple_
 from sqlalchemy.dialects.postgresql import insert
@@ -9,6 +9,49 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.utils.secret_scrubbing import scrub_secrets, scrub_structure
 from .base import CRUDBase
+
+#: Longest message stored for one log line. Agent streams can emit one huge
+#: line of binary garbage on a disconnect; the tail is not useful.
+MAX_LOG_MESSAGE_CHARS = 65536
+_TRUNCATION_MARKER = " [truncated]"
+
+
+def _clean_text(value: str) -> str:
+    """Replace NUL, which PostgreSQL text and JSONB reject, and cap length."""
+    if "\x00" in value:
+        value = value.replace("\x00", "\ufffd")
+    if len(value) > MAX_LOG_MESSAGE_CHARS:
+        keep = MAX_LOG_MESSAGE_CHARS - len(_TRUNCATION_MARKER)
+        value = value[:keep] + _TRUNCATION_MARKER
+    return value
+
+
+def _clean_structure(value: Any) -> Any:
+    """Apply :func:`_clean_text` to every string key and value."""
+    if isinstance(value, str):
+        return _clean_text(value)
+    if isinstance(value, dict):
+        return {
+            _clean_text(k) if isinstance(k, str) else k: _clean_structure(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_clean_structure(item) for item in value]
+    return value
+
+
+def storable_log_message(message: Any) -> Any:
+    """Scrub secrets, drop NUL and cap the length of one log message.
+
+    The single persistence gate for log messages (#173, #1196).
+    """
+    message = scrub_secrets(message)
+    return _clean_text(message) if isinstance(message, str) else message
+
+
+def storable_log_metadata(metadata: Any) -> Any:
+    """Scrub secrets, drop NUL and cap every string in log metadata."""
+    return _clean_structure(scrub_structure(metadata)) if metadata else None
 
 
 class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
@@ -126,7 +169,9 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
 
         Callers retain each entry's ``_persistence_id`` across retries, including
         retries after an ambiguous commit failure. Conflicting IDs are already
-        persisted and must not create duplicate events.
+        persisted and must not create duplicate events. NUL bytes are
+        replaced and long messages capped so one bad line cannot fail the
+        whole batch.
         """
         if not batch:
             return
@@ -142,8 +187,8 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
                     "id": uuid.UUID(log_data["_persistence_id"]),
                     "execution_id": uuid.UUID(execution_id),
                     "log_type": log_data.get("type", "log"),
-                    "message": scrub_secrets(message),
-                    "metadata": scrub_structure(metadata) if metadata else None,
+                    "message": storable_log_message(message),
+                    "metadata": storable_log_metadata(metadata),
                 }
             )
         statement = insert(models.FlowExecutionLog.__table__).values(rows)
@@ -170,8 +215,8 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         log_entry = models.FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=scrub_secrets(message),
-            metadata_=scrub_structure(metadata) if metadata else None,
+            message=storable_log_message(message),
+            metadata_=storable_log_metadata(metadata),
         )
         db.add(log_entry)
         if commit:

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from preloop.api.endpoints import flows
 from preloop.models import models, schemas
 from preloop.models.crud import crud_flow, crud_flow_execution
+from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.schemas.flow_execution import (
@@ -147,3 +148,55 @@ async def test_cold_execution_detail_preserves_lineage_defaults_and_values(
     assert response["parent_execution_id"] == (str(root_id) if child else None)
     assert response["root_execution_id"] == (str(root_id) if child else None)
     assert response["delegation_depth"] == (1 if child else 0)
+
+
+@pytest.mark.asyncio
+async def test_list_and_lineage_project_the_ci_provenance(
+    db_session: Session, test_user: models.User
+) -> None:
+    """The list and tree reads surface the CI provenance without the payload.
+
+    Both ``get_multi`` (lightweight list) and ``get_lineage`` (tree) project
+    ``trigger_subject_ci`` / ``trigger_subject_ci_url`` out of the stored
+    subject, so a CI-dispatched run's "via GitHub Actions" hint reaches the
+    console rows and tree without shipping the full trigger payload.
+    """
+    flow_id, root_id, child_id = _create_lineage(db_session, test_user)
+    child = crud_flow_execution.get(
+        db_session, id=child_id, account_id=test_user.account_id
+    )
+    assert child is not None
+    child.trigger_event_details = {
+        TRIGGER_SUBJECT_KEY: {
+            "text": "preloop/preloop #78 · Pull Request Updated",
+            "url": "https://github.com/preloop/preloop/pull/78",
+            "ci": "GitHub Actions",
+            "ci_url": "https://github.com/preloop/preloop/actions/runs/1",
+        }
+    }
+    db_session.flush()
+    db_session.expunge_all()
+
+    rows = crud_flow_execution.get_multi(
+        db_session,
+        account_id=test_user.account_id,
+        flow_id=flow_id,
+        lightweight=True,
+        eager_load=True,
+    )
+    list_row = next(row for row in rows if row.id == child_id)
+    assert list_row.trigger_subject_ci == "GitHub Actions"
+    assert list_row.trigger_subject_ci_url == (
+        "https://github.com/preloop/preloop/actions/runs/1"
+    )
+
+    lineage = crud_flow_execution.get_lineage(
+        db_session,
+        root_execution_id=root_id,
+        account_id=test_user.account_id,
+    )
+    tree_row = next(row for row in lineage if row.id == child_id)
+    assert tree_row.trigger_subject_ci == "GitHub Actions"
+    assert tree_row.trigger_subject_ci_url == (
+        "https://github.com/preloop/preloop/actions/runs/1"
+    )
