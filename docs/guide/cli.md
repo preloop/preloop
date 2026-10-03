@@ -168,6 +168,47 @@ preloop approvals approve <request-id> [-r "reason"]
 preloop approvals deny <request-id> [-r "reason"]
 ```
 
+## Sessions
+
+```bash
+preloop sessions list [--active] [--agent <id|name>] [--kind <kind>] [--since 2h] \
+  [--parent <session-id>] [--execution <id>] [--limit 50] [--json | -o id] [--wide]
+preloop sessions attach <session-id|short-id> [--execution <id>] [--read-only] [--since 10m] [--json]
+preloop sessions search "<query>" [--from 2026-09-01] [--to 2026-09-15] [--limit 20] [--json]
+```
+
+`sessions list` prints your account's runtime sessions, most recently active
+first: short id (`--wide` for the full id and the agent kind), agent, started,
+last activity, state (`live` for activity in the last 2 minutes, `idle` for
+open but quiet, `ended`), tool calls, model calls, pending approvals and a
+title. An untitled session is labelled with its agent kind, the base name of
+the working directory its hook reported and its start time; if two rows on the
+page would still share a label, the short id is appended.
+
+| Flag | Server filter |
+| --- | --- |
+| `--active` | open sessions with activity in the last 10 minutes |
+| `--agent <id\|name>` | one managed agent; an unknown name is refused, and a name shared by several agents asks for the id |
+| `--kind <kind>` | `claude-code`, `codex`, `cursor`, `hermes`, ...: managed agents of that kind and sessions recorded from that source |
+| `--since <duration>` | active within `30m`, `2h`, `7d`, ... (default: 30 days) |
+| `--parent <session-id>` | only the sessions that session spawned |
+| `--execution <id>` | only sessions linked to that flow execution |
+| `--limit N` | at most N rows (default 50, at most 1000) |
+
+`--json` prints the endpoint's own items (`GET /api/v1/runtime-sessions`), each
+with `computed_title` and `state` added, under `{"total": ..., "items": [...]}`.
+`-o id` prints one full id per line. The hint line naming
+`preloop notes send --session` is printed only to a terminal. To steer the
+session you found, see [Finding the session to steer](operator-notes.md#finding-the-session-to-steer).
+
+`sessions attach` follows one session live (model requests, tool calls,
+approvals, notes, the end), sends a typed line as an operator note and decides
+a pending approval with `a` or `d`. See
+[Attaching to a session from the terminal](sessions-attach.md).
+
+`sessions search` ranks session content by relevance with the same server
+query the console uses; `preloop sessions search --help` lists its flags.
+
 ## Usage import
 
 ```bash
