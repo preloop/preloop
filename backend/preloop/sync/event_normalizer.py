@@ -734,6 +734,59 @@ def _manual_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return parts
 
 
+# Human-readable names for the CI providers a CI-dispatched trigger may
+# declare in its ``ci`` block. Anything unknown falls back to title-casing,
+# so a future provider still renders readably rather than as a raw slug.
+_CI_PROVIDER_LABELS: Dict[str, str] = {
+    "github-actions": "GitHub Actions",
+    "gitlab": "GitLab CI",
+    "gitlab-ci": "GitLab CI",
+    "gitlab-ci-cd": "GitLab CI",
+    "jenkins": "Jenkins",
+    "circleci": "CircleCI",
+    "circle-ci": "CircleCI",
+    "buildkite": "Buildkite",
+    "bitbucket": "Bitbucket Pipelines",
+    "bitbucket-pipelines": "Bitbucket Pipelines",
+    "azure-pipelines": "Azure Pipelines",
+    "azure-devops": "Azure DevOps",
+    "teamcity": "TeamCity",
+    "travis": "Travis CI",
+    "travis-ci": "Travis CI",
+}
+
+
+def _ci_provenance(ci: Any) -> Dict[str, str]:
+    """Read the ``ci`` provenance block a CI-dispatched trigger carries.
+
+    A CI job that calls ``preloop flow trigger`` with a full tracker payload
+    marks where it came from with a top-level ``ci`` block
+    (``{"provider": "github-actions", "run_url": ...}``). The provider lets
+    the subject say who dispatched it; the run URL links back to the job.
+
+    Args:
+        ci: The ``ci`` object from the trigger body, or anything else.
+
+    Returns:
+        ``{"label": "<human provider>", "url": "<run url>"}`` when a provider
+        was declared, else ``{}``. ``url`` is omitted when absent or not a
+        non-empty string.
+    """
+    if not isinstance(ci, dict):
+        return {}
+    provider = str(ci.get("provider") or "").strip()
+    if not provider:
+        return {}
+    label = _CI_PROVIDER_LABELS.get(provider.lower())
+    if not label:
+        label = provider.replace("-", " ").replace("_", " ").title()
+    parts: Dict[str, str] = {"label": label}
+    run_url = ci.get("run_url")
+    if isinstance(run_url, str) and run_url.strip():
+        parts["url"] = run_url.strip()
+    return parts
+
+
 def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Build a compact, human-readable subject for a flow execution.
 
@@ -767,6 +820,12 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
     if not isinstance(payload, dict):
         payload = {}
 
+    # A CI-dispatched run declares where it came from up front, so read the
+    # provenance before the early returns below. Those returns handle runs a
+    # person (or the scheduler) started; a run carrying a ``ci`` block is not
+    # one of those and must keep its real event label and CI hint.
+    ci = _ci_provenance(event_data.get("ci"))
+
     # A scheduled run and a manual run carry no repo and no reference, so
     # they render their own line: the label plus the one fact that tells two
     # runs of the same flow apart (which schedule, or which person).
@@ -780,8 +839,12 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
             parts["text"] = "Scheduled"
         return parts
 
-    if source in ("manual", "api", "console") or (
-        not source and (event_data.get("test_mode") or event_data.get("triggered_by"))
+    if not ci and (
+        source in ("manual", "api", "console")
+        or (
+            not source
+            and (event_data.get("test_mode") or event_data.get("triggered_by"))
+        )
     ):
         return _manual_subject(event_data)
 
@@ -800,7 +863,10 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
     parts = {key: value for key, value in parts.items() if value}
 
     label = humanize_event_type(event_type)
-    if event_data.get("test_mode"):
+    # A run a person started from the console or CLI reads "Manual Test Run".
+    # A CI-dispatched run carries its own provenance block, so it keeps the
+    # real event label (e.g. "Pull Request Updated") and names the CI instead.
+    if event_data.get("test_mode") and not ci:
         label = "Manual Test Run"
     if label:
         parts["event"] = label
@@ -820,6 +886,10 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
         return None
 
     parts["text"] = _SUBJECT_SEPARATOR.join(segments)
+    if ci:
+        parts["ci"] = ci["label"]
+        if ci.get("url"):
+            parts["ci_url"] = ci["url"]
     return parts
 
 

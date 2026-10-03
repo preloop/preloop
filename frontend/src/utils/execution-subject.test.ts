@@ -3,6 +3,8 @@ import { expect, fixture, html } from '@open-wc/testing';
 import {
   executionSubjectText,
   executionSubjectUrl,
+  executionSubjectCiText,
+  executionSubjectCiUrl,
   isSubjectFallback,
   renderExecutionSubject,
   isSafeSubjectUrl,
@@ -199,6 +201,105 @@ describe('execution subjects', () => {
       const span = element.querySelector('span.execution-subject')!;
       expect(span.classList.contains('is-fallback')).to.be.true;
       expect(span.textContent).to.equal('dee1da93');
+    });
+
+    it('renders the CI provenance hint, linking to the CI run', async () => {
+      const element = (await fixture(
+        html`<div>
+          ${renderExecutionSubject({
+            id: 'dee1da93',
+            trigger_subject: 'preloop/preloop #78 · Pull Request Updated',
+            trigger_subject_url: 'https://github.com/preloop/preloop/pull/78',
+            trigger_subject_ci: 'GitHub Actions',
+            trigger_subject_ci_url:
+              'https://github.com/preloop/preloop/actions/runs/1',
+          })}
+        </div>`
+      )) as HTMLElement;
+
+      // The subject links to the PR, the hint to the run.
+      const links = element.querySelectorAll('a');
+      expect(links.length).to.equal(2);
+      expect(links[0].getAttribute('href')).to.equal(
+        'https://github.com/preloop/preloop/pull/78'
+      );
+      expect(links[1].getAttribute('href')).to.equal(
+        'https://github.com/preloop/preloop/actions/runs/1'
+      );
+      expect(links[1].textContent?.trim()).to.equal('via GitHub Actions');
+      expect(links[1].getAttribute('target')).to.equal('_blank');
+      expect(links[1].getAttribute('rel')).to.equal('noopener noreferrer');
+    });
+
+    it('renders an unlinked CI hint when the run URL is unsafe', async () => {
+      const element = (await fixture(
+        html`<div>
+          ${renderExecutionSubject({
+            id: 'dee1da93',
+            trigger_subject: 'preloop/preloop #78 · Pull Request Updated',
+            trigger_subject_ci: 'GitHub Actions',
+            trigger_subject_ci_url: 'javascript:alert(1)',
+          })}
+        </div>`
+      )) as HTMLElement;
+
+      const hint = element.querySelector('span.execution-subject-ci')!;
+      expect(hint.textContent).to.equal('via GitHub Actions');
+      // Only the unsafe CI URL is refused; there is no CI link at all.
+      expect(element.querySelector('a.execution-subject-ci-link')).to.be.null;
+    });
+
+    it('renders no CI hint for runs a person or webhook started', async () => {
+      const element = (await fixture(
+        html`<div>
+          ${renderExecutionSubject({
+            id: 'dee1da93',
+            trigger_subject: 'preloop/preloop #78 · Pull Request Updated',
+            trigger_subject_url: 'https://github.com/preloop/preloop/pull/78',
+          })}
+        </div>`
+      )) as HTMLElement;
+
+      expect(element.textContent).not.to.contain('via ');
+      expect(element.querySelector('a.execution-subject-ci-link')).to.be.null;
+      expect(element.querySelector('span.execution-subject-ci')).to.be.null;
+    });
+  });
+
+  describe('executionSubjectCiText / executionSubjectCiUrl', () => {
+    it('reads the projected fields from list rows', () => {
+      const exec = {
+        id: 'dee1da93',
+        trigger_subject_ci: 'GitHub Actions',
+        trigger_subject_ci_url:
+          'https://github.com/preloop/preloop/actions/runs/1',
+      };
+      expect(executionSubjectCiText(exec)).to.equal('GitHub Actions');
+      expect(executionSubjectCiUrl(exec)).to.equal(
+        'https://github.com/preloop/preloop/actions/runs/1'
+      );
+    });
+
+    it('reads the stored subject from detail rows', () => {
+      const exec = {
+        id: 'dee1da93',
+        trigger_event_details: {
+          _subject: {
+            text: 'preloop/preloop #78 · Pull Request Updated',
+            ci: 'GitHub Actions',
+            ci_url: 'https://github.com/preloop/preloop/actions/runs/1',
+          },
+        },
+      };
+      expect(executionSubjectCiText(exec)).to.equal('GitHub Actions');
+      expect(executionSubjectCiUrl(exec)).to.equal(
+        'https://github.com/preloop/preloop/actions/runs/1'
+      );
+    });
+
+    it('returns empty when no CI provenance was recorded', () => {
+      expect(executionSubjectCiText({ id: 'dee1da93' })).to.equal('');
+      expect(executionSubjectCiUrl({ id: 'dee1da93' })).to.equal(null);
     });
   });
 });
