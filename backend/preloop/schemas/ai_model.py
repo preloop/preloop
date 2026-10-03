@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
+from preloop.services.azure_openai import normalize_azure_auth_meta
 from preloop.schemas.gateway_usage import (
     GatewayTokenUsage,
     GatewayUsageByDay,
@@ -193,6 +194,8 @@ class AIModelCreate(AIModelBase):
 
     @model_validator(mode="after")
     def validate_credentials(self):
+        # Azure auth mode lives in provider_runtime (azure_auth key|entra).
+        self.meta_data = normalize_azure_auth_meta(self.meta_data)
         has_inline_payload = (
             self.credential_type is not None or self.credential_payload is not None
         )
@@ -264,6 +267,8 @@ class AIModelUpdate(BaseModel):
 
     @model_validator(mode="after")
     def validate_credentials(self):
+        # Azure auth mode lives in provider_runtime (azure_auth key|entra).
+        self.meta_data = normalize_azure_auth_meta(self.meta_data)
         has_inline_payload = (
             self.credential_type is not None or self.credential_payload is not None
         )

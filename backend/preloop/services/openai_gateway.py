@@ -169,7 +169,8 @@ from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
-from preloop.services.azure_openai import azure_request_kwargs
+from preloop.services.azure_entra import AZURE_OPENAI_ROLE, AzureEntraTokenError
+from preloop.services.azure_openai import azure_request_kwargs, uses_azure_entra
 from preloop.services.litellm_routing import (
     BEDROCK_PROVIDERS,
     apply_preloop_client_headers,
@@ -491,6 +492,28 @@ def _supports_ambient_provider_credentials(ai_model: GatewayModel) -> bool:
     """
     provider = (ai_model.provider_name or "").strip().lower()
     return provider in BEDROCK_PROVIDERS
+
+
+def _azure_kwargs_or_auth_error(
+    ai_model: GatewayModel, *, provider: GatewayProvider
+) -> Dict[str, Any]:
+    """Return the Azure LiteLLM kwargs, mapping token failures to a 401.
+
+    A failed Entra ID token acquisition is an upstream authentication
+    problem of the provider, so it is reported like a rejected key.
+    """
+    try:
+        return azure_request_kwargs(ai_model)
+    except AzureEntraTokenError as exc:
+        raise ModelGatewayAPIError(
+            provider=provider,
+            status_code=401,
+            message=(
+                f"{exc} The identity needs the {AZURE_OPENAI_ROLE} role on the "
+                "Azure OpenAI resource."
+            ),
+            code="azure_entra_token_error",
+        ) from exc
 
 
 def _openrouter_usage_accounting_enabled() -> bool:
@@ -6927,6 +6950,7 @@ class OpenAIGatewayService:
                 code=exc.code,
             ) from exc
         supports_ambient = _supports_ambient_provider_credentials(ai_model)
+        supports_entra = uses_azure_entra(ai_model)
         supports_oauth = (
             provider == "anthropic"
             and resolved_credentials is not None
@@ -6939,7 +6963,9 @@ class OpenAIGatewayService:
             and resolved_credentials.credential_type == "api_key"
             and bool(resolved_credentials.value)
         )
-        if not (supports_api_key or supports_oauth or supports_ambient):
+        if not (
+            supports_api_key or supports_oauth or supports_ambient or supports_entra
+        ):
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=400,
@@ -6950,6 +6976,8 @@ class OpenAIGatewayService:
         # savings are shown as a share of the rate-limit window, not dollars.
         if supports_oauth:
             self._last_upstream_credential_type = "oauth"
+        elif supports_entra:
+            self._last_upstream_credential_type = "ambient"
         elif supports_api_key:
             self._last_upstream_credential_type = "api_key"
         elif supports_ambient:
@@ -6994,8 +7022,9 @@ class OpenAIGatewayService:
         if api_base := model_api_base(ai_model):
             kwargs["api_base"] = api_base
         # Azure needs the resource root (not the pasted deployment URL) and
-        # an api-version; both come from the stored model.
-        kwargs.update(azure_request_kwargs(ai_model))
+        # an api-version; both come from the stored model. Entra ID models
+        # also get their bearer token provider here.
+        kwargs.update(_azure_kwargs_or_auth_error(ai_model, provider=provider))
         if alibaba_pricing.is_alibaba(ai_model):
             cache_markers = 0
             for message in messages:
@@ -7355,14 +7384,15 @@ class OpenAIGatewayService:
             and resolved_credentials.credential_type == "api_key"
             and bool(resolved_credentials.value)
         )
-        if not (supports_api_key or supports_ambient):
+        supports_entra = uses_azure_entra(ai_model)
+        if not (supports_api_key or supports_ambient or supports_entra):
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=400,
                 message="Model credentials are not configured",
             )
         self._last_upstream_credential_type = (
-            "api_key" if supports_api_key else "ambient"
+            "api_key" if supports_api_key and not supports_entra else "ambient"
         )
 
         kwargs: Dict[str, Any] = {
@@ -7385,8 +7415,9 @@ class OpenAIGatewayService:
         if api_base := model_api_base(ai_model):
             kwargs["api_base"] = api_base
         # Azure needs the resource root (not the pasted deployment URL) and
-        # an api-version; both come from the stored model.
-        kwargs.update(azure_request_kwargs(ai_model))
+        # an api-version; both come from the stored model. Entra ID models
+        # also get their bearer token provider here.
+        kwargs.update(_azure_kwargs_or_auth_error(ai_model, provider="openai"))
         for field in ("dimensions", "encoding_format", "user"):
             if payload.get(field) is not None:
                 kwargs[field] = payload[field]
