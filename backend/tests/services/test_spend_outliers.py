@@ -1177,6 +1177,13 @@ def test_a_snooze_still_in_force_at_the_window_end_hides_the_finding(
     The snooze ran out an hour after the window closed, long before this
     section was generated. It still covers the window, so the finding is
     reported as dismissed.
+
+    The row records an earlier day's fingerprint, which is the case the
+    snooze branch exists for: the operator silenced yesterday's card and the
+    item came back with a new fingerprint, so the digest has to decide from
+    ``snooze_until`` alone. A row whose fingerprint matched would be
+    dismissed by the equality check above it, and this test would then pass
+    without the window-end query being involved at all.
     """
     finding = _finding(
         db_session,
@@ -1189,7 +1196,7 @@ def test_a_snooze_still_in_force_at_the_window_end_hides_the_finding(
         db_session,
         account_id=test_user.account_id,
         item_id=finding.item_id,
-        fingerprint=finding.fingerprint,
+        fingerprint=f"daily_spend|{test_user.id}|2026-09-25",
         reason="snoozed",
         snooze_until=WINDOW_END + timedelta(hours=1),
     )
@@ -1208,7 +1215,14 @@ def test_a_snooze_still_in_force_at_the_window_end_hides_the_finding(
 def test_a_snooze_that_ran_out_before_the_window_end_is_not_active(
     db_session, test_user
 ):
-    """A snooze that had already run out when the window closed hides nothing."""
+    """A snooze that had already run out when the window closed hides nothing.
+
+    The fingerprint is an earlier day's for the same reason as in
+    ``test_a_snooze_still_in_force_at_the_window_end_hides_the_finding``, so
+    this too is decided by ``snooze_until`` and the window it is compared
+    to: the row is not returned by the window-end query, and a finding with
+    nothing to match against is reported as open.
+    """
     finding = _finding(
         db_session,
         test_user,
@@ -1220,7 +1234,7 @@ def test_a_snooze_that_ran_out_before_the_window_end_is_not_active(
         db_session,
         account_id=test_user.account_id,
         item_id=finding.item_id,
-        fingerprint=finding.fingerprint,
+        fingerprint=f"daily_spend|{test_user.id}|2026-09-25",
         reason="snoozed",
         snooze_until=WINDOW_END - timedelta(hours=3),
     )
