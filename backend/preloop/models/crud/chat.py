@@ -208,8 +208,17 @@ class CRUDChat:
                 db.add(row)
                 db.flush()
             db.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             db.rollback()
+            # Only a collision on the receipt key is an idempotent replay.
+            # Preserve foreign-key, nullability and other integrity failures.
+            diagnostic = getattr(exc.orig, "diag", None)
+            if (
+                getattr(exc.orig, "sqlstate", None) != "23505"
+                or getattr(diagnostic, "constraint_name", None)
+                != "chat_work_connection_id_event_id_key"
+            ):
+                raise
             row = (
                 db.query(models.ChatWork)
                 .filter_by(connection_id=connection.id, event_id=event_id)

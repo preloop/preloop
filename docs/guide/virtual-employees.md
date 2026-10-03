@@ -37,7 +37,7 @@ agent's actual runtime), the gateway-enabled `ai_model_id`, and this configurati
 
 Generate the ingress secret locally with `python -c 'import secrets;
 print(secrets.token_hex(32))'`. Keep it in the account's Flow configuration and the
-bridge environment. It authenticates this integration; it is not a user login or
+bridge environment. The Flow write API accepts `employee_secret`; list/detail responses redact it, and updates that omit the field preserve the stored value. Explicit `null` clears it. It authenticates this integration; it is not a user login or
 a permission grant. The service checks the owning account, managed-agent lifecycle,
 Flow enablement, source, connection, event kind and subject on every delivery.
 Payloads are limited to 64 KiB and bot/webhook messages are excluded.

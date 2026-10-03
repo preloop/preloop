@@ -21,6 +21,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import create_access_token
@@ -143,6 +144,31 @@ def proof(f, code="a-high-entropy-synthetic-proof", **values):
             **values,
         },
     )
+
+
+@pytest.mark.parametrize("violation", ["not_null", "foreign_key"])
+def test_receipt_preserves_unrelated_integrity_errors(fixture_db, violation):
+    f = fixture_db
+    connection = f.connection
+    external_user_id = "external-test"
+    if violation == "foreign_key":
+        connection = SimpleNamespace(id=uuid4(), account_id=f.account.id)
+    else:
+        external_user_id = None
+
+    with pytest.raises(IntegrityError) as caught:
+        crud_chat.receive(
+            f.db,
+            connection=connection,
+            event_id=str(uuid4()),
+            external_user_id=external_user_id,
+            payload={"text": "List agents"},
+        )
+    assert caught.value.orig.sqlstate == (
+        "23503" if violation == "foreign_key" else "23502"
+    )
+    # The rollback also leaves the session usable for a subsequent valid receipt.
+    assert receive(f).status == "pending"
 
 
 def test_duplicate_receipt_and_claim_recovery(fixture_db):

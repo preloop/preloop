@@ -21601,7 +21601,8 @@ components:
           title: Trigger Config
         webhook_config:
           anyOf:
-          - $ref: '#/components/schemas/WebhookConfig'
+          - additionalProperties: true
+            type: object
           - type: 'null'
         schedule_config:
           anyOf:
@@ -34062,6 +34063,14 @@ components:
       description: What a console needs to render the create form.
     WebhookConfig:
       properties:
+        employee_secret:
+          anyOf:
+          - type: string
+            minLength: 32
+          - type: 'null'
+          title: Employee Secret
+          description: HMAC secret for signed employee-event ingress.
+          writeOnly: true
         webhook_secret:
           anyOf:
           - type: string

@@ -12,7 +12,32 @@ from fastapi.testclient import TestClient
 
 from preloop.api.endpoints import employee_events as endpoint
 from preloop.models.db.session import get_db_session
+from preloop.models.schemas.flow import WebhookConfig
 from preloop.services.employee_events import EmployeeEventReceipt
+
+
+def test_employee_secret_survives_writes_but_is_redacted_from_responses():
+    from datetime import UTC, datetime
+
+    from preloop.models.schemas.flow import FlowCreate, FlowResponse, FlowUpdate
+
+    secret = "synthetic-secret-at-least-thirty-two-characters"
+    request = FlowCreate(
+        name="Example employee",
+        prompt_template="Handle the event",
+        agent_config={},
+        webhook_config={"employee_secret": secret},
+    )
+    stored = request.model_dump()
+    assert stored["webhook_config"]["employee_secret"] == secret
+    assert (
+        FlowUpdate(**stored).model_dump()["webhook_config"]["employee_secret"] == secret
+    )
+    response = FlowResponse(
+        **stored, id=uuid4(), created_at=datetime.now(UTC), updated_at=datetime.now(UTC)
+    )
+    assert "employee_secret" not in response.model_dump()["webhook_config"]
+    assert secret not in response.model_dump_json()
 
 
 def test_glitchtip_hmac_verification_and_bounded_payload(monkeypatch):
@@ -20,7 +45,7 @@ def test_glitchtip_hmac_verification_and_bounded_payload(monkeypatch):
     secret = "synthetic-secret-at-least-thirty-two-characters"
     flow = SimpleNamespace(
         account_id=account,
-        webhook_config={"employee_secret": secret},
+        webhook_config=WebhookConfig(employee_secret=secret).model_dump(),
         trigger_config={
             "employee_events": {
                 "source": "glitchtip",

@@ -1156,6 +1156,14 @@ class FlowNotifications(BaseModel):
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
 
+    employee_secret: Optional[str] = Field(
+        default=None,
+        min_length=32,
+        repr=False,
+        json_schema_extra={"writeOnly": True},
+        description="HMAC secret for signed employee-event ingress.",
+    )
+
     webhook_secret: Optional[str] = Field(
         default=None,
         description=(
@@ -1568,6 +1576,13 @@ class FlowResponse(FlowBase):
     ai_model_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("webhook_config")
+    def redact_employee_secret(
+        self, value: Optional[WebhookConfig]
+    ) -> Optional[Dict[str, Any]]:
+        """Keep ingress credentials in storage but out of all Flow responses."""
+        return value.model_dump(exclude={"employee_secret"}) if value else None
 
     @computed_field
     @property

@@ -102,8 +102,8 @@ const EVICTION_CLOSE_CODE = 4000;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
-/** Bound on the message_id dedupe memory. */
-
+/** Never evict receipts: reject new commands when durable replay is full. */
+export const MAX_COMMAND_RECEIPTS = 1_000;
 
 type StoredCommandOutcome = {
   name: "command_result" | "command_error";
@@ -387,7 +387,17 @@ export class PreloopCodexSidecar {
       });
       return;
     }
-    if (command.message_id && this.inFlightMessageIds.has(command.message_id)) {
+    if (this.commandOutcomes.size >= MAX_COMMAND_RECEIPTS) {
+      this.sendOn(socket, {
+        type: "status",
+        name: "command_error",
+        message_id: command.message_id,
+        payload: {
+          command_id: command.message_id,
+          status: "failed",
+          error: "Employee receipt ledger is full; provision a new employee before sending new commands.",
+        },
+      });
       return;
     }
     if (command.message_id) {
