@@ -71,8 +71,10 @@ Where the numbers come from:
 - **Small** keeps the chart defaults for every replica count.
 - **Large flow-execution 5**, derived: the smallest count that reaches the
   `maxJobs` quota of 50 at `maxInflight` 10.
-- **Large gateway max 10**: estimate, not load-tested. It is the
-  `maxReplicas` the chart README's scaling example uses. The comment in
+- **Large gateway max 10**: estimate, not load-tested. It is a
+  deliberately higher ceiling than the chart default of 5. The chart
+  README `autoscaling` example (the API/worker HPA) uses 10, while the
+  gateway HPA is documented separately as min 2 / max 5. The comment in
   `values.yaml` says not to go above 5 without raising `max_connections`;
   that warning is about the in-cluster CloudNativePG default of 200, and
   the Flexible Server SKUs below allow far more (see
@@ -164,20 +166,19 @@ set `database.external: true` with the URL in a Secret (the overlays do
 this).
 
 1. Allow-list the extension. Its name on Azure is `vector`, not `pgvector`
-   ([Azure docs](https://learn.microsoft.com/en-us/azure/postgresql/extensions/how-to-use-pgvector)):
+   ([Azure docs](https://learn.microsoft.com/en-us/azure/postgresql/extensions/how-to-use-pgvector)).
+   `parameter set` replaces the whole `azure.extensions` allow-list. Read
+   the current list first with `SHOW azure.extensions;` and pass the full
+   comma-separated value, keeping every extension already allow-listed
+   ([Azure docs](https://learn.microsoft.com/en-us/azure/postgresql/extensions/how-to-allow-extensions)):
 
     ```bash
     az postgres flexible-server parameter set \
       --resource-group <resource_group> \
       --server-name <server> \
       --name azure.extensions \
-      --value vector
+      --value "<existing>,vector"
     ```
-
-    If `azure.extensions` already lists other extensions, keep them in the
-    comma-separated value
-    ([Azure docs](https://learn.microsoft.com/en-us/azure/postgresql/extensions/how-to-allow-extensions)).
-    Check with `SHOW azure.extensions;`.
 
 2. Install the chart. The first migration runs
    `CREATE EXTENSION IF NOT EXISTS vector`, which succeeds once the

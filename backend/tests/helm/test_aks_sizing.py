@@ -177,6 +177,7 @@ def test_concurrent_agents_derive_from_max_inflight_and_quota(
     per_account = values["flowExecution"]["maxRunningPerAccount"]
     table = _section("## Choosing a tier")
     for col, tier in enumerate(TIERS, start=1):
+        assert _overlay(tier)["flowExecution"]["workerEnabled"] is True
         flow = shapes[tier].by_suffix("-worker-flow-execution")["spec"]["replicas"]
         assert _row(table, "Concurrent hosted agents (instance)")[col] == str(
             flow * inflight
@@ -275,7 +276,10 @@ def test_agent_pool_derives_from_limit_range(shapes: Dict[str, _Shape]) -> None:
             math.ceil(agents * req_cpu / 1000 / VM_VCPU["D8s_v5"]),
             math.ceil(agents * req_mem / 1024 / VM_MEMORY_GIB["D8s_v5"]),
         )
-        node_max = math.ceil(agents * lim_mem / 1024 / VM_MEMORY_GIB["D8s_v5"])
+        node_max = max(
+            math.ceil(agents * lim_cpu / 1000 / VM_VCPU["D8s_v5"]),
+            math.ceil(agents * lim_mem / 1024 / VM_MEMORY_GIB["D8s_v5"]),
+        )
         assert row[4] == f"{node_min} / {node_max}"
 
 
