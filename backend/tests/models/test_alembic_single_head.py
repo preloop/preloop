@@ -274,4 +274,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert artifact_kinds.down_revision == "20260927_issue_cost_accuracy"
     session_cwd = script.get_revision("20261002_runtime_session_cwd")
     assert session_cwd.down_revision == "20261001_artifact_kinds_labels"
-    assert script.get_heads() == ["20261002_runtime_session_cwd"]
+    issue_extid = script.get_revision("20261003_issue_extid_unique")
+    assert issue_extid.down_revision == "20261002_runtime_session_cwd"
+    assert script.get_heads() == ["20261003_issue_extid_unique"]
