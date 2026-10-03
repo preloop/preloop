@@ -164,7 +164,6 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
             row = db.execute(stmt).one()
             candidate = db.get(self.model, row.id)
             if candidate is not None:
-                db.refresh(candidate)
                 outcomes.append(
                     UpsertOutcome(candidate=candidate, created=bool(row.inserted))
                 )
