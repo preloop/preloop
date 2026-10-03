@@ -206,7 +206,9 @@ def test_upsert_requires_external_id(db_session: Session, external_id: Any) -> N
 def test_upgrade_refuses_composite_foreign_keys(db_session: Session) -> None:
     db = db_session
     db.execute(text("ALTER TABLE issue DROP CONSTRAINT uq_issue_project_external_id"))
-    db.execute(text("ALTER TABLE issue ADD CONSTRAINT uq_tmp_issue_id_key UNIQUE (id, key)"))
+    db.execute(
+        text("ALTER TABLE issue ADD CONSTRAINT uq_tmp_issue_id_key UNIQUE (id, key)")
+    )
     db.execute(
         text(
             "CREATE TABLE tmp_issue_ref (issue_id uuid, issue_key varchar(512), "
