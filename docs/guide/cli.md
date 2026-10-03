@@ -55,12 +55,12 @@ preloop agents discover --no-onboard-prompt
 preloop agents onboard <agent>           # onboard one agent ("enroll" is an alias)
 preloop agents onboard --all -y          # everything discovered, no prompts
 preloop agents onboard <agent> --dry-run # preview account + config changes
-preloop agents onboard <agent> --approvals  # + native tool-permission hook (Claude Code, Codex CLI, Cursor)
+preloop agents onboard <agent> --approvals  # + native action gates (Claude Code, Codex CLI, Cursor, Copilot CLI, OpenCode, Pi, DeepSeek Harness)
 preloop agents onboard <agent> --tags env=prod,team=infra
 preloop agents status <agent>            # local + remote enrollment state
 preloop agents list                      # managed agents in the account
 preloop agents validate <agent>          # config validation
-preloop agents validate <agent> --live   # + a live prompt through the agent
+preloop agents validate <agent> --live   # + a direct gateway route/accounting probe
 preloop agents reconnect "Claude Code"  # sign in and repair subscription credentials only
 preloop agents reconnect "Codex CLI"    # same recovery for a ChatGPT subscription
 preloop agents reconnect "Claude Code" --from-local # use a fresh login completed separately
@@ -72,7 +72,7 @@ preloop agents offboard --all -y --remove-model yes --remove-mcp-servers yes
 preloop agents starter-policy <mcp-server> [-o file] [--apply]
 ```
 
-Onboarding runs a live validation prompt by default; skip it with `--skip-live-validate`.
+Onboarding runs a direct gateway route/accounting probe by default; skip it with `--skip-live-validate`. The probe reads managed configuration but does not launch the application or verify that it consumed that configuration. Application behavior remains unverified.
 
 `agents reconnect` preserves the existing enrollment, model bindings, policies,
 gateway config and backups. It repairs a shared credential once and attaches any

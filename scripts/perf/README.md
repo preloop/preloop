@@ -50,6 +50,30 @@ never drops tables, and only deletes rows that belong to that account.
 
 Results files are machine-local measurements. The default
 `results/latest.json` and any ad-hoc runs are scratch: do not commit them,
-especially when they carry a real account id. The one versioned file is the
-recorded per-issue baseline (`results/issue-914.json`), kept so later changes
-can be compared against the same numbers.
+especially when they carry a real account id. The versioned files are the
+recorded per-issue baselines (`results/issue-914.json`,
+`results/issue-1197.json`), kept so later changes can be compared against
+the same numbers.
+
+# Flow executions list harness
+
+`benchmark_flow_executions.py` seeds a realistic flow history (20 flows,
+4,000 executions over 60 days, resume chains of depth 2 to 6, normalized log
+rows, gateway usage and MCP activity per run, TOASTed trigger payloads) next
+to a neighbour account with 20,000 executions and 1,000,000 gateway rows from
+interactive sessions, then times `GET /api/v1/flows/executions` (page sizes
+3, 25 and 100, a flow filter, the running-status filter) and
+`GET /api/v1/flows?stats_since=` through the FastAPI `TestClient`. Each case
+lists its statements, slowest first; `--explain` prints
+`EXPLAIN (ANALYZE, BUFFERS)` for the slowest ones.
+
+```bash
+PRELOOP_DISABLE_TELEMETRY=true \
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost/preloop \
+    python scripts/perf/benchmark_flow_executions.py --explain \
+        --output scripts/perf/results/latest-executions.json
+```
+
+Re-run with `--account-id <id>` after a change to measure the same rows.
+`scripts/perf/results/issue-1197.json` records the before/after pair for
+issue #1197.

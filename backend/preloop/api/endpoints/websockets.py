@@ -12,7 +12,6 @@ from preloop.api.auth.key_scopes import api_key_allowed_on_channel
 from preloop.services.db_executor import detach_user, run_db_async
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models import models
-from preloop.models.models import User
 from preloop.services.activity_tracker import handle_activity
 from preloop.services.session_manager import session_manager
 from preloop.services.websocket_manager import SessionStreamFilter, manager
@@ -751,13 +750,13 @@ SESSION_ATTACH_CLOSE_NOT_FOUND = 4404
 
 
 @require_permission("view_runtime_sessions")
-def _session_read_allowed(*, current_user: User, db: Session) -> bool:
+def _session_read_allowed(*, current_user: models.User, db: Session) -> bool:
     """Apply the same RBAC check the session REST reads use."""
     return True
 
 
 @require_permission("view_approvals")
-def _approval_read_allowed(*, current_user: User, db: Session) -> bool:
+def _approval_read_allowed(*, current_user: models.User, db: Session) -> bool:
     """Apply the same RBAC check the approval REST reads use."""
     return True
 
@@ -778,7 +777,7 @@ def _bearer_token(websocket: WebSocket) -> Optional[str]:
 def _authorize_session_attach(
     db: Session,
     *,
-    user: User,
+    user: models.User,
     runtime_session_id: str,
     execution_id: Optional[str],
 ) -> dict:

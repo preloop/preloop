@@ -54,6 +54,7 @@ from preloop.agents.verification import (
 )
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+    FAILURE_CATEGORY_PUBLICATION_MISSING,
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
@@ -70,6 +71,7 @@ from preloop.services.no_progress_guard import (
     parse_retry_config,
 )
 from preloop.services.flow_execution_notifications import (
+    PUBLICATION_MISSING_RESULT_KEY,
     needs_tracker_comment,
     notify_terminal_execution,
 )
@@ -1127,7 +1129,16 @@ class FlowExecutionOrchestrator:
             from preloop.models.crud import crud_project
             from preloop.api.common import get_tracker_client
 
-            project = crud_project.get(self.db, id=trigger_project_id)
+            account_id = self._flow_account_id()
+            if account_id is None:
+                await self._emit_execution_warning(
+                    "Commit status skipped: the flow has no account, so the "
+                    f"triggering project {trigger_project_id} cannot be resolved.",
+                )
+                return None
+            project = crud_project.get(
+                self.db, id=trigger_project_id, account_id=account_id
+            )
             if not project:
                 await self._emit_execution_warning(
                     "Commit status skipped: the triggering project "
@@ -1631,6 +1642,7 @@ class FlowExecutionOrchestrator:
             trigger_event_data=self.trigger_event_data,
             flow_id=str(self.flow_id),
             execution_id=str(self.execution_log.id) if self.execution_log else "",
+            account_id=self._flow_account_id(),
             workspace_mode=workspace_mode(
                 agent_config=getattr(self.flow, "agent_config", None),
                 git_clone_config=getattr(self.flow, "git_clone_config", None),
@@ -2707,6 +2719,16 @@ class FlowExecutionOrchestrator:
             )
             return None
 
+    def _flow_account_id(self) -> Optional[str]:
+        """Return the flow's account as a string, or None when it has none.
+
+        ``Flow.account_id`` is nullable and preset stand-ins may omit it.
+        Project lookups scope on this value, so a missing account must not
+        become the literal string ``"None"``.
+        """
+        account_id = getattr(getattr(self, "flow", None), "account_id", None)
+        return str(account_id) if account_id else None
+
     def _resolve_project_tracker_id(self, project_id: Optional[str]) -> Optional[str]:
         """Return the tracker owning ``project_id``, or None."""
 
@@ -2715,7 +2737,12 @@ class FlowExecutionOrchestrator:
         try:
             from preloop.models.crud import crud_project
 
-            project = crud_project.get(self.db, id=str(project_id))
+            account_id = self._flow_account_id()
+            if account_id is None:
+                return None
+            project = crud_project.get(
+                self.db, id=str(project_id), account_id=account_id
+            )
             organization = project.organization if project else None
             tracker_id = getattr(organization, "tracker_id", None)
             return str(tracker_id) if tracker_id else None
@@ -4704,7 +4731,13 @@ class FlowExecutionOrchestrator:
         from preloop.models.crud import crud_project
 
         project_id = self._follow_up_filing_project_id(plan)
-        project = crud_project.get(self.db, id=project_id)
+        account_id = self._flow_account_id()
+        if account_id is None:
+            raise FollowUpFilingError(
+                "project_missing",
+                f"project {project_id} cannot be resolved: the flow has no account",
+            )
+        project = crud_project.get(self.db, id=project_id, account_id=account_id)
         if not project or not getattr(project, "organization_id", None):
             raise FollowUpFilingError(
                 "project_missing",
@@ -5044,6 +5077,9 @@ class FlowExecutionOrchestrator:
         if not project_ids:
             return []
         clients: List[Any] = []
+        account_id = self._flow_account_id()
+        if account_id is None:
+            return []
         users = crud_user.get_by_account(
             self.db, account_id=self.flow.account_id, limit=1
         )
@@ -5051,7 +5087,9 @@ class FlowExecutionOrchestrator:
             return []
         for project_id in project_ids:
             try:
-                project = crud_project.get(self.db, id=project_id)
+                project = crud_project.get(
+                    self.db, id=project_id, account_id=account_id
+                )
                 if not project or not getattr(project, "organization_id", None):
                     continue
                 client = await get_tracker_client(
@@ -5193,6 +5231,45 @@ class FlowExecutionOrchestrator:
                     _exception_message(error),
                 )
 
+    def _missing_publication_reason(
+        self, final_status: str, merged_result: Any
+    ) -> Optional[str]:
+        """Why a successful run that should have opened a PR did not, or None.
+
+        Applies only to a fresh (non-resume) run whose flow opens a pull
+        request from a deterministic post-execution block. A bound PR (the
+        wrapper marker, branch lookup, or MCP ``create_pull_request``) or a
+        report-publication outcome means publication was handled.
+
+        Args:
+            final_status: Status about to be written.
+            merged_result: Result about to be written.
+
+        Returns:
+            A human-readable reason, or None when nothing is missing.
+        """
+        from preloop.services.flow_execution_notifications import (
+            extract_opened_pr_url,
+        )
+
+        if final_status != "SUCCEEDED" or self._opened_pr is not None:
+            return None
+        if not self._publication_lookup_enabled() or self._publication_is_resume():
+            return None
+        result = merged_result if isinstance(merged_result, dict) else {}
+        if extract_opened_pr_url(result) or result.get(REPORT_PUBLICATION_RESULT_KEY):
+            return None
+        branch = self._publication_target_branch()
+        if getattr(self, "_post_exec_no_commits", False):
+            return (
+                f"the post-execution git step found no commits on {branch}, "
+                "so nothing was pushed and no pull request was opened"
+            )
+        return (
+            f"no pull request exists for branch {branch}: the push or the "
+            "pull request request did not complete (see the execution log)"
+        )
+
     def _publication_side_effect_evidence(
         self, agent_result: Dict[str, Any]
     ) -> Optional[str]:
@@ -5332,8 +5409,11 @@ class FlowExecutionOrchestrator:
 
         One line per run, printed by the post-execution git block right where
         it would otherwise push. Kept as a fact about the run, not a verdict:
-        a successful review flow legitimately commits nothing, and only the
-        terminal classification combines this with an explicit agent failure.
+        a successful review flow legitimately commits nothing. The terminal
+        path combines it with other facts: with an explicit agent failure it
+        is ``agent_no_progress``; on a fresh run configured to open a pull
+        request that ended without one it names the ``publication_missing``
+        reason (see ``_missing_publication_reason``).
 
         Args:
             line: The ``PRELOOP_NO_COMMITS <branch>`` line as printed.
@@ -7192,18 +7272,22 @@ class FlowExecutionOrchestrator:
             if not notifications:
                 return
 
+            result_payload = (
+                result
+                if result is not None
+                else getattr(self.execution_log, "result", None)
+            )
             tracker_client = None
-            if needs_tracker_comment(notifications, status):
+            if needs_tracker_comment(
+                notifications,
+                status,
+                result_payload if isinstance(result_payload, dict) else None,
+            ):
                 tracker_client = await self._get_tracker_client_for_status()
 
             trigger_details = (
                 getattr(self.execution_log, "trigger_event_details", None)
                 or self.trigger_event_data
-            )
-            result_payload = (
-                result
-                if result is not None
-                else getattr(self.execution_log, "result", None)
             )
             await notify_terminal_execution(
                 notifications=notifications,
@@ -8464,6 +8548,30 @@ class FlowExecutionOrchestrator:
                     "source": "sandbox_log",
                     "authenticated": False,
                 }
+
+            # A run configured to open a pull request that ends without one
+            # is not a success: say why on the row and on the issue.
+            missing_publication = self._missing_publication_reason(
+                final_status, merged_result
+            )
+            if missing_publication is not None:
+                final_status = "FAILED"
+                agent_result = {
+                    **agent_result,
+                    "status": "FAILED",
+                    "error_message": f"publication_missing: {missing_publication}",
+                    "failure_category": FAILURE_CATEGORY_PUBLICATION_MISSING,
+                }
+                if not isinstance(merged_result, dict):
+                    merged_result = {}
+                merged_result[PUBLICATION_MISSING_RESULT_KEY] = {
+                    "status": "not_published",
+                    "reason": missing_publication,
+                    "branch": self._publication_target_branch(),
+                }
+                self.execution_logger.log_milestone(
+                    "publication_missing", {"reason": missing_publication}
+                )
 
             # Parked on a human decision: not terminal, so no end_time, no
             # commit status, no terminal notification and no queued follow-up.

@@ -483,3 +483,52 @@ def test_stale_alias_policy_remains_readable_without_rewriting_spend(
     assert response.json()[0]["current_spend_usd"] == 5
     db_session.refresh(policy)
     assert policy.model_alias == "former-alias"
+
+
+@pytest.mark.parametrize("scope", ["team", "subaccount", "subaccounts_total"])
+def test_reserved_plugin_subjects_are_refused_with_a_plugin_message(
+    budget_client, db_session, scope
+):
+    client, account, _ = budget_client
+    register_configuration_authorizer(lambda *_: None)
+    team = models.Team(account_id=account.id, name="Synthetic team")
+    db_session.add(team)
+    db_session.flush()
+    response = client.post(
+        "/api/v1/budget/policies",
+        json={
+            "subject_type": scope,
+            "subject_id": str(team.id),
+            "period": "daily",
+            "hard_limit_usd": 1,
+        },
+    )
+    assert response.status_code == 400
+    assert "plugin" in response.json()["detail"]
+
+
+def test_existing_team_policy_cannot_be_updated_in_core(budget_client, db_session):
+    client, account, _ = budget_client
+    register_configuration_authorizer(lambda *_: None)
+    team = models.Team(account_id=account.id, name="Synthetic team")
+    db_session.add(team)
+    db_session.flush()
+    # A plugin wrote this row through its own endpoint.
+    policy = models.BudgetPolicy(
+        account_id=account.id,
+        subject_type="team",
+        subject_id=team.id,
+        period=models.BudgetPeriod.monthly,
+        hard_limit_usd=5,
+    )
+    db_session.add(policy)
+    db_session.flush()
+    response = client.put(
+        f"/api/v1/budget/policies/{policy.id}", json={"hard_limit_usd": 50}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Team budgets are available with the teams plugin"
+    )
+    db_session.refresh(policy)
+    assert policy.hard_limit_usd == 5

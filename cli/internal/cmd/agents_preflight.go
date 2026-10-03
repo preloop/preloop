@@ -10,10 +10,8 @@ package cmd
 //     not logged in still works (the MCP/model config is written), but live
 //     validation will fail until the user logs the agent in, and the output
 //     says so explicitly instead of looking like a Preloop bug.
-//  2. Support level — whether Preloop can route the agent's model traffic
-//     through the managed gateway ("full") or only govern its tool calls
-//     through the MCP firewall ("mcp-only"). MCP-only is a property of the
-//     agent type, not an onboarding failure, and is rendered as such.
+//  2. Adapter support — independent model-route, native-action-gate and
+//     managed-MCP paths. Support alone is not runtime verification.
 
 import (
 	"encoding/json"
@@ -27,44 +25,20 @@ import (
 	"strings"
 )
 
-// agentSupportLevel describes how far Preloop governance can reach for an
-// agent type.
+// agentSupportLevel retains legacy compatibility values for internal routing
+// decisions and the existing discovery JSON contract. It is not a governance score.
 type agentSupportLevel string
 
 const (
-	// agentSupportLevelFull: MCP firewall plus model-traffic routing through
-	// the managed gateway.
-	agentSupportLevelFull agentSupportLevel = "full"
-	// agentSupportLevelMCPOnly: tool calls are governed through the MCP
-	// firewall, but the agent type offers no hook to repoint model traffic
-	// (by design of the agent, not an onboarding failure).
+	agentSupportLevelFull    agentSupportLevel = "full"
 	agentSupportLevelMCPOnly agentSupportLevel = "mcp-only"
 )
 
-// mcpOnlySupportLabel is the single user-facing phrase for the mcp-only
-// support level, used verbatim in the discovery listing, onboarding output,
-// and the batch summary so the three surfaces never disagree.
-const mcpOnlySupportLabel = "MCP-governed (model routing unavailable for this agent type)"
-
-const fullSupportLabel = "Full (MCP firewall + model routing)"
-
-// supportLevelForAgent maps an agent to its support level. OpenClaw is not in
-// supportsManagedGateway (it uses its own multi-model binding sync) but its
-// model traffic is fully routable, so it counts as full.
 func supportLevelForAgent(agent AgentConfig) agentSupportLevel {
-	if supportsManagedGateway(agent) || isOpenClawAgent(agent) {
+	if capabilitiesForAgent(agent).ModelRoute == controlSupported {
 		return agentSupportLevelFull
 	}
 	return agentSupportLevelMCPOnly
-}
-
-// agentSupportListingLabel renders the support level for the discovery
-// listing.
-func agentSupportListingLabel(agent AgentConfig) string {
-	if supportLevelForAgent(agent) == agentSupportLevelFull {
-		return fullSupportLabel
-	}
-	return mcpOnlySupportLabel
 }
 
 // isOpenClawAgent reports whether the agent is OpenClaw.
@@ -354,7 +328,7 @@ func successSummaryReason(agent AgentConfig) string {
 		return "not logged in — log the agent in, then re-run live validation"
 	}
 	if supportLevelForAgent(agent) == agentSupportLevelMCPOnly {
-		return mcpOnlySupportLabel
+		return mcpOnlySupportLabel + "; onboarding completed; application behavior unverified; only calls routed through the managed MCP entry reach Preloop"
 	}
-	return ""
+	return "onboarding completed; application behavior unverified"
 }

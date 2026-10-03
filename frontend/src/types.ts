@@ -920,6 +920,7 @@ export interface RuntimeSessionActivityItem {
     | 'session_ended'
     | 'agent_control_message'
     | 'browser_step'
+    | 'artifact'
     | string;
   timestamp: string;
   title: string;
@@ -980,6 +981,60 @@ export interface BrowserStepMetadata {
   reasoning?: string | null;
   extra?: Record<string, unknown> | null;
   screenshot?: BrowserStepScreenshotRef | null;
+}
+
+/**
+ * `metadata.artifact` of an `artifact` activity item, written by the deposit
+ * API (#1080) when the artifact is stored.
+ */
+export interface ArtifactRowMetadata {
+  id: string;
+  kind: string;
+  name?: string | null;
+  content_type?: string | null;
+  size_bytes?: number | null;
+  labels?: Record<string, unknown> | null;
+  producer?: string | null;
+}
+
+/**
+ * MCP `ResourceLink` (spec 2026-07-28) pointing at the artifact byte route.
+ * Preloop fields with no MCP slot travel in `_meta["preloop.dev/artifact"]`.
+ */
+export interface McpResourceLink {
+  type: 'resource_link';
+  uri: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  _meta?: Record<string, unknown>;
+}
+
+/** One item of `GET /runtime-sessions/{id}/artifacts`. */
+export interface RuntimeSessionArtifactDescriptor {
+  id: string;
+  runtime_session_id: string;
+  activity_id?: string | null;
+  kind: string;
+  name?: string | null;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  labels: Record<string, unknown>;
+  producer?: string | null;
+  agent_id?: string | null;
+  tool_name?: string | null;
+  parent_artifact_id?: string | null;
+  text_status?: string | null;
+  availability: SessionArtifactAvailability | string;
+  legal_hold: boolean;
+  created_at: string;
+  content_block: McpResourceLink;
+}
+
+export interface RuntimeSessionArtifactListResponse {
+  items: RuntimeSessionArtifactDescriptor[];
+  next_cursor?: string | null;
 }
 
 export interface RuntimeSessionActivityListResponse {

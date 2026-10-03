@@ -1,0 +1,71 @@
+# AKS reference overlay, Medium tier. See docs/operations/sizing-aks.md.
+# Layer it on top of the chart defaults:
+#   helm install preloop ./helm/preloop -f helm/preloop/values-aks-medium.yaml
+#
+# Not load tested. Replica counts and pool sizes come from the production
+# shape recorded in values.yaml (the database.pool comment); anything beyond
+# it is marked as an estimate in the sizing page. Placeholders only: create
+# the Secrets named below yourself and never commit real credentials.
+
+# Drives the console and monitor replicas (the scheduler is always 1).
+replicaCount: 1
+
+# Read jwt-secret from an existing Secret instead of values.
+existingSecret: preloop-app
+
+api:
+  replicaCount: 2
+
+gateway:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: 90
+
+# The API/worker HPA stays off: fixed replicas keep the database connection
+# budget in the sizing page exact.
+autoscaling:
+  enabled: false
+
+worker:
+  pools:
+    - name: default
+      replicaCount: 3
+      tasks: ""
+      excludeTasks: "execute_flow,resume_flow_execution"
+    - name: flow-execution
+      replicaCount: 3
+      tasks: "execute_flow,resume_flow_execution"
+
+flowExecution:
+  workerEnabled: true
+
+# Azure Database for PostgreSQL Flexible Server, General Purpose D4ds_v5,
+# with "vector" added to azure.extensions before the first install.
+database:
+  enabled: true
+  external: true
+  urlFromSecret:
+    name: preloop-db
+    key: database-url
+  externalDatabase:
+    host: preloop-example.postgres.database.azure.com
+    port: 5432
+    database: preloop
+    sslMode: require
+
+# NATS JetStream in-cluster (Azure has no managed NATS service). File store
+# on a Premium SSD managed disk; 10Gi is the NATS chart's default PVC size.
+nats:
+  enabled: true
+  config:
+    jetstream:
+      enabled: true
+      fileStore:
+        enabled: true
+        pvc:
+          enabled: true
+          size: 10Gi
+          storageClassName: managed-csi-premium

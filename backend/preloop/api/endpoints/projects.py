@@ -63,8 +63,8 @@ def _get_organization_in_account(
     """Return the organization only if its tracker belongs to ``account_id``.
 
     Organizations carry no account column; ownership is their tracker's
-    account. ``crud_organization.get`` ignores ``account_id`` for that reason,
-    so callers that act on an organization must scope it here.
+    account. Unlike ``crud_organization.get``, a malformed id returns None
+    instead of reaching the database.
     """
     try:
         org_uuid = uuid.UUID(str(organization_id))

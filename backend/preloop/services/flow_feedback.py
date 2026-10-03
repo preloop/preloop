@@ -197,6 +197,36 @@ def sessionless_retry(execution: models.FlowExecution) -> bool:
     )
 
 
+# Backoff after a repair that never reached an agent: base * 4**n seconds,
+# capped. One review must produce one resume, not one per reconciliation.
+LAUNCH_RETRY_BASE_SECONDS = 60
+LAUNCH_RETRY_MAX_SECONDS = 6 * 3600
+
+
+def launch_never_started(execution: models.FlowExecution) -> bool:
+    """True when a failed repair ended before any agent work happened.
+
+    A refused resume (``resume_failed: ...``) or a launch error fails during
+    initialization: no session, no runtime reference and no tokens. A run
+    that reached the model (an OOM 25 minutes in) spent real work and keeps
+    its turn.
+    """
+    return (
+        sessionless_retry(execution)
+        and not execution.agent_session_reference
+        and not (execution.total_tokens or 0)
+    )
+
+
+def launch_retry_delay(policy: dict[str, Any] | None, failures: int) -> int:
+    """Seconds to wait before re-dispatching after ``failures`` launch failures."""
+    base = max(
+        int((policy or {}).get("debounce_seconds", 30) or 0),
+        LAUNCH_RETRY_BASE_SECONDS,
+    )
+    return int(min(LAUNCH_RETRY_MAX_SECONDS, base * 4 ** max(failures, 1)))
+
+
 def resolve_native_checkpoint(
     db: Session,
     *,
@@ -516,8 +546,13 @@ async def _reconcile(
     if not crud_flow_feedback.finish_active(db, thread):
         crud_flow_feedback.update(db, thread_id, token, changes={}, now=now)
         return
+    launch_failed = False
     if completed_repair:
         finished = crud_flow_execution.get(db, id=thread.latest_execution_id)
+        launch_failed = finished is not None and launch_never_started(finished)
+        if launch_failed:
+            # No model work was spent, so the turn is given back.
+            thread.turns = max(0, thread.turns - 1)
         # The agent never ran, so an unchanged head is not a failed repair.
         if finished is None or not sessionless_retry(finished):
             thread.no_progress = (
@@ -588,6 +623,17 @@ async def _reconcile(
         cursor.pop("ci_wait_started", None)
         cursor.pop("feedback_ready_at", None)
         cursor.pop("ci_infra_attempts", None)
+    if launch_failed:
+        # The repair never reached an agent (resume refused, launch error).
+        # Its turn was given back above; the next attempt waits out a growing
+        # backoff instead of re-dispatching the same review every tick.
+        failures = int(cursor.get("launch_failures", 0)) + 1
+        cursor["launch_failures"] = failures
+        cursor["feedback_ready_at"] = (
+            now + timedelta(seconds=launch_retry_delay(thread.policy, failures))
+        ).isoformat()
+    elif completed_execution:
+        cursor.pop("launch_failures", None)
     if state.infra_failures:
         # Counted per head: a new head starts a fresh infrastructure allowance.
         cursor["ci_infra_attempts"] = int(cursor.get("ci_infra_attempts", 0)) + 1
@@ -603,7 +649,14 @@ async def _reconcile(
             ).isoformat(),
         )
         if now < datetime.fromisoformat(ready_at):
-            outcome, reason = "waiting", "feedback_debounce"
+            outcome, reason = (
+                "waiting",
+                (
+                    "resume_launch_retry"
+                    if cursor.get("launch_failures")
+                    else "feedback_debounce"
+                ),
+            )
     if state.checks_pending:
         if cursor.get("head_sha") != state.head_sha or "ci_wait_started" not in cursor:
             cursor["ci_wait_started"] = now.isoformat()

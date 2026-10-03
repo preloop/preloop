@@ -17,6 +17,7 @@ from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
     EVENT_AGENT_NOTE_DELIVERED,
     EVENT_AGENT_NOTE_SENT,
+    EVENT_AGENT_ONBOARDED,
     EVENT_APPROVAL_CREATED,
     EVENT_APPROVAL_DECIDED,
     EVENT_BUDGET_EXCEEDED,
@@ -659,3 +660,121 @@ def _discovered_at(candidate: Mapping[str, Any]) -> Optional[datetime]:
     from preloop.cra.reporting import parse_timestamp
 
     return parse_timestamp(candidate.get("discovered_at"))
+
+
+# --- agent onboarding ------------------------------------------------------
+
+# How an onboarding relates to agents Preloop already governed. Closed set so
+# a receiver can branch on it.
+ONBOARDED_CREATED = "created"
+ONBOARDED_RELINKED = "relinked"
+ONBOARDED_MERGED = "merged"
+
+# ``enrolled_via`` of an agent an operator registered by hand. Everything
+# else was found on a workstation by discovery or a runtime session.
+_CUSTOM_ENROLLED_VIA = "operator_registration"
+
+
+def _aware(value: Optional[datetime]) -> Optional[datetime]:
+    """Treat naive timestamps as UTC so stored values compare safely."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def agent_onboarded_outcome(
+    *,
+    prior_onboarding_at: Optional[datetime],
+    latest_merge_at: Optional[datetime],
+) -> str:
+    """Classify an onboarding as created, relinked or merged.
+
+    Args:
+        prior_onboarding_at: When another enrollment of the agent was last
+            validated, or ``None`` if this is its first.
+        latest_merge_at: When a duplicate was last merged into the agent, or
+            ``None`` if none was.
+
+    Returns:
+        ``merged`` when a duplicate was merged in since the agent was last
+        onboarded, ``relinked`` when the agent was onboarded before,
+        ``created`` otherwise.
+    """
+    prior = _aware(prior_onboarding_at)
+    merged = _aware(latest_merge_at)
+    if merged is not None and (prior is None or merged > prior):
+        return ONBOARDED_MERGED
+    if prior is not None:
+        return ONBOARDED_RELINKED
+    return ONBOARDED_CREATED
+
+
+def agent_onboarded_data(
+    agent: Any,
+    enrollment: Any,
+    *,
+    outcome: str,
+    actor_user_id: Any,
+    gateway_routed: bool,
+    mcp_rewritten: bool,
+) -> dict[str, Any]:
+    """Body of ``agent.onboarded``.
+
+    Identity and posture only. Hostnames, OS user names, config paths, MCP
+    server URLs and credentials stay out: a receiver learns that a governed
+    agent appeared, not where it lives.
+    """
+    servers = getattr(agent, "managed_mcp_servers", None)
+    return {
+        "agent_id": _str(getattr(agent, "id", None)),
+        "agent_name": getattr(agent, "display_name", None),
+        "agent_kind": getattr(agent, "agent_kind", None),
+        "source_type": (
+            "custom"
+            if getattr(agent, "enrolled_via", None) == _CUSTOM_ENROLLED_VIA
+            else "discovered"
+        ),
+        "outcome": outcome,
+        "enrollment_id": _str(getattr(enrollment, "id", None)),
+        "owner_user_id": _str(getattr(agent, "owner_user_id", None)),
+        "actor_user_id": _str(actor_user_id),
+        "gateway_routed": bool(gateway_routed),
+        "mcp_rewritten": bool(mcp_rewritten),
+        "mcp_server_count": len(servers) if isinstance(servers, list) else 0,
+    }
+
+
+def emit_agent_onboarded(
+    db: Any,
+    agent: Any,
+    enrollment: Any,
+    *,
+    outcome: str,
+    actor_user_id: Any,
+    gateway_routed: bool,
+    mcp_rewritten: bool,
+) -> None:
+    """Enqueue ``agent.onboarded`` in the caller's transaction.
+
+    Keyed on the enrollment alone, so a re-validation of the same enrollment
+    collapses into the delivery that already exists.
+    """
+    enrollment_id = getattr(enrollment, "id", None)
+    if enrollment_id is None:
+        return
+    outbox.enqueue_event(
+        db,
+        account_id=getattr(agent, "account_id", None),
+        event_type=EVENT_AGENT_ONBOARDED,
+        data=agent_onboarded_data(
+            agent,
+            enrollment,
+            outcome=outcome,
+            actor_user_id=actor_user_id,
+            gateway_routed=gateway_routed,
+            mcp_rewritten=mcp_rewritten,
+        ),
+        occurred_at=getattr(enrollment, "last_validated_at", None),
+        natural_key=f"{EVENT_AGENT_ONBOARDED}:{enrollment_id}",
+        subject_id=getattr(agent, "id", None),
+    )
