@@ -9470,9 +9470,7 @@ class OpenAIGatewayService:
                 str(self.auth_context.api_key.id) if self.auth_context.api_key else None
             ),
             # Known from authentication: spares a lookup for the user budget.
-            api_key_user_id=(
-                self.auth_context.api_key.user_id if self.auth_context.api_key else None
-            ),
+            api_key_user_id=getattr(self.auth_context.api_key, "user_id", None),
             auth_subject_type=(
                 "api_key"
                 if self.auth_context.api_key
