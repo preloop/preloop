@@ -77,7 +77,15 @@ class _Shape:
             for d in docs
             if d["kind"] == "HorizontalPodAutoscaler"
         }
-        self.deployments = [d for d in docs if d["kind"] == "Deployment"]
+        # Preloop's own pods only. When the NATS subchart has been fetched
+        # into charts/ (CI's render step does that), nats-box renders too;
+        # the page documents it as outside the totals.
+        self.deployments = [
+            d
+            for d in docs
+            if d["kind"] == "Deployment"
+            and d["metadata"]["labels"].get("app.kubernetes.io/name") == "preloop"
+        ]
         self.kinds = {d["kind"] for d in docs}
         self.docs = docs
 
