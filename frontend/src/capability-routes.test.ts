@@ -82,6 +82,18 @@ describe('capability routes', () => {
     expect(capabilityRoutesFor(caps('multi_account', 'abac_rules'))).to.eql([]);
   });
 
+  it('gates chat separately from hierarchy routes', () => {
+    expect(
+      capabilityRoutesFor(caps('chat_connections')).map((r) => r.path)
+    ).to.eql(['settings/chat']);
+    expect(
+      capabilityRoutesFor(caps('account_hierarchy')).some(
+        (r) => r.path === 'settings/chat'
+      )
+    ).to.equal(false);
+    expect(isCapabilityPath('/console/settings/chat')).to.equal(true);
+  });
+
   it('recognises gated paths for deep links', () => {
     expect(isCapabilityPath('/console/settings/subaccounts')).to.equal(true);
     expect(isCapabilityPath('/console/shared/ai_model/m-1')).to.equal(true);

@@ -45,6 +45,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "chat_connections": True,
                 "policies_console": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
@@ -79,6 +80,7 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "chat_connections": True,
                 "policies_console": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
@@ -115,8 +117,9 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 14
+        assert len(result["features"]) == 15
         assert result["features"]["session_optimization"] is True
+        assert result["features"]["chat_connections"] is True
 
     @patch("preloop.api.auth.bootstrap.crud_user")
     @patch("preloop.api.endpoints.features.get_plugin_manager")

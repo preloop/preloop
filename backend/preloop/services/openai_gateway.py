@@ -3786,6 +3786,24 @@ class OpenAIGatewayService:
                     default_gateway_model = ai_model
 
         if requested_model:
+            # Explicit registry IDs avoid alias collisions for first-party
+            # clients selecting the current account default. The authorization
+            # ceiling and gateway-enabled check are identical to alias routing.
+            for ai_model, _alias in gateway_enabled_models:
+                if str(ai_model.id) == str(requested_model):
+                    return ai_model
+            if any(
+                str(model.id) == str(requested_model)
+                for model, _ in unauthorized_gateway_models
+            ):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=403,
+                    message="Requested model is not authorized",
+                    code="model_not_authorized",
+                )
+
+        if requested_model:
             # Resolution must be deterministic: the resolved row decides which
             # ai_model_id the request is billed and priced against. Two rules,
             # in order:

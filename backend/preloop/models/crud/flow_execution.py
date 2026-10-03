@@ -350,6 +350,54 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         return {candidates[row[0]] for row in rows}
 
+    def reserve_employee_event(
+        self,
+        db: Session,
+        *,
+        flow_id: uuid.UUID,
+        account_id: str,
+        event: Dict[str, Any],
+        delivery_key: str,
+    ) -> tuple[models.FlowExecution, bool]:
+        """Atomically reserve one account-owned event, including concurrent replay."""
+        from sqlalchemy.exc import IntegrityError
+        from preloop.services.webhook_delivery_dedupe import is_delivery_key_conflict
+
+        def existing() -> Optional[models.FlowExecution]:
+            return (
+                db.query(models.FlowExecution)
+                .join(models.Flow)
+                .filter(
+                    models.FlowExecution.flow_id == flow_id,
+                    models.Flow.account_id == uuid.UUID(account_id),
+                    models.FlowExecution.webhook_delivery_key == delivery_key,
+                )
+                .first()
+            )
+
+        previous = existing()
+        if previous is not None:
+            return previous, True
+        row = models.FlowExecution(
+            flow_id=flow_id,
+            status="PENDING",
+            trigger_event_details=event,
+            webhook_delivery_key=delivery_key,
+        )
+        db.add(row)
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if not is_delivery_key_conflict(exc):
+                raise
+            winner = existing()
+            if winner is None:
+                raise
+            return winner, True
+        db.refresh(row)
+        return row, False
+
     def create(self, db: Session, obj_in: FlowExecutionCreate) -> FlowExecution:
         """Create a new flow execution (synchronous)."""
         db_obj = FlowExecution(**obj_in.model_dump())

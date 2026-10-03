@@ -2447,6 +2447,15 @@ def update_flow(
     # with webhook_config=None: the console never shows a webhook URL and
     # the flow is untriggerable. Mirror the create-path behavior here.
     existing_secret = (flow.webhook_config or {}).get("webhook_secret")
+    if (
+        flow_in.webhook_config is not None
+        and "employee_secret" not in flow_in.webhook_config.model_fields_set
+    ):
+        flow_in.webhook_config = flow_in.webhook_config.model_copy(
+            update={
+                "employee_secret": (flow.webhook_config or {}).get("employee_secret")
+            }
+        )
     if flow_in.webhook_config is not None and not flow_in.webhook_config.webhook_secret:
         # A client updating another webhook_config key (for example
         # supersede_on_update) does not resend the secret: keep it.

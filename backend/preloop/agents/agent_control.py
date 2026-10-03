@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from preloop.agents.base import AgentExecutionResult, AgentExecutor, AgentStatus
 from preloop.agents.errors import AgentStartError
+from preloop.utils.redaction import redact_dict
 from preloop.models.crud import (
     crud_agent_control_command,
     crud_flow_execution,
@@ -303,6 +304,47 @@ class AgentControlExecutor(AgentExecutor):
             dispatch_context,
             timeout_seconds=self._timeout_seconds(),
         )
+        from preloop.services.flow_execution_limits import parse_execution_limits
+
+        limits = parse_execution_limits(self.config).as_dict()
+        if limits:
+            metadata["run_limits"] = {
+                **limits,
+                "max_duration_seconds": self._timeout_seconds(),
+                "max_history_chars": min(
+                    limits.get("max_total_tokens", 32768) * 4, 64000
+                ),
+            }
+        trigger = dispatch_context.get("trigger_event_data")
+        employee = trigger.get("employee") if isinstance(trigger, dict) else None
+        if isinstance(employee, dict):
+            # Intake owns this identity; payload text cannot redirect a task.
+            if str(employee.get("managed_agent_id")) != str(agent.id):
+                raise AgentStartError(
+                    "Employee task belongs to another agent", category="runner_error"
+                )
+            metadata["employee_task_key"] = employee.get("task_key")
+            gateway = {
+                "api_key": dispatch_context.get("model_gateway_token"),
+                "base_url": dispatch_context.get("model_gateway_url"),
+                "model": dispatch_context.get("model_gateway_model_alias"),
+            }
+            if not dispatch_context.get("model_gateway_enabled") or not all(
+                gateway.values()
+            ):
+                raise AgentStartError(
+                    "Employee tasks require an execution-scoped model gateway",
+                    category="runner_error",
+                )
+            from preloop.config import settings
+
+            gateway["api_url"] = settings.preloop_url
+            metadata["gateway"] = gateway
+            metadata["mcp_enabled"] = bool(
+                dispatch_context.get("allowed_mcp_servers")
+                or dispatch_context.get("allowed_mcp_tools")
+            )
+            metadata["run_limits"]["timeout_seconds"] = self._timeout_seconds()
         try:
             dispatched = await dispatch_operator_message(
                 self.db,
@@ -342,7 +384,7 @@ class AgentControlExecutor(AgentExecutor):
                         "input_mode": "text",
                         "session_mode": "new",
                         "start_new_session": True,
-                        "source_metadata": metadata,
+                        "source_metadata": redact_dict(metadata),
                         "local_delivery": dispatched.local_delivery,
                         "published": dispatched.subject is not None,
                         "subject": dispatched.subject,
@@ -544,14 +586,11 @@ class AgentControlExecutor(AgentExecutor):
         return lines
 
     async def stop(self, session_reference: str) -> None:
-        """Interrupt the agent's current session if delivery succeeds.
+        """Interrupt the command-owned session without targeting unrelated work.
 
-        Start opens a plugin-owned session the backend never learns the native
-        id of, so stop does not target a tracking UUID. The interrupt uses
-        ``session_mode=current`` (the agent's current session, which may not
-        be this flow if another turn started). A failed interrupt leaves the
-        command non-terminal so the operator can see the remote session is
-        still live.
+        Native runtime IDs come from the persisted command result. While a
+        command is still running, the runtime resolves target_command_id to
+        its owned task. Failure leaves the command visibly non-terminal.
         """
         record = self._load_command(session_reference)
         binding = self._binding(session_reference)
@@ -586,6 +625,7 @@ class AgentControlExecutor(AgentExecutor):
                     text="Stop this flow execution.",
                     metadata={
                         "source": "flow_execution",
+                        "target_command_id": getattr(record, "command_id", None),
                         "flow_execution_id": str(
                             getattr(self.execution, "id", "")
                             or binding.get("command_id")
@@ -596,7 +636,24 @@ class AgentControlExecutor(AgentExecutor):
                     target_session_id=None,
                     source="flow_execution",
                     interrupt=True,
-                    session_mode="current",
+                    session_mode="existing",
+                    session_identity={
+                        "session_reference": (
+                            (
+                                crud_agent_control_command.command_result_payload(
+                                    record
+                                )
+                                or {}
+                            ).get("native_session_id")
+                            or (
+                                crud_agent_control_command.command_result_payload(
+                                    record
+                                )
+                                or {}
+                            ).get("session_id")
+                            or ""
+                        ),
+                    },
                     require_delivery=True,
                 )
                 interrupted = True

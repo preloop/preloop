@@ -159,6 +159,7 @@ func init() {
 		"",
 		"agent source: claude_code, codex_cli, cursor, or copilot_cli",
 	)
+	agentsPermissionHookCmd.Flags().Bool("require-flow-credential", false, "require execution-scoped flow credentials and fail closed")
 	agentsPermissionHookCmd.Flags().String("hook-event", "", "Codex event: PreToolUse or PermissionRequest (default PermissionRequest)")
 	agentsPermissionHookCmd.Flags().Bool(
 		"fail-open",
@@ -168,6 +169,12 @@ func init() {
 }
 
 func runAgentsPermissionHook(cmd *cobra.Command, args []string) error {
+	requireFlow, _ := cmd.Flags().GetBool("require-flow-credential")
+	if requireFlow {
+		if err := os.Setenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED", "1"); err != nil {
+			return err
+		}
+	}
 	source := normalizePermissionSource(mustFlagString(cmd, "source"))
 	failOpen, _ := cmd.Flags().GetBool("fail-open")
 	if source == "" {
@@ -181,7 +188,7 @@ func runAgentsPermissionHook(cmd *cobra.Command, args []string) error {
 	// Codex refreshes its ChatGPT login on its own. Push a newer local
 	// bundle before deciding. A push error is logged once and does not
 	// change this decision or the sync stamp.
-	if source == permissionSourceCodexCLI {
+	if source == permissionSourceCodexCLI && os.Getenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED") != "1" {
 		maybeSyncCodexOAuthFromPermissionHook()
 	}
 	// The event is needed to route an operator note: Cursor serves all three
@@ -276,6 +283,9 @@ func envTruthy(value string) bool {
 // it returns the configured safe default (deny, or allow when --fail-open),
 // except that local deny remains terminal without a network request.
 func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDecision {
+	if os.Getenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED") == "1" {
+		failOpen = false
+	}
 	// Cursor loads ~/.claude/settings.json PreToolUse hooks as third-party
 	// hooks (Settings → Rules → Include third-party configs). A Claude Code
 	// --approvals install must not gate Cursor Agent; Cursor is governed only
@@ -307,6 +317,9 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 
 	cred, err := resolvePermissionHookCredential(source)
 	if err != nil || strings.TrimSpace(cred.Token) == "" {
+		if os.Getenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED") == "1" {
+			return failureDecision(source, false, "Execution-scoped flow credential is unavailable")
+		}
 		// Re-evaluate with empty cred for Cursor (still honors sandbox/allowlist
 		// from local policy files) before falling back.
 		req, _ = buildPermissionRequest(source, raw, permissionHookCredential{})
@@ -960,6 +973,14 @@ func normalizePermissionSource(source string) string {
 // recently written file wins. For Claude Code, if no per-agent file is found we
 // fall back to the durable token stored in ~/.claude/settings.json.
 func resolvePermissionHookCredential(source string) (permissionHookCredential, error) {
+	if os.Getenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED") == "1" {
+		token, baseURL := strings.TrimSpace(os.Getenv("PRELOOP_FLOW_TOKEN")), strings.TrimSpace(os.Getenv("PRELOOP_FLOW_API_URL"))
+		parsed, err := url.Parse(baseURL)
+		if token == "" || err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return permissionHookCredential{}, fmt.Errorf("execution-scoped flow credential is incomplete")
+		}
+		return permissionHookCredential{BaseURL: baseURL, Token: token, Source: source}, nil
+	}
 	creds, err := loadPermissionHookCredentials(source)
 	if err != nil {
 		return permissionHookCredential{}, err

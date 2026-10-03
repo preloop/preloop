@@ -577,7 +577,8 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         timestamp: Optional[datetime] = None,
         commit: bool = True,
     ) -> RuntimeSessionActivity:
-        """Persist one operator-to-agent control message."""
+        """Persist one operator-to-agent control message with secret-free metadata."""
+        metadata = redact_dict(metadata) if metadata else metadata
         activity_timestamp = timestamp or datetime.now(timezone.utc)
         summary = message[:MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN]
         db_obj = RuntimeSessionActivity(
