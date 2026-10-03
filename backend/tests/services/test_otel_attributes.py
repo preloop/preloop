@@ -10,7 +10,12 @@ from uuid import uuid4
 import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from preloop.services import api_usage_recorder, otel_attributes, otel_export
+from preloop.services import (
+    api_usage_recorder,
+    db_pool_monitor,
+    otel_attributes,
+    otel_export,
+)
 from preloop.services.otel_attributes import (
     ALL_SPAN_ATTRIBUTES,
     EXPERIMENTAL_METRIC_DIMENSIONS,
@@ -45,6 +50,11 @@ class _FakeMeter:
 
     def create_counter(self, name, **_kwargs):
         return _FakeInstrument(self._sink, name)
+
+    def create_observable_gauge(self, name, callbacks=(), **_kwargs):
+        for callback in callbacks:
+            for observation in callback(None):
+                self._sink.append((name, dict(observation.attributes or {})))
 
 
 def _full_usage() -> SimpleNamespace:
@@ -92,11 +102,26 @@ def emitted(monkeypatch):
     return keys, metric_sink
 
 
-def _doc_table_names(section: str) -> set[str]:
+def _doc_table_rows(section: str) -> list[dict[str, str]]:
+    """Parse a markdown table under ``## section`` into rows keyed by header."""
     text = POLICY_DOC.read_text()
     match = re.search(rf"^## {re.escape(section)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
     assert match, f"section {section!r} missing from {POLICY_DOC.name}"
-    return set(re.findall(r"^\| `([^`]+)` \|", match.group(1), re.M))
+    lines = [ln for ln in match.group(1).splitlines() if ln.startswith("|")]
+    header = [c.strip() for c in lines[0].strip("|").split("|")]
+    rows = []
+    for line in lines[2:]:
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        rows.append(dict(zip(header, cells, strict=False)))
+    return rows
+
+
+def _codes(cell: str) -> list[str]:
+    return re.findall(r"`([^`]+)`", cell)
+
+
+def _doc_table_names(section: str) -> set[str]:
+    return {_codes(row[next(iter(row))])[0] for row in _doc_table_rows(section)}
 
 
 def test_stable_and_experimental_do_not_overlap() -> None:
@@ -148,6 +173,51 @@ def test_api_usage_recorder_metric_names_are_registered() -> None:
     names = set(re.findall(r'_emit_metric\(\s*"([^"]+)"', source))
     assert names, "expected _emit_metric calls in api_usage_recorder"
     assert names <= set(STABLE_METRICS) | set(EXPERIMENTAL_METRICS), sorted(names)
+
+
+def test_db_pool_gauges_are_registered(monkeypatch) -> None:
+    sink: list = []
+    monkeypatch.setattr(
+        "opentelemetry.metrics.get_meter", lambda *_a, **_k: _FakeMeter(sink)
+    )
+    monkeypatch.setattr(
+        db_pool_monitor,
+        "collect_pool_stats",
+        lambda: [
+            {"engine": "sync", "checked_out": 1, "overflow_in_use": 0, "ceiling": 5}
+        ],
+    )
+    assert db_pool_monitor.register_otel_pool_gauges() is True
+    assert {name for name, _ in sink} == {
+        "db.client.connections.usage",
+        "db.client.connections.overflow",
+        "db.client.connections.max",
+    }
+    for name, attrs in sink:
+        assert name in EXPERIMENTAL_METRICS or name in STABLE_METRICS, name
+        allowed = {**STABLE_METRIC_DIMENSIONS, **EXPERIMENTAL_METRIC_DIMENSIONS}[name]
+        assert set(attrs) <= set(allowed), (name, sorted(attrs))
+
+
+def test_policy_doc_metric_levels_and_dimensions_match_registry() -> None:
+    rows = _doc_table_rows("Metrics table")
+    documented = {
+        _codes(row["Metric"])[0]: (row["Level"], set(_codes(row["Dimensions"])))
+        for row in rows
+    }
+    expected = {
+        **{n: ("Stable", set(STABLE_METRIC_DIMENSIONS[n])) for n in STABLE_METRICS},
+        **{
+            n: ("Experimental", set(EXPERIMENTAL_METRIC_DIMENSIONS[n]))
+            for n in EXPERIMENTAL_METRICS
+        },
+    }
+    assert documented == expected
+
+
+def test_every_registered_metric_has_dimensions_entry() -> None:
+    assert set(STABLE_METRICS) == set(STABLE_METRIC_DIMENSIONS)
+    assert set(EXPERIMENTAL_METRICS) == set(EXPERIMENTAL_METRIC_DIMENSIONS)
 
 
 def test_policy_doc_tables_match_registry() -> None:

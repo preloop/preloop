@@ -16,7 +16,8 @@ major version. Names in the `preloop.*` namespace listed below are stable,
 plus `http.response.status_code`, which follows the stable OpenTelemetry
 HTTP conventions.
 
-**Experimental.** `gen_ai.*` names follow the upstream
+**Experimental.** `gen_ai.*` names, and the `db.client.connections.*`
+pool gauges (older OpenTelemetry database conventions), follow the upstream
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/),
 which are still in Development upstream. They track upstream changes.
 
@@ -55,7 +56,9 @@ stable, the adopted names move to the stable table.
 ## Metrics
 
 Metric names and their dimension (attribute) sets follow the same rules as
-span attributes. Adding a dimension is allowed at any time; removing or
+span attributes. Metric dimensions in the `preloop.*` namespace (for example
+`preloop.db.engine`) are stable even when the metric itself is
+experimental. Adding a dimension is allowed at any time; removing or
 renaming one goes through the deprecation window.
 
 ## Stable span attributes
@@ -90,3 +93,6 @@ renaming one goes through the deprecation window.
 | `preloop.api_usage.dropped` | Stable | none |
 | `preloop.api_usage.failed` | Stable | none |
 | `gen_ai.client.operation.duration` | Experimental | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model` |
+| `db.client.connections.usage` | Experimental | `preloop.db.engine` |
+| `db.client.connections.overflow` | Experimental | `preloop.db.engine` |
+| `db.client.connections.max` | Experimental | `preloop.db.engine` |

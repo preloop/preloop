@@ -50,6 +50,9 @@ EXPERIMENTAL_METRICS: dict[str, str] = {
     "gen_ai.client.operation.duration": (
         "Duration of a governed model or tool call, in seconds."
     ),
+    "db.client.connections.usage": "Checked-out database connections per engine.",
+    "db.client.connections.overflow": "Overflow database connections in use.",
+    "db.client.connections.max": "Database connection ceiling per engine.",
 }
 
 STABLE_METRIC_DIMENSIONS: dict[str, tuple[str, ...]] = {
@@ -63,6 +66,9 @@ EXPERIMENTAL_METRIC_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "gen_ai.provider.name",
         "gen_ai.request.model",
     ),
+    "db.client.connections.usage": ("preloop.db.engine",),
+    "db.client.connections.overflow": ("preloop.db.engine",),
+    "db.client.connections.max": ("preloop.db.engine",),
 }
 
 ALL_SPAN_ATTRIBUTES = frozenset(STABLE_SPAN_ATTRIBUTES) | frozenset(
