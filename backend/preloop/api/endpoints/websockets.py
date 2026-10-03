@@ -12,6 +12,7 @@ from preloop.api.auth.key_scopes import api_key_allowed_on_channel
 from preloop.services.db_executor import detach_user, run_db_async
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models import models
+from preloop.models.models.user import User
 from preloop.services.activity_tracker import handle_activity
 from preloop.services.session_manager import session_manager
 from preloop.services.websocket_manager import SessionStreamFilter, manager
