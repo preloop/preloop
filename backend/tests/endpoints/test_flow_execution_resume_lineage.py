@@ -109,6 +109,20 @@ async def test_list_and_detail_project_resume_chain(db_session, test_user):
     assert detail_row.resume_totals is not None
     assert detail_row.resume_totals.total_tokens == 1400
     assert detail_row.resume_totals.estimated_cost == pytest.approx(0.14)
+    navigation = detail_row.continuation_navigation
+    assert navigation is not None
+    assert navigation.original_execution_id == publisher.id
+    assert [row.id for row in navigation.follow_ups] == [repair.id]
+
+    publisher_detail = await maybe_await(
+        flows.read_flow_execution(
+            db=db_session, execution_id=publisher.id, current_user=test_user
+        )
+    )
+    publisher_navigation = schemas.FlowExecutionResponse.model_validate(
+        publisher_detail
+    ).continuation_navigation
+    assert publisher_navigation == navigation
 
 
 def test_lightweight_lineage_does_not_load_trigger_payload(
@@ -167,3 +181,45 @@ def test_tree_rows_project_resume_of(db_session, test_user) -> None:
     assert "trigger_event_details" in sa_inspect(rows[0]).unloaded
     node = schemas.ExecutionTreeNode.model_validate(rows[0])
     assert node.resume_of == publisher.id
+
+
+def test_continuation_navigation_is_account_scoped(db_session, test_user) -> None:
+    """An unowned publisher cannot be exposed through a forged resume root."""
+    flow = _create_flow(db_session, test_user)
+    publisher = _execution(db_session, flow, total_tokens=1, estimated_cost=0)
+    rows = crud_flow_execution.get_continuation_navigation(
+        db_session, root_id=publisher.id, account_id=uuid.uuid4()
+    )
+    assert rows == []
+
+
+def test_continuation_navigation_bounds_long_chains(db_session, test_user) -> None:
+    """The detail projection loads at most 100 repairs plus an overflow row."""
+    from preloop.services.flow_continuation_navigation import (
+        project_continuation_navigation,
+    )
+
+    flow = _create_flow(db_session, test_user)
+    publisher = _execution(db_session, flow, total_tokens=1, estimated_cost=0)
+    for _ in range(105):
+        _execution(
+            db_session,
+            flow,
+            total_tokens=1,
+            estimated_cost=0,
+            resume_root=str(publisher.id),
+        )
+    publisher_id = publisher.id
+    db_session.expire_all()
+    rows = crud_flow_execution.get_continuation_navigation(
+        db_session, root_id=publisher_id, account_id=test_user.account_id
+    )
+    assert len(rows) == 102
+    assert rows[0].id == publisher_id
+    assert all("execution_logs" in sa_inspect(row).unloaded for row in rows)
+    project_continuation_navigation(
+        db_session, rows[0], account_id=test_user.account_id
+    )
+    navigation = rows[0].continuation_navigation
+    assert navigation["follow_ups_truncated"] is True
+    assert len(navigation["follow_ups"]) == 100

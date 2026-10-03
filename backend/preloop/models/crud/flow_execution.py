@@ -9,6 +9,7 @@ from sqlalchemy import (
     String,
     and_,
     cast,
+    case,
     func,
     literal_column,
     or_,
@@ -231,6 +232,45 @@ def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]
 
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
+
+    def get_continuation_navigation(
+        self, db: Session, *, root_id: uuid.UUID, account_id: uuid.UUID
+    ) -> List[models.FlowExecution]:
+        """Read the publisher and repairs without loading logs or prompts.
+
+        Ownership is checked on every member, including the publisher.
+        """
+        return (
+            db.query(models.FlowExecution)
+            .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+            .filter(
+                models.Flow.account_id == account_id,
+                or_(
+                    models.FlowExecution.id == root_id,
+                    models.FlowExecution.trigger_event_details["_resume"][
+                        "resume_root"
+                    ].astext
+                    == str(root_id),
+                ),
+            )
+            .options(
+                load_only(
+                    models.FlowExecution.id,
+                    models.FlowExecution.status,
+                    models.FlowExecution.start_time,
+                    models.FlowExecution.trigger_event_details,
+                    models.FlowExecution.result,
+                )
+            )
+            .order_by(
+                case((models.FlowExecution.id == root_id, 0), else_=1),
+                models.FlowExecution.start_time,
+                models.FlowExecution.id,
+            )
+            # Publisher, the first 100 repairs, and one overflow sentinel.
+            .limit(102)
+            .all()
+        )
 
     def __init__(self):
         """Initialize with the FlowExecution model."""
