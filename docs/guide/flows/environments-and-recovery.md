@@ -104,6 +104,15 @@ test suites from a checkout with no network and no install step.
   that the baked venv may lack a new dependency. Rebuild the image to pick
   it up.
 
+The frontend test runner uses one browser session at a time inside flow
+containers, identified by both `FLOW_ID` and `EXECUTION_ID`. This avoids a
+host-CPU-derived default exceeding the container's resource budget. Set
+`PRELOOP_TEST_CONCURRENCY` to a positive integer to override that limit, for
+example `PRELOOP_TEST_CONCURRENCY=2 npm test` from `frontend/`. Invalid overrides
+fail configuration loading. Outside flow containers, an unset override preserves
+the test runner's normal default. Run scoped backend and frontend checks
+sequentially so they do not compete for the same container resources.
+
 `environments/preloop/python-venv-smoke.sh` is the build gate (imports
 only). Given a checkout path it runs a database-backed backend test file
 and a frontend test file offline:
