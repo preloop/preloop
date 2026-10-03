@@ -2133,6 +2133,66 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: agent
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 255
+          - type: 'null'
+          description: Managed agent id or display name; only that agent's sessions
+          title: Agent
+        description: Managed agent id or display name; only that agent's sessions
+      - name: agent_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+          description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+            of managed agents of that kind or recorded from that source
+          title: Agent Kind
+        description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+          of managed agents of that kind or recorded from that source
+      - name: parent_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions this session spawned
+          title: Parent Session Id
+        description: Only sessions this session spawned
+      - name: flow_execution_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions linked to this flow execution
+          title: Flow Execution Id
+        description: Only sessions linked to this flow execution
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1440
+            minimum: 1
+          - type: 'null'
+          description: Only open sessions with activity in the last N minutes
+          title: Active Within Minutes
+        description: Only open sessions with activity in the last N minutes
       responses:
         '200':
           description: Successful Response
@@ -29430,6 +29490,43 @@ components:
           description: 'True while a legal hold freezes this session: the retention
             purge leaves it and its activity alone until the hold is released'
           default: false
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+          description: Managed agent whose runtime principal owns this session
+        managed_agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Name
+          description: Display name of that managed agent
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+          description: Agent kind of that managed agent (claude_code, codex, hermes,
+            ...), or null when the session has no managed agent
+        cwd:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cwd
+          description: Working directory the agent's hook last reported for this session;
+            an observation used for labelling, not a trusted path
+        tool_call_count:
+          type: integer
+          title: Tool Call Count
+          description: Tool calls recorded for this session, or the count its usage
+            hook reported when no tool call was recorded server side
+          default: 0
+        pending_approval_count:
+          type: integer
+          title: Pending Approval Count
+          description: Approval requests for this session still awaiting a decision
+          default: 0
       type: object
       required:
       - id

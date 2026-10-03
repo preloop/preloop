@@ -10,6 +10,7 @@ from uuid import UUID
 
 from fastapi import BackgroundTasks, HTTPException
 import litellm
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,11 @@ from preloop.models.crud import (
     crud_runtime_session_optimization_result,
 )
 from preloop.models.models.account import Account
+from preloop.models.models.api_usage import ApiUsage
+from preloop.models.models.approval_request import ApprovalRequest
+from preloop.models.models.managed_agent import ManagedAgent
+from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
 from preloop.services.analytics_history import (
     AnalyticsHistoryWindow,
     resolve_history_window,
@@ -48,6 +54,11 @@ from preloop.schemas.gateway_usage import (
     RuntimeSessionSummary,
 )
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
+from preloop.utils.agent_kind import (
+    AGENT_KIND_SHAPE_ERROR,
+    is_valid_agent_kind,
+    normalize_agent_kind,
+)
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -121,7 +132,15 @@ class RuntimeSessionExplorerService:
         limit: int = 20,
         offset: int = 0,
         background_tasks: Optional[BackgroundTasks] = None,
+        agent: Optional[str] = None,
+        agent_kind: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
+        flow_execution_id: Optional[str] = None,
+        active_within_minutes: Optional[int] = None,
     ) -> AccountRuntimeSessionListResponse:
+        principals, source_types = self._resolve_agent_filters(
+            account=account, agent=agent, agent_kind=agent_kind
+        )
         history_window = resolve_history_window(self.db, account=account)
         start_date, end_date = self._normalize_period(start_date, end_date)
         start_date, end_date = restrict_history_window(
@@ -142,6 +161,15 @@ class RuntimeSessionExplorerService:
             status=status,
             limit=limit,
             offset=offset,
+            principals=principals,
+            source_types=source_types,
+            parent_session_id=parent_session_id,
+            flow_execution_id=flow_execution_id,
+            active_within=(
+                timedelta(minutes=active_within_minutes)
+                if active_within_minutes is not None
+                else None
+            ),
         )
         raw_items = results["items"]
         self.schedule_missing_session_titles(
@@ -154,6 +182,7 @@ class RuntimeSessionExplorerService:
             account=account, items=items, history_window=history_window
         )
         self._attach_note_badges(account=account, items=items)
+        self._attach_session_labels(account=account, items=items)
         return AccountRuntimeSessionListResponse(
             period_start=start_date,
             period_end=end_date,
@@ -165,6 +194,236 @@ class RuntimeSessionExplorerService:
             offset=offset,
             items=items,
         )
+
+    def _resolve_agent_filters(
+        self,
+        *,
+        account: Account,
+        agent: Optional[str],
+        agent_kind: Optional[str],
+    ) -> tuple[Optional[list[tuple[str, str]]], Optional[list[str]]]:
+        """Turn the agent and kind filters into principal and source filters.
+
+        ``agent`` is a managed agent id or its display name. A name that
+        matches nothing is a 404 and a name shared by several agents is a 409:
+        both are mistakes an operator can fix, and silently answering with an
+        empty or merged list would hide them.
+
+        ``agent_kind`` matches sessions owned by a managed agent of that kind
+        and sessions whose source is that kind (hook-pushed usage keys the
+        session by its source label). ``claude-code`` and ``claude_code`` are
+        the same kind.
+
+        Returns:
+            ``(principals, source_types)`` for the CRUD query, ``None`` for a
+            filter that was not asked for.
+        """
+        agent = (agent or "").strip() or None
+        # The same fold the stored kind went through, so the filter cannot
+        # drift from it: case, spaces, hyphens and underscores are one kind.
+        kind = normalize_agent_kind(agent_kind) or None
+        if kind is not None and not is_valid_agent_kind(kind):
+            raise HTTPException(status_code=422, detail=AGENT_KIND_SHAPE_ERROR)
+        if agent is None and kind is None:
+            return None, None
+
+        agents = self._account_managed_agents(account)
+        if agent is not None:
+            by_id = [row for row in agents if str(row.id).lower() == agent.lower()]
+            matches = by_id or [
+                row
+                for row in agents
+                if (row.display_name or "").strip().lower() == agent.lower()
+            ]
+            if not matches:
+                raise HTTPException(status_code=404, detail="Managed agent not found")
+            if len(matches) > 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{len(matches)} managed agents are named {agent!r}; "
+                        "filter by the agent id instead"
+                    ),
+                )
+            agents = matches
+        if kind is not None:
+            agents = [row for row in agents if row.agent_kind == kind]
+
+        principals = [
+            (row.session_source_type, row.session_source_id) for row in agents
+        ]
+        source_types = None
+        if kind is not None and agent is None:
+            source_types = sorted({kind, kind.replace("_", "-")})
+        return principals, source_types
+
+    def _account_managed_agents(self, account: Account) -> list[Any]:
+        """Identity columns of the account's managed agents, nothing heavier.
+
+        An account has tens of agents, not thousands, so one narrow read is
+        cheaper than a per-row lookup and simpler than a join into the
+        aggregate session query.
+        """
+        return (
+            self.db.query(
+                ManagedAgent.id,
+                ManagedAgent.display_name,
+                ManagedAgent.agent_kind,
+                ManagedAgent.session_source_type,
+                ManagedAgent.session_source_id,
+            )
+            .filter(ManagedAgent.account_id == account.id)
+            .all()
+        )
+
+    def _attach_session_labels(
+        self,
+        *,
+        account: Account,
+        items: list[RuntimeSessionSummary],
+    ) -> None:
+        """Attach agent, cwd, tool call and pending approval fields in place.
+
+        These are what lets a terminal list tell two sessions apart and say
+        which one needs a human (#1148). Each is one batched query for the
+        page, and each is best effort: a list that cannot read one of them is
+        still a list.
+        """
+        if not items:
+            return
+        session_ids = [item.id for item in items]
+        for attach in (
+            self._attach_managed_agents,
+            self._attach_cwds,
+            self._attach_tool_call_counts,
+            self._attach_pending_approval_counts,
+        ):
+            try:
+                attach(account=account, items=items, session_ids=session_ids)
+            except SQLAlchemyError:
+                self.db.rollback()
+                logger.debug(
+                    "Session label lookup %s failed; continuing without it",
+                    attach.__name__,
+                    exc_info=True,
+                )
+
+    def _attach_managed_agents(
+        self,
+        *,
+        account: Account,
+        items: list[RuntimeSessionSummary],
+        session_ids: list[str],
+    ) -> None:
+        """Name the managed agent behind each session's runtime principal."""
+        agents = self._account_managed_agents(account)
+        by_principal = {
+            (row.session_source_type, row.session_source_id): row for row in agents
+        }
+        for item in items:
+            principal_type = item.runtime_principal_type
+            principal_id = item.runtime_principal_id
+            if not principal_type or not principal_id:
+                continue
+            row = by_principal.get((principal_type, principal_id))
+            if row is None and ":" in principal_id:
+                # Per-run sessions key off ``<base>:<run-id>``.
+                row = by_principal.get((principal_type, principal_id.split(":", 1)[0]))
+            if row is None:
+                continue
+            item.managed_agent_id = str(row.id)
+            item.managed_agent_name = row.display_name
+            item.agent_kind = row.agent_kind
+
+    def _attach_cwds(
+        self,
+        *,
+        account: Account,
+        items: list[RuntimeSessionSummary],
+        session_ids: list[str],
+    ) -> None:
+        """Copy the hook-reported working directory onto each row."""
+        rows = (
+            self.db.query(RuntimeSession.id, RuntimeSession.cwd)
+            .filter(
+                RuntimeSession.account_id == account.id,
+                RuntimeSession.id.in_(session_ids),
+                RuntimeSession.cwd.isnot(None),
+            )
+            .all()
+        )
+        cwd_by_session = {str(row.id): row.cwd for row in rows}
+        for item in items:
+            item.cwd = cwd_by_session.get(item.id)
+
+    def _attach_tool_call_counts(
+        self,
+        *,
+        account: Account,
+        items: list[RuntimeSessionSummary],
+        session_ids: list[str],
+    ) -> None:
+        """Count recorded tool calls, falling back to the hook-reported count.
+
+        Tool calls Preloop saw itself (MCP, governed native calls) are
+        ``tool_call`` activities. A harness that only pushes usage reports a
+        running conversation count instead, so its largest value is used when
+        nothing was recorded server side. The two are never added: the pushed
+        count already includes every call the harness made.
+        """
+        recorded = dict(
+            self.db.query(
+                RuntimeSessionActivity.runtime_session_id,
+                func.count(RuntimeSessionActivity.id),
+            )
+            .filter(
+                RuntimeSessionActivity.account_id == account.id,
+                RuntimeSessionActivity.runtime_session_id.in_(session_ids),
+                RuntimeSessionActivity.activity_type == "tool_call",
+            )
+            .group_by(RuntimeSessionActivity.runtime_session_id)
+            .all()
+        )
+        reported = dict(
+            self.db.query(
+                ApiUsage.runtime_session_id, func.max(ApiUsage.tool_call_count)
+            )
+            .filter(
+                ApiUsage.account_id == account.id,
+                ApiUsage.runtime_session_id.in_(session_ids),
+                ApiUsage.tool_call_count.isnot(None),
+            )
+            .group_by(ApiUsage.runtime_session_id)
+            .all()
+        )
+        recorded = {str(key): int(value or 0) for key, value in recorded.items()}
+        reported = {str(key): int(value or 0) for key, value in reported.items()}
+        for item in items:
+            item.tool_call_count = recorded.get(item.id) or reported.get(item.id) or 0
+
+    def _attach_pending_approval_counts(
+        self,
+        *,
+        account: Account,
+        items: list[RuntimeSessionSummary],
+        session_ids: list[str],
+    ) -> None:
+        """Count the approval requests on each session still waiting for a human."""
+        rows = (
+            self.db.query(
+                ApprovalRequest.runtime_session_id, func.count(ApprovalRequest.id)
+            )
+            .filter(
+                ApprovalRequest.account_id == account.id,
+                ApprovalRequest.runtime_session_id.in_(session_ids),
+                ApprovalRequest.status == "pending",
+            )
+            .group_by(ApprovalRequest.runtime_session_id)
+            .all()
+        )
+        pending = {str(key): int(value or 0) for key, value in rows}
+        for item in items:
+            item.pending_approval_count = pending.get(item.id, 0)
 
     def _attach_note_badges(
         self,

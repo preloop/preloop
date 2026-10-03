@@ -34,8 +34,9 @@ async def test_endpoint_forwards_pre_tool_phase(
         runtime_session_id=None,
         managed_agent_name="Synthetic Codex agent",
     )
+    # identity, the agent's open session (none), the note claim (none).
     monkeypatch.setattr(
-        endpoint, "run_db_off_loop", AsyncMock(side_effect=[identity, None])
+        endpoint, "run_db_off_loop", AsyncMock(side_effect=[identity, None, None])
     )
     monkeypatch.setattr(
         endpoint, "_permission_check_base_url", lambda: "https://example.com"
