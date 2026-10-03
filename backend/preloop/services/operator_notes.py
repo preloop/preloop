@@ -487,6 +487,13 @@ def claim_pending_notes(
         claimed.append(note)
     if claimed:
         db.commit()
+        _emit_delivered_notes(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            notes=claimed,
+            delivered_at=moment,
+            channel=channel,
+        )
         _index_claimed_notes(
             db,
             account_id=account_id,
@@ -496,6 +503,63 @@ def claim_pending_notes(
             channel=channel,
         )
     return claimed
+
+
+#: Longest note text carried on a live delivery event; the timeline row has
+#: the whole body.
+MAX_LIVE_NOTE_CHARS = 500
+
+
+def _emit_delivered_notes(
+    *,
+    account_id: str,
+    runtime_session_id: Optional[str],
+    notes: List[Any],
+    delivered_at: datetime,
+    channel: str,
+) -> None:
+    """Tell anyone watching the session that a note reached the agent (#1149).
+
+    The delivery is already a timeline row (``agent_control_message``); this
+    is the same fact on the live stream, as the ``runtime_session_updated``
+    event other session activity uses, carrying the timeline row's fields.
+    Sent after the commit, so a watcher never sees a delivery that rolled
+    back. Never raises.
+    """
+    if not runtime_session_id:
+        return
+    try:
+        from preloop.services.account_realtime import (
+            ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+            build_account_event,
+            emit_account_event,
+        )
+
+        for note in notes:
+            emit_account_event(
+                build_account_event(
+                    account_id=str(account_id),
+                    topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+                    event_type="runtime_session_updated",
+                    payload={
+                        "runtime_session_id": str(runtime_session_id),
+                        "last_activity_at": delivered_at.isoformat(),
+                        "activity_type": "agent_control_message",
+                        "status": "delivered",
+                        "summary": (note.body or "")[:MAX_LIVE_NOTE_CHARS],
+                        "metadata": {
+                            "kind": "operator_note",
+                            "note_id": note.command_id,
+                            "delivery_channel": channel,
+                            "author_display": note.author_display,
+                            "author_auth_method": note.author_auth_method,
+                        },
+                    },
+                    runtime_session_id=str(runtime_session_id),
+                )
+            )
+    except Exception:  # pragma: no cover - live delivery is best effort
+        logger.debug("Live note delivery event failed", exc_info=True)
 
 
 def _index_claimed_notes(

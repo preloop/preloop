@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   H5, which may now add buckets in the request's own account. The Cost page
   gains a Teams tab and team names on budget rows, shown only when the server
   advertises `team_budgets` and `team_management` (#1174).
+- **OTLP attribute stability policy.** `docs/guide/otlp-attribute-stability.md`
+  lists the stable `preloop.*` span attributes and metrics, the experimental
+  `gen_ai.*` names, and the deprecation window for renames (CHANGELOG
+  "Telemetry" entry, then both names emitted for at least two minor releases
+  or 60 days). A unit test keeps the exporter, the registry and the docs in
+  sync.
 
 - **Subscription reconnect without re-onboarding.** `preloop agents reconnect
   "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
