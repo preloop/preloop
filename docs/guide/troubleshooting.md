@@ -68,12 +68,12 @@ Windows limitations, see [Windows (WSL2)](../operations/windows-wsl2.md).
 
 ### Agent has an "unverified" badge in the console
 
-Onboarding fires one live validation prompt through the agent to prove model traffic actually flows through the gateway. Two outcomes leave the agent enrolled but unverified:
+Onboarding sends a direct gateway route/accounting probe using managed configuration. It does not launch the application or prove that application traffic uses the gateway. Two outcomes leave the agent enrolled without successful probe evidence:
 
 - **Live check throttled**: the provider rate-limited the verification call.
-- **Upstream refused**: the credential authenticated and reached the provider, but the provider rejected the call (billing/quota). This proves the plumbing works, so it is not treated as a failure.
+- **Upstream refused**: the credential authenticated and reached the provider, but the provider rejected the call (billing/quota). This is inconclusive gateway evidence, so the configured route is retained.
 
-Both resolve the same way:
+Retry the direct probe with the same command in either case. Even a successful probe leaves application behavior unverified:
 
 ```bash
 preloop agents validate <agent> --live

@@ -65,7 +65,7 @@ func printLiveValidationRoundTripResult(
 	if outcome != nil && outcome.Passed {
 		fmt.Fprintf(
 			w,
-			" ✓ round-trip OK, model=%s, latency=%.1fs\n",
+			" ✓ direct gateway route/accounting probe passed, model=%s, latency=%.1fs; application behavior unverified\n",
 			alias,
 			seconds,
 		) //nolint:errcheck
@@ -89,7 +89,7 @@ func printLiveValidationRoundTripResult(
 	}
 	fmt.Fprintln(w, "") //nolint:errcheck
 	fmt.Fprintln(w, formatCLIError(fmt.Sprintf(
-		"✗ round-trip FAILED, model=%s, latency=%.1fs: %s",
+		"✗ direct gateway route/accounting probe FAILED, model=%s, latency=%.1fs: %s",
 		alias,
 		seconds,
 		detail,
@@ -110,7 +110,7 @@ func formatDeferredLiveValidationRoundTrip(result deferredLiveValidationResult) 
 	seconds := result.Duration.Seconds()
 	if result.Outcome != nil && result.Outcome.Passed {
 		return fmt.Sprintf(
-			"  ✓ %s: round-trip OK, model=%s, latency=%.1fs\n",
+			"  ✓ %s: direct gateway route/accounting probe passed, model=%s, latency=%.1fs; application behavior unverified\n",
 			name,
 			alias,
 			seconds,
@@ -121,7 +121,7 @@ func formatDeferredLiveValidationRoundTrip(result deferredLiveValidationResult) 
 		detail = firstErrorLine(result.Err)
 	}
 	line := fmt.Sprintf(
-		"  ✗ %s: round-trip FAILED, model=%s, latency=%.1fs: %s\n",
+		"  ✗ %s: direct gateway route/accounting probe FAILED, model=%s, latency=%.1fs: %s\n",
 		name,
 		alias,
 		seconds,
