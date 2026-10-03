@@ -250,6 +250,7 @@ preloop agents discover                 # Interactive discovery; can prompt to o
 preloop agents discover --json          # Emit discovery results as JSON
 preloop agents discover --no-onboard-prompt
 preloop agents discover --yes           # Auto-onboard newly discovered agents
+preloop agents discover --report        # Opt in: report salted hashes to Preloop (or PRELOOP_DISCOVERY_REPORT=1)
 preloop agents enroll openclaw        # Apply managed enrollment for OpenClaw
 preloop agents enroll openclaw --dry-run
 preloop agents enroll openclaw --yes   # Skip the confirmation prompt

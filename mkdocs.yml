@@ -184,6 +184,7 @@ nav:
       - Evidence storage: guide/flows/evidence-storage.md
       - "DORA: the AI-agent slice": guide/dora-agent-slice.md
       - Outbound webhooks: guide/webhooks.md
+      - Agent discovery reporting: guide/agent-discovery-reporting.md
 
   - Cost:
       - Cost analytics and budgets: guide/concepts/cost-analytics.md

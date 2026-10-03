@@ -9,7 +9,12 @@ artifact capabilities). None of those go through the generic REST
 dependency, so on that dependency an MCP-only key is denied unless the route
 is on :data:`MCP_ONLY_KEY_ALLOWED_PATH_PREFIXES`.
 
-Keys without scopes (personal API keys) and keys with any non-MCP scope keep
+A device-scoped key is the same idea for opt-in discovery reporting: a key
+whose only scope is ``report_discovery`` may reach the discovery salt and
+report routes and nothing else, so an MDM job holding it cannot read or
+change the account.
+
+Keys without scopes (personal API keys) and keys with any other scope keep
 their previous behaviour.
 """
 
@@ -34,6 +39,32 @@ API_KEY_SCOPE_DENIED = "api_key_scope_denied"
 #: dependency. The MCP transport under ``/mcp/`` authenticates itself today;
 #: the prefix is listed so a FastAPI route added under it stays reachable.
 MCP_ONLY_KEY_ALLOWED_PATH_PREFIXES: tuple[str, ...] = ("/mcp/",)
+
+#: Scope (and RBAC permission name) for opt-in discovery reporting.
+DISCOVERY_REPORT_SCOPE = "report_discovery"
+
+#: Exact REST paths a device-scoped (``report_discovery`` only) key may call.
+DEVICE_KEY_ALLOWED_PATHS: frozenset[str] = frozenset(
+    {
+        "/api/v1/agents/discovery-salt",
+        "/api/v1/agents/discovery-reports",
+    }
+)
+
+
+def is_device_scoped_api_key(api_key: Any) -> bool:
+    """Return True when the key's scopes are exactly the discovery scope.
+
+    Args:
+        api_key: API key record (or any object with a ``scopes`` attribute).
+
+    Returns:
+        True for a non-empty scope list made only of ``report_discovery``.
+    """
+    scopes = getattr(api_key, "scopes", None)
+    if not isinstance(scopes, (list, tuple)) or not scopes:
+        return False
+    return all(scope == DISCOVERY_REPORT_SCOPE for scope in scopes)
 
 
 def is_mcp_only_api_key(api_key: Any) -> bool:
@@ -105,6 +136,9 @@ def enforce_api_key_route_scope(api_key: Any, request: Optional[Request]) -> Non
     Raises:
         HTTPException: 403 with ``detail.code`` ``api_key_scope_denied``.
     """
+    if is_device_scoped_api_key(api_key):
+        _enforce_device_key_route(api_key, request)
+        return
     if not is_mcp_only_api_key(api_key):
         # Checked before touching the request, so other keys pay nothing.
         return
@@ -128,6 +162,35 @@ def enforce_api_key_route_scope(api_key: Any, request: Optional[Request]) -> Non
     )
 
 
+def _enforce_device_key_route(api_key: Any, request: Optional[Request]) -> None:
+    """Deny a device-scoped key anywhere but the discovery reporting routes.
+
+    Not subject to the MCP enforcement mode: the device scope is new, so
+    there is no existing integration that audit mode would protect.
+
+    Raises:
+        HTTPException: 403 with ``detail.code`` ``api_key_scope_denied``.
+    """
+    path = request.url.path.rstrip("/") if request is not None else None
+    if path in DEVICE_KEY_ALLOWED_PATHS:
+        return
+    logger.info(
+        "Denied device-scoped API key %s on %s",
+        getattr(api_key, "id", None),
+        path or "a call without request",
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": API_KEY_SCOPE_DENIED,
+            "message": (
+                "This API key is limited to discovery reporting and cannot "
+                "call this endpoint."
+            ),
+        },
+    )
+
+
 def api_key_allowed_on_channel(api_key: Any, channel: str) -> bool:
     """Return whether a key may open a console channel that is not REST.
 
@@ -142,4 +205,6 @@ def api_key_allowed_on_channel(api_key: Any, channel: str) -> bool:
     Returns:
         False when the key must be refused.
     """
+    if is_device_scoped_api_key(api_key):
+        return False
     return not _mode_denies(api_key, channel)
