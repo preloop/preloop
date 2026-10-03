@@ -6,7 +6,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
-from sqlalchemy import and_, case, func, or_, tuple_
+from sqlalchemy import DateTime, and_, case, cast, func, or_, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.utils.agent_kind import normalize_agent_kind
@@ -481,6 +481,37 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         if for_update:
             query = query.with_for_update()
         return query.first()
+
+    def latest_merge_into_at(
+        self, db: Session, *, account_id: str, survivor_id: str
+    ) -> Optional[datetime]:
+        """Return when the most recent duplicate was merged into an agent.
+
+        A merge tags the duplicate with ``merged_into`` and ``merged_at``.
+        ``merged_at`` is the merge time. Duplicates merged before that tag
+        existed fall back to ``lifecycle_updated_at``, which the merge also
+        stamped but a later lifecycle write can move.
+
+        Args:
+            db: Database session.
+            account_id: Account the agents belong to.
+            survivor_id: Agent that absorbed the duplicates.
+
+        Returns:
+            The latest merge time, or ``None`` when nothing was merged in.
+        """
+        merged_at = func.coalesce(
+            cast(self.model.tags["merged_at"].astext, DateTime(timezone=True)),
+            func.timezone("UTC", self.model.lifecycle_updated_at),
+        )
+        return (
+            db.query(func.max(merged_at))
+            .filter(
+                self.model.account_id == account_id,
+                self.model.tags["merged_into"].astext == str(survivor_id),
+            )
+            .scalar()
+        )
 
     def touch_last_seen_for_principal(
         self,

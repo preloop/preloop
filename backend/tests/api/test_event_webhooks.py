@@ -50,6 +50,7 @@ def test_catalogue_lists_the_v1_events_and_the_delivery_contract(client):
     assert response.status_code == 200
     body = response.json()
     assert [item["name"] for item in body["event_types"]] == list(EVENT_TYPES_V1)
+    assert "agent.onboarded" in [item["name"] for item in body["event_types"]]
     assert all(item["description"] for item in body["event_types"])
     assert body["version"] == "1"
     assert body["signature_header"] == "X-Preloop-Signature"

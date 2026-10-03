@@ -1915,7 +1915,12 @@ paths:
       tags:
       - Account
       summary: Validate Account Managed Agent Enrollment
-      description: Persist validation state for one managed-agent enrollment.
+      description: 'Persist validation state for one managed-agent enrollment.
+
+
+        The first time an enrollment reaches ``validated`` the agent counts as
+
+        onboarded and ``agent.onboarded`` is enqueued in the same transaction.'
       operationId: validate_account_managed_agent_enrollment_api_v1_agents__agent_id__enrollments__enrollment_id__validate_post
       security:
       - bearerAuth: []
