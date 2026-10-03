@@ -2133,6 +2133,66 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: agent
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 255
+          - type: 'null'
+          description: Managed agent id or display name; only that agent's sessions
+          title: Agent
+        description: Managed agent id or display name; only that agent's sessions
+      - name: agent_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+          description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+            of managed agents of that kind or recorded from that source
+          title: Agent Kind
+        description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+          of managed agents of that kind or recorded from that source
+      - name: parent_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions this session spawned
+          title: Parent Session Id
+        description: Only sessions this session spawned
+      - name: flow_execution_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions linked to this flow execution
+          title: Flow Execution Id
+        description: Only sessions linked to this flow execution
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1440
+            minimum: 1
+          - type: 'null'
+          description: Only open sessions with activity in the last N minutes
+          title: Active Within Minutes
+        description: Only open sessions with activity in the last N minutes
       responses:
         '200':
           description: Successful Response
@@ -6064,6 +6124,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectResponse'
+        '400':
+          description: The identifier already exists in this organization
+        '404':
+          description: Organization not found in the caller's account
+        '409':
+          description: 'repository_already_registered: the repository is already a
+            project in another organization; move it with POST /api/v1/projects/{project_id}/transfer'
         '422':
           description: Validation Error
           content:
@@ -6319,6 +6386,71 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/projects/{project_id}/transfer:
+    post:
+      tags:
+      - Projects
+      summary: Transfer Project
+      description: 'Rebind a repository project to the organization that now owns
+        it.
+
+
+        A GitHub repository keeps its repository ID when it is transferred to
+
+        another owner or renamed. This keeps the same project row (and so its ID,
+
+        issues, flow triggers, audit and review history) and moves it to the
+
+        destination organization, updating the owner/name that clone and review
+
+        publication use.
+
+
+        Preview by default; send ``dry_run: false`` to apply. Applying again is a
+
+        no-op that returns ``status: unchanged``.
+
+
+        The destination integration must already be able to see the repository
+
+        (checked live with its own credentials) and must include it in scope.
+
+        Repository-level grants on the source integration are not copied; the
+
+        receipt lists them under ``not_carried_over``.'
+      operationId: transfer_project_api_v1_projects__project_id__transfer_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectTransferRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectTransferReceipt'
+        '403':
+          description: Caller lacks manage_trackers
+        '404':
+          description: Project or destination organization not found
+        '409':
+          description: Transfer refused; detail.code says why
+        '422':
+          description: Repository type or host cannot be transferred
+        '502':
+          description: Destination integration could not be queried
   /api/v1/projects/{project_id}/pull-requests:
     get:
       tags:
@@ -26827,6 +26959,67 @@ components:
       - updated_at
       title: ProjectResponse
       description: Response model for project data.
+    ProjectTransferReceipt:
+      properties:
+        project_id:
+          type: string
+          title: Project Id
+        repository_id:
+          type: string
+          title: Repository Id
+        status:
+          type: string
+          title: Status
+          description: '''preview'', ''transferred'' (moved organization), ''updated''
+            (same organization, owner/name refreshed) or ''unchanged'' (already bound)'
+        source:
+          $ref: '#/components/schemas/RepositoryLocation'
+        destination:
+          $ref: '#/components/schemas/RepositoryLocation'
+        changes:
+          items:
+            type: string
+          type: array
+          title: Changes
+        not_carried_over:
+          items:
+            type: string
+          type: array
+          title: Not Carried Over
+          description: Grants and settings that stay with the source and must be re-established
+            deliberately in the destination, if wanted.
+        manual_actions:
+          items:
+            type: string
+          type: array
+          title: Manual Actions
+      type: object
+      required:
+      - project_id
+      - repository_id
+      - status
+      - source
+      - destination
+      title: ProjectTransferReceipt
+      description: Result of a repository project transfer or its preview.
+    ProjectTransferRequest:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+          description: Destination organization ID
+        dry_run:
+          type: boolean
+          title: Dry Run
+          description: Preview only (default). Set to false to apply the move. The
+            preview runs every check the apply runs, including the live destination
+            access check.
+          default: true
+      type: object
+      required:
+      - organization_id
+      title: ProjectTransferRequest
+      description: Move a repository project to the organization that now owns it.
     ProjectUpdate:
       properties:
         name:
@@ -27448,6 +27641,29 @@ components:
         clone and push credential comes from that tracker, never from the
 
         issue tracker''s token.'
+    RepositoryLocation:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        organization_name:
+          type: string
+          title: Organization Name
+        tracker_id:
+          type: string
+          title: Tracker Id
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+      type: object
+      required:
+      - organization_id
+      - organization_name
+      - tracker_id
+      title: RepositoryLocation
+      description: Where a repository project is bound.
     RepriceRequest:
       properties:
         start_date:
@@ -29430,6 +29646,43 @@ components:
           description: 'True while a legal hold freezes this session: the retention
             purge leaves it and its activity alone until the hold is released'
           default: false
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+          description: Managed agent whose runtime principal owns this session
+        managed_agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Name
+          description: Display name of that managed agent
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+          description: Agent kind of that managed agent (claude_code, codex, hermes,
+            ...), or null when the session has no managed agent
+        cwd:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cwd
+          description: Working directory the agent's hook last reported for this session;
+            an observation used for labelling, not a trusted path
+        tool_call_count:
+          type: integer
+          title: Tool Call Count
+          description: Tool calls recorded for this session, or the count its usage
+            hook reported when no tool call was recorded server side
+          default: 0
+        pending_approval_count:
+          type: integer
+          title: Pending Approval Count
+          description: Approval requests for this session still awaiting a decision
+          default: 0
       type: object
       required:
       - id

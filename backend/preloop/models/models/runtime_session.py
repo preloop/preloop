@@ -78,6 +78,11 @@ class RuntimeSession(Base):
         String(255), nullable=True
     )
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    #: Working directory the agent's hook last reported for this session.
+    #: Observed, not trusted: it labels a session in lists so two runs that
+    #: started in the same second can be told apart. NULL until a hook that
+    #: sends ``cwd`` makes a permission check for the session.
+    cwd: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     summary_updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     title_request_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

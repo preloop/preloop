@@ -133,3 +133,47 @@ class TestConnectionResponse(BaseModel):
     details: Optional[Dict] = Field(
         None, description="Additional details about the connection"
     )
+
+
+class ProjectTransferRequest(BaseModel):
+    """Move a repository project to the organization that now owns it."""
+
+    organization_id: str = Field(..., description="Destination organization ID")
+    dry_run: bool = Field(
+        True,
+        description=(
+            "Preview only (default). Set to false to apply the move. The "
+            "preview runs every check the apply runs, including the live "
+            "destination access check."
+        ),
+    )
+
+
+class RepositoryLocation(BaseModel):
+    """Where a repository project is bound."""
+
+    organization_id: str
+    organization_name: str
+    tracker_id: str
+    full_name: Optional[str] = None
+
+
+class ProjectTransferReceipt(BaseModel):
+    """Result of a repository project transfer or its preview."""
+
+    project_id: str
+    repository_id: str
+    status: str = Field(
+        ...,
+        description="'preview', 'transferred' (moved organization), 'updated' (same organization, "
+        "owner/name refreshed) or 'unchanged' (already bound)",
+    )
+    source: RepositoryLocation
+    destination: RepositoryLocation
+    changes: List[str] = Field(default_factory=list)
+    not_carried_over: List[str] = Field(
+        default_factory=list,
+        description="Grants and settings that stay with the source and must be "
+        "re-established deliberately in the destination, if wanted.",
+    )
+    manual_actions: List[str] = Field(default_factory=list)

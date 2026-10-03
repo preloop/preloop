@@ -10,6 +10,7 @@ from sqlalchemy import (
     String,
     and_,
     case,
+    false,
     cast,
     func,
     inspect,
@@ -535,9 +536,65 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         status: str = "all",
         limit: int = 20,
         offset: int = 0,
+        principals: Optional[list[tuple[str, str]]] = None,
+        source_types: Optional[list[str]] = None,
+        parent_session_id: Optional[str] = None,
+        flow_execution_id: Optional[str] = None,
+        active_within: Optional[timedelta] = None,
     ) -> dict[str, Any]:
-        """List runtime sessions with aggregated gateway usage."""
+        """List runtime sessions with aggregated gateway usage.
+
+        ``principals`` and ``source_types`` are alternatives, OR-ed together:
+        a session matches when its runtime principal is one of the given
+        ``(type, id)`` pairs (or a per-run ``<id>:<run>`` variant of one), or
+        when its ``session_source_type`` is one of ``source_types``. Passing
+        either as an empty list matches nothing, which is how a filter that
+        resolved to no agent stays a filter instead of widening to the whole
+        account.
+
+        ``active_within`` keeps open sessions whose last activity (or start,
+        before the first activity) is no older than the window.
+        """
         session_query = db.query(self.model).filter(self.model.account_id == account_id)
+
+        if principals is not None or source_types is not None:
+            alternatives = [
+                self._principal_condition(principal_type, principal_id)
+                for principal_type, principal_id in (principals or [])
+            ]
+            if source_types:
+                alternatives.append(self.model.session_source_type.in_(source_types))
+            session_query = session_query.filter(
+                or_(*alternatives) if alternatives else false()
+            )
+        if parent_session_id:
+            session_query = session_query.filter(
+                self.model.parent_session_id == parent_session_id
+            )
+        if flow_execution_id:
+            # A flow execution is linked two ways: its own legacy session row,
+            # and any session whose governed usage carries the execution id.
+            execution_usage = db.query(ApiUsage.runtime_session_id).filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.flow_execution_id == flow_execution_id,
+                ApiUsage.runtime_session_id.isnot(None),
+            )
+            session_query = session_query.filter(
+                or_(
+                    and_(
+                        self.model.session_source_type == "flow_execution",
+                        self.model.session_source_id == str(flow_execution_id),
+                    ),
+                    self.model.id.in_(execution_usage.distinct()),
+                )
+            )
+        if active_within is not None:
+            cutoff = datetime.now(UTC).replace(tzinfo=None) - active_within
+            session_query = session_query.filter(
+                self.model.ended_at.is_(None),
+                func.coalesce(self.model.last_activity_at, self.model.started_at)
+                >= cutoff,
+            )
 
         if query:
             normalized_query = f"%{' '.join(query.strip().split())}%"
@@ -629,21 +686,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.runtime_principal_type == runtime_principal_type
             )
         if runtime_principal_id:
-            # A managed agent's principal id is the *base* id (e.g.
-            # ``custom_ABC``). Per-run sessions key off a derived id that appends
-            # the X-Preloop-Session-Id as ``<base>:<run-id>``. Match the base
-            # exactly OR any per-run variant so agent-scoped views surface every
-            # run, not just sessions whose principal id equals the base verbatim.
-            escaped = (
-                runtime_principal_id.replace("\\", "\\\\")
-                .replace("%", "\\%")
-                .replace("_", "\\_")
-            )
             session_query = session_query.filter(
-                or_(
-                    self.model.runtime_principal_id == runtime_principal_id,
-                    self.model.runtime_principal_id.like(f"{escaped}:%", escape="\\"),
-                )
+                self._principal_id_condition(runtime_principal_id)
             )
         if status == "active":
             session_query = session_query.filter(self.model.ended_at.is_(None))
@@ -701,6 +745,32 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             items.append(summary)
 
         return {"total": total, "items": items}
+
+    def _principal_id_condition(self, runtime_principal_id: str) -> Any:
+        """Match a principal id exactly or any per-run variant of it.
+
+        A managed agent's principal id is the *base* id (e.g. ``custom_ABC``).
+        Per-run sessions key off a derived id that appends the
+        X-Preloop-Session-Id as ``<base>:<run-id>``. Match the base exactly OR
+        any per-run variant so agent-scoped views surface every run, not just
+        sessions whose principal id equals the base verbatim.
+        """
+        escaped = (
+            runtime_principal_id.replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        return or_(
+            self.model.runtime_principal_id == runtime_principal_id,
+            self.model.runtime_principal_id.like(f"{escaped}:%", escape="\\"),
+        )
+
+    def _principal_condition(self, principal_type: str, principal_id: str) -> Any:
+        """Match one ``(type, id)`` runtime principal, per-run variants included."""
+        return and_(
+            self.model.runtime_principal_type == principal_type,
+            self._principal_id_condition(principal_id),
+        )
 
     @staticmethod
     def _account_usage_links(
