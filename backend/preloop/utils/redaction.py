@@ -26,6 +26,7 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
     "secret",
     "token",
     "api_key",
+    "encrypted_api_key",
     "apikey",
     "api-key",
     "auth",

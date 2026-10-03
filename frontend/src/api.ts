@@ -5919,6 +5919,13 @@ export async function getApprovalRequest(requestId: string): Promise<any> {
   return response.json();
 }
 
+/**
+ * List approval requests for the current account.
+ *
+ * `runtime_session_id` scopes the list to one agent conversation, which is what
+ * a live session view needs. It is ANDed with the account server-side; a
+ * session belonging to another account simply returns no rows.
+ */
 export async function listApprovalRequests(params?: {
   status?: string;
   execution_id?: string;

@@ -642,7 +642,9 @@ async def _send_control_command(
             tzinfo=UTC
         ) <= datetime.now(UTC):
             return None
-        return dict(record.envelope)
+        from preloop.utils.control_credentials import hydrate_control_credentials
+
+        return hydrate_control_credentials(record.envelope)
 
     def mark(db: Session) -> None:
         if control_connection.authorize(db, connection) is not None:

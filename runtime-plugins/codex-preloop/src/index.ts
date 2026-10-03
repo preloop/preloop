@@ -16,6 +16,7 @@
 
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import WebSocket from "ws";
@@ -101,8 +102,12 @@ const EVICTION_CLOSE_CODE = 4000;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
-/** Bound on the message_id dedupe memory. */
-const DEDUPE_CAPACITY = 1_000;
+/**
+ * Cap on retained command receipts.
+ * Employee ledgers refuse new work at this size so a receipt is never evicted.
+ * Ordinary sidecars keep only an in-memory map and drop the oldest receipt.
+ */
+export const MAX_COMMAND_RECEIPTS = 1_000;
 
 type StoredCommandOutcome = {
   name: "command_result" | "command_error";
@@ -123,6 +128,61 @@ export class PreloopCodexSidecar {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private commandOutcomes = new Map<string, StoredCommandOutcome>();
+  /** Bounded dedupe for a non-employee sidecar. Not written to disk. */
+  private memoryOutcomes = new Map<string, StoredCommandOutcome>();
+  private ledgerLoaded = false;
+
+  /**
+   * Path of the durable employee ledger, when this command needs one.
+   *
+   * Ordinary sidecars do not get a path: `start()` only assigns
+   * `employee_state_path` for `codex_employee_scoped` configs, and an
+   * explicit path or a gateway-backed employee command opts in.
+   */
+  private durableLedgerFile(command?: OperatorCommand): string | undefined {
+    const config = this.controlConfig ?? this.verify();
+    const gateway = command?.payload?.metadata?.["gateway"];
+    const employeeCommand = typeof gateway === "object" && gateway !== null;
+    const durable = config.codex_employee_scoped === true
+      || typeof config.employee_state_path === "string"
+      || employeeCommand;
+    if (!durable) return undefined;
+    if (config.employee_state_path) return config.employee_state_path;
+    return (this.configPath ?? defaultConfigPath()) + ".employees.json";
+  }
+
+  private loadLedger(file: string): void {
+    if (this.ledgerLoaded) return;
+    if (fs.existsSync(file)) {
+      const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+      const config = this.verify();
+      if (stored.principal !== config.runtime_principal_id
+          || stored.managedAgent !== config.managed_agent_id
+          || stored.controlURL !== config.control_ws_url) {
+        throw new Error("Employee ledger principal or account origin mismatch");
+      }
+      this.commandOutcomes = new Map(stored.outcomes);
+    }
+    this.ledgerLoaded = true;
+  }
+
+  private saveLedger(file: string): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const temporary = file + ".tmp";
+    const config = this.verify();
+    const descriptor = fs.openSync(temporary, "w", 0o600);
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify({ principal: config.runtime_principal_id,
+        managedAgent: config.managed_agent_id, controlURL: config.control_ws_url,
+        outcomes: [...this.commandOutcomes] }));
+      fs.fsyncSync(descriptor);
+    } finally { fs.closeSync(descriptor); }
+    fs.renameSync(temporary, file);
+    if (process.platform !== "win32") {
+      const directory = fs.openSync(path.dirname(file), "r");
+      try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+    }
+  }
   private inFlightMessageIds = new Set<string>();
   private logger: (message: string) => void = () => {};
 
@@ -145,6 +205,16 @@ export class PreloopCodexSidecar {
   }
 
   configure(config: ControlConfig): void {
+    const previous = this.controlConfig;
+    const changed = previous && (previous.runtime_principal_id !== config.runtime_principal_id
+      || previous.managed_agent_id !== config.managed_agent_id
+      || previous.control_ws_url !== config.control_ws_url);
+    if (changed && this.inFlightMessageIds.size) throw new Error("Cannot replace employee identity during a running command");
+    if (changed) {
+      this.ledgerLoaded = false;
+      this.commandOutcomes.clear();
+      this.memoryOutcomes.clear();
+    }
     this.controlConfig = config;
   }
 
@@ -177,6 +247,11 @@ export class PreloopCodexSidecar {
       `sidecar starting (pid ${process.pid}, config ${this.configPath ?? defaultConfigPath()})`,
     );
     const config = this.verify();
+    // Only employee sidecars keep a durable receipt file. An ordinary
+    // sidecar that always received one would stop forever at the cap.
+    if (config.codex_employee_scoped) {
+      config.employee_state_path ??= (this.configPath ?? defaultConfigPath()) + ".employees.json";
+    }
     if (config.enabled === false) {
       throw new Error("preloop-control is disabled (enabled=false)");
     }
@@ -321,25 +396,47 @@ export class PreloopCodexSidecar {
       });
       return;
     }
+    const ledgerFile = this.durableLedgerFile(command);
+    if (ledgerFile) this.loadLedger(ledgerFile);
     // Redelivered commands (reconnect replay) must not run twice. Dedupe
     // only after a terminal success/error, and replay that stored outcome
     // instead of a bare "duplicate" so a failed command is never silently
     // converted into already-handled.
-    if (command.message_id && this.commandOutcomes.has(command.message_id)) {
-      const outcome = this.commandOutcomes.get(command.message_id)!;
+    if (command.message_id && this.inFlightMessageIds.has(command.message_id)) return;
+    const replayed = command.message_id
+      ? this.commandOutcomes.get(command.message_id) ?? this.memoryOutcomes.get(command.message_id)
+      : undefined;
+    if (replayed) {
       this.sendOn(socket, {
         type: "status",
-        name: outcome.name,
+        name: replayed.name,
         message_id: command.message_id,
-        payload: outcome.payload,
+        payload: replayed.payload,
       });
       return;
     }
-    if (command.message_id && this.inFlightMessageIds.has(command.message_id)) {
+    if (
+      ledgerFile
+      && this.commandOutcomes.size >= MAX_COMMAND_RECEIPTS
+    ) {
+      this.sendOn(socket, {
+        type: "status",
+        name: "command_error",
+        message_id: command.message_id,
+        payload: {
+          command_id: command.message_id,
+          status: "failed",
+          error: "Employee receipt ledger is full; provision a new employee before sending new commands.",
+        },
+      });
       return;
     }
     if (command.message_id) {
       this.inFlightMessageIds.add(command.message_id);
+      this.rememberOutcome(command.message_id, { name: "command_error", payload: {
+        command_id: command.message_id, status: "failed",
+        error: "Worker restarted during task; effects may have occurred. Review before retry.",
+      }}, ledgerFile);
     }
     try {
       const result = await this.dispatch(command);
@@ -357,7 +454,7 @@ export class PreloopCodexSidecar {
       this.rememberOutcome(command.message_id, {
         name: "command_result",
         payload,
-      });
+      }, ledgerFile);
       this.sendOn(socket, {
         type: "status",
         name: "command_result",
@@ -389,7 +486,7 @@ export class PreloopCodexSidecar {
       this.rememberOutcome(command.message_id, {
         name: "command_error",
         payload,
-      });
+      }, ledgerFile);
       this.sendOn(socket, {
         type: "status",
         name: "command_error",
@@ -426,7 +523,12 @@ export class PreloopCodexSidecar {
     }
 
     if (payload.interrupt) {
-      await this.sessions.interrupt(targetSessionId ?? resumeSessionId);
+      const targetCommandId = payload.metadata?.["target_command_id"];
+      if (payload.session_mode === "existing" && !targetSessionId && !resumeSessionId && typeof targetCommandId !== "string") {
+        throw new Error("Existing-session interrupt requires an owned command or session");
+      }
+      await this.sessions.interrupt(targetSessionId ?? resumeSessionId,
+        typeof targetCommandId === "string" ? targetCommandId : undefined);
       return "interrupted";
     }
 
@@ -474,6 +576,7 @@ export class PreloopCodexSidecar {
     try {
       return await this.sessions.sendMessage({
         text,
+        commandId: command.message_id,
         targetSessionId,
         resumeSessionId,
         metadata: payload.metadata,
@@ -537,17 +640,28 @@ export class PreloopCodexSidecar {
   private rememberOutcome(
     messageId: string | undefined,
     outcome: StoredCommandOutcome,
+    ledgerFile?: string,
   ): void {
     if (!messageId) {
       return;
     }
-    this.commandOutcomes.set(messageId, outcome);
-    if (this.commandOutcomes.size > DEDUPE_CAPACITY) {
-      const oldest = this.commandOutcomes.keys().next().value;
-      if (oldest !== undefined) {
-        this.commandOutcomes.delete(oldest);
+    if (!ledgerFile) {
+      if (
+        !this.memoryOutcomes.has(messageId)
+        && this.memoryOutcomes.size >= MAX_COMMAND_RECEIPTS
+      ) {
+        for (const key of this.memoryOutcomes.keys()) {
+          if (!this.inFlightMessageIds.has(key)) {
+            this.memoryOutcomes.delete(key);
+            break;
+          }
+        }
       }
+      this.memoryOutcomes.set(messageId, outcome);
+      return;
     }
+    this.commandOutcomes.set(messageId, outcome);
+    this.saveLedger(ledgerFile);
   }
 
   private sendSessionActivity(activity: SessionActivity): void {
@@ -630,6 +744,7 @@ function commandResultPayload(
       result: result.reply_text,
       reply_text: result.reply_text,
       session_id: result.session_id,
+      native_session_id: result.session_id,
     };
     const metadata: Record<string, unknown> = {};
     if (result.usage) {

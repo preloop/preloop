@@ -1,7 +1,7 @@
 """Merge duplicate issue rows and make (project_id, external_id) unique.
 
 Revision ID: 20261003_issue_extid_unique
-Revises: 20261002_managed_oauth
+Revises: 20261002_chat_connections
 Create Date: 2026-10-03
 
 Concurrent webhook deliveries for one provider issue could each insert a row
@@ -28,7 +28,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "20261003_issue_extid_unique"
-down_revision = "20261002_managed_oauth"
+down_revision = "20261002_chat_connections"
 branch_labels = None
 depends_on = None
 

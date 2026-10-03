@@ -43,6 +43,11 @@ export interface CapabilityRoute {
  */
 export const CAPABILITY_ROUTES: readonly CapabilityRoute[] = [
   {
+    capability: 'chat_connections',
+    path: 'settings/chat',
+    component: 'chat-connections-view',
+  },
+  {
     capability: 'account_hierarchy',
     path: 'settings/subaccounts',
     component: 'subaccounts-view',
@@ -60,6 +65,8 @@ export const CAPABILITY_ROUTES: readonly CapabilityRoute[] = [
 ];
 
 export const capabilityRouteLoaders: ComponentLoaders = {
+  'chat-connections-view': () =>
+    import('./views/authed/settings/chat-connections-view'),
   'subaccounts-view': () => import('./views/authed/hierarchy/subaccounts-view'),
   'access-grants-view': () =>
     import('./views/authed/hierarchy/access-grants-view'),

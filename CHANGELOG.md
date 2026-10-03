@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `created`, `relinked` or `merged`. The payload names the agent, its owner
   and whether MCP and the model gateway were rewritten; it carries no
   hostname, OS user name, config path or server URL.
+- **Governed virtual employees and private chat.** Bounded Codex and Nanobot
+  tasks accept durable tracker, signed incident and Discord events. Nanobot
+  supports DeepSeek through the model gateway. Slack, Mattermost and Discord
+  connections link human identities for scoped inventory/spend questions, approval
+  votes, notes and active-session prompts. Private replies recheck access before
+  delivery; replay protection and uncertain-effect states avoid blind retries.
+  Setup requires the chat migration, a supervised worker and provider credentials;
+  Codex employee tasks require the matching execution-scoped CLI hooks.
 
 - **OTLP attribute stability policy.** `docs/guide/otlp-attribute-stability.md`
   lists the stable `preloop.*` span attributes and metrics, the experimental

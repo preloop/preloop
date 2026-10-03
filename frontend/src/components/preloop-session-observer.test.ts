@@ -1,6 +1,9 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
+import {
+  ConnectionState,
+  unifiedWebSocketManager,
+} from '../services/unified-websocket-manager';
 import { resetConfirmDialogForTests } from './confirm-dialog';
 import './preloop-session-observer';
 import type { PreloopSessionObserver } from './preloop-session-observer';
@@ -35,7 +38,11 @@ describe('PreloopSessionObserver', () => {
     last_request_at: '2026-03-09T20:00:00Z',
   };
 
+  /** Pending approvals the stubbed list endpoint returns. */
+  const PENDING_APPROVALS: Array<Record<string, unknown>> = [];
+
   beforeEach(() => {
+    PENDING_APPROVALS.length = 0;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     connectStub = sinon.stub(unifiedWebSocketManager, 'connect').resolves();
@@ -239,6 +246,12 @@ describe('PreloopSessionObserver', () => {
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
+      }
+      if (url.includes('/approval-requests')) {
+        return new Response(JSON.stringify(PENDING_APPROVALS), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
       return new Response(JSON.stringify({}), {
         status: 200,
@@ -1269,6 +1282,12 @@ describe('PreloopSessionObserver', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         }
+        if (url.includes('/approval-requests')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         return new Response(JSON.stringify({ items: [] }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -1316,5 +1335,193 @@ describe('PreloopSessionObserver', () => {
       expect(seenModals[0].detail.feature).to.equal('analytics_window_days');
       expect(deepText(el.shadowRoot)).to.include(REFUSAL);
     });
+  });
+});
+
+describe('PreloopSessionObserver session approvals', () => {
+  let fetchStub: sinon.SinonStub;
+  let connectStub: sinon.SinonStub;
+  let subscribeStub: sinon.SinonStub;
+
+  const session = {
+    id: 'runtime-session-1',
+    session_source_type: 'claude_code',
+    session_source_id: 'workspace-42',
+    session_reference: 'claude-session-42',
+    runtime_principal_name: 'Claude Workspace',
+    started_at: '2026-03-09T18:00:00Z',
+    last_activity_at: '2026-03-09T20:00:00Z',
+    ended_at: null,
+    latest_model_alias: 'anthropic/claude-sonnet-4',
+    latest_provider_name: 'Anthropic',
+    is_active_now: true,
+    activity_status: 'active_now',
+    total_requests: 1,
+    successful_requests: 1,
+    failed_requests: 0,
+    token_usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+    estimated_cost: 0.01,
+    last_request_at: '2026-03-09T20:00:00Z',
+  };
+
+  const subscriptions: Array<{
+    topic: string;
+    handler: (message: { payload?: Record<string, unknown> }) => void;
+  }> = [];
+
+  beforeEach(() => {
+    subscriptions.length = 0;
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    connectStub = sinon.stub(unifiedWebSocketManager, 'connect').resolves();
+    subscribeStub = sinon
+      .stub(unifiedWebSocketManager, 'subscribe')
+      .callsFake(
+        (
+          topic: string,
+          handler: (message: { payload?: Record<string, unknown> }) => void
+        ) => {
+          subscriptions.push({ topic, handler });
+          return () => undefined;
+        }
+      );
+    sinon
+      .stub(unifiedWebSocketManager, 'onStateChange')
+      .returns(() => undefined);
+    sinon
+      .stub(unifiedWebSocketManager, 'getState')
+      .returns(ConnectionState.CONNECTED);
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/approval-requests')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'req-1',
+              status: 'pending',
+              requested_at: '2026-03-09T20:00:00Z',
+            },
+          ]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/gateway-events')) {
+        return new Response(
+          JSON.stringify({ logs: [], pagination: { has_more: false } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/activity')) {
+        return new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+    connectStub.restore();
+    subscribeStub.restore();
+    sinon.restore();
+    localStorage.clear();
+  });
+
+  function approvalCalls(): string[] {
+    return fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/approval-requests'));
+  }
+
+  function approvalsHandler(): (message: {
+    payload?: Record<string, unknown>;
+  }) => void {
+    return subscriptions.find((entry) => entry.topic === 'approvals')!.handler;
+  }
+
+  async function mount(): Promise<PreloopSessionObserver> {
+    // Conversation is the only mode that renders the chat view; the default
+    // timeline would render the replay panel and answer nothing. Set
+    // `defaultReplayMode` rather than `replayMode`: connectedCallback reads
+    // the mode from the URL and overwrites whatever the element was given.
+    const el = (await fixture(
+      html`<preloop-session-observer
+        defaultReplayMode="conversation"
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await waitUntil(() => approvalCalls().length > 0, '', { timeout: 3000 });
+    return el;
+  }
+
+  it('subscribes to the approvals topic, which is where "wait for me" arrives', async () => {
+    await mount();
+
+    expect(subscriptions.some((entry) => entry.topic === 'approvals')).to.equal(
+      true
+    );
+  });
+
+  it('scopes the approval read to the session it is showing', async () => {
+    await mount();
+
+    expect(approvalCalls()[0]).to.contain(
+      'runtime_session_id=runtime-session-1'
+    );
+    expect(approvalCalls()[0]).to.contain('status=pending');
+  });
+
+  it('re-reads when an approval event names the active session', async () => {
+    await mount();
+    const before = approvalCalls().length;
+
+    approvalsHandler()({
+      payload: { runtime_session_id: 'runtime-session-1' },
+    });
+    await waitUntil(() => approvalCalls().length > before, '', {
+      timeout: 3000,
+    });
+
+    expect(approvalCalls().length).to.be.greaterThan(before);
+  });
+
+  it('ignores an approval event for a session nobody is watching', async () => {
+    await mount();
+    const before = approvalCalls().length;
+
+    approvalsHandler()({
+      payload: { runtime_session_id: 'some-other-session' },
+    });
+    // Give an (incorrect) refetch a chance to land before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(approvalCalls().length).to.equal(before);
+  });
+
+  it('tells the conversation it is waiting on a decision', async () => {
+    const observer = await mount();
+    await observer.updateComplete;
+
+    const chat = observer.shadowRoot!.querySelector('session-chat-view') as
+      | (HTMLElement & {
+          pendingApprovals?: Array<{ id: string; status: string }>;
+        })
+      | null;
+    expect(chat).to.not.equal(null);
+    // Wait for the state, not for the request: the read is async, so
+    // asserting that a fetch happened can pass before the render.
+    await waitUntil(() => (chat!.pendingApprovals?.length ?? 0) > 0, '', {
+      timeout: 3000,
+    });
+    expect(chat!.pendingApprovals?.map((row) => row.id)).to.deep.equal([
+      'req-1',
+    ]);
   });
 });
