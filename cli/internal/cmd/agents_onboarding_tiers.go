@@ -1,27 +1,8 @@
 package cmd
 
-// Validate-first onboarding tiers.
-//
-// Quick and interactive batch onboarding used to walk candidates in discovery
-// order, so an agent that could only be MCP-governed (or whose model
-// credential could not be resolved) was interleaved with agents whose model
-// routing works end to end. Onboarding now happens in two tiers:
-//
-//	Tier 1  agents whose model routing is verified to be workable: the agent
-//	        type supports gateway routing AND a model credential was resolved
-//	        locally (resolveManagedGatewayUpstream) or is already stored in
-//	        the Preloop account (serverHasReusableGatewayCredential). For
-//	        OpenClaw — which syncs its own multi-model bindings — the
-//	        existing auth-state probe stands in.
-//	Tier 2  everything else: MCP-only agent types, and gateway-capable agents
-//	        with no verifiable credential. These are onboarded after tier 1,
-//	        behind a printed explanation (interactive flows then ask
-//	        per-agent, --yes keeps onboarding them for backward
-//	        compatibility).
-//
-// This reuses the existing preflight/planning probes; no new validation path
-// is introduced. Live validation still runs after onboarding exactly as
-// before.
+// Credential-ready onboarding tiers. These planning probes establish adapter
+// support and available credentials, not that the application consumed config.
+// A direct gateway route/accounting probe runs separately after onboarding.
 
 import (
 	"bufio"
@@ -31,8 +12,8 @@ import (
 	"github.com/preloop/preloop/cli/internal/api"
 )
 
-// agentModelRoutingVerified reports whether onboarding this agent can be
-// expected to yield working model routing, with a one-line reason when not.
+// agentModelRoutingVerified is a legacy internal name for credential readiness.
+// It does not verify application routing or behavior.
 func agentModelRoutingVerified(client *api.Client, agent AgentConfig) (bool, string) {
 	if supportLevelForAgent(agent) != agentSupportLevelFull {
 		return false, mcpOnlySupportLabel
@@ -90,7 +71,7 @@ func printModelRoutingTierExplanation(
 	}
 	fmt.Fprintln( //nolint:errcheck
 		writer,
-		"\nThese agents can be governed for tool calls (MCP), but Preloop couldn't verify model routing for them:",
+		"\nThese agents lack automatic model-routing support or usable provider credentials; application behavior unverified:",
 	)
 	for i, agent := range unverified {
 		reason := ""
@@ -98,20 +79,20 @@ func printModelRoutingTierExplanation(
 			reason = reasons[i]
 		}
 		if reason == "" {
-			reason = "model routing could not be verified"
+			reason = "model-routing credentials are not ready"
 		}
 		fmt.Fprintf(writer, "  - %s: %s\n", resolveAgentDisplayName(agent), reason) //nolint:errcheck
 	}
 	if autoApprove {
 		fmt.Fprintln( //nolint:errcheck
 			writer,
-			"Onboarding them as well: MCP governance applies now; model traffic stays direct until routing can be verified.",
+			"Onboarding them as well: supported integrations will be configured. Only calls routed through the managed MCP entry reach Preloop; application behavior unverified.",
 		)
 		return
 	}
 	fmt.Fprintln( //nolint:errcheck
 		writer,
-		"Onboarding them still applies MCP governance now; model traffic stays direct until routing can be verified. Onboard anyway?",
+		"Onboarding configures supported integrations. Only calls routed through the managed MCP entry reach Preloop; application behavior unverified. Onboard anyway?",
 	)
 }
 
@@ -135,7 +116,7 @@ func promptToOnboardCandidatesTiered(
 	if len(verified) > 0 && len(unverified) > 0 {
 		fmt.Fprintf( //nolint:errcheck
 			writer,
-			"Onboarding %d agent(s) with verified model routing first.\n",
+			"Onboarding %d agent(s) with model-routing support and available credentials first (application behavior unverified).\n",
 			len(verified),
 		)
 	}
