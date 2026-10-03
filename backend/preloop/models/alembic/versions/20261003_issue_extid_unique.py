@@ -1,7 +1,7 @@
 """Merge duplicate issue rows and make (project_id, external_id) unique.
 
 Revision ID: 20261003_issue_extid_unique
-Revises: 20261003_resume_root_idx
+Revises: 20261002_managed_oauth
 Create Date: 2026-10-03
 
 Concurrent webhook deliveries for one provider issue could each insert a row
