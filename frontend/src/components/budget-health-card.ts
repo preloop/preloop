@@ -33,6 +33,8 @@ export class BudgetHealthCard extends LitElement {
   @property({ type: Array }) policies: BudgetPolicy[] = [];
   @property({ type: Boolean }) configurable = false;
   @property({ type: Array }) agents: ManagedAgentSummary[] = [];
+  /** Team id to name, for `team` rows (set when team budgets are enabled). */
+  @property({ attribute: false }) teamNames: Record<string, string> = {};
   @property({ type: Boolean }) loading = false;
   @property({ type: String }) timeRange = 'month';
   @property({ type: Boolean }) showRangeSelector = false;
@@ -206,6 +208,10 @@ export class BudgetHealthCard extends LitElement {
     if (policy.subject_type === 'ai_model') {
       return `${policy.model_alias || 'Model'} · ${period}`;
     }
+    if (policy.subject_type === 'team') {
+      const name = policy.subject_id ? this.teamNames[policy.subject_id] : '';
+      return `${name ? `Team ${name}` : 'Team'} · ${period}`;
+    }
     return `${policy.subject_type.replace(/_/g, ' ')} · ${period}`;
   }
 
@@ -215,6 +221,7 @@ export class BudgetHealthCard extends LitElement {
     }
     if (policy.subject_type === 'managed_agent') return 'robot';
     if (policy.subject_type === 'ai_model') return 'cpu';
+    if (policy.subject_type === 'team') return 'people';
     return 'sliders';
   }
 

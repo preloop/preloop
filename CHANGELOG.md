@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-user budgets count API-key traffic.** A call made with an API key a
+  user owns now counts toward that user's `user` budget and is blocked by its
+  hard limit. Agent traffic keeps counting against the agent's owner only, so
+  one call never counts against two users (#1174).
+- **Team budget subject reserved for plugins.** `team` joins `subaccount` and
+  `subaccounts_total` as a reserved budget subject: the core budget endpoint
+  refuses it and the teams plugin serves and enforces it through account hook
+  H5, which may now add buckets in the request's own account. The Cost page
+  gains a Teams tab and team names on budget rows, shown only when the server
+  advertises `team_budgets` and `team_management` (#1174).
+
 - **Subscription reconnect without re-onboarding.** `preloop agents reconnect
   "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
   credentials while preserving enrollment, policy and configuration. Working

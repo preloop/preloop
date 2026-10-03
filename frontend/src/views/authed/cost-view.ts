@@ -247,6 +247,8 @@ export class CostView extends AuthedElement {
   // range when its tab is next shown.
   @state() private loadedTabs = new Set<string>();
   @state() private activeTab = 'agents';
+  // Team id -> name, for team rows of the budget health card.
+  @state() private teamNames: Record<string, string> = {};
   @state() private sectionStates: Record<
     string,
     'loading' | 'ready' | 'error'
@@ -280,6 +282,14 @@ export class CostView extends AuthedElement {
 
   private get reconciliationEnabled(): boolean {
     return this.featureFlags.provider_billing_reconciliation === true;
+  }
+  // Teams tab and team names on budget rows: the team budgets plugin
+  // (`team_budgets`) on a server where teams exist (`team_management`).
+  private get teamBudgetsEnabled(): boolean {
+    return (
+      this.featureFlags.team_budgets === true &&
+      this.featureFlags.team_management === true
+    );
   }
 
   static styles = [
@@ -932,6 +942,7 @@ export class CostView extends AuthedElement {
         request: getFeatures().then(async (features) => {
           if (generation !== this.loadGeneration) return;
           this.featureFlags = features.features || {};
+          if (this.teamBudgetsEnabled) void this.loadTeamNames(generation);
           // The whole list, not only the active rows: an expired or disabled
           // override is exactly what somebody reading this table came to
           // find, and the summary count still counts the active ones.
@@ -953,6 +964,17 @@ export class CostView extends AuthedElement {
       ? `Could not load ${failed.join(', ')}.`
       : null;
     this.contextLoading = false;
+  }
+
+  private async loadTeamNames(generation = this.loadGeneration): Promise<void> {
+    try {
+      const { listTeamBudgets, teamNamesFrom } =
+        await import('../../team-budgets-api');
+      const names = teamNamesFrom(await listTeamBudgets());
+      if (generation === this.loadGeneration) this.teamNames = names;
+    } catch {
+      // Labels only: a team row falls back to "Team".
+    }
   }
 
   private async loadPreviousRangeSummary(
@@ -1038,6 +1060,7 @@ export class CostView extends AuthedElement {
       imported: ['imported'],
       copilot: [],
       reconciliation: [],
+      teams: [],
     };
     if (!(tab in sections)) return;
     this.sectionStates = { ...this.sectionStates, [tab]: 'loading' };
@@ -1048,6 +1071,10 @@ export class CostView extends AuthedElement {
         tab === 'tools' ? this.loadToolFlagCount(generation) : undefined,
         tab === 'reconciliation'
           ? this.loadReconciliation(generation)
+          : undefined,
+        // The panel ships in its own chunk, fetched when the tab opens.
+        tab === 'teams'
+          ? import('../../components/team-budgets-panel')
           : undefined,
       ]);
       if (generation !== this.loadGeneration) return;
@@ -2279,6 +2306,16 @@ export class CostView extends AuthedElement {
             >Copilot</sl-tab
           >
           ${
+            this.teamBudgetsEnabled
+              ? html`<sl-tab
+                  slot="nav"
+                  panel="teams"
+                  ?active=${this.activeTab === 'teams'}
+                  >Teams</sl-tab
+                >`
+              : nothing
+          }
+          ${
             this.reconciliationEnabled
               ? html`<sl-tab slot="nav" panel="reconciliation"
                   >Reconciliation</sl-tab
@@ -2300,6 +2337,13 @@ export class CostView extends AuthedElement {
           <sl-tab-panel name="copilot"
             >${this.renderTab('copilot', () => this.renderCopilotTab())}</sl-tab-panel
           >
+          ${
+            this.teamBudgetsEnabled
+              ? html`<sl-tab-panel name="teams"
+                  >${this.renderTab('teams', () => this.renderTeamsTab())}</sl-tab-panel
+                >`
+              : nothing
+          }
           ${
             this.reconciliationEnabled
               ? html`<sl-tab-panel name="reconciliation"
@@ -2373,6 +2417,27 @@ export class CostView extends AuthedElement {
 
   // Imported GitHub Copilot spend. Rendered in its own tab and never merged
   // into the gateway totals above (it is not metered by the gateway).
+  private renderTeamsTab() {
+    return html`<div class="tab-panel-body">
+      <team-budgets-panel
+        .startDate=${this.currentPeriod?.startDate}
+        .endDate=${this.currentPeriod?.endDate}
+        @team-budgets-changed=${() => void this.refreshBudgetsAfterTeamChange()}
+      ></team-budgets-panel>
+    </div>`;
+  }
+
+  private async refreshBudgetsAfterTeamChange(): Promise<void> {
+    const generation = this.loadGeneration;
+    await this.loadTeamNames(generation);
+    try {
+      const policies = await getBudgetPolicies();
+      if (generation === this.loadGeneration) this.budgetPolicies = policies;
+    } catch {
+      // The health card keeps its last list; the next load refreshes it.
+    }
+  }
+
   private renderCopilotTab() {
     return html`<div class="tab-panel-body">
       <copilot-usage-panel
@@ -2904,6 +2969,7 @@ export class CostView extends AuthedElement {
       <budget-health-card
         .summary=${this.summary}
         .policies=${this.budgetPolicies}
+        .teamNames=${this.teamNames}
         .configurable=${true}
         .timeRange=${'month'}
         @configure=${() => (this.budgetDialogOpen = true)}
