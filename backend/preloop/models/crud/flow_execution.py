@@ -925,6 +925,30 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.order_by(FlowExecution.start_time.desc()).first()
 
+    def last_successful_scheduled_at(
+        self, db: Session, *, flow_id: Any
+    ) -> Optional[str]:
+        """``scheduled_at`` of this flow's newest SUCCEEDED scheduled run.
+
+        Read from the trigger payload the schedule tick wrote, so the value
+        is the tick time the run saw, not when it finished. None when no
+        scheduled run of the flow has succeeded yet.
+        """
+        scheduled_at = FlowExecution.trigger_event_details["payload"][
+            "scheduled_at"
+        ].astext
+        row = (
+            db.query(scheduled_at)
+            .filter(
+                FlowExecution.flow_id == flow_id,
+                FlowExecution.status == "SUCCEEDED",
+                scheduled_at.isnot(None),
+            )
+            .order_by(FlowExecution.start_time.desc())
+            .first()
+        )
+        return row[0] if row else None
+
     def get_by_result_pr_url(
         self,
         db: Session,
