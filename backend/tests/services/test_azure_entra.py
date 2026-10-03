@@ -24,6 +24,7 @@ from preloop.services.azure_openai import (
 from preloop.services.litellm_routing import preloop_user_agent
 from preloop.services.model_credentials import (
     build_aux_kwargs,
+    build_aux_openai_client,
     resolve_model_call_credentials,
 )
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
@@ -285,6 +286,50 @@ def test_aux_kwargs_carry_entra_token_provider(fake_identity) -> None:
     assert kwargs["api_key"] is None
     assert kwargs["api_base"] == RESOURCE
     assert kwargs["azure_ad_token_provider"]() == "token-1"
+
+
+def test_aux_openai_client_entra_needs_no_static_key(
+    fake_identity, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The raw OpenAI SDK client for Entra uses the token provider, not a key."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    pasted = (
+        f"{RESOURCE}/openai/deployments/chat-deployment/chat/completions"
+        "?api-version=2024-10-21"
+    )
+    model = AIModel(
+        id="model-entra",
+        provider_name="azure",
+        model_identifier="chat-deployment",
+        api_endpoint=pasted,
+        meta_data={
+            "provider_runtime": {
+                "azure_auth": "entra",
+                "api_version": "2024-10-21",
+            }
+        },
+    )
+    with patch("preloop.services.model_credentials.get_secret_service") as secrets:
+        secrets.return_value.resolve_ai_model_credentials.return_value = None
+        creds = resolve_model_call_credentials(model)
+    openai_module = SimpleNamespace(OpenAI=MagicMock(), AzureOpenAI=MagicMock())
+    build_aux_openai_client(
+        openai_module,
+        model,
+        creds,
+        static_key_fallback=None,
+        timeout=30.0,
+        max_retries=0,
+    )
+    openai_module.OpenAI.assert_not_called()
+    openai_module.AzureOpenAI.assert_called_once_with(
+        azure_endpoint=RESOURCE,
+        azure_ad_token_provider=creds["azure_ad_token_provider"],
+        api_version="2024-10-21",
+        timeout=30.0,
+        max_retries=0,
+    )
 
 
 def test_aux_build_without_resolved_creds_still_uses_entra(fake_identity) -> None:

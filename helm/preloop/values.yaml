@@ -182,8 +182,9 @@ serviceAccount:
 # Pod annotations
 podAnnotations: {}
 
-# Extra pod labels on every Preloop deployment. For Azure OpenAI with
-# Microsoft Entra ID on AKS workload identity, set
+# Extra pod labels on the api, gateway, frontend, and spacesync-* deployments.
+# health-monitor and the chart Jobs do not receive these labels.
+# For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set
 #   podLabels:
 #     azure.workload.identity/use: "true"
 # and annotate the service account with azure.workload.identity/client-id.

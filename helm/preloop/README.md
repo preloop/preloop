@@ -481,7 +481,7 @@ helm install preloop ./helm/preloop \
 | `serviceAccount.annotations`   | Annotations for the service account                   | `{}`        |
 | `serviceAccount.name`          | The name of the service account                       | `""`        |
 | `podAnnotations`               | Annotations for pods                                  | `{}`        |
-| `podLabels`                    | Extra labels on every pod. For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set `azure.workload.identity/use: "true"` and annotate the service account with `azure.workload.identity/client-id` | `{}`        |
+| `podLabels`                    | Extra labels on the api, gateway, frontend, and spacesync-* deployments (not health-monitor or Jobs). For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set `azure.workload.identity/use: "true"` and annotate the service account with `azure.workload.identity/client-id` | `{}`        |
 | `podSecurityContext`           | Pod security context                                  | `{}`        |
 | `securityContext`              | Container security context                            | `{}`        |
 | `nodeSelector`                 | Node selector                                         | `{}`        |
