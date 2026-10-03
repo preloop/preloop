@@ -9,7 +9,11 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_account, crud_flow_execution_log
+from preloop.models.crud import (
+    crud_account,
+    crud_flow_execution,
+    crud_flow_execution_log,
+)
 from preloop.models.crud.flow_execution_log import MAX_LOG_MESSAGE_CHARS
 from tests.models.test_flow_runner_ephemeral import _execution
 
@@ -53,3 +57,26 @@ def test_single_append_strips_nul(db_session: Session) -> None:
         db_session, execution_id, {"type": "log", "message": "a\x00b"}
     )
     assert entry.message == "a�b"
+
+
+def test_metadata_line_is_capped_like_the_message(db_session: Session) -> None:
+    account = crud_account.create(db_session, obj_in={"organization_name": "Logs"})
+    execution_id = str(_execution(db_session, account.id).id)
+    crud_flow_execution_log.append_logs(
+        db_session, [(execution_id, _line("y" * (MAX_LOG_MESSAGE_CHARS * 2)))]
+    )
+    (log,) = crud_flow_execution_log.get_by_execution_id(db_session, execution_id)
+    assert len(log.metadata_["line"]) == MAX_LOG_MESSAGE_CHARS
+
+
+def test_legacy_execution_append_log_strips_nul(db_session: Session) -> None:
+    """``crud_flow_execution.append_log`` shares the same persistence gate."""
+    account = crud_account.create(db_session, obj_in={"organization_name": "Logs"})
+    execution_id = str(_execution(db_session, account.id).id)
+    crud_flow_execution.append_log(
+        db_session,
+        execution_id,
+        {"type": "agent_log_line", "payload": {"line": "bad\x00line"}},
+    )
+    (log,) = crud_flow_execution_log.get_by_execution_id(db_session, execution_id)
+    assert log.message == "bad�line" and log.metadata_ == {"line": "bad�line"}

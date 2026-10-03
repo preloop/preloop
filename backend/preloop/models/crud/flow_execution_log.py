@@ -17,8 +17,13 @@ _TRUNCATION_MARKER = " [truncated]"
 
 
 def _clean_text(value: str) -> str:
-    """Replace NUL, which PostgreSQL text and JSONB reject (#1196)."""
-    return value.replace("\x00", "\ufffd") if "\x00" in value else value
+    """Replace NUL, which PostgreSQL text and JSONB reject, and cap length."""
+    if "\x00" in value:
+        value = value.replace("\x00", "\ufffd")
+    if len(value) > MAX_LOG_MESSAGE_CHARS:
+        keep = MAX_LOG_MESSAGE_CHARS - len(_TRUNCATION_MARKER)
+        value = value[:keep] + _TRUNCATION_MARKER
+    return value
 
 
 def _clean_structure(value: Any) -> Any:
@@ -35,20 +40,17 @@ def _clean_structure(value: Any) -> Any:
     return value
 
 
-def _storable_message(message: Any) -> Any:
-    """Scrub secrets, drop NUL and cap the length of one log message."""
+def storable_log_message(message: Any) -> Any:
+    """Scrub secrets, drop NUL and cap the length of one log message.
+
+    The single persistence gate for log messages (#173, #1196).
+    """
     message = scrub_secrets(message)
-    if not isinstance(message, str):
-        return message
-    message = _clean_text(message)
-    if len(message) > MAX_LOG_MESSAGE_CHARS:
-        keep = MAX_LOG_MESSAGE_CHARS - len(_TRUNCATION_MARKER)
-        message = message[:keep] + _TRUNCATION_MARKER
-    return message
+    return _clean_text(message) if isinstance(message, str) else message
 
 
-def _storable_metadata(metadata: Any) -> Any:
-    """Scrub secrets and drop NUL from log metadata."""
+def storable_log_metadata(metadata: Any) -> Any:
+    """Scrub secrets, drop NUL and cap every string in log metadata."""
     return _clean_structure(scrub_structure(metadata)) if metadata else None
 
 
@@ -185,8 +187,8 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
                     "id": uuid.UUID(log_data["_persistence_id"]),
                     "execution_id": uuid.UUID(execution_id),
                     "log_type": log_data.get("type", "log"),
-                    "message": _storable_message(message),
-                    "metadata": _storable_metadata(metadata),
+                    "message": storable_log_message(message),
+                    "metadata": storable_log_metadata(metadata),
                 }
             )
         statement = insert(models.FlowExecutionLog.__table__).values(rows)
@@ -213,8 +215,8 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         log_entry = models.FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=_storable_message(message),
-            metadata_=_storable_metadata(metadata),
+            message=storable_log_message(message),
+            metadata_=storable_log_metadata(metadata),
         )
         db.add(log_entry)
         if commit:
