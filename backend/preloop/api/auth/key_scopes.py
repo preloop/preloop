@@ -12,7 +12,8 @@ is on :data:`MCP_ONLY_KEY_ALLOWED_PATH_PREFIXES`.
 A device-scoped key is the same idea for opt-in discovery reporting: a key
 whose only scope is ``report_discovery`` may reach the discovery salt and
 report routes and nothing else, so an MDM job holding it cannot read or
-change the account.
+change the account. The MCP bearer backend and the model gateway do not
+use this REST dependency, so they refuse a device-scoped key themselves.
 
 Keys without scopes (personal API keys) and keys with any other scope keep
 their previous behaviour.

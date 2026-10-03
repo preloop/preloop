@@ -11,6 +11,7 @@ import hashlib
 import hmac
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from starlette.requests import Request
@@ -22,7 +23,7 @@ from preloop.api.auth.key_scopes import (
     enforce_api_key_route_scope,
     is_device_scoped_api_key,
 )
-from preloop.models.crud import crud_discovered_agent_candidate, crud_user
+from preloop.models.crud import crud_api_key, crud_discovered_agent_candidate, crud_user
 from preloop.models.crud.discovered_agent_candidate import (
     ReportedCandidate,
     utc_now_naive,
@@ -351,6 +352,53 @@ def test_device_scoped_key_reaches_only_the_reporting_routes():
     assert not is_device_scoped_api_key(
         SimpleNamespace(scopes=["report_discovery", "mcp:read"])
     )
+
+
+def _bearer_conn(token: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        headers={"authorization": f"Bearer {token}"},
+        scope={"path": "/mcp"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_device_scoped_key_is_refused_on_mcp_and_the_model_gateway(
+    db_session, test_user
+):
+    """A report_discovery key must not authenticate MCP or the model gateway."""
+    from preloop.services.mcp_http import PreloopBearerAuthBackend
+    from preloop.services.model_gateway_auth import authenticate_bearer_token
+
+    _device_key, device_token = crud_api_key.create_runtime_key(
+        db_session,
+        name="workstation discovery",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        scopes=["report_discovery"],
+    )
+    _personal_key, personal_token = crud_api_key.create_runtime_key(
+        db_session,
+        name="personal console",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        scopes=[],
+    )
+
+    assert await authenticate_bearer_token(device_token, db_session) is None
+    personal_gateway = await authenticate_bearer_token(personal_token, db_session)
+    assert personal_gateway is not None
+
+    backend = PreloopBearerAuthBackend()
+
+    def _same_session():
+        yield db_session
+
+    with (
+        patch("preloop.services.mcp_http.get_db", _same_session),
+        patch.object(db_session, "close"),
+    ):
+        assert await backend.authenticate(_bearer_conn(device_token)) is None
+        assert await backend.authenticate(_bearer_conn(personal_token)) is not None
 
 
 def test_console_list_and_mark_ignored(client, db_session, test_user):
