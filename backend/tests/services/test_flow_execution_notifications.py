@@ -457,3 +457,44 @@ async def test_orchestrator_notify_terminal_wakes_a_parked_parent() -> None:
         await orchestrator._notify_terminal(status="FAILED")
 
     notify.assert_awaited_once_with(str(execution_id))
+
+
+class TestMissingPublicationComment:
+    """A run that should have opened a PR and did not says so on the issue."""
+
+    MISSING = {
+        "publication_missing": {
+            "status": "not_published",
+            "reason": "no pull request exists for branch preloop/issue-42",
+            "branch": "preloop/issue-42",
+        }
+    }
+
+    def test_a_tracker_client_is_resolved_for_the_missing_publication(self) -> None:
+        flags = _notifications(success_comment=True)
+        assert needs_tracker_comment(flags, "FAILED", self.MISSING)
+        assert not needs_tracker_comment(flags, "FAILED", {"pr_url": PR_URL})
+        assert not needs_tracker_comment(
+            _notifications(success_comment=False), "FAILED", self.MISSING
+        )
+
+    @pytest.mark.asyncio
+    async def test_failed_publication_posts_the_reason(self) -> None:
+        tracker = StubTracker()
+        outcome = await notify_terminal_execution(
+            notifications=_notifications(success_comment=True),
+            status="FAILED",
+            execution_id="exec-1",
+            trigger_event_details=_issue_trigger(),
+            result=self.MISSING,
+            tracker_client=tracker,
+        )
+        assert outcome.missing_publication_comment_posted is True
+        assert outcome.success_comment_posted is False
+        assert tracker.calls == [
+            (
+                "42",
+                "No pull request was opened for this run: no pull request "
+                "exists for branch preloop/issue-42.",
+            )
+        ]
