@@ -18,6 +18,7 @@ create out of band first).
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261003_resume_root_idx"
@@ -35,8 +36,29 @@ EXPRESSION = "((trigger_event_details -> '_resume') ->> 'resume_root')"
 
 
 def upgrade() -> None:
-    """Create the partial expression index without blocking writes."""
+    """Create the partial expression index without blocking writes.
+
+    A CONCURRENTLY build that fails part way (lock timeout, statement
+    timeout, dropped connection) leaves an INVALID index behind, and the
+    migration runner retries ``upgrade head``. ``IF NOT EXISTS`` alone would
+    then see the name and skip, committing a revision whose index the planner
+    never uses. So a leftover invalid index is dropped first and rebuilt.
+    """
     with op.get_context().autocommit_block():
+        invalid = (
+            op.get_bind()
+            .execute(
+                sa.text(
+                    "SELECT 1 FROM pg_index i "
+                    "JOIN pg_class c ON c.oid = i.indexrelid "
+                    "WHERE c.relname = :name AND NOT i.indisvalid"
+                ),
+                {"name": INDEX},
+            )
+            .scalar()
+        )
+        if invalid:
+            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {INDEX}")
         op.execute(
             f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {INDEX} "
             f"ON flow_execution ({EXPRESSION}) "

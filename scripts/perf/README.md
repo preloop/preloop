@@ -50,9 +50,10 @@ never drops tables, and only deletes rows that belong to that account.
 
 Results files are machine-local measurements. The default
 `results/latest.json` and any ad-hoc runs are scratch: do not commit them,
-especially when they carry a real account id. The one versioned file is the
-recorded per-issue baseline (`results/issue-914.json`), kept so later changes
-can be compared against the same numbers.
+especially when they carry a real account id. The versioned files are the
+recorded per-issue baselines (`results/issue-914.json`,
+`results/issue-1197.json`), kept so later changes can be compared against
+the same numbers.
 
 # Flow executions list harness
 
