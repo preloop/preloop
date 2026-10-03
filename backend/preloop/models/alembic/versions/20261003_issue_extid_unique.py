@@ -9,8 +9,9 @@ Concurrent webhook deliveries for one provider issue could each insert a row
 re-points every foreign key that references ``issue.id`` to it, deletes the
 extra rows and adds ``uq_issue_project_external_id``.
 
-The foreign keys are read from ``pg_constraint`` at upgrade time so columns
-added by plugins are covered too. In core at this revision they are:
+The foreign keys are read from ``pg_constraint`` at upgrade time so
+single-column FKs added by plugins are covered too. A composite FK to
+``issue`` aborts the upgrade with its name instead of failing later. In core at this revision they are:
 ``issue.parent_id``, ``comment.issue_id``, ``issueembedding.issue_id``,
 ``issue_relationship.source_issue_id`` / ``target_issue_id``,
 ``issue_duplicate`` (four issue columns), ``issue_lifecycle.issue_id``,
@@ -40,6 +41,7 @@ DECLARE
     pair record;
     fk record;
     dep record;
+    composite name;
 BEGIN
     DROP TABLE IF EXISTS _issue_merge;
     CREATE TEMP TABLE _issue_merge ON COMMIT DROP AS
@@ -57,6 +59,20 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM _issue_merge) THEN
         RETURN;
     END IF;
+
+    SELECT conname INTO composite
+    FROM pg_constraint
+    WHERE contype = 'f'
+      AND confrelid = 'issue'::regclass
+      AND array_length(conkey, 1) > 1
+    LIMIT 1;
+    IF composite IS NOT NULL THEN
+        RAISE EXCEPTION
+            'Composite foreign key % references issue; merge duplicates manually',
+            composite;
+    END IF;
+
+    RAISE NOTICE 'Merging % duplicate issue rows', (SELECT count(*) FROM _issue_merge);
 
     FOR fk IN
         SELECT c.conrelid::regclass AS tbl, a.attname AS col
@@ -79,6 +95,8 @@ BEGIN
                 EXCEPTION WHEN unique_violation OR check_violation THEN
                     EXECUTE format('DELETE FROM %s WHERE ctid = $1', fk.tbl)
                     USING dep.ctid;
+                    RAISE NOTICE 'Dropped colliding %.% row of duplicate issue %',
+                        fk.tbl, fk.col, pair.duplicate_id;
                 END;
             END LOOP;
         END LOOP;

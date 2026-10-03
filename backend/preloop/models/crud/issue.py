@@ -45,8 +45,14 @@ class CRUDIssue(CRUDBase[Issue]):
 
         Returns:
             The stored issue and whether this call inserted it.
+
+        Raises:
+            ValueError: When ``external_id`` is missing or empty.
         """
         values = dict(obj_in)
+        if values.get("external_id") in (None, ""):
+            # An empty id would merge unrelated issues under one key.
+            raise ValueError("Issue upsert requires a provider external_id")
         values["external_id"] = str(values["external_id"])
         if isinstance(values.get("meta_data"), dict):
             metadata = dict(values["meta_data"])

@@ -186,3 +186,45 @@ def test_upsert_updates_the_existing_row(db_session: Session) -> None:
     )
     assert not created_again and second.id == first.id
     assert second.title == "Edited title"
+
+
+@pytest.mark.parametrize("external_id", [None, ""])
+def test_upsert_requires_external_id(db_session: Session, external_id: Any) -> None:
+    _, project, tracker = _project(db_session)
+    with pytest.raises(ValueError, match="external_id"):
+        crud_issue.upsert(
+            db_session,
+            obj_in={
+                "title": "No provider id",
+                "external_id": external_id,
+                "project_id": project.id,
+                "tracker_id": tracker.id,
+            },
+        )
+
+
+def test_upgrade_refuses_composite_foreign_keys(db_session: Session) -> None:
+    db = db_session
+    db.execute(text("ALTER TABLE issue DROP CONSTRAINT uq_issue_project_external_id"))
+    db.execute(text("ALTER TABLE issue ADD CONSTRAINT uq_tmp_issue_id_key UNIQUE (id, key)"))
+    db.execute(
+        text(
+            "CREATE TABLE tmp_issue_ref (issue_id uuid, issue_key varchar(512), "
+            "CONSTRAINT fk_tmp_issue_ref FOREIGN KEY (issue_id, issue_key) "
+            "REFERENCES issue (id, key))"
+        )
+    )
+    _, project, tracker = _project(db)
+    for _ in range(2):
+        CRUDBase(models.Issue).create(
+            db,
+            obj_in={
+                "title": "Copy",
+                "external_id": "9000001",
+                "project_id": project.id,
+                "tracker_id": tracker.id,
+            },
+        )
+    db.flush()
+    with pytest.raises(Exception, match="fk_tmp_issue_ref"):
+        _run_upgrade(db)
