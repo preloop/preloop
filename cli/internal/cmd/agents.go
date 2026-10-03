@@ -323,7 +323,8 @@ partially), non-zero only when every attempted agent failed.
 
 Examples:
   preloop agents discover
-  preloop agents discover --json`,
+  preloop agents discover --json
+  preloop agents discover --inventory`,
 	RunE: runAgentsDiscover,
 }
 
@@ -827,7 +828,8 @@ func init() {
 	agentsCmd.AddCommand(agentsStarterPolicyCmd)
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
-	agentsDiscoverCmd.Flags().Bool("json", false, "output discovered agents as JSON (read-only, no prompts)")
+	agentsDiscoverCmd.Flags().Bool("json", false, "output safe discovery summaries as JSON (read-only, no prompts)")
+	agentsDiscoverCmd.Flags().Bool("inventory", false, "output offline known-app inventory JSON (no auth, network, prompts, or writes)")
 	agentsDiscoverCmd.Flags().Bool("no-onboard-prompt", false, "do not prompt to onboard discovered agents")
 	agentsDiscoverCmd.Flags().BoolP("yes", "y", false, "auto-approve interactive onboarding prompts")
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
@@ -869,6 +871,9 @@ func init() {
 
 // runAgentsDiscover scans for AI agents on the machine.
 func runAgentsDiscover(cmd *cobra.Command, args []string) error {
+	if isOfflineInventoryCommand(cmd) {
+		return runAgentsInventory(cmd)
+	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	addServers, _ := cmd.Flags().GetBool("add")
 	noOnboardPrompt, _ := cmd.Flags().GetBool("no-onboard-prompt")
@@ -881,18 +886,24 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 
 	discovered, err := discoverAgents(os.Stdout, !asJSON)
 	if err != nil {
+		if asJSON {
+			return fmt.Errorf("discovery failed")
+		}
 		return err
 	}
 	client := authenticatedDiscoveryClient()
 	discovered, err = enrichDiscoveredAgents(discovered, client)
 	if err != nil {
+		if asJSON {
+			return fmt.Errorf("discovery enrichment failed")
+		}
 		return err
 	}
 
 	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
-		return enc.Encode(discovered)
+		return enc.Encode(safeDiscoveryJSON(discovered))
 	}
 
 	if len(discovered) == 0 {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/telemetry"
 	"github.com/preloop/preloop/cli/internal/version"
 )
@@ -48,6 +49,13 @@ daily version check-in and conversion events). Update notifications are
 suppressed too, as they depend on the check-in response.`,
 
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Inventory is explicitly offline, including when validation rejects
+		// conflicting flags. Skip telemetry counters and version/cache work.
+		if isOfflineInventoryCommand(cmd) {
+			silenceUsageForRuntimeErrors(cmd)
+			return
+		}
+
 		// Count top-level command-category usage locally (names only, never
 		// arguments); merged into the daily check-in and reset on success.
 		telemetry.Increment(topLevelCommandName(cmd))
@@ -60,8 +68,9 @@ suppressed too, as they depend on the check-in response.`,
 
 		// Check for updates on each invocation (cached daily). Skip the
 		// daily prompt on `preloop update` itself so the command owns the
-		// confirmation and we do not ask twice.
-		if cmd.Name() != "update" {
+		// confirmation and we do not ask twice. JSON discovery must also
+		// remain prompt-free and emit only its allowlisted JSON array.
+		if cmd.Name() != "update" && !isSafeDiscoveryJSONCommand(cmd) {
 			if err := version.CheckForUpdate(); err != nil {
 				// Silently ignore update check errors
 				if verbose {
@@ -111,7 +120,17 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&FlagURL, "url", "", "API base URL (overrides PRELOOP_URL env var and config file)")
 	rootCmd.PersistentFlags().StringVar(&FlagProfile, "profile", "", "config profile to use (overrides PRELOOP_PROFILE and the file's current profile)")
 	rootCmd.PersistentFlags().StringVar(&FlagAccount, "account", "", "account slug to act in for this command (overrides PRELOOP_ACCOUNT and the profile's current account)")
-	cobra.OnInitialize(applySelection)
+	cobra.OnInitialize(func() {
+		if inventory, _ := agentsDiscoverCmd.Flags().GetBool("inventory"); inventory {
+			return
+		}
+		if asJSON, _ := agentsDiscoverCmd.Flags().GetBool("json"); asJSON {
+			// Select the profile without emitting free-form selection diagnostics.
+			config.Select(FlagProfile, FlagAccount)
+		} else {
+			applySelection()
+		}
+	})
 
 	// Add subcommands
 	rootCmd.AddCommand(loginCmd)
