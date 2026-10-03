@@ -236,6 +236,50 @@ The full request and response schemas are in the API reference
 `preloop artifacts put <file> --session <id> --kind <kind> --label site=...`
 is planned in #1089. Until it ships, use the multipart call above.
 
+## Reading artifacts from an agent
+
+Two built-in MCP tools, both **off by default**, let an agent find and read
+artifacts: `search_artifacts` and `get_artifact`. Enable them on the **Tools**
+page or list them in a flow's `allowed_mcp_tools`.
+
+```json
+{
+  "name": "search_artifacts",
+  "arguments": {
+    "kind": ["transcript"],
+    "labels": {"site": "heilbronn"},
+    "since": "2026-10-04T08:00:00+00:00",
+    "until": "2026-10-04T09:00:00+00:00"
+  }
+}
+```
+
+- `q` matches the artifact's extracted text (web search syntax) or its name.
+- `kind` is a list; `labels` must all match; a label with an empty value
+  matches any.
+- `since` is inclusive and `until` exclusive, both on `created_at`, ISO 8601
+  with an offset. A scheduled flow can pass its own
+  `trigger_event.payload.window.from` / `.to`.
+- `limit` is at most 50; pass `next_cursor` back as `cursor` for the next page.
+
+The answer is one `resource_link` block per artifact and
+`structuredContent.items`: each artifact's descriptor plus `excerpt`, a short
+fragment of its text with matches in `**bold**`.
+
+`get_artifact {artifact_id, max_bytes?}` returns the content: an
+`EmbeddedResource` with `text` for text kinds (the first `max_bytes`, default
+64 KiB, with `_meta["preloop.dev/artifact"].truncated` set when cut), inline
+bytes for binaries up to 1 MiB, and a `resource_link` beyond that.
+
+**Scope.** By default both tools see only artifacts of sessions run by the
+calling agent identity, across all its runs. `scope: "account"` reads every
+artifact of the account and needs the `artifact_search.account_scope` grant
+for that agent (granted through the Enterprise Edition governance settings).
+Without the grant the call is refused with `account_scope_not_granted`, naming
+the grant; it is never quietly narrowed. `get_artifact` answers an id outside
+the caller's scope with `artifact_not_found`. Every call, answered or refused,
+is written to the audit log with the agent as the actor.
+
 ## Where artifacts appear
 
 - **Session timeline.** Every deposit writes an `artifact` row on the session

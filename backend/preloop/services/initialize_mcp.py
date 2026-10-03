@@ -25,6 +25,8 @@ from preloop.services.dynamic_fastmcp import (
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
     DEPOSIT_ARTIFACT_TOOL,
+    GET_ARTIFACT_TOOL,
+    SEARCH_ARTIFACTS_TOOL,
     GET_EXECUTION_TOOL,
     GET_ISSUE_DESCRIPTION,
     GET_ISSUE_SCHEMA,
@@ -83,6 +85,14 @@ class CancelScopeErrorFilter(logging.Filter):
             return True
 
         return False
+
+
+def _artifact_block(block: dict):
+    """Validate one shared-mapping block dict into an MCP ``ContentBlock``."""
+    from mcp.types import ContentBlock
+    from pydantic import TypeAdapter
+
+    return TypeAdapter(ContentBlock).validate_python(block)
 
 
 def initialize_mcp_with_tools() -> DynamicFastMCP:
@@ -1417,6 +1427,120 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     )
     deposit_artifact_tool.parameters = deepcopy(DEPOSIT_ARTIFACT_TOOL["schema"])
     mcp.add_tool(deposit_artifact_tool)
+
+    # Register Tools 7i/7j: search_artifacts and get_artifact (shared
+    # metadata: tools.builtin_defs.SEARCH_ARTIFACTS_TOOL / GET_ARTIFACT_TOOL).
+    # The read half of the artifact tools (#1104). Scope (own sessions, or
+    # the account with artifact_search.account_scope), the MCP block
+    # mapping and the audit row all live in services.agent_artifact_read.
+    async def _run_artifact_read(
+        tool_name: str, arguments: dict, ctx: Optional[Context]
+    ) -> ToolResult:
+        from mcp.types import TextContent
+
+        from anyio import to_thread
+        from preloop.models.db import session as db_session_module
+        from preloop.services import agent_artifact_read
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return ToolResult(
+                content=[TextContent(type="text", text="Error: No user context")],
+                is_error=True,
+            )
+        approved, denial = await require_approval(
+            tool_name=tool_name,
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments=arguments,
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return ToolResult(
+                content=[TextContent(type="text", text=str(denial))], is_error=True
+            )
+        caller = agent_artifact_read.Caller.from_user_context(user_context)
+        run = (
+            agent_artifact_read.search
+            if tool_name == SEARCH_ARTIFACTS_TOOL["name"]
+            else agent_artifact_read.get
+        )
+
+        def _run():
+            db = next(db_session_module.get_db_session())
+            try:
+                return run(db, caller=caller, arguments=arguments)
+            finally:
+                db.close()
+
+        outcome = await to_thread.run_sync(_run)
+        blocks = [_artifact_block(block) for block in outcome.blocks] or [
+            TextContent(type="text", text=outcome.text)
+        ]
+        return ToolResult(
+            content=blocks,
+            structured_content=outcome.structured,
+            is_error=outcome.is_error,
+        )
+
+    async def search_artifacts(
+        q: str | None = None,
+        kind: list[str] | None = None,
+        labels: dict | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        scope: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Find artifacts by kind, labels and time window, scoped to the caller."""
+        arguments = {
+            "q": q,
+            "kind": kind,
+            "labels": labels,
+            "since": since,
+            "until": until,
+            "scope": scope,
+            "limit": limit,
+            "cursor": cursor,
+        }
+        return await _run_artifact_read(
+            SEARCH_ARTIFACTS_TOOL["name"],
+            {k: v for k, v in arguments.items() if v is not None},
+            ctx,
+        )
+
+    search_artifacts_tool = FunctionTool.from_function(
+        search_artifacts,
+        description=SEARCH_ARTIFACTS_TOOL["description"],
+        output_schema=None,
+    )
+    search_artifacts_tool.parameters = deepcopy(SEARCH_ARTIFACTS_TOOL["schema"])
+    mcp.add_tool(search_artifacts_tool)
+
+    async def get_artifact(
+        artifact_id: str,
+        max_bytes: int | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Read one artifact in the caller's scope as an MCP content block."""
+        arguments: dict = {"artifact_id": artifact_id}
+        if max_bytes is not None:
+            arguments["max_bytes"] = max_bytes
+        return await _run_artifact_read(GET_ARTIFACT_TOOL["name"], arguments, ctx)
+
+    get_artifact_tool = FunctionTool.from_function(
+        get_artifact,
+        description=GET_ARTIFACT_TOOL["description"],
+        output_schema=None,
+    )
+    get_artifact_tool.parameters = deepcopy(GET_ARTIFACT_TOOL["schema"])
+    mcp.add_tool(get_artifact_tool)
 
     # Register Tool 8: add_comment
     @mcp.tool()

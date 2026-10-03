@@ -172,6 +172,24 @@ descriptor as `structuredContent`. Errors are tool errors whose text starts
 with the deposit API's code string. Default-off: enable it on the Tools page or
 list it in a flow's `allowed_mcp_tools`.
 
+### Artifact read tools
+
+`search_artifacts` and `get_artifact` (#1104) are the read half of
+`deposit_artifact`, for example for a scheduled evaluator. Both are
+default-off. Scope follows `search_sessions`: `own` (default) is the artifacts
+of sessions the calling agent identity (`runtime_principal_id`) ran, across
+runs; `account` needs the `artifact_search.account_scope` grant in the
+governance store (read in core by `account_scope_granted`, written by EE) and
+is refused as `account_scope_not_granted` without it. `get_artifact` answers an
+id outside the caller's scope with `artifact_not_found`. Results use the shared
+MCP mapping (`preloop/services/artifact_shapes.py`): `ResourceLink` blocks for
+search hits, an `EmbeddedResource` (text up to `max_bytes`, small binaries up to
+1 MiB) or a `ResourceLink` for a read, with `truncated` in
+`_meta["preloop.dev/artifact"]`. Every call writes an audit row
+(`resource_type` `runtime_session_artifact`, action `query` or `read`, actor
+`source` `mcp`). Code: `preloop/services/agent_artifact_read.py`; guide:
+[docs/guide/artifacts.md](../guide/artifacts.md#reading-artifacts-from-an-agent).
+
 ### Issue tools
 
 `get_issue` and `update_issue` carry the issue triage surface. There are no separate

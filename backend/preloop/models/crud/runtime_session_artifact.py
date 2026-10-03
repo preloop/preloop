@@ -442,6 +442,130 @@ def list_page_for_session(
     )
 
 
+def search_page(
+    db: Session,
+    *,
+    account_id: UUID,
+    limit: int,
+    runtime_principal_id: str | None = None,
+    kinds: list[str] | None = None,
+    labels: dict[str, Any] | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    query: str | None = None,
+    before: tuple[datetime, UUID] | None = None,
+) -> list[tuple[models.RuntimeSessionArtifact, str | None]]:
+    """One page of available artifacts across sessions, newest first.
+
+    The agent-facing read behind ``search_artifacts`` (#1104). Bound to the
+    account in SQL; ``runtime_principal_id`` narrows to the sessions one
+    agent identity ran, which is the default "own" scope.
+
+    Args:
+        db: Database session.
+        account_id: Account the caller is allowed to read.
+        limit: Maximum rows to return.
+        runtime_principal_id: When set, only artifacts of sessions whose
+            ``runtime_principal_id`` equals it.
+        kinds: When set, only rows of these kinds.
+        labels: When set, only rows whose labels contain these (JSONB ``@>``).
+        since: Inclusive lower bound on ``created_at``.
+        until: Exclusive upper bound on ``created_at``.
+        query: Web search syntax over the artifact's extracted text chunks
+            (#1082), or a case-insensitive substring of its name.
+        before: Keyset cursor ``(created_at, id)``; strictly older rows only.
+
+    Returns:
+        ``(artifact, excerpt)`` pairs. The excerpt is a highlighted fragment
+        of the best matching chunk when ``query`` matched text, otherwise
+        the start of the first chunk, or None for an artifact without text.
+    """
+    from preloop.models.models.session_search_document import (
+        REDACTION_STATE_METADATA_ONLY,
+        SessionSearchDocument,
+    )
+
+    table = models.RuntimeSessionArtifact
+    chunks = SessionSearchDocument
+    q = db.query(table).filter(
+        table.account_id == account_id,
+        table.availability == "available",
+    )
+    if runtime_principal_id is not None:
+        own = select(models.RuntimeSession.id).where(
+            models.RuntimeSession.account_id == account_id,
+            models.RuntimeSession.runtime_principal_id == runtime_principal_id,
+        )
+        q = q.filter(table.runtime_session_id.in_(own))
+    if kinds:
+        q = q.filter(table.kind.in_(kinds))
+    if labels:
+        q = q.filter(table.labels.contains(labels))
+    if since is not None:
+        q = q.filter(table.created_at >= since)
+    if until is not None:
+        q = q.filter(table.created_at < until)
+    normalized = " ".join(query.split()) if query else ""
+    tsquery = func.websearch_to_tsquery("simple", normalized) if normalized else None
+    chunk_scope = (
+        chunks.account_id == account_id,
+        chunks.source_kind == "artifact",
+        chunks.redaction_state != REDACTION_STATE_METADATA_ONLY,
+    )
+    if tsquery is not None:
+        text_hits = select(chunks.source_id).where(
+            *chunk_scope, chunks.search_vector.op("@@")(tsquery)
+        )
+        escaped = (
+            normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        q = q.filter(
+            func.cast(table.id, String).in_(text_hits)
+            | table.name.ilike(f"%{escaped}%", escape="\\")
+        )
+    if before is not None:
+        created_at, artifact_id = before
+        q = q.filter(
+            (table.created_at < created_at)
+            | ((table.created_at == created_at) & (table.id < artifact_id))
+        )
+    rows = list(q.order_by(table.created_at.desc(), table.id.desc()).limit(limit).all())
+    if not rows:
+        return []
+
+    ids = [str(row.id) for row in rows]
+    excerpts: dict[str, str] = {}
+    if tsquery is not None:
+        headline = func.ts_headline(
+            "simple",
+            chunks.content,
+            tsquery,
+            "MaxFragments=1, MaxWords=30, MinWords=8, StartSel=**, StopSel=**",
+        )
+        for source_id, text in (
+            db.query(chunks.source_id, headline)
+            .filter(
+                *chunk_scope,
+                chunks.source_id.in_(ids),
+                chunks.search_vector.op("@@")(tsquery),
+            )
+            .order_by(chunks.source_id, chunks.chunk_index)
+            .all()
+        ):
+            excerpts.setdefault(source_id, text)
+    for source_id, text in (
+        db.query(chunks.source_id, func.left(chunks.content, EXCERPT_MAX_CHARS))
+        .filter(*chunk_scope, chunks.source_id.in_(ids), chunks.chunk_index == 0)
+        .all()
+    ):
+        excerpts.setdefault(source_id, text)
+    return [(row, excerpts.get(str(row.id))) for row in rows]
+
+
+#: Longest excerpt ``search_page`` returns for an artifact without a match.
+EXCERPT_MAX_CHARS = 280
+
+
 def decrypt(artifact: models.RuntimeSessionArtifact) -> bytes:
     """Decrypt an artifact's ciphertext.
 
