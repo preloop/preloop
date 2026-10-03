@@ -1,5 +1,6 @@
 """Endpoints for managing projects."""
 
+import datetime
 import logging
 import uuid
 from typing import List, Optional
@@ -9,18 +10,26 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.api.common import get_accessible_projects
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 from preloop.schemas.project import (
     ProjectCreate,
     ProjectResponse,
+    ProjectTransferReceipt,
+    ProjectTransferRequest,
+    RepositoryLocation,
     ProjectUpdate,
     TestConnectionRequest,
     TestConnectionResponse,
 )
 from preloop.sync.trackers import create_tracker_client
 from preloop.models.crud.organization import CRUDOrganization
-from preloop.models.crud.project import CRUDProject
+from preloop.models.crud.project import (
+    REPOSITORY_ID_TRACKER_TYPES,
+    CRUDProject,
+    find_same_repository_projects,
+    repository_host,
+)
 from preloop.models.crud.tracker import CRUDTracker
 from preloop.models.crud.issue import CRUDIssue
 from preloop.models.crud.embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
@@ -31,6 +40,10 @@ from preloop.models.models.project import Project
 from preloop.models.models.tracker import Tracker
 from preloop.models.models.issue import Issue
 from preloop.models.models.issue import IssueEmbedding, EmbeddingModel
+from preloop.models.models.tracker_scope_rule import TrackerScopeRule
+from preloop.models.models.flow import Flow
+from preloop.models.models.webhook import Webhook
+from preloop.models.crud import crud_audit_log
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -42,6 +55,44 @@ crud_issue_embedding = CRUDIssueEmbedding(IssueEmbedding)
 crud_embedding_model = CRUDEmbeddingModel(EmbeddingModel)
 
 
+def _get_organization_in_account(
+    db: Session, organization_id: object, account_id: object
+) -> Optional[Organization]:
+    """Return the organization only if its tracker belongs to ``account_id``.
+
+    Organizations carry no account column; ownership is their tracker's
+    account. ``crud_organization.get`` ignores ``account_id`` for that reason,
+    so callers that act on an organization must scope it here.
+    """
+    try:
+        org_uuid = uuid.UUID(str(organization_id))
+    except ValueError:
+        return None
+    return (
+        db.query(Organization)
+        .join(Organization.tracker)
+        .filter(Organization.id == org_uuid, Tracker.account_id == account_id)
+        .first()
+    )
+
+
+def _get_project_in_account(
+    db: Session, project_id: object, account_id: object
+) -> Optional[Project]:
+    """Return the project only if its organization's tracker is in the account."""
+    try:
+        project_uuid = uuid.UUID(str(project_id))
+    except ValueError:
+        return None
+    return (
+        db.query(Project)
+        .join(Project.organization)
+        .join(Organization.tracker)
+        .filter(Project.id == project_uuid, Tracker.account_id == account_id)
+        .first()
+    )
+
+
 @router.post("/projects", response_model=ProjectResponse, status_code=201)
 @require_permission("create_projects")
 def create_project(
@@ -50,9 +101,9 @@ def create_project(
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
     """Create a new project, ensuring user has access to the organization."""
-    # Check if organization exists
-    organization = crud_organization.get(
-        db, id=project.organization_id, account_id=current_user.account_id
+    # Check the organization exists and belongs to the caller's account
+    organization = _get_organization_in_account(
+        db, project.organization_id, current_user.account_id
     )
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -81,9 +132,38 @@ def create_project(
         "meta_data": {},
     }
 
+    # A repository keeps its ID when it moves between organisations. A second
+    # registration under the new owner would split its issues and reviews
+    # across two records and make webhook routing ambiguous (#1159).
+    registered = find_same_repository_projects(
+        db,
+        organization=organization,
+        identifier=project.identifier,
+        account_id=current_user.account_id,
+    )
+    if registered:
+        existing = registered[0]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "repository_already_registered",
+                "message": (
+                    f"Repository '{project.identifier}' is already registered as "
+                    f"project {existing.id} in another organization. If the "
+                    "repository moved, preview and apply the move with "
+                    f"POST /api/v1/projects/{existing.id}/transfer instead of "
+                    "creating a second project."
+                ),
+                "existing_project_id": str(existing.id),
+                "existing_organization_id": str(existing.organization_id),
+            },
+        )
+
     db_project = crud_project.create(db, obj_in=project_data)
 
-    # Convert datetime objects to ISO format strings
+    # ProjectResponse declares the timestamps as strings. Returning datetime
+    # objects failed response validation after the row was committed, which
+    # surfaced as an HTTP 500 for every create (#1159).
     return {
         "id": db_project.id,
         "name": db_project.name,
@@ -92,8 +172,8 @@ def create_project(
         "organization_id": db_project.organization_id,
         "settings": db_project.settings,
         "tracker_configurations": db_project.tracker_settings,
-        "created_at": db_project.created_at,
-        "updated_at": db_project.updated_at,
+        "created_at": db_project.created_at.isoformat(),
+        "updated_at": db_project.updated_at.isoformat(),
     }
 
 
@@ -430,3 +510,351 @@ async def test_project_connection(
         raise HTTPException(
             status_code=500, detail=f"Error testing connection: {str(e)}"
         )
+
+
+def _transfer_error(
+    status_code: int, code: str, message: str, **extra
+) -> HTTPException:
+    """An actionable transfer refusal with a stable machine-readable code."""
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, **extra},
+    )
+
+
+def _list_destination_repositories(
+    tracker: Tracker, organization: Organization
+) -> List[dict]:
+    """List the repositories the destination integration can see in the org.
+
+    Uses the destination tracker's own credentials, so a repository appears
+    only if that installation or token has been granted access to it.
+
+    Runs on the request's worker thread. The client is built here because a
+    GitHub App client may read its installation from the database; only the
+    HTTP listing is handed to the event loop.
+    """
+    from anyio import from_thread
+
+    from preloop.sync.scanner.core import TrackerClient
+
+    client = TrackerClient(tracker).client
+    return from_thread.run(client.get_projects, str(organization.identifier))
+
+
+def _scope_allows(
+    rules: List[TrackerScopeRule], org_identifier: str, repo_id: str
+) -> bool:
+    """Mirror the scanner and project listing scope rules for one repository."""
+    org_includes = {
+        r.identifier
+        for r in rules
+        if r.scope_type == "ORGANIZATION" and r.rule_type == "INCLUDE"
+    }
+    project_includes = {
+        r.identifier
+        for r in rules
+        if r.scope_type == "PROJECT" and r.rule_type == "INCLUDE"
+    }
+    project_excludes = {
+        r.identifier
+        for r in rules
+        if r.scope_type == "PROJECT" and r.rule_type == "EXCLUDE"
+    }
+    if org_identifier not in org_includes:
+        return False
+    if repo_id in project_excludes:
+        return False
+    return not project_includes or repo_id in project_includes
+
+
+@router.post(
+    "/projects/{project_id}/transfer",
+    response_model=ProjectTransferReceipt,
+    responses={
+        403: {"description": "Caller lacks manage_trackers"},
+        404: {"description": "Project or destination organization not found"},
+        409: {"description": "Transfer refused; detail.code says why"},
+        422: {"description": "Repository type or host cannot be transferred"},
+        502: {"description": "Destination integration could not be queried"},
+    },
+)
+@require_permission("manage_trackers")
+def transfer_project(
+    project_id: str,
+    request: ProjectTransferRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> ProjectTransferReceipt:
+    """Rebind a repository project to the organization that now owns it.
+
+    A GitHub repository keeps its repository ID when it is transferred to
+    another owner or renamed. This keeps the same project row (and so its ID,
+    issues, flow triggers, audit and review history) and moves it to the
+    destination organization, updating the owner/name that clone and review
+    publication use.
+
+    Preview by default; send ``dry_run: false`` to apply. Applying again is a
+    no-op that returns ``status: unchanged``.
+
+    The destination integration must already be able to see the repository
+    (checked live with its own credentials) and must include it in scope.
+    Repository-level grants on the source integration are not copied; the
+    receipt lists them under ``not_carried_over``.
+    """
+    # require_permission is a no-op without the RBAC plugin. Moving a repo
+    # changes which integration's credentials publish to it, so enforce it.
+    ensure_permission_in_oss(db, current_user, "manage_trackers")
+
+    project = _get_project_in_account(db, project_id, current_user.account_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    destination = _get_organization_in_account(
+        db, request.organization_id, current_user.account_id
+    )
+    if not destination:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    source = project.organization
+    source_tracker = source.tracker
+    dest_tracker = destination.tracker
+    repo_id = str(project.identifier)
+
+    if source_tracker.tracker_type not in REPOSITORY_ID_TRACKER_TYPES:
+        raise _transfer_error(
+            422,
+            "unsupported_tracker",
+            f"Transfers are supported for {sorted(REPOSITORY_ID_TRACKER_TYPES)} "
+            f"repositories; this project's tracker is '{source_tracker.tracker_type}'.",
+        )
+    if dest_tracker.tracker_type != source_tracker.tracker_type or repository_host(
+        dest_tracker
+    ) != repository_host(source_tracker):
+        raise _transfer_error(
+            422,
+            "different_repository_host",
+            "The destination organization is on a different host or tracker "
+            "type. Repository IDs are only stable within one GitHub host.",
+        )
+    if not dest_tracker.is_active or dest_tracker.is_deleted:
+        raise _transfer_error(
+            409,
+            "destination_integration_inactive",
+            "The destination organization's integration is inactive. "
+            "Reactivate it and retry.",
+        )
+
+    dest_rules = (
+        db.query(TrackerScopeRule)
+        .filter(TrackerScopeRule.tracker_id == dest_tracker.id)
+        .all()
+    )
+    if not _scope_allows(dest_rules, str(destination.identifier), repo_id):
+        raise _transfer_error(
+            409,
+            "destination_out_of_scope",
+            f"Organization '{destination.name}' or repository {repo_id} is not "
+            "included in the destination integration's scope. Include them in "
+            "the destination integration's settings, then retry. Scope is not "
+            "copied from the source integration.",
+        )
+
+    duplicate = (
+        db.query(Project)
+        .filter(
+            Project.organization_id == destination.id,
+            Project.identifier == repo_id,
+            Project.id != project.id,
+        )
+        .first()
+    )
+    if duplicate:
+        issue_count = db.query(Issue).filter(Issue.project_id == duplicate.id).count()
+        raise _transfer_error(
+            409,
+            "destination_has_duplicate",
+            f"Organization '{destination.name}' already has project "
+            f"{duplicate.id} for repository {repo_id} ({issue_count} issues). "
+            "Two projects for one repository make webhook routing ambiguous. "
+            "Review it and delete it if it holds nothing you need, then retry. "
+            "It is not merged automatically.",
+            duplicate_project_id=str(duplicate.id),
+            duplicate_issue_count=issue_count,
+        )
+
+    try:
+        visible = _list_destination_repositories(dest_tracker, destination)
+    except Exception as exc:  # tracker/network failure, never a bare 500
+        logger.warning(
+            "Destination access check failed for project %s: %s", project.id, exc
+        )
+        raise _transfer_error(
+            502,
+            "destination_check_failed",
+            "Could not list repositories through the destination integration. "
+            "Check its credentials and retry.",
+        ) from exc
+    live = next(
+        (
+            r
+            for r in visible
+            if str(r.get("identifier") or r.get("id") or "") == repo_id
+        ),
+        None,
+    )
+    if live is None:
+        raise _transfer_error(
+            409,
+            "destination_cannot_see_repository",
+            f"The integration for '{destination.name}' cannot see repository "
+            f"{repo_id}. Grant it access (for a GitHub App with selected "
+            "repositories, add this repository to the installation), then retry.",
+        )
+
+    live_meta = live.get("meta_data") or {}
+    new_full_name = live_meta.get("full_name") or project.slug
+    new_name = live.get("name") or project.name
+    old_meta = dict(project.meta_data or {})
+    old_full_name = old_meta.get("full_name") or project.slug
+
+    source_location = RepositoryLocation(
+        organization_id=str(source.id),
+        organization_name=source.name,
+        tracker_id=str(source_tracker.id),
+        full_name=old_full_name,
+    )
+    destination_location = RepositoryLocation(
+        organization_id=str(destination.id),
+        organization_name=destination.name,
+        tracker_id=str(dest_tracker.id),
+        full_name=new_full_name,
+    )
+
+    moving = source.id != destination.id
+    changes: List[str] = []
+    if moving:
+        changes.append(f"organization: {source.name} -> {destination.name}")
+    if project.slug != new_full_name:
+        changes.append(
+            f"repository: {project.slug} -> {new_full_name} "
+            "(clone and review publication target)"
+        )
+    if project.name != new_name:
+        changes.append(f"name: {project.name} -> {new_name}")
+
+    not_carried_over: List[str] = []
+    if moving:
+        source_repo_rules = (
+            db.query(TrackerScopeRule)
+            .filter(
+                TrackerScopeRule.tracker_id == source_tracker.id,
+                TrackerScopeRule.scope_type == "PROJECT",
+                TrackerScopeRule.identifier == repo_id,
+            )
+            .all()
+        )
+        for rule in source_repo_rules:
+            not_carried_over.append(
+                f"{rule.rule_type} scope rule for repository {repo_id} on the "
+                f"source integration {source_tracker.id}"
+            )
+
+    manual_actions: List[str] = []
+    stale_hooks = (
+        db.query(Webhook)
+        .filter(
+            Webhook.project_id == project.id,
+            Webhook.organization_id == source.id,
+        )
+        .count()
+        if moving
+        else 0
+    )
+    if stale_hooks:
+        manual_actions.append(
+            f"{stale_hooks} repository webhook record(s) were registered by the "
+            "source integration; re-register webhooks from the destination "
+            "integration if it uses repository webhooks."
+        )
+    if old_full_name and new_full_name and old_full_name != new_full_name:
+        flows = db.query(Flow).filter(Flow.account_id == current_user.account_id).all()
+        pinned = [
+            str(f.id)
+            for f in flows
+            if f.git_clone_config and old_full_name in str(f.git_clone_config)
+        ]
+        if pinned:
+            manual_actions.append(
+                f"Flow(s) {', '.join(pinned)} pin the old repository "
+                f"'{old_full_name}' in their clone configuration; update them "
+                f"to '{new_full_name}'."
+            )
+
+    receipt = ProjectTransferReceipt(
+        project_id=str(project.id),
+        repository_id=repo_id,
+        status="preview",
+        source=source_location,
+        destination=destination_location,
+        changes=changes,
+        not_carried_over=not_carried_over,
+        manual_actions=manual_actions,
+    )
+    if not changes:
+        receipt.status = "unchanged"
+        return receipt
+    if request.dry_run:
+        return receipt
+
+    new_meta = {**old_meta, **live_meta}
+    if moving:
+        history = list(old_meta.get("repository_transfers") or [])
+        history.append(
+            {
+                "from_organization_id": str(source.id),
+                "to_organization_id": str(destination.id),
+                "from_full_name": old_full_name,
+                "to_full_name": new_full_name,
+                "by_user_id": str(current_user.id),
+                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+        )
+        new_meta["repository_transfers"] = history
+    project.organization_id = destination.id
+    project.slug = new_full_name
+    project.name = new_name
+    project.meta_data = new_meta  # reassign: JSON column mutations are untracked
+
+    crud_audit_log.log_action(
+        db,
+        account_id=current_user.account_id,
+        user_id=current_user.id,
+        action="project_transferred" if moving else "project_repository_renamed",
+        resource_type="project",
+        resource_id=str(project.id),
+        status="success",
+        details={
+            "repository_id": repo_id,
+            "from_organization_id": str(source.id),
+            "to_organization_id": str(destination.id),
+            "from_full_name": old_full_name,
+            "to_full_name": new_full_name,
+            "not_carried_over": not_carried_over,
+        },
+        commit=False,
+    )
+    db.commit()
+    # Events for this repo on the destination may have been backed off as an
+    # unknown project; it resolves now.
+    crud_tracker.clear_unknown_project(
+        db, id=str(dest_tracker.id), project_identifier=repo_id
+    )
+    logger.info(
+        "Project %s (repository %s) rebound from org %s to org %s",
+        project.id,
+        repo_id,
+        source.id,
+        destination.id,
+    )
+    receipt.status = "transferred" if moving else "updated"
+    return receipt

@@ -120,7 +120,7 @@ class TestCreateProject:
         )
 
         with patch.object(
-            projects.crud_organization, "get", return_value=mock_organization
+            projects, "_get_organization_in_account", return_value=mock_organization
         ):
             with patch.object(
                 projects.crud_project, "get_by_identifier", return_value=None
@@ -158,7 +158,7 @@ class TestCreateProject:
         )
 
         with patch.object(
-            projects.crud_organization, "get", return_value=mock_organization
+            projects, "_get_organization_in_account", return_value=mock_organization
         ):
             with patch.object(
                 projects.crud_project,
@@ -186,7 +186,7 @@ class TestCreateProject:
             organization_id=str(uuid.uuid4()),
         )
 
-        with patch.object(projects.crud_organization, "get", return_value=None):
+        with patch.object(projects, "_get_organization_in_account", return_value=None):
             with pytest.raises(HTTPException) as exc_info:
                 call_endpoint(
                     projects.create_project,
@@ -209,7 +209,7 @@ class TestCreateProject:
         )
 
         with patch.object(
-            projects.crud_organization, "get", return_value=mock_organization
+            projects, "_get_organization_in_account", return_value=mock_organization
         ):
             with patch.object(
                 projects.crud_project, "get_by_identifier", return_value=mock_project

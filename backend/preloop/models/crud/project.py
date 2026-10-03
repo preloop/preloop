@@ -1,6 +1,6 @@
 """CRUD operations for Project model."""
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
@@ -353,3 +353,77 @@ class CRUDProject(CRUDBase[Project]):
             query = query.filter(Project.id.in_(project_ids))
 
         return query.all()
+
+
+# Tracker types whose project identifier is a host-wide, stable repository ID
+# that survives renames and moves between owners. GitHub's repository ID is the
+# identity of a repository project (#1159).
+REPOSITORY_ID_TRACKER_TYPES = frozenset({"github"})
+
+
+def repository_host(tracker: Tracker) -> str:
+    """Return the host that scopes a tracker's repository IDs.
+
+    Repository IDs are unique per GitHub host: github.com and each GitHub
+    Enterprise Server have separate ID spaces. An empty URL and the API host
+    both mean github.com.
+
+    Args:
+        tracker: Tracker row.
+
+    Returns:
+        Lower-case host name.
+    """
+    from urllib.parse import urlparse
+
+    raw = (getattr(tracker, "url", None) or "").strip()
+    if not raw:
+        return "github.com"
+    host = (urlparse(raw if "://" in raw else f"https://{raw}").hostname or "").lower()
+    if host in ("", "api.github.com", "www.github.com"):
+        return "github.com"
+    return host
+
+
+def find_same_repository_projects(
+    db: Session,
+    *,
+    organization: Organization,
+    identifier: str,
+    account_id: Any,
+) -> List[Project]:
+    """Find this repository registered under another organization.
+
+    Matches projects in the same account whose tracker has the same type and
+    host as ``organization``'s tracker and whose identifier is the same
+    repository ID. Projects in ``organization`` itself are excluded, as are
+    tracker types whose identifiers are not stable repository IDs.
+
+    Args:
+        db: Database session.
+        organization: Organization the caller wants to register the repo in.
+        identifier: Repository ID.
+        account_id: Account that owns both organizations.
+
+    Returns:
+        Matching projects, most recently updated first.
+    """
+    tracker = organization.tracker
+    if tracker is None or tracker.tracker_type not in REPOSITORY_ID_TRACKER_TYPES:
+        return []
+    host = repository_host(tracker)
+    candidates = (
+        db.query(Project)
+        .join(Project.organization)
+        .join(Organization.tracker)
+        .filter(
+            Project.identifier == str(identifier),
+            Project.organization_id != organization.id,
+            Tracker.account_id == account_id,
+            Tracker.tracker_type == tracker.tracker_type,
+            Tracker.is_deleted.is_(False),
+        )
+        .order_by(Project.updated_at.desc())
+        .all()
+    )
+    return [p for p in candidates if repository_host(p.organization.tracker) == host]

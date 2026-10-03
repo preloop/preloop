@@ -178,6 +178,34 @@ async def receive_webhook(
     return result
 
 
+def _resolve_webhook_project(
+    db: Session,
+    *,
+    identifier: str,
+    organization_id: Any,
+    account_id: Any,
+):
+    """Find the project a webhook names, never outside the tracker's account.
+
+    Repository IDs are only unique per host, and another account may track
+    the same repository. Prefer the organization the webhook was delivered
+    for; fall back to the rest of the account so a repository that moved
+    owners keeps routing to its project until it is transferred (#1159).
+    """
+    if organization_id is not None:
+        project = crud_project.get_by_identifier(
+            db,
+            identifier=identifier,
+            organization_id=str(organization_id),
+            account_id=str(account_id),
+        )
+        if project is not None:
+            return project
+    return crud_project.get_by_identifier(
+        db, identifier=identifier, account_id=str(account_id)
+    )
+
+
 def _prepare_webhook(
     tracker_type: str,
     organization_id: str,
@@ -632,7 +660,12 @@ def _prepare_webhook(
                     detail="Could not determine project identifier from payload",
                 )
 
-            project = crud_project.get_by_identifier(db, identifier=project_identifier)
+            project = _resolve_webhook_project(
+                db,
+                identifier=project_identifier,
+                organization_id=plan.organization_id,
+                account_id=resolved_tracker.account_id,
+            )
             if not project:
                 # The webhook names a project we never imported. Usually the
                 # repo is outside the integration's scope (GitHub App installed
@@ -792,7 +825,12 @@ def _prepare_webhook(
                     detail="Could not determine project identifier from payload",
                 )
 
-            project = crud_project.get_by_identifier(db, identifier=project_identifier)
+            project = _resolve_webhook_project(
+                db,
+                identifier=project_identifier,
+                organization_id=plan.organization_id,
+                account_id=resolved_tracker.account_id,
+            )
             if not project:
                 raise HTTPException(
                     status_code=404,
