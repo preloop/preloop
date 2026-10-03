@@ -16,10 +16,12 @@ major version. Names in the `preloop.*` namespace listed below are stable,
 plus `http.response.status_code`, which follows the stable OpenTelemetry
 HTTP conventions.
 
-**Experimental.** `gen_ai.*` names, and the `db.client.connections.*`
-pool gauges (older OpenTelemetry database conventions), follow the upstream
+**Experimental.** `gen_ai.*` names follow the upstream
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/),
-which are still in Development upstream. They track upstream changes.
+which are still in Development upstream. The `db.client.connections.*` pool
+gauges use names from the
+[OpenTelemetry database conventions](https://opentelemetry.io/docs/specs/semconv/database/)
+in their earlier, pre-stable form. Both groups track upstream changes.
 
 **Not covered.** Span names, span kinds, links between spans, resource
 attributes other than `service.name`, instrumentation scope names, and
