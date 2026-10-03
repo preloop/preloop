@@ -777,7 +777,7 @@ def _bearer_token(websocket: WebSocket) -> Optional[str]:
 def _authorize_session_attach(
     db: Session,
     *,
-    user: User,
+    user: models.User,
     runtime_session_id: str,
     execution_id: Optional[str],
 ) -> dict:
