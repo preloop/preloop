@@ -23,13 +23,19 @@ from sqlalchemy.orm import Session
 
 from preloop.api.common import get_tracker_client
 from preloop.models import models
-from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue_lifecycle
+from preloop.models.crud import (
+    crud_flow,
+    crud_flow_execution,
+    crud_issue,
+    crud_issue_lifecycle,
+)
 from preloop.schemas.issue_triage import (
     IssueTriageApply,
     IssueTriageResult,
     TriageDispatch,
 )
 from preloop.services.issue_triage import apply_triage, get_context, scope_revision
+from preloop.services.issue_intake import IssuePayloadError, issue_values_from_payload
 from preloop.services.issue_triage_provider import IssueTriageProvider
 from preloop.sync.exceptions import TrackerError
 
@@ -242,6 +248,41 @@ async def authorized_provider(
         raise TriageControllerError("triage_provider_scope_unsupported") from exc
 
 
+def _intake_from_delivery(
+    db: Session, *, project: models.Project, subject: dict[str, Any]
+) -> bool:
+    """Store a delivered issue the webhook transaction has not committed yet.
+
+    The flow event can reach the worker before the webhook handler that
+    stores the row commits (#1195). Both writers use the same atomic upsert,
+    so they converge on one row. A delivery whose provider id already has a
+    row is ambiguous, not missing, and is left to fail closed.
+
+    Returns:
+        Whether a row was written.
+    """
+    if subject.get("id") is None or not subject.get("title"):
+        return False
+    if crud_issue.get_by_external_id(
+        db, project_id=project.id, external_id=str(subject["id"])
+    ):
+        return False
+    try:
+        values = issue_values_from_payload(
+            project.organization.tracker, project, subject
+        )
+        crud_issue.upsert(db, obj_in=values)
+    except (IssuePayloadError, KeyError, TypeError, ValueError, SQLAlchemyError):
+        db.rollback()
+        logger.warning(
+            "Could not store delivered issue %s for triage",
+            subject.get("id"),
+            exc_info=True,
+        )
+        return False
+    return True
+
+
 async def reserve_triage_execution(
     db: Session,
     *,
@@ -267,13 +308,15 @@ async def reserve_triage_execution(
     subject = payload.get("issue") or payload.get("object_attributes") or {}
     if not isinstance(subject, dict):
         raise TriageControllerError("triage_issue_payload_required")
-    issue = crud_issue_lifecycle.issue_target(
-        db,
-        account_id=account_id,
-        project_id=project_id,
-        external_id=str(subject["id"]) if subject.get("id") is not None else None,
-        number=str(subject.get("number") or subject.get("iid") or "") or None,
-    )
+    target = {
+        "account_id": account_id,
+        "project_id": project_id,
+        "external_id": str(subject["id"]) if subject.get("id") is not None else None,
+        "number": str(subject.get("number") or subject.get("iid") or "") or None,
+    }
+    issue = crud_issue_lifecycle.issue_target(db, **target)
+    if issue is None and _intake_from_delivery(db, project=project, subject=subject):
+        issue = crud_issue_lifecycle.issue_target(db, **target)
     if issue is None:
         raise TriageControllerError("triage_issue_not_synced")
     issue_id = issue.id

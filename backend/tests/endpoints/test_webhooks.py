@@ -230,7 +230,7 @@ class TestWebhooksEndpoint:
     @patch("preloop.models.crud.crud_issue_embedding")
     @patch("preloop.api.endpoints.webhooks.crud_issue")
     @patch("preloop.api.endpoints.webhooks.crud_project")
-    @patch("preloop.api.endpoints.webhooks.TrackerClient")
+    @patch("preloop.services.issue_intake.TrackerClient")
     def test_github_webhook_valid_signature(
         self,
         mock_tracker_client,
@@ -259,7 +259,7 @@ class TestWebhooksEndpoint:
         mock_crud_project.get_by_identifier.return_value = mock_project
 
         mock_crud_issue.get_by_external_id.return_value = None
-        mock_crud_issue.create.return_value = MagicMock()
+        mock_crud_issue.upsert.return_value = (MagicMock(), True)
 
         payload_dict = {
             "action": "opened",
@@ -346,7 +346,7 @@ class TestWebhooksEndpoint:
     @patch("preloop.models.crud.crud_issue_embedding")
     @patch("preloop.api.endpoints.webhooks.crud_issue")
     @patch("preloop.api.endpoints.webhooks.crud_project")
-    @patch("preloop.api.endpoints.webhooks.TrackerClient")
+    @patch("preloop.services.issue_intake.TrackerClient")
     def test_gitlab_webhook_valid_token(
         self,
         mock_tracker_client,
@@ -375,7 +375,7 @@ class TestWebhooksEndpoint:
         mock_crud_project.get_by_identifier.return_value = mock_project
 
         mock_crud_issue.get_by_external_id.return_value = None
-        mock_crud_issue.create.return_value = MagicMock()
+        mock_crud_issue.upsert.return_value = (MagicMock(), True)
 
         response = self.test_client.post(
             f"/api/v1/private/webhooks/gitlab/{current_org_mock.id}",

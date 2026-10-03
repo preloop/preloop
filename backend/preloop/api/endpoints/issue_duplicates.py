@@ -10,6 +10,8 @@ from datetime import datetime, UTC
 
 from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.model_credentials import (
+    AuxApiKeyMissingError,
+    build_aux_openai_client,
     get_aux_openai_sdk_extra_kwargs,
     resolve_model_call_credentials,
 )
@@ -210,22 +212,22 @@ def check_or_create_issue_duplicate(
     llm_response_text = ""
     try:
         creds_kwargs = resolve_model_call_credentials(default_model, db=db)
-        api_key = creds_kwargs.get("api_key")
-        if not api_key:
-            logger.warning(
-                f"API key not found in credentials for model {default_model.model_identifier}. Trying OPENAI_API_KEY env var."
+        try:
+            client = build_aux_openai_client(
+                openai,
+                default_model,
+                creds_kwargs,
+                static_key_fallback=os.getenv("OPENAI_API_KEY"),
+                timeout=30.0,
+                max_retries=0,
             )
-            api_key = os.getenv("OPENAI_API_KEY")
-
-        if not api_key:
+        except AuxApiKeyMissingError:
             logger.error(
                 f"OpenAI API key not found for model {default_model.model_identifier} or environment variable."
             )
             raise HTTPException(
                 status_code=500, detail="OpenAI API key not configured."
-            )
-
-        client = openai.OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
+            ) from None
         aux_extras = get_aux_openai_sdk_extra_kwargs(
             default_model,
             call_site_kwargs={
@@ -993,25 +995,23 @@ def get_resolution_suggestion(
     )
 
     creds_kwargs = resolve_model_call_credentials(default_model, db=db)
-    api_key = creds_kwargs.get("api_key")
-    if not api_key:
-        logger.warning(
-            f"API key not found in credentials for model {default_model.model_identifier}. Trying OPENAI_API_KEY env var."
+    try:
+        client = build_aux_openai_client(
+            openai,
+            default_model,
+            creds_kwargs,
+            include_api_base=True,
+            static_key_fallback=os.getenv("OPENAI_API_KEY"),
+            timeout=30.0,
+            max_retries=0,
         )
-        api_key = os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
+    except AuxApiKeyMissingError:
         logger.error(
             f"OpenAI API key not found for model {default_model.model_identifier} or environment variable."
         )
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
-
-    client = openai.OpenAI(
-        api_key=api_key,
-        base_url=creds_kwargs.get("api_base"),
-        timeout=30.0,
-        max_retries=0,
-    )
+        raise HTTPException(
+            status_code=500, detail="OpenAI API key not configured."
+        ) from None
     dup_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt_text},
