@@ -1,6 +1,11 @@
 """Tests for MCP server initialization and tool registration."""
 
 import logging
+import gc
+import weakref
+import json
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -8,6 +13,7 @@ from uuid import uuid4
 import pytest
 
 from preloop.services.dynamic_fastmcp import DynamicFastMCP
+from preloop.models import models
 from preloop.services.initialize_mcp import (
     CancelScopeErrorFilter,
     initialize_mcp_with_tools,
@@ -112,6 +118,14 @@ def mcp_server():
 
 
 class TestInitializeMcpWithTools:
+    def test_unused_servers_can_be_collected(self) -> None:
+        """Framework callable caches must not own a previous MCP server."""
+        references = [weakref.ref(initialize_mcp_with_tools()) for _ in range(3)]
+
+        gc.collect()
+
+        assert all(reference() is None for reference in references)
+
     def test_returns_dynamic_fastmcp(self, mcp_server):
         assert isinstance(mcp_server, DynamicFastMCP)
 
@@ -136,6 +150,63 @@ class TestInitializeMcpWithTools:
 
 @pytest.mark.asyncio
 class TestRegisteredToolBehaviour:
+    async def test_approval_replay_uses_the_owning_live_server(
+        self, mcp_server: DynamicFastMCP
+    ) -> None:
+        """Creating another server must not redirect an earlier callback."""
+        other_server = initialize_mcp_with_tools()
+        tool = await mcp_server.get_tool("get_approval_status")
+        request_id = uuid4()
+        account_id = uuid4()
+        approval = models.ApprovalRequest(
+            id=request_id,
+            account_id=account_id,
+            status="approved",
+            tool_name="get_issue",
+            tool_args={"issue": "ABC-1"},
+            responses=[],
+        )
+        approval_result = MagicMock()
+        approval_result.scalar_one_or_none.return_value = approval
+        events_result = MagicMock()
+        events_result.scalars.return_value = []
+        db = AsyncMock()
+        db.execute.side_effect = [approval_result, events_result, approval_result]
+
+        @asynccontextmanager
+        async def session() -> AsyncIterator[AsyncMock]:
+            yield db
+
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=SimpleNamespace(account_id=str(account_id)),
+            ),
+            patch("preloop.models.db.session.get_async_db_session", new=session),
+            patch.object(
+                mcp_server,
+                "call_registered_tool_without_policy",
+                new=AsyncMock(return_value="Replay completed"),
+            ) as replay,
+            patch.object(
+                other_server,
+                "call_registered_tool_without_policy",
+                new=AsyncMock(),
+            ) as other_replay,
+            patch(
+                "preloop.services.approval_service._log_approval_tool_executed_async"
+            ),
+        ):
+            result = json.loads(await tool.fn(request_id=str(request_id)))
+
+        assert result["tool_result"] == {"text": "Replay completed"}
+        replay.assert_awaited_once_with(
+            f"account_{str(account_id).replace('-', '_')}_get_issue",
+            {"issue": "ABC-1"},
+            account_id=str(account_id),
+        )
+        other_replay.assert_not_awaited()
+
     async def _fn(self, mcp_server, name):
         tool = await mcp_server.get_tool(name)
         return tool.fn

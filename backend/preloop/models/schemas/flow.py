@@ -1156,6 +1156,43 @@ class FlowNotifications(BaseModel):
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
 
+    employee_secret: Optional[str] = Field(
+        default=None,
+        min_length=32,
+        repr=False,
+        json_schema_extra={"writeOnly": True},
+        description="HMAC secret for signed employee-event ingress.",
+    )
+
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description=(
+            "Secure token for authenticating webhook requests (auto-generated "
+            "for webhook triggers; unset on flows triggered by tracker events)"
+        ),
+    )
+    supersede_on_update: bool = Field(
+        default=False,
+        description=(
+            "When a pull or merge request gets a new head, stop this flow's "
+            "executions still working on an older head of the same request "
+            "before starting the new one. Off by default; the Pull Request "
+            "Reviewer preset turns it on."
+        ),
+    )
+    dedupe_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Dotted JSON path into the webhook body used to build a "
+            "deduplication key (e.g. 'data.issue.id'). When unset, defaults "
+            "to 'attachments.0.title_link' then 'data.issue.id'."
+        ),
+    )
+
+
+class WebhookConfigResponse(BaseModel):
+    """Webhook settings on a flow response. The ingress secret is omitted."""
+
     webhook_secret: Optional[str] = Field(
         default=None,
         description=(
@@ -1568,6 +1605,22 @@ class FlowResponse(FlowBase):
     ai_model_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("webhook_config", return_type=Optional[WebhookConfigResponse])
+    def redact_employee_secret(
+        self, value: Optional[WebhookConfig]
+    ) -> Optional[WebhookConfigResponse]:
+        """Keep ingress credentials in storage but out of all Flow responses.
+
+        A dedicated response model keeps ``webhook_secret``,
+        ``supersede_on_update`` and ``dedupe_path`` in the published schema.
+        A dict return type would widen the field to an untyped object.
+        """
+        if value is None:
+            return None
+        return WebhookConfigResponse.model_validate(
+            value.model_dump(exclude={"employee_secret"})
+        )
 
     @computed_field
     @property

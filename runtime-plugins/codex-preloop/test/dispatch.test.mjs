@@ -7,6 +7,7 @@ import { test } from "node:test";
 
 import {
   PreloopCodexSidecar,
+  MAX_COMMAND_RECEIPTS,
   controlAuthHeaders,
   resolveResumeSessionId,
   resolveTargetSessionId,
@@ -511,3 +512,118 @@ function fakeSocket({ open = true } = {}) {
     },
   };
 }
+
+test("durable employee receipt replays after sidecar restart without effects", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-employee-"));
+  try {
+    const config = { ...baseConfig, employee_state_path: path.join(directory, "state.json") };
+    const state = { starts: [], resumes: [], runs: 0, texts: [] };
+    const command = {type: "command", name: "send_message", message_id: "durable-example",
+      payload: {text: "review", start_new_session: true}};
+    const replies = [];
+    const socket = {OPEN: 1, readyState: 1, send: value => replies.push(JSON.parse(value))};
+    const first = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+    first.configure(config);
+    await first.handleFrame(socket, JSON.stringify(command));
+    const restarted = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+    restarted.configure(config);
+    await restarted.handleFrame(socket, JSON.stringify(command));
+    assert.equal(state.runs, 1);
+    assert.equal(replies[0].payload.native_session_id, replies[1].payload.native_session_id);
+    const stored = await fs.readFile(config.employee_state_path, "utf8");
+    assert.equal(stored.includes(config.bearer_token), false);
+  } finally { await fs.rm(directory, {recursive: true, force: true}); }
+});
+
+test("receipt ledger refuses the same principal under another managed identity or origin", async () => {
+ const directory = await fs.mkdtemp(path.join(os.tmpdir(), "preloop-receipt-scope-"));
+ try {
+  const config = {...baseConfig, managed_agent_id:"owned-agent", employee_state_path:path.join(directory,"ledger.json")};
+  const state = {starts:[], resumes:[], runs:0, texts:[]};
+  const command = JSON.stringify({type:"command", name:"send_message", message_id:"scoped-receipt", payload:{text:"synthetic", start_new_session:true}});
+  const first = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+  first.configure(config);
+  await first.handleFrame(fakeSocket(),command);
+  for (const override of [{managed_agent_id:"other-agent"},{control_ws_url:"wss://foreign.example.com/api/v1/agents/control/ws"}]) {
+   const changed = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+   changed.configure({...config,...override});
+   await assert.rejects(changed.handleFrame(fakeSocket(),command),/account origin mismatch/);
+  }
+  assert.equal(state.runs,1);
+ } finally {await fs.rm(directory,{recursive:true,force:true});}
+});
+
+
+test("ordinary sidecar evicts in memory and does not stop at the receipt cap", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "codex-ordinary-receipts-"));
+  try {
+    const configPath = path.join(directory, "preloop-control.json");
+    const state = { texts: [], runs: 0, starts: [], resumes: [] };
+    const sidecar = new PreloopCodexSidecar(configPath, makeEchoFactory(state));
+    sidecar.configure({ ...baseConfig });
+    const memory = new Map();
+    for (let index = 0; index < MAX_COMMAND_RECEIPTS; index += 1) {
+      memory.set(`old-${index}`, {
+        name: "command_result",
+        payload: { status: "completed", reply_text: `old-${index}` },
+      });
+    }
+    sidecar.memoryOutcomes = memory;
+    const socket = fakeSocket();
+    await sidecar.handleFrame(socket, JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "fresh",
+      payload: { text: "still runs", start_new_session: true },
+    }));
+    assert.equal(socket.sent.at(-1).name, "command_result");
+    assert.equal(state.runs, 1);
+    assert.equal(sidecar.memoryOutcomes.has("old-0"), false);
+    assert.equal(sidecar.memoryOutcomes.has("fresh"), true);
+    await sidecar.handleFrame(socket, JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "old-1",
+    }));
+    assert.equal(socket.sent.at(-1).name, "command_result");
+    assert.equal(socket.sent.at(-1).payload.reply_text, "old-1");
+    assert.equal(state.runs, 1);
+    await assert.rejects(fs.access(configPath + ".employees.json"));
+    assert.equal(sidecar.controlConfig.employee_state_path, undefined);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("full durable receipt ledger rejects new work and preserves replay after restart", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "codex-full-ledger-"));
+  const ledger = path.join(directory, "ledger.json");
+  const config = {...baseConfig, managed_agent_id: "owned-agent", employee_state_path: ledger};
+  const outcomes = Array.from({length: MAX_COMMAND_RECEIPTS}, (_, index) => [
+    `receipt-${index}`,
+    {name: "command_result", payload: {status: "completed", reply_text: `original-${index}`}},
+  ]);
+  const original = JSON.stringify({principal: config.runtime_principal_id,
+    managedAgent: config.managed_agent_id, controlURL: config.control_ws_url, outcomes});
+  await fs.writeFile(ledger, original);
+  const state = {texts: [], runs: 0, starts: [], resumes: []};
+  try {
+    for (let restart = 0; restart < 2; restart += 1) {
+      const sidecar = new PreloopCodexSidecar(undefined, makeEchoFactory(state));
+      sidecar.configure(config);
+      const socket = fakeSocket();
+      await sidecar.handleFrame(socket, JSON.stringify({type: "command", name: "send_message",
+        message_id: "new-command", payload: {text: "must not execute", start_new_session: true}}));
+      assert.equal(socket.sent[0].name, "command_error");
+      assert.match(socket.sent[0].payload.error, /ledger is full/);
+      for (const id of ["receipt-0", `receipt-${MAX_COMMAND_RECEIPTS - 1}`]) {
+        await sidecar.handleFrame(socket, JSON.stringify({type: "command", name: "send_message", message_id: id}));
+        assert.equal(socket.sent.at(-1).name, "command_result");
+        assert.equal(socket.sent.at(-1).payload.reply_text, `original-${id.slice(8)}`);
+      }
+      assert.equal(await fs.readFile(ledger, "utf8"), original);
+    }
+    assert.equal(state.runs, 0);
+    assert.equal(state.starts.length, 0);
+  } finally { await fs.rm(directory, {recursive: true, force: true}); }
+});

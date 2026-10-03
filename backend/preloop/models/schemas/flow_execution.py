@@ -343,6 +343,24 @@ class FlowExecutionUpdate(BaseModel):
 
 
 # Pydantic model for representing a FlowExecution in API responses (includes DB fields)
+class ExecutionFollowUp(BaseModel):
+    """A repair execution linked from its publishing execution."""
+
+    id: uuid.UUID
+    status: str
+    start_time: datetime
+
+
+class ExecutionContinuationNavigation(BaseModel):
+    """Navigation shared by a publisher and its review/CI continuations."""
+
+    original_execution_id: uuid.UUID
+    issue_url: Optional[str] = None
+    pr_url: Optional[str] = None
+    follow_ups: List[ExecutionFollowUp] = Field(default_factory=list)
+    follow_ups_truncated: bool = False
+
+
 class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     id: uuid.UUID
     created_at: datetime
@@ -350,6 +368,7 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
 
     # Include flow name for display purposes
     flow_name: Optional[str] = None
+    continuation_navigation: Optional[ExecutionContinuationNavigation] = None
     park: Optional[ExecutionPark] = Field(
         None,
         description=(

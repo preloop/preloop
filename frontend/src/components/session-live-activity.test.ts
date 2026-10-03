@@ -1,3 +1,239 @@
+import { expect, fixture, html } from '@open-wc/testing';
+import sinon from 'sinon';
+import './session-live-activity';
+import type { SessionLiveActivity } from './session-live-activity';
+import type { LiveSessionState } from '../utils/live-session';
+
+const SINCE = Date.parse('2026-10-02T09:00:00Z');
+
+function state(overrides: Partial<LiveSessionState> = {}): LiveSessionState {
+  return {
+    status: 'model_processing',
+    label: 'Model processing',
+    detail: 'openai/gpt-5',
+    since: SINCE,
+    transport: 'connected',
+    lastUpdateAt: SINCE,
+    pendingApprovalCount: 0,
+    ...overrides,
+  };
+}
+
+async function renderLine(
+  value: LiveSessionState,
+  now = SINCE + 12_000
+): Promise<SessionLiveActivity> {
+  const el = await fixture<SessionLiveActivity>(
+    html`<session-live-activity
+      .state=${value}
+      .now=${now}
+    ></session-live-activity>`
+  );
+  await el.updateComplete;
+  return el;
+}
+
+describe('session-live-activity', () => {
+  it('shows model, status and elapsed time in one line', async () => {
+    const el = await renderLine(state());
+
+    const line = el.shadowRoot!.querySelector('[data-testid="live-activity"]')!;
+    expect(line.getAttribute('data-status')).to.equal('model_processing');
+    expect(
+      line
+        .querySelector('[data-testid="live-activity-label"]')
+        ?.textContent?.trim()
+    ).to.equal('Model processing');
+    expect(line.textContent).to.contain('openai/gpt-5');
+    expect(line.querySelector('.elapsed')?.textContent?.trim()).to.equal(
+      '· 12s'
+    );
+  });
+
+  it('keeps the elapsed readout anchored to when the status began', async () => {
+    const first = await renderLine(state(), SINCE + 12_000);
+    expect(
+      first.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
+    ).to.equal('· 12s');
+
+    // A re-render at a later clock must advance the same status, never restart it.
+    first.now = SINCE + 45_000;
+    await first.updateComplete;
+    expect(
+      first.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
+    ).to.equal('· 45s');
+  });
+
+  it('shows the pending count and offers an in-place jump', async () => {
+    const el = await renderLine(
+      state({
+        status: 'waiting_for_approval',
+        label: 'Waiting for approval',
+        detail: '2 pending',
+        pendingApprovalCount: 2,
+      })
+    );
+
+    const jump = el.shadowRoot!.querySelector<HTMLButtonElement>(
+      '[data-testid="live-activity-jump"]'
+    )!;
+    expect(jump).to.not.equal(null);
+
+    let detail: unknown = null;
+    el.addEventListener('live-activity-pending-jump', (event) => {
+      detail = (event as CustomEvent).detail;
+    });
+    jump.click();
+
+    expect(detail).to.deep.equal({ count: 2 });
+  });
+
+  it('offers no jump when nothing is pending', async () => {
+    const el = await renderLine(state());
+
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="live-activity-jump"]')
+    ).to.equal(null);
+  });
+
+  it('reports a dropped socket separately from the work status', async () => {
+    const el = await renderLine(
+      state({ status: 'idle', label: 'Idle', transport: 'reconnecting' })
+    );
+
+    const line = el.shadowRoot!.querySelector('[data-testid="live-activity"]')!;
+    expect(line.getAttribute('data-status')).to.equal('idle');
+    expect(line.getAttribute('data-transport')).to.equal('reconnecting');
+    expect(
+      line.querySelector('[data-testid="live-activity-transport"]')?.textContent
+    ).to.contain('Reconnecting');
+  });
+
+  it('announces a state change once, not every elapsed second', async () => {
+    const el = await renderLine(state());
+    const live = el.shadowRoot!.querySelector('[aria-live="polite"]')!;
+    expect(live.textContent).to.contain('Model processing');
+    // The ticking number is presentational only.
+    expect(
+      el.shadowRoot!.querySelector('.elapsed')?.getAttribute('aria-hidden')
+    ).to.equal('true');
+
+    el.now = SINCE + 30_000;
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[aria-live="polite"]')!.textContent
+    ).to.contain('Model processing');
+    expect(
+      el.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
+    ).to.equal('· 30s');
+  });
+
+  it('re-announces when the status actually changes', async () => {
+    const el = await renderLine(state());
+    el.state = state({
+      status: 'waiting_for_approval',
+      label: 'Waiting for approval',
+      detail: '1 pending',
+      pendingApprovalCount: 1,
+    });
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot!.querySelector('[aria-live="polite"]')!.textContent
+    ).to.contain('Waiting for approval');
+  });
+
+  it('says nothing rather than guessing when nothing was observed', async () => {
+    const el = await renderLine(
+      state({
+        status: 'unavailable',
+        label: 'Activity unavailable',
+        detail: null,
+      })
+    );
+
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-testid="live-activity-label"]')!
+        .textContent?.trim()
+    ).to.equal('Activity unavailable');
+  });
+});
+
+describe('session-live-activity ticking', () => {
+  let clock: sinon.SinonFakeTimers;
+
+  beforeEach(() => {
+    clock = sinon.useFakeTimers({ shouldAdvanceTime: false });
+  });
+
+  afterEach(() => {
+    sinon.restore();
+  });
+
+  async function mountBusy(now: number): Promise<SessionLiveActivity> {
+    const el = document.createElement(
+      'session-live-activity'
+    ) as SessionLiveActivity;
+    el.now = now;
+    el.state = {
+      status: 'model_processing',
+      label: 'Model processing',
+      detail: 'claude-sonnet-4',
+      since: now - 12_000,
+      pendingApprovalCount: 0,
+      transport: 'live',
+      lastUpdateAt: now - 12_000,
+    };
+    document.body.append(el);
+    await el.updateComplete;
+    return el;
+  }
+
+  it('keeps counting up instead of freezing on the last event', async () => {
+    const el = await mountBusy(1_000_000);
+
+    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
+      '12s'
+    );
+
+    await clock.tickAsync(5000);
+    await el.updateComplete;
+
+    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
+      '17s'
+    );
+  });
+
+  it('stops the tick once the agent is no longer busy', async () => {
+    const el = await mountBusy(1_000_000);
+
+    el.state = { ...el.state!, status: 'idle', label: 'Idle', since: null };
+    await el.updateComplete;
+    const before = el.shadowRoot!.querySelector('.elapsed');
+
+    await clock.tickAsync(5000);
+    await el.updateComplete;
+
+    // No timer is left running: the readout is gone and stays gone.
+    expect(el.shadowRoot!.querySelector('.elapsed')).to.equal(before ?? null);
+  });
+
+  it('does not restart the counter at each tick', async () => {
+    const el = await mountBusy(1_000_000);
+
+    await clock.tickAsync(3000);
+    await el.updateComplete;
+    await clock.tickAsync(3000);
+    await el.updateComplete;
+
+    // 6s of ticking on top of the 12s already elapsed, not 6s total.
+    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
+      '18s'
+    );
+  });
+});
+
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import { invalidateUserProfileCache } from '../api';
@@ -9,7 +245,7 @@ import type { ApprovalRequest } from '../types';
 import './session-chat-view';
 import type { SessionChatView } from './session-chat-view';
 import './session-live-activity';
-import type { SessionLiveActivity } from './session-live-activity';
+import { SessionLiveActivity } from './session-live-activity';
 
 export function syntheticApproval(
   id = 'approval-example',
@@ -151,6 +387,46 @@ describe('shared session approval controller', () => {
         .getCalls()
         .filter((c) => String(c.args[0]).includes('/approval-requests?'))
     ).to.have.length(2);
+  });
+  it('opens the controller once when the session id arrives after the first render', async () => {
+    // The status line connects before it knows its session, so the controller
+    // starts on a later update. Opening from both the controller and the
+    // update threw the first pass away and re-read the profile and approvals.
+    const opened: string[] = [];
+    sinon
+      .stub(
+        SessionLiveActivity.prototype as unknown as {
+          open: () => Promise<void>;
+        },
+        'open'
+      )
+      .callsFake(function (this: SessionLiveActivity) {
+        opened.push(this.sessionId);
+        return Promise.resolve();
+      });
+    const element = await fixture<SessionChatView>(
+      html`<session-chat-view></session-chat-view>`
+    );
+    const line = element.shadowRoot!.querySelector(
+      'session-live-activity'
+    ) as SessionLiveActivity;
+    const readsFor = (session: string): number =>
+      opened.filter((id) => id === session).length;
+    expect(readsFor('session-a'), 'no session yet, nothing to read').to.equal(
+      0
+    );
+
+    element.sessionId = 'session-a';
+    await element.updateComplete;
+    await line.updateComplete;
+    expect(readsFor('session-a'), 'one read of the session, not two').to.equal(
+      1
+    );
+
+    element.sessionId = 'session-b';
+    await element.updateComplete;
+    await line.updateComplete;
+    expect(readsFor('session-b'), 'a switch re-reads exactly once').to.equal(1);
   });
   it('loads pending requests beyond the first historical page within the selected session', async () => {
     rows = Array.from({ length: 105 }, (_, i) => ({

@@ -2322,6 +2322,36 @@ class FlowTriggerService:
             # Trigger each matching flow
             for flow in flows_to_trigger:
                 try:
+                    employee_binding = (flow.trigger_config or {}).get(
+                        "employee_events"
+                    )
+                    if isinstance(employee_binding, dict):
+                        from preloop.services.employee_events import (
+                            ingest_employee_event,
+                        )
+
+                        subject = self._extract_resource_key(event_data)
+                        if not subject:
+                            raise ValueError(
+                                "Employee tracker event is missing an owned subject"
+                            )
+                        # Created/merged objects have one lifecycle event. Providers
+                        # lacking delivery IDs still get a stable replay identity.
+                        event_id = (
+                            event_data.get("delivery_id") or f"{event_type}:{subject}"
+                        )
+                        await ingest_employee_event(
+                            self.db,
+                            account_id=account_id,
+                            flow_id=flow.id,
+                            source=event_source,
+                            connection_id=str(tracker_id or event_source),
+                            event_id=str(event_id),
+                            kind=event_type,
+                            subject=subject,
+                            payload=event_data.get("payload") or {},
+                        )
+                        continue
                     # One provider delivery, one execution per flow. At-least-
                     # once message delivery (a drained pod naks its in-flight
                     # message, ack_wait expires, a pod dies before acking)

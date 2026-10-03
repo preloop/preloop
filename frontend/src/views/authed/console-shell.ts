@@ -1006,6 +1006,16 @@ export class ConsoleShell extends LitElement {
                           '/console/settings/webhooks',
                           html`<sl-menu-item>Webhooks</sl-menu-item>`
                         )}
+                        ${
+                          hasCapability(this.features, 'chat_connections')
+                            ? this._renderNavLink(
+                                '/console/settings/chat',
+                                html`<sl-menu-item
+                                  >Chat connections</sl-menu-item
+                                >`
+                              )
+                            : nothing
+                        }
                         <!-- The four personal pages had routes and a place in
                              the avatar menu, but no way in from the sidebar,
                              so Appearance in particular was unreachable for
