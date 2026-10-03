@@ -28,12 +28,14 @@ from preloop.models.crud.project import (
     REPOSITORY_ID_TRACKER_TYPES,
     CRUDProject,
     find_same_repository_projects,
+    lock_repository_identity,
     repository_host,
 )
 from preloop.models.crud.tracker import CRUDTracker
 from preloop.models.crud.issue import CRUDIssue
 from preloop.models.crud.embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
 from preloop.models.db.session import get_db_session as get_db
+from preloop.models.db.session import release_transaction
 from preloop.models.models.user import User
 from preloop.models.models.organization import Organization
 from preloop.models.models.project import Project
@@ -93,7 +95,22 @@ def _get_project_in_account(
     )
 
 
-@router.post("/projects", response_model=ProjectResponse, status_code=201)
+@router.post(
+    "/projects",
+    response_model=ProjectResponse,
+    status_code=201,
+    responses={
+        400: {"description": "The identifier already exists in this organization"},
+        404: {"description": "Organization not found in the caller's account"},
+        409: {
+            "description": (
+                "repository_already_registered: the repository is already a "
+                "project in another organization; move it with "
+                "POST /api/v1/projects/{project_id}/transfer"
+            )
+        },
+    },
+)
 @require_permission("create_projects")
 def create_project(
     project: ProjectCreate,
@@ -135,6 +152,16 @@ def create_project(
     # A repository keeps its ID when it moves between organisations. A second
     # registration under the new owner would split its issues and reviews
     # across two records and make webhook routing ambiguous (#1159).
+    tracker = organization.tracker
+    if tracker is not None and tracker.tracker_type in REPOSITORY_ID_TRACKER_TYPES:
+        # Held until crud_project.create commits, so a concurrent create or
+        # transfer for this repository waits for this one to finish.
+        lock_repository_identity(
+            db,
+            account_id=current_user.account_id,
+            host=repository_host(tracker),
+            identifier=str(project.identifier),
+        )
     registered = find_same_repository_projects(
         db,
         organization=organization,
@@ -197,8 +224,8 @@ def list_projects(
     # Apply organization filter if provided
     if organization_id:
         # Check organization access first
-        organization = crud_organization.get(
-            db, id=organization_id, account_id=current_user.account_id
+        organization = _get_organization_in_account(
+            db, organization_id, current_user.account_id
         )
         if not organization:
             raise HTTPException(status_code=404, detail="Organization not found")
@@ -247,8 +274,8 @@ def list_organization_projects(
 ):
     """List all projects for an organization, applying scope rules and ensuring user has access."""
     # Check if organization exists
-    organization = crud_organization.get(
-        db, id=organization_id, account_id=current_user.account_id
+    organization = _get_organization_in_account(
+        db, organization_id, current_user.account_id
     )
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -299,7 +326,7 @@ def get_project(
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
     """Get a project by ID, ensuring user has access."""
-    project = crud_project.get(db, id=project_id, account_id=current_user.account_id)
+    project = _get_project_in_account(db, project_id, current_user.account_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -330,8 +357,8 @@ def get_project_by_identifier(
 ) -> dict:
     """Get a project by organization ID and project identifier, ensuring user has access."""
     # Check organization access first
-    organization = crud_organization.get(
-        db, id=organization_id, account_id=current_user.account_id
+    organization = _get_organization_in_account(
+        db, organization_id, current_user.account_id
     )
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -366,7 +393,7 @@ def update_project(
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
     """Update a project, ensuring user has access."""
-    project = crud_project.get(db, id=project_id, account_id=current_user.account_id)
+    project = _get_project_in_account(db, project_id, current_user.account_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -402,7 +429,7 @@ def delete_project(
     current_user: User = Depends(get_current_active_user),
 ) -> None:
     """Delete a project, ensuring user has access."""
-    project = crud_project.get(db, id=project_id, account_id=current_user.account_id)
+    project = _get_project_in_account(db, project_id, current_user.account_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -422,8 +449,8 @@ async def test_project_connection(
         # Resolve organization
         organization_id = request.organization
         if len(organization_id) == 36:  # Simple UUID check
-            organization = crud_organization.get(
-                db, id=organization_id, account_id=current_user.account_id
+            organization = _get_organization_in_account(
+                db, organization_id, current_user.account_id
             )
         else:
             organization = crud_organization.get_by_identifier(
@@ -436,9 +463,7 @@ async def test_project_connection(
         # Resolve project
         project_id = request.project
         if len(project_id) == 36:  # Simple UUID check
-            project = crud_project.get(
-                db, id=project_id, account_id=current_user.account_id
-            )
+            project = _get_project_in_account(db, project_id, current_user.account_id)
         else:
             project = crud_project.get_by_identifier(
                 db, organization_id=organization.id, identifier=project_id
@@ -568,6 +593,35 @@ def _scope_allows(
     return not project_includes or repo_id in project_includes
 
 
+def _refuse_destination_duplicate(
+    db: Session, project: Project, destination: Organization
+) -> None:
+    """Raise 409 if the destination already has another project for the repo."""
+    repo_id = str(project.identifier)
+    duplicate = (
+        db.query(Project)
+        .filter(
+            Project.organization_id == destination.id,
+            Project.identifier == repo_id,
+            Project.id != project.id,
+        )
+        .first()
+    )
+    if duplicate:
+        issue_count = db.query(Issue).filter(Issue.project_id == duplicate.id).count()
+        raise _transfer_error(
+            409,
+            "destination_has_duplicate",
+            f"Organization '{destination.name}' already has project "
+            f"{duplicate.id} for repository {repo_id} ({issue_count} issues). "
+            "Two projects for one repository make webhook routing ambiguous. "
+            "Review it and delete it if it holds nothing you need, then retry. "
+            "It is not merged automatically.",
+            duplicate_project_id=str(duplicate.id),
+            duplicate_issue_count=issue_count,
+        )
+
+
 @router.post(
     "/projects/{project_id}/transfer",
     response_model=ProjectTransferReceipt,
@@ -659,29 +713,10 @@ def transfer_project(
             "copied from the source integration.",
         )
 
-    duplicate = (
-        db.query(Project)
-        .filter(
-            Project.organization_id == destination.id,
-            Project.identifier == repo_id,
-            Project.id != project.id,
-        )
-        .first()
-    )
-    if duplicate:
-        issue_count = db.query(Issue).filter(Issue.project_id == duplicate.id).count()
-        raise _transfer_error(
-            409,
-            "destination_has_duplicate",
-            f"Organization '{destination.name}' already has project "
-            f"{duplicate.id} for repository {repo_id} ({issue_count} issues). "
-            "Two projects for one repository make webhook routing ambiguous. "
-            "Review it and delete it if it holds nothing you need, then retry. "
-            "It is not merged automatically.",
-            duplicate_project_id=str(duplicate.id),
-            duplicate_issue_count=issue_count,
-        )
+    _refuse_destination_duplicate(db, project, destination)
 
+    # Do not sit idle in a transaction while GitHub answers.
+    release_transaction(db)
     try:
         visible = _list_destination_repositories(dest_tracker, destination)
     except Exception as exc:  # tracker/network failure, never a bare 500
@@ -805,6 +840,17 @@ def transfer_project(
         return receipt
     if request.dry_run:
         return receipt
+
+    # The live check above may take a while and must not hold a lock. Take
+    # the repository lock now and check again before writing, so a create or
+    # transfer that ran meanwhile cannot leave two projects in the destination.
+    lock_repository_identity(
+        db,
+        account_id=current_user.account_id,
+        host=repository_host(dest_tracker),
+        identifier=repo_id,
+    )
+    _refuse_destination_duplicate(db, project, destination)
 
     new_meta = {**old_meta, **live_meta}
     if moving:

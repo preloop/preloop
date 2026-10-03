@@ -21,7 +21,12 @@ from preloop.models.crud import (
     crud_comment,
     crud_tracker,
 )
-from preloop.models.crud.project import find_same_repository_projects
+from preloop.models.crud.project import (
+    REPOSITORY_ID_TRACKER_TYPES,
+    find_same_repository_projects,
+    lock_repository_identity,
+    repository_host,
+)
 from preloop.models.db.session import release_transaction
 from preloop.models.models import (
     Issue,
@@ -316,6 +321,16 @@ class TrackerClient:
                         db, db_obj=existing_project, obj_in=proj_create_data
                     )
                 else:
+                    org_tracker = organization.tracker
+                    if org_tracker.tracker_type in REPOSITORY_ID_TRACKER_TYPES:
+                        # Serialize with API creates/transfers of this repo;
+                        # released by the commit in crud_project.create.
+                        lock_repository_identity(
+                            db,
+                            account_id=self.tracker.account_id,
+                            host=repository_host(org_tracker),
+                            identifier=str(project_identifier),
+                        )
                     registered = find_same_repository_projects(
                         db,
                         organization=organization,

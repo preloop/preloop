@@ -20,6 +20,7 @@ from preloop.models.crud import (
     crud_tracker,
 )
 from preloop.models.db.session import get_db_session, _safe_close_db_session
+from preloop.models.crud.project import find_repository_projects, repository_host
 from preloop.sync.scanner.core import TrackerClient
 
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
@@ -183,27 +184,34 @@ def _resolve_webhook_project(
     *,
     identifier: str,
     organization_id: Any,
-    account_id: Any,
-):
-    """Find the project a webhook names, never outside the tracker's account.
+    tracker: Any,
+) -> Optional[models.Project]:
+    """Find the project a webhook names, within the delivering tracker's reach.
 
-    Repository IDs are only unique per host, and another account may track
-    the same repository. Prefer the organization the webhook was delivered
-    for; fall back to the rest of the account so a repository that moved
-    owners keeps routing to its project until it is transferred (#1159).
+    Prefer the organization the webhook was delivered for. Otherwise fall back
+    to the same repository on the same tracker type and host elsewhere in the
+    tracker's account, so a repository that moved owners keeps routing to its
+    project until it is transferred (#1159). Never look outside the account,
+    and never match an identifier from another tracker type or host: the same
+    number names unrelated repositories there.
     """
     if organization_id is not None:
         project = crud_project.get_by_identifier(
             db,
             identifier=identifier,
             organization_id=str(organization_id),
-            account_id=str(account_id),
+            account_id=str(tracker.account_id),
         )
         if project is not None:
             return project
-    return crud_project.get_by_identifier(
-        db, identifier=identifier, account_id=str(account_id)
+    matches = find_repository_projects(
+        db,
+        identifier=identifier,
+        account_id=tracker.account_id,
+        tracker_type=tracker.tracker_type,
+        host=repository_host(tracker),
     )
+    return matches[0] if matches else None
 
 
 def _prepare_webhook(
@@ -664,7 +672,7 @@ def _prepare_webhook(
                 db,
                 identifier=project_identifier,
                 organization_id=plan.organization_id,
-                account_id=resolved_tracker.account_id,
+                tracker=resolved_tracker,
             )
             if not project:
                 # The webhook names a project we never imported. Usually the
@@ -829,7 +837,7 @@ def _prepare_webhook(
                 db,
                 identifier=project_identifier,
                 organization_id=plan.organization_id,
-                account_id=resolved_tracker.account_id,
+                tracker=resolved_tracker,
             )
             if not project:
                 raise HTTPException(

@@ -57,12 +57,11 @@ def raw_client(app):
         yield client
 
 
-@pytest.fixture
-def moved_repo(db_session, test_user):
+def build_moved_repo(db_session, test_user):
     """A repo registered under its old org, now visible to a new org.
 
     Each org has its own GitHub tracker, as with one GitHub App
-    installation per organisation.
+    installation per organisation. Shared with the scanner tests.
     """
     old_tracker = _github_tracker(db_session, test_user.account_id, "old install")
     new_tracker = _github_tracker(db_session, test_user.account_id, "new install")
@@ -115,6 +114,12 @@ def moved_repo(db_session, test_user):
         "project": project,
         "issue": issue,
     }
+
+
+@pytest.fixture
+def moved_repo(db_session, test_user):
+    """See :func:`build_moved_repo`."""
+    return build_moved_repo(db_session, test_user)
 
 
 @pytest.fixture
@@ -540,13 +545,13 @@ def test_webhook_project_lookup_stays_in_the_trackers_account(
         db_session,
         identifier=REPO_ID,
         organization_id=moved_repo["new_org"].id,
-        account_id=test_user.account_id,
+        tracker=moved_repo["new_tracker"],
     )
     theirs = _resolve_webhook_project(
         db_session,
         identifier=REPO_ID,
         organization_id=foreign_org.id,
-        account_id=other.id,
+        tracker=foreign_tracker,
     )
     assert ours.id == moved_repo["project"].id
     assert theirs.id == foreign.id
@@ -568,15 +573,15 @@ def test_webhook_project_lookup_prefers_the_delivering_org(
         },
     )
     db_session.flush()
-    for org, expected in (
-        (moved_repo["new_org"], dup.id),
-        (moved_repo["old_org"], moved_repo["project"].id),
+    for org, tracker, expected in (
+        (moved_repo["new_org"], moved_repo["new_tracker"], dup.id),
+        (moved_repo["old_org"], moved_repo["old_tracker"], moved_repo["project"].id),
     ):
         found = _resolve_webhook_project(
             db_session,
             identifier=REPO_ID,
             organization_id=org.id,
-            account_id=test_user.account_id,
+            tracker=tracker,
         )
         assert found.id == expected
 
@@ -626,3 +631,216 @@ def test_destination_check_failure_is_502_not_500(
     )
     assert response.status_code == 502, response.text
     assert response.json()["detail"]["code"] == "destination_check_failed"
+
+
+# --- Account boundary on existing project endpoints -----------------------
+
+
+@pytest.fixture
+def foreign_project(db_session):
+    """A project in another account."""
+    from preloop.models.crud import crud_account
+
+    other = crud_account.create(
+        db_session, obj_in={"organization_name": "other", "is_active": True}
+    )
+    tracker = _github_tracker(db_session, other.id, "foreign")
+    org = crud_organization.create(
+        db_session, obj_in={"name": "f", "identifier": "88", "tracker_id": tracker.id}
+    )
+    project = crud_project.create(
+        db_session,
+        obj_in={
+            "id": str(uuid.uuid4()),
+            "name": "theirs",
+            "identifier": "4242",
+            "organization_id": org.id,
+        },
+    )
+    db_session.flush()
+    return project
+
+
+def test_cannot_read_another_accounts_project(raw_client, foreign_project):
+    response = raw_client.get(f"/api/v1/projects/{foreign_project.id}")
+    assert response.status_code == 404, response.text
+
+
+def test_cannot_update_another_accounts_project(
+    raw_client, db_session, foreign_project
+):
+    response = raw_client.put(
+        f"/api/v1/projects/{foreign_project.id}", json={"name": "renamed"}
+    )
+    assert response.status_code == 404, response.text
+    db_session.refresh(foreign_project)
+    assert foreign_project.name == "theirs"
+
+
+def test_cannot_delete_another_accounts_project(
+    raw_client, db_session, foreign_project
+):
+    project_id = foreign_project.id
+    response = raw_client.delete(f"/api/v1/projects/{project_id}")
+    assert response.status_code == 404, response.text
+    db_session.expire_all()
+    assert crud_project.get(db_session, id=project_id) is not None
+
+
+def test_cannot_transfer_another_accounts_project(
+    raw_client, moved_repo, foreign_project, destination_sees
+):
+    response = _transfer(raw_client, foreign_project, moved_repo["new_org"], False)
+    assert response.status_code == 404, response.text
+
+
+def test_own_project_endpoints_still_work(raw_client, moved_repo):
+    """The scoping must not lock owners out of their own project."""
+    project = moved_repo["project"]
+    assert raw_client.get(f"/api/v1/projects/{project.id}").status_code == 200
+    response = raw_client.put(f"/api/v1/projects/{project.id}", json={"name": "w2"})
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "w2"
+
+
+@pytest.mark.parametrize(
+    "tracker_type,url",
+    [("gitlab", "https://gitlab.com"), ("github", "https://ghe.example.com")],
+)
+def test_webhook_fallback_never_crosses_tracker_type_or_host(
+    db_session, moved_repo, test_user, tracker_type, url
+):
+    """A numeric ID on another tracker type or host is a different repository."""
+    from preloop.api.endpoints.webhooks import _resolve_webhook_project
+
+    other_tracker = crud_tracker.create(
+        db_session,
+        obj_in={
+            "name": "other host",
+            "tracker_type": tracker_type,
+            "url": url,
+            "api_key": "k",
+            "account_id": test_user.account_id,
+            "is_active": True,
+        },
+    )
+    other_org = crud_organization.create(
+        db_session,
+        obj_in={"name": "o", "identifier": "5", "tracker_id": other_tracker.id},
+    )
+    db_session.flush()
+    found = _resolve_webhook_project(
+        db_session,
+        identifier=REPO_ID,
+        organization_id=other_org.id,
+        tracker=other_tracker,
+    )
+    assert found is None
+
+
+def test_webhook_fallback_follows_moved_repo_on_same_host(db_session, moved_repo):
+    """Before the transfer, the new owner's events still reach the project."""
+    from preloop.api.endpoints.webhooks import _resolve_webhook_project
+
+    found = _resolve_webhook_project(
+        db_session,
+        identifier=REPO_ID,
+        organization_id=moved_repo["new_org"].id,
+        tracker=moved_repo["new_tracker"],
+    )
+    assert found.id == moved_repo["project"].id
+
+
+# --- Concurrency ----------------------------------------------------------
+
+
+def _try_lock_elsewhere(db_engine, key):
+    from sqlalchemy import text
+
+    with db_engine.connect() as other:
+        with other.begin():
+            return other.execute(
+                text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key}
+            ).scalar()
+
+
+def test_repository_identity_lock_excludes_concurrent_writers(db_session, db_engine):
+    """Two writers for the same repository identity serialize; others do not."""
+    from preloop.models.crud.project import (
+        lock_repository_identity,
+        repository_identity_lock_key,
+    )
+
+    lock_repository_identity(
+        db_session, account_id="acct", host="github.com", identifier=REPO_ID
+    )
+    same = repository_identity_lock_key("acct", "github.com", REPO_ID)
+    other_host = repository_identity_lock_key("acct", "ghe.example.com", REPO_ID)
+    assert _try_lock_elsewhere(db_engine, same) is False
+    assert _try_lock_elsewhere(db_engine, other_host) is True
+
+
+def test_create_takes_the_lock_before_checking_for_duplicates(
+    raw_client, db_session, moved_repo, monkeypatch
+):
+    calls = []
+    real_find = projects_endpoint.find_same_repository_projects
+
+    def spy_lock(db, **kwargs):
+        calls.append(("lock", kwargs["identifier"], kwargs["host"]))
+
+    def spy_find(db, **kwargs):
+        calls.append(("check", kwargs["identifier"]))
+        return real_find(db, **kwargs)
+
+    monkeypatch.setattr(projects_endpoint, "lock_repository_identity", spy_lock)
+    monkeypatch.setattr(projects_endpoint, "find_same_repository_projects", spy_find)
+    raw_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "widget",
+            "identifier": REPO_ID,
+            "organization_id": str(moved_repo["new_org"].id),
+        },
+    )
+    assert calls[:2] == [("lock", REPO_ID, "github.com"), ("check", REPO_ID)]
+
+
+def test_transfer_rechecks_destination_under_the_lock(
+    raw_client, db_session, moved_repo, monkeypatch
+):
+    """A duplicate created during the live check is caught before writing."""
+    project = moved_repo["project"]
+    new_org = moved_repo["new_org"]
+
+    def list_and_race(tracker, organization):
+        # Another writer registers the repo while we talk to GitHub.
+        crud_project.create(
+            db_session,
+            obj_in={
+                "id": str(uuid.uuid4()),
+                "name": "widget",
+                "identifier": REPO_ID,
+                "organization_id": new_org.id,
+            },
+            commit=False,
+        )
+        db_session.flush()
+        return [_repo("new-owner/widget")]
+
+    locked = []
+    real_lock = projects_endpoint.lock_repository_identity
+    monkeypatch.setattr(
+        projects_endpoint,
+        "lock_repository_identity",
+        lambda db, **kw: (locked.append(kw), real_lock(db, **kw)),
+    )
+    monkeypatch.setattr(
+        projects_endpoint, "_list_destination_repositories", list_and_race
+    )
+    response = _transfer(raw_client, project, new_org, dry_run=False)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "destination_has_duplicate"
+    assert locked and locked[0]["identifier"] == REPO_ID
+    db_session.refresh(project)
+    assert str(project.organization_id) == str(moved_repo["old_org"].id)

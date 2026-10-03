@@ -6064,6 +6064,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectResponse'
+        '400':
+          description: The identifier already exists in this organization
+        '404':
+          description: Organization not found in the caller's account
+        '409':
+          description: 'repository_already_registered: the repository is already a
+            project in another organization; move it with POST /api/v1/projects/{project_id}/transfer'
         '422':
           description: Validation Error
           content:

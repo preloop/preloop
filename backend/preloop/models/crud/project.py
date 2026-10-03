@@ -385,6 +385,49 @@ def repository_host(tracker: Tracker) -> str:
     return host
 
 
+def find_repository_projects(
+    db: Session,
+    *,
+    identifier: str,
+    account_id: Any,
+    tracker_type: str,
+    host: str,
+    exclude_organization_id: Any = None,
+) -> List[Project]:
+    """Find projects for one repository on one host within an account.
+
+    A repository identifier only names the same repository on the same
+    tracker type and host: GitHub repository 21 and GitLab project 21 are
+    unrelated, as are github.com and a GitHub Enterprise Server.
+
+    Args:
+        db: Database session.
+        identifier: Repository identifier (for GitHub, the repository ID).
+        account_id: Account to search.
+        tracker_type: Tracker type the identifier belongs to.
+        host: Host from :func:`repository_host`.
+        exclude_organization_id: Organization to leave out, if any.
+
+    Returns:
+        Matching projects, most recently updated first.
+    """
+    query = (
+        db.query(Project)
+        .join(Project.organization)
+        .join(Organization.tracker)
+        .filter(
+            Project.identifier == str(identifier),
+            Tracker.account_id == account_id,
+            Tracker.tracker_type == tracker_type,
+            Tracker.is_deleted.is_(False),
+        )
+    )
+    if exclude_organization_id is not None:
+        query = query.filter(Project.organization_id != exclude_organization_id)
+    candidates = query.order_by(Project.updated_at.desc()).all()
+    return [p for p in candidates if repository_host(p.organization.tracker) == host]
+
+
 def find_same_repository_projects(
     db: Session,
     *,
@@ -411,19 +454,54 @@ def find_same_repository_projects(
     tracker = organization.tracker
     if tracker is None or tracker.tracker_type not in REPOSITORY_ID_TRACKER_TYPES:
         return []
-    host = repository_host(tracker)
-    candidates = (
-        db.query(Project)
-        .join(Project.organization)
-        .join(Organization.tracker)
-        .filter(
-            Project.identifier == str(identifier),
-            Project.organization_id != organization.id,
-            Tracker.account_id == account_id,
-            Tracker.tracker_type == tracker.tracker_type,
-            Tracker.is_deleted.is_(False),
-        )
-        .order_by(Project.updated_at.desc())
-        .all()
+    return find_repository_projects(
+        db,
+        identifier=identifier,
+        account_id=account_id,
+        tracker_type=tracker.tracker_type,
+        host=repository_host(tracker),
+        exclude_organization_id=organization.id,
     )
-    return [p for p in candidates if repository_host(p.organization.tracker) == host]
+
+
+def repository_identity_lock_key(account_id: Any, host: str, identifier: str) -> int:
+    """Advisory lock key for one repository identity in one account.
+
+    Args:
+        account_id: Account the repository is registered in.
+        host: Host from :func:`repository_host`.
+        identifier: Repository ID.
+
+    Returns:
+        A signed 64-bit integer, as ``pg_advisory_xact_lock`` expects.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(
+        f"preloop:repository:{account_id}:{host}:{identifier}".encode()
+    ).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+def lock_repository_identity(
+    db: Session, *, account_id: Any, host: str, identifier: str
+) -> None:
+    """Serialize writers that register or move one repository.
+
+    There is no unique constraint that can express "one project per
+    repository ID per host per account" (the host lives on the tracker, two
+    joins away), so the duplicate check and the write that follows it hold a
+    transaction-scoped advisory lock. It is released when the writer commits
+    or rolls back. Do not hold it across network calls.
+
+    A no-op on databases other than PostgreSQL.
+    """
+    from sqlalchemy import text
+
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": repository_identity_lock_key(account_id, host, identifier)},
+    )

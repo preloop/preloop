@@ -8,11 +8,17 @@ from preloop.models.models.project import Project
 from preloop.sync.scanner.core import TrackerClient
 from preloop.sync.trackers.github import GitHubTracker
 
-from tests.endpoints.test_project_repository_transfer import (  # noqa: F401
+from tests.endpoints.test_project_repository_transfer import (
     REPO_ID,
     _repo,
-    moved_repo,
+    build_moved_repo,
 )
+
+
+@pytest.fixture
+def moved_repo(db_session, test_user):
+    """Old and new owner organizations, one GitHub tracker each."""
+    return build_moved_repo(db_session, test_user)
 
 
 def _scanner(tracker, repos):
@@ -30,7 +36,7 @@ def _scanner(tracker, repos):
 @pytest.mark.asyncio
 async def test_refresh_of_new_owner_does_not_duplicate_moved_repo(
     db_session,
-    moved_repo,  # noqa: F811
+    moved_repo,
 ):
     """The destination refresh must not create a second project for the repo."""
     scanner = _scanner(moved_repo["new_tracker"], [_repo("new-owner/widget")])
@@ -46,7 +52,7 @@ async def test_refresh_of_new_owner_does_not_duplicate_moved_repo(
 @pytest.mark.asyncio
 async def test_refresh_picks_up_rename_and_keeps_transfer_history(
     db_session,
-    moved_repo,  # noqa: F811
+    moved_repo,
 ):
     """Same org, same repository ID, new name: update in place, keep history."""
     project = moved_repo["project"]
@@ -69,3 +75,26 @@ async def test_refresh_picks_up_rename_and_keeps_transfer_history(
     assert rows[0].meta_data["repository_transfers"] == [
         {"to_full_name": "old-owner/widget"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_refresh_locks_repository_identity_before_creating(
+    db_session,
+    moved_repo,
+    monkeypatch,
+):
+    """New repositories are created under the same lock API writers take."""
+    import preloop.sync.scanner.core as scanner_core
+
+    locked = []
+    monkeypatch.setattr(
+        scanner_core,
+        "lock_repository_identity",
+        lambda db, **kw: locked.append((kw["host"], kw["identifier"])),
+    )
+    scanner = _scanner(moved_repo["new_tracker"], [_repo("new-owner/fresh", "555")])
+
+    created = await scanner.scan_projects(db_session, moved_repo["new_org"])
+
+    assert [p.identifier for p in created] == ["555"]
+    assert locked == [("github.com", "555")]
