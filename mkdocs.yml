@@ -237,6 +237,7 @@ nav:
       - GitHub Actions: guide/flows/github-actions.md
       - Trackers:
           - Bitbucket Cloud: guide/bitbucket-tracker.md
+          - Moving a GitHub repository: guide/github-repository-transfer.md
           - Bitbucket and Jira quickstart: guide/bitbucket-jira-quickstart.md
           - Jira repository binding: guide/flows/jira-repository-binding.md
 
