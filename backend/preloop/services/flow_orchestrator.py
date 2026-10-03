@@ -1127,7 +1127,11 @@ class FlowExecutionOrchestrator:
             from preloop.models.crud import crud_project
             from preloop.api.common import get_tracker_client
 
-            project = crud_project.get(self.db, id=trigger_project_id)
+            project = crud_project.get(
+                self.db,
+                id=trigger_project_id,
+                account_id=str(self.flow.account_id),
+            )
             if not project:
                 await self._emit_execution_warning(
                     "Commit status skipped: the triggering project "
@@ -1631,6 +1635,7 @@ class FlowExecutionOrchestrator:
             trigger_event_data=self.trigger_event_data,
             flow_id=str(self.flow_id),
             execution_id=str(self.execution_log.id) if self.execution_log else "",
+            account_id=str(self.flow.account_id) if self.flow else None,
             workspace_mode=workspace_mode(
                 agent_config=getattr(self.flow, "agent_config", None),
                 git_clone_config=getattr(self.flow, "git_clone_config", None),
@@ -2715,7 +2720,12 @@ class FlowExecutionOrchestrator:
         try:
             from preloop.models.crud import crud_project
 
-            project = crud_project.get(self.db, id=str(project_id))
+            account_id = getattr(getattr(self, "flow", None), "account_id", None)
+            if not account_id:
+                return None
+            project = crud_project.get(
+                self.db, id=str(project_id), account_id=str(account_id)
+            )
             organization = project.organization if project else None
             tracker_id = getattr(organization, "tracker_id", None)
             return str(tracker_id) if tracker_id else None
@@ -4704,7 +4714,9 @@ class FlowExecutionOrchestrator:
         from preloop.models.crud import crud_project
 
         project_id = self._follow_up_filing_project_id(plan)
-        project = crud_project.get(self.db, id=project_id)
+        project = crud_project.get(
+            self.db, id=project_id, account_id=str(self.flow.account_id)
+        )
         if not project or not getattr(project, "organization_id", None):
             raise FollowUpFilingError(
                 "project_missing",
@@ -5051,7 +5063,9 @@ class FlowExecutionOrchestrator:
             return []
         for project_id in project_ids:
             try:
-                project = crud_project.get(self.db, id=project_id)
+                project = crud_project.get(
+                    self.db, id=project_id, account_id=str(self.flow.account_id)
+                )
                 if not project or not getattr(project, "organization_id", None):
                     continue
                 client = await get_tracker_client(

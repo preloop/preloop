@@ -1,5 +1,6 @@
 """Organization schemas for request and response validation."""
 
+from datetime import datetime
 from typing import Dict, Optional
 from uuid import UUID
 
@@ -35,8 +36,8 @@ class OrganizationResponse(OrganizationBase):
     id: UUID = Field(..., description="Organization ID")
     tracker_id: UUID = Field(..., description="Tracker ID")
     is_active: bool = Field(True, description="Whether the organization is active")
-    created_at: Optional[str] = Field(None, description="Creation timestamp")
-    updated_at: Optional[str] = Field(None, description="Last update timestamp")
+    created_at: Optional[datetime] = Field(None, description="Creation timestamp")
+    updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
     meta_data: Dict = Field(default_factory=dict, description="Additional metadata")
 
     @field_serializer("id", "tracker_id")

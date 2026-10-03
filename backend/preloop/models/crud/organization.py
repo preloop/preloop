@@ -2,9 +2,9 @@
 
 from datetime import datetime
 from uuid import UUID
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 from sqlalchemy import func  # Import func for lower()
 
 from ..models.organization import Organization
@@ -14,6 +14,12 @@ from .base import CRUDBase
 
 class CRUDOrganization(CRUDBase[Organization]):
     """CRUD operations for Organization model."""
+
+    def _scope_to_account(self, query: Query, account_id: Any) -> Query:
+        """Scope through the owning tracker (``tracker_id`` is NOT NULL)."""
+        return query.join(Tracker, Organization.tracker_id == Tracker.id).filter(
+            Tracker.account_id == account_id
+        )
 
     def touch_webhook(
         self, db: Session, *, organization_id: UUID, observed_at: datetime

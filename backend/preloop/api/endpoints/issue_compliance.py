@@ -102,7 +102,9 @@ def _calculate_issue_compliance(
     if not issue:
         raise HTTPException(status_code=404, detail="Issue not found")
 
-    project = crud_project.get(db, id=issue.project_id)
+    project = crud_project.get(
+        db, id=issue.project_id, account_id=current_user.account_id
+    )
 
     default_model = crud_ai_model.get_default_active_model(
         db, account_id=current_user.account_id
@@ -239,13 +241,21 @@ def get_compliance_improvement_suggestion(
         settings=settings,
     )
 
-    issue = crud_issue.get(db, id=issue_id)
+    issue = crud_issue.get(db, id=issue_id, account_id=current_user.account_id)
     if not issue:
         raise HTTPException(status_code=404, detail="Issue not found")
 
     # Authorization check
-    project = crud_project.get(db, id=issue.project_id)
-    organization = crud_organization.get(db, id=project.organization_id)
+    project = crud_project.get(
+        db, id=issue.project_id, account_id=current_user.account_id
+    )
+    organization = (
+        crud_organization.get(
+            db, id=project.organization_id, account_id=current_user.account_id
+        )
+        if project
+        else None
+    )
     if (
         not organization
         or not organization.tracker

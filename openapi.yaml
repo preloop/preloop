@@ -26198,12 +26198,14 @@ components:
         created_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Created At
           description: Creation timestamp
         updated_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Updated At
           description: Last update timestamp

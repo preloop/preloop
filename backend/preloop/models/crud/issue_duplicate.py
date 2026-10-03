@@ -3,7 +3,7 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime, UTC
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 from sqlalchemy import or_
 
 from preloop.models.crud.base import CRUDBase
@@ -14,6 +14,14 @@ from ..models.tracker import Tracker
 
 class CRUDIssueDuplicate(CRUDBase[IssueDuplicate]):
     """CRUD for IssueDuplicate model."""
+
+    def _scope_to_account(self, query: Query, account_id: Any) -> Query:
+        """Scope through the first issue's tracker, like the other lookups."""
+        return (
+            query.join(Issue, self.model.issue1_id == Issue.id)
+            .join(Tracker, Issue.tracker_id == Tracker.id)
+            .filter(Tracker.account_id == account_id)
+        )
 
     def create(self, db: Session, *, obj_in: Dict[str, Any]) -> IssueDuplicate:
         """Create a new issue duplicate."""

@@ -2,7 +2,7 @@
 
 from typing import Any, List, Optional
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Query, Session, joinedload
 from sqlalchemy import func, or_
 
 from ..models.project import Project
@@ -13,6 +13,14 @@ from .base import CRUDBase
 
 class CRUDProject(CRUDBase[Project]):
     """CRUD operations for Project model."""
+
+    def _scope_to_account(self, query: Query, account_id: Any) -> Query:
+        """Scope through organization -> tracker, which owns the account."""
+        return (
+            query.join(Organization, Project.organization_id == Organization.id)
+            .join(Tracker, Organization.tracker_id == Tracker.id)
+            .filter(Tracker.account_id == account_id)
+        )
 
     def get_all_active_by_identifier_or_name_globally(
         self,

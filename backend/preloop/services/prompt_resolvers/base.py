@@ -20,12 +20,14 @@ class ResolverContext:
         trigger_event_data: Data from the triggering event
         flow_id: UUID of the executing flow
         execution_id: UUID of the current execution
+        account_id: Account owning the flow; scopes database lookups
     """
 
     db: Session
     trigger_event_data: Dict[str, Any]
     flow_id: str
     execution_id: str
+    account_id: Optional[str] = None
     workspace_mode: str = "ephemeral"
 
 

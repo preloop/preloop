@@ -6086,18 +6086,26 @@ trap _preloop_publication_cleanup EXIT
             from preloop.models.crud import crud_project, crud_tracker
             from preloop.models.db.session import get_db_session
 
+            if not account_id:
+                self.logger.warning(
+                    f"No account for project {project_id}; refusing repo lookup"
+                )
+                return None
             db = next(get_db_session())
             try:
-                # Get project from database - don't filter by account_id since
-                # Project doesn't have a direct account_id field
-                project = crud_project.get(db, id=str(project_id))
+                # Scoped through organization -> tracker -> account.
+                project = crud_project.get(
+                    db, id=str(project_id), account_id=str(account_id)
+                )
                 if not project:
                     self.logger.info(
                         f"Project {project_id} not found by ID, trying slug/identifier"
                     )
                     # Also try looking up by slug or identifier
                     project = crud_project.get_by_slug_or_identifier(
-                        db, slug_or_identifier=str(project_id)
+                        db,
+                        slug_or_identifier=str(project_id),
+                        account_id=str(account_id),
                     )
 
                 if not project:
@@ -6233,9 +6241,13 @@ trap _preloop_publication_cleanup EXIT
             from preloop.models.db.session import get_db_session
             from preloop.services.tracker_git_token import resolve_tracker_git_username
 
+            if not account_id:
+                return None, None, None
             db = next(get_db_session())
             try:
-                project = crud_project.get(db, id=str(project_id))
+                project = crud_project.get(
+                    db, id=str(project_id), account_id=str(account_id)
+                )
                 if not project:
                     return None, None, None
 
@@ -6243,7 +6255,9 @@ trap _preloop_publication_cleanup EXIT
                 if not organization:
                     return None, None, None
 
-                tracker = crud_tracker.get(db, id=organization.tracker_id)
+                tracker = crud_tracker.get(
+                    db, id=organization.tracker_id, account_id=str(account_id)
+                )
                 resolved_token = tracker.resolved_api_key if tracker else ""
                 if not tracker or not resolved_token:
                     if tracker and (tracker.auth_type or "").lower() in APP_AUTH_TYPES:
