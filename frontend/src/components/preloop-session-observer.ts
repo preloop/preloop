@@ -2086,18 +2086,23 @@ export class PreloopSessionObserver extends LitElement {
 
   /**
    * Chat-style transcript (P1 of the transcript redesign): only top-level
-   * user prompts and final agent responses expanded; tool calls/results,
-   * system and injected segments collapsed. Rendered ALONGSIDE the replay
+   * user prompts, responses, named tools and approvals are visible;
+   * system and injected segments remain collapsed. Rendered ALONGSIDE the replay
    * panel (which is hidden, not unmounted, in this mode) so switching tabs
    * never loses the panel's expand/replay/optimize state.
    */
   private renderConversationView() {
     if (!this.activeSession) {
+      if (this.replayMode !== 'conversation') return nothing;
       return html`<div class="empty">${this.replayEmptyText}</div>`;
     }
     return html`
       <session-chat-view
+        style=${this.replayMode === 'conversation' ? '' : 'display:none'}
+        .liveEnabled=${this.replayMode === 'conversation'}
         .sessionId=${this.activeSessionId || ''}
+        .ended=${Boolean(this.activeSession?.endedAt)}
+        @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
         .artifacts=${this.activeArtifacts}
@@ -2471,12 +2476,9 @@ export class PreloopSessionObserver extends LitElement {
               `
             : nothing
         }
-        ${
-          this.replayMode === 'conversation'
-            ? this.renderConversationView()
-            : nothing
-        }
+        ${this.renderConversationView()}
         <session-replay-panel
+          @session-live-reload=${() => void this.reloadActiveSession()}
           style=${this.replayMode === 'conversation' ? 'display: none;' : ''}
           .session=${this.activeSession}
           .emptyText=${this.replayEmptyText}

@@ -987,6 +987,7 @@ class PolicyApplier:
         """Apply MCP server definitions."""
         from preloop.models.crud import crud_mcp_server
         from preloop.models.models.mcp_server import MCPServer
+        from preloop.models.schemas.mcp_server import merge_auth_config
 
         for server_def in servers:
             # Check if server exists by name
@@ -1012,7 +1013,10 @@ class PolicyApplier:
                     # 2. It's NOT a redaction marker
                     # This prevents rollbacks from wiping credentials
                     if server_def.auth_config and not auth_config_is_redacted:
-                        existing.auth_config = server_def.auth_config
+                        # Per-key markers keep the stored secret for that key.
+                        existing.auth_config = merge_auth_config(
+                            server_def.auth_config, existing.auth_config
+                        )
                     elif auth_config_is_redacted:
                         logger.debug(
                             f"Skipping auth_config update for {server_def.name} "
@@ -1027,7 +1031,9 @@ class PolicyApplier:
                     # For new servers with redacted auth, set to None
                     # (user will need to configure credentials)
                     actual_auth_config = (
-                        None if auth_config_is_redacted else server_def.auth_config
+                        None
+                        if auth_config_is_redacted
+                        else merge_auth_config(server_def.auth_config, None)
                     )
                     if auth_config_is_redacted:
                         logger.warning(

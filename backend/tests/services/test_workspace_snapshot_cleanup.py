@@ -24,6 +24,11 @@ class _FakeQuery:
             row.workspace_snapshot = None
         return len(self._rows)
 
+    def delete(self, synchronize_session=False):
+        # The artifact cleanup also sweeps search chunks of expired
+        # artifacts; this fake holds none.
+        return 0
+
 
 class _FakeSession:
     def __init__(self, rows):

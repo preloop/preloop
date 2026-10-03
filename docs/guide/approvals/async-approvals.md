@@ -168,11 +168,13 @@ Called by the agent to poll approval status.
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/v1/approval-requests/{id}` | Get approval request details (authenticated) |
-| `POST /api/v1/approval-requests/{id}/approve` | Approve a request |
-| `POST /api/v1/approval-requests/{id}/decline` | Decline a request |
-| `POST /api/v1/approval-requests/{id}/decide` | Approve or decline |
+| `POST /api/v1/approval-requests/{id}/approve` | Approve a request (body optional: `{"comment": "..."}`) |
+| `POST /api/v1/approval-requests/{id}/decline` | Decline a request (body optional: `{"comment": "..."}`) |
+| `POST /api/v1/approval-requests/{id}/decide` | Approve or decline (`{"approved": true\|false}` required) |
 | `GET /approval/{id}/data?token={token}` | Public token-based access |
-| `POST /approval/{id}/decide?token={token}` | Public token-based decision |
+| `POST /approval/{id}/approve?token={token}` | Public token-based approve (the webhook `decision.approve_url`) |
+| `POST /approval/{id}/decline?token={token}` | Public token-based decline (the webhook `decision.decline_url`) |
+| `POST /approval/{id}/decide?token={token}` | Public token-based decision (`{"action": "approve"\|"decline"}`) |
 
 ---
 

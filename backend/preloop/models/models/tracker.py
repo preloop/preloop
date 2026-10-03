@@ -33,6 +33,7 @@ class TrackerType(enum.Enum):
     GITLAB = "gitlab"
     JIRA = "jira"
     BITBUCKET = "bitbucket"
+    BITBUCKET_DC = "bitbucket_dc"
 
 
 class Tracker(Base):

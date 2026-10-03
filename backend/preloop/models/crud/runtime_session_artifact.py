@@ -9,7 +9,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -506,8 +506,41 @@ def cleanup(db: Session, *, now: datetime) -> int:
             synchronize_session=False,
         )
     )
+    _drop_unavailable_search_chunks(db)
     db.commit()
     return int(count or 0)
+
+
+def _drop_unavailable_search_chunks(db: Session) -> int:
+    """Remove search chunks of every artifact whose bytes are gone.
+
+    One statement over all unavailable artifacts rather than the ids of this
+    pass, so a chunk left by an earlier pass (or written before this sweep
+    existed) is reclaimed too.
+    """
+    from preloop.models.models.session_search_document import SessionSearchDocument
+
+    gone = select(func.cast(models.RuntimeSessionArtifact.id, String)).where(
+        models.RuntimeSessionArtifact.availability != "available"
+    )
+    return int(
+        db.query(SessionSearchDocument)
+        .filter(
+            SessionSearchDocument.source_kind == "artifact",
+            SessionSearchDocument.source_id.in_(gone),
+        )
+        .delete(synchronize_session=False)
+        or 0
+    )
+
+
+def _drop_search_chunks(db: Session, artifact_ids: list[Any]) -> None:
+    """Remove the session search chunks quoting artifacts whose bytes went."""
+    from preloop.models.crud import crud_session_search_document
+
+    crud_session_search_document.delete_for_sources(
+        db, source_kind="artifact", source_ids=artifact_ids
+    )
 
 
 def mark_unavailable(
@@ -540,6 +573,7 @@ def mark_unavailable(
         return False
     row.ciphertext = None
     row.availability = availability
+    _drop_search_chunks(db, [row.id])
     if commit:
         db.commit()
     else:

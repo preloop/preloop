@@ -387,7 +387,7 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
-      # Fixture MCP server for artifact demos and tests (#1091). Outside
+      # Fixture MCP server for artifact tests (#1091). Outside
       # backend/tests, so the backend shards do not collect it.
       - name: warehouse-sim fixture tests
         env:

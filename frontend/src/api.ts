@@ -5922,6 +5922,7 @@ export async function getApprovalRequest(requestId: string): Promise<any> {
 export async function listApprovalRequests(params?: {
   status?: string;
   execution_id?: string;
+  runtime_session_id?: string;
   limit?: number;
   skip?: number;
 }): Promise<any[]> {
@@ -5929,6 +5930,8 @@ export async function listApprovalRequests(params?: {
   if (params?.status) queryParams.append('status', params.status);
   if (params?.execution_id)
     queryParams.append('execution_id', params.execution_id);
+  if (params?.runtime_session_id)
+    queryParams.append('runtime_session_id', params.runtime_session_id);
   if (params?.limit) queryParams.append('limit', params.limit.toString());
   if (params?.skip) queryParams.append('skip', params.skip.toString());
 
@@ -5990,8 +5993,9 @@ export async function approveRequest(
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(
-      extractErrorMessage(errorData, 'Failed to approve request')
+    throw Object.assign(
+      new Error(extractErrorMessage(errorData, 'Failed to approve request')),
+      { status: response.status, detail: errorData.detail }
     );
   }
   return response.json();
@@ -6011,8 +6015,9 @@ export async function declineRequest(
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(
-      extractErrorMessage(errorData, 'Failed to decline request')
+    throw Object.assign(
+      new Error(extractErrorMessage(errorData, 'Failed to decline request')),
+      { status: response.status, detail: errorData.detail }
     );
   }
   return response.json();

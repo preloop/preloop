@@ -156,6 +156,22 @@ call it makes is audited with the agent as the actor; what the row carries is
 described in
 [docs/guide/session-search-audit.md](../guide/session-search-audit.md).
 
+### Artifact deposit tool
+
+`deposit_artifact` lets an agent that only has the Preloop MCP URL store a file,
+image, transcript or text on its own runtime session (#1081). The session comes
+from the session-bound key, never an argument; a key without one gets the tool
+error `artifact_no_session`. The input is one MCP `ContentBlock` (`text`,
+`image`, `audio`, `resource`, or a `resource_link` to an artifact of the same
+session, which copies it with new labels as a child). Storage, the `artifact`
+timeline row and every error code are the deposit service
+(`preloop/services/artifact_deposit.py`); the MCP adapter is
+`preloop/services/artifact_mcp_tools.py`. The result is a `CallToolResult` with
+one `resource_link` block (absolute URI under `PRELOOP_URL`) and the artifact
+descriptor as `structuredContent`. Errors are tool errors whose text starts
+with the deposit API's code string. Default-off: enable it on the Tools page or
+list it in a flow's `allowed_mcp_tools`.
+
 ### Issue tools
 
 `get_issue` and `update_issue` carry the issue triage surface. There are no separate

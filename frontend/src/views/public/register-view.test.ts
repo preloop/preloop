@@ -9,6 +9,7 @@ import {
   isFreePlanId,
 } from './register-view';
 import { invalidateApiCaches } from '../../api';
+import { Router } from '../../router';
 
 describe('RegisterView', () => {
   let element: RegisterView;
@@ -141,6 +142,38 @@ describe('RegisterView', () => {
     expect(localStorage.getItem('accessToken')).to.equal('test-token');
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
+  });
+
+  it('auto-login after registration ignores a non-local stored return', async () => {
+    localStorage.setItem('loginRedirect', '//evil.example/console');
+    const goStub = sinon.stub(Router, 'go');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/v1/auth/token/json')) {
+        return new Response(JSON.stringify({ access_token: 'test-token' }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+    try {
+      const field = (id: string) =>
+        element.shadowRoot?.querySelector<any>(`#${id}`);
+      field('username').value = 'testuser';
+      field('email').value = 'test@example.com';
+      field('password').value = 'password123';
+      element.shadowRoot
+        ?.querySelector('form')
+        ?.dispatchEvent(
+          new SubmitEvent('submit', { bubbles: true, cancelable: true })
+        );
+      await waitUntil(() => goStub.called);
+      expect(goStub).to.have.been.calledWith('/console');
+      expect(localStorage.getItem('loginRedirect')).to.equal(null);
+    } finally {
+      goStub.restore();
+      localStorage.removeItem('accessToken');
+    }
   });
 
   it('should have a link to the login page', () => {

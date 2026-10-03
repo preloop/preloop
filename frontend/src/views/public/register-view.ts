@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
+import { consumeLoginReturn } from '../../utils/login-return';
 import { post, getFeatures } from '../../api';
 import { formStyles } from '../../styles/form-styles';
 import { getBrandConfig } from '../../brand-config';
@@ -325,9 +326,8 @@ export class RegisterView extends LitElement {
             new CustomEvent('auth-change', { bubbles: true, composed: true })
           );
           this._loading = false;
-          const redirectPath = localStorage.getItem('loginRedirect');
+          const redirectPath = consumeLoginReturn();
           if (redirectPath) {
-            localStorage.removeItem('loginRedirect');
             Router.go(redirectPath);
           } else {
             Router.go('/console');

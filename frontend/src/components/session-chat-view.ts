@@ -1,14 +1,23 @@
+import {
+  renderSessionApproval,
+  renderSessionActivity,
+} from './session-approval-presentation';
+import './session-tool-card';
+import './session-approval-card';
+import './session-live-activity';
+import { type SessionApprovalState } from './session-live-activity';
+import {
+  sessionTools,
+  sessionTimelineTime,
+  type SessionTool,
+} from '../utils/session-live';
+import type { ApprovalRequest } from '../types';
 /**
- * Chat-style session transcript: ONLY top-level user prompts and final agent
- * responses are expanded; tool calls, tool results, system/injected segments
- * and intermediate agent output are nested in collapsed, manually expandable
- * step groups. Reference UX: Claude Code web chat. When in doubt, collapse —
- * except for prompt classification, where doubt keeps the prompt visible
- * (see utils/transcript.ts).
- *
- * Presentational only: events/activity arrive as props from
- * <preloop-session-observer>; paging is requested by re-emitting the
- * observer's existing `session-events-page-requested` event.
+ * Chronological conversation with named captured tools and inline approvals.
+ * System/injected segments and uncorrelated historical steps remain expandable.
+ * Gateway/activity props and paging remain owned by the observer; the shared
+ * live controller fetches permission-gated session approvals and reconciles
+ * websocket updates without replacing the scroll container.
  */
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
@@ -89,6 +98,74 @@ export const TALK_RETRY_EVENT = 'talk-retry';
 export class SessionChatView extends LitElement {
   // `attribute: false`: these are data-only properties set via property
   // bindings; an attribute path would (de)serialize large arrays as JSON.
+  @state() private approvalState: SessionApprovalState = {
+    requests: [],
+    canDecide: false,
+    author: '',
+    now: Date.now(),
+  };
+  private renderApproval(request: ApprovalRequest) {
+    return renderSessionApproval(this, this.approvalState, request);
+  }
+  @property({ type: Boolean }) liveEnabled = true;
+  @property({ type: Boolean }) ended = false;
+  private renderActivity() {
+    if (!this.liveEnabled) return nothing;
+    return renderSessionActivity(
+      this,
+      this.sessionId,
+      this.events,
+      this.activity,
+      this.ended,
+      this.approvalState,
+      (state) => {
+        this.approvalState = state;
+      }
+    );
+  }
+  private get displayItems(): Array<
+    | TranscriptItem
+    | { type: 'tool'; key: string; tool: SessionTool }
+    | { type: 'approval'; key: string; request: ApprovalRequest }
+  > {
+    const tools = sessionTools(this.events, this.activity);
+    const items: Array<
+      | TranscriptItem
+      | { type: 'tool'; key: string; tool: SessionTool }
+      | { type: 'approval'; key: string; request: ApprovalRequest }
+    > = this.conversation.items.flatMap<TranscriptItem>((item) => {
+      if (item.type !== 'steps') return [item];
+      const steps = item.steps.filter(
+        (step) =>
+          step.kind !== 'tool_call' &&
+          !(
+            step.kind === 'tool_result' &&
+            step.toolCallIds?.length &&
+            step.toolCallIds.every((id) =>
+              tools.some(
+                (tool) => tool.callId === id && tool.result !== undefined
+              )
+            )
+          )
+      );
+      return steps.length ? [{ ...item, steps }] : [];
+    });
+    for (const tool of tools) items.push({ type: 'tool', key: tool.id, tool });
+    for (const request of this.approvalState.requests)
+      items.push({ type: 'approval', key: `approval:${request.id}`, request });
+    const timestamp = (item: (typeof items)[number]): string | null =>
+      item.type === 'tool'
+        ? item.tool.timestamp
+        : item.type === 'approval'
+          ? item.request.requested_at
+          : item.type === 'steps'
+            ? item.steps[0]?.timestamp
+            : item.timestamp;
+    return items.sort(
+      (a, b) =>
+        sessionTimelineTime(timestamp(a)) - sessionTimelineTime(timestamp(b))
+    );
+  }
   @property({ attribute: false })
   events: FlowGatewayEvent[] = [];
 
@@ -475,6 +552,13 @@ export class SessionChatView extends LitElement {
   `;
 
   willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has('sessionId'))
+      this.approvalState = {
+        requests: [],
+        canDecide: false,
+        author: '',
+        now: Date.now(),
+      };
     if (changed.has('events') || changed.has('activity')) {
       this.conversation = buildConversation(this.events, this.activity);
       // Screen readers get the agent's reply, not the whole thread: the last
@@ -543,7 +627,7 @@ export class SessionChatView extends LitElement {
 
   /** What the thread is showing right now, cheap enough to compare per update. */
   private contentSignature(): string {
-    const items = this.conversation.items;
+    const items = this.displayItems;
     const last = items[items.length - 1];
     return `${items.length}|${last ? last.key : ''}|${this.events.length}|${
       this.activity.length
@@ -967,7 +1051,9 @@ ${
     </div>`;
   }
 
-  private passesArtifactFilter(item: TranscriptItem): boolean {
+  private passesArtifactFilter(
+    item: (typeof this.displayItems)[number]
+  ): boolean {
     if (!this.artifactKindFilter) return true;
     if (item.type === 'browser_step') {
       return (
@@ -983,7 +1069,10 @@ ${
     return view?.group === this.artifactKindFilter;
   }
 
-  private renderItem(item: TranscriptItem) {
+  private renderItem(item: (typeof this.displayItems)[number]) {
+    if (item.type === 'tool')
+      return html`<session-tool-card .tool=${item.tool}></session-tool-card>`;
+    if (item.type === 'approval') return this.renderApproval(item.request);
     if (item.type === 'message') return this.renderMessage(item);
     if (item.type === 'artifact') return this.renderArtifact(item.activity);
     if (item.type === 'steps') return this.renderStepGroup(item);
@@ -1080,6 +1169,10 @@ ${
   }
 
   render() {
+    return html`${this.renderActivity()}${this.renderContent()}`;
+  }
+
+  private renderContent() {
     if (this.loading && !this.events.length && !this.activity.length) {
       return html`
         <div class="loading">
@@ -1089,7 +1182,8 @@ ${
       `;
     }
 
-    const { items, stats } = this.conversation;
+    const { stats } = this.conversation;
+    const items = this.displayItems;
     if (!items.length && !this.pending.length) {
       return html`${this.renderLiveRegion()}
         <div class="empty">${this.emptyText}</div>`;

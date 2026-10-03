@@ -267,6 +267,58 @@ def test_a_semantic_only_hit_carries_its_similarity_and_no_keyword_score(
     assert row["session_reference"] == "semantic-only"
 
 
+def test_a_semantic_artifact_hit_carries_its_artifact_ref(
+    client, db_session, test_user, provider
+):
+    """The vector half builds the same artifact identity the keyword half does."""
+    _opt_in(db_session, test_user.account_id)
+    session = _session(db_session, test_user.account_id, "semantic-artifact")
+    rows = crud_session_search_document.replace_source_chunks(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        source_kind="artifact",
+        source_id="artifact-sem-1",
+        occurred_at=BASE_AT,
+        chunks=[
+            SessionSearchChunk(
+                content=SEMANTIC_TEXT,
+                role="artifact",
+                meta_data={
+                    "artifact_id": "artifact-sem-1",
+                    "activity_id": "activity-sem-1",
+                    "kind": "transcript",
+                    "name": "books.vtt",
+                    "content_type": "text/vtt",
+                    "tool_name": "record_call",
+                    "labels": {"site": "nord"},
+                    "cue_start": 12.0,
+                },
+            )
+        ],
+    )
+    crud_session_search_document.store_embeddings(
+        db_session, vectors=[(rows[0], QUERY_VECTOR)], model_identity=MODEL_IDENTITY
+    )
+    db_session.flush()
+
+    payload = _search(client, mode="semantic").json()
+
+    [snippet] = _by_session(payload)[str(session.id)]["snippets"]
+    assert snippet["source_kind"] == "artifact"
+    assert snippet["artifact"] == {
+        "artifact_id": "artifact-sem-1",
+        "activity_id": "activity-sem-1",
+        "kind": "transcript",
+        "name": "books.vtt",
+        "content_type": "text/vtt",
+        "tool_name": "record_call",
+        "labels": {"site": "nord"},
+        "cue_start": 12.0,
+        "text_truncated": False,
+    }
+
+
 def test_a_keyword_only_hit_carries_no_similarity(
     client, db_session, test_user, provider
 ):

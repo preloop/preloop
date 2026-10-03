@@ -487,7 +487,8 @@ def test_resolve_openai_codex_credentials_maps_refresh_failure_to_401():
     assert exc_info.value.error_type == "authentication_error"
     assert exc_info.value.code == "refresh_token_reused"
     assert "could not be refreshed" in exc_info.value.message
-    assert "sync-credentials" in exc_info.value.message
+    assert 'reconnect "Codex CLI" --from-local' in exc_info.value.message
+    assert "enrollment is preserved" in exc_info.value.message
     assert "codex login" in exc_info.value.message
     assert service._last_upstream_credential_type is None
 
