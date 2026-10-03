@@ -10,7 +10,8 @@ on purpose, so an operator learns one rule:
 
 * ``own`` (default): artifacts of the sessions the calling agent identity
   ran (``runtime_session.runtime_principal_id`` equals the caller's), across
-  runs. The identity comes from the authenticated credential, never from an
+  runs. A flow execution's principal is the execution id, so for a flow the
+  identity is the flow: every execution of it counts as "own". The identity comes from the authenticated credential, never from an
   argument.
 * ``account``: every artifact of the account. Needs the
   ``artifact_search.account_scope`` grant in the governance store (read here,
@@ -122,6 +123,9 @@ class Caller:
     runtime_principal_id: Optional[str]
     api_key_id: Optional[str]
     managed_agent_id: Optional[str]
+    #: Flow execution the credential belongs to, if any. Its flow is the
+    #: identity "own" spans across runs.
+    flow_execution_id: Optional[str] = None
 
     @classmethod
     def from_user_context(cls, user_context: Any) -> "Caller":
@@ -133,6 +137,24 @@ class Caller:
             else None,
             api_key_id=getattr(user_context, "api_key_id", None),
             managed_agent_id=getattr(user_context, "managed_agent_id", None),
+            flow_execution_id=getattr(user_context, "flow_execution_id", None),
+        )
+
+    def flow_id(self, db: Session) -> Optional[UUID]:
+        """The flow this caller's execution belongs to, account bound."""
+        execution_id = _as_uuid(self.flow_execution_id)
+        if execution_id is None:
+            return None
+        from preloop.models.models import Flow, FlowExecution
+
+        return (
+            db.query(FlowExecution.flow_id)
+            .join(Flow, Flow.id == FlowExecution.flow_id)
+            .filter(
+                FlowExecution.id == execution_id,
+                Flow.account_id == self.account_id,
+            )
+            .scalar()
         )
 
     def actor(self) -> session_search_audit.SearchActor:
@@ -308,6 +330,7 @@ def search(db: Session, *, caller: Caller, arguments: Mapping[str, Any]) -> Read
         db,
         account_id=caller.account_id,
         runtime_principal_id=principal,
+        flow_id=caller.flow_id(db) if principal else None,
         limit=limit + 1,
         kinds=kinds,
         labels=labels,
@@ -491,17 +514,29 @@ def get(db: Session, *, caller: Caller, arguments: Mapping[str, Any]) -> ReadOut
 def _owned(db: Session, caller: Caller, artifact: Any) -> bool:
     if not caller.runtime_principal_id:
         return False
+    own = crud_artifact.own_session_ids(
+        account_id=caller.account_id,
+        runtime_principal_id=caller.runtime_principal_id,
+        flow_id=caller.flow_id(db),
+    )
     from preloop.models.models import RuntimeSession
 
-    principal = (
-        db.query(RuntimeSession.runtime_principal_id)
+    return (
+        db.query(RuntimeSession.id)
         .filter(
             RuntimeSession.id == artifact.runtime_session_id,
-            RuntimeSession.account_id == caller.account_id,
+            RuntimeSession.id.in_(own),
         )
-        .scalar()
+        .first()
+        is not None
     )
-    return principal == caller.runtime_principal_id
+
+
+def _as_uuid(value: Any) -> Optional[UUID]:
+    try:
+        return UUID(str(value)) if value else None
+    except ValueError:
+        return None
 
 
 __all__ = [

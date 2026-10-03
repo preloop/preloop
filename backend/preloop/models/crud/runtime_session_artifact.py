@@ -442,12 +442,39 @@ def list_page_for_session(
     )
 
 
+def own_session_ids(
+    *, account_id: UUID, runtime_principal_id: str, flow_id: UUID | None = None
+) -> Any:
+    """Select the ids of the sessions one agent identity ran, across runs.
+
+    The identity is the runtime principal; for a flow execution, whose
+    principal is the execution id, it is every execution of the same flow.
+    """
+    session = models.RuntimeSession
+    match = session.runtime_principal_id == runtime_principal_id
+    if flow_id is not None:
+        runs = (
+            select(func.cast(models.FlowExecution.id, String))
+            .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+            .where(
+                models.FlowExecution.flow_id == flow_id,
+                models.Flow.account_id == account_id,
+            )
+        )
+        match = match | (
+            (session.runtime_principal_type == "flow_execution")
+            & session.runtime_principal_id.in_(runs)
+        )
+    return select(session.id).where(session.account_id == account_id, match)
+
+
 def search_page(
     db: Session,
     *,
     account_id: UUID,
     limit: int,
     runtime_principal_id: str | None = None,
+    flow_id: UUID | None = None,
     kinds: list[str] | None = None,
     labels: dict[str, Any] | None = None,
     since: datetime | None = None,
@@ -466,7 +493,10 @@ def search_page(
         account_id: Account the caller is allowed to read.
         limit: Maximum rows to return.
         runtime_principal_id: When set, only artifacts of sessions whose
-            ``runtime_principal_id`` equals it.
+            ``runtime_principal_id`` equals it (or of ``flow_id``'s runs).
+        flow_id: With ``runtime_principal_id``, also the sessions of every
+            execution of this flow: a flow execution's principal is the
+            execution id, so the flow is its identity across runs.
         kinds: When set, only rows of these kinds.
         labels: When set, only rows whose labels contain these (JSONB ``@>``).
         since: Inclusive lower bound on ``created_at``.
@@ -492,11 +522,15 @@ def search_page(
         table.availability == "available",
     )
     if runtime_principal_id is not None:
-        own = select(models.RuntimeSession.id).where(
-            models.RuntimeSession.account_id == account_id,
-            models.RuntimeSession.runtime_principal_id == runtime_principal_id,
+        q = q.filter(
+            table.runtime_session_id.in_(
+                own_session_ids(
+                    account_id=account_id,
+                    runtime_principal_id=runtime_principal_id,
+                    flow_id=flow_id,
+                )
+            )
         )
-        q = q.filter(table.runtime_session_id.in_(own))
     if kinds:
         q = q.filter(table.kind.in_(kinds))
     if labels:

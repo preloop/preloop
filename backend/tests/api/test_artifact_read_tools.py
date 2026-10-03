@@ -278,6 +278,76 @@ class TestScope:
         assert "foreign.vtt" not in _names(outcome)
 
 
+def _flow_run(db, account_id, flow):
+    from preloop.models.crud import crud_flow_execution
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+
+    execution = crud_flow_execution.create(
+        db, obj_in=FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    session = crud_runtime_session.upsert_by_source(
+        db,
+        account_id=account_id,
+        session_source_type="flow_execution",
+        session_source_id=str(execution.id),
+        session_reference=str(execution.id),
+        runtime_principal_type="flow_execution",
+        runtime_principal_id=str(execution.id),
+        runtime_principal_name=flow.name,
+        started_at=TODAY,
+        last_activity_at=TODAY,
+    )
+    return execution, session
+
+
+def _flow(db, account_id, name):
+    from preloop.models.crud import crud_flow
+    from preloop.models.schemas.flow import FlowCreate
+
+    return crud_flow.create(
+        db=db,
+        flow_in=FlowCreate(
+            name=f"{name} {uuid.uuid4().hex[:6]}",
+            prompt_template="p",
+            agent_type="openhands",
+            agent_config={},
+        ),
+        account_id=account_id,
+    )
+
+
+class TestFlowIdentity:
+    """A flow execution's principal is per run; the flow spans runs."""
+
+    def test_flow_run_sees_earlier_runs_of_the_same_flow_only(
+        self, db_session, test_user
+    ):
+        account_id = test_user.account_id
+        evaluator = _flow(db_session, account_id, "evaluator")
+        other = _flow(db_session, account_id, "other")
+        _, earlier = _flow_run(db_session, account_id, evaluator)
+        _artifact(db_session, earlier, name="earlier.vtt", created_at=YESTERDAY)
+        _, foreign = _flow_run(db_session, account_id, other)
+        foreign_row = _artifact(
+            db_session, foreign, name="other-flow.vtt", created_at=TODAY
+        )
+        current, _ = _flow_run(db_session, account_id, evaluator)
+        caller = reads.Caller(
+            account_id=account_id,
+            runtime_principal_id=str(current.id),
+            api_key_id=None,
+            managed_agent_id=None,
+            flow_execution_id=str(current.id),
+        )
+        assert _names(reads.search(db_session, caller=caller, arguments={})) == [
+            "earlier.vtt"
+        ]
+        refused = reads.get(
+            db_session, caller=caller, arguments={"artifact_id": str(foreign_row.id)}
+        )
+        assert refused.text.startswith("artifact_not_found")
+
+
 class TestFilters:
     def test_window_since_inclusive_until_exclusive(
         self, db_session, test_user, corpus
