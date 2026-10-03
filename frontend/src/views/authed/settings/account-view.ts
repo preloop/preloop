@@ -964,11 +964,14 @@ export class AccountView extends LitElement {
 
       .audio-storage {
         margin-top: 1.25rem;
-        padding-top: 1rem;
-        border-top: 1px solid var(--sl-color-neutral-200);
         display: flex;
         flex-direction: column;
         gap: 0.75rem;
+      }
+
+      .audio-storage sl-switch {
+        /* Only the control and its label are clickable; no dead row. */
+        align-self: flex-start;
       }
 
       .audio-storage .usage-note {
@@ -977,9 +980,14 @@ export class AccountView extends LitElement {
 
       .audio-retention {
         display: flex;
-        align-items: flex-end;
+        align-items: flex-start;
         gap: 0.75rem;
-        max-width: 28rem;
+        max-width: 32rem;
+      }
+
+      .audio-retention sl-button {
+        /* Line up with the input, below its label. */
+        margin-top: calc(var(--sl-input-label-font-size-medium) * 1.8);
       }
 
       .usage-models {
