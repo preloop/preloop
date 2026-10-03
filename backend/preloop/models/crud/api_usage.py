@@ -29,6 +29,7 @@ ApiUsage = models.ApiUsage
 Flow = models.Flow
 FlowExecution = models.FlowExecution
 ManagedAgent = models.ManagedAgent
+ApiKey = models.ApiKey
 RuntimeSession = models.RuntimeSession
 User = models.User
 
@@ -175,6 +176,19 @@ def _usage_account_clause(
     )
 
 
+def _api_key_owner_id(db: Session, api_key_id: Any) -> Optional[uuid.UUID]:
+    """Owner of an API key, for per-user budgets; ``None`` if unknown."""
+    try:
+        key_id = (
+            api_key_id
+            if isinstance(api_key_id, uuid.UUID)
+            else uuid.UUID(str(api_key_id))
+        )
+    except (TypeError, ValueError):
+        return None
+    return db.query(ApiKey.user_id).filter(ApiKey.id == key_id).scalar()
+
+
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
 
@@ -291,6 +305,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         user_id: Optional[str] = None,
         account_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
+        api_key_user_id: Optional[Any] = None,
         auth_subject_type: Optional[str] = None,
         ai_model_id: Optional[str] = None,
         flow_id: Optional[str] = None,
@@ -318,7 +333,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         rate_limit_retry_after_ms: Optional[int] = None,
         meta_data: Optional[Dict[str, Any]] = None,
     ) -> ApiUsage:
-        """Log a model gateway request with usage and attribution fields."""
+        """Log a model gateway request with usage and attribution fields.
+
+        ``api_key_user_id`` is the owner of ``api_key_id`` when the caller
+        already knows it (the gateway does); otherwise it is looked up, once,
+        for the per-user budget scope.
+        """
         db_obj = ApiUsage(
             user_id=user_id,
             account_id=account_id,
@@ -385,6 +405,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 subject_scopes: list[tuple[str, Optional[str]]] = []
                 if api_key_id:
                     subject_scopes.append(("api_key", str(api_key_id)))
+                    # A per-user budget also counts calls made with an API key
+                    # the user owns. Agent traffic counts against the agent's
+                    # owner instead (below), so one call never counts against
+                    # two users.
+                    if not managed_agent_id and auth_subject_type != "managed_agents":
+                        key_owner_id = api_key_user_id or _api_key_owner_id(
+                            db, api_key_id
+                        )
+                        if key_owner_id:
+                            subject_scopes.append(("user", str(key_owner_id)))
                 if managed_agent_id:
                     subject_scopes.append(("managed_agent", str(managed_agent_id)))
                     # A per-user budget counts spend from every agent the user

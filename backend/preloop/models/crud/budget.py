@@ -498,14 +498,15 @@ def record_spend_for_request(
     scoped: list[tuple[Any, str, Optional[uuid.UUID]]] = [
         (account_id, s_type, s_id) for s_type, s_id in subjects
     ]
-    # Buckets of other accounts that this spend also counts toward, such as
-    # an ancestor's (account hook H5). They go into the same batch, so the
+    # Other buckets that this spend also counts toward, such as an ancestor's
+    # or a plugin subject's in this account (account hook H5). They go into the same batch, so the
     # caller's single commit or rollback covers them too.
     from preloop.plugins.account_hooks import get_budget_extension
 
     extension = get_budget_extension()
     if extension is not None:
         seen_extra: set[tuple[str, str, Optional[uuid.UUID]]] = set()
+        own_buckets = set(subjects)
         for extra_scope in (
             extension.extra_spend_scopes(
                 db,
@@ -533,7 +534,13 @@ def record_spend_for_request(
                 normalize_budget_subject_type(extra_scope.subject_type),
                 extra_id,
             )
-            if extra_key[0] == str(account_id) or extra_key in seen_extra:
+            # A bucket of the request's own account is allowed (a plugin
+            # subject such as ``team``) unless it is one the request already
+            # records, which would count the spend twice.
+            if extra_key in seen_extra or (
+                extra_key[0] == str(account_id)
+                and (extra_key[1], extra_key[2]) in own_buckets
+            ):
                 continue
             seen_extra.add(extra_key)
             try:
