@@ -30,6 +30,7 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_key,
     crud_attention_dismissal,
+    crud_audit_log,
     crud_approval_workflow,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
@@ -1172,6 +1173,109 @@ def get_session_artifact_usage(
     return SessionArtifactUsageResponse.model_validate(
         account_usage(db, account_id=account.id)
     )
+
+
+class SessionArtifactSettingsResponse(BaseModel):
+    """Account artifact storage settings (#1102)."""
+
+    audio_storage_enabled: bool = Field(
+        description="Store raw audio deposited by agents. Off by default."
+    )
+    audio_retention_days: int = Field(
+        description="Days raw audio is kept before its bytes expire."
+    )
+    audio_retention_max_days: int = Field(
+        description="Longest allowed audio retention (the session retention)."
+    )
+    updated_by_user_id: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SessionArtifactSettingsUpdate(BaseModel):
+    """Change artifact storage settings; omitted fields are left as they are."""
+
+    audio_storage_enabled: Optional[bool] = None
+    audio_retention_days: Optional[int] = Field(default=None, ge=1)
+
+
+def _artifact_settings_response(account: Account) -> SessionArtifactSettingsResponse:
+    from preloop.services import audio_storage
+
+    resolved = audio_storage.resolve(account.meta_data)
+    return SessionArtifactSettingsResponse(**resolved.__dict__)
+
+
+@router.get(
+    "/account/session-artifacts/settings",
+    response_model=SessionArtifactSettingsResponse,
+)
+@require_permission("view_policies")
+def get_session_artifact_settings(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactSettingsResponse:
+    """Return whether raw audio is stored, and for how long."""
+    return _artifact_settings_response(account)
+
+
+@router.put(
+    "/account/session-artifacts/settings",
+    response_model=SessionArtifactSettingsResponse,
+    responses={
+        403: {"description": "Caller may not manage account policies"},
+        422: {"description": "audio_retention_days_invalid"},
+    },
+)
+@require_permission("manage_policies")
+def update_session_artifact_settings(
+    payload: SessionArtifactSettingsUpdate,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactSettingsResponse:
+    """Opt the account in or out of raw audio storage; admin only, audited.
+
+    Uses ``manage_policies`` like the retention settings: it governs what
+    the account keeps. Every change writes an ``artifact_settings_updated``
+    audit row with the before and after values.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from preloop.services import audio_storage
+
+    before = audio_storage.resolve(account.meta_data)
+    try:
+        updated = audio_storage.apply_update(
+            account.meta_data,
+            audio_storage_enabled=payload.audio_storage_enabled,
+            audio_retention_days=payload.audio_retention_days,
+            user_id=current_user.id,
+            now=datetime.now(UTC),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    after = audio_storage.resolve(updated)
+    account.meta_data = updated
+    flag_modified(account, "meta_data")
+    db.add(account)
+    crud_audit_log.log_action(
+        db,
+        account_id=account.id,
+        user_id=current_user.id,
+        action=audio_storage.AUDIT_ACTION,
+        resource_type="account_settings",
+        resource_id="artifacts",
+        status="success",
+        details={
+            field: {"from": getattr(before, field), "to": getattr(after, field)}
+            for field in ("audio_storage_enabled", "audio_retention_days")
+        },
+        commit=False,
+    )
+    db.commit()
+    db.refresh(account)
+    return _artifact_settings_response(account)
 
 
 @router.patch("/account/details", response_model=AccountDetailsResponse)

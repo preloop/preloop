@@ -124,9 +124,12 @@ def max_request_bytes() -> int:
 def audio_storage_enabled(account: Any) -> bool:
     """Whether the account stores audio artifacts.
 
-    Always False until #1102 adds the per-account opt-in setting.
+    Reads ``artifacts.audio_storage_enabled`` from the account (default
+    False, admin opt-in, #1102). Transcripts are stored either way.
     """
-    return False
+    from preloop.services.audio_storage import is_enabled
+
+    return is_enabled(account)
 
 
 def artifact_uri(runtime_session_id: Any, artifact_id: Any) -> str:

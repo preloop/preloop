@@ -54,6 +54,8 @@ describe('AccountView', () => {
       effectivePlan?: Record<string, unknown> | null;
       summaryPlan?: Record<string, unknown> | null;
       sessionArtifactUsage?: Record<string, unknown> | null;
+      artifactSettings?: Record<string, unknown> | null;
+      artifactSettingsPut?: (body: Record<string, unknown>) => Response;
     } = {}
   ) {
     return sinon
@@ -81,6 +83,16 @@ describe('AccountView', () => {
             created_at: '2026-01-01T00:00:00Z',
             updated_at: '2026-01-02T00:00:00Z',
           });
+        }
+
+        if (url.includes('/api/v1/account/session-artifacts/settings')) {
+          if (method === 'PUT' && opts.artifactSettingsPut) {
+            return opts.artifactSettingsPut(JSON.parse(String(init?.body)));
+          }
+          if (!opts.artifactSettings) {
+            return json({ detail: 'no settings in this test' }, 404);
+          }
+          return json(opts.artifactSettings);
         }
 
         if (url.includes('/api/v1/account/session-artifacts/usage')) {
@@ -1198,6 +1210,122 @@ describe('AccountView', () => {
     expect(cells['Generated file']).to.equal('1 KiB');
     expect(cells['Audio'], 'empty kinds stay hidden').to.be.undefined;
     expect(cells['Screenshots']).to.equal('0 B');
+  });
+
+  describe('raw audio storage (#1102)', () => {
+    const usage = {
+      used_bytes: 0,
+      budget_bytes: 1048576,
+      by_kind: { screenshot: 0, recording: 0 },
+      evicted_count_30d: 0,
+    };
+    const off = {
+      audio_storage_enabled: false,
+      audio_retention_days: 30,
+      audio_retention_max_days: 180,
+    };
+
+    async function mount(): Promise<AccountView> {
+      const element = await fixture<AccountView>(
+        html`<account-view></account-view>`
+      );
+      await waitUntil(() => !(element as any)._loading, 'load');
+      await waitUntil(
+        () =>
+          element.shadowRoot?.querySelector(
+            '[data-testid="audio-storage-settings"]'
+          ),
+        'audio settings'
+      );
+      return element;
+    }
+
+    function q<T extends Element>(el: AccountView, id: string): T {
+      return el.shadowRoot!.querySelector(`[data-testid="${id}"]`) as T;
+    }
+
+    it('shows the toggle off with the copy and the retention field', async () => {
+      fetchStub = createFetchStub({
+        sessionArtifactUsage: usage,
+        artifactSettings: off,
+      });
+      const element = await mount();
+
+      const toggle = q<HTMLInputElement>(element, 'audio-storage-toggle');
+      expect(toggle.checked).to.equal(false);
+      expect(
+        q(element, 'audio-storage-copy')
+          .textContent!.replace(/\s+/g, ' ')
+          .trim()
+      ).to.equal(
+        'Store raw audio deposited by agents. Off by default. Transcripts are stored either way.'
+      );
+      const days = q<HTMLInputElement>(element, 'audio-retention-days');
+      expect(days.value).to.equal('30');
+      expect(String((days as any).max)).to.equal('180');
+    });
+
+    it('turning the toggle on sends the opt-in and reflects the saved state', async () => {
+      const puts: Record<string, unknown>[] = [];
+      fetchStub = createFetchStub({
+        sessionArtifactUsage: usage,
+        artifactSettings: off,
+        artifactSettingsPut: (body) => {
+          puts.push(body);
+          return json({ ...off, ...body, updated_at: '2026-10-04T00:00:00Z' });
+        },
+      });
+      const element = await mount();
+
+      const toggle = q<HTMLElement>(element, 'audio-storage-toggle');
+      toggle.click();
+      await waitUntil(() => puts.length === 1, 'PUT sent');
+      await waitUntil(
+        () => (element as any)._artifactSettings.audio_storage_enabled
+      );
+      await element.updateComplete;
+
+      expect(puts[0]).to.deep.equal({ audio_storage_enabled: true });
+      expect(
+        q<HTMLInputElement>(element, 'audio-storage-toggle').checked
+      ).to.equal(true);
+    });
+
+    it('saves a new retention in days', async () => {
+      const puts: Record<string, unknown>[] = [];
+      fetchStub = createFetchStub({
+        sessionArtifactUsage: usage,
+        artifactSettings: { ...off, audio_storage_enabled: true },
+        artifactSettingsPut: (body) => {
+          puts.push(body);
+          return json({ ...off, audio_storage_enabled: true, ...body });
+        },
+      });
+      const element = await mount();
+
+      (element as any)._audioRetentionDraft = '7';
+      await element.updateComplete;
+      q<HTMLElement>(element, 'audio-retention-save').click();
+      await waitUntil(() => puts.length === 1, 'PUT sent');
+
+      expect(puts[0]).to.deep.equal({ audio_retention_days: 7 });
+    });
+
+    it('tells a non-admin why the change was refused', async () => {
+      fetchStub = createFetchStub({
+        sessionArtifactUsage: usage,
+        artifactSettings: off,
+        artifactSettingsPut: () => json({ detail: 'denied' }, 403),
+      });
+      const element = await mount();
+
+      q<HTMLElement>(element, 'audio-storage-toggle').click();
+      await waitUntil(() => q(element, 'audio-storage-error'), 'error shown');
+
+      expect(q(element, 'audio-storage-error').textContent).to.contain(
+        'Only an account admin can change audio storage.'
+      );
+    });
   });
 
   it('stops listening after disconnect so a window dispatch fetches nothing', async () => {
