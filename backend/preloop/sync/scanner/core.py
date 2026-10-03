@@ -440,7 +440,10 @@ class TrackerClient:
                     )
             else:
                 issue_changed = True
-                current_issue_model = crud_issue.create(db, obj_in=xformed_issue_data)
+                # A webhook may insert the same issue concurrently.
+                current_issue_model, _ = crud_issue.upsert(
+                    db, obj_in=xformed_issue_data
+                )
 
             # Process dependencies
             for dep in dependencies:

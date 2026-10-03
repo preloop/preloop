@@ -4,7 +4,8 @@ import uuid as uuid_module
 from datetime import datetime, timezone  # Import timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ..models.issue import Issue
@@ -27,6 +28,51 @@ class CRUDIssue(CRUDBase[Issue]):
             metadata.pop("preloop_triage", None)
             values["meta_data"] = metadata
         return super().create(db, obj_in=values, commit=commit)
+
+    def upsert(self, db: Session, *, obj_in: Dict[str, Any]) -> tuple[Issue, bool]:
+        """Create or update the issue identified by ``(project_id, external_id)``.
+
+        Concurrent writers (webhook deliveries, the poll sync, the triage
+        controller) converge on one row: the insert uses ``ON CONFLICT DO
+        NOTHING`` against ``uq_issue_project_external_id``, so a writer that
+        loses the race waits for the winner's commit and then updates the row
+        the winner inserted. The update path goes through :meth:`update`, which
+        keeps a trusted triage receipt and invalidates compliance results.
+
+        Args:
+            db: Database session. The method commits.
+            obj_in: Issue values; must include ``project_id`` and ``external_id``.
+
+        Returns:
+            The stored issue and whether this call inserted it.
+        """
+        values = dict(obj_in)
+        values["external_id"] = str(values["external_id"])
+        if isinstance(values.get("meta_data"), dict):
+            metadata = dict(values["meta_data"])
+            metadata.pop("preloop_triage", None)
+            values["meta_data"] = metadata
+        columns = {column.name for column in Issue.__table__.columns}
+        row = {key: value for key, value in values.items() if key in columns}
+        inserted_id = db.execute(
+            pg_insert(Issue)
+            .values(**row)
+            .on_conflict_do_nothing(index_elements=["project_id", "external_id"])
+            .returning(Issue.id)
+        ).scalar_one_or_none()
+        db.commit()
+        if inserted_id is not None:
+            issue = db.get(Issue, inserted_id)
+            if issue is None:  # pragma: no cover - committed in this session
+                raise RuntimeError("Inserted issue row is not readable")
+            return issue, True
+        existing = db.scalars(
+            select(Issue).where(
+                Issue.project_id == values["project_id"],
+                Issue.external_id == values["external_id"],
+            )
+        ).one()
+        return self.update(db, db_obj=existing, obj_in=values), False
 
     def set_triage_receipt(
         self, db: Session, *, db_obj: Issue, receipt: Dict[str, Any] | None
