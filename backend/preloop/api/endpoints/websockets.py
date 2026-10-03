@@ -14,7 +14,7 @@ from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models import models
 from preloop.services.activity_tracker import handle_activity
 from preloop.services.session_manager import session_manager
-from preloop.services.websocket_manager import manager
+from preloop.services.websocket_manager import SessionStreamFilter, manager
 from preloop.sync.services.event_bus import EventBus, get_nats_client
 from preloop.utils import get_client_ip
 from preloop.utils.permissions import require_permission
@@ -723,3 +723,254 @@ async def unified_websocket(websocket: WebSocket):
             pass  # Already closed
 
         logger.info(f"Unified WebSocket session {session.id} closed")
+
+
+# --- Session attach (#1149) -------------------------------------------------
+#
+# ``preloop sessions attach`` follows one session from a terminal. The unified
+# socket fans out every event in the account and leaves filtering to the
+# browser, which is fine for the console but would hand a terminal the whole
+# account's traffic and skip the session read check. This channel is the
+# session-scoped one the issue allows for: it authenticates the bearer token,
+# requires session read on a session in the caller's account, withholds
+# approval payloads from a viewer who cannot read approvals, audits attach and
+# detach, and forwards only the events that belong to the session.
+#
+# It is receive-only. Notes and approval decisions go through their REST
+# endpoints, so they keep their own permission checks and audit. A command
+# channel for Agent Control agents (#1150) would be a new message type here.
+
+SESSION_ATTACH_AUDIT_ATTACHED = "runtime_session.attached"
+SESSION_ATTACH_AUDIT_DETACHED = "runtime_session.detached"
+
+#: Close codes in the private 4000 range, mirroring the HTTP status meant.
+SESSION_ATTACH_CLOSE_UNAUTHORIZED = 4401
+SESSION_ATTACH_CLOSE_FORBIDDEN = 4403
+SESSION_ATTACH_CLOSE_NOT_FOUND = 4404
+
+
+@require_permission("view_runtime_sessions")
+def _session_read_allowed(*, current_user: User, db: Session) -> bool:
+    """Apply the same RBAC check the session REST reads use."""
+    return True
+
+
+@require_permission("view_approvals")
+def _approval_read_allowed(*, current_user: User, db: Session) -> bool:
+    """Apply the same RBAC check the approval REST reads use."""
+    return True
+
+
+def _bearer_token(websocket: WebSocket) -> Optional[str]:
+    """Read the bearer token from the upgrade request's Authorization header.
+
+    Header only: a token in the query string ends up in every access log on
+    the way, and the CLI can always set a header.
+    """
+    header = websocket.headers.get("authorization", "")
+    if header[:7].lower() == "bearer ":
+        token = header[7:].strip()
+        return token or None
+    return None
+
+
+def _authorize_session_attach(
+    db: Session,
+    *,
+    user: User,
+    runtime_session_id: str,
+    execution_id: Optional[str],
+) -> dict:
+    """Decide whether ``user`` may follow the session, without side effects.
+
+    Returns a dict with ``error`` (an HTTP-like status) on refusal, otherwise
+    the session's identity and whether approvals may be shown.
+    """
+    from preloop.models.crud import crud_runtime_session
+
+    try:
+        _session_read_allowed(current_user=user, db=db)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            return {"error": 403, "detail": "Attaching needs session read access"}
+        raise
+    try:
+        uuid.UUID(runtime_session_id)
+    except ValueError:
+        return {"error": 404, "detail": "Runtime session not found"}
+    session = crud_runtime_session.get_account_session(
+        db, account_id=str(user.account_id), runtime_session_id=runtime_session_id
+    )
+    if session is None:
+        return {"error": 404, "detail": "Runtime session not found"}
+    if execution_id is not None:
+        try:
+            uuid.UUID(execution_id)
+        except ValueError:
+            return {"error": 404, "detail": "Flow execution not found"}
+        execution = crud_flow_execution.get(
+            db, execution_id, account_id=str(user.account_id)
+        )
+        if execution is None:
+            return {"error": 404, "detail": "Flow execution not found"}
+    try:
+        approvals_visible = _approval_read_allowed(current_user=user, db=db)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        approvals_visible = False
+    return {
+        "runtime_session_id": str(session.id),
+        "account_id": str(user.account_id),
+        "ended_at": session.ended_at.isoformat() if session.ended_at else None,
+        "approvals_visible": bool(approvals_visible),
+    }
+
+
+def _audit_session_attach(
+    db: Session,
+    *,
+    action: str,
+    user_id: object,
+    account_id: str,
+    runtime_session_id: str,
+    details: dict,
+    ip_address: Optional[str],
+    user_agent: Optional[str],
+) -> None:
+    from preloop.models.crud import crud_audit_log
+
+    crud_audit_log.log_action(
+        db,
+        account_id=account_id,
+        user_id=user_id,
+        action=action,
+        resource_type="runtime_session",
+        resource_id=runtime_session_id,
+        status="success",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        details=details,
+    )
+
+
+@router.websocket("/ws/runtime-sessions/{runtime_session_id}")
+async def runtime_session_websocket(websocket: WebSocket, runtime_session_id: str):
+    """Stream one runtime session's live events to an attached client.
+
+    Authentication: ``Authorization: Bearer <token>`` on the upgrade request.
+
+    Query parameters:
+        execution_id (optional): also stream events of this flow execution.
+        read_only (optional): recorded on the audit event; enforcement of a
+            read-only attach is the REST endpoints' permission checks.
+
+    Messages sent: one ``attached`` message, then every account realtime
+    event of the session exactly as the unified socket would deliver it.
+    Messages accepted: ``{"type": "ping"}``, answered with ``pong``.
+    """
+    await websocket.accept()
+
+    async def refuse(code: int, error: str, detail: str) -> None:
+        try:
+            await websocket.send_json(
+                {"type": "error", "error": error, "detail": detail}
+            )
+            await websocket.close(code=code)
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+
+    token = _bearer_token(websocket)
+    user = await _resolve_token_user(token) if token else None
+    if user is None:
+        await refuse(
+            SESSION_ATTACH_CLOSE_UNAUTHORIZED,
+            "unauthorized",
+            "A valid bearer token is required",
+        )
+        return
+
+    execution_id = websocket.query_params.get("execution_id") or None
+    read_only = websocket.query_params.get("read_only") in {"1", "true", "yes"}
+    client_ip = get_client_ip(websocket)
+    user_agent = websocket.headers.get("user-agent", "")
+
+    try:
+        decision = await run_db_async(
+            lambda db: _authorize_session_attach(
+                db,
+                user=user,
+                runtime_session_id=runtime_session_id,
+                execution_id=execution_id,
+            )
+        )
+    except Exception:
+        logger.warning("Session attach authorization failed", exc_info=True)
+        await refuse(
+            SESSION_ATTACH_CLOSE_FORBIDDEN,
+            "forbidden",
+            "Session access could not be verified",
+        )
+        return
+    if decision.get("error") == 403:
+        await refuse(SESSION_ATTACH_CLOSE_FORBIDDEN, "forbidden", decision["detail"])
+        return
+    if decision.get("error") == 404:
+        await refuse(SESSION_ATTACH_CLOSE_NOT_FOUND, "not_found", decision["detail"])
+        return
+
+    session_id = decision["runtime_session_id"]
+    account_id = decision["account_id"]
+    audit_details = {"execution_id": execution_id, "read_only": read_only}
+
+    async def audit(action: str) -> None:
+        try:
+            await run_db_async(
+                lambda db: _audit_session_attach(
+                    db,
+                    action=action,
+                    user_id=user.id,
+                    account_id=account_id,
+                    runtime_session_id=session_id,
+                    details=audit_details,
+                    ip_address=client_ip,
+                    user_agent=user_agent,
+                )
+            )
+        except Exception:
+            logger.warning("Session attach audit failed (%s)", action, exc_info=True)
+
+    connection_id = await manager.connect_with_account(websocket, account_id)
+    manager.session_streams[connection_id] = SessionStreamFilter(
+        runtime_session_id=session_id,
+        execution_id=execution_id,
+        approvals_visible=decision["approvals_visible"],
+    )
+    await audit(SESSION_ATTACH_AUDIT_ATTACHED)
+    try:
+        await websocket.send_json(
+            {
+                "type": "attached",
+                "runtime_session_id": session_id,
+                "execution_id": execution_id,
+                "ended_at": decision["ended_at"],
+                "approvals_visible": decision["approvals_visible"],
+            }
+        )
+        while True:
+            try:
+                text = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "heartbeat"})
+                continue
+            try:
+                message = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict) and message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        manager.disconnect(connection_id)
+        await audit(SESSION_ATTACH_AUDIT_DETACHED)
