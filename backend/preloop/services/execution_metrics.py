@@ -348,7 +348,6 @@ def project_resume_lineage(
     """
     if not executions:
         return
-    from sqlalchemy import String, cast, or_, select
 
     roots: set[uuid.UUID] = set()
     for execution in executions:
@@ -363,27 +362,11 @@ def project_resume_lineage(
                 else uuid.UUID(str(execution.id))
             )
     root_texts = [str(root) for root in roots]
-    resume_root_col = models.FlowExecution.trigger_event_details["_resume"][
-        "resume_root"
-    ].astext
-    chain_key = func.coalesce(resume_root_col, cast(models.FlowExecution.id, String))
-    rows = db.execute(
-        select(
-            chain_key.label("chain_root"),
-            func.coalesce(func.sum(models.FlowExecution.total_tokens), 0),
-            func.coalesce(func.sum(models.FlowExecution.estimated_cost), 0),
-            func.count(models.FlowExecution.id),
-        )
-        .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
-        .where(
-            models.Flow.account_id == account_id,
-            or_(
-                models.FlowExecution.id.in_(list(roots)),
-                resume_root_col.in_(root_texts),
-            ),
-        )
-        .group_by(chain_key)
-    ).all()
+    from preloop.models.crud import crud_flow_execution
+
+    rows = crud_flow_execution.get_resume_chain_totals(
+        db, account_id=account_id, roots=list(roots), root_texts=root_texts
+    )
     by_root: Dict[str, Dict[str, Any]] = {}
     for chain_root, tokens, cost, members in rows:
         if int(members or 0) < 2:
