@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 import time
 import uuid
 from typing import Any, Callable, Iterator
@@ -183,6 +184,20 @@ def _saturated_db_session() -> _SaturatedPoolSession:
     return _SaturatedPoolSession()
 
 
+class _HeldPoolSession:
+    """Hold a simulated checkout until the concurrent ping has completed."""
+
+    def __init__(self, checkout: Callable[[], None]) -> None:
+        self._checkout = checkout
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        def blocking_call(*args: Any, **kwargs: Any) -> Any:
+            self._checkout()
+            raise SQLAlchemyTimeoutError(POOL_TIMEOUT_MESSAGE)
+
+        return blocking_call
+
+
 def _stub_user() -> User:
     """Build a detached user for dependency overrides."""
     return User(
@@ -237,8 +252,27 @@ async def test_pool_timeout_on_a_burst_path_does_not_stall_ping(app: FastAPI) ->
     """A saturated pool must fail one request, not the liveness probe."""
     user = _stub_user()
     account = Account(id=user.account_id, organization_name="Example Org")
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    all_checkouts_held = asyncio.Event()
+    release_checkouts = threading.Event()
+    checkout_lock = threading.Lock()
+    checkout_threads: list[int] = []
 
-    app.dependency_overrides[get_db_session] = _saturated_db_session
+    def hold_checkout() -> None:
+        """Assert dispatch and signal once all four workers are waiting."""
+        thread_id = threading.get_ident()
+        assert thread_id != loop_thread, "database checkout ran on the event loop"
+        with checkout_lock:
+            checkout_threads.append(thread_id)
+            if len(checkout_threads) == 4:
+                loop.call_soon_threadsafe(all_checkouts_held.set)
+        assert release_checkouts.wait(timeout=10), "test did not release checkout"
+
+    def held_db_session() -> _HeldPoolSession:
+        return _HeldPoolSession(hold_checkout)
+
+    app.dependency_overrides[get_db_session] = held_db_session
     app.dependency_overrides[get_current_active_user] = lambda: user
     app.dependency_overrides[get_account_for_user] = lambda: account
     try:
@@ -246,21 +280,32 @@ async def test_pool_timeout_on_a_burst_path_does_not_stall_ping(app: FastAPI) ->
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver"
         ) as client:
-            async with _LoopHeartbeat() as heartbeat:
-                started = time.perf_counter()
-                burst = asyncio.gather(
-                    *(client.get("/api/v1/runtime-sessions") for _ in range(4)),
-                    return_exceptions=True,
-                )
-                ping = await client.get("/api/v1/ping")
-                # Measured from the moment the burst was launched, so a loop
-                # blocked by the burst shows up in this number.
-                ping_seconds = time.perf_counter() - started
+            # Separate cold application/route initialization from a pool wait.
+            # The invariant starts only once every checkout is held off-loop;
+            # a wall-clock reading before dispatch conflates the two on CI.
+            assert (await client.get("/api/v1/ping")).status_code == 200
+            requests = [
+                asyncio.create_task(client.get("/api/v1/runtime-sessions"))
+                for _ in range(4)
+            ]
+            burst = asyncio.gather(*requests, return_exceptions=True)
+            try:
+                await asyncio.wait_for(all_checkouts_held.wait(), timeout=5)
+                async with _LoopHeartbeat() as heartbeat:
+                    started = time.perf_counter()
+                    ping = await client.get("/api/v1/ping")
+                    ping_seconds = time.perf_counter() - started
+                    # The probe really completed with every checkout held.
+                    assert not release_checkouts.is_set()
+                    assert all(not task.done() for task in requests)
+            finally:
+                release_checkouts.set()
                 results = await burst
     finally:
         app.dependency_overrides.clear()
 
     assert ping.status_code == 200
+    assert len(checkout_threads) == 4
     assert ping_seconds < PING_BUDGET_SECONDS, (
         f"/api/v1/ping took {ping_seconds:.2f}s while the pool was saturated; "
         "a blocking checkout is back on the event loop"

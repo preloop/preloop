@@ -174,6 +174,9 @@ describe('Execution tree', () => {
     const element = await mount('lonely-1');
 
     expect(find(element, 'execution-tree-empty')).to.exist;
+    expect(find(element, 'execution-tree-empty')!.textContent?.trim()).to.equal(
+      'No delegated executions.'
+    );
     expect(find(element, 'execution-tree')).to.not.exist;
     expect(rows(element)).to.have.length(0);
   });

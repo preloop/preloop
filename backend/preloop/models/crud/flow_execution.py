@@ -1,6 +1,7 @@
 import logging
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
@@ -9,6 +10,7 @@ from sqlalchemy import (
     String,
     and_,
     cast,
+    case,
     func,
     literal_column,
     or_,
@@ -43,6 +45,25 @@ from preloop.models.schemas.flow_execution import (
 from .base import CRUDBase
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class FlowExecutionNavigationRow:
+    """Small navigation projection, excluding trigger bodies and results."""
+
+    id: uuid.UUID
+    status: str
+    start_time: datetime
+    use_issue: bool | None
+    issue_html_url: Any
+    issue_web_url: Any
+    issue_url: Any
+    object_html_url: Any
+    object_web_url: Any
+    object_url: Any
+    result_pr_url: Any
+    resume_pr_url: Any
+    feedback_pr_url: Any
 
 
 async def get_flow_execution(
@@ -231,6 +252,61 @@ def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]
 
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
+
+    def get_continuation_navigation(
+        self, db: Session, *, root_id: uuid.UUID, account_id: uuid.UUID
+    ) -> List[FlowExecutionNavigationRow]:
+        """Read the publisher and repairs without loading logs or prompts.
+
+        Ownership is checked on every member, including the publisher.
+        """
+        details = models.FlowExecution.trigger_event_details
+        issue = details["payload"]["issue"]
+        attributes = details["payload"]["object_attributes"]
+        # Match Python's issue-or-object_attributes choice without returning
+        # either complete object (an issue body can be very large).
+        use_issue = and_(
+            issue.isnot(None),
+            func.jsonb_typeof(issue) != "null",
+            ~issue.in_([{}, [], False, 0, ""]),
+        )
+        rows = (
+            db.query(
+                models.FlowExecution.id,
+                models.FlowExecution.status,
+                models.FlowExecution.start_time,
+                use_issue.label("use_issue"),
+                issue["html_url"].label("issue_html_url"),
+                issue["web_url"].label("issue_web_url"),
+                issue["url"].label("issue_url"),
+                attributes["html_url"].label("object_html_url"),
+                attributes["web_url"].label("object_web_url"),
+                attributes["url"].label("object_url"),
+                models.FlowExecution.result["pr_url"].label("result_pr_url"),
+                details["_resume"]["pr_url"].label("resume_pr_url"),
+                details["_feedback"]["pr_url"].label("feedback_pr_url"),
+            )
+            .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+            .filter(
+                models.Flow.account_id == account_id,
+                or_(
+                    models.FlowExecution.id == root_id,
+                    models.FlowExecution.trigger_event_details["_resume"][
+                        "resume_root"
+                    ].astext
+                    == str(root_id),
+                ),
+            )
+            .order_by(
+                case((models.FlowExecution.id == root_id, 0), else_=1),
+                models.FlowExecution.start_time,
+                models.FlowExecution.id,
+            )
+            # Publisher, the first 100 repairs, and one overflow sentinel.
+            .limit(102)
+            .all()
+        )
+        return [FlowExecutionNavigationRow(*row) for row in rows]
 
     def __init__(self):
         """Initialize with the FlowExecution model."""

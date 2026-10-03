@@ -1,7 +1,9 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { Router } from '../router';
+import { router, Router, LOCATION_CHANGED } from '../router';
+import { CapabilityRouteGate } from '../lazy-routes';
 
+import type { LitApp } from './lit-app';
 import './lit-app';
 
 describe('LitApp routing', () => {
@@ -65,6 +67,140 @@ describe('LitApp routing', () => {
     expect(customElements.get('profile-view')).to.equal(undefined);
     expect(customElements.get('agent-detail-view')).to.equal(undefined);
     expect(customElements.get('flow-execution-view')).to.equal(undefined);
+  });
+
+  it('removes capability listeners on disconnect and restores one on reconnect', async () => {
+    const sync = sinon.stub(CapabilityRouteGate.prototype, 'sync').resolves([]);
+    try {
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const parent = el.parentElement!;
+      window.history.replaceState({}, '', '/console');
+      sync.resetHistory();
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(sync.callCount).to.equal(1);
+
+      el.remove();
+      sync.resetHistory();
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(sync.callCount).to.equal(0);
+
+      parent.appendChild(el);
+      await el.updateComplete;
+      sync.resetHistory();
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(sync.callCount).to.equal(1);
+      el.remove();
+    } finally {
+      sync.restore();
+    }
+  });
+
+  it('cancels the deferred websocket connection when removed before the frame', async () => {
+    const schedule = sinon.stub(window, 'requestAnimationFrame').returns(12345);
+    const cancel = sinon.spy(window, 'cancelAnimationFrame');
+    try {
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const connect = sinon.spy(el, 'connectWebSocket');
+      el.remove();
+      expect(cancel.calledWith(12345)).to.equal(true);
+      // Even an already queued callback must not reconnect a removed app.
+      const callback = schedule.firstCall.args[0] as FrameRequestCallback;
+      callback(0);
+      expect(connect.called).to.equal(false);
+    } finally {
+      schedule.restore();
+      cancel.restore();
+    }
+  });
+
+  it('reschedules websocket startup after an early disconnect, only once', async () => {
+    const schedule = sinon.stub(window, 'requestAnimationFrame').returns(12345);
+    try {
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const parent = el.parentElement!;
+      const connect = sinon.spy(el, 'connectWebSocket');
+      const initialSchedules = schedule.callCount;
+      el.remove();
+      parent.appendChild(el);
+      await el.updateComplete;
+
+      expect(schedule.callCount).to.equal(initialSchedules + 1);
+      const callback = schedule.lastCall.args[0] as FrameRequestCallback;
+      callback(0);
+      expect(connect.callCount).to.equal(1);
+
+      el.remove();
+      parent.appendChild(el);
+      await el.updateComplete;
+      expect(schedule.callCount).to.equal(initialSchedules + 1);
+      expect(connect.callCount).to.equal(1);
+    } finally {
+      schedule.restore();
+    }
+  });
+
+  it('finishes a gated deep-link initialization after reconnecting', async () => {
+    let release!: (routes: []) => void;
+    let releaseResumed!: (routes: []) => void;
+    const pending = new Promise<[]>((resolve) => {
+      release = resolve;
+    });
+    const resumed = new Promise<[]>((resolve) => {
+      releaseResumed = resolve;
+    });
+    const sync = sinon.stub(CapabilityRouteGate.prototype, 'sync').resolves([]);
+    sync.onFirstCall().returns(pending);
+    sync.onSecondCall().returns(resumed);
+    const install = sinon.spy(router, 'setRoutes');
+    try {
+      window.history.replaceState({}, '', '/console/settings/subaccounts');
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const parent = el.parentElement!;
+      el.remove();
+      release([]);
+      parent.appendChild(el);
+      await el.updateComplete;
+      await pending;
+      await Promise.resolve();
+      // The completion from before disconnect cannot install stale routes;
+      // the fresh capability read made on reconnect must finish first.
+      expect(install.callCount).to.equal(0);
+
+      releaseResumed([]);
+      await waitUntil(
+        () => install.callCount === 1,
+        'Route initialization was lost on reconnect'
+      );
+    } finally {
+      sync.restore();
+      install.restore();
+    }
+  });
+
+  it('does not install stale gated routes into a newer app outlet', async () => {
+    let release!: (routes: []) => void;
+    const pending = new Promise<[]>((resolve) => {
+      release = resolve;
+    });
+    const sync = sinon
+      .stub(CapabilityRouteGate.prototype, 'sync')
+      .returns(pending);
+    const install = sinon.spy(router, 'setRoutes');
+    try {
+      window.history.replaceState({}, '', '/console/settings/subaccounts');
+      await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const current = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      release([]);
+      await pending;
+      await Promise.resolve();
+      expect(install.callCount).to.equal(1);
+      expect(router.getOutlet()).to.equal(
+        current.shadowRoot!.querySelector('main')
+      );
+    } finally {
+      sync.restore();
+      install.restore();
+    }
   });
 
   it('renders the landing page and /login without touching a console chunk', async () => {

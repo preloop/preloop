@@ -102,7 +102,9 @@ adoption do not change the PR association or create a subscription.
 
 The first repair of a publication whose publisher stored no native session also
 continues on that published branch, including when checkpoint uploads are
-disabled. A later repair still requires its own checkpoint. A deployment that
+disabled. Later repairs also use the published branch when no recoverable native
+checkpoint was stored. An expired, mismatched or incorrectly bound stored
+checkpoint still fails closed. A deployment that
 replaces the chart's default worker pool must subscribe one pool to
 `reconcile_flow_feedback`; otherwise the scheduler publishes reviews that no
 worker reads.
@@ -115,6 +117,12 @@ Cost is cumulative estimated execution cost in USD, with existing execution
 budgets enforced independently. No-progress detection compares the PR head
 before and after a repair. The execution result's `continuation` object shows
 thread state, consumed turns/cost, pending feedback, head and stop reason.
+
+The execution detail page marks each repair as a **Continuation** and links to
+the original publishing execution. Both pages provide issue and pull request
+links, plus an ordered list of follow-up executions with their status and start
+time. The list shows up to 100 continuations and links to the flow's paginated
+execution list when there are more. Delegated executions remain a separate tree.
 
 Publication registers an internal subscription using existing repository
 webhooks. No webhook is installed for an individual PR. Registration recovery
@@ -243,9 +251,10 @@ its session. Private runners must advertise native checkpoint support; a runner
 without it reports a cold handoff and does not upload its home directory.
 
 Restore begins in an empty session directory. Missing or expired recovery files
-stop a durable native resume. Only an explicitly adopted original publication may
-start a fresh conversation on its published branch and report `cold_handoff`.
-That exception is consumed by the first repair: later repairs need their own
+stop a durable native resume. When no native artifact was stored or checkpoint
+uploads are disabled, the controller can authorize a fresh conversation on the
+bound published branch and report `cold_handoff`. An explicit adoption applies
+only to its selected original publication. Later native resumes need their own
 workspace and native checkpoints. Corrupt, mismatched,
 unsupported or incompatible existing state produces `resume_failed`. A failed
 native CLI resume preserves the checkpoint and does not silently select another
@@ -379,7 +388,9 @@ acknowledgement is then unnecessary. `published_branch_handoff` explicitly gives
 up unavailable unpublished workspace and native conversation state and starts
 from the verified published PR branch. The controller binds that permission to
 the selected source execution and its reserved first repair. Trigger payloads
-cannot grant the exception. Subsequent turns must restore their own checkpoints.
+cannot grant the exception. Subsequent turns use their own checkpoints when
+available, or a controller-authorized published-branch handoff when no native
+artifact was stored.
 
 A changed head, closed PR, disabled flow, missing checkpoint capability or
 unreadable provider returns HTTP 409, requiring a new preview. Repeated adoption

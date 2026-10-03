@@ -1474,31 +1474,33 @@ def create_app() -> FastAPI:
         app.add_middleware(MCPPathRewriteMiddleware)
 
     # --- Custom API Docs Routes (Moved to /docs/api and /docs/redoc) ---
+    # FastAPI caches route callables. Resolve the serving app from the request
+    # so those caches cannot retain each application created by tests or reloads.
     @app.get("/docs/api", include_in_schema=False)  # Changed path
-    async def custom_swagger_ui_html() -> Any:
+    async def custom_swagger_ui_html(request: Request) -> Any:
         return get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - Swagger UI",
-            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+            openapi_url=request.app.openapi_url,
+            title=f"{request.app.title} - Swagger UI",
+            oauth2_redirect_url=request.app.swagger_ui_oauth2_redirect_url,
             swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
             swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
         )
 
     @app.get("/api/v1/openapi.yaml", include_in_schema=False)
     @app.get("/api/v1/spec", include_in_schema=False)
-    async def get_openapi_yaml() -> Any:
+    async def get_openapi_yaml(request: Request) -> Any:
         import yaml  # type: ignore
         from fastapi.responses import PlainTextResponse
 
-        schema = app.openapi()
+        schema = request.app.openapi()
         yaml_str = yaml.dump(schema, sort_keys=False)
         return PlainTextResponse(yaml_str, media_type="application/x-yaml")
 
     @app.get("/docs/redoc", include_in_schema=False)  # Changed path
-    async def custom_redoc_html() -> Any:
+    async def custom_redoc_html(request: Request) -> Any:
         return get_redoc_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - ReDoc",
+            openapi_url=request.app.openapi_url,
+            title=f"{request.app.title} - ReDoc",
             redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@2.0.0/bundles/redoc.standalone.js",
         )
 

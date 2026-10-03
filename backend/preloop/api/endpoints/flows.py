@@ -1019,6 +1019,11 @@ def read_flow_execution(
     # before /metrics answers, and the number must not change under the user.
     project_execution_totals(db, [execution])
     project_resume_lineage(db, [execution], account_id=current_user.account_id)
+    from preloop.services.flow_continuation_navigation import (
+        project_continuation_navigation,
+    )
+
+    project_continuation_navigation(db, execution, account_id=current_user.account_id)
     _project_execution_park(db, execution)
     # The page paints its title from this row before the flow itself loads.
     execution.flow_name = execution.flow.name if execution.flow else None

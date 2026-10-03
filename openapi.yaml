@@ -20335,6 +20335,56 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    ExecutionContinuationNavigation:
+      properties:
+        original_execution_id:
+          type: string
+          format: uuid
+          title: Original Execution Id
+        issue_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue Url
+        pr_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr Url
+        follow_ups:
+          items:
+            $ref: '#/components/schemas/ExecutionFollowUp'
+          type: array
+          title: Follow Ups
+        follow_ups_truncated:
+          type: boolean
+          title: Follow Ups Truncated
+          default: false
+      type: object
+      required:
+      - original_execution_id
+      title: ExecutionContinuationNavigation
+      description: Navigation shared by a publisher and its review/CI continuations.
+    ExecutionFollowUp:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        status:
+          type: string
+          title: Status
+        start_time:
+          type: string
+          format: date-time
+          title: Start Time
+      type: object
+      required:
+      - id
+      - status
+      - start_time
+      title: ExecutionFollowUp
+      description: A repair execution linked from its publishing execution.
     ExecutionModelUsage:
       properties:
         model_alias:
@@ -21504,6 +21554,10 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        continuation_navigation:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionContinuationNavigation'
+          - type: 'null'
         park:
           anyOf:
           - $ref: '#/components/schemas/ExecutionPark'
