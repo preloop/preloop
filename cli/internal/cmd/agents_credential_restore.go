@@ -154,7 +154,11 @@ func defaultReadClaudeOffboardKeychain() (string, error) {
 		} // errSecItemNotFound
 		return "", errors.New("cannot read active Claude Code keychain")
 	}
-	return strings.TrimSpace(string(output)), nil
+	blob := strings.TrimSpace(string(output))
+	if blob == "" {
+		return "", errors.New("active Claude Code keychain credential is empty")
+	}
+	return blob, nil
 }
 
 func defaultWriteClaudeOffboardKeychain(blob string) error {
@@ -178,6 +182,9 @@ func defaultReadCodexOffboardKeychain() (string, error) {
 	blob, err := readCodexKeychainBlobForSync()
 	if errors.Is(err, keyring.ErrNotFound) {
 		return "", nil
+	}
+	if err == nil && strings.TrimSpace(blob) == "" {
+		return "", errors.New("active Codex keychain credential is empty")
 	}
 	return blob, err
 }

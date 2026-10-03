@@ -394,6 +394,11 @@ esac
 	if err := os.WriteFile(filepath.Join(dir, "security"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "darwin" {
+		if _, err := defaultReadClaudeOffboardKeychain(); err == nil {
+			t.Error("existing empty active keychain must not fall back to file")
+		}
+	}
 	if err := defaultWriteClaudeOffboardKeychain(`{"synthetic":"bundle"}`); err != nil {
 		t.Fatal(err)
 	}
@@ -403,5 +408,17 @@ esac
 	}
 	if !strings.Contains(string(args), "-a\nsynthetic-active-account\n") || strings.Contains(string(args), "synthetic-other-user") {
 		t.Error("write did not target the existing active account")
+	}
+}
+
+func TestCodexOffboardEmptyActiveKeychainFails(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS keychain selection")
+	}
+	previous := readCodexKeychainBlobForSync
+	readCodexKeychainBlobForSync = func() (string, error) { return "", nil }
+	t.Cleanup(func() { readCodexKeychainBlobForSync = previous })
+	if _, err := defaultReadCodexOffboardKeychain(); err == nil {
+		t.Error("empty existing active keychain must not fall back to file")
 	}
 }
