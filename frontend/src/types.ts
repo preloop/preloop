@@ -944,6 +944,15 @@ export interface AccountGovernanceDefaults {
   approval_workflow_id?: string | null;
 }
 
+/**
+ * Per-flow governance override (subject type "flows") plus the account
+ * defaults it inherits. has_override is false when the flow stores none.
+ */
+export interface FlowGovernanceResponse extends SubjectGovernanceResponse {
+  has_override: boolean;
+  account_defaults: AccountGovernanceDefaults;
+}
+
 export interface AccountGovernanceDefaultsResponse {
   defaults: AccountGovernanceDefaults;
   /** Managed agent ids carrying an explicit per-agent override. */

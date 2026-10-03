@@ -41,6 +41,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/radio/radio.js';
+import '../../components/flow-governance-card';
 import '../../components/preloop-flow-form';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
@@ -638,9 +639,25 @@ export class FlowView extends LitElement {
         </div>
       </view-header>
       <div class="column-layout wide">
-        <div class="main-column">${this.renderForm()}</div>
+        <div class="main-column">
+          ${this.renderForm()} ${this.isNew ? '' : this.renderGovernanceCard()}
+        </div>
       </div>
     `;
+  }
+
+  /**
+   * Per-flow governance override. Allowed MCP Tools scope what the agent
+   * sees; this card governs how those calls (and model calls) are decided.
+   */
+  renderGovernanceCard() {
+    if (!this.flowId) return '';
+    return html`<flow-governance-card
+      .flowId=${this.flowId}
+      .allowedToolNames=${(this.flow.allowed_mcp_tools || []).map(
+        (tool) => tool.tool_name
+      )}
+    ></flow-governance-card>`;
   }
 
   renderFlowDetails() {
@@ -877,7 +894,7 @@ ${this.flow.review_instructions}</pre>
                 `
               : ''
           }
-          ${this.renderPublicationPolicy()}
+          ${this.renderPublicationPolicy()} ${this.renderGovernanceCard()}
           ${
             this.flow.git_clone_config?.enabled &&
             (this.flow.git_clone_config.repositories?.length || 0) > 0

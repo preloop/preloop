@@ -75,3 +75,17 @@ class AccountGovernanceDefaultsResponse(BaseModel):
     # How many managed agents carry an explicit override, so the console can
     # say "N agents override this" next to the default editor.
     override_agent_ids: List[str] = Field(default_factory=list)
+
+
+class FlowGovernanceResponse(SubjectGovernanceResponse):
+    """Per-flow governance override plus the account defaults it inherits.
+
+    ``has_override`` is False when the flow stores no override, in which case
+    ``config`` is empty and every execution of the flow is governed by the
+    account-wide policy (tool rules, enabled tools) and ``account_defaults``.
+    """
+
+    has_override: bool = False
+    account_defaults: AccountGovernanceDefaults = Field(
+        default_factory=AccountGovernanceDefaults
+    )

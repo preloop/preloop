@@ -1680,6 +1680,97 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/account/governance/flows/{flow_id}:
+    get:
+      tags:
+      - Account
+      summary: Get Account Flow Governance
+      description: Per-flow governance override for every execution of one flow.
+      operationId: get_account_flow_governance_api_v1_account_governance_flows__flow_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Account
+      summary: Update Account Flow Governance
+      description: Store a governance override for one flow's executions.
+      operationId: update_account_flow_governance_api_v1_account_governance_flows__flow_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubjectGovernanceConfig'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Account
+      summary: Reset Account Flow Governance
+      description: Drop the flow's override so it inherits the account policy again.
+      operationId: reset_account_flow_governance_api_v1_account_governance_flows__flow_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/{agent_id}/governance:
     get:
       tags:
@@ -21659,6 +21750,36 @@ components:
       - budget
       title: FlowGatewayUsageSummaryResponse
       description: Flow-scoped gateway usage summary.
+    FlowGovernanceResponse:
+      properties:
+        subject_type:
+          type: string
+          title: Subject Type
+        subject_id:
+          type: string
+          title: Subject Id
+        config:
+          $ref: '#/components/schemas/SubjectGovernanceConfig'
+        has_override:
+          type: boolean
+          title: Has Override
+          default: false
+        account_defaults:
+          $ref: '#/components/schemas/AccountGovernanceDefaults'
+      type: object
+      required:
+      - subject_type
+      - subject_id
+      - config
+      title: FlowGovernanceResponse
+      description: 'Per-flow governance override plus the account defaults it inherits.
+
+
+        ``has_override`` is False when the flow stores no override, in which case
+
+        ``config`` is empty and every execution of the flow is governed by the
+
+        account-wide policy (tool rules, enabled tools) and ``account_defaults``.'
     FlowNotifications:
       properties:
         on_failure:
