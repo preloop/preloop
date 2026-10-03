@@ -1,0 +1,15 @@
+File:   bundle.tar.gz
+sha256: 1568c2ebca680e423f76c3524ea3c0571ac48b9a3a583397461fdb3bae99c8db
+  approvals/approval_request.jsonl                0 bytes  ok
+  artifacts/821aaf55-e952-4115-90a0-874d2ada2232/1e8bc401-f9e3-4edd-9a0b-6a4cd16400d8-aisle-7-pallet.png     4303 bytes  ok
+  artifacts/821aaf55-e952-4115-90a0-874d2ada2232/7d415513-19d8-4b63-82ed-31e94cd944a1-nord-late.vtt      580 bytes  ok
+  artifacts/manifest.json                      2317 bytes  ok
+  audit/audit_log.jsonl                         386 bytes  ok
+  evidence/receipts.jsonl                         0 bytes  ok
+  holds/legal_hold.jsonl                          0 bytes  ok
+  member list digest: ok
+
+Signature verified with key psk_1b170b3d5248cf43 (fetched from the API, so it shows the bundle matches today's published key)
+Signed at 2026-10-03T23:53:27Z
+
+What this shows: the archive is the one Preloop built and nothing in it has moved since. Not that the records were true when written.
