@@ -101,6 +101,7 @@ Re-running the installer upgrades in place and preserves your configuration, see
 - [Onboard local agents with the CLI](../guide/quickstart-cli.md)
 - [Troubleshooting](../guide/troubleshooting.md): docker preflight messages, registration reopen semantics, install.log
 - For Kubernetes, use the [Helm chart](https://github.com/preloop/preloop/tree/main/helm/preloop) (`helm install preloop ./helm/preloop` from a repo checkout)
+- On Azure Kubernetes Service, size the install with [Reference sizing for Helm on AKS](sizing-aks.md)
 
 !!! info "Editions"
     **Preloop** (open source, this page) is free forever. **Preloop Cloud** is

@@ -80,6 +80,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The agent read and planned but never changed a file, so the run ended with nothing to show for the tokens it spent.',
   },
+  publication_missing: {
+    label: 'no pull request',
+    tooltip:
+      'The flow was set to open a pull request, but the run ended without one: nothing was pushed or the request did not complete.',
+  },
   tool_error: {
     label: 'tool error',
     tooltip: 'A command the agent ran in its own workspace exited non-zero.',

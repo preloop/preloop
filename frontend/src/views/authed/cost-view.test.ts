@@ -786,6 +786,82 @@ describe('CostView', () => {
     );
   });
 
+  it('shows a Teams tab only with team budgets on a server with teams', async () => {
+    const tabsOf = async () => {
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () => (element as unknown as { loading: boolean }).loading === false
+      );
+      await waitUntil(
+        () =>
+          Object.keys(
+            (element as unknown as { featureFlags: object }).featureFlags
+          ).length > 0
+      );
+      await element.updateComplete;
+      return Array.from(
+        element.shadowRoot?.querySelectorAll('sl-tab[slot="nav"]') || []
+      ).map((tab) => tab.textContent?.trim());
+    };
+    featuresPayload = { billing: true, team_budgets: true };
+    expect(await tabsOf()).to.not.include('Teams');
+    invalidateApiCaches();
+    featuresPayload = { billing: true, team_management: true };
+    expect(await tabsOf()).to.not.include('Teams');
+    invalidateApiCaches();
+    featuresPayload = {
+      billing: true,
+      team_budgets: true,
+      team_management: true,
+    };
+    expect(await tabsOf()).to.include('Teams');
+  });
+
+  it('loads team spend for the page window when the Teams tab opens', async () => {
+    featuresPayload = {
+      billing: true,
+      team_budgets: true,
+      team_management: true,
+    };
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element['handleTabShow'](
+      new CustomEvent('sl-tab-show', { detail: { name: 'teams' } })
+    );
+    await element.updateComplete;
+    const panel = element.shadowRoot!.querySelector('team-budgets-panel') as
+      (HTMLElement & { startDate?: string; endDate?: string }) | null;
+    expect(panel).to.not.equal(null);
+    const period = (
+      element as unknown as {
+        currentPeriod: { startDate: string; endDate: string };
+      }
+    ).currentPeriod;
+    expect(panel!.startDate).to.equal(period.startDate);
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/usage/teams?start='))
+    );
+  });
+
+  it('never calls the team budget endpoints without the capability', async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => /team-budgets|usage\/teams/.test(String(call.args[0])))
+    ).to.equal(false);
+  });
+
   describe('imported usage section', () => {
     const importedUsage = {
       event_count: 4,

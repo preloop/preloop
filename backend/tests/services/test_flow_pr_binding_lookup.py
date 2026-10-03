@@ -537,6 +537,10 @@ class TestEndToEnd:
             [_agent("FAILED", PRE_PUSH_TRANSIENT), _agent("SUCCEEDED", exit_code=0)]
         )
         client = _github_client(prs=[], branch_exists=False)
+        # Nothing was published by the failed attempt; the retry opens the PR.
+        client.list_pull_requests = AsyncMock(
+            side_effect=lambda **_: {"items": [_listed()] if len(calls) > 1 else []}
+        )
         orchestrator = await _run(db_session, flow, event_data, monitor, client)
 
         assert len(calls) == 2

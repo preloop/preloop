@@ -2,6 +2,8 @@
 
 One notification survives: a short "PR opened: <url>" comment on the
 triggering issue after a successful run that recorded a pull request URL.
+Its counterpart, under the same flag, says when a run that was supposed to
+open a pull request ended without one, and why.
 Comments go through the tracker client (the same service MCP ``add_comment``
 uses), never through the MCP HTTP endpoint.
 
@@ -26,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 SUCCESS_STATUSES = frozenset({"SUCCEEDED", "SUCCESS"})
 
+# Result key the orchestrator writes when a publishing run opened no PR.
+PUBLICATION_MISSING_RESULT_KEY = "publication_missing"
+
 # Issue / PR / MR identifiers the tracker comment APIs accept. Branch
 # names, tags, and SHAs show up on ``_subject.reference`` for some events
 # and must not become comment targets. GitLab MR refs are ``!123``.
@@ -44,6 +49,7 @@ class NotificationOutcome:
     """What the terminal notifier did (or skipped)."""
 
     success_comment_posted: bool = False
+    missing_publication_comment_posted: bool = False
     skipped_reason: Optional[str] = None
 
 
@@ -82,12 +88,32 @@ def is_success_status(status: str) -> bool:
     return (status or "").upper() in SUCCESS_STATUSES
 
 
-def needs_tracker_comment(notifications: Any, status: str) -> bool:
+def needs_tracker_comment(
+    notifications: Any, status: str, result: Optional[Dict[str, Any]] = None
+) -> bool:
     """True when the terminal path should resolve a tracker client."""
     parsed = parse_notifications(notifications)
     if parsed is None:
         return False
-    return parsed.on_success_comment and is_success_status(status)
+    return parsed.on_success_comment and (
+        is_success_status(status) or extract_missing_publication(result) is not None
+    )
+
+
+def extract_missing_publication(result: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return the reason a publishing run opened no pull request, if recorded."""
+    if not isinstance(result, dict):
+        return None
+    record = result.get(PUBLICATION_MISSING_RESULT_KEY)
+    if not isinstance(record, dict):
+        return None
+    reason = record.get("reason")
+    return str(reason) if reason else "no reason was recorded"
+
+
+def format_missing_publication_comment(reason: str) -> str:
+    """Build the comment posted when a run should have opened a PR and did not."""
+    return f"No pull request was opened for this run: {reason}."
 
 
 def extract_trigger_comment_target(
@@ -221,6 +247,17 @@ async def notify_terminal_execution(
                 execution_id=execution_id,
             )
             outcome.success_comment_posted = posted
+
+    missing = extract_missing_publication(result)
+    if parsed.on_success_comment and missing is not None:
+        # The issue already says "Implemented in <sha>" when the agent wrote
+        # that itself; without this the thread ends there and looks done.
+        outcome.missing_publication_comment_posted = await _post_trigger_comment(
+            tracker_client=tracker_client,
+            trigger_event_details=trigger_event_details,
+            body=format_missing_publication_comment(missing),
+            execution_id=execution_id,
+        )
 
     return outcome
 

@@ -124,6 +124,14 @@ every 15 seconds; workers reconcile bounded batches. Default feedback debounce
 is 30 seconds. Duplicate deliveries and check/workflow notifications do not
 create duplicate execution turns.
 
+A repair that fails before any agent work (the resume was refused or the launch
+errored: no session, no runtime and no tokens) does not consume a repair turn.
+Its feedback stays pending and the next attempt waits out a growing backoff
+(4 minutes, then 16, up to 6 hours) instead of retrying on every
+reconciliation. While waiting, the continuation shows
+`stop_reason: resume_launch_retry`. A repair that reached the model and then
+failed, for example out of memory, still counts as a turn.
+
 A PostgreSQL row lease protects each thread. Creating the next PENDING execution
 and assigning its feedback receipts is one transaction. If dispatch fails or a
 worker crashes, normal execution recovery dispatches the same execution ID.

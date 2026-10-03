@@ -4,11 +4,19 @@ from typing import Any
 from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from preloop.models import models
+from preloop.models.models.access_values import RESERVED_BUDGET_SUBJECTS
 
 
 def validate_budget_subject(
     db: Session, *, account_id: Any, subject_type: str, subject_id: Any
 ) -> Any:
+    if subject_type in RESERVED_BUDGET_SUBJECTS:
+        # Owned by a plugin (team budgets, account hierarchy), which validates
+        # and enforces the subject behind its own endpoints.
+        raise ValueError(
+            f"Budget subject '{subject_type}' is available with the plugin "
+            "that provides it, not on this endpoint"
+        )
     if subject_type == "account":
         if subject_id is not None:
             raise ValueError("Account policies must not specify a subject id")

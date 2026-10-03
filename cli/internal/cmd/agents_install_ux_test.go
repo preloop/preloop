@@ -30,8 +30,8 @@ func TestPrintLiveValidationRoundTripResultSuccess(t *testing.T) {
 		1250*time.Millisecond,
 	)
 	rendered := out.String()
-	if !strings.Contains(rendered, "✓ round-trip OK, model=openai/gpt-5.6-sol, latency=1.3s") &&
-		!strings.Contains(rendered, "✓ round-trip OK, model=openai/gpt-5.6-sol, latency=1.2s") {
+	if !strings.Contains(rendered, "✓ direct gateway route/accounting probe passed, model=openai/gpt-5.6-sol, latency=1.3s") &&
+		!strings.Contains(rendered, "✓ direct gateway route/accounting probe passed, model=openai/gpt-5.6-sol, latency=1.2s") {
 		t.Fatalf("unexpected success formatting: %q", rendered)
 	}
 }
@@ -46,7 +46,7 @@ func TestPrintLiveValidationRoundTripResultFailure(t *testing.T) {
 		500*time.Millisecond,
 	)
 	rendered := out.String()
-	if !strings.Contains(rendered, "✗ round-trip FAILED") {
+	if !strings.Contains(rendered, "✗ direct gateway route/accounting probe FAILED") {
 		t.Fatalf("expected failure marker, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "gateway returned 401") {
@@ -69,7 +69,7 @@ func TestFormatDeferredLiveValidationRoundTrip(t *testing.T) {
 		},
 		Duration: 2 * time.Second,
 	})
-	if !strings.Contains(line, "round-trip OK") || !strings.Contains(line, "Hermes") {
+	if !strings.Contains(line, "direct gateway route/accounting probe passed") || !strings.Contains(line, "Hermes") {
 		t.Fatalf("unexpected deferred success line: %q", line)
 	}
 }

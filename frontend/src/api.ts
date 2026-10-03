@@ -52,6 +52,8 @@ import type {
   RuntimeSessionSummary,
   RuntimeSessionUpdateRequest,
   RuntimeSessionActivityListResponse,
+  RuntimeSessionArtifactDescriptor,
+  RuntimeSessionArtifactListResponse,
   RuntimeSessionRequestListResponse,
   RuntimeSessionSummaryInsight,
   SimilarSessionsParams,
@@ -2467,6 +2469,42 @@ export async function getAccountRuntimeSessionActivityTimeline(
     throw new Error('Failed to fetch session activity timeline');
   }
   return response.json();
+}
+
+/** Most artifacts the session header reads (5 pages of the list maximum). */
+export const SESSION_ARTIFACT_LIST_CAP = 1000;
+
+/**
+ * List a session's artifacts (descriptors only, never bytes), following
+ * `next_cursor` up to {@link SESSION_ARTIFACT_LIST_CAP} items. The list route
+ * has no total, so `truncated` says the header count is a lower bound.
+ */
+export async function listRuntimeSessionArtifacts(
+  runtimeSessionId: string
+): Promise<{ items: RuntimeSessionArtifactDescriptor[]; truncated: boolean }> {
+  const items: RuntimeSessionArtifactDescriptor[] = [];
+  let cursor: string | null | undefined = null;
+  do {
+    const query = new URLSearchParams({ limit: '200' });
+    if (cursor) query.set('cursor', cursor);
+    const response = await fetchWithAuth(
+      `/api/v1/runtime-sessions/${encodeURIComponent(
+        runtimeSessionId
+      )}/artifacts?${query.toString()}`
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to list session artifacts (${response.status})`);
+    }
+    const page = (await response.json()) as RuntimeSessionArtifactListResponse;
+    const pageItems = Array.isArray(page?.items) ? page.items : [];
+    items.push(...pageItems);
+    // An empty page or a cursor that does not move ends the walk, so a
+    // misbehaving server cannot keep the console fetching.
+    const next =
+      typeof page?.next_cursor === 'string' ? page.next_cursor : null;
+    cursor = pageItems.length && next !== cursor ? next : null;
+  } while (cursor && items.length < SESSION_ARTIFACT_LIST_CAP);
+  return { items, truncated: Boolean(cursor) };
 }
 
 /**

@@ -28,6 +28,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_id": "proj-123"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_project = MagicMock()
@@ -37,7 +38,9 @@ class TestProjectResolver:
         result = await resolver.resolve("name", context)
 
         assert result == "Test Project"
-        mock_crud_project.get.assert_called_once_with(mock_db, id="proj-123")
+        mock_crud_project.get.assert_called_once_with(
+            mock_db, id="proj-123", account_id="acct-1"
+        )
 
     @pytest.mark.asyncio
     @patch("preloop.services.prompt_resolvers.project.crud_project")
@@ -51,6 +54,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_identifier": "TP"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_project = MagicMock()
@@ -61,7 +65,7 @@ class TestProjectResolver:
 
         assert result == "Test description"
         mock_crud_project.get_by_identifier.assert_called_once_with(
-            mock_db, identifier="TP"
+            mock_db, identifier="TP", account_id="acct-1"
         )
 
     @pytest.mark.asyncio
@@ -76,6 +80,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_id": "proj-123"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_project = MagicMock()
@@ -98,6 +103,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_id": "proj-123"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_project = MagicMock()
@@ -120,6 +126,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_id": "proj-123"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_project = MagicMock()
@@ -142,6 +149,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_id": "proj-123"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_project = MagicMock()
@@ -164,6 +172,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_id": "proj-123"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_crud_project.get.return_value = None
@@ -183,6 +192,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         result = await resolver.resolve("name", context)
@@ -200,6 +210,7 @@ class TestProjectResolver:
             trigger_event_data=None,
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         result = await resolver.resolve("name", context)
@@ -218,6 +229,7 @@ class TestProjectResolver:
             trigger_event_data={"payload": {"project_id": "proj-123"}},
             flow_id="flow-1",
             execution_id="exec-1",
+            account_id="acct-1",
         )
 
         mock_project = MagicMock()
