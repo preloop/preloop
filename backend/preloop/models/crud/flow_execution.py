@@ -1665,8 +1665,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 False when batching many entries and commit manually
                 after the loop.
         """
+        from preloop.models.crud.flow_execution_log import (
+            storable_log_message,
+            storable_log_metadata,
+        )
         from preloop.models.models.flow_execution_log import FlowExecutionLog
-        from preloop.utils.secret_scrubbing import scrub_secrets, scrub_structure
 
         # NATS messages nest actual content under "payload" (e.g. payload.line
         # for agent_log_line).  Derive message from the best available field
@@ -1679,12 +1682,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         # Last gate before persistence: redact known credential formats so a
         # secret cannot be stored even if its producer skipped scrubbing
-        # (issue #173).
+        # (issue #173), and drop NUL bytes PostgreSQL rejects (#1196).
         log_entry = FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=scrub_secrets(message),
-            metadata_=scrub_structure(metadata) if metadata else None,
+            message=storable_log_message(message),
+            metadata_=storable_log_metadata(metadata),
         )
         db.add(log_entry)
         if commit:
