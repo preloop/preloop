@@ -7,8 +7,8 @@ export function testConcurrency(env = process.env) {
     }
     return Number(override);
   }
-  // Flow runners expose host CPUs even when their cgroup has only one CPU
-  // and 4 GiB of RAM. The runner's CPU-derived default can open too many
+  // Flow runners expose host CPUs despite a limited CPU and memory cgroup.
+  // The test runner's CPU-derived default can open too many
   // Chromium test pages for that memory budget.
   return env.FLOW_ID && env.EXECUTION_ID ? 1 : undefined;
 }
