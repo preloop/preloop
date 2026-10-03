@@ -259,6 +259,7 @@ nav:
       - Schema migrations: operations/schema-migrations.md
       - Database credentials: operations/database-credentials.md
       - Gateway memory: operations/gateway-memory.md
+      - Reference sizing on AKS: operations/sizing-aks.md
       - Session embedding worker: operations/session-embedding.md
       - Session search: operations/session-search.md
       - OTLP export: guide/observability-otlp.md
