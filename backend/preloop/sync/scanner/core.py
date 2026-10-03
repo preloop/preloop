@@ -350,6 +350,9 @@ class TrackerClient:
                             "creating a duplicate. Move it with POST "
                             f"/api/v1/projects/{registered[0].id}/transfer."
                         )
+                        # Nothing to write: end the transaction so the
+                        # repository lock is not held past this check.
+                        release_transaction(db)
                         continue
                     project = crud_project.create(db, obj_in=proj_create_data)
                 processed_projects.append(project)

@@ -780,20 +780,29 @@ def test_repository_identity_lock_excludes_concurrent_writers(db_session, db_eng
     assert _try_lock_elsewhere(db_engine, other_host) is True
 
 
-def test_create_takes_the_lock_before_checking_for_duplicates(
+def test_create_takes_the_lock_before_any_duplicate_check(
     raw_client, db_session, moved_repo, monkeypatch
 ):
+    """Both the same-org and the cross-org check run under the lock."""
     calls = []
+    real_same_org = projects_endpoint.crud_project.get_by_identifier
     real_find = projects_endpoint.find_same_repository_projects
 
     def spy_lock(db, **kwargs):
         calls.append(("lock", kwargs["identifier"], kwargs["host"]))
 
+    def spy_same_org(db, **kwargs):
+        calls.append(("same-org check", kwargs["identifier"]))
+        return real_same_org(db, **kwargs)
+
     def spy_find(db, **kwargs):
-        calls.append(("check", kwargs["identifier"]))
+        calls.append(("cross-org check", kwargs["identifier"]))
         return real_find(db, **kwargs)
 
     monkeypatch.setattr(projects_endpoint, "lock_repository_identity", spy_lock)
+    monkeypatch.setattr(
+        projects_endpoint.crud_project, "get_by_identifier", spy_same_org
+    )
     monkeypatch.setattr(projects_endpoint, "find_same_repository_projects", spy_find)
     raw_client.post(
         "/api/v1/projects",
@@ -803,7 +812,11 @@ def test_create_takes_the_lock_before_checking_for_duplicates(
             "organization_id": str(moved_repo["new_org"].id),
         },
     )
-    assert calls[:2] == [("lock", REPO_ID, "github.com"), ("check", REPO_ID)]
+    assert calls[:3] == [
+        ("lock", REPO_ID, "github.com"),
+        ("same-org check", REPO_ID),
+        ("cross-org check", REPO_ID),
+    ]
 
 
 def test_transfer_rechecks_destination_under_the_lock(

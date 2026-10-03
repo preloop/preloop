@@ -98,3 +98,30 @@ async def test_refresh_locks_repository_identity_before_creating(
 
     assert [p.identifier for p in created] == ["555"]
     assert locked == [("github.com", "555")]
+
+
+@pytest.mark.asyncio
+async def test_refresh_releases_the_lock_when_it_refuses_a_duplicate(
+    db_session, moved_repo, monkeypatch
+):
+    """The refused path ends the transaction instead of keeping the lock."""
+    import preloop.sync.scanner.core as scanner_core
+
+    events = []
+    real_release = scanner_core.release_transaction
+    monkeypatch.setattr(
+        scanner_core,
+        "lock_repository_identity",
+        lambda db, **kw: events.append("lock"),
+    )
+    monkeypatch.setattr(
+        scanner_core,
+        "release_transaction",
+        lambda db: (events.append("release"), real_release(db)),
+    )
+    scanner = _scanner(moved_repo["new_tracker"], [_repo("new-owner/widget")])
+
+    await scanner.scan_projects(db_session, moved_repo["new_org"])
+
+    assert "lock" in events
+    assert events[events.index("lock") + 1 :] == ["release"]

@@ -125,6 +125,17 @@ def create_project(
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
 
+    # Both duplicate checks below and the insert run under this lock, held
+    # until crud_project.create commits, so concurrent creates or transfers
+    # of one repository cannot both pass the checks.
+    if organization.tracker is not None:
+        lock_repository_identity(
+            db,
+            account_id=current_user.account_id,
+            host=repository_host(organization.tracker),
+            identifier=str(project.identifier),
+        )
+
     # Check if project with this identifier already exists in the organization
     existing_project = crud_project.get_by_identifier(
         db, organization_id=project.organization_id, identifier=project.identifier
@@ -152,16 +163,6 @@ def create_project(
     # A repository keeps its ID when it moves between organisations. A second
     # registration under the new owner would split its issues and reviews
     # across two records and make webhook routing ambiguous (#1159).
-    tracker = organization.tracker
-    if tracker is not None and tracker.tracker_type in REPOSITORY_ID_TRACKER_TYPES:
-        # Held until crud_project.create commits, so a concurrent create or
-        # transfer for this repository waits for this one to finish.
-        lock_repository_identity(
-            db,
-            account_id=current_user.account_id,
-            host=repository_host(tracker),
-            identifier=str(project.identifier),
-        )
     registered = find_same_repository_projects(
         db,
         organization=organization,
