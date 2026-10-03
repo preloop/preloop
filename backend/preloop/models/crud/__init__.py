@@ -1,6 +1,7 @@
 """CRUD operation implementations."""
 
 # Create CRUD instances for each model
+from .managed_oauth import CRUDManagedOAuth, crud_managed_oauth
 from ..models import (
     Account,
     AgentControlCommand,
@@ -241,6 +242,8 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
 __all__ = [
     "crud_chat",
+    "CRUDManagedOAuth",
+    "crud_managed_oauth",
     "crud_flow_feedback",
     "crud_issue_cost",
     "CRUDCliSession",

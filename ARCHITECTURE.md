@@ -321,6 +321,9 @@ constraints and scalar session association prevent cross-account labels and
 join fan-out. Console exact-period links preserve UTC microseconds and use
 normal authenticated account scoping; URL account context grants no access.
 
+Managed tracker OAuth persistence uses the [provider-neutral storage contract](docs/architecture/managed-oauth-storage.md),
+with tenant-bound connection transactions and serialized token-pair rotation.
+
 ### Nanobot managed runtime
 
 The optional `runtime-plugins/nanobot-preloop` process embeds a pinned Nanobot
