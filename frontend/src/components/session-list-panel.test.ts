@@ -221,3 +221,39 @@ describe('session-list-panel note indicator', () => {
     );
   });
 });
+
+describe('session-list-panel artifact cell (#1084)', () => {
+  it('renders nothing for a session without artifacts', async () => {
+    const el = await renderPanel([makeSession({ artifactCounts: {} })]);
+    expect(el.shadowRoot?.querySelector('.artifact-row')).to.equal(null);
+  });
+
+  it('folds kinds into header groups and keeps the row keyboard operable', async () => {
+    const el = await renderPanel([
+      makeSession({
+        artifactCounts: { recording: 1, screencast: 2, screenshot: 1 },
+      }),
+    ]);
+    const buttons = Array.from(
+      el.shadowRoot!.querySelectorAll('.artifact-kind')
+    ).map((node) => node.getAttribute('data-kind'));
+    expect(buttons).to.deep.equal(['other', 'screenshot']);
+
+    const card = el.shadowRoot!.querySelector('.session-card') as HTMLElement;
+    expect(card.getAttribute('role')).to.equal('button');
+    const events: CustomEvent[] = [];
+    el.addEventListener('session-selected', (event) =>
+      events.push(event as CustomEvent)
+    );
+    card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    (
+      el.shadowRoot!.querySelector(
+        '.artifact-kind[data-kind="screenshot"]'
+      ) as HTMLButtonElement
+    ).click();
+    expect(events.map((event) => event.detail)).to.deep.equal([
+      { sessionId: 'session-1', artifactKind: null },
+      { sessionId: 'session-1', artifactKind: 'screenshot' },
+    ]);
+  });
+});

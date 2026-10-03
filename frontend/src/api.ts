@@ -1025,6 +1025,8 @@ export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
   query?: string;
   sessionSourceType?: string;
   status?: 'all' | 'active' | 'ended';
+  /** Only sessions holding an available artifact: `any` or one kind. */
+  hasArtifacts?: string;
   limit?: number;
   offset?: number;
 }
@@ -1130,6 +1132,9 @@ function buildRuntimeSessionListQuery(
   }
   if (params.status) {
     queryParams.set('status', params.status);
+  }
+  if (params.hasArtifacts) {
+    queryParams.set('has_artifacts', params.hasArtifacts);
   }
   if (typeof params.limit === 'number') {
     queryParams.set('limit', String(params.limit));

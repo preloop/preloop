@@ -120,6 +120,7 @@ from preloop.services.cache_accounting import (
     build_request_cache_accounting,
     summarize_session_cache,
 )
+from preloop.services.artifact_media import ARTIFACT_KINDS
 from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.managed_agent_identity import (
     ManagedAgentIdentityError,
@@ -2677,8 +2678,24 @@ async def list_account_runtime_sessions(
         le=1440,
         description="Only open sessions with activity in the last N minutes",
     ),
+    has_artifacts: Optional[str] = Query(
+        None,
+        description=(
+            "Only sessions holding an available artifact: 'any', or an "
+            "artifact kind such as transcript, screenshot, document or audio"
+        ),
+    ),
 ):
     """List runtime sessions for the current account."""
+    if has_artifacts is not None and has_artifacts != "any":
+        if has_artifacts not in ARTIFACT_KINDS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "has_artifacts must be 'any' or one of: "
+                    + ", ".join(sorted(ARTIFACT_KINDS))
+                ),
+            )
     # Off the loop on purpose: the console polls this path, and a saturated
     # pool must not stall the liveness probe. See preloop.api.loop_safety.
     return await run_db_off_loop(
@@ -2697,6 +2714,7 @@ async def list_account_runtime_sessions(
             parent_session_id=str(parent_session_id) if parent_session_id else None,
             flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
             active_within_minutes=active_within_minutes,
+            has_artifacts=has_artifacts,
         )
     )
 

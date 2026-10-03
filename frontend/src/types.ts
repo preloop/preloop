@@ -564,6 +564,8 @@ export interface RuntimeSessionSummary {
   latest_note_author_display?: string | null;
   latest_note_author_auth_method?: string | null;
   latest_note_at?: string | null;
+  /** Available artifacts on the session by kind (#1084). */
+  artifact_counts?: Record<string, number>;
   /** True while a legal hold freezes this session. */
   legal_hold?: boolean;
 }
