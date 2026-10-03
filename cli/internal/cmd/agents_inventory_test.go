@@ -224,8 +224,13 @@ func inventorySnapshot(t *testing.T, home string) map[string]string {
 		if err != nil {
 			return err
 		}
-		value := fmt.Sprintf("%s|%s", info.Mode(), info.ModTime().UTC().Format(time.RFC3339Nano))
+		// NTFS can publish parent-directory mtimes lazily after fixture
+		// files are created. Read-only enumeration can then observe that
+		// delayed timestamp. Directory names/modes and all file metadata
+		// and contents still prove no entries or config files were changed.
+		value := info.Mode().String()
 		if !entry.IsDir() {
+			value += "|" + info.ModTime().UTC().Format(time.RFC3339Nano)
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return err
@@ -452,5 +457,22 @@ func TestInventoryRegistryIDsCoverKnownApps(t *testing.T) {
 			t.Fatalf("missing or duplicate fixed app ID for %q", spec.Name)
 		}
 		seen[id] = true
+	}
+}
+
+func TestInventorySnapshotDetectsFileMutationAndNewEntries(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	path := writeInventoryFixture(t, home, ".cursor/mcp.json", "original")
+	before := inventorySnapshot(t, home)
+	if err := os.WriteFile(path, []byte("modified"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(before, inventorySnapshot(t, home)) {
+		t.Fatal("snapshot missed a config mutation")
+	}
+	before = inventorySnapshot(t, home)
+	writeInventoryFixture(t, home, "execution-marker", "forbidden")
+	if reflect.DeepEqual(before, inventorySnapshot(t, home)) {
+		t.Fatal("snapshot missed an executed process creating a new file")
 	}
 }
