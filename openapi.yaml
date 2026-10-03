@@ -5469,6 +5469,17 @@ paths:
         holds.
 
 
+        Session artifacts created in the period are included as
+
+        ``artifacts/<session_id>/<artifact_id>-<name>`` members with
+
+        ``artifacts/manifest.json``, a list of A2A ``Artifact`` objects. Above
+
+        ``RETENTION_EXPORT_MAX_ARTIFACT_BYTES`` the export is refused with 413
+
+        ``export_too_large``.
+
+
         The archive carries ``manifest.json`` with a sha256 per member and a
 
         digest over the member list, in the same shape an evidence pack manifest
@@ -5498,6 +5509,19 @@ paths:
           description: Period end, exclusive (YYYY-MM-DD)
           title: End
         description: Period end, exclusive (YYYY-MM-DD)
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Limit the artifact members to one runtime session. Audit rows,
+            approvals, receipts and holds still cover the whole period.
+          title: Runtime Session Id
+        description: Limit the artifact members to one runtime session. Audit rows,
+          approvals, receipts and holds still cover the whole period.
       responses:
         '200':
           description: Successful Response

@@ -19,6 +19,7 @@ from preloop.services.legal_hold import place_hold
 from preloop.services.retention_export import (
     EXPORT_MANIFEST_SCHEMA,
     MEMBER_APPROVALS,
+    MEMBER_ARTIFACT_MANIFEST,
     MEMBER_AUDIT,
     MEMBER_EVIDENCE,
     MEMBER_HOLDS,
@@ -155,6 +156,7 @@ def test_the_archive_carries_a_manifest_and_one_file_per_class(
         MEMBER_APPROVALS,
         MEMBER_EVIDENCE,
         MEMBER_HOLDS,
+        MEMBER_ARTIFACT_MANIFEST,
     }
 
 
@@ -389,8 +391,11 @@ def test_an_empty_period_is_an_archive_not_an_error(db_session, account):
         "approvals": 0,
         "evidence": 0,
         "legal_holds": 0,
+        "artifacts": 0,
+        "artifacts_unavailable": 0,
     }
     assert _members(export.archive)[MEMBER_AUDIT] == b""
+    assert json.loads(_members(export.archive)[MEMBER_ARTIFACT_MANIFEST]) == []
 
 
 # --- bounds ----------------------------------------------------------------

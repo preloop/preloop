@@ -29,6 +29,7 @@ from typing import Annotated, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -373,8 +374,21 @@ def create_period_export(
     db: Session = Depends(get_db_session),
     start: str = Query(..., description="Period start, inclusive (YYYY-MM-DD)"),
     end: str = Query(..., description="Period end, exclusive (YYYY-MM-DD)"),
+    runtime_session_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Limit the artifact members to one runtime session. Audit rows, "
+            "approvals, receipts and holds still cover the whole period."
+        ),
+    ),
 ):
     """Build a tar.gz of one period: audit rows, approvals, receipts, holds.
+
+    Session artifacts created in the period are included as
+    ``artifacts/<session_id>/<artifact_id>-<name>`` members with
+    ``artifacts/manifest.json``, a list of A2A ``Artifact`` objects. Above
+    ``RETENTION_EXPORT_MAX_ARTIFACT_BYTES`` the export is refused with 413
+    ``export_too_large``.
 
     The archive carries ``manifest.json`` with a sha256 per member and a
     digest over the member list, in the same shape an evidence pack manifest
@@ -399,11 +413,18 @@ def create_period_export(
         )
     try:
         export = build_period_export(
-            db, account=account, start=period_start, end=period_end
+            db,
+            account=account,
+            start=period_start,
+            end=period_end,
+            runtime_session_id=runtime_session_id,
         )
     except PeriodExportError as exc:
         codes = {
             "period_too_large": status.HTTP_413_CONTENT_TOO_LARGE,
+            "export_too_large": status.HTTP_413_CONTENT_TOO_LARGE,
+            "artifact_integrity": status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "artifact_unreadable": status.HTTP_500_INTERNAL_SERVER_ERROR,
             "invalid_period": status.HTTP_400_BAD_REQUEST,
         }
         raise HTTPException(
@@ -427,8 +448,9 @@ def create_period_export(
         headers["X-Preloop-Signature"] = str(export.signature.get("signature") or "")
         headers["X-Preloop-Signing-Key-Id"] = str(export.signature.get("key_id") or "")
         headers["X-Preloop-Signed-At"] = str(export.signature.get("signed_at") or "")
-    return Response(
-        content=export.archive,
+    headers["Content-Length"] = str(export.size_bytes)
+    return StreamingResponse(
+        export.iter_chunks(),
         media_type="application/gzip",
         headers=headers,
     )
