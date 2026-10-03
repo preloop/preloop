@@ -1,3 +1,4 @@
+import { consumeLoginReturn } from '../utils/login-return';
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { router, Router, LOCATION_CHANGED, type Route } from '../router';
@@ -281,9 +282,8 @@ export class LitApp extends LitElement {
               this._autoStartGitHubAppInstall(accessToken);
             } else {
               // Standard OAuth entry point w/o setup blockers
-              const redirectPath = localStorage.getItem('loginRedirect');
+              const redirectPath = consumeLoginReturn();
               if (redirectPath) {
-                localStorage.removeItem('loginRedirect');
                 setTimeout(() => {
                   Router.go(redirectPath);
                 }, 0);
@@ -291,9 +291,8 @@ export class LitApp extends LitElement {
             }
           } else if (window.location.pathname === '/console') {
             // Handled when returning from e.g. Stripe without an access token hash
-            const redirectPath = localStorage.getItem('loginRedirect');
+            const redirectPath = consumeLoginReturn();
             if (redirectPath) {
-              localStorage.removeItem('loginRedirect');
               setTimeout(() => {
                 Router.go(redirectPath);
               }, 0);

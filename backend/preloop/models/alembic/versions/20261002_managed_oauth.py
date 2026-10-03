@@ -1,14 +1,14 @@
 """Tenant-bound managed OAuth storage; existing credentials stay unmanaged.
 
 Revision ID: 20261002_managed_oauth
-Revises: 20260927_issue_cost_accuracy
+Revises: 20261001_artifact_kinds_labels
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 revision = "20261002_managed_oauth"
-down_revision = "20260927_issue_cost_accuracy"
+down_revision = "20261001_artifact_kinds_labels"
 branch_labels = None
 depends_on = None
 

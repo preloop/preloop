@@ -4,6 +4,14 @@ Preloop is an open-source, responsible AI automation platform. It can proxy tool
 
 ARCHITECTURE.md is the map. Read one chapter under `docs/architecture/` for the subsystem you are changing. Do not load every chapter for context.
 
+Live session supervision uses shared Lit state and tool/approval cards across
+Talk, Conversation and Transcript. Gateway starts and accounting completions
+share a per-request identity; captured OpenAI, Responses and Anthropic tool
+metadata has a 64 KiB aggregate bound and follows capture/redaction policy.
+Approval REST queries combine account and runtime-session scope, and websocket
+approval payloads pass the same permission boundary before delivery. See
+[Runtime sessions](docs/guide/concepts/runtime-sessions.md#following-live-work-and-decisions).
+
 Implementation PRs can use [durable feedback subscriptions](docs/guide/flows/durable-implementation-feedback.md): PostgreSQL threads and inbox leases coordinate new execution turns, while native conversation artifacts remain isolated from workspace checkpoints. Repository events and bounded reconciliation advance CI/review gates without idle agent containers. Feedback opt-in applies to future executions; a preview-and-adopt API binds one older publication explicitly. Live policy changes are checked again at atomic repair reservation. Missing native checkpoints fail closed unless the operator explicitly selected a source-only published-branch handoff. Unreadable repository requirements prevent readiness while fully verified feedback can still authorize bounded repairs.
 
 [Isolated publication](docs/guide/flows/automated-issue-implementation.md#isolated-publication-rollout-and-repair) verifies immutable bundles in fresh credential-free runtimes before acquiring a write lease. Controller-owned evidence reuse binds the execution, bundle, base, profile, pinned image and runtime; sandbox-written evidence cannot populate it. Failed durable repairs retain their latest workspace and native session while recovering only the prior published branch binding from authenticated thread ancestry.
@@ -14,6 +22,11 @@ HTTP model gateways use immutable execution values and fresh worker-owned databa
 units for authentication, preparation and accounting. Provider waits and stream
 pulls retain no Session. See [Gateway database ownership](docs/architecture/gateway.md#gateway-database-ownership)
 for protocol boundaries, cancellation and the serialized OAuth rotation exception.
+
+Claude/Codex subscription recovery preserves agent enrollment through
+`preloop agents reconnect`. Credential imports serialize with rotation and reject
+recently consumed refresh tokens; provider-declared invalid grants require fresh
+authorization. See [OAuth credential recovery](docs/architecture/gateway.md#gateway-database-ownership).
 
 The [account kill switch](docs/guide/account-kill-switch.md) serializes halt transitions and runtime admission on the account row. Audit records and durable execution stop intent share the transition transaction. Monitors and recovery workers distinguish a stop request from confirmed runtime termination; approval deadlines recover once by their actual frozen interval.
 
@@ -50,6 +63,15 @@ tables. Each issue row, summary and unassigned bucket also states `cost_coverage
 (`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
 unpriced subscription-backed run is never read as a free ticket; see
 [Cost per issue](docs/architecture/cost.md#cost-and-cycle-time-per-tracker-issue).
+
+Bitbucket Data Center uses the separate `bitbucket_dc` adapter, gated off by
+default. Its REST transport enforces administrator-approved HTTPS instances,
+context paths, connection-time destination validation and verified TLS; user PATs
+use tracker SecretReference encryption through CRUD. Repository numeric IDs
+remain stable when slugs change. DC repository/review support targets the 10.2
+LTS contract with synthetic fixtures; Jira remains the issue host. OAuth,
+webhooks and execution/publication routing are separate integrations. See the
+[deployment and validation guide](docs/guide/bitbucket-data-center.md).
 
 ## High-Level Architecture
 
@@ -287,6 +309,15 @@ on failure. Before returning success, the API checks the account's registered
 agent and selected model binding through CRUD. Credentials stay in request
 memory; audit events contain deployment identifiers and outcomes. See
 [operator configuration](docs/operations/agent-deployment.md).
+
+Cost digest consumers use full-window CRUD aggregates for model and agent
+request rankings. SQL window totals preserve unknown activity and remaining
+known groups while returning at most three named entries plus a bucket row.
+Agent attribution prefers the account-owned direct managed principal, then
+an account-owned session's managed agent, then a named principal. Account
+constraints and scalar session association prevent cross-account labels and
+join fan-out. Console exact-period links preserve UTC microseconds and use
+normal authenticated account scoping; URL account context grants no access.
 
 Managed tracker OAuth persistence uses the [provider-neutral storage contract](docs/architecture/managed-oauth-storage.md),
 with tenant-bound connection transactions and serialized token-pair rotation.

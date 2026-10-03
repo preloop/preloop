@@ -361,7 +361,7 @@ def _session_artifact(
         source="browser_use",
         source_ref=source_ref,
         content_type="image/png",
-        plaintext=b"unpublished-screenshot-bytes",
+        plaintext=b"\x89PNG\r\n\x1a\n" + b"unpublished-screenshot-bytes",
         manifest={"step_index": 1},
         expires_at=expires_at,
         commit=False,
@@ -872,3 +872,54 @@ def test_a_purge_that_removes_nothing_leaves_the_floor_where_it_was(
 
     state = audit_chain.get_state(db_session, account_id=account.id, create=False)
     assert int(state.pruned_below_seq) == 0
+
+
+def test_a_session_purge_cascades_a_transcript_and_its_derived_document(
+    db_session, test_user, account
+):
+    """New kinds follow the same cascade, including a lineage pair."""
+    session = _runtime_session(db_session, test_user, age_days=500, activities=1)
+    session_id = session.id
+    transcript = crud_session_artifact.store(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session_id,
+        kind="transcript",
+        source="synthetic",
+        source_ref="call-1",
+        content_type="text/vtt",
+        plaintext=b"WEBVTT\n\n00:00.000 --> 00:01.000\nhallo",
+        manifest={},
+        labels={"site": "heilbronn"},
+        producer="deposit_api",
+        commit=False,
+    )
+    crud_session_artifact.store(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session_id,
+        kind="document",
+        source="synthetic",
+        source_ref="summary-1",
+        content_type="text/markdown",
+        plaintext=b"# Summary",
+        manifest={},
+        parent_artifact_id=transcript.id,
+        producer="deposit_api",
+        commit=False,
+    )
+    db_session.commit()
+
+    result = purge.purge_class(
+        db_session,
+        account=account,
+        record_class=CLASS_RUNTIME_SESSIONS,
+        now=datetime.now(UTC),
+        batch_size=100,
+        max_batches=5,
+        dry_run=False,
+    )
+
+    assert result.deleted == 1
+    assert result.as_details()["runtime_session_artifact"] == 2
+    assert _artifact_rows(db_session, session_id) == []

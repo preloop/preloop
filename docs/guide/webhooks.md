@@ -252,20 +252,29 @@ sees the same `X-Preloop-Event-Id` with a new `X-Preloop-Delivery-Id`.
 
 ## Approval workflow webhooks
 
-An approval workflow with `webhook_url` in its `approval_config` keeps
-working, unchanged in shape: the same JSON body goes to the same URL. It is
-now delivered through the outbox, which means it is **signed and retried**
-where it previously was a single unsigned POST with no retry.
+An approval workflow sends its approval requests to a webhook configured in
+`channel_configs` (`webhook`, `slack` or `mattermost`, each with a `url`), or
+in the older `approval_config.webhook_url`. Either way the request goes
+through the outbox, so it is **signed and retried**, with the headers and
+signature described [above](#verifying-the-signature).
 
-The signing secret is `approval_config.webhook_secret`. Set it yourself to
-choose it; leave it out and Preloop generates one and writes it back beside
-the URL, where you can read it. These endpoints appear in the console list
-read-only, so you can see one failing, and are edited by changing the approval
-workflow.
+The signing secret is generated when you create the workflow through the API
+and returned once, in `webhook_secret` on that response. Reads show only
+`webhook_secret_hint`. To get a new one (for a workflow created by policy
+apply, or a secret you did not keep), rotate it:
 
-Two behaviour changes worth knowing: `webhook_posted_at` on the approval
-request is now stamped when a receiver actually accepted the delivery rather
-than when the POST was issued, and a receiver that is down no longer loses the
+```bash
+curl -X POST "https://preloop.example.com/api/v1/approval-workflows/$WORKFLOW_ID/webhook-secret/rotate" \
+  -H "Authorization: Bearer $PRELOOP_API_KEY"
+```
+
+The response carries the new `webhook_secret`; the next delivery is signed
+with it. You can also set `approval_config.webhook_secret` yourself to choose
+the secret. These endpoints appear in the console list read-only, so you can
+see one failing, and are edited by changing the approval workflow.
+
+`webhook_posted_at` on the approval request is stamped when a receiver
+actually accepted the delivery, and a receiver that is down does not lose the
 notification.
 
 ## Settings

@@ -43,9 +43,6 @@ logger = logging.getLogger(__name__)
 #: catalogue: the body is the legacy approval-workflow shape.
 EVENT_POLICY_NOTICE = "policy.notice"
 
-#: Workflow types whose webhook receives notices.
-WEBHOOK_APPROVAL_TYPES = frozenset({"slack", "mattermost", "webhook"})
-
 _MAX_RECIPIENTS = 500
 
 T = TypeVar("T")
@@ -361,13 +358,17 @@ def send_webhook_notice(
         True when a delivery was queued.
     """
     from preloop.services.event_webhooks import outbox
-    from preloop.services.event_webhooks.approval_shim import sync_shim_endpoint
+    from preloop.services.event_webhooks.approval_shim import (
+        resolve_webhook_target,
+        sync_shim_endpoint,
+    )
 
     workflow = _resolve_workflow(db, hit.account_id, approval_workflow)
-    if workflow is None or workflow.approval_type not in WEBHOOK_APPROVAL_TYPES:
+    if workflow is None:
         return False
+    target = resolve_webhook_target(workflow)
     endpoint = sync_shim_endpoint(db, workflow)
-    if endpoint is None:
+    if endpoint is None or target is None:
         # The workflow has no URL. Keep the shim's deactivation of a stale
         # endpoint, as the approval path does, instead of losing it when the
         # short-lived session closes.
@@ -377,7 +378,7 @@ def send_webhook_notice(
         db,
         endpoint=endpoint,
         event_type=EVENT_POLICY_NOTICE,
-        payload=build_webhook_payload(db, hit, workflow.approval_type),
+        payload=build_webhook_payload(db, hit, target[0]),
         natural_key=f"policy_notice:{hit.id}",
         occurred_at=hit.created_at,
         subject_id=None,

@@ -135,6 +135,15 @@ class TrackerClient:
             self.client = JiraTracker(
                 tracker.id, tracker.resolved_api_key, connection_details
             )
+        elif self.tracker_type == "bitbucket_dc":
+            from ..trackers.bitbucket_dc import BitbucketDCTracker
+
+            connection_details["auth_type"] = (
+                getattr(tracker, "auth_type", None) or "api_token"
+            )
+            self.client = BitbucketDCTracker(
+                tracker.id, tracker.resolved_api_key, connection_details
+            )
         elif self.tracker_type == "bitbucket":
             from ..trackers.bitbucket import BitbucketTracker
 
@@ -324,6 +333,9 @@ class TrackerClient:
         force_update: bool = False,
     ) -> Tuple[List[Issue], int]:
         """Scan and update issues for a project."""
+        if self.tracker_type == "bitbucket_dc":
+            # DC is a repository host. Issue sync belongs to the Jira tracker.
+            return [], 0
         logger.info(
             f"Scanning issues for project {project.id} ({project.name}) since {since}"
         )
@@ -510,7 +522,7 @@ async def _process_organization(
         logger.warning(
             "PRELOOP_URL environment variable not set. Skipping webhook registration."
         )
-    else:
+    elif client.tracker_type != "bitbucket_dc":
         try:
             webhook_target_path = (
                 f"/api/v1/private/webhooks/{client.tracker_type}/{org.id}"

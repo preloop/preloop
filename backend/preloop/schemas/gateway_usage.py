@@ -749,6 +749,7 @@ class RuntimeSessionUpdateRequest(BaseModel):
 class RuntimeSessionActivityItem(BaseModel):
     """One activity item in a runtime session timeline."""
 
+    activity_id: Optional[str] = None
     activity_type: str
     timestamp: datetime
     title: str

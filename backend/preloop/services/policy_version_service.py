@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud.policy_snapshot import crud_policy_snapshot
 from preloop.models.models.policy_snapshot import PolicySnapshot
+from preloop.models.schemas.mcp_server import redact_snapshot_credentials
 from preloop.services.policy import (
     PolicyApplier,
     PolicyDiffResult,
@@ -186,8 +187,12 @@ class PolicyVersionService:
             policy_name="Current Configuration",
         )
 
-        # Load snapshot policy
-        snapshot_policy = PolicyDocument.model_validate(snapshot.snapshot_data)
+        # Load snapshot policy. The diff is returned to callers, so diff a
+        # copy with MCP server credentials masked; rollback reloads the
+        # stored snapshot itself.
+        snapshot_policy = PolicyDocument.model_validate(
+            redact_snapshot_credentials(snapshot.snapshot_data)
+        )
 
         # Compute diff (from current to snapshot, showing what would change)
         diff = compute_policy_diff(current_policy, snapshot_policy)

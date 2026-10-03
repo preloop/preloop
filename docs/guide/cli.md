@@ -61,6 +61,9 @@ preloop agents status <agent>            # local + remote enrollment state
 preloop agents list                      # managed agents in the account
 preloop agents validate <agent>          # config validation
 preloop agents validate <agent> --live   # + a live prompt through the agent
+preloop agents reconnect "Claude Code"  # sign in and repair subscription credentials only
+preloop agents reconnect "Codex CLI"    # same recovery for a ChatGPT subscription
+preloop agents reconnect "Claude Code" --from-local # use a fresh login completed separately
 preloop agents install-plugin <agent>    # Agent Control runtime plugin (openclaw | hermes)
 preloop agents install-runtime <hermes|openclaw>  # install the runtime itself, then onboard
 preloop agents restore <agent>           # restore the most recent local config backup
@@ -70,6 +73,14 @@ preloop agents starter-policy <mcp-server> [-o file] [--apply]
 ```
 
 Onboarding runs a live validation prompt by default; skip it with `--skip-live-validate`.
+
+`agents reconnect` preserves the existing enrollment, model bindings, policies,
+gateway config and backups. It repairs a shared credential once and attaches any
+legacy split model rows to it. It only updates subscription models owned by this
+machine's enrollment in the selected account. Use `--from-local` after completing
+`claude auth login --claudeai` or `codex login`. Expired or incomplete local
+credentials are refused. Update the CLI if your installed version does not yet
+provide this command.
 
 ### The onboarding summary table
 

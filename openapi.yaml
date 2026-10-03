@@ -3842,6 +3842,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/approval-workflows/{workflow_id}/webhook-secret/rotate:
+    post:
+      tags:
+      - Tools
+      summary: Rotate Approval Workflow Webhook Secret
+      description: "Replace the workflow's webhook signing secret and return it once.\n\
+        \nDeliveries are signed with the new secret from the next one on. Use this\n\
+        to obtain a secret for a workflow created by policy apply, or one whose\n\
+        secret was not kept.\n\nSync handler on purpose: FastAPI runs it in the threadpool,\
+        \ so the sync\nsession never blocks the event loop.\n\nRaises:\n    HTTPException:\
+        \ 404 if the workflow is not found, 400 if it has no\n        webhook configured."
+      operationId: rotate_approval_workflow_webhook_secret_api_v1_approval_workflows__workflow_id__webhook_secret_rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: workflow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Workflow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalWorkflowResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/tool-configurations/{config_id}/approval-condition:
     get:
       tags:
@@ -4214,9 +4249,10 @@ paths:
       summary: List Approval Requests
       description: "List approval requests for the current account.\n\nArgs:\n   \
         \ status: Filter by status (pending, approved, declined, etc.)\n    execution_id:\
-        \ Filter by execution ID\n    limit: Maximum number of results\n    skip:\
-        \ Number of results to skip\n    current_user: Current authenticated user\n\
-        \nReturns:\n    List of approval requests"
+        \ Filter by execution ID\n    runtime_session_id: Filter by a validated runtime\
+        \ session ID\n    limit: Maximum number of results\n    skip: Number of results\
+        \ to skip\n    current_user: Current authenticated user\n\nReturns:\n    List\
+        \ of approval requests"
       operationId: list_approval_requests_api_v1_approval_requests_get
       security:
       - bearerAuth: []
@@ -4241,12 +4277,24 @@ paths:
           description: Filter by execution ID
           title: Execution Id
         description: Filter by execution ID
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Filter by runtime session ID
+          title: Runtime Session Id
+        description: Filter by runtime session ID
       - name: limit
         in: query
         required: false
         schema:
           type: integer
           maximum: 100
+          minimum: 1
           description: Maximum number of results
           default: 50
           title: Limit
@@ -4256,6 +4304,7 @@ paths:
         required: false
         schema:
           type: integer
+          minimum: 0
           description: Number of results to skip
           default: 0
           title: Skip
@@ -13088,6 +13137,219 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/runtime-sessions/{runtime_session_id}/artifacts:
+    post:
+      tags:
+      - Runtime Sessions
+      summary: Deposit Runtime Session Artifact
+      description: 'Store one artifact on a runtime session and add it to the timeline.
+
+
+        JSON bodies carry one MCP ``ContentBlock`` in ``content``; multipart
+
+        bodies carry a ``file`` part and an optional JSON ``metadata`` part.
+
+        A repeated ``Idempotency-Key`` returns the stored artifact with
+
+        ``Idempotent-Replayed: true``.'
+      operationId: deposit_runtime_session_artifact_api_v1_runtime_sessions__runtime_session_id__artifacts_post
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency-Key
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionArtifactOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '409':
+          description: artifact_audio_storage_disabled
+        '413':
+          description: artifact_too_large
+        '415':
+          description: artifact_media_type_invalid or artifact_content_mismatch
+        '422':
+          description: artifact_labels_invalid and other request errors
+        '507':
+          description: storage_budget_exhausted
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              description: 'JSON deposit: the metadata fields plus one MCP ``ContentBlock``.'
+              properties:
+                kind:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  description: Artifact kind. Inferred from the media type when omitted
+                    (image -> screenshot, text/vtt -> transcript, ...).
+                  title: Kind
+                name:
+                  maxLength: 255
+                  minLength: 1
+                  title: Name
+                  type: string
+                labels:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                  description: 'Up to 16 keys matching ^[a-z][a-z0-9_.-]{0,62}$; string
+                    values up to 128 characters; `tags` is a list of strings. Documented
+                    keys: site, tenant_ref, consent_basis, retention_class, tags.'
+                  title: Labels
+                activity_id:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  description: Existing timeline row in this session the artifact
+                    illustrates.
+                  title: Activity Id
+                parent_artifact_id:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  description: Artifact in this account this one derives from.
+                  title: Parent Artifact Id
+                tool_name:
+                  anyOf:
+                  - maxLength: 255
+                    minLength: 1
+                    type: string
+                  - type: 'null'
+                  title: Tool Name
+                content:
+                  additionalProperties: true
+                  description: 'One MCP ContentBlock: text, image, audio, or resource
+                    (text or blob). A resource_link carries no bytes and is refused.'
+                  title: Content
+                  type: object
+              required:
+              - name
+              - content
+              title: ArtifactDepositIn
+              type: object
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                metadata:
+                  type: string
+                  description: 'JSON object: kind, name, labels, activity_id, parent_artifact_id,
+                    tool_name'
+      security:
+      - bearerAuth: []
+    get:
+      tags:
+      - Runtime Sessions
+      summary: List Runtime Session Artifacts
+      description: 'List a session''s artifacts, newest first, with cursor pagination.
+
+
+        A key pinned to this session may list it. Any other credential needs a
+
+        user with ``view_runtime_sessions`` in the session''s account.'
+      operationId: list_runtime_session_artifacts_api_v1_runtime_sessions__runtime_session_id__artifacts_get
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+      - name: label
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: Repeatable `key:value` label filter.
+          title: Label
+        description: Repeatable `key:value` label filter.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionArtifactListOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Bad kind, label, limit or cursor
+      security:
+      - bearerAuth: []
   /api/v1/runtime-sessions/search/saved:
     post:
       tags:
@@ -16615,6 +16877,19 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        webhook_secret:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret
+          description: Webhook signing secret. Present only in the response that generated
+            it; store it, it is not shown again.
+        webhook_secret_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret Hint
+          description: Last characters of the webhook signing secret
         created_at:
           type: string
           format: date-time
@@ -23908,7 +24183,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -23961,7 +24238,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -24035,7 +24314,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -25102,6 +25383,37 @@ components:
       title: ManagedAgentUsageAggregate
       description: Historical usage aggregate across all sessions for one managed
         agent.
+    McpResourceLink:
+      properties:
+        type:
+          type: string
+          const: resource_link
+          title: Type
+          default: resource_link
+        uri:
+          type: string
+          title: Uri
+        name:
+          type: string
+          title: Name
+        mimeType:
+          type: string
+          title: Mimetype
+        size:
+          type: integer
+          title: Size
+        _meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - uri
+      - name
+      - mimeType
+      - size
+      title: McpResourceLink
+      description: MCP ``ResourceLink`` pointing at the artifact's byte route.
     MobileDeviceRegistration:
       properties:
         platform:
@@ -27918,6 +28230,11 @@ components:
       title: RunnerResponse
     RuntimeSessionActivityItem:
       properties:
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
         activity_type:
           type: string
           title: Activity Type
@@ -28018,6 +28335,109 @@ components:
       type: object
       title: RuntimeSessionActivityListResponse
       description: List of activity items for a runtime session.
+    RuntimeSessionArtifactListOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionArtifactOut'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+          description: Pass as `cursor` for the next page; null on the last page.
+      type: object
+      required:
+      - items
+      title: RuntimeSessionArtifactListOut
+      description: One page of a session's artifacts, newest first.
+    RuntimeSessionArtifactOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
+        kind:
+          type: string
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        content_type:
+          type: string
+          title: Content Type
+        size_bytes:
+          type: integer
+          title: Size Bytes
+        sha256:
+          type: string
+          title: Sha256
+        labels:
+          additionalProperties: true
+          type: object
+          title: Labels
+        producer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Producer
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        parent_artifact_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Artifact Id
+        text_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text Status
+        availability:
+          type: string
+          title: Availability
+        legal_hold:
+          type: boolean
+          title: Legal Hold
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        content_block:
+          $ref: '#/components/schemas/McpResourceLink'
+      type: object
+      required:
+      - id
+      - runtime_session_id
+      - kind
+      - content_type
+      - size_bytes
+      - sha256
+      - availability
+      - legal_hold
+      - created_at
+      - content_block
+      title: RuntimeSessionArtifactOut
+      description: Descriptor of one stored session artifact.
     RuntimeSessionCacheModelGroup:
       properties:
         model_alias:
@@ -29432,15 +29852,38 @@ components:
         screenshot:
           type: integer
           title: Screenshot
+          default: 0
         recording:
           type: integer
           title: Recording
+          default: 0
+        screencast:
+          type: integer
+          title: Screencast
+          default: 0
+        audio:
+          type: integer
+          title: Audio
+          default: 0
+        transcript:
+          type: integer
+          title: Transcript
+          default: 0
+        document:
+          type: integer
+          title: Document
+          default: 0
+        generated_file:
+          type: integer
+          title: Generated File
+          default: 0
+        trace:
+          type: integer
+          title: Trace
+          default: 0
       type: object
-      required:
-      - screenshot
-      - recording
       title: SessionArtifactUsageByKind
-      description: Available plaintext bytes by artifact kind.
+      description: Available plaintext bytes by artifact kind (zero when unused).
     SessionArtifactUsageResponse:
       properties:
         used_bytes:
@@ -29963,6 +30406,61 @@ components:
         are all "this saved question changed", and splitting them into three
 
         routes would say nothing extra.'
+    SessionSearchArtifactRef:
+      properties:
+        artifact_id:
+          type: string
+          title: Artifact Id
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        content_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Type
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        labels:
+          additionalProperties: true
+          type: object
+          title: Labels
+        cue_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cue Start
+        text_truncated:
+          type: boolean
+          title: Text Truncated
+          default: false
+      type: object
+      required:
+      - artifact_id
+      title: SessionSearchArtifactRef
+      description: 'The artifact an ``artifact`` chunk came from, enough to open it.
+
+
+        ``activity_id`` is the timeline row the deposit wrote, so a console can
+
+        land on that row; ``cue_start`` is the start in seconds of the transcript
+
+        cue the chunk begins in, when the transcript was timed.'
     SessionSearchDegraded:
       properties:
         keyword:
@@ -30063,7 +30561,27 @@ components:
           - type: 'null'
           title: Source Kind
           description: 'One corpus source kind: gateway_interaction, transcript_message,
-            tool_call, browser_step, operator_note, session_summary, flow_log.'
+            tool_call, browser_step, operator_note, session_summary, flow_log, artifact.'
+        kind:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Kind
+          description: Artifact kind, for example transcript or document. Restricts
+            the search to artifact chunks.
+        label:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 16
+          - type: 'null'
+          title: Label
+          description: Artifact label filters as key:value, for example site:nord.
+            Repeatable; every one must match (AND). tags:x matches an artifact whose
+            tags include x. Restricts the search to artifact chunks.
       additionalProperties: false
       type: object
       title: SessionSearchFilters
@@ -30424,6 +30942,12 @@ components:
           description: Cosine similarity between the query vector and this chunk.
             Null for a chunk the vector half never scored, because a keyword match
             has no similarity to report.
+        artifact:
+          anyOf:
+          - $ref: '#/components/schemas/SessionSearchArtifactRef'
+          - type: 'null'
+          description: 'Set when source_kind is artifact: the artifact id, its timeline
+            activity id, kind, name, labels and the transcript cue start.'
       type: object
       required:
       - document_id
@@ -31935,7 +32459,8 @@ components:
             format: uri
           - type: 'null'
           title: Url
-          description: URL of the tracker instance (required for Jira)
+          description: URL of the tracker instance (required for Jira and Bitbucket
+            Data Center)
         is_active:
           type: boolean
           title: Is Active
@@ -31947,7 +32472,10 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Tracker-specific connection details
+          description: Tracker-specific connection details. bitbucket_dc uses instance_url,
+            version (10.2), project_key, repository_id (numeric, stable across rename),
+            repository_slug, and optional reviewer username. Credentials and deployment
+            trust settings must not be stored here.
         meta_data:
           anyOf:
           - additionalProperties: true
@@ -32158,7 +32686,10 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Tracker-specific connection details
+          description: Tracker-specific connection details. bitbucket_dc uses instance_url,
+            version (10.2), project_key, repository_id (numeric, stable across rename),
+            repository_slug, and optional reviewer username. Credentials and deployment
+            trust settings must not be stored here.
         organization_identifier:
           anyOf:
           - type: string
@@ -32170,9 +32701,9 @@ components:
           - type: string
           - type: 'null'
           title: Auth Type
-          description: 'Authentication mode for trackers that support several (Bitbucket:
-            ''api_token'' or ''oauth_token''). Ignored when tracker_id is set: the
-            stored mode is used.'
+          description: 'Authentication mode for trackers that support several (Bitbucket
+            Cloud: ''api_token'' or ''oauth_token''; Data Center: ''api_token'' user
+            PAT only). Ignored when tracker_id is set: the stored mode is used.'
       type: object
       required:
       - tracker_type
@@ -32210,6 +32741,7 @@ components:
       - gitlab
       - jira
       - bitbucket
+      - bitbucket_dc
       title: TrackerType
       description: Enum for tracker types.
     TrackerUpdate:
