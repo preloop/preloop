@@ -8,6 +8,7 @@ from .api_key import ApiKey
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
 from .base import Base
+from .chat import ChatConnection, ChatIdentity, ChatLinkCode, ChatWork
 from .comment import Comment
 from .issue import EmbeddingModel, Issue, IssueEmbedding
 from .issue_duplicate import IssueDuplicate
@@ -141,6 +142,10 @@ from .security_maintenance import (
 )
 
 __all__ = [
+    "ChatConnection",
+    "ChatIdentity",
+    "ChatLinkCode",
+    "ChatWork",
     "OAuthProviderConfiguration",
     "OAuthConnectionTransaction",
     "BillingOperation",

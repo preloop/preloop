@@ -4,6 +4,7 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
 } from '../types';
+import type { LiveSessionState } from '../utils/live-session';
 import {
   retainSessionApprovalForms,
   type SessionApprovalState,
@@ -42,13 +43,16 @@ export function renderSessionActivity(
   activity: RuntimeSessionActivityItem[],
   ended: boolean,
   state: SessionApprovalState,
-  setState: (state: SessionApprovalState) => void
+  setState: (state: SessionApprovalState) => void,
+  liveLine?: { state: LiveSessionState | null; now: number } | null
 ) {
   return html`<session-live-activity
     .sessionId=${sessionId}
     .events=${events}
     .activity=${activity}
     .ended=${ended}
+    .state=${liveLine?.state ?? null}
+    .now=${liveLine?.now ?? 0}
     @session-approvals-changed=${(event: CustomEvent<SessionApprovalState>) => setState(retainSessionApprovalForms(state, event.detail))}
     @session-approval-jump=${(event: CustomEvent<{ id: string }>) => jumpSessionApproval(host, event.detail.id)}
     @session-live-reconcile=${() => host.dispatchEvent(new CustomEvent('session-live-reload', { bubbles: true, composed: true }))}

@@ -24,6 +24,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.cache_accounting import reported_cache_miss_tokens
+from preloop.services.gateway_tool_activity import normalize_tool_activity
 from preloop.services.model_allowlist import is_model_not_allowed_detail
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
@@ -270,6 +271,15 @@ class ModelGatewayEventEmitter:
         )
         api_key = self.db.get(ApiKey, usage.api_key_id) if usage.api_key_id else None
         managed_agent_id = self._resolve_managed_agent_id(usage=usage, api_key=api_key)
+        # Sanitize once, then derive structure from the sanitized bodies: tool
+        # arguments and results are content, so this module must never be the
+        # path that recovers what the capture policy withheld upstream of it.
+        sanitized_request = self._cap_activity_body(
+            self._sanitize_payload(request_payload)
+        )
+        sanitized_response = self._cap_activity_body(
+            self._sanitize_payload(response_payload)
+        )
         return {
             "topic": "flow_executions",
             "execution_id": str(usage.flow_execution_id)
@@ -311,6 +321,13 @@ class ModelGatewayEventEmitter:
                 "gateway_attempt": meta_data.get("gateway_attempt"),
                 "is_retry": meta_data.get("is_retry"),
                 "retry_of_api_usage_id": meta_data.get("retry_of_api_usage_id"),
+                # Shared with the `model_gateway_request_started` event this
+                # call announced. Present on rows recorded after the id was
+                # threaded through the gateway; absent on older rows, which is
+                # what makes "never fabricate completion" possible: a start
+                # without a matching id here stays unmatched rather than
+                # closing some other request that happened to finish next.
+                "gateway_request_id": meta_data.get("gateway_request_id"),
                 # Retries the gateway itself made against the provider inside
                 # this single request (mid-stream disconnect, 5xx, 429).
                 # 0 = the call succeeded first time. Lets the console show
@@ -365,18 +382,37 @@ class ModelGatewayEventEmitter:
                 "error_detail": error_detail,
                 "capture_policy": self._build_capture_policy(conversation_preview),
                 "conversation_preview": conversation_preview,
+                # Named tool calls and results for this exchange, recovered from
+                # the structured wire fields rather than left inside raw text.
+                # A session whose gateway history is the only record of what an
+                # agent did can still render `terminal · completed · 1.2s`.
+                # None when neither body carried tool structure.
+                "tool_activity": normalize_tool_activity(
+                    request_payload=sanitized_request,
+                    response_payload=sanitized_response,
+                    capture_content=settings.model_gateway_capture_content,
+                    redact_text=self._redact_for_tool_activity,
+                ),
                 # These two bodies are the ones that carried 533KB of binary
                 # content in the 2026-08-05 incident. Cap them here, at the
                 # point they enter the activity payload, so the JSONB row stays
                 # a bounded size regardless of what the upstream returned.
-                "request": self._cap_activity_body(
-                    self._sanitize_payload(request_payload)
-                ),
-                "response": self._cap_activity_body(
-                    self._sanitize_payload(response_payload)
-                ),
+                "request": sanitized_request,
+                "response": sanitized_response,
             },
         }
+
+    @staticmethod
+    def _redact_for_tool_activity(value: str) -> str:
+        """Secret redaction for tool arguments and results.
+
+        ``_sanitize_payload`` only rewrites the message-content keys, so a
+        bearer token nested inside a tool argument would otherwise reach the
+        activity row untouched. Reusing the emitter's patterns here keeps one
+        definition of "sensitive" for the whole event.
+        """
+        redacted, _ = ModelGatewayEventEmitter._redact_sensitive_text(value)
+        return redacted
 
     def _resolve_managed_agent_id(
         self, *, usage: ApiUsage, api_key: Optional[ApiKey]

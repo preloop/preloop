@@ -172,12 +172,19 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         *,
         account_id: str,
         execution_id: Optional[str] = None,
-        runtime_session_id: Optional[str] = None,
         status: Optional[str] = None,
+        runtime_session_id: Optional[Union[UUID, str]] = None,
         skip: int = 0,
         limit: int = 100,
     ) -> list[ApprovalRequest]:
         """Get approval requests for an account with optional filters.
+
+        ``runtime_session_id`` narrows to one agent conversation, which is what
+        a live session view needs: without it the only way to answer "what is
+        THIS session waiting on" is to page the whole account and filter in
+        the browser. It is ANDed with ``account_id`` (never replacing it), so
+        naming another account's session returns nothing rather than that
+        account's approvals.
 
         Expiry is handled by explicit sweep callers via ``expire_stale_pending``;
         keeping this method read-only avoids hidden UPDATE+COMMIT work on list
@@ -189,7 +196,9 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             query = query.filter(self.model.execution_id == execution_id)
 
         if runtime_session_id:
-            query = query.filter(self.model.runtime_session_id == runtime_session_id)
+            query = query.filter(
+                self.model.runtime_session_id == str(runtime_session_id)
+            )
 
         if status:
             query = query.filter(self.model.status == status)

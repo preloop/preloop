@@ -1626,3 +1626,21 @@ func TestCursorPreToolUseDuplicateRequiresInstalledBeforeHook(t *testing.T) {
 		t.Fatal("beforeMCPExecution install should locally allow MCP preToolUse")
 	}
 }
+
+func TestFlowCredentialOverridesBroadHookCredentialAndFailsClosed(t *testing.T) {
+	t.Setenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED", "1")
+	t.Setenv("PRELOOP_FLOW_TOKEN", "synthetic-flow-token")
+	t.Setenv("PRELOOP_FLOW_API_URL", "https://preloop.example.com")
+	credential, err := resolvePermissionHookCredential(permissionSourceCodexCLI)
+	if err != nil || credential.Token != "synthetic-flow-token" || credential.BaseURL != "https://preloop.example.com" {
+		t.Fatalf("flow credential resolution = %#v, %v", credential, err)
+	}
+	t.Setenv("PRELOOP_FLOW_TOKEN", "")
+	if _, err := resolvePermissionHookCredential(permissionSourceCodexCLI); err == nil {
+		t.Fatal("missing flow credential must not fall back")
+	}
+	decision := resolvePermissionDecision(permissionSourceCodexCLI, []byte(`{"hook_event_name":"PreToolUse","tool_name":"shell","tool_input":{"command":"echo example"},"session_id":"synthetic-session"}`), true)
+	if decision.Behavior != "deny" {
+		t.Fatalf("flow credential failure allowed tool: %#v", decision)
+	}
+}

@@ -164,6 +164,7 @@ AGENT_CONTROL_SUPPORTED_AGENT_KINDS = {
     "opencode",
     "pi",
     "deepseek",
+    "nanobot",
     "codex",
 }
 AGENT_CONTROL_STATE_UNSUPPORTED = "unsupported"

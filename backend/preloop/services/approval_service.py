@@ -2379,6 +2379,26 @@ class ApprovalService:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to resolve approver list for audit: {exc}")
 
+        try:
+            from preloop.services.chat_worker import enqueue_approval_notifications
+
+            results["chat"] = {
+                "queued": await asyncio.to_thread(
+                    enqueue_approval_notifications,
+                    approval_request.account_id,
+                    approval_request.id,
+                    approver_user_ids,
+                )
+            }
+        except Exception:
+            logger.warning(
+                "Failed to enqueue private chat approval notifications", exc_info=True
+            )
+            results["chat"] = {
+                "success": False,
+                "error": "Chat notification queue unavailable",
+            }
+
         partition = await self._partition_approvers_for_stagger(approver_user_ids)
 
         # Push first so watch/mobile get the head start.

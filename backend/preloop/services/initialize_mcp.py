@@ -5,6 +5,7 @@ preloop.tools.builtin_defs (and BUILTIN_TOOLS in tools.py).
 """
 
 import logging
+import weakref
 from copy import deepcopy
 from typing import Any, Literal, Optional
 from uuid import UUID
@@ -1705,6 +1706,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         return result.model_dump_json()
 
     # Register Tool 13: get_approval_status (async approval polling)
+    # Frameworks cache callback signatures/type adapters beyond the lifetime
+    # of a server. Its replay callback must not make those caches own the
+    # server and every registered tool.
+    mcp_reference = weakref.ref(mcp)
+
     @mcp.tool()
     async def get_approval_status(
         request_id: str,
@@ -1872,6 +1878,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         exec_error: Optional[str] = None
                         result_preview: Optional[str] = None
                         try:
+                            replay_server = mcp_reference()
+                            if replay_server is None:
+                                raise RuntimeError("MCP server is no longer available")
                             from preloop.services.dynamic_fastmcp import (
                                 _approved_answer_var,
                                 _approved_comment_var,
@@ -1888,12 +1897,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 # Try internal (namespaced) name first, fall
                                 # back to original name for built-in tools.
                                 try:
-                                    tool_result = (
-                                        await mcp.call_registered_tool_without_policy(
-                                            internal_name,
-                                            tool_args,
-                                            account_id=str(approval_request.account_id),
-                                        )
+                                    tool_result = await replay_server.call_registered_tool_without_policy(
+                                        internal_name,
+                                        tool_args,
+                                        account_id=str(approval_request.account_id),
                                     )
                                 except Exception as name_err:
                                     if "not found" in str(name_err).lower():
@@ -1901,7 +1908,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                             f"Tool '{internal_name}' not found, "
                                             f"trying original name '{tool_name}'"
                                         )
-                                        tool_result = await mcp.call_registered_tool_without_policy(
+                                        tool_result = await replay_server.call_registered_tool_without_policy(
                                             tool_name,
                                             tool_args,
                                             account_id=str(approval_request.account_id),

@@ -7,7 +7,7 @@ import {
   isCapabilityPath,
   withLazyRoutes,
 } from '../lazy-routes';
-import { loadCapabilities } from '../capabilities';
+import { loadCapabilities, NO_CAPABILITIES } from '../capabilities';
 import { consoleRouteLoaders } from './console-route-loaders';
 import { routeLoadingRenderer } from './route-loading';
 import { getBrandConfig, isSaaS } from '../brand-config';
@@ -38,6 +38,55 @@ import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
 @customElement('lit-app')
 export class LitApp extends LitElement {
   private hasNavigated = false;
+  private syncInConsole?: () => void;
+  private websocketFrame?: number;
+  private websocketStarted = false;
+  private resumeRouteInstallation?: () => void;
+
+  connectedCallback() {
+    super.connectedCallback();
+    if (this.syncInConsole) {
+      window.addEventListener(LOCATION_CHANGED, this.syncInConsole);
+    }
+    if (this.hasUpdated) {
+      this.scheduleWebSocketConnection();
+      this.resumeRouteInstallation?.();
+    }
+  }
+
+  private scheduleWebSocketConnection(): void {
+    if (
+      !this.isConnected ||
+      this.websocketStarted ||
+      this.websocketFrame !== undefined
+    )
+      return;
+    this.websocketFrame = requestAnimationFrame(() => {
+      this.websocketFrame = undefined;
+      if (this.isConnected && !this.websocketStarted) {
+        this.websocketStarted = true;
+        this.connectWebSocket();
+      }
+    });
+  }
+
+  private ownsRouterOutlet(): boolean {
+    return (
+      this.isConnected &&
+      router.getOutlet() === this.renderRoot.querySelector('main')
+    );
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    if (this.syncInConsole) {
+      window.removeEventListener(LOCATION_CHANGED, this.syncInConsole);
+    }
+    if (this.websocketFrame !== undefined) {
+      cancelAnimationFrame(this.websocketFrame);
+      this.websocketFrame = undefined;
+    }
+  }
 
   static styles = css`
     :host {
@@ -56,9 +105,7 @@ export class LitApp extends LitElement {
 
     // Defer WebSocket connection until after initial render
     // This ensures the landing page loads quickly without waiting for WebSocket
-    requestAnimationFrame(() => {
-      this.connectWebSocket();
-    });
+    this.scheduleWebSocketConnection();
 
     const outlet = this.renderRoot.querySelector('main');
     const ssrRoute = this.getAttribute('data-ssr-route');
@@ -448,25 +495,43 @@ export class LitApp extends LitElement {
       void router.setRoutes(table);
       return;
     }
-    const gate = new CapabilityRouteGate(router, consoleRoute, () =>
-      loadCapabilities()
-    );
-    const syncInConsole = () => {
-      if (window.location.pathname.startsWith('/console')) {
+    const gate = new CapabilityRouteGate(router, consoleRoute, async () => {
+      const capabilities = await loadCapabilities();
+      return this.ownsRouterOutlet() ? capabilities : NO_CAPABILITIES;
+    });
+    this.syncInConsole = () => {
+      if (
+        this.ownsRouterOutlet() &&
+        window.location.pathname.startsWith('/console')
+      ) {
         void gate.sync();
       }
     };
-    window.addEventListener(LOCATION_CHANGED, syncInConsole);
+    window.addEventListener(LOCATION_CHANGED, this.syncInConsole);
     if (isCapabilityPath(window.location.pathname)) {
       // A deep link to a gated view waits for the answer, so it never flashes
       // the not-found page before its route exists.
-      void gate
-        .sync({ render: false })
-        .finally(() => void router.setRoutes(table));
+      let attempt = 0;
+      const install = (): void => {
+        if (!this.ownsRouterOutlet()) return;
+        const currentAttempt = ++attempt;
+        void gate.sync({ render: false }).finally(() => {
+          if (
+            currentAttempt !== attempt ||
+            !this.ownsRouterOutlet() ||
+            this.resumeRouteInstallation !== install
+          )
+            return;
+          this.resumeRouteInstallation = undefined;
+          void router.setRoutes(table);
+        });
+      };
+      this.resumeRouteInstallation = install;
+      install();
       return;
     }
     void router.setRoutes(table);
-    syncInConsole();
+    this.syncInConsole();
   }
 
   /**

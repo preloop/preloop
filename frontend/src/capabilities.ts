@@ -18,6 +18,7 @@ export const CAPABILITIES = [
   'multi_account',
   'account_hierarchy',
   'abac_rules',
+  'chat_connections',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

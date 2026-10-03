@@ -13,6 +13,7 @@ import random
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -1046,6 +1047,20 @@ class OpenAIGatewayService:
         # endpoints return it as ``X-Preloop-Usage-Id`` so an operator smoke
         # check can point at the exact row the Cost page counts.
         self.last_usage_id: Optional[str] = None
+        # Stable identity for the CURRENT request, minted in
+        # ``_begin_request_accounting`` and carried on both the
+        # ``model_gateway_request_started`` event and the usage row's
+        # ``model_gateway_call`` event.
+        #
+        # A live console used to pair the two by arrival order ("the last start
+        # belongs to the next completion"), which is wrong the moment two
+        # requests overlap — a parallel tool call plus the next model turn is
+        # the normal case, not an edge case. Both events carry this id, so a
+        # consumer can pair them exactly and an unmatched start is visible as
+        # an unmatched start instead of silently retarding some other request.
+        # It is deliberately NOT the ApiUsage primary key: the started event is
+        # published before the usage row exists.
+        self._gateway_request_id: Optional[str] = None
 
     @property
     def db(self) -> Session:
@@ -1113,6 +1128,10 @@ class OpenAIGatewayService:
         self._last_upstream_retry_count = 0
         self._last_alibaba_cache_mode = None
         self.last_usage_id = None
+        # A fresh identity for every request, including one that never reaches
+        # usage recording. Re-arming here (rather than minting at first use)
+        # keeps it request-scoped under the same discipline as the retry count.
+        self._gateway_request_id = uuid.uuid4().hex
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -1607,6 +1626,9 @@ class OpenAIGatewayService:
                     "model_alias": requested_model,
                     "managed_agent_id": managed_agent_id,
                     "total_tokens": 0,
+                    # Correlation id shared with the completion event. Consumers
+                    # must pair the two by this and never by arrival order.
+                    "gateway_request_id": self._gateway_request_id,
                     "meta_data": {
                         "endpoint_kind": endpoint_kind,
                         "requested_model": requested_model,
@@ -3762,6 +3784,24 @@ class OpenAIGatewayService:
                 )
                 if ai_model.is_default:
                     default_gateway_model = ai_model
+
+        if requested_model:
+            # Explicit registry IDs avoid alias collisions for first-party
+            # clients selecting the current account default. The authorization
+            # ceiling and gateway-enabled check are identical to alias routing.
+            for ai_model, _alias in gateway_enabled_models:
+                if str(ai_model.id) == str(requested_model):
+                    return ai_model
+            if any(
+                str(model.id) == str(requested_model)
+                for model, _ in unauthorized_gateway_models
+            ):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=403,
+                    message="Requested model is not authorized",
+                    code="model_not_authorized",
+                )
 
         if requested_model:
             # Resolution must be deterministic: the resolved row decides which
@@ -9528,6 +9568,10 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
+                # Same id the `model_gateway_request_started` event carried, so
+                # a live surface can pair the start with THIS completion even
+                # while other requests overlap.
+                "gateway_request_id": self._gateway_request_id,
                 # Retries the GATEWAY made inside this one request after a
                 # transient upstream failure. Distinct from gateway_attempt /
                 # is_retry, which describe the CLIENT resending a request.

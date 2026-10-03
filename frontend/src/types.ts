@@ -250,6 +250,39 @@ export interface FlowGatewayCapturePolicy {
   conversation_preview_available?: boolean;
 }
 
+/**
+ * One tool invocation recovered from a captured gateway body.
+ *
+ * `id` is the provider's own call id (`tool_calls[].id`, `call_id`,
+ * `tool_use.id`), which is the only identity that provably links a call to its
+ * result across events and retries. It is null when the producer had none to
+ * give; `stable_id` says so, and consumers must scope such a row to the event
+ * that produced it rather than merging it with anything.
+ *
+ * `arguments` and `result` are CONTENT. They are null when the gateway's
+ * capture policy withheld them, in which case `redacted` is true — the tool
+ * NAME and ids survive, because a name is structure, not content.
+ */
+export interface GatewayToolActivityEntry {
+  id?: string | null;
+  stable_id?: boolean;
+  direction?: 'call' | 'result' | string;
+  name?: string | null;
+  dialect?: string | null;
+  arguments?: string | null;
+  result?: string | null;
+  is_error?: boolean | null;
+  redacted?: boolean;
+  truncated?: boolean;
+}
+
+export interface GatewayToolActivity {
+  entries?: GatewayToolActivityEntry[];
+  /** True when the producer's entry cap dropped older calls. */
+  truncated?: boolean;
+  dialect?: string | null;
+}
+
 export interface FlowGatewayEventPayload {
   api_usage_id?: string | null;
   endpoint?: string | null;
@@ -271,6 +304,17 @@ export interface FlowGatewayEventPayload {
   gateway_attempt?: number | null;
   is_retry?: boolean | null;
   retry_of_api_usage_id?: string | null;
+  /**
+   * Identity shared with the `model_gateway_request_started` event this call
+   * announced. Consumers pair the two halves by this and never by arrival
+   * order, which is wrong whenever two requests overlap. Absent on rows
+   * recorded before the id existed, and on a start whose completion is not
+   * (yet) observed — an unpaired start must stay unpaired rather than closing
+   * whichever request happened to finish next.
+   */
+  gateway_request_id?: string | null;
+  /** Named tool calls and results recovered from the captured wire bodies. */
+  tool_activity?: GatewayToolActivity | null;
   finish_reason?: string | null;
   prompt_tokens?: number | null;
   completion_tokens?: number | null;

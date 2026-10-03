@@ -12,6 +12,8 @@ Approval REST queries combine account and runtime-session scope, and websocket
 approval payloads pass the same permission boundary before delivery. See
 [Runtime sessions](docs/guide/concepts/runtime-sessions.md#following-live-work-and-decisions).
 
+[Employee event intake](docs/guide/virtual-employees.md) authenticates provider events, verifies Flow/account/source scope, reserves the existing delivery-keyed execution before dispatch, and reuses Flow worker claims and recovery. Managed-agent control commands carry encrypted execution credentials; Codex/Nanobot tasks use independent bounded conversations and command-owned interruption.
+
 Implementation PRs can use [durable feedback subscriptions](docs/guide/flows/durable-implementation-feedback.md): PostgreSQL threads and inbox leases coordinate new execution turns, while native conversation artifacts remain isolated from workspace checkpoints. Repository events and bounded reconciliation advance CI/review gates without idle agent containers. Feedback opt-in applies to future executions; a preview-and-adopt API binds one older publication explicitly. Live policy changes are checked again at atomic repair reservation. Missing native checkpoints fail closed unless the operator explicitly selected a source-only published-branch handoff. Unreadable repository requirements prevent readiness while fully verified feedback can still authorize bounded repairs.
 
 [Isolated publication](docs/guide/flows/automated-issue-implementation.md#isolated-publication-rollout-and-repair) verifies immutable bundles in fresh credential-free runtimes before acquiring a write lease. Controller-owned evidence reuse binds the execution, bundle, base, profile, pinned image and runtime; sandbox-written evidence cannot populate it. Failed durable repairs retain their latest workspace and native session while recovering only the prior published branch binding from authenticated thread ancestry.
@@ -321,3 +323,24 @@ normal authenticated account scoping; URL account context grants no access.
 
 Managed tracker OAuth persistence uses the [provider-neutral storage contract](docs/architecture/managed-oauth-storage.md),
 with tenant-bound connection transactions and serialized token-pair rotation.
+
+### Nanobot managed runtime
+
+The optional `runtime-plugins/nanobot-preloop` process embeds a pinned Nanobot
+Python SDK and reuses Agent Control, runtime enrollment, the model gateway and
+MCP firewall. It owns persisted session references and bounds turns, duration and
+token/context consumption. Native and MCP tool execution require explicit
+Preloop permission decisions; background subagents and outbound channel tools
+are disabled. See its README for supported limits and installation.
+
+### Authenticated chat operations
+
+Chat connections authenticate provider ingress before persisting a tenant-owned
+receipt. Expiring single-use proofs bind provider users to Preloop users. The
+separate chat worker consumes a leased PostgreSQL ingress/outbox, delegates a
+fixed read-tool registry and explicit human commands to existing authorized APIs,
+and routes the account default model through the existing gateway. Protected
+replies revalidate actor, permissions, resource access, and scoped read snapshots
+before private provider delivery. Ambiguous writes become observable uncertain
+work rather than automatic duplicate operations. See
+[Chat connections](docs/chat-connections.md) for setup and operational limits.

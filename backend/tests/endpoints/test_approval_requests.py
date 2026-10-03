@@ -226,7 +226,7 @@ class TestListApprovalRequests:
                 mock_db_session,
                 account_id=mock_user.account_id,
                 execution_id="execution-example",
-                runtime_session_id=str(session_id),
+                runtime_session_id=session_id,
                 status="pending",
                 skip=100,
                 limit=25,

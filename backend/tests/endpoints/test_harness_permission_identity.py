@@ -12,7 +12,16 @@ from preloop.api.endpoints import agent_permission as endpoint
 
 @pytest.mark.parametrize(
     "scenario",
-    ["active", "ended", "different_execution", "ordinary_key", "missing_session"],
+    [
+        "active",
+        "ended",
+        "different_execution",
+        "ordinary_key",
+        "missing_session",
+        "active_managed",
+        "ended_managed",
+        "different_execution_managed",
+    ],
 )
 def test_flow_permission_requires_own_active_execution(
     monkeypatch: pytest.MonkeyPatch, scenario: str
@@ -30,9 +39,9 @@ def test_flow_permission_requires_own_active_execution(
         ended_at=None,
         runtime_principal_name="Test flow",
     )
-    if scenario == "ended":
+    if scenario in {"ended", "ended_managed"}:
         session.ended_at = "2026-01-01"
-    elif scenario == "different_execution":
+    elif scenario in {"different_execution", "different_execution_managed"}:
         session.session_source_id = str(uuid4())
     elif scenario == "ordinary_key":
         key.context_data = {}
@@ -48,7 +57,17 @@ def test_flow_permission_requires_own_active_execution(
         "_authenticate_with_api_key",
         lambda *args: SimpleNamespace(id=uuid4()),
     )
-    monkeypatch.setattr(endpoint, "_managed_agent_for_api_key", lambda *args: None)
+    managed = (
+        SimpleNamespace(
+            id=uuid4(),
+            display_name="Example employee",
+            session_source_type="codex",
+            session_source_id="employee-example",
+        )
+        if scenario.endswith("_managed")
+        else None
+    )
+    monkeypatch.setattr(endpoint, "_managed_agent_for_api_key", lambda *args: managed)
     monkeypatch.setattr(
         endpoint, "_runtime_session_id_from_api_key", lambda *args: session_id
     )
@@ -57,11 +76,13 @@ def test_flow_permission_requires_own_active_execution(
         "get_account_session",
         lambda *args, **kwargs: session,
     )
-    if scenario == "active":
+    if scenario in {"active", "active_managed"}:
         identity = endpoint._resolve_permission_identity("flow-token")
-        assert identity.managed_agent_id is None
+        assert identity.managed_agent_id == (managed.id if managed else None)
         assert identity.runtime_session_id == session_id
-        assert identity.managed_agent_name == "Test flow"
+        assert identity.managed_agent_name == (
+            "Example employee" if managed else "Test flow"
+        )
     else:
         with pytest.raises(HTTPException) as exc:
             endpoint._resolve_permission_identity("flow-token")
