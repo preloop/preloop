@@ -24,6 +24,9 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
+from preloop.services.azure_entra import AZURE_OPENAI_ROLE, AzureEntraTokenError
+from preloop.services.model_gateway_errors import GatewayProvider, ModelGatewayAPIError
+
 AZURE_PROVIDERS = frozenset({"azure"})
 
 AZURE_AUTH_KEY = "key"
@@ -187,26 +190,52 @@ def azure_client_id(ai_model: Any) -> Optional[str]:
 
 def normalize_azure_auth_meta(
     meta_data: Optional[Dict[str, Any]],
+    *,
+    provider_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Validate and normalize the Azure auth keys in model metadata.
 
-    ``azure_auth`` must be ``key`` or ``entra``. ``entra`` also sets
-    ``ambient_credentials`` so the model counts as configured without a key;
-    ``key`` clears that flag again. A blank ``azure_client_id`` is removed.
+    ``azure_auth`` must be ``key`` or ``entra``. On an Azure model, ``entra``
+    also sets ``ambient_credentials`` so the model counts as configured
+    without a key; ``key`` clears that flag again. A blank
+    ``azure_client_id`` is removed.
+
+    Non-Azure models do not keep that metadata. ``azure_auth`` and
+    ``azure_client_id`` are dropped, and ``ambient_credentials`` is cleared
+    when it arrived with ``azure_auth``, so a stale Entra flag cannot mark an
+    unrelated model as configured. A provider that sets
+    ``ambient_credentials`` on its own (Bedrock) keeps the flag when no Azure
+    auth key is present.
+
+    When ``provider_name`` is omitted, the mode is still validated but
+    ``ambient_credentials`` is not set. Callers that learn the provider later
+    (a partial update) run this again with the stored provider.
 
     Args:
         meta_data: The ``meta_data`` a create or update request carries.
+        provider_name: The model's provider, when known.
 
     Returns:
         The same mapping, normalized in place.
 
     Raises:
-        ValueError: ``azure_auth`` or ``azure_client_id`` has an invalid value.
+        ValueError: ``azure_auth`` or ``azure_client_id`` has an invalid value
+            on an Azure model, or when the provider is not yet known.
     """
     if not isinstance(meta_data, dict):
         return meta_data
     runtime = meta_data.get("provider_runtime")
     if not isinstance(runtime, dict):
+        return meta_data
+    provider = (provider_name or "").strip().lower()
+    if provider and provider not in AZURE_PROVIDERS:
+        # Only drop ambient credentials that this Entra flag would have set.
+        # Bedrock uses the same key without azure_auth.
+        had_azure_auth = "azure_auth" in runtime
+        runtime.pop("azure_auth", None)
+        runtime.pop("azure_client_id", None)
+        if had_azure_auth:
+            runtime.pop("ambient_credentials", None)
         return meta_data
     if "azure_client_id" in runtime:
         client_id = runtime["azure_client_id"]
@@ -224,11 +253,42 @@ def normalize_azure_auth_meta(
         raise ValueError("provider_runtime.azure_auth must be 'key' or 'entra'")
     runtime["azure_auth"] = normalized
     if normalized == AZURE_AUTH_ENTRA:
-        runtime["ambient_credentials"] = True
+        # Unknown provider: do not mark the row configured. The CRUD layer
+        # re-runs this once the stored provider is known.
+        if provider in AZURE_PROVIDERS:
+            runtime["ambient_credentials"] = True
     else:
         runtime.pop("ambient_credentials", None)
         runtime.pop("azure_client_id", None)
     return meta_data
+
+
+def azure_entra_auth_error(
+    exc: AzureEntraTokenError, *, provider: GatewayProvider
+) -> ModelGatewayAPIError:
+    """Map a failed Entra ID token acquisition to a provider 401.
+
+    The same envelope the gateway uses for a rejected key, so server-side
+    generation and gateway requests fail the same way.
+
+    Args:
+        exc: The token error. Its message names the failure class, not the
+            raw credential-chain exception text.
+        provider: Gateway response dialect. Auxiliary callers use ``openai``.
+
+    Returns:
+        A ``ModelGatewayAPIError`` with status 401 and code
+        ``azure_entra_token_error``.
+    """
+    return ModelGatewayAPIError(
+        provider=provider,
+        status_code=401,
+        message=(
+            f"{exc} The identity needs the {AZURE_OPENAI_ROLE} role on the "
+            "Azure OpenAI resource."
+        ),
+        code="azure_entra_token_error",
+    )
 
 
 def azure_request_kwargs(ai_model: Any) -> Dict[str, Any]:

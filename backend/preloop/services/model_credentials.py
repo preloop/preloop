@@ -26,6 +26,12 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.aux_model_retry import call_with_aux_retry
+from preloop.services.azure_entra import AzureEntraTokenError
+from preloop.services.azure_openai import (
+    azure_entra_auth_error,
+    azure_request_kwargs,
+    uses_azure_entra,
+)
 from preloop.services.litellm_routing import (
     apply_preloop_client_headers,
     model_api_base,
@@ -96,8 +102,14 @@ def resolve_model_call_credentials(
 
     Returns:
         A dict of litellm/openai-compatible kwargs (e.g., {"api_key": "...", "api_base": "..."}).
-        Never raises: on resolution failure the api_key is omitted so the caller
+        On secret-resolution failure the api_key is omitted so the caller
         degrades the same way it did before, but routing (api_base) is preserved.
+        An Azure model in Entra mode also receives ``azure_ad_token_provider``
+        (and ``api_key`` forced to None).
+
+    Raises:
+        ModelGatewayAPIError: The model uses Entra ID and no token could be
+            acquired. Same 401 the gateway returns for that failure.
     """
     kwargs: dict[str, Any] = {}
 
@@ -124,6 +136,16 @@ def resolve_model_call_credentials(
             exc,
             exc_info=True,
         )
+
+    if uses_azure_entra(model):
+        # Outside the secret-resolution try: a missing token must fail the
+        # call, not be swallowed into an unauthenticated LiteLLM request.
+        # azure_request_kwargs also replaces a pasted deployment URL with the
+        # resource root and clears any stored key.
+        try:
+            kwargs.update(azure_request_kwargs(model))
+        except AzureEntraTokenError as exc:
+            raise azure_entra_auth_error(exc, provider="openai") from exc
 
     return kwargs
 
@@ -272,6 +294,13 @@ def build_aux_kwargs(
 
     Preloop client branding is applied last: User-Agent is always Preloop
     (never LiteLLM). OpenRouter also gets ``X-Title`` / ``HTTP-Referer``.
+
+    An Entra Azure model whose ``creds_kwargs`` omit
+    ``azure_ad_token_provider`` receives one here, so a caller that skipped
+    :func:`resolve_model_call_credentials` still authenticates.
+
+    Raises:
+        ModelGatewayAPIError: Entra token acquisition failed.
     """
     # Layer 4: safety defaults (capability-checked, not blanket).
     merged: dict[str, Any] = {"drop_params": True}
@@ -282,8 +311,15 @@ def build_aux_kwargs(
     if isinstance(model_params, dict):
         _merge_extra_body(merged, model_params)
 
-    # Layer 2: resolved credentials (api_key, api_base).
+    # Layer 2: resolved credentials (api_key, api_base, Entra token provider).
     _merge_extra_body(merged, creds_kwargs)
+    if uses_azure_entra(model) and "azure_ad_token_provider" not in merged:
+        # Callers that build aux kwargs without resolve_model_call_credentials
+        # still authenticate. Token failures use the gateway's 401 envelope.
+        try:
+            _merge_extra_body(merged, azure_request_kwargs(model))
+        except AzureEntraTokenError as exc:
+            raise azure_entra_auth_error(exc, provider="openai") from exc
 
     # Layer 1: call-site explicit args (always win).
     _merge_extra_body(merged, call_site_kwargs)

@@ -91,6 +91,45 @@ class CRUDAIModel(CRUDBase[AIModel]):
         validate_qwen_endpoint(endpoint)
 
     @staticmethod
+    def _normalize_azure_auth_fields(
+        obj_data: Dict, *, existing: Optional[AIModel] = None
+    ) -> None:
+        """Keep Azure Entra metadata on Azure models only.
+
+        A partial update that omits ``provider_name`` is normalized against
+        the stored provider. Switching a row off Azure drops an Entra flag
+        that would otherwise leave ``ambient_credentials`` set.
+        """
+        from preloop.services.azure_openai import normalize_azure_auth_meta
+
+        provider = obj_data.get("provider_name")
+        if not provider and existing is not None:
+            provider = existing.provider_name
+        provider_changed = False
+        if existing is not None and "provider_name" in obj_data:
+            old_provider = (existing.provider_name or "").strip().lower()
+            new_provider = (obj_data.get("provider_name") or "").strip().lower()
+            provider_changed = old_provider != new_provider
+
+        if "meta_data" in obj_data:
+            meta = obj_data.get("meta_data")
+        elif (
+            existing is not None
+            and provider_changed
+            and isinstance(existing.meta_data, dict)
+        ):
+            runtime = existing.meta_data.get("provider_runtime")
+            if not isinstance(runtime, dict) or "azure_auth" not in runtime:
+                return
+            meta = copy.deepcopy(existing.meta_data)
+        else:
+            return
+        provider_name = provider if isinstance(provider, str) else None
+        obj_data["meta_data"] = normalize_azure_auth_meta(
+            meta, provider_name=provider_name
+        )
+
+    @staticmethod
     def _apply_secret_reference_fields(
         db: Session,
         *,
@@ -363,6 +402,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data)
+        self._normalize_azure_auth_fields(obj_data)
         self._enforce_unique_gateway_alias(
             db,
             obj_data=obj_data,
@@ -566,6 +606,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """Update an AIModel. If setting a model as default, ensure others are not."""
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data, existing=db_obj)
+        self._normalize_azure_auth_fields(obj_data, existing=db_obj)
 
         # Preserve the gateway alias when provider_name changes so that
         # in-flight agents configured with the old alias can still resolve

@@ -169,8 +169,12 @@ from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
-from preloop.services.azure_entra import AZURE_OPENAI_ROLE, AzureEntraTokenError
-from preloop.services.azure_openai import azure_request_kwargs, uses_azure_entra
+from preloop.services.azure_entra import AzureEntraTokenError
+from preloop.services.azure_openai import (
+    azure_entra_auth_error,
+    azure_request_kwargs,
+    uses_azure_entra,
+)
 from preloop.services.litellm_routing import (
     BEDROCK_PROVIDERS,
     apply_preloop_client_headers,
@@ -505,15 +509,7 @@ def _azure_kwargs_or_auth_error(
     try:
         return azure_request_kwargs(ai_model)
     except AzureEntraTokenError as exc:
-        raise ModelGatewayAPIError(
-            provider=provider,
-            status_code=401,
-            message=(
-                f"{exc} The identity needs the {AZURE_OPENAI_ROLE} role on the "
-                "Azure OpenAI resource."
-            ),
-            code="azure_entra_token_error",
-        ) from exc
+        raise azure_entra_auth_error(exc, provider=provider) from exc
 
 
 def _openrouter_usage_accounting_enabled() -> bool:

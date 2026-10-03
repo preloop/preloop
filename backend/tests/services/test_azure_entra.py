@@ -22,6 +22,10 @@ from preloop.services.azure_openai import (
     normalize_azure_auth_meta,
 )
 from preloop.services.litellm_routing import preloop_user_agent
+from preloop.services.model_credentials import (
+    build_aux_kwargs,
+    resolve_model_call_credentials,
+)
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -158,15 +162,52 @@ def test_auth_mode_defaults_to_key() -> None:
 
 def test_normalize_entra_sets_ambient_and_key_clears_it() -> None:
     meta = {"provider_runtime": {"azure_auth": " Entra ", "azure_client_id": " c1 "}}
-    normalize_azure_auth_meta(meta)
+    normalize_azure_auth_meta(meta, provider_name="azure")
     assert meta["provider_runtime"] == {
         "azure_auth": "entra",
         "azure_client_id": "c1",
         "ambient_credentials": True,
     }
     meta["provider_runtime"]["azure_auth"] = "key"
-    normalize_azure_auth_meta(meta)
+    normalize_azure_auth_meta(meta, provider_name="Azure")
     assert meta["provider_runtime"] == {"azure_auth": "key"}
+
+
+def test_normalize_entra_on_non_azure_does_not_mark_configured() -> None:
+    """Entra metadata on another provider must not set ambient credentials."""
+    meta = {
+        "provider_runtime": {
+            "azure_auth": "entra",
+            "azure_client_id": "c1",
+            "region": "us-east-1",
+        }
+    }
+    normalize_azure_auth_meta(meta, provider_name="openai")
+    assert meta["provider_runtime"] == {"region": "us-east-1"}
+    created = AIModelCreate(
+        name="GPT",
+        provider_name="openai",
+        model_identifier="gpt-4o",
+        meta_data={
+            "provider_runtime": {"azure_auth": "entra", "ambient_credentials": True}
+        },
+    )
+    runtime = created.meta_data["provider_runtime"]
+    assert "azure_auth" not in runtime
+    assert "ambient_credentials" not in runtime
+    model = AIModel(
+        provider_name="openai",
+        model_identifier="gpt-4o",
+        meta_data=created.meta_data,
+    )
+    assert model.has_api_key is False
+
+
+def test_normalize_keeps_bedrock_ambient_without_azure_auth() -> None:
+    meta = {"provider_runtime": {"ambient_credentials": True, "region": "us-east-1"}}
+    normalize_azure_auth_meta(meta, provider_name="bedrock")
+    assert meta["provider_runtime"]["ambient_credentials"] is True
+    assert meta["provider_runtime"]["region"] == "us-east-1"
 
 
 def test_schema_rejects_unknown_auth_mode() -> None:
@@ -204,6 +245,86 @@ def test_model_row_with_entra_counts_as_configured() -> None:
 
 
 # --- request kwargs and gateway --------------------------------------------
+
+
+def test_aux_kwargs_carry_entra_token_provider(fake_identity) -> None:
+    """Server-side generation gets the same Entra kwargs as the gateway."""
+    pasted = (
+        f"{RESOURCE}/openai/deployments/chat-deployment/chat/completions"
+        "?api-version=2024-10-21"
+    )
+    model = AIModel(
+        id="model-entra",
+        provider_name="azure",
+        model_identifier="chat-deployment",
+        api_endpoint=pasted,
+        meta_data={
+            "provider_runtime": {
+                "azure_auth": "entra",
+                "api_version": "2024-10-21",
+            }
+        },
+    )
+    with patch("preloop.services.model_credentials.get_secret_service") as secrets:
+        secrets.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(credential_type="api_key", value="old-azure-key")
+        )
+        creds = resolve_model_call_credentials(model)
+    assert creds["api_key"] is None
+    assert creds["api_base"] == RESOURCE
+    assert creds["api_version"] == "2024-10-21"
+    assert creds["azure_ad_token_provider"]() == "token-1"
+    kwargs = build_aux_kwargs(
+        model,
+        creds,
+        call_site_kwargs={
+            "model": "azure/chat-deployment",
+            "messages": [{"role": "user", "content": "ping"}],
+        },
+    )
+    assert kwargs["api_key"] is None
+    assert kwargs["api_base"] == RESOURCE
+    assert kwargs["azure_ad_token_provider"]() == "token-1"
+
+
+def test_aux_build_without_resolved_creds_still_uses_entra(fake_identity) -> None:
+    model = AIModel(
+        provider_name="azure",
+        model_identifier="chat-deployment",
+        api_endpoint=RESOURCE,
+        meta_data={"provider_runtime": {"azure_auth": "entra"}},
+    )
+    kwargs = build_aux_kwargs(
+        model, {}, call_site_kwargs={"model": "azure/chat-deployment"}
+    )
+    assert kwargs["api_key"] is None
+    assert kwargs["azure_ad_token_provider"]() == "token-1"
+
+
+def test_aux_token_failure_is_provider_auth_error(fake_identity) -> None:
+    def failing_factory(client_id: Optional[str]) -> FakeCredential:
+        credential = FakeCredential(fake_identity.now)
+        credential.error = RuntimeError("no identity endpoint")
+        return credential
+
+    model = AIModel(
+        id="model-entra",
+        provider_name="azure",
+        model_identifier="chat-deployment",
+        api_endpoint=RESOURCE,
+        meta_data={"provider_runtime": {"azure_auth": "entra"}},
+    )
+    with (
+        patch.object(azure_entra, "credential_factory", failing_factory),
+        patch("preloop.services.model_credentials.get_secret_service") as secrets,
+    ):
+        secrets.return_value.resolve_ai_model_credentials.return_value = None
+        with pytest.raises(ModelGatewayAPIError) as raised:
+            resolve_model_call_credentials(model)
+    assert raised.value.status_code == 401
+    assert raised.value.code == "azure_entra_token_error"
+    assert "Cognitive Services OpenAI User" in raised.value.message
+    assert "no identity endpoint" not in raised.value.message
 
 
 def test_request_kwargs_carry_token_provider_not_key(fake_identity) -> None:

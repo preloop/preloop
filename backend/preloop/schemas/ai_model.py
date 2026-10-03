@@ -195,7 +195,9 @@ class AIModelCreate(AIModelBase):
     @model_validator(mode="after")
     def validate_credentials(self):
         # Azure auth mode lives in provider_runtime (azure_auth key|entra).
-        self.meta_data = normalize_azure_auth_meta(self.meta_data)
+        self.meta_data = normalize_azure_auth_meta(
+            self.meta_data, provider_name=self.provider_name
+        )
         has_inline_payload = (
             self.credential_type is not None or self.credential_payload is not None
         )
@@ -268,7 +270,12 @@ class AIModelUpdate(BaseModel):
     @model_validator(mode="after")
     def validate_credentials(self):
         # Azure auth mode lives in provider_runtime (azure_auth key|entra).
-        self.meta_data = normalize_azure_auth_meta(self.meta_data)
+        # provider_name is optional on update; CRUD re-runs this with the
+        # stored provider so a partial write still cannot mark a non-Azure
+        # model configured.
+        self.meta_data = normalize_azure_auth_meta(
+            self.meta_data, provider_name=self.provider_name
+        )
         has_inline_payload = (
             self.credential_type is not None or self.credential_payload is not None
         )
