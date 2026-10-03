@@ -183,8 +183,12 @@ Where hits show up:
 - Attention: one "Policy notice" card per rule with hits in the last 7
   days. Dismissing it hides it until the rule matches again.
 - Optimization digest: a "Policy notices" section with each rule's hit
-  count over 7 days, the last user and the last excerpt. The digest is
-  sent by the EE optimization plugin; without it, nothing is sent.
+  count over one window, the last user and the last excerpt. The window is
+  the 7 days ending at `now` by default, or exactly the `start` and `end`
+  the caller passes; both bounds are always applied, and the section
+  reports the window it covered as `window_start` and `window_end`. The
+  digest is sent by the EE optimization plugin; without it, nothing is
+  sent.
 - `GET /api/v1/policies/notices/summary?days=7` (requires
   `view_policies`).
 

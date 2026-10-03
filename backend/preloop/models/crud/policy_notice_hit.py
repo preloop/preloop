@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, List, Optional
 from uuid import UUID
 
-from sqlalchemy import case, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from ..models.permission import Permission, Role, RolePermission, TeamRole, UserRole
@@ -138,29 +138,46 @@ class CRUDPolicyNoticeHit(CRUDBase[PolicyNoticeHit]):
         *,
         account_id: Any,
         since: datetime,
+        until: Optional[datetime] = None,
         limit: int = 100,
     ) -> List[PolicyNoticeRuleSummary]:
-        """Per-rule hit counts since ``since``, newest rule activity first.
+        """Per-rule hit counts in ``[since, until)``, newest rule activity first.
+
+        ``until`` is exclusive and optional. It is applied in SQL before the
+        counts are grouped and before the newest in-window hit is chosen, so
+        a hit at or after the end of the window cannot be counted or shown as
+        the latest one. Without it the window has no upper bound, which is
+        what the Attention summary of a caller that only wants "everything
+        since" expects.
+
+        The username is joined within the summarised account: a hit that
+        (wrongly) points at a user of another account resolves to no name at
+        all rather than to that account's label.
 
         Args:
             db: Database session.
             account_id: Account to summarise.
-            since: Window start (aware or naive UTC).
+            since: Inclusive window start (aware or naive UTC).
+            until: Exclusive window end (aware or naive UTC), or None for no
+                upper bound.
             limit: Maximum number of rules returned.
 
         Returns:
             One summary per rule with at least one hit in the window.
         """
         start = _naive_utc(since)
+        bounds = [
+            PolicyNoticeHit.account_id == account_id,
+            PolicyNoticeHit.created_at >= start,
+        ]
+        if until is not None:
+            bounds.append(PolicyNoticeHit.created_at < _naive_utc(until))
         counts = (
             select(
                 PolicyNoticeHit.rule_id.label("rule_id"),
                 func.count(PolicyNoticeHit.id).label("hit_count"),
             )
-            .where(
-                PolicyNoticeHit.account_id == account_id,
-                PolicyNoticeHit.created_at >= start,
-            )
+            .where(*bounds)
             .group_by(PolicyNoticeHit.rule_id)
             .subquery()
         )
@@ -177,10 +194,7 @@ class CRUDPolicyNoticeHit(CRUDBase[PolicyNoticeHit]):
                 )
                 .label("rank"),
             )
-            .where(
-                PolicyNoticeHit.account_id == account_id,
-                PolicyNoticeHit.created_at >= start,
-            )
+            .where(*bounds)
             .subquery()
         )
         latest = select(ranked).where(ranked.c.rank == 1).subquery()
@@ -197,7 +211,10 @@ class CRUDPolicyNoticeHit(CRUDBase[PolicyNoticeHit]):
                 User.username,
             )
             .join(counts, counts.c.rule_id == latest.c.rule_id)
-            .outerjoin(User, User.id == latest.c.user_id)
+            .outerjoin(
+                User,
+                and_(User.id == latest.c.user_id, User.account_id == account_id),
+            )
             .order_by(latest.c.created_at.desc())
             .limit(limit)
         ).all()

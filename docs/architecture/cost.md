@@ -217,11 +217,23 @@ unexpired snooze hides the card whatever the fingerprint, until the snooze
 ends. The dismissal endpoints stamp `dismissed_at` on the matching finding,
 and a restore clears it.
 
-**Digest.** `build_spend_outlier_digest_section(db, account_id, now)` returns
-the findings detected in the last seven days, one entry per fingerprint, each
-marked `dismissed` when a dismissal or an active snooze covers it. It is the
-section for the weekly digest service, which is resolved through the plugin
-registry and lives outside this repository.
+**Digest.** `build_spend_outlier_digest_section(db, account_id, now,
+start=..., end=...)` returns the findings detected in one half-open
+`[start, end)` window, one entry per fingerprint, each marked `dismissed` when
+a dismissal or a snooze covers it. The two are read at different moments: a
+dismissal is read as it stands, so a finding dismissed after the window closed
+is still reported as dismissed, while a snooze is resolved as of the window
+end, so one that only runs out afterwards still covers the window. Without
+`start` and `end` the window is the seven days ending at `now`; with them it
+is exactly that window, and both bounds are always applied, so a finding
+detected at or after the end of the window is not in the section. The window is
+reported back as `window_start` and `window_end`. Display names, session titles
+and dismissals are resolved within the account, so a row that points at another
+account's user or session shows no label rather than that account's. Every
+entry keeps the numbers its rule recorded, including imported dollars;
+overlapping findings are never summed into an account total. It is the section
+for the weekly digest service, which is resolved through the plugin registry
+and lives outside this repository.
 
 **Imported spend.** Spend that does not pass through the gateway enters
 through `register_imported_spend_source`. Cards and digest entries that
