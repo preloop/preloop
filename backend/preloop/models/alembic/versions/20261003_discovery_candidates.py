@@ -1,7 +1,7 @@
 """Add opt-in discovery reporting tables.
 
 Revision ID: 20261003_discovery_candidates
-Revises: 20261002_managed_oauth
+Revises: 20261003_issue_extid_unique
 Create Date: 2026-10-03
 
 Two new tables, nothing existing changes. ``discovered_agent_candidate``
@@ -18,7 +18,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "20261003_discovery_candidates"
-down_revision = "20261002_managed_oauth"
+down_revision = "20261003_issue_extid_unique"
 branch_labels = None
 depends_on = None
 
