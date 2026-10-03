@@ -105,6 +105,17 @@ HEADLINE_OPTIONS = (
     "MaxFragments=2, FragmentDelimiter= ... "
 )
 
+#: Hit markers of :meth:`CRUDSessionSearchDocument.artifact_excerpts`. Control
+#: characters rather than ``<mark>`` so a caller can turn them into offsets
+#: without confusing them with markup that is part of the artifact text.
+EXCERPT_START = "\x02"
+EXCERPT_STOP = "\x03"
+EXCERPT_HEADLINE_OPTIONS = (
+    f"StartSel={EXCERPT_START}, StopSel={EXCERPT_STOP}, "
+    "MaxWords=35, MinWords=10, ShortWord=3, "
+    "MaxFragments=2, FragmentDelimiter= ... "
+)
+
 #: Chunks the vector pass reads before anything is grouped into sessions.
 #: This is the requested nearest-neighbour depth, not a guarantee of the
 #: closest N. The HNSW index cannot carry the equality filters
@@ -2111,3 +2122,80 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             .scalar()
             or 0
         )
+
+    def artifact_excerpts(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        artifact_ids: Sequence[Any],
+        query: str,
+    ) -> Dict[str, Tuple[str, Optional[float]]]:
+        """Best matching chunk of each artifact as a highlighted excerpt.
+
+        Used by the account artifact search (#1086). Only chunks in
+        :data:`TEXT_RETURNABLE_REDACTION_STATES` are read, so a withheld
+        chunk never produces an excerpt; chunk text was already redacted
+        when it was indexed.
+
+        Args:
+            db: Database session.
+            account_id: Account the caller is allowed to read.
+            artifact_ids: Artifacts of the current page.
+            query: Raw search text, parsed with ``websearch_to_tsquery``.
+
+        Returns:
+            ``artifact_id -> (headline, cue_start)``. The headline marks hits
+            with :data:`EXCERPT_START` and :data:`EXCERPT_STOP`. Artifacts
+            without a matching returnable chunk are absent.
+        """
+        normalized = normalize_query(query)
+        ids = [str(value) for value in artifact_ids]
+        if not normalized or not ids:
+            return {}
+        tsquery = func.websearch_to_tsquery(SEARCH_CONFIG, normalized)
+        ranked = (
+            select(
+                SessionSearchDocument.source_id,
+                SessionSearchDocument.content,
+                SessionSearchDocument.meta_data,
+                func.row_number()
+                .over(
+                    partition_by=SessionSearchDocument.source_id,
+                    order_by=(
+                        func.ts_rank_cd(
+                            SessionSearchDocument.search_vector, tsquery
+                        ).desc(),
+                        SessionSearchDocument.chunk_index.asc(),
+                    ),
+                )
+                .label("position"),
+            )
+            .where(
+                SessionSearchDocument.account_id == account_id,
+                SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT,
+                SessionSearchDocument.source_id.in_(ids),
+                SessionSearchDocument.redaction_state.in_(
+                    TEXT_RETURNABLE_REDACTION_STATES
+                ),
+                SessionSearchDocument.search_vector.op("@@")(tsquery),
+            )
+            .subquery()
+        )
+        rows = db.execute(
+            select(
+                ranked.c.source_id,
+                func.ts_headline(
+                    SEARCH_CONFIG, ranked.c.content, tsquery, EXCERPT_HEADLINE_OPTIONS
+                ),
+                ranked.c.meta_data,
+            ).where(ranked.c.position == 1)
+        ).all()
+        out: Dict[str, Tuple[str, Optional[float]]] = {}
+        for source_id, headline, meta in rows:
+            cue = (meta or {}).get("cue_start")
+            out[str(source_id)] = (
+                headline or "",
+                float(cue) if isinstance(cue, (int, float)) else None,
+            )
+        return out
