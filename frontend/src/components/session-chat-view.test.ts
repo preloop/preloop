@@ -96,9 +96,17 @@ describe('session-chat-view', () => {
         ]}
       ></session-chat-view>
     `);
-    const host = withMarker.shadowRoot
-      ?.querySelector('session-tool-card')
-      ?.shadowRoot?.querySelector('repository-chip') as
+    // Native tool rows render as top-level tool cards, so the chip lives in
+    // the card's shadow root rather than the view's.
+    const card = withMarker.shadowRoot?.querySelector('session-tool-card') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    expect(card).to.not.equal(null);
+    await card!.updateComplete;
+    const host = card!.renderRoot.querySelector('repository-chip') as
       | (HTMLElement & {
           updateComplete: Promise<boolean>;
           renderRoot: ShadowRoot;
@@ -132,11 +140,19 @@ describe('session-chat-view', () => {
         ]}
       ></session-chat-view>
     `);
-    expect(
-      withoutMarker.shadowRoot
-        ?.querySelector('session-tool-card')
-        ?.shadowRoot?.querySelector('repository-chip')
-    ).to.equal(null);
+    const plainCard = withoutMarker.shadowRoot?.querySelector(
+      'session-tool-card'
+    ) as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    expect(plainCard).to.not.equal(null);
+    await plainCard!.updateComplete;
+    expect(plainCard!.renderRoot.querySelector('repository-chip')).to.equal(
+      null
+    );
   });
 
   it('renders empty state without events', async () => {
@@ -736,5 +752,294 @@ describe('session-chat-view in the talk window', () => {
     const region = el.shadowRoot!.querySelector('.live-region')!;
     expect(region.getAttribute('aria-live')).to.equal('polite');
     expect(region.textContent).to.contain('All green.');
+  });
+});
+
+describe('session-chat-view live tools and activity', () => {
+  function toolEvent(
+    id: string,
+    timestamp: string,
+    entries: Array<Record<string, unknown>>
+  ): FlowGatewayEvent {
+    return {
+      id,
+      execution_id: 'exec-1',
+      timestamp,
+      type: 'model_gateway_call',
+      payload: { outcome: 'success', tool_activity: { entries } },
+    } as FlowGatewayEvent;
+  }
+
+  const CALL = {
+    id: 'call_1',
+    stable_id: true,
+    direction: 'call',
+    name: 'terminal',
+    dialect: 'openai_chat',
+    arguments: '{"command": "pytest -q"}',
+    result: null,
+    is_error: null,
+    redacted: false,
+    truncated: false,
+  };
+
+  it('renders a named tool card from gateway-only history with no activity rows', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: 'run the tests' },
+          ]),
+          toolEvent('e2', '2026-08-06T10:00:05Z', [CALL]),
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+
+    const card = el.shadowRoot!.querySelector('session-tool-card') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    expect(card, 'a gateway tool call must render as its own row').to.not.equal(
+      null
+    );
+    await card!.updateComplete;
+    expect(
+      card!.renderRoot.querySelector('.name')?.textContent?.trim()
+    ).to.equal('terminal');
+    // The card is top level: it is not folded into an anonymous step group.
+    expect(el.shadowRoot!.querySelectorAll('sl-details.steps').length).to.equal(
+      0
+    );
+  });
+
+  it('shows a pending approval on the activity line above the thread', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[toolEvent('e2', '2026-08-06T10:00:05Z', [CALL])]}
+        .pendingApprovals=${[
+          {
+            id: 'req-1',
+            status: 'pending',
+            requested_at: '2026-08-06T10:00:04Z',
+          },
+        ]}
+        .now=${Date.parse('2026-08-06T10:00:20Z')}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+
+    const line = el.shadowRoot!.querySelector('session-live-activity') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    expect(line).to.not.equal(null);
+    await line!.updateComplete;
+    const host = line!.renderRoot.querySelector(
+      '[data-testid="live-activity"]'
+    )!;
+    expect(host.getAttribute('data-status')).to.equal('waiting_for_approval');
+    expect(host.textContent).to.contain('1 pending');
+  });
+
+  it('reports an in-flight model request instead of a generic active badge', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          {
+            id: 's1',
+            execution_id: 'exec-1',
+            timestamp: '2026-08-06T10:00:00Z',
+            type: 'model_gateway_request_started',
+            payload: {
+              gateway_request_id: 'g1',
+              model_alias: 'openai/gpt-5',
+              outcome: 'pending',
+            },
+          } as FlowGatewayEvent,
+        ]}
+        .now=${Date.parse('2026-08-06T10:00:12Z')}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+
+    const line = el.shadowRoot!.querySelector('session-live-activity') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    await line!.updateComplete;
+    const host = line!.renderRoot.querySelector(
+      '[data-testid="live-activity"]'
+    )!;
+    expect(host.getAttribute('data-status')).to.equal('model_processing');
+    expect(host.textContent).to.contain('openai/gpt-5');
+    expect(host.textContent).to.contain('12s');
+  });
+
+  it('reports reconnecting separately from the work status', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          toolEvent('e2', '2026-08-06T10:00:05Z', [
+            CALL,
+            { ...CALL, direction: 'result', result: 'ok', arguments: null },
+          ]),
+        ]}
+        .connected=${false}
+        .now=${Date.parse('2026-08-06T10:00:20Z')}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+
+    const line = el.shadowRoot!.querySelector('session-live-activity') as
+      | (HTMLElement & {
+          updateComplete: Promise<boolean>;
+          renderRoot: ShadowRoot;
+        })
+      | null;
+    await line!.updateComplete;
+    const host = line!.renderRoot.querySelector(
+      '[data-testid="live-activity"]'
+    )!;
+    expect(host.getAttribute('data-status')).to.equal('idle');
+    expect(host.getAttribute('data-transport')).to.equal('reconnecting');
+  });
+
+  it('drops the pending approval once it is resolved', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[toolEvent('e2', '2026-08-06T10:00:05Z', [CALL])]}
+        .pendingApprovals=${[{ id: 'req-1', status: 'pending' }]}
+        .now=${Date.parse('2026-08-06T10:00:20Z')}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    expect(
+      el
+        .shadowRoot!.querySelector('session-live-activity')!
+        .shadowRoot!.querySelector('[data-testid="live-activity"]')!
+        .getAttribute('data-status')
+    ).to.equal('waiting_for_approval');
+
+    el.pendingApprovals = [{ id: 'req-1', status: 'approved' }];
+    await el.updateComplete;
+    expect(
+      el
+        .shadowRoot!.querySelector('session-live-activity')!
+        .shadowRoot!.querySelector('[data-testid="live-activity"]')!
+        .getAttribute('data-status')
+    ).to.equal('idle');
+  });
+
+  it('says when tool_activity dropped calls', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          {
+            id: 'e2',
+            execution_id: 'exec-1',
+            timestamp: '2026-08-06T10:00:05Z',
+            type: 'model_gateway_call',
+            payload: {
+              outcome: 'success',
+              tool_activity: { entries: [CALL], truncated: true },
+            },
+          } as FlowGatewayEvent,
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="tool-activity-truncated"]')
+        ?.textContent
+    ).to.contain('truncated');
+  });
+
+  it('renders one card when both gateway producers describe the same call', async () => {
+    // The gateway emits `tools` and `tool_activity` for the same invocation on
+    // the same event. Both build a card, so the transcript row has to yield to
+    // the captured one instead of rendering the call twice.
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          {
+            id: 'e2',
+            execution_id: 'exec-1',
+            timestamp: '2026-08-06T10:00:05Z',
+            type: 'model_gateway_call',
+            payload: {
+              outcome: 'success',
+              tools: [
+                {
+                  kind: 'call',
+                  call_id: 'call_1',
+                  name: 'terminal',
+                  text: '{"command": "pytest -q"}',
+                },
+                { kind: 'result', call_id: 'call_1', text: 'ok' },
+              ],
+              tool_activity: {
+                entries: [
+                  CALL,
+                  {
+                    ...CALL,
+                    direction: 'result',
+                    result: 'ok',
+                    arguments: null,
+                  },
+                ],
+              },
+            },
+          } as FlowGatewayEvent,
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+
+    const cards = el.shadowRoot!.querySelectorAll('session-tool-card');
+    expect(cards, 'one call must not render two cards').to.have.length(1);
+    const card = cards[0] as HTMLElement & { updateComplete: Promise<boolean> };
+    await card.updateComplete;
+    expect(card.shadowRoot!.textContent).to.contain('terminal');
+    expect(card.shadowRoot!.textContent).to.contain('completed');
+  });
+
+  it('still renders a gateway call the captured tools never carried', async () => {
+    // `payload.tools` is capped independently of `tool_activity`, so a call
+    // only the transcript knows about must keep its own row.
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          {
+            id: 'e2',
+            execution_id: 'exec-1',
+            timestamp: '2026-08-06T10:00:05Z',
+            type: 'model_gateway_call',
+            payload: {
+              outcome: 'success',
+              tools: [
+                {
+                  kind: 'call',
+                  call_id: 'call_0',
+                  name: 'terminal',
+                  text: '{"command": "pwd"}',
+                },
+              ],
+              tool_activity: { entries: [{ ...CALL, id: 'call_9' }] },
+            },
+          } as FlowGatewayEvent,
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelectorAll('session-tool-card')).to.have.length(
+      2
+    );
   });
 });

@@ -44,6 +44,7 @@ from .api_key import CRUDApiKey
 from .api_usage import CRUDApiUsage
 from .audit_log import CRUDAuditLog
 from .base import CRUDBase
+from .chat import crud_chat
 from .comment import CRUDComment, crud_comment
 from .embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
 from .flow_feedback import crud_flow_feedback
@@ -240,6 +241,7 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
 
 __all__ = [
+    "crud_chat",
     "CRUDManagedOAuth",
     "crud_managed_oauth",
     "crud_flow_feedback",

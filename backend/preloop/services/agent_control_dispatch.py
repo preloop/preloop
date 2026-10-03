@@ -40,6 +40,7 @@ SUPPORTED_CONTROL_AGENT_KINDS = {
     "pi",
     "deepseek",
     "codex",
+    "nanobot",
 }
 # Pi and DeepSeek accept text on an already-open session only. Shared so the
 # operator endpoint and persistent executor refuse start_new_session together.
@@ -287,7 +288,12 @@ async def persist_and_deliver_command(
         command_status = "delivered"
     subject: Optional[str] = None
     if not local_delivery:
-        subject = await _publish_command(envelope)
+        from preloop.utils.control_credentials import protect_control_credentials
+
+        protected = AgentControlEnvelope.model_validate(
+            protect_control_credentials(envelope.model_dump(mode="json"))
+        )
+        subject = await _publish_command(protected)
         if subject is None and require_delivery:
             try:
                 with db.begin_nested():

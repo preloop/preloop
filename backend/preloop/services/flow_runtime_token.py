@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import (
     crud_account,
     crud_api_key,
+    crud_managed_agent,
     crud_runtime_session,
     crud_user,
 )
@@ -173,6 +174,26 @@ def create_flow_runtime_token(
                 "username": principal_user.username,
             },
         }
+        employee_binding = (getattr(flow, "trigger_config", None) or {}).get(
+            "employee_events"
+        )
+        if isinstance(employee_binding, dict):
+            target_id = (getattr(flow, "agent_config", None) or {}).get(
+                "target_agent_id"
+            )
+            agent = crud_managed_agent.get_for_account(
+                db,
+                account_id=account_id,
+                agent_id=str(target_id or ""),
+            )
+            if agent is None or agent.lifecycle_state != "active":
+                logger.warning(
+                    "Employee runtime token refused: target identity unavailable"
+                )
+                return None, None
+            # Keep the Flow's model/MCP scope and execution principal while
+            # enforcing the employee's native policy and lifecycle on every call.
+            context_data["managed_agent_id"] = str(agent.id)
         api_key, token_key = crud_api_key.create_runtime_key(
             db,
             name=f"Flow Execution {execution_id_value or 'temp'}",

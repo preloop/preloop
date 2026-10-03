@@ -69,7 +69,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
         context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
         principal = context.get("runtime_principal")
         principal = principal if isinstance(principal, dict) else {}
-        if managed_agent is None:
+        if managed_agent is None or context.get("flow_execution_id"):
             # Flow keys are ephemeral and account-scoped, and must name the
             # exact execution session they were issued for. Ordinary API keys
             # still cannot use this native approval endpoint.

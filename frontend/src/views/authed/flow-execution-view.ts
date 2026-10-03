@@ -144,6 +144,13 @@ interface FlowExecution {
    * Distinct from parent_execution_id (delegation tree).
    */
   resume_of?: string | null;
+  continuation_navigation?: {
+    original_execution_id: string;
+    issue_url?: string | null;
+    pr_url?: string | null;
+    follow_ups: { id: string; status: string; start_time: string }[];
+    follow_ups_truncated?: boolean;
+  } | null;
   /**
    * Summed tokens and cost for the publishing execution plus every repair
    * that points at it. Absent when the row is not part of a multi-turn chain.
@@ -433,6 +440,19 @@ export class FlowExecutionView extends LitElement {
       }
       .resume-line a:hover {
         text-decoration: underline;
+      }
+      .continuation-navigation {
+        margin-bottom: var(--sl-spacing-medium);
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-small);
+      }
+      .continuation-navigation li {
+        margin-block: var(--sl-spacing-small);
+        color: var(--console-meta-color);
+      }
+      .continuation-navigation a {
+        color: var(--sl-color-primary-600);
       }
       /* One of the page's two ambient animations: the dot that says this run
          is still going. The chip beside it stays a soft tint. */
@@ -3546,7 +3566,7 @@ ${execution.resolved_input_prompt}</pre>
       ? router.urlForPath(`/console/flows/executions/${resumeOf}`)
       : '';
     const body = resumeOf
-      ? html`Resumption of
+      ? html`Continuation of original execution
           <a href=${href} data-testid="resume-of-link"
             >${resumeOf.slice(0, 8)}</a
           >${chain}`
@@ -3558,6 +3578,76 @@ ${execution.resolved_input_prompt}</pre>
     >
       ${body}
     </div>`;
+  }
+
+  private renderContinuationNavigation(execution: FlowExecution) {
+    const navigation = execution.continuation_navigation;
+    if (!navigation) return nothing;
+    const followUps = navigation.follow_ups || [];
+    const externalLink = (url: string | null | undefined, label: string) =>
+      url && /^https?:\/\//i.test(url)
+        ? html`<sl-button
+            size="small"
+            variant="text"
+            href=${url}
+            target="_blank"
+            rel="noopener noreferrer"
+            >${label}<sl-icon slot="suffix" name="box-arrow-up-right"></sl-icon
+          ></sl-button>`
+        : nothing;
+    if (!followUps.length && !navigation.issue_url && !navigation.pr_url)
+      return nothing;
+    return html`<section
+      class="continuation-navigation"
+      data-testid="continuation-navigation"
+      aria-label="Issue and pull request follow-up"
+    >
+      <div>
+        ${externalLink(navigation.issue_url, 'Issue')}
+        ${externalLink(navigation.pr_url, 'Pull request')}
+      </div>
+      ${
+        followUps.length
+          ? html`<sl-details
+              summary="Follow-up executions (${followUps.length})"
+            >
+              <ul>
+                ${followUps.map(
+                  (followUp, index) =>
+                    html`<li>
+                      ${
+                        followUp.id === execution.id
+                          ? html`<strong
+                              >Continuation ${index + 1} (this
+                              execution)</strong
+                            >`
+                          : html`<a
+                              href=${router.urlForPath(
+                                `/console/flows/executions/${followUp.id}`
+                              )}
+                              >Continuation ${index + 1}</a
+                            >`
+                      }
+                      · ${executionStatusLabel(followUp.status)} ·
+                      ${formatUTCDateTime(followUp.start_time)}
+                    </li>`
+                )}
+              </ul>
+              ${
+                navigation.follow_ups_truncated
+                  ? html`<p>
+                      Showing the first 100 continuations.
+                      <a
+                        href=${`/console/flows/executions?flow_id=${encodeURIComponent(execution.flow_id)}`}
+                        >View all executions for this flow</a
+                      >.
+                    </p>`
+                  : nothing
+              }
+            </sl-details>`
+          : nothing
+      }
+    </section>`;
   }
 
   /**
@@ -3693,6 +3783,11 @@ ${execution.resolved_input_prompt}</pre>
           </sl-button>
         </div>
         <div slot="title-prefix" class="status-pill">
+          ${
+            execution.resume_of
+              ? html`<sl-badge variant="primary" pill>Continuation</sl-badge>`
+              : nothing
+          }
           ${running ? html`<span class="status-dot"></span>` : ''}
           <sl-badge
             class="chip ${statusVariant === 'danger' ? 'solid' : ''}"
@@ -3717,6 +3812,7 @@ ${execution.resolved_input_prompt}</pre>
       <div class="column-layout wide">
         <div class="main-column">
           ${this.renderSummaryStrip(execution)} ${this.renderHostSessions()}
+          ${this.renderContinuationNavigation(execution)}
           <execution-records-card
             execution-id=${execution.id}
           ></execution-records-card>

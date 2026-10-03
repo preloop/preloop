@@ -25,6 +25,9 @@ class OperatorNoteCreate(BaseModel):
     open session waits for the agent's next one.
     """
 
+    source: Literal["api", "chat"] = "api"
+    correlation_id: Optional[UUID] = None
+
     text: str = Field(
         ...,
         min_length=1,

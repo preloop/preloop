@@ -353,7 +353,7 @@ export class PreloopExecutionTree extends LitElement {
     if (children.length === 0) {
       // The overwhelming majority of runs. One line, no table, no headings.
       return html`<div class="empty" data-testid="execution-tree-empty">
-        This run did not start any other runs.
+        No delegated executions.
       </div>`;
     }
 
