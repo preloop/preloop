@@ -164,9 +164,15 @@ export class SessionLiveActivity extends LitElement {
     super.connectedCallback();
     this.ensureController();
   }
-  /** Websocket and approval polling belong to a real session, not the status line. */
-  private ensureController(): void {
-    if (this.controllerStarted || !this.sessionId) return;
+  /**
+   * Websocket and approval polling belong to a real session, not the status
+   * line.
+   *
+   * @returns `true` when this call started the controller, so the caller must
+   *   not open again — `ensureController` already did.
+   */
+  private ensureController(): boolean {
+    if (this.controllerStarted || !this.sessionId) return false;
     this.controllerStarted = true;
     if (this.hasUpdated) void this.open();
     this.connected =
@@ -217,6 +223,7 @@ export class SessionLiveActivity extends LitElement {
       )
         this.notify();
     }, 1000);
+    return true;
   }
   disconnectedCallback(): void {
     ++this.generation;
@@ -245,10 +252,11 @@ export class SessionLiveActivity extends LitElement {
     this.syncTicker();
   }
   protected updated(changed: Map<string | number | symbol, unknown>): void {
-    if (changed.has('sessionId')) {
-      this.ensureController();
-      void this.open();
-    }
+    // Exactly one open per sessionId change: `ensureController` opens when it
+    // starts the controller here, so only a switch to an already-running
+    // controller needs a second call. Opening twice refetched the profile and
+    // reset approval state before the first open had settled.
+    if (changed.has('sessionId') && !this.ensureController()) void this.open();
   }
   private get effectiveNow(): number {
     if (this.now !== this.lastHostNow) {

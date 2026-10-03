@@ -960,4 +960,86 @@ describe('session-chat-view live tools and activity', () => {
         ?.textContent
     ).to.contain('truncated');
   });
+
+  it('renders one card when both gateway producers describe the same call', async () => {
+    // The gateway emits `tools` and `tool_activity` for the same invocation on
+    // the same event. Both build a card, so the transcript row has to yield to
+    // the captured one instead of rendering the call twice.
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          {
+            id: 'e2',
+            execution_id: 'exec-1',
+            timestamp: '2026-08-06T10:00:05Z',
+            type: 'model_gateway_call',
+            payload: {
+              outcome: 'success',
+              tools: [
+                {
+                  kind: 'call',
+                  call_id: 'call_1',
+                  name: 'terminal',
+                  text: '{"command": "pytest -q"}',
+                },
+                { kind: 'result', call_id: 'call_1', text: 'ok' },
+              ],
+              tool_activity: {
+                entries: [
+                  CALL,
+                  {
+                    ...CALL,
+                    direction: 'result',
+                    result: 'ok',
+                    arguments: null,
+                  },
+                ],
+              },
+            },
+          } as FlowGatewayEvent,
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+
+    const cards = el.shadowRoot!.querySelectorAll('session-tool-card');
+    expect(cards, 'one call must not render two cards').to.have.length(1);
+    const card = cards[0] as HTMLElement & { updateComplete: Promise<boolean> };
+    await card.updateComplete;
+    expect(card.shadowRoot!.textContent).to.contain('terminal');
+    expect(card.shadowRoot!.textContent).to.contain('completed');
+  });
+
+  it('still renders a gateway call the captured tools never carried', async () => {
+    // `payload.tools` is capped independently of `tool_activity`, so a call
+    // only the transcript knows about must keep its own row.
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          {
+            id: 'e2',
+            execution_id: 'exec-1',
+            timestamp: '2026-08-06T10:00:05Z',
+            type: 'model_gateway_call',
+            payload: {
+              outcome: 'success',
+              tools: [
+                {
+                  kind: 'call',
+                  call_id: 'call_0',
+                  name: 'terminal',
+                  text: '{"command": "pwd"}',
+                },
+              ],
+              tool_activity: { entries: [{ ...CALL, id: 'call_9' }] },
+            },
+          } as FlowGatewayEvent,
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelectorAll('session-tool-card')).to.have.length(
+      2
+    );
+  });
 });

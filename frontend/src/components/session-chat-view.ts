@@ -158,7 +158,7 @@ export class SessionChatView extends LitElement {
     for (const tool of tools) items.push({ type: 'tool', key: tool.id, tool });
     for (const request of this.approvalState.requests)
       items.push({ type: 'approval', key: `approval:${request.id}`, request });
-    const covered = this.nativeToolKeysCovered(tools);
+    const covered = this.transcriptToolKeysCovered(tools);
     const visible = items.filter((item) => {
       if (item.type !== 'tool' || !('call' in item)) return true;
       return !covered.has(item.call.key);
@@ -178,12 +178,24 @@ export class SessionChatView extends LitElement {
   }
 
   /**
-   * A native activity row that `sessionTools` already folded into a captured
-   * card (including a gateway call with the same tool_call_id) must not also
-   * render as a second live card.
+   * A transcript tool row that `sessionTools` already folded into a captured
+   * card must not also render as a second live card.
+   *
+   * Both producers read the same evidence, so they collide in two ways and
+   * both are deduped on the one identity they share — the provider call id.
+   * The gateway card (`payload.tools`, keyed `tool:<callId>`) already carries
+   * the call and its result, and the transcript row for the same call is
+   * keyed `gw:<callId>`; a native activity row that `sessionTools` merged
+   * into that card already dropped the transcript's `act:` row. Callers keep
+   * the captured card because it is also the row a native activity item
+   * folds into, so the merge is not undone by dropping the transcript row.
    */
-  private nativeToolKeysCovered(tools: SessionTool[]): Set<string> {
+  private transcriptToolKeysCovered(tools: SessionTool[]): Set<string> {
     const covered = new Set<string>();
+    for (const tool of tools) {
+      const callId = tool.callId?.trim();
+      if (callId) covered.add(`gw:${callId}`);
+    }
     this.activity.forEach((item, index) => {
       if ((item.activity_type || '').toLowerCase() !== 'tool_call') return;
       const metadata = item.metadata ?? {};

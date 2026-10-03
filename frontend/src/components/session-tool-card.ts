@@ -1,7 +1,6 @@
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
-import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import type { LiveToolCall, ToolCallState } from '../utils/live-session';
 import { TOOL_CALL_STATE_LABELS, formatDuration } from '../utils/live-session';
 import {

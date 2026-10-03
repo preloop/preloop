@@ -245,7 +245,7 @@ import type { ApprovalRequest } from '../types';
 import './session-chat-view';
 import type { SessionChatView } from './session-chat-view';
 import './session-live-activity';
-import type { SessionLiveActivity } from './session-live-activity';
+import { SessionLiveActivity } from './session-live-activity';
 
 export function syntheticApproval(
   id = 'approval-example',
@@ -387,6 +387,46 @@ describe('shared session approval controller', () => {
         .getCalls()
         .filter((c) => String(c.args[0]).includes('/approval-requests?'))
     ).to.have.length(2);
+  });
+  it('opens the controller once when the session id arrives after the first render', async () => {
+    // The status line connects before it knows its session, so the controller
+    // starts on a later update. Opening from both the controller and the
+    // update threw the first pass away and re-read the profile and approvals.
+    const opened: string[] = [];
+    sinon
+      .stub(
+        SessionLiveActivity.prototype as unknown as {
+          open: () => Promise<void>;
+        },
+        'open'
+      )
+      .callsFake(function (this: SessionLiveActivity) {
+        opened.push(this.sessionId);
+        return Promise.resolve();
+      });
+    const element = await fixture<SessionChatView>(
+      html`<session-chat-view></session-chat-view>`
+    );
+    const line = element.shadowRoot!.querySelector(
+      'session-live-activity'
+    ) as SessionLiveActivity;
+    const readsFor = (session: string): number =>
+      opened.filter((id) => id === session).length;
+    expect(readsFor('session-a'), 'no session yet, nothing to read').to.equal(
+      0
+    );
+
+    element.sessionId = 'session-a';
+    await element.updateComplete;
+    await line.updateComplete;
+    expect(readsFor('session-a'), 'one read of the session, not two').to.equal(
+      1
+    );
+
+    element.sessionId = 'session-b';
+    await element.updateComplete;
+    await line.updateComplete;
+    expect(readsFor('session-b'), 'a switch re-reads exactly once').to.equal(1);
   });
   it('loads pending requests beyond the first historical page within the selected session', async () => {
     rows = Array.from({ length: 105 }, (_, i) => ({
