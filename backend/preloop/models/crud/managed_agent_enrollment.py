@@ -5,10 +5,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models.managed_agent_enrollment import ManagedAgentEnrollment
 from .base import CRUDBase
+
+# Statuses of an enrollment that once reached a validated state. A restored
+# enrollment was validated before the operator rolled the config back.
+ONBOARDED_ENROLLMENT_STATUSES = ("validated", "restored")
 
 
 def _utc_now() -> datetime:
@@ -188,6 +193,41 @@ class CRUDManagedAgentEnrollment(CRUDBase[ManagedAgentEnrollment]):
                 self.model.id == enrollment_id,
             )
             .first()
+        )
+
+    def latest_prior_onboarding_at(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_id: str,
+        exclude_enrollment_id: str,
+    ) -> Optional[datetime]:
+        """Return when another enrollment of this agent was last onboarded.
+
+        An enrollment counts once it was validated, including one that was
+        later restored (the operator un-onboarded it). Failed or pending
+        attempts do not count.
+
+        Args:
+            db: Database session.
+            account_id: Account the agent belongs to.
+            agent_id: Managed agent id.
+            exclude_enrollment_id: The enrollment being validated now.
+
+        Returns:
+            The latest validation time, or ``None`` if there is none.
+        """
+        return (
+            db.query(func.max(self.model.last_validated_at))
+            .filter(
+                self.model.account_id == account_id,
+                self.model.managed_agent_id == agent_id,
+                self.model.id != exclude_enrollment_id,
+                self.model.status.in_(ONBOARDED_ENROLLMENT_STATUSES),
+                self.model.last_validated_at.isnot(None),
+            )
+            .scalar()
         )
 
     def upsert_runtime_bootstrap(

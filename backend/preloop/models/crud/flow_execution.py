@@ -4,7 +4,16 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
-from sqlalchemy import ColumnElement, and_, func, or_
+from sqlalchemy import (
+    ColumnElement,
+    String,
+    and_,
+    cast,
+    func,
+    literal_column,
+    or_,
+    true,
+)
 from sqlalchemy.orm import (
     Session,
     contains_eager,
@@ -20,6 +29,7 @@ from preloop.models import models
 from preloop.models.models.flow_execution import (
     AGENT_CONTROL_BINDING_KEY,
     DELEGATION_DETAILS_KEY,
+    RESUME_ROOT_SQL,
     STOP_COVERAGE_KEY,
     TRIGGER_SUBJECT_KEY,
     FlowExecution,
@@ -1348,6 +1358,49 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         return query
 
+    def get_resume_chain_totals(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        roots: List[uuid.UUID],
+        root_texts: List[str],
+    ) -> List[Any]:
+        """Tokens, cost and member count per resume chain root.
+
+        A chain is the publishing execution (``id`` in ``roots``) plus every
+        repair turn whose ``_resume.resume_root`` names it. Both halves are
+        index lookups: the primary key, and the partial expression index
+        ``ix_flow_execution_resume_root`` that holds repair turns only. The
+        expression is spelled as :data:`RESUME_ROOT_SQL` so the planner can
+        match it to that index; written any other way the lookup reads (and
+        detoasts) the trigger payload of every execution in the account.
+
+        Returns:
+            Rows of ``(chain_root, total_tokens, estimated_cost, members)``.
+        """
+        if not roots and not root_texts:
+            return []
+        resume_root = literal_column(RESUME_ROOT_SQL, type_=String)
+        chain_key = func.coalesce(resume_root, cast(FlowExecution.id, String))
+        return db.execute(
+            select(
+                chain_key.label("chain_root"),
+                func.coalesce(func.sum(FlowExecution.total_tokens), 0),
+                func.coalesce(func.sum(FlowExecution.estimated_cost), 0),
+                func.count(FlowExecution.id),
+            )
+            .join(Flow, Flow.id == FlowExecution.flow_id)
+            .where(
+                Flow.account_id == account_id,
+                or_(
+                    FlowExecution.id.in_(list(roots)),
+                    resume_root.in_(list(root_texts)),
+                ),
+            )
+            .group_by(chain_key)
+        ).all()
+
     def get_by_statuses(
         self, db: Session, statuses: List[str], account_id: Optional[str] = None
     ) -> List[FlowExecution]:
@@ -1489,12 +1542,16 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             # start_time, not the usage row's timestamp. A long run, a
             # delayed gateway write, or a backdated start_time would
             # otherwise print cost for a period the runs count does not.
-            window_cost = (
-                db.query(
-                    self.model.flow_id,
-                    func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                        "estimated_cost"
-                    ),
+            # Aggregated per execution first, through a LATERAL subquery on
+            # ``ix_api_usage_flow_execution_id``, and only then per flow. The
+            # plain join this replaces let the planner hash the window's
+            # executions against a sequential scan of every account's
+            # gateway rows (issue #1197). GROUP BY keeps the subquery from
+            # being flattened back into that join, and drops executions with
+            # no usage, exactly as the inner join did.
+            per_execution = (
+                select(
+                    func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
                     func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
                         "prompt_tokens"
                     ),
@@ -1506,16 +1563,39 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     ),
                     *cache_split_columns(),
                 )
-                .join(self.model, ApiUsage.flow_execution_id == self.model.id)
-                .filter(
-                    self.model.flow_id.in_(flow_ids),
-                    self.model.start_time >= start_date,
+                .where(
+                    ApiUsage.flow_execution_id == self.model.id,
                     ApiUsage.action_type == "model_gateway",
                     exclude_replay_usage_condition(),
                 )
-                .group_by(self.model.flow_id)
-                .all()
+                .group_by(ApiUsage.flow_execution_id)
+                .lateral("per_execution")
             )
+
+            def _total(column: str, default: Any = 0) -> Any:
+                return func.coalesce(
+                    func.sum(getattr(per_execution.c, column)), default
+                ).label(column)
+
+            window_cost = db.execute(
+                select(
+                    self.model.flow_id,
+                    _total("estimated_cost", 0.0),
+                    _total("prompt_tokens"),
+                    _total("completion_tokens"),
+                    _total("total_tokens"),
+                    _total("cache_read_tokens"),
+                    _total("cache_write_tokens"),
+                    _total("covered_prompt_tokens"),
+                )
+                .select_from(self.model)
+                .join(per_execution, true())
+                .where(
+                    self.model.flow_id.in_(flow_ids),
+                    self.model.start_time >= start_date,
+                )
+                .group_by(self.model.flow_id)
+            ).all()
             window_cost_map = {
                 str(row.flow_id): float(row.estimated_cost or 0.0)
                 for row in window_cost

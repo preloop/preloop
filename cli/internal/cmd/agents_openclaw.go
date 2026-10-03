@@ -1124,7 +1124,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	liveValidationRolledBack := false
 	var liveValidationDuration time.Duration
 	if requestedLiveValidation {
-		fmt.Fprint(output, "Sending test prompt through gateway...") //nolint:errcheck
+		fmt.Fprint(output, "Sending direct gateway route/accounting probe...") //nolint:errcheck
 		started := time.Now()
 		liveOutcome, err := runManagedAgentLiveValidation(client, agent, validationResult)
 		liveValidationDuration = time.Since(started)
@@ -1290,7 +1290,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		fmt.Printf("  Agent Control channel: %s\n", boolStatus(validationResult["control_channel_configured"]))
 	}
 	if status, ok := validationResult["live_validation_status"].(string); ok && strings.TrimSpace(status) != "" {
-		fmt.Printf("  Live validation: %s\n", status)
+		fmt.Printf("  Gateway validation: %s\n", gatewayProbeStatusLabel(status))
 	}
 	fmt.Printf("  Config updated: %s\n", agent.ConfigPath)
 	fmt.Printf("  Backup saved: %s\n", backupState.BackupPath)

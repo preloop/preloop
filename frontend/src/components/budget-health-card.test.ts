@@ -268,4 +268,51 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(text).to.include('$3.25');
     expect(text).to.include('$91.83');
   });
+  it('names the team on a team budget row', async () => {
+    const teamPolicy: BudgetPolicy = {
+      model_alias: null,
+      period: 'monthly',
+      hard_limit_usd: 10,
+      soft_limit_usd: null,
+      notify_on_soft: false,
+      notify_on_hard: false,
+      id: 'policy-team',
+      subject_type: 'team',
+      subject_id: 'team-1',
+      current_spend_usd: 4,
+    } as BudgetPolicy;
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${summary}
+        .policies=${[teamPolicy]}
+        .teamNames=${{ 'team-1': 'Platform' }}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('Team Platform');
+  });
+
+  it('labels a team row without a known name as Team', async () => {
+    const teamPolicy: BudgetPolicy = {
+      model_alias: null,
+      period: 'monthly',
+      hard_limit_usd: 10,
+      soft_limit_usd: null,
+      notify_on_soft: false,
+      notify_on_hard: false,
+      id: 'policy-team',
+      subject_type: 'team',
+      subject_id: 'team-2',
+    } as BudgetPolicy;
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${summary}
+        .policies=${[teamPolicy]}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+    const text = element.shadowRoot?.textContent || '';
+    expect(text).to.contain('Team');
+    expect(text).to.not.contain('Team Platform');
+  });
 });

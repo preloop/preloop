@@ -743,6 +743,7 @@ describe('RuntimeSessionsView', () => {
         url.startsWith('/api/v1/runtime-sessions/runtime-session-1') &&
         !url.includes('/gateway-events') &&
         !url.includes('/activity') &&
+        !url.includes('/artifacts') &&
         !url.includes('/requests')
       );
     });
@@ -1275,6 +1276,25 @@ describe('RuntimeSessionsView', () => {
       );
       expect(loadingState).to.not.equal(null);
       expect(loadingState!.textContent).to.contain('Searching session content');
+    });
+
+    it('drops a stale ?artifact= when a snippet opens another session', async () => {
+      const element = await renderedSearch();
+      // An earlier landing on an artifact of some other session.
+      (element as any).focusArtifactId = 'artifact-of-session-1';
+      (element as any).syncUrl();
+      expect(
+        new URLSearchParams(window.location.search).get('artifact')
+      ).to.equal('artifact-of-session-1');
+
+      snippetButtons(element)[1].click();
+      await element.updateComplete;
+
+      expect((element as any).selectedSessionId).to.equal('runtime-session-2');
+      expect((element as any).focusArtifactId).to.equal(null);
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get('artifact')).to.equal(null);
+      expect(params.get('turn')).to.equal('tool-7');
     });
 
     it('opens the session at the matching turn, and the location reproduces it', async () => {
