@@ -967,8 +967,9 @@ def _issue_to_list_item(issue: Issue, current_user: User, db: Session) -> IssueR
     """
     project = getattr(issue, "project", None)
     if project is None:
-        # Project scopes through organization.tracker; account_id is a no-op.
-        project = crud_project.get(db, id=issue.project_id)
+        project = crud_project.get(
+            db, id=issue.project_id, account_id=current_user.account_id
+        )
     organization = None
     if project is not None:
         organization = getattr(project, "organization", None)

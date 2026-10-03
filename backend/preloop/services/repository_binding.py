@@ -170,6 +170,7 @@ def _load_bindings(
     db: Session,
     config: Dict[str, Any],
     trigger_project_id: Optional[str],
+    account_id: Optional[str],
 ) -> Tuple[List[RepositoryBinding], str, str]:
     """Return (bindings, source, where): flow level first, then project."""
     flow_bindings = parse_repository_bindings(
@@ -177,9 +178,11 @@ def _load_bindings(
     )
     if flow_bindings:
         return flow_bindings, "flow", "the flow's git_clone_config"
-    if not trigger_project_id:
+    if not trigger_project_id or not account_id:
         return [], "project", "the triggering project"
-    project = crud_project.get(db, id=str(trigger_project_id))
+    project = crud_project.get(
+        db, id=str(trigger_project_id), account_id=str(account_id)
+    )
     settings = getattr(project, "settings", None) if project is not None else None
     if not isinstance(settings, dict):
         return [], "project", "the triggering project"
@@ -232,7 +235,9 @@ def resolve_repository_binding(
     if not trigger_needs_binding(tracker_type):
         return None
 
-    bindings, source, where = _load_bindings(db, git_clone_config, trigger_project_id)
+    bindings, source, where = _load_bindings(
+        db, git_clone_config, trigger_project_id, account_id
+    )
     if not bindings:
         return None
     binding = select_repository_binding(bindings, where=where)

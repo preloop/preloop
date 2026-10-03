@@ -937,8 +937,8 @@ def get_resolution_suggestion(
     settings: Settings = Depends(get_settings),
 ):
     """Generate a suggestion for resolving a duplicate issue pair."""
-    issue1 = crud_issue.get(db, id=issue1_id)
-    issue2 = crud_issue.get(db, id=issue2_id)
+    issue1 = crud_issue.get(db, id=issue1_id, account_id=current_user.account_id)
+    issue2 = crud_issue.get(db, id=issue2_id, account_id=current_user.account_id)
 
     if not issue1 or not issue2:
         raise HTTPException(status_code=404, detail="One or both issues not found")

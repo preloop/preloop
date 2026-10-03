@@ -5,7 +5,7 @@ from datetime import datetime, timezone  # Import timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from ..models.issue import Issue
 from ..models.project import Project
@@ -16,6 +16,12 @@ from .issue_compliance_result import issue_compliance_result
 
 class CRUDIssue(CRUDBase[Issue]):
     """CRUD operations for Issue model."""
+
+    def _scope_to_account(self, query: Query, account_id: Any) -> Query:
+        """Scope through the issue's tracker, which owns the account."""
+        return query.join(Tracker, Issue.tracker_id == Tracker.id).filter(
+            Tracker.account_id == account_id
+        )
 
     def create(
         self, db: Session, *, obj_in: Dict[str, Any], commit: bool = True

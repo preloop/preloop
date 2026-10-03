@@ -1127,7 +1127,16 @@ class FlowExecutionOrchestrator:
             from preloop.models.crud import crud_project
             from preloop.api.common import get_tracker_client
 
-            project = crud_project.get(self.db, id=trigger_project_id)
+            account_id = self._flow_account_id()
+            if account_id is None:
+                await self._emit_execution_warning(
+                    "Commit status skipped: the flow has no account, so the "
+                    f"triggering project {trigger_project_id} cannot be resolved.",
+                )
+                return None
+            project = crud_project.get(
+                self.db, id=trigger_project_id, account_id=account_id
+            )
             if not project:
                 await self._emit_execution_warning(
                     "Commit status skipped: the triggering project "
@@ -1631,6 +1640,7 @@ class FlowExecutionOrchestrator:
             trigger_event_data=self.trigger_event_data,
             flow_id=str(self.flow_id),
             execution_id=str(self.execution_log.id) if self.execution_log else "",
+            account_id=self._flow_account_id(),
             workspace_mode=workspace_mode(
                 agent_config=getattr(self.flow, "agent_config", None),
                 git_clone_config=getattr(self.flow, "git_clone_config", None),
@@ -2707,6 +2717,16 @@ class FlowExecutionOrchestrator:
             )
             return None
 
+    def _flow_account_id(self) -> Optional[str]:
+        """Return the flow's account as a string, or None when it has none.
+
+        ``Flow.account_id`` is nullable and preset stand-ins may omit it.
+        Project lookups scope on this value, so a missing account must not
+        become the literal string ``"None"``.
+        """
+        account_id = getattr(getattr(self, "flow", None), "account_id", None)
+        return str(account_id) if account_id else None
+
     def _resolve_project_tracker_id(self, project_id: Optional[str]) -> Optional[str]:
         """Return the tracker owning ``project_id``, or None."""
 
@@ -2715,7 +2735,12 @@ class FlowExecutionOrchestrator:
         try:
             from preloop.models.crud import crud_project
 
-            project = crud_project.get(self.db, id=str(project_id))
+            account_id = self._flow_account_id()
+            if account_id is None:
+                return None
+            project = crud_project.get(
+                self.db, id=str(project_id), account_id=account_id
+            )
             organization = project.organization if project else None
             tracker_id = getattr(organization, "tracker_id", None)
             return str(tracker_id) if tracker_id else None
@@ -4704,7 +4729,13 @@ class FlowExecutionOrchestrator:
         from preloop.models.crud import crud_project
 
         project_id = self._follow_up_filing_project_id(plan)
-        project = crud_project.get(self.db, id=project_id)
+        account_id = self._flow_account_id()
+        if account_id is None:
+            raise FollowUpFilingError(
+                "project_missing",
+                f"project {project_id} cannot be resolved: the flow has no account",
+            )
+        project = crud_project.get(self.db, id=project_id, account_id=account_id)
         if not project or not getattr(project, "organization_id", None):
             raise FollowUpFilingError(
                 "project_missing",
@@ -5044,6 +5075,9 @@ class FlowExecutionOrchestrator:
         if not project_ids:
             return []
         clients: List[Any] = []
+        account_id = self._flow_account_id()
+        if account_id is None:
+            return []
         users = crud_user.get_by_account(
             self.db, account_id=self.flow.account_id, limit=1
         )
@@ -5051,7 +5085,9 @@ class FlowExecutionOrchestrator:
             return []
         for project_id in project_ids:
             try:
-                project = crud_project.get(self.db, id=project_id)
+                project = crud_project.get(
+                    self.db, id=project_id, account_id=account_id
+                )
                 if not project or not getattr(project, "organization_id", None):
                     continue
                 client = await get_tracker_client(
