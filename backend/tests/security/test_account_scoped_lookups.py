@@ -357,3 +357,49 @@ def test_repository_binding_ignores_other_account_project(db_session, own, other
     )
     assert bindings == []
     assert source == "project"
+
+
+# --- Orchestrator: a flow without an account resolves no project -------------
+
+
+def _orchestrator(db, account_id):
+    from types import SimpleNamespace
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = db
+    orchestrator.flow = SimpleNamespace(account_id=account_id)
+    return orchestrator
+
+
+def test_orchestrator_flow_account_id_never_stringifies_none(db_session, own):
+    assert _orchestrator(db_session, None)._flow_account_id() is None
+    acct = own["account_id"]
+    assert _orchestrator(db_session, acct)._flow_account_id() == str(acct)
+
+
+def test_orchestrator_project_tracker_is_account_scoped(db_session, own, other):
+    project_id = str(other["project"].id)
+    assert (
+        _orchestrator(db_session, None)._resolve_project_tracker_id(project_id) is None
+    )
+    assert (
+        _orchestrator(db_session, own["account_id"])._resolve_project_tracker_id(
+            project_id
+        )
+        is None
+    )
+    assert _orchestrator(db_session, other["account_id"])._resolve_project_tracker_id(
+        project_id
+    ) == str(other["tracker"].id)
+
+
+@pytest.mark.asyncio
+async def test_follow_up_filing_without_account_is_a_domain_error(db_session, other):
+    from preloop.services.follow_up_filing import FollowUpFilingError
+
+    orchestrator = _orchestrator(db_session, None)
+    orchestrator._follow_up_filing_project_id = lambda plan: str(other["project"].id)
+    with pytest.raises(FollowUpFilingError, match="no account"):
+        await orchestrator._follow_up_filing_target(object())
