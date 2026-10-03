@@ -750,13 +750,13 @@ SESSION_ATTACH_CLOSE_NOT_FOUND = 4404
 
 
 @require_permission("view_runtime_sessions")
-def _session_read_allowed(*, current_user: User, db: Session) -> bool:
+def _session_read_allowed(*, current_user: models.User, db: Session) -> bool:
     """Apply the same RBAC check the session REST reads use."""
     return True
 
 
 @require_permission("view_approvals")
-def _approval_read_allowed(*, current_user: User, db: Session) -> bool:
+def _approval_read_allowed(*, current_user: models.User, db: Session) -> bool:
     """Apply the same RBAC check the approval REST reads use."""
     return True
 
