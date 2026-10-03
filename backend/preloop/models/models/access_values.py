@@ -51,12 +51,20 @@ RULE_ACTIONS = (
 RULE_SCOPES = ("self", "subaccounts", "self_and_subaccounts")
 
 # Budget policies need no table: ``budget_policies.subject_type`` is a free
-# string. The hierarchy reserves these two values, stored under the parent
-# account's ``account_id``. Nothing writes them yet:
-# ``crud.budget_configuration.validate_budget_subject`` still rejects both, and
-# accepting them there belongs to the hierarchy budgets change.
+# string. Plugins reserve these values. The hierarchy stores the first two
+# under the parent account's ``account_id``; a ``team`` policy is stored under
+# the team's own account with ``subject_id`` the team. Core neither writes nor
+# enforces them: ``crud.budget_configuration.validate_budget_subject`` refuses
+# all three, and the plugin that owns a subject validates it, serves its
+# endpoints and enforces it through account hook H5.
 BUDGET_SUBJECT_SUBACCOUNT = "subaccount"
 BUDGET_SUBJECT_SUBACCOUNTS_TOTAL = "subaccounts_total"
+BUDGET_SUBJECT_TEAM = "team"
+RESERVED_BUDGET_SUBJECTS = (
+    BUDGET_SUBJECT_SUBACCOUNT,
+    BUDGET_SUBJECT_SUBACCOUNTS_TOTAL,
+    BUDGET_SUBJECT_TEAM,
+)
 
 
 def in_list_check(column: str, values: tuple[str, ...]) -> str:
