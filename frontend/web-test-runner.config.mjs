@@ -2,6 +2,7 @@ import { playwrightLauncher } from '@web/test-runner-playwright';
 import { esbuildPlugin } from '@web/dev-server-esbuild';
 import fs from 'fs/promises';
 import path from 'path';
+import { testConcurrency } from './scripts/test-concurrency.mjs';
 
 const headed = process.env.HEADED === 'true';
 
@@ -22,6 +23,7 @@ const cssInlinePlugin = {
 };
 
 export default {
+  concurrency: testConcurrency(),
   plugins: [
     cssInlinePlugin,
     esbuildPlugin({
