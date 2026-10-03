@@ -394,9 +394,7 @@ def test_digest_window_is_half_open_at_both_ends(
     """A hit before the start, at the end or after it is not in the window."""
     _hit_at(db_session, test_user, WINDOW_END - timedelta(days=7, seconds=1))
     _hit_at(db_session, test_user, WINDOW_END - timedelta(days=7), excerpt="at start")
-    _hit_at(
-        db_session, test_user, WINDOW_END - timedelta(minutes=1), excerpt="last in"
-    )
+    _hit_at(db_session, test_user, WINDOW_END - timedelta(minutes=1), excerpt="last in")
     _hit_at(db_session, test_user, WINDOW_END, excerpt="at end")
     _hit_at(db_session, test_user, WINDOW_END + timedelta(days=1), excerpt="future")
 
@@ -642,8 +640,46 @@ def test_a_partial_day_window_is_described_as_it_is(
 
     assert section.window_days == 1
     assert section.window_label == "1 day, 3 hours"
-    assert "No notify rule matched in the last 1 day, 3 hours." in section.render_text()
-    assert "last 1 day, 3 hours" in section.render_html()
+    text = section.render_text()
+    assert "No notify rule matched in the reporting window." in text
+    assert "in the last" not in text
+    assert "1 day, 3 hours" in text
+    rendered = section.render_html()
+    assert "in the last" not in rendered
+    assert "1 day, 3 hours" in rendered
+
+
+def test_a_window_that_is_not_the_last_n_days_names_its_period(
+    db_session: Session, test_user: User
+) -> None:
+    """A window that ended in the past is the range it covers, not "the last"."""
+    start = datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 1, 8, 9, 0, tzinfo=timezone.utc)
+    period = "2026-01-01 09:00:00 UTC to 2026-01-08 09:00:00 UTC (7 days)"
+
+    section = build_policy_notice_digest_section(
+        db_session, test_user.account_id, start=start, end=end
+    )
+
+    assert section.window_summary == period
+    text = section.render_text()
+    assert "No notify rule matched in the reporting window." in text
+    assert f"Window: {period}." in text
+    assert "in the last" not in text
+    rendered = section.render_html()
+    assert "No notify rule matched in the reporting window." in rendered
+    assert f"Window: {period}." in rendered
+    assert "in the last" not in rendered
+
+    _hit_at(db_session, test_user, start + timedelta(hours=1), excerpt="inside")
+    filled = build_policy_notice_digest_section(
+        db_session, test_user.account_id, start=start, end=end
+    )
+    filled_text = filled.render_text()
+    assert "notify-codename: 1 hit" in filled_text
+    assert f"Window: {period}." in filled_text
+    assert "in the last" not in filled_text
+    assert f"Window: {period}." in filled.render_html()
 
 
 def test_the_default_window_is_still_seven_days(
@@ -655,7 +691,10 @@ def test_the_default_window_is_still_seven_days(
 
     assert section.window_days == 7
     assert section.window_label == "7 days"
-    assert "No notify rule matched in the last 7 days." in section.render_text()
+    text = section.render_text()
+    assert "No notify rule matched in the reporting window." in text
+    assert "7 days" in text
+    assert "in the last" not in text
 
 
 # --- Delivery ---------------------------------------------------------------

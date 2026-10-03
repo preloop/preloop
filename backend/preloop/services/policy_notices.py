@@ -39,6 +39,7 @@ from preloop.models.crud import crud_policy_notice_hit
 from preloop.models.crud.policy_notice_hit import PolicyNoticeRuleSummary
 from preloop.models.models.policy_notice_hit import POLICY_NOTICE_EXCERPT_MAX_CHARS
 from preloop.utils.reporting_window import (
+    as_utc,
     describe_window_duration,
     resolve_reporting_window,
 )
@@ -371,12 +372,23 @@ def summarize_policy_notices(
     )
 
 
+def _format_digest_bound(value: datetime) -> str:
+    """One window bound as ``YYYY-MM-DD HH:MM:SS UTC``.
+
+    A naive value is read as UTC, the same way the rest of this repository
+    reads one.
+    """
+    return as_utc(value).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
 @dataclass(frozen=True)
 class PolicyNoticeDigestSection:
     """The "Policy notices" section of the weekly digest.
 
     ``window_start`` is inclusive and ``window_end`` exclusive, so a caller
     renders the window it asked for rather than one it rounded to whole days.
+    Rendered text and HTML name that range and its length. They do not say
+    "in the last", which is wrong for a window that has already ended.
     """
 
     title: str
@@ -400,15 +412,22 @@ class PolicyNoticeDigestSection:
         return describe_window_duration(self.window)
 
     @property
+    def window_summary(self) -> str:
+        """The range and its length, for a window that is not "the last" N days."""
+        start = _format_digest_bound(self.window_start)
+        end = _format_digest_bound(self.window_end)
+        return f"{start} to {end} ({self.window_label})"
+
+    @property
     def is_empty(self) -> bool:
         """True when no notify rule matched in the window."""
         return not self.rows
 
     def render_text(self) -> str:
-        """Plain-text section: rule, count, last user, last excerpt."""
-        lines = [self.title, ""]
+        """Plain-text section: window, rule, count, last user, last excerpt."""
+        lines = [self.title, "", f"Window: {self.window_summary}."]
         if self.is_empty:
-            lines.append(f"No notify rule matched in the last {self.window_label}.")
+            lines.append("No notify rule matched in the reporting window.")
             return "\n".join(lines)
         for row in self.rows:
             noun = "hit" if row.count == 1 else "hits"
@@ -420,10 +439,11 @@ class PolicyNoticeDigestSection:
     def render_html(self) -> str:
         """HTML table for the digest email. Every value is escaped."""
         heading = f"<h3>{html.escape(self.title)}</h3>"
+        window = f"<p>Window: {html.escape(self.window_summary)}.</p>"
         if self.is_empty:
             return (
-                f"{heading}<p>No notify rule matched in the last "
-                f"{html.escape(self.window_label)}.</p>"
+                f"{heading}{window}"
+                "<p>No notify rule matched in the reporting window.</p>"
             )
         body = "".join(
             "<tr>"
@@ -435,7 +455,7 @@ class PolicyNoticeDigestSection:
             for row in self.rows
         )
         return (
-            f"{heading}<table><thead><tr><th>Rule</th><th>Count</th>"
+            f"{heading}{window}<table><thead><tr><th>Rule</th><th>Count</th>"
             "<th>Last user</th><th>Last excerpt</th></tr></thead>"
             f"<tbody>{body}</tbody></table>"
         )
