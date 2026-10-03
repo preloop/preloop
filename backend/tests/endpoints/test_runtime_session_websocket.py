@@ -1,7 +1,8 @@
 """The session-scoped websocket behind `preloop sessions attach` (#1149)."""
 
 from datetime import UTC, datetime
-from typing import Any, Callable
+from inspect import unwrap
+from typing import Any, Callable, get_type_hints
 
 import pytest
 from fastapi import HTTPException
@@ -13,6 +14,22 @@ from preloop.api.endpoints import websockets as ws_endpoint
 from preloop.models import models
 from preloop.models.crud import crud_account
 from preloop.services.websocket_manager import manager
+
+
+@pytest.mark.parametrize(
+    ("function_name", "parameter"),
+    [
+        ("_session_read_allowed", "current_user"),
+        ("_approval_read_allowed", "current_user"),
+        ("_authorize_session_attach", "user"),
+    ],
+)
+def test_session_authorization_user_annotations_resolve(
+    function_name: str, parameter: str
+) -> None:
+    """Resolve deferred annotations too, keeping imports safe across Python versions."""
+    function = unwrap(getattr(ws_endpoint, function_name))
+    assert get_type_hints(function)[parameter] is models.User
 
 
 @pytest.fixture
