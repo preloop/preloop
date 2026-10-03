@@ -282,7 +282,8 @@ details, and drift messages are no longer emitted because they can contain
 credentials or personal information. This is a security correction for JSON
 consumers; use the count instead of inspecting raw server definitions. `--json`
 still skips onboarding prompts, but can perform authenticated enrollment
-lookups and ordinary version/telemetry work.
+lookups and local telemetry counting. Root update checks are skipped so they
+cannot add an update prompt or notification to the JSON stream.
 
 Use `preloop agents discover --inventory` for an explicitly offline collection.
 The `preloop.inventory.v1` envelope contains a UTC `observed_at`, collector and

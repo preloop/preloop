@@ -68,11 +68,12 @@ suppressed too, as they depend on the check-in response.`,
 
 		// Check for updates on each invocation (cached daily). Skip the
 		// daily prompt on `preloop update` itself so the command owns the
-		// confirmation and we do not ask twice.
-		if cmd.Name() != "update" {
+		// confirmation and we do not ask twice. JSON discovery must also
+		// remain prompt-free and emit only its allowlisted JSON array.
+		if cmd.Name() != "update" && !isSafeDiscoveryJSONCommand(cmd) {
 			if err := version.CheckForUpdate(); err != nil {
 				// Silently ignore update check errors
-				if verbose && !isSafeDiscoveryJSONCommand(cmd) {
+				if verbose {
 					fmt.Fprintf(os.Stderr, "Warning: failed to check for updates: %v\n", err)
 				}
 			}

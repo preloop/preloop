@@ -392,7 +392,11 @@ func TestSafeDiscoveryJSONCommandDoesNotPromptOrLeakMalformedConfig(t *testing.T
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("PRELOOP_TOKEN", "")
-	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "false") // All transport is a spy.
+	network := &inventoryNetworkSpy{}
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = network
+	defer func() { http.DefaultTransport = oldTransport }()
 	oldSpecs, oldRuntime, oldToken := agentSpecs, runtimeExecutableProbe, FlagToken
 	oldBundle := appBundleProbe
 	appBundleProbe = func(string) (string, bool) { return "", false }
@@ -415,9 +419,12 @@ func TestSafeDiscoveryJSONCommandDoesNotPromptOrLeakMalformedConfig(t *testing.T
 	var output, diagnostics bytes.Buffer
 	rootCmd.SetOut(&output)
 	rootCmd.SetErr(&diagnostics)
-	rootCmd.SetArgs([]string{"agents", "discover", "--json", "--yes"})
+	rootCmd.SetArgs([]string{"agents", "discover", "--json", "--yes", "--verbose", "--profile", secret})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatal(err)
+	}
+	if network.calls != 0 {
+		t.Fatalf("JSON root ran a network/update check: %d", network.calls)
 	}
 	combined := output.String() + diagnostics.String()
 	for _, forbidden := range []string{home, secret, "Would onboard", "Warning:", "mcp_servers", "config_path"} {
