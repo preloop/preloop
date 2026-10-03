@@ -17,7 +17,7 @@ plus `http.response.status_code`, which follows the stable OpenTelemetry
 HTTP conventions.
 
 **Experimental.** `gen_ai.*` names follow the upstream
-[OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/),
+[OpenTelemetry GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions-genai),
 which are still in Development upstream. The `db.client.connections.*`
 pool gauges follow the [OpenTelemetry database conventions](https://opentelemetry.io/docs/specs/semconv/db/).
 Both track upstream changes.
