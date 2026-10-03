@@ -990,6 +990,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 with_expression(
                     FlowExecution.trigger_subject_url, subject["url"].astext
                 ),
+                with_expression(FlowExecution.trigger_subject_ci, subject["ci"].astext),
+                with_expression(
+                    FlowExecution.trigger_subject_ci_url, subject["ci_url"].astext
+                ),
                 # Same as the list projection: ExecutionTreeNode inherits
                 # resume_of, and an unpopulated query expression cannot be read.
                 with_expression(
@@ -1253,6 +1257,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 with_expression(
                     FlowExecution.trigger_subject_url,
                     subject["url"].astext,
+                ),
+                with_expression(
+                    FlowExecution.trigger_subject_ci,
+                    subject["ci"].astext,
+                ),
+                with_expression(
+                    FlowExecution.trigger_subject_ci_url,
+                    subject["ci_url"].astext,
                 ),
                 with_expression(
                     FlowExecution.resume_of,
