@@ -124,8 +124,14 @@ export class TeamBudgetsPanel extends AuthedElement {
   }
 
   private async addBudget(): Promise<void> {
+    // Number('') is 0: an untouched field must not become a $0 hard limit.
     const limit = Number(this.formLimit);
-    if (!this.formTeam || !Number.isFinite(limit) || limit < 0) {
+    if (
+      !this.formTeam ||
+      this.formLimit.trim() === '' ||
+      !Number.isFinite(limit) ||
+      limit < 0
+    ) {
       this.actionError = 'Choose a team and a limit of 0 or more.';
       return;
     }

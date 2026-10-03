@@ -199,3 +199,27 @@ def test_user_token_without_key_has_no_budget_user(
 ) -> None:
     auth = ModelGatewayAuthContext(token="t", user=test_user)
     assert budget_user_ids(db_session, auth) == set()
+
+
+def test_a_known_key_owner_spares_the_api_key_lookup(
+    db_session: Session, test_user: models.User
+) -> None:
+    """The gateway passes the owner it authenticated, so recording the user
+    scope adds no statement to the request."""
+    from sqlalchemy import event
+
+    key = _key(db_session, test_user)
+    statements: list[str] = []
+
+    def capture(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        if "FROM api_key" in statement or "FROM api_keys" in statement:
+            statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        _usage(db_session, key, api_key_user_id=key.user_id)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert statements == []
+    assert _user_spend(db_session, test_user.account_id, test_user.id) == 2.0

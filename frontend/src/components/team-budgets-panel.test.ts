@@ -148,4 +148,19 @@ describe('TeamBudgetsPanel', () => {
     await (el as unknown as { addBudget: () => Promise<void> }).addBudget();
     expect(writes).to.deep.equal([]);
   });
+
+  it('refuses an empty limit instead of saving a $0 hard limit', async () => {
+    const el = (await fixture(
+      html`<team-budgets-panel></team-budgets-panel>`
+    )) as TeamBudgetsPanel;
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('table[aria-label="Team budgets"]')
+    );
+    for (const value of ['', '   ']) {
+      (el as unknown as { formLimit: string }).formLimit = value;
+      await (el as unknown as { addBudget: () => Promise<void> }).addBudget();
+    }
+    expect(writes).to.deep.equal([]);
+    expect(el.shadowRoot!.textContent).to.contain('limit of 0 or more');
+  });
 });
