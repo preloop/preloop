@@ -12,7 +12,8 @@ trigger_event_source: null
 # comment_created is correlated in the trigger service to a pull request this
 # flow opened, so unrelated comments never start a cold run. Pair this with
 # trigger_config to decide which issues qualify, for example
-# {"labels": ["agent-ready"]}.
+# {"labels": ["agent-ready"]}. The Issue Triage Assistant can apply that label
+# itself when its agent_config.dispatch policy is met (see issue-triage.md).
 trigger_event_types:
   - issue_labeled
   - comment_created

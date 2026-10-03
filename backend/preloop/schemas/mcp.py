@@ -36,6 +36,8 @@ class GetIssueResponse(IssueResponse):
     # include="label_catalog"
     label_catalog: Optional[List[Dict[str, str]]] = None
     complexity_scheme: Optional[ComplexityScheme] = None
+    risk_scheme: Optional[ComplexityScheme] = None
+    readiness_scheme: Optional[ComplexityScheme] = None
     # include="revision"
     expected_revision: Optional[str] = None
     provider_issue: Optional[TriageIssue] = None

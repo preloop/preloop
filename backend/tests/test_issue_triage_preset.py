@@ -439,3 +439,57 @@ def test_presets_do_not_classify_work_for_implementation_models(filename: str) -
     tools = {entry["name"] for entry in data["allowed_mcp_tools"]}
     assert "update_flow" not in tools
     assert "create_flow" not in tools
+
+
+class TestReadyForDevelopmentSpec:
+    PLAN_HEADINGS = (
+        "### Problem",
+        "### How to measure",
+        "### What to change",
+        "### How to verify",
+        "### Acceptance criteria",
+        "### Out of scope",
+        "### Tags applied",
+    )
+
+    def test_prompt_asks_for_an_executable_plan(self, preset: dict) -> None:
+        template = preset["prompt_template"]
+        positions = [template.index(heading) for heading in self.PLAN_HEADINGS]
+        assert positions == sorted(positions), "plan headings keep their order"
+        prompt = _norm(template)
+        assert (
+            "For performance issues How to measure and How to verify are mandatory"
+            in (prompt)
+        )
+        assert "one Validation section" in prompt
+        assert "Never invent a command, path or number" in prompt
+
+    def test_prompt_applies_risk_and_readiness_tags(self, prompt: str) -> None:
+        assert "complexity_label, risk_label, readiness_label" in prompt
+        assert "risk_scheme.labels" in prompt
+        assert "readiness_scheme.labels" in prompt
+        assert "readiness:needs-verification" in prompt
+        assert '"applied_risk_label"' in prompt
+        assert '"applied_readiness_label"' in prompt
+
+    def test_prompt_describes_dispatch_honestly(self, prompt: str) -> None:
+        assert "you never apply a dispatch, assignment or any other label" in prompt
+        assert "the controller applies its configured dispatch label" in prompt
+        assert "do not mark ready to trigger work" in prompt
+
+    def test_dispatch_block_is_opt_in_and_valid(self, preset: dict) -> None:
+        from preloop.schemas.issue_triage import (
+            DEFAULT_DISPATCH_POLICY,
+            TriageDispatch,
+        )
+
+        block = TriageDispatch.model_validate(preset["agent_config"]["dispatch"])
+        assert block.enabled is False
+        assert block.label == "agent-ready"
+        assert block.policy == DEFAULT_DISPATCH_POLICY
+
+    def test_implementation_preset_matches_the_default_dispatch_label(self) -> None:
+        data = yaml.safe_load(
+            (PRESETS_DIR / "011-automated-issue-implementation.yaml").read_text()
+        )
+        assert "issue_labeled" in data["trigger_event_types"]
