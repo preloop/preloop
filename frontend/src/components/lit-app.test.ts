@@ -1,7 +1,9 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { Router } from '../router';
+import { Router, LOCATION_CHANGED } from '../router';
+import { CapabilityRouteGate } from '../lazy-routes';
 
+import type { LitApp } from './lit-app';
 import './lit-app';
 
 describe('LitApp routing', () => {
@@ -65,6 +67,50 @@ describe('LitApp routing', () => {
     expect(customElements.get('profile-view')).to.equal(undefined);
     expect(customElements.get('agent-detail-view')).to.equal(undefined);
     expect(customElements.get('flow-execution-view')).to.equal(undefined);
+  });
+
+  it('removes capability listeners on disconnect and restores one on reconnect', async () => {
+    const sync = sinon.stub(CapabilityRouteGate.prototype, 'sync').resolves([]);
+    try {
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const parent = el.parentElement!;
+      window.history.replaceState({}, '', '/console');
+      sync.resetHistory();
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(sync.callCount).to.equal(1);
+
+      el.remove();
+      sync.resetHistory();
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(sync.callCount).to.equal(0);
+
+      parent.appendChild(el);
+      await el.updateComplete;
+      sync.resetHistory();
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(sync.callCount).to.equal(1);
+      el.remove();
+    } finally {
+      sync.restore();
+    }
+  });
+
+  it('cancels the deferred websocket connection when removed before the frame', async () => {
+    const schedule = sinon.stub(window, 'requestAnimationFrame').returns(12345);
+    const cancel = sinon.spy(window, 'cancelAnimationFrame');
+    try {
+      const el = await fixture<LitApp>(html`<lit-app></lit-app>`);
+      const connect = sinon.spy(el, 'connectWebSocket');
+      el.remove();
+      expect(cancel.calledWith(12345)).to.equal(true);
+      // Even an already queued callback must not reconnect a removed app.
+      const callback = schedule.firstCall.args[0] as FrameRequestCallback;
+      callback(0);
+      expect(connect.called).to.equal(false);
+    } finally {
+      schedule.restore();
+      cancel.restore();
+    }
   });
 
   it('renders the landing page and /login without touching a console chunk', async () => {
