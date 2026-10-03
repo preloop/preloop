@@ -25,7 +25,7 @@ deliberately not part of this change.
 
 import logging
 import uuid
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Set, Tuple
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -147,6 +147,50 @@ def _resolve_owner_user_id(
         return None
 
 
+def _api_key_owner_user_id(
+    auth_context: ModelGatewayAuthContext,
+    managed_agent_id: Optional[uuid.UUID],
+) -> Optional[uuid.UUID]:
+    """Owner of the calling API key, for per-user budgets.
+
+    Agent traffic counts against the agent's owner instead, so a key that
+    resolves to a managed agent contributes no key owner. This mirrors the
+    ``user`` spend scope recorded by ``crud_api_usage.log_gateway_request``.
+    """
+    api_key = auth_context.api_key
+    if api_key is None or managed_agent_id is not None:
+        return None
+    owner_id = getattr(api_key, "user_id", None)
+    if owner_id is None:
+        return None
+    try:
+        return owner_id if isinstance(owner_id, uuid.UUID) else uuid.UUID(str(owner_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def budget_user_ids(
+    db: Session,
+    auth_context: ModelGatewayAuthContext,
+) -> Set[uuid.UUID]:
+    """Users whose ``user`` budgets a gateway request counts against.
+
+    The owner of the managed agent making the call, otherwise the owner of
+    the calling API key. Plugins that budget groups of users (for example
+    teams) resolve the same users.
+    """
+    managed_agent_id = _resolve_managed_agent_id(db, auth_context)
+    users = {
+        user_id
+        for user_id in (
+            _resolve_owner_user_id(db, auth_context.account_id, managed_agent_id),
+            _api_key_owner_user_id(auth_context, managed_agent_id),
+        )
+        if user_id is not None
+    }
+    return users
+
+
 def _policy_lookup_subjects(
     auth_context: ModelGatewayAuthContext,
     managed_agent_id: Optional[uuid.UUID],
@@ -257,6 +301,20 @@ class ModelGatewayBudgetEnforcer:
             if "user" in subject_types
             else None
         )
+        # A per-user budget covers the agents the user owns and the API keys
+        # the user owns (the same users the spend is recorded against).
+        budget_users = (
+            {
+                user_id
+                for user_id in (
+                    owner_user_id,
+                    _api_key_owner_user_id(auth_context, managed_agent_id),
+                )
+                if user_id is not None
+            }
+            if "user" in subject_types
+            else set()
+        )
         policies_by_id = {
             policy.id: policy
             for policy in candidates
@@ -267,10 +325,7 @@ class ModelGatewayBudgetEnforcer:
                     and policy.subject_id == managed_agent_id
                 )
             )
-            and (
-                policy.subject_type != "user"
-                or (owner_user_id is not None and policy.subject_id == owner_user_id)
-            )
+            and (policy.subject_type != "user" or policy.subject_id in budget_users)
         }
 
         evaluations: List[

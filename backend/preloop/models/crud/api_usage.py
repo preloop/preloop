@@ -29,6 +29,7 @@ ApiUsage = models.ApiUsage
 Flow = models.Flow
 FlowExecution = models.FlowExecution
 ManagedAgent = models.ManagedAgent
+ApiKey = models.ApiKey
 RuntimeSession = models.RuntimeSession
 User = models.User
 
@@ -173,6 +174,19 @@ def _usage_account_clause(
             for value in account_ids
         ]
     )
+
+
+def _api_key_owner_id(db: Session, api_key_id: Any) -> Optional[uuid.UUID]:
+    """Owner of an API key, for per-user budgets; ``None`` if unknown."""
+    try:
+        key_id = (
+            api_key_id
+            if isinstance(api_key_id, uuid.UUID)
+            else uuid.UUID(str(api_key_id))
+        )
+    except (TypeError, ValueError):
+        return None
+    return db.query(ApiKey.user_id).filter(ApiKey.id == key_id).scalar()
 
 
 class CRUDApiUsage(CRUDBase[ApiUsage]):
@@ -385,6 +399,14 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 subject_scopes: list[tuple[str, Optional[str]]] = []
                 if api_key_id:
                     subject_scopes.append(("api_key", str(api_key_id)))
+                    # A per-user budget also counts calls made with an API key
+                    # the user owns. Agent traffic counts against the agent's
+                    # owner instead (below), so one call never counts against
+                    # two users.
+                    if not managed_agent_id and auth_subject_type != "managed_agents":
+                        key_owner_id = _api_key_owner_id(db, api_key_id)
+                        if key_owner_id:
+                            subject_scopes.append(("user", str(key_owner_id)))
                 if managed_agent_id:
                     subject_scopes.append(("managed_agent", str(managed_agent_id)))
                     # A per-user budget counts spend from every agent the user
