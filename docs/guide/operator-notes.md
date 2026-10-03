@@ -82,7 +82,7 @@ preloop sessions list --active
 ID        AGENT   STARTED  LAST ACTIVITY  STATE  TOOLS  MODEL  PENDING  TITLE
 aaaaaaaa  Worker  9m ago   30s ago        live   7      12     1        claude_code alpha 2026-10-02 11:50:07Z
 bbbbbbbb  Worker  9m ago   5m ago         idle   2      3      0        claude_code beta 2026-10-02 11:50:07Z
-Steer: preloop notes send --session <id>.
+Steer: preloop notes send --session <id>. Watch: preloop sessions attach <id>.
 ```
 
 A session the server has not titled yet is labelled with its agent kind, the
@@ -99,7 +99,9 @@ preloop sessions list --agent "Release worker" --active -o id | head -1 \
 Narrow the list with `--agent <id|name>`, `--kind claude-code`, `--since 2h`,
 `--parent <session-id>` (the sessions a conductor spawned) and
 `--execution <id>`. The server applies every filter across the account. See
-[the CLI reference](cli.md#sessions).
+[the CLI reference](cli.md#sessions). To watch the session and steer it from
+the same terminal, attach to it:
+[Attaching to a session from the terminal](sessions-attach.md).
 
 API:
 
