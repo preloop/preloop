@@ -174,8 +174,10 @@ nav:
       - Model content policies: guide/model-content-policies.md
       - Account kill switch: guide/account-kill-switch.md
       - Operator notes: guide/operator-notes.md
+      - Attaching to a session: guide/sessions-attach.md
 
   - Sessions, search and audit:
+      - Session artifacts: guide/artifacts.md
       - Session search for agents: guide/agent-session-search.md
       - Saved session searches: guide/session-saved-searches.md
       - Session search audit: guide/session-search-audit.md
@@ -235,6 +237,7 @@ nav:
       - GitHub Actions: guide/flows/github-actions.md
       - Trackers:
           - Bitbucket Cloud: guide/bitbucket-tracker.md
+          - Moving a GitHub repository: guide/github-repository-transfer.md
           - Bitbucket and Jira quickstart: guide/bitbucket-jira-quickstart.md
           - Jira repository binding: guide/flows/jira-repository-binding.md
 
@@ -261,6 +264,7 @@ nav:
       - Session embedding worker: operations/session-embedding.md
       - Session search: operations/session-search.md
       - OTLP export: guide/observability-otlp.md
+      - OTLP attribute stability: guide/otlp-attribute-stability.md
       - Browser error reporting: operations/browser-error-reporting.md
 
   - Security and compliance:

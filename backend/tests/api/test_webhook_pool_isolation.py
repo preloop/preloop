@@ -206,7 +206,10 @@ async def test_issue_webhook_queues_embedding_work_without_waiting_for_provider(
         id=uuid4(),
         webhook_secret="secret",
         tracker=SimpleNamespace(
-            id=uuid4(), is_active=True, subscribed_events=["Issue Hook"]
+            id=uuid4(),
+            account_id=uuid4(),
+            is_active=True,
+            subscribed_events=["Issue Hook"],
         ),
     )
 

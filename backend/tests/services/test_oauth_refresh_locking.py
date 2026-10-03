@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_account, crud_ai_model
-from preloop.services.secret_service import SecretService
+from preloop.services.secret_service import CredentialRefreshError, SecretService
 from preloop.utils.encryption import encrypt_value
 
 
@@ -167,3 +167,98 @@ def test_needed_refresh_keeps_exclusion_until_rotated_bundle_commits(
         assert result["expires"] == 4102444800000
         assert calls == [True]
         assert_secret_unlocked(db_engine, secret_id)
+
+
+def test_terminal_failure_releases_only_owned_lock(
+    db_engine: Engine, oauth_model: UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cached rejection must neither retry the provider nor hold its row lock."""
+    service = SecretService()
+    with Session(db_engine) as setup:
+        model = setup.get(models.AIModel, oauth_model)
+        model.credentials_secret.status = "error"
+        model.credentials_secret.meta_data = {
+            "last_refresh_code": "invalid_grant",
+            "last_refresh_status_code": 400,
+        }
+        setup.commit()
+    with Session(db_engine) as reader:
+        model = reader.get(models.AIModel, oauth_model)
+        secret_id = model.credentials_secret.id
+        unrelated_id = uuid4()
+        reader.add(
+            models.Account(id=unrelated_id, organization_name="Uncommitted caller work")
+        )
+        reader.flush()
+
+        def no_provider_call(token: str) -> dict[str, Any]:
+            pytest.fail("A terminal grant rejection must not be resubmitted")
+
+        monkeypatch.setattr(service, "_refresh_openai_codex_token", no_provider_call)
+        monkeypatch.setattr(
+            service, "_refresh_anthropic_claude_code_token", no_provider_call
+        )
+        with pytest.raises(CredentialRefreshError, match="reconnected"):
+            refresh_method(service, model)(
+                model, {"expires": 1, "refresh": "synthetic-old"}, db=reader
+            )
+        assert_secret_unlocked(db_engine, secret_id)
+        with Session(db_engine) as observer:
+            assert observer.get(models.Account, unrelated_id) is None
+        assert reader.get(models.Account, unrelated_id) is not None
+        reader.rollback()
+
+
+def test_credential_import_observes_rotation_before_rejecting_consumed_token(
+    db_engine: Engine, oauth_model: UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An importer with a stale identity map must observe the committed rotation."""
+    service = SecretService()
+    with Session(db_engine) as importer, Session(db_engine) as updater:
+        old_model = importer.get(models.AIModel, oauth_model)
+        old_secret = old_model.credentials_secret
+        secret_id, account_id = old_secret.id, old_secret.account_id
+        model = updater.get(models.AIModel, oauth_model)
+
+        def provider_refresh(token: str) -> dict[str, Any]:
+            return {
+                "access": "synthetic-new",
+                "refresh": "synthetic-new",
+                "expires": 4102444800000,
+            }
+
+        monkeypatch.setattr(service, "_refresh_openai_codex_token", provider_refresh)
+        monkeypatch.setattr(
+            service, "_refresh_anthropic_claude_code_token", provider_refresh
+        )
+        refresh_method(service, model)(
+            model, {"expires": 1, "refresh": "synthetic-old"}, db=updater
+        )
+        credential_type = (
+            "oauth_openai_codex"
+            if model.provider_name == "openai"
+            else "oauth_anthropic_claude_code"
+        )
+        with pytest.raises(ValueError, match="consumed or revoked"):
+            service.create_local_secret_reference(
+                importer,
+                account_id=account_id,
+                name="Synthetic subscription",
+                secret_kind="ai_model_credentials",
+                existing_secret_id=secret_id,
+                secret_value=json.dumps(
+                    {
+                        "type": credential_type,
+                        "access": "synthetic-old",
+                        "refresh": "synthetic-old",
+                        "expires": 4102444800000,
+                    }
+                ),
+            )
+        importer.rollback()
+        with Session(db_engine) as observer:
+            latest = observer.get(models.SecretReference, secret_id)
+            assert (
+                json.loads(service.resolve_secret_reference(latest).value)["refresh"]
+                == "synthetic-new"
+            )

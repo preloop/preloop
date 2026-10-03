@@ -59,6 +59,7 @@ from ..models.session_search_document import (
     EMBEDDING_STATE_PENDING,
     REDACTION_STATE_CLEAR,
     REDACTION_STATE_WITHHELD,
+    SOURCE_KIND_ARTIFACT,
     TEXT_RETURNABLE_REDACTION_STATES,
     SessionSearchDocument,
 )
@@ -236,6 +237,12 @@ class SessionSearchFilters:
     api_key_id: Optional[Any] = None
     flow_id: Optional[Any] = None
     source_kind: Optional[str] = None
+    #: Artifact kind (``transcript``, ``document``, ...). Setting it, or
+    #: ``artifact_labels``, restricts the search to artifact chunks.
+    artifact_kind: Optional[str] = None
+    #: JSONB containment terms over the artifact labels, ANDed: each one is
+    #: ``{key: value}`` or ``{"tags": [value]}``.
+    artifact_labels: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -258,6 +265,7 @@ class RankedSnippet:
     rank: float
     redaction_state: str
     text: Optional[str] = None
+    meta_data: Optional[Dict[str, Any]] = None
     match_reason: MatchReason = MATCH_REASON_KEYWORD
     similarity: Optional[float] = None
 
@@ -280,6 +288,7 @@ class VectorChunkHit:
     role: Optional[str]
     redaction_state: str
     similarity: float
+    meta_data: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -927,6 +936,14 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             conditions.append(SessionSearchDocument.flow_id == active.flow_id)
         if active.source_kind:
             conditions.append(SessionSearchDocument.source_kind == active.source_kind)
+        if active.artifact_kind or active.artifact_labels:
+            conditions.append(SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT)
+        if active.artifact_kind:
+            conditions.append(
+                SessionSearchDocument.meta_data["kind"].astext == active.artifact_kind
+            )
+        for term in active.artifact_labels or ():
+            conditions.append(SessionSearchDocument.meta_data["labels"].contains(term))
         return conditions
 
     def _match_conditions(
@@ -1123,6 +1140,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             SessionSearchDocument.occurred_at.label("occurred_at"),
             SessionSearchDocument.role.label("role"),
             SessionSearchDocument.redaction_state.label("redaction_state"),
+            SessionSearchDocument.meta_data.label("meta_data"),
             chunk_rank.label("rank"),
             func.row_number()
             .over(
@@ -1175,6 +1193,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 windowed.c.occurred_at,
                 windowed.c.role,
                 windowed.c.redaction_state,
+                windowed.c.meta_data,
                 windowed.c.rank,
                 headline.label("snippet"),
             )
@@ -1199,6 +1218,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                     role=row.role,
                     rank=float(row.rank or 0.0),
                     redaction_state=row.redaction_state,
+                    meta_data=row.meta_data,
                     text=(
                         row.snippet
                         if include_text
@@ -1329,6 +1349,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 SessionSearchDocument.occurred_at.label("occurred_at"),
                 SessionSearchDocument.role.label("role"),
                 SessionSearchDocument.redaction_state.label("redaction_state"),
+                SessionSearchDocument.meta_data.label("meta_data"),
                 similarity,
             )
             .where(*conditions)
@@ -1346,6 +1367,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 role=row.role,
                 redaction_state=row.redaction_state,
                 similarity=float(row.similarity or 0.0),
+                meta_data=row.meta_data,
             )
             for row in rows
         ]

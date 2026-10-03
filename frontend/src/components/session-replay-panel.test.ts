@@ -57,6 +57,41 @@ function previewEvent(
 }
 
 describe('SessionReplayPanel', () => {
+  it('renders correlated tool results once while retaining uncorrelated legacy bubbles', async () => {
+    const event = previewEvent('tool-example', '2026-10-02T10:00:00Z', [], {
+      tools: [
+        {
+          kind: 'result',
+          call_id: 'call-example',
+          name: 'terminal',
+          text: 'Captured result',
+        },
+      ],
+      conversation_preview: {
+        messages: [
+          {
+            role: 'tool',
+            source: 'request',
+            text: 'Captured result',
+            tool_call_ids: ['call-example'],
+          },
+          { role: 'tool', source: 'request', text: 'Legacy result' },
+        ],
+      },
+    });
+    const element = await fixture<SessionReplayPanel>(
+      html`<session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${[event]}
+      ></session-replay-panel>`
+    );
+    expect(
+      element.shadowRoot!.querySelectorAll('session-tool-card')
+    ).to.have.length(1);
+    expect(element.shadowRoot!.textContent).not.to.include('Captured result');
+    expect(element.shadowRoot!.textContent).to.include('Legacy result');
+  });
   it('renders agent control messages in chat mode', async () => {
     const element = await fixture<SessionReplayPanel>(html`
       <session-replay-panel

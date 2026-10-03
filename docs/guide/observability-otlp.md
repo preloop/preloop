@@ -11,6 +11,10 @@ Spans follow [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io
 where they apply. Runtime session identity is emitted as
 `gen_ai.conversation.id` (see [Runtime Session Identity](../architecture/gateway.md)).
 
+Which attribute and metric names are stable, and how renames are
+announced, is set out in the
+[OTLP attribute stability policy](otlp-attribute-stability.md).
+
 ## Privacy
 
 Raw prompts, completions, and tool arguments are **not** attached to span

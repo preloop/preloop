@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import logging
+import hmac
 from typing import Any, Callable, Dict, Optional, Protocol
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
@@ -46,6 +47,17 @@ PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES = frozenset(
         ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
     }
 )
+TERMINAL_OAUTH_REFRESH_CODES = frozenset(
+    {
+        "invalid_grant",
+        "refresh_token_reused",
+        "refresh_token_expired",
+        "invalid_refresh_token",
+    }
+)
+# Hashes identify consumed tokens without retaining plaintext token history.
+OAUTH_CONSUMED_REFRESH_HASHES = "consumed_refresh_token_hashes"
+OAUTH_REFRESH_HISTORY_LIMIT = 64
 OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 OPENAI_CODEX_JWT_CLAIM_PATH = "https://api.openai.com/auth"
@@ -103,6 +115,30 @@ class CredentialRefreshError(ValueError):
         status = self.status_code if self.status_code is not None else "?"
         code = self.code or "unknown"
         return f"{self.provider} refresh failed (status={status}, code={code})"
+
+    def recovery_message(self) -> str:
+        """Explain provider re-authorization separately from transient failures."""
+        prefix = "Model credentials could not be refreshed. "
+        if self.code not in TERMINAL_OAUTH_REFRESH_CODES:
+            return (
+                prefix
+                + "The provider refresh failed; retry later. Your enrollment is preserved."
+            )
+        if self.provider == "anthropic":
+            agent, login = "Claude Code", "claude auth login --claudeai"
+        elif self.provider == "openai":
+            agent, login = "Codex CLI", "codex login"
+        else:
+            return (
+                prefix
+                + "Reconnect the subscription authorization. Your enrollment is preserved."
+            )
+        return (
+            prefix
+            + f"The subscription authorization is no longer valid. Run `{login}`, "
+            + f'then `preloop agents reconnect "{agent}" --from-local` '
+            + "with an updated Preloop CLI. Your enrollment is preserved."
+        )
 
 
 class SecretBackend(Protocol):
@@ -295,8 +331,11 @@ class SecretService:
         now = datetime.now(timezone.utc)
 
         if existing_secret_id:
-            secret_ref = crud_secret_reference.get(db, id=existing_secret_id)
+            secret_ref = crud_secret_reference.get_for_update(
+                db, secret_id=existing_secret_id, account_id=account_id
+            )
             if secret_ref:
+                history = self._validate_oauth_replacement(secret_ref, secret_value)
                 secret_ref.name = name
                 secret_ref.backend_type = LOCAL_ENCRYPTED_BACKEND
                 secret_ref.secret_kind = secret_kind
@@ -304,6 +343,11 @@ class SecretService:
                 secret_ref.status = "active"
                 secret_ref.last_verified_at = now
                 secret_ref.meta_data = meta_data or {}
+                if history:
+                    secret_ref.meta_data = {
+                        **secret_ref.meta_data,
+                        OAUTH_CONSUMED_REFRESH_HASHES: history,
+                    }
                 db.add(secret_ref)
                 db.commit()
                 db.refresh(secret_ref)
@@ -325,6 +369,117 @@ class SecretService:
             },
         )
         return secret_ref
+
+    @staticmethod
+    def _consumed_refresh_hashes(secret_ref: SecretReference) -> list[str]:
+        """Read the bounded history of provider-consumed refresh tokens."""
+        metadata = secret_ref.meta_data or {}
+        history = metadata.get(OAUTH_CONSUMED_REFRESH_HASHES, [])
+        return (
+            [value for value in history if isinstance(value, str)][
+                -OAUTH_REFRESH_HISTORY_LIMIT:
+            ]
+            if isinstance(history, list)
+            else []
+        )
+
+    @staticmethod
+    def _refresh_token_fingerprint(refresh_token: str) -> str:
+        """Fingerprint a provider token without exposing an unkeyed verifier."""
+        return hmac.digest(
+            (settings.security.encryption_key or settings.security.secret_key).encode(),
+            b"preloop/oauth-refresh/v1/" + refresh_token.encode(),
+            "sha256",
+        ).hex()
+
+    def _validate_oauth_replacement(
+        self, secret_ref: SecretReference, secret_value: str
+    ) -> list[str]:
+        """Reject a previously consumed local token under the credential row lock."""
+        try:
+            incoming = json.loads(secret_value)
+        except (ValueError, TypeError):
+            return []
+        if (
+            not isinstance(incoming, dict)
+            or incoming.get("type") not in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+        ):
+            return []
+        history = self._consumed_refresh_hashes(secret_ref)
+        refresh = str(incoming.get("refresh") or "").strip()
+        if not refresh:
+            return history
+        fingerprint = self._refresh_token_fingerprint(refresh)
+        metadata = secret_ref.meta_data or {}
+        # Existing installations have no token history yet. A terminal failure
+        # still proves that the currently stored refresh token cannot be reused.
+        if (
+            secret_ref.status == "error"
+            and metadata.get("last_refresh_code") in TERMINAL_OAUTH_REFRESH_CODES
+            and secret_ref.encrypted_value
+        ):
+            try:
+                current = json.loads(decrypt_value(secret_ref.encrypted_value))
+            except (TypeError, ValueError):
+                current = None
+            if isinstance(current, dict):
+                failed_refresh = str(current.get("refresh") or "").strip()
+                if failed_refresh:
+                    failed_hash = self._refresh_token_fingerprint(failed_refresh)
+                    if failed_hash not in history:
+                        history.append(failed_hash)
+        if fingerprint in history:
+            raise ValueError(
+                "This subscription refresh token has already been consumed or revoked. "
+                "Sign in again and run preloop agents reconnect with --from-local; "
+                "the existing enrollment is preserved."
+            )
+        return history[-OAUTH_REFRESH_HISTORY_LIMIT:]
+
+    def _record_consumed_refresh(
+        self, secret_ref: SecretReference, old_refresh: str, new_refresh: str
+    ) -> None:
+        """Remember rotation so later imports cannot roll back the live grant."""
+        if not old_refresh or old_refresh == new_refresh:
+            return
+        history = self._consumed_refresh_hashes(secret_ref)
+        fingerprint = self._refresh_token_fingerprint(old_refresh)
+        if fingerprint not in history:
+            history.append(fingerprint)
+        secret_ref.meta_data = {
+            **(secret_ref.meta_data or {}),
+            OAUTH_CONSUMED_REFRESH_HASHES: history[-OAUTH_REFRESH_HISTORY_LIMIT:],
+        }
+
+    @staticmethod
+    def _clear_refresh_failure_metadata(secret_ref: SecretReference) -> None:
+        """A successful refresh must not keep displaying an old failure."""
+        failure_keys = {
+            "last_refresh_error",
+            "last_refresh_status_code",
+            "last_refresh_code",
+            "last_refresh_failed_at",
+        }
+        secret_ref.meta_data = {
+            key: value
+            for key, value in (secret_ref.meta_data or {}).items()
+            if key not in failure_keys
+        }
+
+    @staticmethod
+    def _raise_terminal_refresh_error(
+        secret_ref: SecretReference, provider: str
+    ) -> None:
+        """Do not repeatedly submit a grant the provider already rejected."""
+        metadata = secret_ref.meta_data or {}
+        code = metadata.get("last_refresh_code")
+        if secret_ref.status == "error" and code in TERMINAL_OAUTH_REFRESH_CODES:
+            raise CredentialRefreshError(
+                "Subscription authorization must be reconnected",
+                provider=provider,
+                status_code=metadata.get("last_refresh_status_code"),
+                code=code,
+            )
 
     def create_external_secret_reference(
         self,
@@ -574,6 +729,10 @@ class SecretService:
             needs_refresh = refresh_required(payload) and bool(
                 str(payload.get("refresh") or "").strip()
             )
+            if locked is not None and locked.status == "error":
+                metadata = locked.meta_data or {}
+                if metadata.get("last_refresh_code") in TERMINAL_OAUTH_REFRESH_CODES:
+                    needs_refresh = False
             return payload, needs_refresh
 
         return crud_secret_reference.inspect_for_refresh(
@@ -600,6 +759,8 @@ class SecretService:
             )
             if not self._openai_codex_refresh_required(payload):
                 return payload
+
+            self._raise_terminal_refresh_error(ai_model.credentials_secret, "openai")
 
         refresh_token = str(payload.get("refresh") or "").strip()
         if not refresh_token:
@@ -645,6 +806,9 @@ class SecretService:
             and ai_model.credentials_secret is not None
             and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
         ):
+            self._record_consumed_refresh(
+                ai_model.credentials_secret, refresh_token, refreshed["refresh"]
+            )
             ai_model.credentials_secret.encrypted_value = encrypt_value(
                 json.dumps(next_payload)
             )
@@ -657,6 +821,8 @@ class SecretService:
                 ),
                 "credential_type": OPENAI_CODEX_OAUTH_CREDENTIAL_TYPE,
             }
+            ai_model.credentials_secret.status = "active"
+            self._clear_refresh_failure_metadata(ai_model.credentials_secret)
             db.add(ai_model.credentials_secret)
             db.commit()
             db.refresh(ai_model.credentials_secret)
@@ -683,6 +849,8 @@ class SecretService:
             )
             if not self._anthropic_claude_code_refresh_required(payload):
                 return payload
+
+            self._raise_terminal_refresh_error(ai_model.credentials_secret, "anthropic")
 
         refresh_token = str(payload.get("refresh") or "").strip()
         if not refresh_token:
@@ -725,6 +893,9 @@ class SecretService:
             and ai_model.credentials_secret is not None
             and ai_model.credentials_secret.backend_type == LOCAL_ENCRYPTED_BACKEND
         ):
+            self._record_consumed_refresh(
+                ai_model.credentials_secret, refresh_token, refreshed["refresh"]
+            )
             ai_model.credentials_secret.encrypted_value = encrypt_value(
                 json.dumps(next_payload)
             )
@@ -738,6 +909,7 @@ class SecretService:
                 "credential_type": ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
             }
             ai_model.credentials_secret.status = "active"
+            self._clear_refresh_failure_metadata(ai_model.credentials_secret)
             db.add(ai_model.credentials_secret)
             db.commit()
             db.refresh(ai_model.credentials_secret)

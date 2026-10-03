@@ -36,6 +36,7 @@ const KIND_LABELS: Record<string, string> = {
   gitlab: 'GitLab',
   jira: 'Jira',
   bitbucket: 'Bitbucket Cloud',
+  bitbucket_dc: 'Bitbucket Data Center',
 };
 
 export function trackerKindLabel(kind: string): string {

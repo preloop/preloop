@@ -172,6 +172,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         *,
         account_id: str,
         execution_id: Optional[str] = None,
+        runtime_session_id: Optional[str] = None,
         status: Optional[str] = None,
         skip: int = 0,
         limit: int = 100,
@@ -187,11 +188,14 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         if execution_id:
             query = query.filter(self.model.execution_id == execution_id)
 
+        if runtime_session_id:
+            query = query.filter(self.model.runtime_session_id == runtime_session_id)
+
         if status:
             query = query.filter(self.model.status == status)
 
         return (
-            query.order_by(self.model.requested_at.desc())
+            query.order_by(self.model.requested_at.desc(), self.model.id.desc())
             .offset(skip)
             .limit(limit)
             .all()

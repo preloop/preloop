@@ -20,6 +20,113 @@ import { groupProjectsByGroup } from '../utils/tracker-scope';
 
 const BITBUCKET_WEB_URL = 'https://bitbucket.org';
 
+/**
+ * The only Bitbucket Data Center release the adapter is validated against.
+ * Other releases are reported by the backend as unsupported or unvalidated;
+ * they never fall back to Bitbucket Cloud behaviour.
+ */
+export const BITBUCKET_DC_VERSION = '10.2';
+
+/**
+ * Result of normalising a user-entered Bitbucket Data Center URL.
+ * `url` is the canonical `https://host[:port][/context]` origin with no
+ * trailing slash; `error` explains why the input was rejected.
+ */
+export interface BitbucketDcUrlResult {
+  url: string | null;
+  error: string | null;
+}
+
+/**
+ * Normalise a Bitbucket Data Center instance URL to its canonical form.
+ *
+ * This is early client-side feedback only. The backend applies the deployment
+ * policy (administrator-approved origins, ports and context paths, DNS and
+ * redirect checks); nothing accepted here is treated as approved.
+ *
+ * Rejected: non-https schemes, userinfo, query strings, fragments and path
+ * traversal segments. Trailing slashes are dropped and the host is lowercased
+ * so the same instance always serialises to the same string.
+ */
+export function canonicalizeBitbucketDcUrl(raw: string): BitbucketDcUrlResult {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) {
+    return {
+      url: null,
+      error: 'Enter the Bitbucket Data Center instance URL.',
+    };
+  }
+  // Reject encoded paths and backslashes before the URL parser can normalise
+  // them into a different administrator-approved context path.
+  if (/[\\%\u0000-\u0020\u007f]/.test(trimmed)) {
+    return {
+      url: null,
+      error:
+        'Use an unencoded HTTPS instance URL without spaces or backslashes.',
+    };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return {
+      url: null,
+      error:
+        'Enter a full instance URL such as https://bitbucket.example.com or https://bitbucket.example.com/stash.',
+    };
+  }
+  if (parsed.protocol !== 'https:') {
+    return {
+      url: null,
+      error: 'Bitbucket Data Center instances must use https://.',
+    };
+  }
+  if (parsed.username || parsed.password) {
+    return {
+      url: null,
+      error:
+        'Remove credentials from the instance URL; the personal access token is entered separately.',
+    };
+  }
+  if (parsed.search || trimmed.includes('?')) {
+    return {
+      url: null,
+      error: 'The instance URL must not contain a query string.',
+    };
+  }
+  if (parsed.hash || trimmed.includes('#')) {
+    return {
+      url: null,
+      error: 'The instance URL must not contain a fragment.',
+    };
+  }
+  // Compare the raw path so URL's own dot-segment normalisation cannot hide
+  // a traversal attempt such as /stash/../admin.
+  const rawPath = trimmed.slice(parsed.origin.length);
+  const rawSegments = rawPath.split('/').filter((segment) => segment !== '');
+  if (rawSegments.some((segment) => segment === '.' || segment === '..')) {
+    return {
+      url: null,
+      error: 'The instance URL must not contain "." or ".." path segments.',
+    };
+  }
+  const segments = parsed.pathname
+    .split('/')
+    .filter((segment) => segment !== '');
+  const contextPath = segments.length ? `/${segments.join('/')}` : '';
+  return { url: `${parsed.origin}${contextPath}`, error: null };
+}
+
+/** Connection details persisted for a Bitbucket Data Center tracker. */
+export type BitbucketDcConnectionDetails = {
+  instance_url: string;
+  version: string;
+  project_key?: string;
+  repository_id?: number;
+  repository_slug?: string;
+  username?: string;
+};
+
 @customElement('add-tracker-modal')
 export class AddTrackerModal extends LitElement {
   @property({ type: Object })
@@ -79,6 +186,34 @@ export class AddTrackerModal extends LitElement {
   /** ISO date (YYYY-MM-DD) the token expires on, if known. */
   @state()
   private tokenExpiresAt = '';
+
+  /**
+   * Whether the deployment exposes the opt-in `bitbucket_dc` capability
+   * (`features.bitbucket_dc` from `/features`). Off by default; the Data
+   * Center option is hidden until the backend reports it enabled.
+   */
+  @state()
+  private bitbucketDcEnabled = false;
+
+  /** Set once the /features lookup has settled, so the gate is not applied on a stale default. */
+  @state()
+  private bitbucketDcFeatureLoaded = false;
+
+  /** Bitbucket Data Center: instance URL as typed (canonicalised on submit). */
+  @state()
+  private bitbucketDcInstanceUrl = '';
+
+  /** Bitbucket Data Center: optional project key for manual discovery. */
+  @state()
+  private bitbucketDcProjectKey = '';
+
+  /** Bitbucket Data Center: optional immutable numeric repository id. */
+  @state()
+  private bitbucketDcRepositoryId = '';
+
+  /** Bitbucket Data Center: optional repository slug (may change on rename). */
+  @state()
+  private bitbucketDcRepositorySlug = '';
 
   @state()
   private orgs: any[] = [];
@@ -177,6 +312,20 @@ export class AddTrackerModal extends LitElement {
         this.bitbucketEmail = details.email ?? '';
         this.tokenExpiresAt = details.token_expires_at ?? '';
       }
+      if (this.tracker.tracker_type === 'bitbucket_dc') {
+        // instance_url is the canonical origin plus context path; it is the
+        // identity the stored PAT is bound to, so prefer it over `url`.
+        const details = this.tracker.connection_details ?? {};
+        this.bitbucketDcInstanceUrl =
+          details.instance_url ?? this.tracker.url ?? '';
+        this.trackerUrl = this.bitbucketDcInstanceUrl;
+        this.bitbucketDcProjectKey = details.project_key ?? '';
+        this.bitbucketDcRepositoryId =
+          details.repository_id === undefined || details.repository_id === null
+            ? ''
+            : String(details.repository_id);
+        this.bitbucketDcRepositorySlug = details.repository_slug ?? '';
+      }
       this.authMethod = this.isOAuthAuthType(this.tracker.auth_type)
         ? 'github_app'
         : 'api_token';
@@ -215,6 +364,8 @@ export class AddTrackerModal extends LitElement {
     }
     // Check if GitHub App OAuth is available
     this.checkGitHubAppAvailability();
+    // Check whether this deployment opted in to Bitbucket Data Center
+    this.checkBitbucketDcAvailability();
 
     // If we have a GitHub installation ID from OAuth callback (not editing), set up for GitHub App flow
     // Only apply these defaults for new trackers, not when editing existing ones
@@ -236,6 +387,39 @@ export class AddTrackerModal extends LitElement {
 
   private get isEditingAppTracker(): boolean {
     return !!this.tracker && this.authMethod === 'github_app';
+  }
+
+  private get isBitbucketDc(): boolean {
+    return this.trackerType === 'bitbucket_dc';
+  }
+
+  /**
+   * An existing Data Center tracker is being edited on a deployment that has
+   * the capability switched off. The form keeps its real type (never a silent
+   * Cloud fallback) and blocks submission until an administrator enables it.
+   */
+  private get isBitbucketDcEditBlocked(): boolean {
+    return (
+      !!this.tracker &&
+      this.tracker.tracker_type === 'bitbucket_dc' &&
+      this.bitbucketDcFeatureLoaded &&
+      !this.bitbucketDcEnabled
+    );
+  }
+
+  async checkBitbucketDcAvailability() {
+    try {
+      const response = await this._api.getFeatures();
+      this.bitbucketDcEnabled = response.features?.['bitbucket_dc'] === true;
+    } catch (error) {
+      console.error(
+        'Failed to check Bitbucket Data Center availability:',
+        error
+      );
+      this.bitbucketDcEnabled = false;
+    } finally {
+      this.bitbucketDcFeatureLoaded = true;
+    }
   }
 
   async checkGitHubAppAvailability() {
@@ -358,6 +542,7 @@ export class AddTrackerModal extends LitElement {
           variant="primary"
           @click=${this.testConnection}
           .loading=${this.isLoading}
+          ?disabled=${this.isBitbucketDcEditBlocked}
           >Next</sl-button
         >
       `;
@@ -417,6 +602,7 @@ export class AddTrackerModal extends LitElement {
         label="Type"
         name="type"
         .value=${this.trackerType}
+        ?disabled=${this.isBitbucketDcEditBlocked}
         @sl-change=${(e: any) => {
           this.trackerType = e.target.value;
           const urlInput = this.shadowRoot?.querySelector(
@@ -424,6 +610,10 @@ export class AddTrackerModal extends LitElement {
           ) as HTMLInputElement;
           if (this.trackerType === 'bitbucket') {
             this.trackerUrl = BITBUCKET_WEB_URL;
+          } else if (this.trackerType === 'bitbucket_dc') {
+            // The canonical instance URL is derived from the DC field on
+            // submit; keep the shared url state in step with it.
+            this.trackerUrl = this.bitbucketDcInstanceUrl;
           } else if (this.trackerType === 'gitlab') {
             this.trackerUrl = 'https://gitlab.com';
             if (urlInput) {
@@ -447,19 +637,47 @@ export class AddTrackerModal extends LitElement {
         <sl-option value="gitlab">GitLab</sl-option>
         <sl-option value="jira">Jira</sl-option>
         <sl-option value="bitbucket">Bitbucket Cloud</sl-option>
+        ${
+          this.bitbucketDcEnabled ||
+          this.tracker?.tracker_type === 'bitbucket_dc'
+            ? html`
+                <sl-option value="bitbucket_dc"
+                  >Bitbucket Data Center</sl-option
+                >
+              `
+            : ''
+        }
       </sl-select>
+      ${
+        this.isBitbucketDcEditBlocked
+          ? html`
+              <sl-alert variant="warning" open class="bitbucket-dc-disabled">
+                <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                <strong
+                  >Bitbucket Data Center is disabled on this deployment.</strong
+                >
+                This tracker keeps its Data Center configuration and stored
+                token, but it cannot be tested or saved until an administrator
+                enables the <code>bitbucket_dc</code> capability. It is not
+                treated as a Bitbucket Cloud tracker.
+              </sl-alert>
+            `
+          : ''
+      }
       ${
         this.trackerType === 'bitbucket'
           ? this.renderBitbucketFields()
-          : html`
-              <sl-input
-                label="URL"
-                name="url"
-                .value=${this.trackerUrl}
-                @sl-input=${(e: any) => (this.trackerUrl = e.target.value)}
-                placeholder="e.g., https://github.example.com"
-              ></sl-input>
-            `
+          : this.isBitbucketDc
+            ? this.renderBitbucketDcFields()
+            : html`
+                <sl-input
+                  label="URL"
+                  name="url"
+                  .value=${this.trackerUrl}
+                  @sl-input=${(e: any) => (this.trackerUrl = e.target.value)}
+                  placeholder="e.g., https://github.example.com"
+                ></sl-input>
+              `
       }
       ${
         this.trackerType === 'jira'
@@ -557,18 +775,163 @@ export class AddTrackerModal extends LitElement {
                     ></sl-input>
                   </details>
                 `
-              : html`
-                  <sl-input
-                    type="password"
-                    label="API Key"
-                    name="api_key"
-                    .value=${this.trackerToken}
-                    @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
-                    required
-                  ></sl-input>
-                `
+              : this.isBitbucketDc
+                ? ''
+                : html`
+                    <sl-input
+                      type="password"
+                      label="API Key"
+                      name="api_key"
+                      .value=${this.trackerToken}
+                      @sl-input=${(e: any) =>
+                        (this.trackerToken = e.target.value)}
+                      required
+                    ></sl-input>
+                  `
       }
     `;
+  }
+
+  /**
+   * Bitbucket Data Center settings: canonical instance URL, PAT and optional
+   * project/repository hints for manual discovery.
+   */
+  renderBitbucketDcFields() {
+    const blocked = this.isBitbucketDcEditBlocked;
+    return html`
+      <sl-alert variant="neutral" open class="bitbucket-dc-notice">
+        <sl-icon slot="icon" name="info-circle"></sl-icon>
+        <p style="margin: 0 0 0.5rem 0;">
+          <strong>Administrator approval required.</strong> Preloop only
+          connects to Bitbucket Data Center instances whose origin, port and
+          context path an administrator has approved for this deployment.
+          Private-network instances also need an explicit allowlist entry.
+          Unapproved instances are rejected when you continue.
+        </p>
+        <p style="margin: 0;">
+          <strong
+            >Fixture-tested against Data Center ${BITBUCKET_DC_VERSION}
+            LTS</strong
+          >
+          (REST 1.0); live certification is separate. Other releases are
+          reported as unsupported or unvalidated and operations the release does
+          not support are declined, never faked and never routed through
+          Bitbucket Cloud behaviour.
+        </p>
+      </sl-alert>
+      <sl-input
+        label="Instance URL"
+        name="url"
+        .value=${this.bitbucketDcInstanceUrl}
+        ?disabled=${!!this.tracker}
+        @sl-input=${(e: any) => {
+          this.bitbucketDcInstanceUrl = e.target.value;
+          this.trackerUrl = e.target.value;
+        }}
+        placeholder="https://bitbucket.example.com/stash"
+        help-text=${
+          this.tracker
+            ? 'The stored token is bound to this instance. Create a new tracker to connect a different instance.'
+            : 'https origin plus context path, if any. No credentials, query string or fragment.'
+        }
+        required
+      ></sl-input>
+      <sl-input
+        type="password"
+        label="Personal access token"
+        name="api_key"
+        .value=${this.trackerToken}
+        ?disabled=${blocked}
+        @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
+        help-text=${
+          this.tracker
+            ? 'Leave as is to keep the stored token. Enter a new token to replace it.'
+            : 'A Bitbucket Data Center personal access token with repository read and write permissions. Stored encrypted; never written to logs.'
+        }
+        password-toggle
+        required
+      ></sl-input>
+      <sl-input
+        label="Reviewer user slug"
+        name="bitbucket_dc_username"
+        .value=${this.trackerUsername ?? ''}
+        ?disabled=${blocked}
+        @sl-input=${(e: any) => (this.trackerUsername = e.target.value)}
+        help-text="Optional. Your Data Center user slug for review verdicts when the server does not identify the current user in its response. The PAT still uses Bearer authentication."
+      ></sl-input>
+      <sl-input
+        label="Project key"
+        name="bitbucket_dc_project_key"
+        .value=${this.bitbucketDcProjectKey}
+        ?disabled=${blocked}
+        @sl-input=${(e: any) => (this.bitbucketDcProjectKey = e.target.value)}
+        help-text="Optional. Limit discovery to one Data Center project key."
+      ></sl-input>
+      <sl-input
+        label="Repository ID"
+        name="bitbucket_dc_repository_id"
+        type="number"
+        min="1"
+        step="1"
+        .value=${this.bitbucketDcRepositoryId}
+        ?disabled=${blocked}
+        @sl-input=${(e: any) => (this.bitbucketDcRepositoryId = e.target.value)}
+        help-text="Optional. The numeric repository id stays stable when the repository is renamed."
+      ></sl-input>
+      <sl-input
+        label="Repository slug"
+        name="bitbucket_dc_repository_slug"
+        .value=${this.bitbucketDcRepositorySlug}
+        ?disabled=${blocked}
+        @sl-input=${(e: any) =>
+          (this.bitbucketDcRepositorySlug = e.target.value)}
+        help-text="Optional. The current repository slug; discovery resolves it against the repository id."
+      ></sl-input>
+    `;
+  }
+
+  /**
+   * Connection details sent for a Bitbucket Data Center tracker. The instance
+   * URL is canonical (https origin plus context path, no trailing slash) and
+   * optional discovery hints are only included when set.
+   *
+   * @throws Error when the instance URL or repository id is invalid.
+   */
+  bitbucketDcConnectionDetails(): BitbucketDcConnectionDetails {
+    const { url, error } = canonicalizeBitbucketDcUrl(
+      this.bitbucketDcInstanceUrl
+    );
+    if (!url) {
+      throw new Error(error ?? 'Invalid Bitbucket Data Center instance URL.');
+    }
+    const details: BitbucketDcConnectionDetails = {
+      instance_url: url,
+      version: BITBUCKET_DC_VERSION,
+    };
+    const reviewer = (this.trackerUsername ?? '').trim();
+    if (reviewer) {
+      details.username = reviewer;
+    }
+    const projectKey = this.bitbucketDcProjectKey.trim();
+    if (projectKey) {
+      details.project_key = projectKey;
+    }
+    const repositoryId = this.bitbucketDcRepositoryId.trim();
+    if (repositoryId) {
+      if (
+        !/^\d+$/.test(repositoryId) ||
+        !Number.isSafeInteger(Number(repositoryId)) ||
+        Number(repositoryId) <= 0
+      ) {
+        throw new Error('Repository ID must be a positive whole number.');
+      }
+      details.repository_id = Number(repositoryId);
+    }
+    const repositorySlug = this.bitbucketDcRepositorySlug.trim();
+    if (repositorySlug) {
+      details.repository_slug = repositorySlug;
+    }
+    return details;
   }
 
   /** Bitbucket Cloud settings: workspace, token kind and git identity. */
@@ -686,6 +1049,12 @@ export class AddTrackerModal extends LitElement {
 
   /** Extra options for the test and project-listing endpoints. */
   private connectionOptions(): api.TrackerConnectionOptions {
+    if (this.isBitbucketDc) {
+      return {
+        connectionDetails: this.bitbucketDcConnectionDetails(),
+        authType: 'api_token',
+      };
+    }
     if (this.trackerType !== 'bitbucket') {
       return {};
     }
@@ -693,6 +1062,31 @@ export class AddTrackerModal extends LitElement {
       connectionDetails: this.bitbucketConnectionDetails(),
       authType: this.bitbucketAuthType,
     };
+  }
+
+  /**
+   * Resolve the Data Center form into the canonical instance URL and
+   * connection details, surfacing validation problems as the form error.
+   * Returns null (with `errorMessage` set) when the form cannot be submitted.
+   */
+  private prepareBitbucketDc(): BitbucketDcConnectionDetails | null {
+    if (this.isBitbucketDcEditBlocked) {
+      this.errorMessage =
+        'Bitbucket Data Center is disabled on this deployment. Ask an administrator to enable the bitbucket_dc capability before editing this tracker.';
+      return null;
+    }
+    if (!this.tracker && !this.trackerToken.trim()) {
+      this.errorMessage = 'Enter a personal access token to continue.';
+      return null;
+    }
+    try {
+      const details = this.bitbucketDcConnectionDetails();
+      this.trackerUrl = details.instance_url;
+      return details;
+    } catch (error: any) {
+      this.errorMessage = error.message;
+      return null;
+    }
   }
 
   /**
@@ -811,6 +1205,12 @@ export class AddTrackerModal extends LitElement {
       this.isLoading = false;
       this.errorMessage =
         'Please connect with GitHub or enter an API token to continue.';
+      return;
+    }
+
+    // Data Center: validate the form before the PAT leaves the browser.
+    if (this.isBitbucketDc && !this.prepareBitbucketDc()) {
+      this.isLoading = false;
       return;
     }
 
@@ -1063,6 +1463,14 @@ export class AddTrackerModal extends LitElement {
   async handleSave() {
     this.isLoading = true;
     this.errorMessage = '';
+    let bitbucketDcDetails: BitbucketDcConnectionDetails | null = null;
+    if (this.isBitbucketDc) {
+      bitbucketDcDetails = this.prepareBitbucketDc();
+      if (!bitbucketDcDetails) {
+        this.isLoading = false;
+        return;
+      }
+    }
     const scopeRules = [];
     for (const org of this.orgs) {
       if (this.selectedOrgs[org.id]) {
@@ -1104,8 +1512,9 @@ export class AddTrackerModal extends LitElement {
       }
     }
 
-    const connectionDetails =
-      this.trackerType === 'bitbucket'
+    const connectionDetails: Record<string, unknown> = bitbucketDcDetails
+      ? bitbucketDcDetails
+      : this.trackerType === 'bitbucket'
         ? this.bitbucketConnectionDetails()
         : {
             username: this.trackerUsername,
@@ -1136,6 +1545,15 @@ export class AddTrackerModal extends LitElement {
     if (this.trackerType === 'bitbucket') {
       trackerData.url = BITBUCKET_WEB_URL;
       trackerData.auth_type = this.bitbucketAuthType;
+    }
+    if (bitbucketDcDetails) {
+      // The tracker URL is the canonical instance URL (origin plus context
+      // path); it must match connection_details.instance_url on the backend.
+      // Only manual PAT auth is supported; an untouched token stays
+      // 'unchanged' so the stored secret is preserved on edit.
+      trackerData.url = bitbucketDcDetails.instance_url;
+      trackerData.auth_type = 'api_token';
+      trackerData.api_key = this.trackerToken;
     }
 
     try {

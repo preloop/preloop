@@ -15,11 +15,30 @@ from pydantic import (
 )
 
 from preloop.models.crud.tracker import UNKNOWN_PROJECTS_META_KEY
-from preloop.models.models.tracker import TrackerType
+from preloop.models import models
 from preloop.utils.bitbucket import token_expiry_status as classify_token_expiry
 from .tracker_scope_rule import TrackerScopeRuleCreate, TrackerScopeRuleResponse
 
+TrackerType = models.TrackerType
+
 logger = logging.getLogger(__name__)
+
+
+class BitbucketDCConnectionDetails(BaseModel):
+    """Public, non-secret DC configuration; deployment trust is server-owned."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    instance_url: str = Field(..., description="Approved HTTPS origin and context path")
+    version: str = Field(
+        "10.2", description="Validated baseline: Bitbucket DC 10.2 LTS"
+    )
+    project_key: Optional[str] = None
+    repository_id: Optional[int] = Field(None, gt=0)
+    repository_slug: Optional[str] = None
+    username: Optional[str] = Field(
+        None, description="Optional reviewer user slug; never used for HTTP Basic auth"
+    )
 
 
 class TrackerBase(BaseModel):
@@ -28,11 +47,17 @@ class TrackerBase(BaseModel):
     name: str = Field(..., description="User-friendly name for the tracker")
     tracker_type: TrackerType = Field(..., description="Type of the issue tracker")
     url: Optional[HttpUrl] = Field(
-        None, description="URL of the tracker instance (required for Jira)"
+        None,
+        description="URL of the tracker instance (required for Jira and Bitbucket Data Center)",
     )
     is_active: bool = Field(True, description="Whether the tracker is active")
     connection_details: Optional[Dict[str, Any]] = Field(
-        default_factory=dict, description="Tracker-specific connection details"
+        default_factory=dict,
+        description=(
+            "Tracker-specific connection details. bitbucket_dc uses instance_url, version (10.2), "
+            "project_key, repository_id (numeric, stable across rename), repository_slug, and optional reviewer username. "
+            "Credentials and deployment trust settings must not be stored here."
+        ),
     )
     meta_data: Optional[Dict[str, Any]] = Field(
         default_factory=dict, description="Additional metadata"
@@ -64,7 +89,8 @@ class TrackerRegisterRequest(BaseModel):
         ..., description="Type of the issue tracker", alias="type"
     )
     url: Optional[HttpUrl] = Field(
-        None, description="URL of the tracker instance (required for Jira)"
+        None,
+        description="URL of the tracker instance (required for Jira and Bitbucket Data Center)",
     )
     api_key: str = Field(
         ..., description="API key or token for the tracker", alias="token"
@@ -96,10 +122,6 @@ class TrackerRegisterRequest(BaseModel):
             ]
         },
     )
-
-    def __init__(self, **data):
-        super().__init__(**data)
-        print("Incoming data:", data)
 
 
 class TrackerUpdate(BaseModel):
@@ -254,7 +276,12 @@ class TrackerTestRequest(BaseModel):
     url: Optional[str] = Field(None, description="URL of the tracker instance")
     api_key: str = Field(..., description="API key or token for the tracker")
     connection_details: Optional[Dict[str, Any]] = Field(
-        default_factory=dict, description="Tracker-specific connection details"
+        default_factory=dict,
+        description=(
+            "Tracker-specific connection details. bitbucket_dc uses instance_url, version (10.2), "
+            "project_key, repository_id (numeric, stable across rename), repository_slug, and optional reviewer username. "
+            "Credentials and deployment trust settings must not be stored here."
+        ),
     )
     organization_identifier: Optional[str] = Field(
         None, description="Identifier for the organization to fetch projects from"
@@ -263,7 +290,7 @@ class TrackerTestRequest(BaseModel):
         None,
         description=(
             "Authentication mode for trackers that support several "
-            "(Bitbucket: 'api_token' or 'oauth_token'). Ignored when "
+            "(Bitbucket Cloud: 'api_token' or 'oauth_token'; Data Center: 'api_token' user PAT only). Ignored when "
             "tracker_id is set: the stored mode is used."
         ),
     )

@@ -1,4 +1,4 @@
-"""Per-account storage budget for runtime-session screenshots and recordings.
+"""Per-account storage budget for runtime-session artifacts of every kind.
 
 A new artifact that would exceed the account budget evicts the oldest unheld
 bytes first. Held artifacts are never evicted. There is no per-account
@@ -22,6 +22,7 @@ from preloop.models.crud import (
     crud_runtime_session_activity,
     crud_runtime_session_artifact,
 )
+from preloop.services.artifact_media import ARTIFACT_KINDS
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
     build_account_event,
@@ -29,6 +30,9 @@ from preloop.services.account_realtime import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Evicted only after every media kind: small, and what reviewers search.
+_EVICT_LAST_KINDS: tuple[str, ...] = ("transcript", "document")
 
 
 def enforce_account_budget(
@@ -39,10 +43,11 @@ def enforce_account_budget(
 ) -> list[models.RuntimeSessionArtifact]:
     """Evict oldest unheld artifacts until ``incoming_bytes`` fits.
 
-    Recordings are chosen before screenshots, then oldest ``created_at``.
-    Alphabetical ``kind DESC`` would evict screenshots first (``screenshot``
-    sorts after ``recording``), so the query ranks ``recording`` ahead
-    explicitly. Each eviction clears ciphertext, writes an
+    Recordings are chosen first, then the other media kinds (screenshots,
+    screencasts, audio, generated files, traces), then transcripts and
+    documents, each tier oldest ``created_at`` first. Text kinds go last
+    because they are small and are what a reviewer searches. The query
+    ranks tiers explicitly rather than by kind name. Each eviction clears ciphertext, writes an
     ``artifact_evicted`` activity, and when the evicted artifact is a
     screenshot with an ``activity_id`` updates that browser step's
     ``metadata.screenshot.availability``. Recording evictions do not stamp
@@ -136,9 +141,26 @@ def account_usage(db: Session, *, account_id: UUID) -> dict[str, Any]:
         account_id: Account to total.
 
     Returns:
-        ``used_bytes``, ``budget_bytes``, ``by_kind`` plaintext bytes, and
+        ``used_bytes``, ``budget_bytes``, ``by_kind`` plaintext bytes for
+        every kind in :data:`ARTIFACT_KINDS` (zero when unused), and
         ``evicted_count_30d``.
     """
+    by_kind = {kind: 0 for kind in ARTIFACT_KINDS}
+    rows = (
+        db.query(
+            models.RuntimeSessionArtifact.kind,
+            func.coalesce(func.sum(models.RuntimeSessionArtifact.size_bytes), 0),
+        )
+        .filter(
+            models.RuntimeSessionArtifact.account_id == account_id,
+            models.RuntimeSessionArtifact.availability == "available",
+        )
+        .group_by(models.RuntimeSessionArtifact.kind)
+        .all()
+    )
+    for kind, total in rows:
+        if kind in by_kind:
+            by_kind[kind] = int(total or 0)
     since = datetime.now(UTC) - timedelta(days=30)
     evicted = (
         db.query(func.count(models.RuntimeSessionArtifact.id))
@@ -154,20 +176,13 @@ def account_usage(db: Session, *, account_id: UUID) -> dict[str, Any]:
             db, account_id=account_id
         ),
         "budget_bytes": int(settings.runtime_session_artifact_account_max_bytes),
-        "by_kind": {
-            "screenshot": crud_runtime_session_artifact.account_bytes(
-                db, account_id=account_id, kind="screenshot"
-            ),
-            "recording": crud_runtime_session_artifact.account_bytes(
-                db, account_id=account_id, kind="recording"
-            ),
-        },
+        "by_kind": by_kind,
         "evicted_count_30d": int(evicted or 0),
     }
 
 
 def _evictable(db: Session, *, account_id: UUID) -> list[models.RuntimeSessionArtifact]:
-    """Available unheld artifacts, recordings first, then oldest."""
+    """Available unheld artifacts: recordings, other media, then text kinds."""
     session_held = (
         select(models.RuntimeSession.id)
         .where(
@@ -197,6 +212,10 @@ def _evictable(db: Session, *, account_id: UUID) -> list[models.RuntimeSessionAr
         .order_by(
             case(
                 (models.RuntimeSessionArtifact.kind == "recording", 0),
+                (
+                    models.RuntimeSessionArtifact.kind.in_(_EVICT_LAST_KINDS),
+                    2,
+                ),
                 else_=1,
             ),
             models.RuntimeSessionArtifact.created_at.asc(),

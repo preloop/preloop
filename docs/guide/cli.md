@@ -61,6 +61,9 @@ preloop agents status <agent>            # local + remote enrollment state
 preloop agents list                      # managed agents in the account
 preloop agents validate <agent>          # config validation
 preloop agents validate <agent> --live   # + a live prompt through the agent
+preloop agents reconnect "Claude Code"  # sign in and repair subscription credentials only
+preloop agents reconnect "Codex CLI"    # same recovery for a ChatGPT subscription
+preloop agents reconnect "Claude Code" --from-local # use a fresh login completed separately
 preloop agents install-plugin <agent>    # Agent Control runtime plugin (openclaw | hermes)
 preloop agents install-runtime <hermes|openclaw>  # install the runtime itself, then onboard
 preloop agents restore <agent>           # restore the most recent local config backup
@@ -70,6 +73,14 @@ preloop agents starter-policy <mcp-server> [-o file] [--apply]
 ```
 
 Onboarding runs a live validation prompt by default; skip it with `--skip-live-validate`.
+
+`agents reconnect` preserves the existing enrollment, model bindings, policies,
+gateway config and backups. It repairs a shared credential once and attaches any
+legacy split model rows to it. It only updates subscription models owned by this
+machine's enrollment in the selected account. Use `--from-local` after completing
+`claude auth login --claudeai` or `codex login`. Expired or incomplete local
+credentials are refused. Update the CLI if your installed version does not yet
+provide this command.
 
 ### The onboarding summary table
 
@@ -156,6 +167,47 @@ preloop approvals pending [-l 20]
 preloop approvals approve <request-id> [-r "reason"]
 preloop approvals deny <request-id> [-r "reason"]
 ```
+
+## Sessions
+
+```bash
+preloop sessions list [--active] [--agent <id|name>] [--kind <kind>] [--since 2h] \
+  [--parent <session-id>] [--execution <id>] [--limit 50] [--json | -o id] [--wide]
+preloop sessions attach <session-id|short-id> [--execution <id>] [--read-only] [--since 10m] [--json]
+preloop sessions search "<query>" [--from 2026-09-01] [--to 2026-09-15] [--limit 20] [--json]
+```
+
+`sessions list` prints your account's runtime sessions, most recently active
+first: short id (`--wide` for the full id and the agent kind), agent, started,
+last activity, state (`live` for activity in the last 2 minutes, `idle` for
+open but quiet, `ended`), tool calls, model calls, pending approvals and a
+title. An untitled session is labelled with its agent kind, the base name of
+the working directory its hook reported and its start time; if two rows on the
+page would still share a label, the short id is appended.
+
+| Flag | Server filter |
+| --- | --- |
+| `--active` | open sessions with activity in the last 10 minutes |
+| `--agent <id\|name>` | one managed agent; an unknown name is refused, and a name shared by several agents asks for the id |
+| `--kind <kind>` | `claude-code`, `codex`, `cursor`, `hermes`, ...: managed agents of that kind and sessions recorded from that source |
+| `--since <duration>` | active within `30m`, `2h`, `7d`, ... (default: 30 days) |
+| `--parent <session-id>` | only the sessions that session spawned |
+| `--execution <id>` | only sessions linked to that flow execution |
+| `--limit N` | at most N rows (default 50, at most 1000) |
+
+`--json` prints the endpoint's own items (`GET /api/v1/runtime-sessions`), each
+with `computed_title` and `state` added, under `{"total": ..., "items": [...]}`.
+`-o id` prints one full id per line. The hint line naming
+`preloop notes send --session` is printed only to a terminal. To steer the
+session you found, see [Finding the session to steer](operator-notes.md#finding-the-session-to-steer).
+
+`sessions attach` follows one session live (model requests, tool calls,
+approvals, notes, the end), sends a typed line as an operator note and decides
+a pending approval with `a` or `d`. See
+[Attaching to a session from the terminal](sessions-attach.md).
+
+`sessions search` ranks session content by relevance with the same server
+query the console uses; `preloop sessions search --help` lists its flags.
 
 ## Usage import
 

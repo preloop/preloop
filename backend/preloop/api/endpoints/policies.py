@@ -31,6 +31,7 @@ from preloop.api.common import get_account_for_user
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
+from preloop.models.schemas.mcp_server import redact_snapshot_credentials
 from preloop.services.policy import (
     ModelIORule,
     PolicyApplier,
@@ -769,7 +770,7 @@ def _snapshot_to_metadata(snapshot) -> PolicyVersionMetadata:
 
 
 def _snapshot_to_full(snapshot) -> PolicyVersionFull:
-    """Convert a PolicySnapshot to PolicyVersionFull."""
+    """Convert a PolicySnapshot to PolicyVersionFull with credentials masked."""
     return PolicyVersionFull(
         id=snapshot.id,
         version_number=snapshot.version_number,
@@ -781,7 +782,7 @@ def _snapshot_to_full(snapshot) -> PolicyVersionFull:
         tools_count=snapshot.tools_count,
         created_at=snapshot.created_at.isoformat(),
         created_by_user_id=snapshot.created_by_user_id,
-        snapshot_data=snapshot.snapshot_data,
+        snapshot_data=redact_snapshot_credentials(snapshot.snapshot_data),
     )
 
 

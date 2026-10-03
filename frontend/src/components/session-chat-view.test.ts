@@ -96,7 +96,9 @@ describe('session-chat-view', () => {
         ]}
       ></session-chat-view>
     `);
-    const host = withMarker.shadowRoot?.querySelector('repository-chip') as
+    const host = withMarker.shadowRoot
+      ?.querySelector('session-tool-card')
+      ?.shadowRoot?.querySelector('repository-chip') as
       | (HTMLElement & {
           updateComplete: Promise<boolean>;
           renderRoot: ShadowRoot;
@@ -130,9 +132,11 @@ describe('session-chat-view', () => {
         ]}
       ></session-chat-view>
     `);
-    expect(withoutMarker.shadowRoot?.querySelector('repository-chip')).to.equal(
-      null
-    );
+    expect(
+      withoutMarker.shadowRoot
+        ?.querySelector('session-tool-card')
+        ?.shadowRoot?.querySelector('repository-chip')
+    ).to.equal(null);
   });
 
   it('renders empty state without events', async () => {

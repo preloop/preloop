@@ -148,3 +148,93 @@ def test_exists_for_suggestion_detects_matching_action(
         )
         is False
     )
+
+
+def test_list_applied_pairs_is_account_scoped(db_session, create_account) -> None:
+    """list_applied_pairs returns only this account's (session, suggestion) pairs."""
+    account = create_account()
+    other = create_account()
+    session = _create_runtime_session(db_session, account.id)
+    other_session = _create_runtime_session(db_session, other.id)
+    db_session.commit()
+    for acct, sess, suggestion in (
+        (account.id, session.id, "scope-tools"),
+        (account.id, session.id, "trim-context"),
+        (other.id, other_session.id, "scope-tools"),
+    ):
+        crud_runtime_session_optimization_action.create_applied(
+            db_session,
+            account_id=acct,
+            runtime_session_id=sess,
+            suggestion_id=suggestion,
+            suggestion_title="Example",
+            action_type="scope_tools",
+            params={},
+            applied_by="alice",
+            runtime_principal_id="agent-1",
+            baseline={},
+            result={},
+        )
+
+    pairs = crud_runtime_session_optimization_action.list_applied_pairs(
+        db_session, account_id=account.id
+    )
+
+    assert pairs == {
+        (str(session.id), "scope-tools"),
+        (str(session.id), "trim-context"),
+    }
+
+
+def test_list_for_account_honors_inclusive_start_and_exclusive_end(
+    db_session, create_account
+) -> None:
+    """Window bounds are [start, end) and other accounts never appear."""
+    account = create_account()
+    other = create_account()
+    session = _create_runtime_session(db_session, account.id)
+    other_session = _create_runtime_session(db_session, other.id)
+    db_session.commit()
+    start = datetime(2026, 9, 17, 9, 0, 0, 123456, tzinfo=UTC)
+    end = datetime(2026, 9, 24, 9, 0, 0, 654321, tzinfo=UTC)
+    stamps = {"at-start": start, "inside": start.replace(day=20), "at-end": end}
+    for suggestion, created_at in stamps.items():
+        action = crud_runtime_session_optimization_action.create_applied(
+            db_session,
+            account_id=account.id,
+            runtime_session_id=session.id,
+            suggestion_id=suggestion,
+            suggestion_title="Example",
+            action_type="scope_tools",
+            params={},
+            applied_by="alice",
+            runtime_principal_id="agent-1",
+            baseline={},
+            result={},
+        )
+        action.created_at = created_at
+    foreign = crud_runtime_session_optimization_action.create_applied(
+        db_session,
+        account_id=other.id,
+        runtime_session_id=other_session.id,
+        suggestion_id="foreign",
+        suggestion_title="Example",
+        action_type="scope_tools",
+        params={},
+        applied_by="alice",
+        runtime_principal_id="agent-1",
+        baseline={},
+        result={},
+    )
+    foreign.created_at = start.replace(day=20)
+    db_session.flush()
+
+    windowed = crud_runtime_session_optimization_action.list_for_account(
+        db_session, account_id=account.id, start=start, end=end
+    )
+    unbounded = crud_runtime_session_optimization_action.list_for_account(
+        db_session, account_id=account.id
+    )
+
+    assert {row.suggestion_id for row in windowed} == {"at-start", "inside"}
+    assert {row.suggestion_id for row in unbounded} == set(stamps)

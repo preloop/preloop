@@ -17,6 +17,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OTLP attribute stability policy.** `docs/guide/otlp-attribute-stability.md`
+  lists the stable `preloop.*` span attributes and metrics, the experimental
+  `gen_ai.*` names, and the deprecation window for renames (CHANGELOG
+  "Telemetry" entry, then both names emitted for at least two minor releases
+  or 60 days). A unit test keeps the exporter, the registry and the docs in
+  sync.
+
+- **Subscription reconnect without re-onboarding.** `preloop agents reconnect
+  "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
+  credentials while preserving enrollment, policy and configuration. Working
+  server credentials are preserved during repeated onboarding; credential imports
+  serialize with refresh and reject recently consumed tokens. Invalid grants stop
+  retrying until re-authorized, and gateway errors distinguish those from transient
+  provider failures.
+
+- **Exact digest periods in Cost.** `/console/cost` accepts an
+  `account_id`, `start_date` and `end_date` link (UTC, microsecond
+  precision) and shows that window without changing the saved preset;
+  mismatched or malformed links fetch nothing. Login keeps such return
+  paths and rejects non-local ones. Gateway usage CRUD adds full-window
+  model and agent rankings with unknown and remainder totals.
+
+- **Session artifacts guide.** `docs/guide/artifacts.md` covers kinds and
+  caps, labels, the MCP and REST deposit paths with tested examples, where
+  artifacts appear, retention and budget, the standards mapping and every
+  error code. The browser agents page now says what the console shows and
+  that Playwright MCP `--image-responses omit` yields steps without
+  screenshots (#1090).
+- **`deposit_artifact` MCP tool.** An agent stores a file, image, transcript
+  or text on its own runtime session through the MCP endpoint alone; it
+  shows up in the session's artifact list and timeline. Takes one MCP
+  content block, answers with a `resource_link` and the artifact descriptor,
+  and reports refusals with the same codes as the REST deposit API.
+  Default-off: enable it on the Tools page or in a flow's
+  `allowed_mcp_tools`. See `docs/architecture/mcp.md` (#1081).
 - **`preloop flow trigger --stop-on-interrupt`.** When `--wait` is
   interrupted by SIGINT or SIGTERM, the CLI stops the execution on the
   server (one stop request), prints the execution id and final status, and

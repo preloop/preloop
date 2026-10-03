@@ -507,3 +507,18 @@ describe('buildConversation', () => {
     ]);
   });
 });
+
+describe('transient live coverage', () => {
+  it('does not count request-start signals as missing conversation capture', () => {
+    const started: FlowGatewayEvent = {
+      id: 'start-example',
+      execution_id: 'exec-example',
+      timestamp: '2026-10-02T10:00:00Z',
+      type: 'model_gateway_request_started',
+      payload: { request_id: 'request-example' },
+    };
+    expect(
+      buildConversation([started], []).stats.eventsWithoutRawBody
+    ).to.equal(0);
+  });
+});

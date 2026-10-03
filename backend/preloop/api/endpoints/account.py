@@ -1081,10 +1081,16 @@ class AccountDetailsResponse(BaseModel):
 
 
 class SessionArtifactUsageByKind(BaseModel):
-    """Available plaintext bytes by artifact kind."""
+    """Available plaintext bytes by artifact kind (zero when unused)."""
 
-    screenshot: int
-    recording: int
+    screenshot: int = 0
+    recording: int = 0
+    screencast: int = 0
+    audio: int = 0
+    transcript: int = 0
+    document: int = 0
+    generated_file: int = 0
+    trace: int = 0
 
 
 class SessionArtifactUsageResponse(BaseModel):
@@ -2553,6 +2559,33 @@ async def list_account_runtime_sessions(
     end_date: Optional[datetime] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    agent: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Managed agent id or display name; only that agent's sessions",
+    ),
+    agent_kind: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Agent kind (claude_code, codex, cursor, hermes, ...); sessions of "
+            "managed agents of that kind or recorded from that source"
+        ),
+    ),
+    parent_session_id: Optional[UUID] = Query(
+        None, description="Only sessions this session spawned"
+    ),
+    flow_execution_id: Optional[UUID] = Query(
+        None, description="Only sessions linked to this flow execution"
+    ),
+    active_within_minutes: Optional[int] = Query(
+        None,
+        ge=1,
+        le=1440,
+        description="Only open sessions with activity in the last N minutes",
+    ),
 ):
     """List runtime sessions for the current account."""
     # Off the loop on purpose: the console polls this path, and a saturated
@@ -2568,6 +2601,11 @@ async def list_account_runtime_sessions(
             limit=limit,
             offset=offset,
             background_tasks=background_tasks,
+            agent=agent,
+            agent_kind=agent_kind,
+            parent_session_id=str(parent_session_id) if parent_session_id else None,
+            flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
+            active_within_minutes=active_within_minutes,
         )
     )
 

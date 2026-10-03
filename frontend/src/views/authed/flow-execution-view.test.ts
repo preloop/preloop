@@ -1961,18 +1961,26 @@ describe('FlowExecutionView', () => {
     });
 
     it('drops the connection-state listener when the view goes away', async () => {
-      const unsubscribeState = sinon.spy();
+      const unsubscribers: sinon.SinonSpy[] = [];
       const stateStub = sinon
         .stub(unifiedWebSocketManager, 'onStateChange')
-        .returns(unsubscribeState);
+        .callsFake(() => {
+          const unsubscribe = sinon.spy();
+          unsubscribers.push(unsubscribe);
+          return unsubscribe;
+        });
 
       try {
         const element = await load('exec-running');
-        expect(unsubscribeState.called).to.be.false;
+        expect(unsubscribers.length).to.be.at.least(1);
+        expect(unsubscribers.every((unsubscribe) => !unsubscribe.called)).to.be
+          .true;
 
         element.remove();
-        expect(unsubscribeState.calledOnce, 'state listener released').to.be
-          .true;
+        expect(
+          unsubscribers.every((unsubscribe) => unsubscribe.calledOnce),
+          'every view and nested session listener released'
+        ).to.be.true;
       } finally {
         stateStub.restore();
       }
