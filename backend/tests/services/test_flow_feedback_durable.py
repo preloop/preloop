@@ -1010,9 +1010,10 @@ async def test_failed_launch_without_a_session_retries_the_published_branch(
 ) -> None:
     """A private-runner launch that dies before a session still owes its review.
 
-    The failed execution already consumed the review and incremented the turn.
-    The next reconciliation puts the review back and continues on the published
-    branch instead of demanding a checkpoint that was never stored.
+    The failed execution consumed the review and reserved a turn. The next
+    reconciliation puts the review back, refunds the turn (no agent ran) and,
+    after a launch backoff, continues on the published branch instead of
+    demanding a checkpoint that was never stored.
     """
     from preloop.config import settings
     from preloop.services.flow_feedback import resolve_native_checkpoint
@@ -1066,8 +1067,16 @@ async def test_failed_launch_without_a_session_retries_the_published_branch(
                 *crud_flow_feedback.claim_due(db, now=NOW + timedelta(seconds=31))[0],
                 now=NOW + timedelta(seconds=31),
             )
+            db.refresh(thread)
+            assert thread.turns == 0
+            assert thread.active_execution_id is None
+            assert thread.stop_reason == "resume_launch_retry"
+            later = NOW + timedelta(seconds=31 + 241)
+            await _reconcile(
+                db, *crud_flow_feedback.claim_due(db, now=later)[0], now=later
+            )
         db.refresh(thread)
-        assert thread.turns == 2
+        assert thread.turns == 1
         assert thread.active_execution_id != failed.id
         repair = db.get(models.FlowExecution, thread.active_execution_id)
         assert repair is not None
@@ -1165,7 +1174,8 @@ async def test_stopped_sessionless_thread_is_picked_up_again(
         db.refresh(thread)
         assert thread.no_progress == 0
         assert thread.state != "stopped"
-        assert thread.turns == 4
+        # The launch never reached an agent, so its turn is refunded.
+        assert thread.turns == 2
 
 
 def test_permanent_stops_do_not_crowd_out_a_sessionless_thread(
@@ -2048,3 +2058,78 @@ def test_register_thread_binds_bitbucket_pr() -> None:
         assert values["repository_id"] == "ws/22222222-2222-2222-2222-222222222222"
         assert values["pr_number"] == "7"
         assert values["provider"] == "bitbucket"
+
+
+@pytest.mark.asyncio
+async def test_refused_resumes_do_not_burn_the_budget_or_fan_out(
+    database: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One review whose resume is refused at launch keeps its turn budget.
+
+    A repair that fails during initialization (``resume_failed: ...``,
+    no session, no runtime, no tokens) spent no model work. It gives its
+    turn back and the next attempt waits out a backoff, so one review does
+    not become one failed resume per reconciliation until the budget is gone.
+    """
+    from preloop.config import settings
+    from preloop.services.flow_feedback import run_feedback_tick
+
+    monkeypatch.setattr(settings, "flow_artifact_direct_upload", False)
+    dispatched = AsyncMock(return_value=True)
+    provider = SimpleNamespace(
+        read=AsyncMock(return_value=FeedbackState("head", feedback=[event("review")]))
+    )
+    with Session(database) as db:
+        thread = create_thread(db)
+        policy = {"enabled": True, "debounce_seconds": 30, "max_turns": 5}
+        flow = db.get(models.Flow, thread.flow_id)
+        assert flow is not None
+        flow.agent_config = {"feedback": policy}
+        thread.policy = dict(policy)
+        db.commit()
+        crud_flow_feedback.ingest(
+            db, thread_id=thread.id, events=[event("review")], now=NOW
+        )
+        with (
+            patch(
+                "preloop.services.flow_feedback.FeedbackProvider.for_thread",
+                AsyncMock(return_value=provider),
+            ),
+            patch(
+                "preloop.services.flow_execution_dispatcher.flow_execution_worker_enabled",
+                return_value=True,
+            ),
+            patch(
+                "preloop.services.flow_execution_dispatcher.dispatch_execute",
+                dispatched,
+            ),
+        ):
+            # Simulate every reconciliation tick for 30 minutes. Each launch
+            # is refused during initialization, as on the affected deployment.
+            now = NOW
+            for _ in range(60):
+                thread.due_at = now
+                db.commit()
+                await run_feedback_tick(db, now=now)
+                db.refresh(thread)
+                if thread.active_execution_id is not None:
+                    launched = db.get(models.FlowExecution, thread.active_execution_id)
+                    assert launched is not None
+                    launched.status = "FAILED"
+                    launched.error_message = "resume_failed: native checkpoint missing"
+                    launched.cli_session = None
+                    db.commit()
+                now += timedelta(seconds=30)
+        db.refresh(thread)
+        launches = db.query(models.FlowExecution).filter(
+            models.FlowExecution.flow_id == thread.flow_id,
+            models.FlowExecution.status == "FAILED",
+        )
+        # Backoff 4, 16 minutes: three launches in 30 minutes, not dozens.
+        assert dispatched.await_count == launches.count()
+        assert 1 <= launches.count() <= 3
+        assert thread.turns == 0
+        assert thread.state != "stopped"
+        assert (thread.cursor or {}).get("launch_failures", 0) >= 2
+        assert thread.stop_reason == "resume_launch_retry"
+        assert len(crud_flow_feedback.pending(db, thread.id)) == 1
