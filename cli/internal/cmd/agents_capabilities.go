@@ -76,6 +76,14 @@ func agentSupportListingLabel(agent AgentConfig) string {
 	)
 }
 
+func agentDiscoverySearchLabel() string {
+	names := make([]string, 0, len(agentSpecs))
+	for _, spec := range agentSpecs {
+		names = append(names, spec.Name)
+	}
+	return "Looked for: " + strings.Join(names, ", ")
+}
+
 const mcpOnlySupportLabel = "model routing unsupported by current Preloop adapter"
 
 const directGatewayProbeEvidence = "direct gateway route/accounting probe passed; application behavior unverified"

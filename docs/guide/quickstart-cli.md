@@ -73,12 +73,12 @@ Each agent shows its **onboarding state**:
 
 | Badge | Meaning |
 |-------|---------|
-| `Fully onboarded` | Tool calls are routed through the MCP Firewall **and** model calls go through the Gateway. Agent Control still requires a loaded runtime plugin. |
-| `MCP only` | Tool calls are firewalled, but the agent still uses its own model credentials. |
-| `Gateway only` | Model traffic is gated, but the agent still calls tools directly. |
+| `Fully onboarded` | The managed MCP entry and model gateway are configured. Only calls routed through that MCP entry reach Preloop. Agent Control still requires a loaded runtime plugin. |
+| `MCP only` | The managed MCP entry is configured; no managed model gateway is configured. |
+| `Gateway only` | The model gateway is configured; no managed MCP entry is configured. |
 | `Incomplete` | Detected but not fully managed yet. Run `preloop agents onboard <name>` to connect it. |
 
-An agent can also carry an **unverified** note ("Live check throttled, unverified" or "Upstream refused, unverified"): enrollment succeeded, but the live validation prompt was throttled or refused upstream, so model traffic has not been proven end-to-end yet. Clear it with `preloop agents validate <name> --live`.
+An agent can also carry an **unverified** note ("Live check throttled, unverified" or "Upstream refused, unverified"): enrollment succeeded, but the direct gateway route/accounting probe was throttled or refused upstream. Retry it with `preloop agents validate <name> --live`. The probe does not launch the application; even a successful probe leaves application behavior unverified.
 
 Batch onboarding continues past individual failures and ends with a per-agent summary table (`onboarded` / `partial` / `failed` plus a Reason). The command exits 0 when at least one agent onboarded fully or partially, see [CLI Reference](cli.md#the-onboarding-summary-table) for the exact semantics.
 

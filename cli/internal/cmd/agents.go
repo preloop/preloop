@@ -897,7 +897,7 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 
 	if len(discovered) == 0 {
 		fmt.Println("No AI agents found on this machine.")
-		fmt.Println("Looked for: Claude Code, Cursor, Windsurf, VSCode, Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes, Antigravity, Devin, Copilot CLI")
+		fmt.Println(agentDiscoverySearchLabel())
 		return nil
 	}
 

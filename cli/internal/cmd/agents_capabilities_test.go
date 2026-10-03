@@ -96,6 +96,9 @@ func TestControlDisclosureText(t *testing.T) {
 
 func TestControlDisclosureHelpMatchesDispatch(t *testing.T) {
 	for _, spec := range agentSpecs {
+		if !strings.Contains(agentDiscoverySearchLabel(), spec.Name) {
+			t.Fatalf("empty discovery message missing registered app %s", spec.Name)
+		}
 		if !strings.Contains(agentsDiscoverCmd.Long, spec.Name) {
 			t.Fatalf("discovery help missing registered app %s", spec.Name)
 		}
