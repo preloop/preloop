@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Governed virtual employees and private chat.** Bounded Codex and Nanobot
+  tasks accept durable tracker, signed incident and Discord events. Nanobot
+  supports DeepSeek through the model gateway. Slack, Mattermost and Discord
+  connections link human identities for scoped inventory/spend questions, approval
+  votes, notes and active-session prompts. Private replies recheck access before
+  delivery; replay protection and uncertain-effect states avoid blind retries.
+  Setup requires the chat migration, a supervised worker and provider credentials;
+  Codex employee tasks require the matching execution-scoped CLI hooks.
+
 - **Subscription reconnect without re-onboarding.** `preloop agents reconnect
   "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
   credentials while preserving enrollment, policy and configuration. Working
