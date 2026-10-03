@@ -4,12 +4,14 @@
 // gateway-probe helpers that the orchestrator calls after CLI onboarding
 // completes. Each helper sends a real, account-bound model request through
 // the Preloop gateway, then waits for the request to be indexed in the
-// gateway-usage search so we can prove end-to-end that:
+// gateway-usage search to verify the direct gateway route and accounting, independently of application behavior:
 //
-//   - the durable credential the CLI installed actually authenticates,
+//   - the durable credential read from managed config authenticates,
 //   - the managed model alias is bound to a working AI model,
 //   - the upstream provider returns a non-error response, and
 //   - the request was logged on the account's audit/usage trail.
+//
+// These helpers do not launch the application or prove it consumed its config.
 //
 // Historically only OpenClaw and Codex CLI had bespoke implementations;
 // every other agent kind silently reported ``Live check: unsupported`` and
@@ -1303,7 +1305,7 @@ func runDeferredLiveValidationsParallel(
 
 	fmt.Fprintf(
 		output,
-		"\nSending test prompts through gateway for %d agent(s) in parallel...\n",
+		"\nSending direct gateway route/accounting probes for %d agent(s) in parallel...\n",
 		len(supported),
 	)
 
@@ -1534,7 +1536,7 @@ func printDeferredLiveValidationLine(
 				label = "failed (transient upstream error after retries)"
 			}
 			fmt.Fprint(output, formatCLIError(fmt.Sprintf(
-				"  ✗ %s: round-trip FAILED (%s), model=%s, latency=%.1fs: %v\n",
+				"  ✗ %s: direct gateway route/accounting probe FAILED (%s), model=%s, latency=%.1fs: %v\n",
 				name,
 				label,
 				deferredLiveValidationModelAlias(result),
@@ -1604,12 +1606,14 @@ func applyLiveValidationOutcomesToSummary(
 	}
 }
 
-// liveValidationSummaryReason renders the one-line summary Reason for an
-// attempted-but-not-passed live validation, or "" when there is nothing to
-// warn about (passed, skipped, or unsupported).
+// liveValidationSummaryReason renders direct gateway probe evidence or failure.
+// Success still leaves application behavior unverified; skipped probes add no evidence.
 func liveValidationSummaryReason(result deferredLiveValidationResult) string {
-	if result.Outcome == nil || !result.Outcome.Attempted || result.Outcome.Passed {
+	if result.Outcome == nil || !result.Outcome.Attempted {
 		return ""
+	}
+	if result.Outcome.Passed {
+		return directGatewayProbeEvidence
 	}
 	quotedName := shellQuoteAgentName(resolveAgentDisplayName(result.Agent))
 	revalidate := fmt.Sprintf(

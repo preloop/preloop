@@ -251,48 +251,34 @@ func isClaudeDesktopAgent(agent AgentConfig) bool {
 	return strings.EqualFold(strings.TrimSpace(agent.Name), "claude desktop")
 }
 
-// mcpOnlyAgentModelNote returns a clear, agent-specific note explaining why
-// an agent is onboarded for tool-call governance only and its model traffic
-// is not routed through the Preloop gateway. These agents either expose no
-// programmatic custom-base-URL hook (Cursor) or run inference exclusively on
-// a vendor backend that cannot be redirected (Antigravity, Devin). Returns
-// "" for agents that do support gateway routing.
+// mcpOnlyAgentModelNote describes limitations of the current Preloop adapter,
+// without inferring vendor limitations or verification from the app type.
 func mcpOnlyAgentModelNote(agent AgentConfig) string {
-	// Every mcp-only note leads with the shared support-level phrase so the
-	// onboarding output matches the discovery listing and summary table:
-	// this is a support level of the agent type, not an incomplete
-	// onboarding.
-	switch {
-	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
-		return mcpOnlySupportLabel + ": Cursor tool calls are governed through " +
-			"Preloop's MCP firewall. Cursor only accepts a custom model base URL via " +
-			"its in-app Settings → Models (global, no config-file hook), so Preloop " +
-			"does not rewrite model traffic automatically. Setting the OpenAI base " +
-			"URL override there to your Preloop gateway URL routes the AI panel's " +
-			"third-party model calls (Ask/Plan and Agent modes) through Preloop; " +
-			"Tab, inline edit, and Cursor-billed bundled models stay on Cursor's " +
-			"backend."
-	case strings.EqualFold(strings.TrimSpace(agent.Name), "claude desktop"):
-		return mcpOnlySupportLabel + ": Claude Desktop tool calls are governed " +
-			"through Preloop's MCP firewall. Claude Desktop's model traffic is fixed " +
-			"to Anthropic's backend by design and cannot be repointed, so MCP-level " +
-			"governance is the complete onboarding for this agent type."
-	case isAntigravityAgent(agent):
-		return mcpOnlySupportLabel + ": Antigravity tool calls are governed through " +
-			"Preloop's MCP firewall. Antigravity is locked to Google-hosted models " +
-			"with no BYO key or custom base URL, so model traffic cannot be routed " +
-			"through the Preloop gateway."
-	case isDevinAgent(agent):
-		return mcpOnlySupportLabel + ": Devin tool calls are governed through " +
-			"Preloop's MCP firewall. Devin runs all inference in Cognition's cloud " +
-			"and does not support third-party LLM endpoints, so model traffic cannot " +
-			"be routed through the Preloop gateway."
-	case supportLevelForAgent(agent) == agentSupportLevelMCPOnly:
-		return mcpOnlySupportLabel + ": tool calls are governed through Preloop's " +
-			"MCP firewall; this agent type exposes no hook for rewriting model " +
-			"traffic."
-	default:
+	if capabilitiesForAgent(agent).ModelRoute == controlSupported {
 		return ""
+	}
+	scope := ": only calls routed through the managed MCP entry reach Preloop. "
+	switch {
+	case isClaudeDesktopAgent(agent):
+		return mcpOnlySupportLabel + scope +
+			"The current Preloop adapter adds a managed MCP bridge and does not configure Desktop model routing. " +
+			"Vendor gateway/bootstrap support exists and needs a separately verified adapter: " +
+			"https://code.claude.com/docs/en/claude-apps-gateway."
+	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
+		return mcpOnlySupportLabel + scope +
+			"Cursor native action gates are supported separately via --approvals. " +
+			"Preloop does not automatically rewrite Cursor model traffic; its in-app Settings → Models " +
+			"base URL override requires separate configuration and verification."
+	case isCopilotCLIAgent(agent):
+		return mcpOnlySupportLabel + scope +
+			"Copilot CLI native action gates are supported separately via --approvals. " +
+			"The current Preloop adapter does not configure Copilot CLI model routing."
+	default:
+		if capabilitiesForAgent(agent).ManagedMCP != controlSupported {
+			return "Adapter support unknown; application behavior unverified."
+		}
+		return mcpOnlySupportLabel + scope +
+			"This describes the current Preloop adapter, not all vendor integration options."
 	}
 }
 
@@ -310,17 +296,21 @@ var agentsDiscoverCmd = &cobra.Command{
 	Long: `Scan standard configuration paths for known AI agents and display their
 MCP server configurations without mutating local files or your Preloop account.
 
-Supported agents: Claude Code, Cursor, Windsurf, VSCode/Copilot,
-                  Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes,
-                  Antigravity, Devin, Copilot CLI.
+Supported agents: Pi, DeepSeek Harness, Claude Code, Claude Desktop, Cursor,
+                  Windsurf, VSCode / Copilot, Gemini CLI, OpenCode, Codex CLI,
+                  OpenClaw, Hermes, Antigravity, Devin, Copilot CLI.
 
 Each listed agent shows a pre-onboarding readiness probe:
   Auth     Ready / Not logged in / Unknown, detected from the agent's local
-           auth artifacts. A not-logged-in agent can still be onboarded; live
-           validation will fail until the agent logs in.
-  Support  Full (MCP firewall + model routing), or MCP-governed when the
-           agent type offers no way to route model traffic (a support level,
-           not a failure).
+           auth artifacts. A not-logged-in agent can still be onboarded; model
+           routing may require provider credentials.
+  Support  Independent model-routing, native-action-gate and managed-MCP
+           adapter support. Support does not mean installed or verified.
+           Only calls routed through the managed MCP entry reach Preloop.
+
+Live validation sends a direct gateway route/accounting probe using managed
+configuration. It does not launch the application or verify that the application
+consumed its configuration.
 
 When the post-scan onboarding prompts run, an error onboarding one agent does
 not stop the remaining agents; a per-agent summary (onboarded / partial /
@@ -841,23 +831,23 @@ func init() {
 	agentsDiscoverCmd.Flags().Bool("no-onboard-prompt", false, "do not prompt to onboard discovered agents")
 	agentsDiscoverCmd.Flags().BoolP("yes", "y", false, "auto-approve interactive onboarding prompts")
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
-	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a live validation prompt after onboarding")
+	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding")
 	_ = agentsDiscoverCmd.Flags().MarkDeprecated("add", "use 'preloop agents onboard [agent]'")
 	agentsEnrollCmd.Flags().Bool("dry-run", false, "preview account and config changes without writing")
 	agentsEnrollCmd.Flags().BoolP("yes", "y", false, "skip the onboarding confirmation prompt")
 	agentsEnrollCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsEnrollCmd.Flags().Bool("all", false, "onboard all discovered agents")
-	agentsEnrollCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported live validation prompt through the agent (default: true; pass --skip-live-validate or --live-validate=false to opt out)")
-	agentsEnrollCmd.Flags().Bool("skip-live-validate", false, "do not run a live validation prompt after onboarding (overrides --live-validate)")
+	agentsEnrollCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported direct gateway route/accounting probe (application behavior unverified) (default: true; pass --skip-live-validate or --live-validate=false to opt out)")
+	agentsEnrollCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding (overrides --live-validate)")
 	agentsEnrollCmd.Flags().StringSlice("tags", []string{}, "add key-value tags to the enrolled agent (e.g., --tags ext=true,env=prod)")
-	agentsEnrollCmd.Flags().Bool("approvals", false, "install native hooks for central policy and mobile/watch approvals (Claude Code, Cursor, Codex CLI)")
+	agentsEnrollCmd.Flags().Bool("approvals", false, "install native action gates for central policy and mobile/watch approvals (Claude Code, Cursor, Codex CLI, Copilot CLI, OpenCode, Pi, DeepSeek Harness)")
 	agentsEnrollCmd.Flags().Bool("no-usage-hooks", false, "Cursor only: do not install the usage hooks that store conversations as runtime sessions with a token estimate (installed by default)")
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
-	agentsValidateCmd.Flags().Bool("live", false, "run a supported live validation prompt in addition to config validation")
+	agentsValidateCmd.Flags().Bool("live", false, "run a supported direct gateway route/accounting probe in addition to config validation (application behavior unverified)")
 	agentsInstallPluginCmd.Flags().Bool("dry-run", false, "print the runtime plugin installation command without running it")
 	agentsRestoreCmd.Flags().BoolP("yes", "y", false, "skip the restore confirmation prompt")
 	agentsRestoreCmd.Flags().BoolP("force", "f", false, "alias for --yes")
@@ -907,7 +897,7 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 
 	if len(discovered) == 0 {
 		fmt.Println("No AI agents found on this machine.")
-		fmt.Println("Looked for: Claude Code, Cursor, Windsurf, VSCode, Gemini CLI, OpenCode, Codex CLI, OpenClaw, Hermes, Antigravity, Devin, Copilot CLI")
+		fmt.Println(agentDiscoverySearchLabel())
 		return nil
 	}
 
@@ -1718,6 +1708,7 @@ func runAgentsStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Agent name: %s\n", resolveAgentDisplayName(agent))
 	fmt.Printf("Config: %s\n", agent.ConfigPath)
 	fmt.Printf("Runtime principal: %s\n", runtimePrincipalIDForAgent(agent))
+	printAgentStatusDisclosure(os.Stdout, agent)
 	if localState != nil {
 		fmt.Printf("Local backup: %s\n", localState.BackupPath)
 		fmt.Printf("Managed MCP URL: %s\n", localState.ManagedServerURL)
@@ -3757,11 +3748,11 @@ func onboardingStateFromValidation(validation map[string]interface{}) string {
 func onboardingStateLabel(state string) string {
 	switch strings.TrimSpace(state) {
 	case "fully_onboarded":
-		return "Fully onboarded"
+		return "MCP bridge and model gateway configured"
 	case "mcp_proxy_only":
-		return "MCP proxy only"
+		return "Managed MCP bridge configured"
 	case "gateway_only":
-		return "Model gateway only"
+		return "Model gateway configured"
 	default:
 		return "Incomplete"
 	}
@@ -3770,13 +3761,13 @@ func onboardingStateLabel(state string) string {
 func onboardingStateNote(state string) string {
 	switch strings.TrimSpace(state) {
 	case "fully_onboarded":
-		return "Tool calls and model traffic are both routed through Preloop."
+		return "Managed MCP entry and model gateway are configured; only calls routed through the managed MCP entry reach Preloop; application behavior unverified."
 	case "mcp_proxy_only":
-		return "Tool calls are routed through Preloop, but model traffic is still direct."
+		return "Managed MCP entry is configured; only calls routed through that entry reach Preloop. No model gateway configuration detected; application behavior unverified."
 	case "gateway_only":
-		return "Model traffic is routed through Preloop, but MCP tool traffic is still direct."
+		return "Model gateway is configured; no managed MCP entry detected; application behavior unverified."
 	default:
-		return "This agent is not fully managed by Preloop yet."
+		return "Managed MCP and model gateway configuration is incomplete; application behavior unverified."
 	}
 }
 

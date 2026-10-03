@@ -108,7 +108,7 @@ func TestPromptToOnboardCandidatesTiered_AutoApproveOrdersVerifiedFirst(t *testi
 		t.Fatalf("expected verified agent first, got %v", enrolledOrder)
 	}
 	rendered := output.String()
-	if !strings.Contains(rendered, "couldn't verify model routing") {
+	if !strings.Contains(rendered, "lack automatic model-routing support or usable provider credentials") {
 		t.Fatalf("expected tier explanation, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "Cursor: "+mcpOnlySupportLabel) {
@@ -119,7 +119,7 @@ func TestPromptToOnboardCandidatesTiered_AutoApproveOrdersVerifiedFirst(t *testi
 	}
 	// The explanation must precede the second-tier enrollment, i.e. appear
 	// after the first tier's heading.
-	if strings.Index(rendered, "verified model routing first") > strings.Index(rendered, "couldn't verify model routing") {
+	if strings.Index(rendered, "model-routing support and available credentials first") > strings.Index(rendered, "lack automatic model-routing support or usable provider credentials") {
 		t.Fatalf("expected tier-1 heading before tier-2 explanation, got %q", rendered)
 	}
 }
@@ -157,7 +157,7 @@ func TestPromptToOnboardCandidatesTiered_InteractiveTwoStepAsk(t *testing.T) {
 		t.Fatalf("expected a single OpenClaw outcome, got %#v", outcomes)
 	}
 	rendered := output.String()
-	if !strings.Contains(rendered, "couldn't verify model routing") ||
+	if !strings.Contains(rendered, "lack automatic model-routing support or usable provider credentials") ||
 		!strings.Contains(rendered, "Onboard anyway?") {
 		t.Fatalf("expected interactive tier-2 explanation, got %q", rendered)
 	}

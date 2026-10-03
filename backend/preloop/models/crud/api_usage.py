@@ -16,6 +16,8 @@ from sqlalchemy import (
     literal_column,
     or_,
     select,
+    true,
+    union_all,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased, joinedload
@@ -29,6 +31,7 @@ ApiUsage = models.ApiUsage
 Flow = models.Flow
 FlowExecution = models.FlowExecution
 ManagedAgent = models.ManagedAgent
+ApiKey = models.ApiKey
 RuntimeSession = models.RuntimeSession
 User = models.User
 
@@ -175,6 +178,19 @@ def _usage_account_clause(
     )
 
 
+def _api_key_owner_id(db: Session, api_key_id: Any) -> Optional[uuid.UUID]:
+    """Owner of an API key, for per-user budgets; ``None`` if unknown."""
+    try:
+        key_id = (
+            api_key_id
+            if isinstance(api_key_id, uuid.UUID)
+            else uuid.UUID(str(api_key_id))
+        )
+    except (TypeError, ValueError):
+        return None
+    return db.query(ApiKey.user_id).filter(ApiKey.id == key_id).scalar()
+
+
 class CRUDApiUsage(CRUDBase[ApiUsage]):
     """CRUD operations for API usage tracking."""
 
@@ -291,6 +307,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         user_id: Optional[str] = None,
         account_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
+        api_key_user_id: Optional[Any] = None,
         auth_subject_type: Optional[str] = None,
         ai_model_id: Optional[str] = None,
         flow_id: Optional[str] = None,
@@ -318,7 +335,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         rate_limit_retry_after_ms: Optional[int] = None,
         meta_data: Optional[Dict[str, Any]] = None,
     ) -> ApiUsage:
-        """Log a model gateway request with usage and attribution fields."""
+        """Log a model gateway request with usage and attribution fields.
+
+        ``api_key_user_id`` is the owner of ``api_key_id`` when the caller
+        already knows it (the gateway does); otherwise it is looked up, once,
+        for the per-user budget scope.
+        """
         db_obj = ApiUsage(
             user_id=user_id,
             account_id=account_id,
@@ -385,6 +407,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 subject_scopes: list[tuple[str, Optional[str]]] = []
                 if api_key_id:
                     subject_scopes.append(("api_key", str(api_key_id)))
+                    # A per-user budget also counts calls made with an API key
+                    # the user owns. Agent traffic counts against the agent's
+                    # owner instead (below), so one call never counts against
+                    # two users.
+                    if not managed_agent_id and auth_subject_type != "managed_agents":
+                        key_owner_id = api_key_user_id or _api_key_owner_id(
+                            db, api_key_id
+                        )
+                        if key_owner_id:
+                            subject_scopes.append(("user", str(key_owner_id)))
                 if managed_agent_id:
                     subject_scopes.append(("managed_agent", str(managed_agent_id)))
                     # A per-user budget counts spend from every agent the user
@@ -2292,6 +2324,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         self,
         db: Session,
         execution_ids: Sequence[Any],
+        *,
+        account_id: Optional[Any] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Return the model aliases that served each execution, most used first.
 
@@ -2316,6 +2350,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Args:
             db: Database session.
             execution_ids: Execution ids to aggregate (str or UUID).
+            account_id: The account that owns the executions. Optional, but
+                callers that know it should pass it: it bounds the runtime
+                session lookup to that account's sessions and lets it use
+                the account/source unique index.
 
         Returns:
             ``{execution_id: [{"model_alias", "provider_name",
@@ -2326,46 +2364,96 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ids = [str(execution_id) for execution_id in execution_ids if execution_id]
         if not ids:
             return {}
+        uuid_ids: List[uuid.UUID] = []
+        for execution_id in ids:
+            try:
+                uuid_ids.append(uuid.UUID(execution_id))
+            except ValueError:
+                continue
 
-        # The execution an attributed row belongs to: its own
-        # flow_execution_id when set, else the execution id its runtime
-        # session was created for.
-        session_execution_id = case(
-            (
-                and_(
-                    RuntimeSession.session_source_type == "flow_execution",
-                    RuntimeSession.session_source_id.isnot(None),
-                ),
-                RuntimeSession.session_source_id,
-            ),
-            else_=None,
-        )
-        execution_key = func.coalesce(
-            cast(ApiUsage.flow_execution_id, String), session_execution_id
-        )
+        # The two attributions are read as two index-driven branches, each
+        # grouped on its own, and only then merged. Matching
+        # ``coalesce(cast(flow_execution_id), <session source id>)`` against
+        # the page's ids, as this used to, cannot use any index: every list
+        # request read every gateway row of every account (issue #1197).
+        def _gateway_rows(*conditions: Any) -> List[Any]:
+            return [
+                *conditions,
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.model_alias.isnot(None),
+                exclude_replay_usage_condition(),
+            ]
 
-        rows = (
-            db.query(
-                execution_key.label("execution_id"),
+        # Branch 1, direct attribution: ``ix_api_usage_flow_execution_id``.
+        direct = (
+            select(
+                cast(ApiUsage.flow_execution_id, String).label("execution_id"),
                 ApiUsage.model_alias.label("model_alias"),
                 func.max(ApiUsage.provider_name).label("provider_name"),
                 func.count(ApiUsage.id).label("request_count"),
             )
-            .outerjoin(RuntimeSession, ApiUsage.runtime_session_id == RuntimeSession.id)
-            .filter(
-                ApiUsage.action_type == "model_gateway",
-                ApiUsage.model_alias.isnot(None),
-                execution_key.in_(ids),
-                exclude_replay_usage_condition(),
-            )
-            .group_by(execution_key, ApiUsage.model_alias)
-            .order_by(
-                execution_key,
-                func.count(ApiUsage.id).desc(),
-                ApiUsage.model_alias.asc(),
-            )
-            .all()
+            .where(*_gateway_rows(ApiUsage.flow_execution_id.in_(uuid_ids)))
+            .group_by(ApiUsage.flow_execution_id, ApiUsage.model_alias)
         )
+
+        # Branch 2, rows with no flow_execution_id whose runtime session was
+        # created for the execution (a row that has a flow_execution_id
+        # belongs to branch 1 only, the precedence the coalesce gave it). The
+        # sessions are found by source (``uq_runtime_session_account_source``
+        # when the account is known), then each session's usage through
+        # ``ix_api_usage_runtime_session_id``. The per-session aggregate is a
+        # LATERAL subquery on purpose: a plain join lets the planner hash the
+        # handful of sessions against a sequential scan of api_usage, because
+        # long interactive sessions make the per-session row estimate large.
+        per_session = (
+            select(
+                ApiUsage.model_alias.label("model_alias"),
+                func.max(ApiUsage.provider_name).label("provider_name"),
+                func.count(ApiUsage.id).label("request_count"),
+            )
+            .where(
+                *_gateway_rows(
+                    ApiUsage.runtime_session_id == RuntimeSession.id,
+                    ApiUsage.flow_execution_id.is_(None),
+                )
+            )
+            .group_by(ApiUsage.model_alias)
+            .lateral("per_session")
+        )
+        session_filters = [
+            RuntimeSession.session_source_type == "flow_execution",
+            RuntimeSession.session_source_id.in_(ids),
+        ]
+        if account_id is not None:
+            session_filters.insert(0, RuntimeSession.account_id == account_id)
+        via_session = (
+            select(
+                RuntimeSession.session_source_id.label("execution_id"),
+                per_session.c.model_alias,
+                per_session.c.provider_name,
+                per_session.c.request_count,
+            )
+            .select_from(RuntimeSession)
+            .join(per_session, true())
+            .where(*session_filters)
+        )
+        attributed = union_all(direct, via_session).subquery("attributed")
+        request_count = func.sum(attributed.c.request_count)
+
+        rows = db.execute(
+            select(
+                attributed.c.execution_id,
+                attributed.c.model_alias,
+                func.max(attributed.c.provider_name).label("provider_name"),
+                request_count.label("request_count"),
+            )
+            .group_by(attributed.c.execution_id, attributed.c.model_alias)
+            .order_by(
+                attributed.c.execution_id,
+                request_count.desc(),
+                attributed.c.model_alias.asc(),
+            )
+        ).all()
 
         models_by_execution: Dict[str, List[Dict[str, Any]]] = {}
         for row in rows:

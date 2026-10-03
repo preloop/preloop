@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "20261002_managed_oauth"
-down_revision = "20261002_runtime_session_cwd"
+down_revision = "20261003_resume_root_idx"
 branch_labels = None
 depends_on = None
 

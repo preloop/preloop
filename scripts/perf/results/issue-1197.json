@@ -1,0 +1,104 @@
+{
+  "issue": 1197,
+  "dataset": {
+    "flows": 20,
+    "executions": 4000,
+    "resume_chains": 40,
+    "neighbour_executions": 20000,
+    "gateway_noise_rows": 1000000,
+    "log_rows_per_execution": 75,
+    "usage_rows_per_execution": 20,
+    "activity_rows_per_execution": 10,
+    "payload_kb": 20,
+    "logs_kb": 60
+  },
+  "note": "Local docker Postgres 16 (pgvector/pgvector:pg16), warm cache, TestClient. Before: 5 warm iterations; after: 10.",
+  "before": {
+    "executions_limit_25": {
+      "first_ms": 425.0,
+      "warm_median_ms": 230.9,
+      "warm_max_ms": 280.7,
+      "statements": 9,
+      "slowest_statement_ms": 189.5
+    },
+    "executions_limit_3": {
+      "first_ms": 164.5,
+      "warm_median_ms": 163.0,
+      "warm_max_ms": 165.6,
+      "statements": 9,
+      "slowest_statement_ms": 127.6
+    },
+    "executions_flow_limit_3": {
+      "first_ms": 162.6,
+      "warm_median_ms": 166.2,
+      "warm_max_ms": 170.8,
+      "statements": 9,
+      "slowest_statement_ms": 130.3
+    },
+    "executions_running": {
+      "first_ms": 9.8,
+      "warm_median_ms": 5.2,
+      "warm_max_ms": 5.5,
+      "statements": 3,
+      "slowest_statement_ms": 0.8
+    },
+    "executions_limit_100": {
+      "first_ms": 237.4,
+      "warm_median_ms": 241.1,
+      "warm_max_ms": 243.3,
+      "statements": 9,
+      "slowest_statement_ms": 192.2
+    },
+    "flows_stats_since": {
+      "first_ms": 121.0,
+      "warm_median_ms": 112.9,
+      "warm_max_ms": 114.0,
+      "statements": 6,
+      "slowest_statement_ms": 84.8
+    }
+  },
+  "after": {
+    "executions_limit_25": {
+      "first_ms": 174.5,
+      "warm_median_ms": 13.9,
+      "warm_max_ms": 204.8,
+      "statements": 9,
+      "slowest_statement_ms": 7.3
+    },
+    "executions_limit_3": {
+      "first_ms": 12.9,
+      "warm_median_ms": 12.5,
+      "warm_max_ms": 19.8,
+      "statements": 9,
+      "slowest_statement_ms": 3.4
+    },
+    "executions_flow_limit_3": {
+      "first_ms": 23.0,
+      "warm_median_ms": 14.5,
+      "warm_max_ms": 20.4,
+      "statements": 9,
+      "slowest_statement_ms": 4.4
+    },
+    "executions_running": {
+      "first_ms": 14.6,
+      "warm_median_ms": 8.2,
+      "warm_max_ms": 13.5,
+      "statements": 3,
+      "slowest_statement_ms": 4.0
+    },
+    "executions_limit_100": {
+      "first_ms": 98.9,
+      "warm_median_ms": 47.3,
+      "warm_max_ms": 55.6,
+      "statements": 9,
+      "slowest_statement_ms": 18.6
+    },
+    "flows_stats_since": {
+      "first_ms": 82.7,
+      "warm_median_ms": 72.2,
+      "warm_max_ms": 83.5,
+      "statements": 6,
+      "slowest_statement_ms": 38.7
+    }
+  }
+}
