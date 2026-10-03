@@ -178,7 +178,8 @@ list it in a flow's `allowed_mcp_tools`.
 `deposit_artifact`, for example for a scheduled evaluator. Both are
 default-off. Scope follows `search_sessions`: `own` (default) is the artifacts
 of sessions the calling agent identity (`runtime_principal_id`) ran, across
-runs; `account` needs the `artifact_search.account_scope` grant in the
+runs (for a flow execution, whose principal is the execution id: every
+execution of the same flow); `account` needs the `artifact_search.account_scope` grant in the
 governance store (read in core by `account_scope_granted`, written by EE) and
 is refused as `account_scope_not_granted` without it. `get_artifact` answers an
 id outside the caller's scope with `artifact_not_found`. Results use the shared

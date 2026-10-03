@@ -272,7 +272,9 @@ fragment of its text with matches in `**bold**`.
 bytes for binaries up to 1 MiB, and a `resource_link` beyond that.
 
 **Scope.** By default both tools see only artifacts of sessions run by the
-calling agent identity, across all its runs. `scope: "account"` reads every
+calling agent identity, across all its runs. For a flow the identity is the
+flow: a run sees the artifacts of every run of the same flow, not of other
+flows. `scope: "account"` reads every
 artifact of the account and needs the `artifact_search.account_scope` grant
 for that agent (granted through the Enterprise Edition governance settings).
 Without the grant the call is refused with `account_scope_not_granted`, naming

@@ -767,7 +767,8 @@ MAX_SCHEDULE_INTERVAL = timedelta(days=366)
 # first few matched days - well inside 200 ticks.
 _SCHEDULE_CHECK_MAX_TICKS = 200
 # How far back ScheduleBase.fire_window searches for the previous fire time.
-# Eight years covers a "29 February only" cron.
+# The last scan always runs at exactly this bound; eight years covers a
+# "29 February only" cron, whose two previous fires can be 2921 days apart.
 _FIRE_WINDOW_MAX_LOOKBACK = timedelta(days=366 * 8)
 
 # Bounds on ScheduleBase.payload, the static trigger payload a schedule
@@ -893,7 +894,7 @@ class ScheduleBase(BaseModel):
         """
         trigger = self.build_trigger()
         lookback = MIN_SCHEDULE_INTERVAL * 2
-        while lookback <= _FIRE_WINDOW_MAX_LOOKBACK:
+        while True:
             fires: List[datetime] = []
             prev: Optional[datetime] = None
             cursor = at - lookback
@@ -910,7 +911,11 @@ class ScheduleBase(BaseModel):
                     fires[1].astimezone(timezone.utc),
                     fires[0].astimezone(timezone.utc),
                 )
-            lookback *= 4
+            if lookback >= _FIRE_WINDOW_MAX_LOOKBACK:
+                break
+            # Widen geometrically, but always finish with one scan at the
+            # cap itself, so the bound is the real bound.
+            lookback = min(lookback * 4, _FIRE_WINDOW_MAX_LOOKBACK)
         return at, at - MIN_SCHEDULE_INTERVAL
 
 

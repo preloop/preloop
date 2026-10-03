@@ -658,6 +658,15 @@ class TestScheduleFireWindow:
         assert current == _utc(2027, 1, 1, 6, 0)
         assert previous == _utc(2026, 1, 1, 6, 0)
 
+    def test_cron_leap_day_only_reaches_the_eight_year_bound(self):
+        # 29 February only: from 2028-02-28 the previous two fires are
+        # 2024-02-29 and 2020-02-29, 2921 days back.
+        current, previous = CronSchedule(expr="0 6 29 2 *").fire_window(
+            _utc(2028, 2, 28, 6, 0, 1)
+        )
+        assert current == _utc(2024, 2, 29, 6, 0)
+        assert previous == _utc(2020, 2, 29, 6, 0)
+
     def test_interval_is_one_period_back(self):
         at = _utc(2026, 10, 4, 12, 7, 30)
         current, previous = IntervalSchedule(every=15, unit="minutes").fire_window(at)
@@ -874,3 +883,27 @@ class TestWindowTemplateVariables:
             execution_id="exec-1",
         )
         assert await TriggerEventResolver().resolve(path, context) == expected
+
+
+@pytest.mark.asyncio
+async def test_null_last_success_resolves_to_none():
+    """No successful run yet: the resolver answers None, so the orchestrator
+    leaves the placeholder as written (documented in flow-triggers.md)."""
+    from preloop.services.prompt_resolvers.base import ResolverContext
+    from preloop.services.prompt_resolvers.trigger_event import TriggerEventResolver
+
+    context = ResolverContext(
+        db=MagicMock(),
+        trigger_event_data={
+            "source": "schedule",
+            "payload": {"last_successful_scheduled_at": None},
+        },
+        flow_id="flow-1",
+        execution_id="exec-1",
+    )
+    assert (
+        await TriggerEventResolver().resolve(
+            "payload.last_successful_scheduled_at", context
+        )
+        is None
+    )
