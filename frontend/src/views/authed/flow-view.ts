@@ -657,7 +657,15 @@ export class FlowView extends LitElement {
       .allowedToolNames=${(this.flow.allowed_mcp_tools || []).map(
         (tool) => tool.tool_name
       )}
+      ?inheritsFromAgent=${this.flowRunsAsAgent()}
     ></flow-governance-card>`;
+  }
+
+  /** Employee flows run as a managed agent, whose settings fill gaps. */
+  private flowRunsAsAgent(): boolean {
+    const trigger = (this.flow as any).trigger_config;
+    const agentConfig = (this.flow as any).agent_config;
+    return Boolean(trigger?.employee_events && agentConfig?.target_agent_id);
   }
 
   renderFlowDetails() {

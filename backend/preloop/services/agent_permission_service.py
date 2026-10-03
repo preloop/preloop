@@ -197,11 +197,11 @@ async def _resolve_agent_configured_workflow(
 async def _resolve_subject_configured_workflow(
     db: Any, account_id: str, subject_type: str, subject_id: Any
 ) -> models.ApprovalWorkflow | None:
-    """Return the workflow configured for this agent via subject governance.
+    """Return the workflow pinned for one subject via subject governance.
 
-    Operators can pin an approval workflow per managed agent in the agent
-    detail view; the choice is stored in the account's subject-governance
-    config under the agent's id. Returns None when unset or when the
+    Operators can pin an approval workflow per managed agent (agent detail
+    view) or per flow (flow Governance card); the choice is stored in the
+    account's subject-governance config under the subject's id. Returns None when unset or when the
     configured workflow no longer exists in the account.
 
     Loads the account and matching workflow in one round-trip: the pin lives

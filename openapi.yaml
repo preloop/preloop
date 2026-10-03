@@ -1685,7 +1685,12 @@ paths:
       tags:
       - Account
       summary: Get Account Flow Governance
-      description: Per-flow governance override for every execution of one flow.
+      description: 'Per-flow governance override for every execution of one flow.
+
+
+        Sync on purpose: FastAPI runs it in the threadpool, so the sync DB
+
+        session never blocks the event loop.'
       operationId: get_account_flow_governance_api_v1_account_governance_flows__flow_id__get
       security:
       - bearerAuth: []
@@ -15434,26 +15439,28 @@ components:
             - 'off'
           - type: 'null'
           title: Native Tool Approvals
-          description: Account default for native tool-call approvals. Agents without
-            an explicit per-agent setting inherit this; absent/None means "enforce".
+          description: Account default for native tool-call approvals. Agents and
+            flow executions without an explicit per-subject setting inherit this;
+            absent/None means "enforce".
         approval_workflow_id:
           anyOf:
           - type: string
           - type: 'null'
           title: Approval Workflow Id
           description: Account default approval workflow for native tool-call approvals.
-            Agents without a per-agent pin inherit this; absent falls back to the
-            account's default workflow.
+            Agents and flows without their own pin inherit this; absent falls back
+            to the account's default workflow.
       type: object
       title: AccountGovernanceDefaults
-      description: 'Account-wide governance defaults inherited by every managed agent.
+      description: 'Account-wide governance defaults inherited by managed agents and
+        flows.
 
 
-        A per-agent subject-governance config with an explicit value overrides
+        A per-agent or per-flow subject-governance config with an explicit value
 
-        these; an absent/None per-agent value inherits. The final fallback when
+        overrides these; an absent/None per-subject value inherits. The final
 
-        both are unset is "enforce" (fail safe).'
+        fallback when both are unset is "enforce" (fail safe).'
     AccountGovernanceDefaultsResponse:
       properties:
         defaults:

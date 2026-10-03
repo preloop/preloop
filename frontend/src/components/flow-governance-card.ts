@@ -52,8 +52,19 @@ const EMPTY_CONFIG: SubjectGovernanceConfig = {
 @customElement('flow-governance-card')
 export class FlowGovernanceCard extends LitElement {
   @property({ type: String }) flowId = '';
-  /** Tools the flow exposes (its allowed_mcp_tools); empty means all. */
-  @property({ type: Array }) allowedToolNames: string[] = [];
+  /**
+   * Tools the flow exposes (its allowed_mcp_tools). Matches the backend: an
+   * empty list means the flow sees no MCP tools; null shows the full catalog.
+   */
+  @property({ attribute: false }) allowedToolNames: string[] | null = null;
+  /**
+   * True when the flow runs as a managed agent (employee flow): unset values
+   * then fall back to that agent's settings before the account default.
+   */
+  @property({ type: Boolean }) inheritsFromAgent = false;
+
+  /** Saves run one at a time so responses cannot land out of order. */
+  private saveChain: Promise<void> = Promise.resolve();
 
   @state() private config: SubjectGovernanceConfig = { ...EMPTY_CONFIG };
   @state() private hasOverride = false;
@@ -158,12 +169,20 @@ export class FlowGovernanceCard extends LitElement {
 
   /** Tools shown in the editor: the flow's allowed tools, or all. */
   private visibleTools(): any[] {
-    if (!this.allowedToolNames.length) return this.toolCatalog;
+    if (this.allowedToolNames === null) return this.toolCatalog;
     const allowed = new Set(this.allowedToolNames);
     return this.toolCatalog.filter((tool) => allowed.has(tool.name));
   }
 
-  async save(patch: Partial<SubjectGovernanceConfig> = {}): Promise<void> {
+  save(patch: Partial<SubjectGovernanceConfig> = {}): Promise<void> {
+    // Apply the edit locally right away, then queue the write behind any
+    // in-flight one. Each queued write sends the latest local state.
+    this.config = { ...this.config, ...patch };
+    this.saveChain = this.saveChain.then(() => this.persist());
+    return this.saveChain;
+  }
+
+  private async persist(): Promise<void> {
     if (!this.flowId) return;
     this.saving = true;
     this.error = null;
@@ -172,7 +191,6 @@ export class FlowGovernanceCard extends LitElement {
         ...this.config,
         tool_rules: serializeScopedToolRules(this.scopedToolRules),
         tool_enabled_overrides: this.toolEnabledOverrides,
-        ...patch,
       };
       this.applyResponse(await updateFlowGovernance(this.flowId, payload));
     } catch (err) {
@@ -183,7 +201,12 @@ export class FlowGovernanceCard extends LitElement {
     }
   }
 
-  async reset(): Promise<void> {
+  reset(): Promise<void> {
+    this.saveChain = this.saveChain.then(() => this.persistReset());
+    return this.saveChain;
+  }
+
+  private async persistReset(): Promise<void> {
     if (!this.flowId) return;
     this.saving = true;
     this.error = null;
@@ -273,9 +296,11 @@ export class FlowGovernanceCard extends LitElement {
   }
 
   private inheritedApprovalsLabel(): string {
-    return this.accountDefaults.native_tool_approvals === 'off'
-      ? 'Off'
-      : 'Enforce';
+    const account =
+      this.accountDefaults.native_tool_approvals === 'off' ? 'Off' : 'Enforce';
+    return this.inheritsFromAgent
+      ? `agent setting, else account default: ${account}`
+      : `account default: ${account}`;
   }
 
   private inheritedWorkflowLabel(): string {
@@ -283,7 +308,8 @@ export class FlowGovernanceCard extends LitElement {
     const workflow = pinned
       ? this.workflows.find((w) => w.id === pinned)
       : this.workflows.find((w) => w.is_default);
-    return workflow?.name || 'account default';
+    const account = workflow?.name || 'account default';
+    return this.inheritsFromAgent ? `agent pin, else ${account}` : account;
   }
 
   render() {
@@ -351,8 +377,7 @@ export class FlowGovernanceCard extends LitElement {
             }}
           >
             <sl-option value=""
-              >Inherit account default
-              (${this.inheritedApprovalsLabel()})</sl-option
+              >Inherit (${this.inheritedApprovalsLabel()})</sl-option
             >
             <sl-option value="enforce"
               >Enforce: always require approval</sl-option

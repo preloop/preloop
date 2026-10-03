@@ -99,7 +99,51 @@ describe('flow-governance-card', () => {
     const inherit = el.shadowRoot?.querySelector(
       '#flow-native-tool-approvals sl-option[value=""]'
     );
-    expect(inherit?.textContent).to.contain('Off');
+    expect(inherit?.textContent).to.contain('account default: Off');
+  });
+
+  it('names the agent fallback for flows that run as an agent', async () => {
+    const el = await mount();
+    el.inheritsFromAgent = true;
+    await el.updateComplete;
+    const inherit = el.shadowRoot?.querySelector(
+      '#flow-native-tool-approvals sl-option[value=""]'
+    );
+    expect(inherit?.textContent).to.contain('agent setting');
+  });
+
+  it('serializes saves so the last edit is the last write', async () => {
+    const el = await mount();
+    const order: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let first = true;
+    const handler = async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        const body = JSON.parse(String(init.body));
+        order.push(`start:${body.native_tool_approvals}`);
+        if (first) {
+          first = false;
+          await gate;
+        }
+        order.push(`end:${body.native_tool_approvals}`);
+        return json(governance({ has_override: true, config: body }));
+      }
+      return json(current);
+    };
+    fetchStub.callsFake(handler);
+    const a = el.save({ native_tool_approvals: 'off' });
+    const b = el.save({ native_tool_approvals: 'enforce' });
+    await new Promise((r) => setTimeout(r, 20));
+    // Only one write is in flight; the second waits for the first.
+    expect(order).to.have.length(1);
+    release();
+    await Promise.all([a, b]);
+    expect(order).to.have.length(4);
+    expect(order[1].startsWith('end:')).to.equal(true);
+    // Every write carries the latest local edit, so the last one wins.
+    expect(order[3]).to.equal('end:enforce');
+    expect((el as any).config.native_tool_approvals).to.equal('enforce');
   });
 
   it('saves an override through PUT and reflects it', async () => {

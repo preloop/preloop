@@ -45,18 +45,19 @@ class SubjectGovernanceResponse(BaseModel):
 
 
 class AccountGovernanceDefaults(BaseModel):
-    """Account-wide governance defaults inherited by every managed agent.
+    """Account-wide governance defaults inherited by managed agents and flows.
 
-    A per-agent subject-governance config with an explicit value overrides
-    these; an absent/None per-agent value inherits. The final fallback when
-    both are unset is "enforce" (fail safe).
+    A per-agent or per-flow subject-governance config with an explicit value
+    overrides these; an absent/None per-subject value inherits. The final
+    fallback when both are unset is "enforce" (fail safe).
     """
 
     native_tool_approvals: Optional[Literal["enforce", "off"]] = Field(
         None,
         description=(
-            "Account default for native tool-call approvals. Agents without "
-            "an explicit per-agent setting inherit this; absent/None means "
+            "Account default for native tool-call approvals. Agents and flow "
+            "executions without an explicit per-subject setting inherit this; "
+            "absent/None means "
             '"enforce".'
         ),
     )
@@ -64,8 +65,8 @@ class AccountGovernanceDefaults(BaseModel):
         None,
         description=(
             "Account default approval workflow for native tool-call "
-            "approvals. Agents without a per-agent pin inherit this; absent "
-            "falls back to the account's default workflow."
+            "approvals. Agents and flows without their own pin inherit this; "
+            "absent falls back to the account's default workflow."
         ),
     )
 

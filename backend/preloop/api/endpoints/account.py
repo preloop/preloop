@@ -1718,13 +1718,17 @@ def _flow_governance_response(account: Account, flow_id: str) -> FlowGovernanceR
     response_model=FlowGovernanceResponse,
 )
 @require_permission("view_flows")
-async def get_account_flow_governance(
+def get_account_flow_governance(
     flow_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> FlowGovernanceResponse:
-    """Per-flow governance override for every execution of one flow."""
+    """Per-flow governance override for every execution of one flow.
+
+    Sync on purpose: FastAPI runs it in the threadpool, so the sync DB
+    session never blocks the event loop.
+    """
     _require_account_flow(db, account, flow_id)
     return _flow_governance_response(account, flow_id)
 
@@ -1734,7 +1738,7 @@ async def get_account_flow_governance(
     response_model=FlowGovernanceResponse,
 )
 @require_permission("edit_flows")
-async def update_account_flow_governance(
+def update_account_flow_governance(
     flow_id: str,
     payload: SubjectGovernanceConfig,
     account: Annotated[Account, Depends(get_account_for_user)],
@@ -1762,7 +1766,7 @@ async def update_account_flow_governance(
     response_model=FlowGovernanceResponse,
 )
 @require_permission("edit_flows")
-async def reset_account_flow_governance(
+def reset_account_flow_governance(
     flow_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: UserModel = Depends(get_current_active_user),
