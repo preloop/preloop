@@ -2056,7 +2056,16 @@ async def create_account_managed_agent_enrollment(
         validation_result=payload.validation_result,
         restore_available=payload.restore_available,
         last_applied_at=payload.last_applied_at,
-        last_validated_at=payload.last_validated_at,
+        # A row born ``validated`` carries a validation time, so it counts as
+        # a prior onboarding when the agent is re-linked later.
+        last_validated_at=(
+            payload.last_validated_at
+            or (
+                datetime.now(UTC)
+                if payload.status == ENROLLMENT_STATUS_VALIDATED
+                else None
+            )
+        ),
         last_restored_at=payload.last_restored_at,
         commit=False,
     )
@@ -3337,11 +3346,11 @@ async def get_dashboard_telemetry(
     db: Session = Depends(get_db_session),
 ):
     """Aggregate high-level metrics for the new global dashboard."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     from preloop.models.crud.runtime_session import crud_runtime_session
     from preloop.models.crud.api_usage import crud_api_usage
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     day_ago = now - timedelta(days=1)
 
     def _query() -> DashboardTelemetryResponse:

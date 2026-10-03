@@ -333,3 +333,20 @@ def test_enrollment_created_already_validated_fires_once(
     assert len(events) == 1
     assert events[0]["data"]["enrollment_id"] == enrollment_id
     assert events[0]["data"]["outcome"] == "created"
+
+
+def test_validated_create_without_a_time_still_counts_for_relink(
+    client, db_session, test_user, endpoint
+):
+    agent = _make_agent(db_session, test_user, source_id="codex-born-no-time")
+    response = client.post(
+        f"/api/v1/agents/{agent.id}/enrollments",
+        json={"enrollment_type": "cli_managed_config", "status": "validated"},
+    )
+    assert response.status_code == 201
+    assert response.json()["last_validated_at"] is not None
+
+    _validate(client, agent.id, _enroll(client, agent.id))
+
+    outcomes = [e["data"]["outcome"] for e in _events(db_session, test_user)]
+    assert outcomes == ["created", "relinked"]
