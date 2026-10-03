@@ -94,7 +94,8 @@ func TestInventoryStructuralConfigCounts(t *testing.T) {
 	}{
 		{"json", "Claude Code", "settings.json", `{"mcpServers":{"secret-server":{"command":"secret","env":{"ARBITRARY":"secret"},"auth":{"token":"secret"},"headers":{"X":"secret"},"args":["secret"],"url":"https://user:secret@example.com/?secret"}}}`, 1, false},
 		{"vscode", "VSCode / Copilot", "mcp.json", `{"servers":{"one":{},"two":{}}}`, 2, false},
-		{"opencode", "OpenCode", "config.json", `{"mcp":{"one":{}}}`, 1, false},
+		{"opencode", "OpenCode", "config.json", `{"mcp":{"one":{"type":"remote"}}}`, 1, false},
+		{"opencode-empty", "OpenCode", "config.json", `{"mcp":{"one":{}}}`, 0, false},
 		{"nested", "OpenClaw", "config.json", `{"mcp":{"servers":{"one":{}}},"models":{"providers":{"secret":{"apiKey":"secret"}}}}`, 1, false},
 		{"json5", "OpenClaw", "config.json5", `{// comment
 mcpServers:{one:{url:"https://example.com/?secret"}}}`, 1, false},
@@ -102,10 +103,18 @@ mcpServers:{one:{url:"https://example.com/?secret"}}}`, 1, false},
 		{"toml-inline", "Codex CLI", "config.toml", "mcp_servers = { one = { command = 'secret' } }", 1, false},
 		{"yaml", "Hermes", "config.yaml", "mcp_servers:\n  one:\n    url: https://example.com/?secret\n    headers:\n      X: secret\n", 1, false},
 		{"bare-copilot", "Copilot CLI", "mcp.json", `{"one":{"url":"https://example.com/?secret"}}`, 1, false},
+		{"bare-headers", "Cursor", "mcp.json", `{"s1":{"headers":{"X-Api-Key":"secret"}}}`, 1, false},
+		{"bare-transport", "Copilot CLI", "mcp.json", `{"one":{"transport":"http"}}`, 1, false},
+		{"bare-auth", "Claude Code", "settings.json", `{"one":{"auth":{"token":"secret"}}}`, 1, false},
+		{"bare-type", "Gemini CLI", "settings.json", `{"one":{"type":"http"}}`, 1, false},
+		{"bare-httpurl", "Copilot CLI", "mcp.json", `{"one":{"httpUrl":"https://example.com/?secret"}}`, 0, false},
+		{"mcp-non-server", "Cursor", "mcp.json", `{"mcp":{"one":{}}}`, 0, false},
+		{"precedence", "OpenClaw", "config.json", `{"mcp_servers":{"a":{}},"mcp":{"servers":{"b":{},"c":{}}}}`, 2, false},
+		{"preloop-precedence", "Cursor", "mcp.json", `{"mcpServers":{"a":{}},"mcp_servers":{"preloop":{},"b":{}}}`, 2, false},
 		{"empty", "Cursor", "mcp.json", `{}`, 0, false},
 		{"malformed-json", "Cursor", "mcp.json", `{"secret":"secret`, 0, true},
-		{"malformed-shape", "Cursor", "mcp.json", `{"mcpServers":"secret"}`, 0, true},
-		{"malformed-entry", "Cursor", "mcp.json", `{"mcpServers":{"secret": "secret"}}`, 0, true},
+		{"skipped-shape", "Cursor", "mcp.json", `{"mcpServers":"secret"}`, 0, false},
+		{"skipped-entry", "Cursor", "mcp.json", `{"mcpServers":{"secret":"secret","ok":{}}}`, 1, false},
 		{"malformed-toml", "Codex CLI", "config.toml", "[mcp_servers.secret\nsecret='secret'", 0, true},
 		{"malformed-yaml", "Hermes", "config.yaml", "mcp_servers: [secret", 0, true},
 		{"yaml-duplicate", "Hermes", "config.yaml", "mcp_servers:\n  one: {}\n  one: {}\n", 0, true},
@@ -121,6 +130,38 @@ mcpServers:{one:{url:"https://example.com/?secret"}}}`, 1, false},
 				t.Fatalf("unsafe error %v", err)
 			}
 		})
+	}
+}
+
+func TestInventoryJSONCountMatchesDiscoveryResolver(t *testing.T) {
+	documents := []string{
+		`{"mcpServers":{"secret-server":{"command":"secret","headers":{"X":"secret"}}}}`,
+		`{"servers":{"one":{},"two":{}}}`,
+		`{"mcp":{"one":{"type":"remote"}}}`,
+		`{"mcp":{"one":{}}}`,
+		`{"mcp":{"servers":{"one":{}}}}`,
+		`{"s1":{"headers":{"X-Api-Key":"secret"}}}`,
+		`{"one":{"transport":"http"}}`,
+		`{"one":{"auth":{"token":"secret"}}}`,
+		`{"one":{"type":"http"}}`,
+		`{"one":{"httpUrl":"https://example.com/?secret"}}`,
+		`{"mcp_servers":{"a":{}},"mcp":{"servers":{"b":{},"c":{}}}}`,
+		`{"mcpServers":{"a":{}},"mcp_servers":{"preloop":{},"b":{}}}`,
+		`{"mcpServers":"secret"}`,
+		`{"mcpServers":{"secret":"secret","ok":{}}}`,
+		`{}`,
+		`{"one":{"url":"https://example.com/?secret"}}`,
+	}
+	for _, data := range documents {
+		var doc map[string]interface{}
+		if err := json.Unmarshal([]byte(data), &doc); err != nil {
+			t.Fatal(err)
+		}
+		want := len(parseServerMapFromDocument(doc))
+		got, err := inventoryMCPServerCount("Cursor", "mcp.json", []byte(data))
+		if err != nil || got != want {
+			t.Fatalf("data %s count=%d error=%v discovery=%d", data, got, err, want)
+		}
 	}
 }
 

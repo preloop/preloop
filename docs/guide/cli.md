@@ -51,6 +51,7 @@ preloop auth logout
 ```bash
 preloop agents discover                  # detect local agents (read-only), then offer onboarding
 preloop agents discover --json           # machine-readable, no prompts
+preloop agents discover --inventory      # offline known-app inventory JSON
 preloop agents discover --no-onboard-prompt
 preloop agents onboard <agent>           # onboard one agent ("enroll" is an alias)
 preloop agents onboard --all -y          # everything discovered, no prompts
@@ -71,6 +72,8 @@ preloop agents offboard <agent>          # restore config + remove managed enrol
 preloop agents offboard --all -y --remove-model yes --remove-mcp-servers yes
 preloop agents starter-policy <mcp-server> [-o file] [--apply]
 ```
+
+`--json` emits only allowlisted summaries (`name`, `app_id`, `mcp_server_count`, `auth_state`, `runtime_state`). `--inventory` writes an offline `preloop.inventory.v1` envelope of known-app presence and aggregate MCP counts, with no credentials, prompts, or network calls.
 
 Onboarding runs a direct gateway route/accounting probe by default; skip it with `--skip-live-validate`. The probe reads managed configuration but does not launch the application or verify that it consumed that configuration. Application behavior remains unverified.
 

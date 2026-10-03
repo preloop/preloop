@@ -63,58 +63,115 @@ func inventoryMCPServerCount(appName, path string, data []byte) (int, error) {
 	if appName == "OpenClaw" {
 		decode = json5.Unmarshal
 	}
-	object := func(raw []byte) (map[string]json.RawMessage, error) {
-		var result map[string]json.RawMessage
-		if len(bytes.TrimSpace(raw)) == 0 || decode(raw, &result) != nil || result == nil {
-			return nil, errInventoryConfig
-		}
-		return result, nil
-	}
-	doc, err := object(data)
-	if err != nil {
+	doc, ok := inventoryRawObject(decode, data)
+	if !ok {
 		return 0, errInventoryConfig
 	}
-	var container map[string]json.RawMessage
-	for _, key := range []string{"mcpServers", "servers", "mcp_servers"} {
-		if raw, exists := doc[key]; exists {
-			container, err = object(raw)
-			break
-		}
-	}
-	if container == nil && err == nil {
-		if raw, exists := doc["mcp"]; exists {
-			container, err = object(raw)
-			if nested, exists := container["servers"]; exists && err == nil {
-				container, err = object(nested)
-			}
-		}
-	}
-	if err != nil {
-		return 0, errInventoryConfig
-	}
-	if container == nil && appName == "Copilot CLI" {
-		// Bare server maps: inspect keys without decoding the field values.
-		for _, raw := range doc {
-			entry, entryErr := object(raw)
-			if entryErr != nil {
-				return 0, nil
-			}
-			if _, command := entry["command"]; !command {
-				if _, url := entry["url"]; !url {
-					if _, httpURL := entry["httpUrl"]; !httpURL {
-						return 0, nil
-					}
-				}
-			}
-		}
-		container = doc
-	}
+	// Same container as discovery's lookupMCPServerContainer. Values stay
+	// json.RawMessage so credentials, URLs, headers, and env are not decoded.
+	container := inventoryLookupMCPContainer(doc, decode)
+	count := 0
 	for _, raw := range container {
-		if _, err := object(raw); err != nil {
-			return 0, errInventoryConfig
+		if _, entryOK := inventoryRawObject(decode, raw); entryOK {
+			count++
 		}
 	}
-	return len(container), nil
+	return count, nil
+}
+
+// inventoryLookupMCPContainer mirrors lookupMCPServerContainer: prefer a
+// container that already has a "preloop" entry, otherwise the first recognised
+// container. mcp.servers wins over mcp_servers. Bare top-level maps count for
+// every agent when every entry matches looksLikeMCPServerEntry.
+func inventoryLookupMCPContainer(
+	doc map[string]json.RawMessage,
+	decode func([]byte, any) error,
+) map[string]json.RawMessage {
+	var fallback map[string]json.RawMessage
+	take := func(servers map[string]json.RawMessage) bool {
+		if _, hasPreloop := servers["preloop"]; hasPreloop {
+			fallback = servers
+			return true
+		}
+		if fallback == nil {
+			fallback = servers
+		}
+		return false
+	}
+	consider := func(raw json.RawMessage) bool {
+		servers, ok := inventoryRawObject(decode, raw)
+		if !ok {
+			return false
+		}
+		return take(servers)
+	}
+	if raw, exists := doc["mcpServers"]; exists && consider(raw) {
+		return fallback
+	}
+	if raw, exists := doc["servers"]; exists && consider(raw) {
+		return fallback
+	}
+	if raw, exists := doc["mcp"]; exists {
+		if mcp, ok := inventoryRawObject(decode, raw); ok {
+			if nested, nestedExists := mcp["servers"]; nestedExists && consider(nested) {
+				return fallback
+			}
+			if inventoryLooksLikeMCPServerContainer(mcp, decode) && take(mcp) {
+				return fallback
+			}
+		}
+	}
+	if raw, exists := doc["mcp_servers"]; exists && consider(raw) {
+		return fallback
+	}
+	if inventoryLooksLikeMCPServerContainer(doc, decode) {
+		take(doc)
+	}
+	if fallback != nil {
+		return fallback
+	}
+	return map[string]json.RawMessage{}
+}
+
+func inventoryRawObject(
+	decode func([]byte, any) error,
+	raw []byte,
+) (map[string]json.RawMessage, bool) {
+	var result map[string]json.RawMessage
+	if len(bytes.TrimSpace(raw)) == 0 || decode(raw, &result) != nil || result == nil {
+		return nil, false
+	}
+	return result, true
+}
+
+func inventoryLooksLikeMCPServerContainer(
+	value map[string]json.RawMessage,
+	decode func([]byte, any) error,
+) bool {
+	if len(value) == 0 {
+		return false
+	}
+	for _, raw := range value {
+		entry, ok := inventoryRawObject(decode, raw)
+		if !ok || !inventoryLooksLikeMCPServerEntry(entry) {
+			return false
+		}
+	}
+	return true
+}
+
+// inventoryLooksLikeMCPServerEntry matches looksLikeMCPServerEntry: key
+// presence only, so secret values are never decoded.
+func inventoryLooksLikeMCPServerEntry(value map[string]json.RawMessage) bool {
+	if value == nil {
+		return false
+	}
+	for _, key := range []string{"url", "command", "transport", "headers", "auth", "type"} {
+		if _, ok := value[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func inventoryUniqueYAMLKeys(node *yaml.Node) bool {
