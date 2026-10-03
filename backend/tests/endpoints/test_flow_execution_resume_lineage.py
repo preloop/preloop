@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.orm import Session
 
 from preloop.api.endpoints import flows
-from preloop.models import schemas
+from preloop.models import models, schemas
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
@@ -216,10 +218,121 @@ def test_continuation_navigation_bounds_long_chains(db_session, test_user) -> No
     )
     assert len(rows) == 102
     assert rows[0].id == publisher_id
-    assert all("execution_logs" in sa_inspect(row).unloaded for row in rows)
+    assert all(not hasattr(row, "execution_logs") for row in rows)
     project_continuation_navigation(
-        db_session, rows[0], account_id=test_user.account_id
+        db_session, publisher, account_id=test_user.account_id
     )
-    navigation = rows[0].continuation_navigation
+    navigation = publisher.continuation_navigation
     assert navigation["follow_ups_truncated"] is True
     assert len(navigation["follow_ups"]) == 100
+
+
+def test_navigation_reads_only_url_fields(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Large trigger/result documents are never selected for chain links."""
+    from sqlalchemy import event
+
+    flow = _create_flow(db_session, test_user)
+    publisher = _execution(db_session, flow, total_tokens=1, estimated_cost=0)
+    publisher.trigger_event_details = {
+        "payload": {
+            "issue": {"html_url": "https://github.com/org/repo/issues/1"},
+            "unused": "x" * 1_000_000,
+        }
+    }
+    publisher.result = {
+        "pr_url": "https://github.com/org/repo/pull/2",
+        "unused": "y" * 1_000_000,
+    }
+    publisher_id = publisher.id
+    account_id = test_user.account_id
+    db_session.flush()
+    db_session.expire_all()
+    statements: list[str] = []
+
+    def record_query(
+        _connection: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _many: bool,
+    ) -> None:
+        statements.append(statement)
+
+    connection = db_session.connection()
+    event.listen(connection, "before_cursor_execute", record_query)
+    try:
+        rows = crud_flow_execution.get_continuation_navigation(
+            db_session, root_id=publisher_id, account_id=account_id
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", record_query)
+
+    assert len(rows) == 1
+    assert rows[0].issue_html_url == "https://github.com/org/repo/issues/1"
+    assert rows[0].result_pr_url == "https://github.com/org/repo/pull/2"
+    assert not hasattr(rows[0], "trigger_event_details")
+    assert not hasattr(rows[0], "result")
+    assert len(statements) == 1
+    selected = statements[0].split("FROM", 1)[0]
+    assert "flow_execution.trigger_event_details AS" not in selected
+    assert "flow_execution.result AS" not in selected
+
+
+@pytest.mark.parametrize("issue", [None, {}, [], False, 0, ""])
+def test_navigation_empty_issue_uses_merge_request_attributes(
+    db_session: Session, test_user: models.User, issue: Any
+) -> None:
+    """The SQL choice preserves all falsy JSON values accepted by old data."""
+    from preloop.services.flow_continuation_navigation import (
+        project_continuation_navigation,
+    )
+
+    flow = _create_flow(db_session, test_user)
+    publisher = _execution(db_session, flow, total_tokens=1, estimated_cost=0)
+    publisher.trigger_event_details = {
+        "payload": {
+            "issue": issue,
+            "object_attributes": {"web_url": "https://gitlab.com/org/repo/issues/1"},
+        }
+    }
+    db_session.flush()
+
+    project_continuation_navigation(
+        db_session, publisher, account_id=test_user.account_id
+    )
+
+    assert publisher.continuation_navigation["issue_url"] == (
+        "https://gitlab.com/org/repo/issues/1"
+    )
+
+
+@pytest.mark.parametrize("issue", [{"html_url": "javascript:bad"}, "invalid", 1])
+def test_navigation_rejects_invalid_primary_issue_link(
+    db_session: Session, test_user: models.User, issue: Any
+) -> None:
+    """Truthy invalid issue data must not fall through to another subject."""
+    from preloop.services.flow_continuation_navigation import (
+        project_continuation_navigation,
+    )
+
+    flow = _create_flow(db_session, test_user)
+    publisher = _execution(db_session, flow, total_tokens=1, estimated_cost=0)
+    publisher.trigger_event_details = {
+        "payload": {
+            "issue": issue,
+            "object_attributes": {"web_url": "https://gitlab.com/org/repo/issues/1"},
+        },
+        "_resume": {"pr_url": "https://gitlab.com/org/repo/merge_requests/2"},
+    }
+    publisher.result = {"pr_url": "javascript:bad"}
+    db_session.flush()
+
+    project_continuation_navigation(
+        db_session, publisher, account_id=test_user.account_id
+    )
+
+    assert publisher.continuation_navigation["issue_url"] is None
+    assert publisher.continuation_navigation["pr_url"] is None

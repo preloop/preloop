@@ -50,18 +50,14 @@ def project_continuation_navigation(
     issue_url = None
     pr_url = None
     for row in [publisher, *rows]:
-        details = _mapping(row.trigger_event_details)
-        payload = _mapping(details.get("payload"))
-        issue = payload.get("issue") or payload.get("object_attributes") or {}
-        if isinstance(issue, dict):
-            issue_url = issue_url or _web_url(
-                issue.get("html_url") or issue.get("web_url") or issue.get("url")
-            )
-        result = _mapping(row.result)
-        resume = _mapping(details.get("_resume"))
-        feedback = _mapping(details.get("_feedback"))
+        candidate = (
+            row.issue_html_url or row.issue_web_url or row.issue_url
+            if row.use_issue
+            else row.object_html_url or row.object_web_url or row.object_url
+        )
+        issue_url = issue_url or _web_url(candidate)
         pr_url = pr_url or _web_url(
-            result.get("pr_url") or resume.get("pr_url") or feedback.get("pr_url")
+            row.result_pr_url or row.resume_pr_url or row.feedback_pr_url
         )
     navigation = {
         "original_execution_id": root_id,
