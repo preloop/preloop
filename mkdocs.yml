@@ -264,6 +264,7 @@ nav:
       - Session embedding worker: operations/session-embedding.md
       - Session search: operations/session-search.md
       - OTLP export: guide/observability-otlp.md
+      - OTLP attribute stability: guide/otlp-attribute-stability.md
       - Browser error reporting: operations/browser-error-reporting.md
 
   - Security and compliance:

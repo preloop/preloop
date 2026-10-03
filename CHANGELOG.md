@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OTLP attribute stability policy.** `docs/guide/otlp-attribute-stability.md`
+  lists the stable `preloop.*` span attributes and metrics, the experimental
+  `gen_ai.*` names, and the deprecation window for renames (CHANGELOG
+  "Telemetry" entry, then both names emitted for at least two minor releases
+  or 60 days). A unit test keeps the exporter, the registry and the docs in
+  sync.
+
 - **Subscription reconnect without re-onboarding.** `preloop agents reconnect
   "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
   credentials while preserving enrollment, policy and configuration. Working
