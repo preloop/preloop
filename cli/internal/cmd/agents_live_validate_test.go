@@ -646,7 +646,7 @@ func TestPrintDeferredLiveValidationLine_StatusVariants(t *testing.T) {
 				},
 				Duration: 250 * time.Millisecond,
 			},
-			contains: []string{"OpenClaw", "round-trip OK", "openai/gpt-5.4", "latency="},
+			contains: []string{"OpenClaw", "direct gateway route/accounting probe passed", "openai/gpt-5.4", "latency="},
 		},
 		{
 			name: "failed_with_error",
@@ -662,7 +662,7 @@ func TestPrintDeferredLiveValidationLine_StatusVariants(t *testing.T) {
 			},
 			contains: []string{
 				"Codex CLI",
-				"round-trip FAILED",
+				"direct gateway route/accounting probe FAILED",
 				"HTTP 400 boom",
 				"preloop agents validate \"Codex CLI\" --live",
 			},
@@ -1199,8 +1199,8 @@ func TestApplyLiveValidationOutcomesToSummary(t *testing.T) {
 	if !strings.Contains(outcomes[0].Reason, "preloop agents validate") {
 		t.Fatalf("reason should include the re-verify command, got %q", outcomes[0].Reason)
 	}
-	if outcomes[1].Reason != "" {
-		t.Fatalf("passed validation must not add a Reason, got %q", outcomes[1].Reason)
+	if outcomes[1].Reason != directGatewayProbeEvidence {
+		t.Fatalf("passed validation must disclose probe evidence, got %q", outcomes[1].Reason)
 	}
 }
 

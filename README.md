@@ -36,7 +36,7 @@ preloop login --url http://localhost:3000    # your self-hosted instance
 preloop agents discover
 ```
 
-`preloop agents discover` finds local agent configs, imports representable MCP servers and model metadata, mints managed credentials, and rewrites supported agents so tool calls go through the **MCP Firewall** and model traffic through the **Gateway**. For Talk (operator commands), the CLI can install the runtime plugin (`preloop agents install-plugin`, or `preloop claude` for Claude Code). The plugin is what keeps the control channel connected.
+`preloop agents discover` finds local agent configs and reports adapter support for model routing, native action gates, and managed MCP separately. `preloop agents onboard` configures supported integrations: only calls routed through the managed MCP entry reach the **MCP Firewall**, while supported model routes use the **Gateway**. Support and configuration do not verify application behavior; live validation sends a direct gateway route/accounting probe without launching the application. For Talk (operator commands), the CLI can install the runtime plugin (`preloop agents install-plugin`, or `preloop claude` for Claude Code). The plugin is what keeps the control channel connected.
 
 [Pi and DeepSeek Harness](runtime-plugins/harness-preloop/README.md) support CLI onboarding, gateway routing, native tool approvals, active-session remote control, and ephemeral flows. Onboard with `preloop agents onboard Pi --approvals` or `preloop agents onboard "DeepSeek Harness" --approvals`.
 

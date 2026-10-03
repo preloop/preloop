@@ -405,7 +405,12 @@ class BudgetExtension:
         subject_scopes: Sequence[tuple[str, Any]],
         model_alias: Optional[str],
     ) -> Sequence[SpendScope]:
-        """Return extra buckets to increment in the same transaction."""
+        """Return extra buckets to increment in the same transaction.
+
+        A scope may name another account (an ancestor) or the request's own
+        account (a plugin subject such as ``team``). A scope equal to one of
+        the request's own buckets is ignored, so it is never counted twice.
+        """
         return ()
 
 

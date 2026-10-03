@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-user budgets count API-key traffic.** A call made with an API key a
+  user owns now counts toward that user's `user` budget and is blocked by its
+  hard limit. Agent traffic keeps counting against the agent's owner only, so
+  one call never counts against two users (#1174).
+- **Team budget subject reserved for plugins.** `team` joins `subaccount` and
+  `subaccounts_total` as a reserved budget subject: the core budget endpoint
+  refuses it and the teams plugin serves and enforces it through account hook
+  H5, which may now add buckets in the request's own account. The Cost page
+  gains a Teams tab and team names on budget rows, shown only when the server
+  advertises `team_budgets` and `team_management` (#1174).
+- Webhooks: new `agent.onboarded` event (#1161). It fires once per managed-agent
+  enrollment, the first time the enrollment is validated, with `outcome`
+  `created`, `relinked` or `merged`. The payload names the agent, its owner
+  and whether MCP and the model gateway were rewritten; it carries no
+  hostname, OS user name, config path or server URL.
 - **Governed virtual employees and private chat.** Bounded Codex and Nanobot
   tasks accept durable tracker, signed incident and Discord events. Nanobot
   supports DeepSeek through the model gateway. Slack, Mattermost and Discord

@@ -31,6 +31,7 @@ import type {
   FlowGatewayConversationPreviewMessage,
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
+  RuntimeSessionArtifactDescriptor,
   RuntimeSessionInteractionSummary,
   RuntimeSessionOptimizationAppliedAction,
   RuntimeSessionOptimizationResponse,
@@ -52,10 +53,17 @@ import { outcomeLabel } from '../utils/outcome-label';
 import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
 import './browser-step-row';
+import './session-artifact-row';
 import {
+  artifactRowKey,
+  artifactRowMetadata,
+  artifactView,
+  browserStepHasScreenshot,
   browserStepKey,
+  isArtifactRow,
   isBrowserStep,
   sortBrowserSteps,
+  type ArtifactKindGroup,
 } from '../utils/session-artifacts';
 import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
@@ -162,6 +170,8 @@ type ChatTurn = {
   // Set for a `browser_step` activity turn: rendered as a browser-step row
   // with its screenshot thumbnail instead of chat bubbles.
   browserStep?: RuntimeSessionActivityItem | null;
+  // Set for an `artifact` activity turn: rendered as a session-artifact-row.
+  artifact?: RuntimeSessionActivityItem | null;
   // Measured idle-TTL cache expiry for this turn (from optimize context profile).
   idleExpiry: ChatTurnIdleExpiry | null;
 };
@@ -235,6 +245,18 @@ export class SessionReplayPanel extends LitElement {
 
   @property({ type: Array })
   activity: RuntimeSessionActivityItem[] = [];
+
+  /** Artifact descriptors by id (sha256, lineage, availability). */
+  @property({ attribute: false })
+  artifacts: Record<string, RuntimeSessionArtifactDescriptor> = {};
+
+  /** When set, the thread shows only artifact turns of this kind group. */
+  @property({ type: String })
+  artifactKindFilter: ArtifactKindGroup | null = null;
+
+  /** Artifact turn to highlight (search hit landing, `?artifact=`). */
+  @property({ type: String })
+  highlightArtifactId: string | null = null;
 
   @property({ type: String })
   replayMode: SessionReplayMode = 'timeline';
@@ -4262,7 +4284,10 @@ export class SessionReplayPanel extends LitElement {
 
   private getSupportingActivity(): RuntimeSessionActivityItem[] {
     // Browser steps render as their own turns with screenshots.
-    const activity = this.activity.filter((item) => !isBrowserStep(item));
+    // Artifacts render as their own turns too.
+    const activity = this.activity.filter(
+      (item) => !isBrowserStep(item) && !isArtifactRow(item)
+    );
     if (!this.events.length) return activity;
     return activity.filter((item) => {
       if (item.activity_type === 'model_interaction') return false;
@@ -4273,7 +4298,7 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private isToolCallActivity(item: RuntimeSessionActivityItem): boolean {
-    if (isBrowserStep(item)) return false;
+    if (isBrowserStep(item) || isArtifactRow(item)) return false;
     return item.activity_type === 'tool_call' || Boolean(item.tool_name);
   }
 
@@ -4536,7 +4561,33 @@ export class SessionReplayPanel extends LitElement {
       })
     );
 
-    const turns = [...eventTurns, ...activityTurns, ...browserStepTurns].sort(
+    const artifactTurns: ChatTurn[] = this.activity
+      .filter((item) => isArtifactRow(item) && artifactRowMetadata(item))
+      .map((item) => ({
+        id: artifactRowKey(artifactRowMetadata(item)!.id),
+        index: 0,
+        event: null,
+        timestamp: item.timestamp || null,
+        title: item.title || 'Artifact',
+        deltaMessages: [],
+        totalTokens: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        cachedTokens: null,
+        estimatedCost: 0,
+        toolCallCount: 0,
+        failed: false,
+        isActivity: true,
+        artifact: item,
+        idleExpiry: null,
+      }));
+
+    const turns = [
+      ...eventTurns,
+      ...activityTurns,
+      ...browserStepTurns,
+      ...artifactTurns,
+    ].sort(
       (left, right) =>
         new Date(left.timestamp || 0).getTime() -
         new Date(right.timestamp || 0).getTime()
@@ -4557,8 +4608,27 @@ export class SessionReplayPanel extends LitElement {
     return this.chatSort === 'newest' ? [...messages].reverse() : messages;
   }
 
+  private turnArtifactGroup(turn: ChatTurn): ArtifactKindGroup | null {
+    if (!turn.artifact) return null;
+    const meta = artifactRowMetadata(turn.artifact);
+    return meta
+      ? artifactView(turn.artifact, this.artifacts[meta.id])?.group || null
+      : null;
+  }
+
   private turnPassesTypeFilter(turn: ChatTurn): boolean {
+    if (this.artifactKindFilter) {
+      if (turn.browserStep) {
+        return (
+          this.artifactKindFilter === 'screenshot' &&
+          browserStepHasScreenshot(turn.browserStep)
+        );
+      }
+      return this.turnArtifactGroup(turn) === this.artifactKindFilter;
+    }
     if (this.chatTypeFilter === 'all') return true;
+    // An artifact is something the session produced; keep it in both views.
+    if (turn.artifact) return true;
     // A browser action is tool activity, not a message.
     if (turn.browserStep) return this.chatTypeFilter === 'tools';
     if (this.chatTypeFilter === 'tools') return turn.toolCallCount > 0;
@@ -5246,10 +5316,44 @@ export class SessionReplayPanel extends LitElement {
     return true;
   }
 
+  /** Scroll the turn of one artifact into view and focus its row. */
+  scrollToArtifact(artifactId: string): boolean {
+    const row = this.renderRoot.querySelector<HTMLElement>(
+      `[data-artifact-key="${artifactRowKey(artifactId)}"] session-artifact-row`
+    );
+    if (!row) return false;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+    return true;
+  }
+
+  private renderArtifactTurn(turn: ChatTurn) {
+    const item = turn.artifact!;
+    const meta = artifactRowMetadata(item);
+    const view = meta ? artifactView(item, this.artifacts[meta.id]) : null;
+    if (!meta || !view) return nothing;
+    const parent = view.parentArtifactId
+      ? this.artifacts[view.parentArtifactId]
+      : null;
+    return html`<div
+      class="chat-turn browser-step-turn artifact-turn"
+      data-artifact-key=${turn.id}
+    >
+      <session-artifact-row
+        .item=${item}
+        .artifact=${view}
+        .sessionId=${this.session?.id || ''}
+        .parentName=${parent?.name || ''}
+        ?highlighted=${this.highlightArtifactId === meta.id}
+      ></session-artifact-row>
+    </div>`;
+  }
+
   private renderChatTurn(
     turn: ChatTurn,
     mostExpensiveTurnId: string | null = null
   ) {
+    if (turn.artifact) return this.renderArtifactTurn(turn);
     if (turn.browserStep) {
       return html`<div
         class="chat-turn browser-step-turn"

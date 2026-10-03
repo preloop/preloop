@@ -554,6 +554,47 @@ test("receipt ledger refuses the same principal under another managed identity o
 });
 
 
+test("ordinary sidecar evicts in memory and does not stop at the receipt cap", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "codex-ordinary-receipts-"));
+  try {
+    const configPath = path.join(directory, "preloop-control.json");
+    const state = { texts: [], runs: 0, starts: [], resumes: [] };
+    const sidecar = new PreloopCodexSidecar(configPath, makeEchoFactory(state));
+    sidecar.configure({ ...baseConfig });
+    const memory = new Map();
+    for (let index = 0; index < MAX_COMMAND_RECEIPTS; index += 1) {
+      memory.set(`old-${index}`, {
+        name: "command_result",
+        payload: { status: "completed", reply_text: `old-${index}` },
+      });
+    }
+    sidecar.memoryOutcomes = memory;
+    const socket = fakeSocket();
+    await sidecar.handleFrame(socket, JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "fresh",
+      payload: { text: "still runs", start_new_session: true },
+    }));
+    assert.equal(socket.sent.at(-1).name, "command_result");
+    assert.equal(state.runs, 1);
+    assert.equal(sidecar.memoryOutcomes.has("old-0"), false);
+    assert.equal(sidecar.memoryOutcomes.has("fresh"), true);
+    await sidecar.handleFrame(socket, JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "old-1",
+    }));
+    assert.equal(socket.sent.at(-1).name, "command_result");
+    assert.equal(socket.sent.at(-1).payload.reply_text, "old-1");
+    assert.equal(state.runs, 1);
+    await assert.rejects(fs.access(configPath + ".employees.json"));
+    assert.equal(sidecar.controlConfig.employee_state_path, undefined);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("full durable receipt ledger rejects new work and preserves replay after restart", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "codex-full-ledger-"));
   const ledger = path.join(directory, "ledger.json");

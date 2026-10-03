@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
 
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -239,10 +240,27 @@ def list_deliveries(
     }
 
 
+async def _read_ingress_body(request: Request) -> bytes:
+    """Read a provider body, refusing it once it passes the event limit."""
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > MAX_EVENT_BYTES:
+            raise HTTPException(413, "Event is too large")
+    return bytes(raw)
+
+
 @router.post("/ingress/{connection_id}")
-async def ingest(
-    connection_id: UUID, request: Request, db: Session = Depends(get_db_session)
+def ingest(
+    connection_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db_session),
 ) -> dict[str, Any]:
+    """Accept one verified provider event.
+
+    The handler is synchronous so the session checkout stays on the
+    threadpool. The request stream is read on the event loop.
+    """
     connection = crud_chat.connections.get(db, connection_id)
     if connection is None or not connection.enabled:
         raise HTTPException(404, "Connection not found")
@@ -250,11 +268,7 @@ async def ingest(
     if account is None or not account.is_active:
         raise HTTPException(404, "Connection not found")
     # Bound the body while streaming, rather than allocating an arbitrary body.
-    raw = bytearray()
-    async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > MAX_EVENT_BYTES:
-            raise HTTPException(413, "Event is too large")
+    raw = from_thread.run(_read_ingress_body, request)
     try:
         ingress = verify_ingress(
             provider_config(connection), bytes(raw), request.headers

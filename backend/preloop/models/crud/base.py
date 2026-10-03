@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from ..models.base import Base
 
@@ -17,13 +17,38 @@ class CRUDBase(Generic[ModelType]):
         """Initialize with a model class."""
         self.model = model
 
+    def _scope_to_account(self, query: Query, account_id: Any) -> Query:
+        """Restrict ``query`` to rows owned by ``account_id``.
+
+        Models with an ``account_id`` column filter on it directly. Models
+        that reach their account through a relationship (for example via
+        ``Tracker.account_id``) must override this method. A model with
+        neither raises instead of silently returning unscoped rows.
+
+        Args:
+            query: Query over ``self.model``.
+            account_id: Owning account.
+
+        Returns:
+            The scoped query.
+
+        Raises:
+            TypeError: The model has no way to scope by account.
+        """
+        if hasattr(self.model, "account_id"):
+            return query.filter(self.model.account_id == account_id)
+        raise TypeError(
+            f"{type(self).__name__} cannot scope {self.model.__name__} by "
+            "account_id; override _scope_to_account"
+        )
+
     def get(
         self, db: Session, id: Any, *, account_id: Optional[str] = None
     ) -> Optional[ModelType]:
-        """Get entity by ID."""
+        """Get entity by ID, scoped to ``account_id`` when given."""
         query = db.query(self.model).filter(self.model.id == id)
-        if account_id and hasattr(self.model, "account_id"):
-            query = query.filter(self.model.account_id == account_id)
+        if account_id:
+            query = self._scope_to_account(query, account_id)
         return query.first()
 
     def get_multi(
@@ -37,8 +62,8 @@ class CRUDBase(Generic[ModelType]):
     ) -> List[ModelType]:
         """Get multiple entities with optional filtering."""
         query = db.query(self.model)
-        if account_id and hasattr(self.model, "account_id"):
-            query = query.filter(self.model.account_id == account_id)
+        if account_id:
+            query = self._scope_to_account(query, account_id)
 
         for key, value in filters.items():
             if hasattr(self.model, key):

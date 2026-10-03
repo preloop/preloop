@@ -102,7 +102,11 @@ const EVICTION_CLOSE_CODE = 4000;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
-/** Never evict receipts: reject new commands when durable replay is full. */
+/**
+ * Cap on retained command receipts.
+ * Employee ledgers refuse new work at this size so a receipt is never evicted.
+ * Ordinary sidecars keep only an in-memory map and drop the oldest receipt.
+ */
 export const MAX_COMMAND_RECEIPTS = 1_000;
 
 type StoredCommandOutcome = {
@@ -124,17 +128,32 @@ export class PreloopCodexSidecar {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private commandOutcomes = new Map<string, StoredCommandOutcome>();
+  /** Bounded dedupe for a non-employee sidecar. Not written to disk. */
+  private memoryOutcomes = new Map<string, StoredCommandOutcome>();
   private ledgerLoaded = false;
 
-  private ledgerPath(): string | undefined {
-    const config = this.verify();
-    return config.employee_state_path ?? (this.configPath ? this.configPath + ".employees.json" : undefined);
+  /**
+   * Path of the durable employee ledger, when this command needs one.
+   *
+   * Ordinary sidecars do not get a path: `start()` only assigns
+   * `employee_state_path` for `codex_employee_scoped` configs, and an
+   * explicit path or a gateway-backed employee command opts in.
+   */
+  private durableLedgerFile(command?: OperatorCommand): string | undefined {
+    const config = this.controlConfig ?? this.verify();
+    const gateway = command?.payload?.metadata?.["gateway"];
+    const employeeCommand = typeof gateway === "object" && gateway !== null;
+    const durable = config.codex_employee_scoped === true
+      || typeof config.employee_state_path === "string"
+      || employeeCommand;
+    if (!durable) return undefined;
+    if (config.employee_state_path) return config.employee_state_path;
+    return (this.configPath ?? defaultConfigPath()) + ".employees.json";
   }
 
-  private loadLedger(): void {
+  private loadLedger(file: string): void {
     if (this.ledgerLoaded) return;
-    const file = this.ledgerPath();
-    if (file && fs.existsSync(file)) {
+    if (fs.existsSync(file)) {
       const stored = JSON.parse(fs.readFileSync(file, "utf8"));
       const config = this.verify();
       if (stored.principal !== config.runtime_principal_id
@@ -147,9 +166,7 @@ export class PreloopCodexSidecar {
     this.ledgerLoaded = true;
   }
 
-  private saveLedger(): void {
-    const file = this.ledgerPath();
-    if (!file) return;
+  private saveLedger(file: string): void {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const temporary = file + ".tmp";
     const config = this.verify();
@@ -193,7 +210,11 @@ export class PreloopCodexSidecar {
       || previous.managed_agent_id !== config.managed_agent_id
       || previous.control_ws_url !== config.control_ws_url);
     if (changed && this.inFlightMessageIds.size) throw new Error("Cannot replace employee identity during a running command");
-    if (changed) { this.ledgerLoaded = false; this.commandOutcomes.clear(); }
+    if (changed) {
+      this.ledgerLoaded = false;
+      this.commandOutcomes.clear();
+      this.memoryOutcomes.clear();
+    }
     this.controlConfig = config;
   }
 
@@ -226,7 +247,11 @@ export class PreloopCodexSidecar {
       `sidecar starting (pid ${process.pid}, config ${this.configPath ?? defaultConfigPath()})`,
     );
     const config = this.verify();
-    config.employee_state_path ??= (this.configPath ?? defaultConfigPath()) + ".employees.json";
+    // Only employee sidecars keep a durable receipt file. An ordinary
+    // sidecar that always received one would stop forever at the cap.
+    if (config.codex_employee_scoped) {
+      config.employee_state_path ??= (this.configPath ?? defaultConfigPath()) + ".employees.json";
+    }
     if (config.enabled === false) {
       throw new Error("preloop-control is disabled (enabled=false)");
     }
@@ -371,23 +396,29 @@ export class PreloopCodexSidecar {
       });
       return;
     }
-    this.loadLedger();
+    const ledgerFile = this.durableLedgerFile(command);
+    if (ledgerFile) this.loadLedger(ledgerFile);
     // Redelivered commands (reconnect replay) must not run twice. Dedupe
     // only after a terminal success/error, and replay that stored outcome
     // instead of a bare "duplicate" so a failed command is never silently
     // converted into already-handled.
     if (command.message_id && this.inFlightMessageIds.has(command.message_id)) return;
-    if (command.message_id && this.commandOutcomes.has(command.message_id)) {
-      const outcome = this.commandOutcomes.get(command.message_id)!;
+    const replayed = command.message_id
+      ? this.commandOutcomes.get(command.message_id) ?? this.memoryOutcomes.get(command.message_id)
+      : undefined;
+    if (replayed) {
       this.sendOn(socket, {
         type: "status",
-        name: outcome.name,
+        name: replayed.name,
         message_id: command.message_id,
-        payload: outcome.payload,
+        payload: replayed.payload,
       });
       return;
     }
-    if (this.commandOutcomes.size >= MAX_COMMAND_RECEIPTS) {
+    if (
+      ledgerFile
+      && this.commandOutcomes.size >= MAX_COMMAND_RECEIPTS
+    ) {
       this.sendOn(socket, {
         type: "status",
         name: "command_error",
@@ -405,7 +436,7 @@ export class PreloopCodexSidecar {
       this.rememberOutcome(command.message_id, { name: "command_error", payload: {
         command_id: command.message_id, status: "failed",
         error: "Worker restarted during task; effects may have occurred. Review before retry.",
-      }});
+      }}, ledgerFile);
     }
     try {
       const result = await this.dispatch(command);
@@ -423,7 +454,7 @@ export class PreloopCodexSidecar {
       this.rememberOutcome(command.message_id, {
         name: "command_result",
         payload,
-      });
+      }, ledgerFile);
       this.sendOn(socket, {
         type: "status",
         name: "command_result",
@@ -455,7 +486,7 @@ export class PreloopCodexSidecar {
       this.rememberOutcome(command.message_id, {
         name: "command_error",
         payload,
-      });
+      }, ledgerFile);
       this.sendOn(socket, {
         type: "status",
         name: "command_error",
@@ -609,12 +640,28 @@ export class PreloopCodexSidecar {
   private rememberOutcome(
     messageId: string | undefined,
     outcome: StoredCommandOutcome,
+    ledgerFile?: string,
   ): void {
     if (!messageId) {
       return;
     }
+    if (!ledgerFile) {
+      if (
+        !this.memoryOutcomes.has(messageId)
+        && this.memoryOutcomes.size >= MAX_COMMAND_RECEIPTS
+      ) {
+        for (const key of this.memoryOutcomes.keys()) {
+          if (!this.inFlightMessageIds.has(key)) {
+            this.memoryOutcomes.delete(key);
+            break;
+          }
+        }
+      }
+      this.memoryOutcomes.set(messageId, outcome);
+      return;
+    }
     this.commandOutcomes.set(messageId, outcome);
-    this.saveLedger();
+    this.saveLedger(ledgerFile);
   }
 
   private sendSessionActivity(activity: SessionActivity): void {

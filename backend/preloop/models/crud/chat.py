@@ -9,11 +9,27 @@ from sqlalchemy import or_, and_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from preloop.models import models
+from preloop.models.crud.audit_chain import postgres_sqlstate
+
 from .base import CRUDBase
+
+_CHAT_WORK_EVENT_KEY = "chat_work_connection_id_event_id_key"
+_UNIQUE_VIOLATION = "23505"
 
 
 class ChatLeaseLostError(RuntimeError):
     """A worker no longer owns this durable job."""
+
+
+def _is_chat_work_event_replay(exc: IntegrityError) -> bool:
+    """True only for a duplicate ``(connection_id, event_id)`` receipt."""
+    if postgres_sqlstate(exc) != _UNIQUE_VIOLATION:
+        return False
+    orig = getattr(exc, "orig", None)
+    diagnostic = getattr(orig, "diag", None)
+    if getattr(diagnostic, "constraint_name", None) == _CHAT_WORK_EVENT_KEY:
+        return True
+    return _CHAT_WORK_EVENT_KEY in str(orig if orig is not None else exc)
 
 
 class CRUDChat:
@@ -212,12 +228,8 @@ class CRUDChat:
             db.rollback()
             # Only a collision on the receipt key is an idempotent replay.
             # Preserve foreign-key, nullability and other integrity failures.
-            diagnostic = getattr(exc.orig, "diag", None)
-            if (
-                getattr(exc.orig, "sqlstate", None) != "23505"
-                or getattr(diagnostic, "constraint_name", None)
-                != "chat_work_connection_id_event_id_key"
-            ):
+            # psycopg2 exposes pgcode; psycopg3 exposes sqlstate.
+            if not _is_chat_work_event_replay(exc):
                 raise
             row = (
                 db.query(models.ChatWork)

@@ -28,7 +28,11 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
+import type {
+  FlowGatewayEvent,
+  RuntimeSessionActivityItem,
+  RuntimeSessionArtifactDescriptor,
+} from '../types';
 import type {
   TranscriptBuildResult,
   TranscriptItem,
@@ -40,7 +44,15 @@ import { buildConversation } from '../utils/transcript';
 import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
 import './browser-step-row';
-import { browserStepKey } from '../utils/session-artifacts';
+import './session-artifact-row';
+import {
+  artifactRowKey,
+  artifactRowMetadata,
+  artifactView,
+  browserStepHasScreenshot,
+  browserStepKey,
+  type ArtifactKindGroup,
+} from '../utils/session-artifacts';
 import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
@@ -163,6 +175,18 @@ export class SessionChatView extends LitElement {
   /** Session the activity belongs to; browser-step screenshots load from it. */
   @property({ type: String })
   sessionId = '';
+
+  /** Artifact descriptors by id (sha256, lineage, availability). */
+  @property({ attribute: false })
+  artifacts: Record<string, RuntimeSessionArtifactDescriptor> = {};
+
+  /** When set, the thread shows only artifact rows of this kind group. */
+  @property({ type: String })
+  artifactKindFilter: ArtifactKindGroup | null = null;
+
+  /** Artifact row to highlight (search hit landing, `?artifact=`). */
+  @property({ type: String })
+  highlightArtifactId: string | null = null;
 
   @property({ type: Boolean })
   loading = false;
@@ -477,6 +501,14 @@ export class SessionChatView extends LitElement {
       white-space: pre-wrap;
     }
 
+    .artifact-item {
+      margin: 0.25rem 0;
+    }
+    .artifact-filter-note {
+      font-size: 0.8rem;
+      color: var(--sl-color-neutral-600);
+      margin: 0.25rem 0 0.5rem;
+    }
     .browser-step-item {
       margin: 0.25rem 0;
       border-radius: 8px;
@@ -986,11 +1018,63 @@ ${
     return true;
   }
 
+  /** Scroll one artifact row into view and focus it. */
+  scrollToArtifact(artifactId: string): boolean {
+    const row = this.renderRoot.querySelector<HTMLElement>(
+      `[data-artifact-key="${artifactRowKey(artifactId)}"] session-artifact-row`
+    );
+    if (!row) return false;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+    return true;
+  }
+
+  private renderArtifact(activity: RuntimeSessionActivityItem) {
+    const meta = artifactRowMetadata(activity);
+    if (!meta) return nothing;
+    const view = artifactView(activity, this.artifacts[meta.id]);
+    if (!view) return nothing;
+    const parent = view.parentArtifactId
+      ? this.artifacts[view.parentArtifactId]
+      : null;
+    return html`<div
+      class="artifact-item"
+      data-artifact-key=${artifactRowKey(meta.id)}
+    >
+      <session-artifact-row
+        .item=${activity}
+        .artifact=${view}
+        .sessionId=${this.sessionId}
+        .parentName=${parent?.name || ''}
+        ?highlighted=${this.highlightArtifactId === meta.id}
+      ></session-artifact-row>
+    </div>`;
+  }
+
+  private passesArtifactFilter(
+    item: (typeof this.displayItems)[number]
+  ): boolean {
+    if (!this.artifactKindFilter) return true;
+    if (item.type === 'browser_step') {
+      return (
+        this.artifactKindFilter === 'screenshot' &&
+        browserStepHasScreenshot(item.activity)
+      );
+    }
+    if (item.type !== 'artifact') return false;
+    const meta = artifactRowMetadata(item.activity);
+    const view = meta
+      ? artifactView(item.activity, this.artifacts[meta.id])
+      : null;
+    return view?.group === this.artifactKindFilter;
+  }
+
   private renderItem(item: (typeof this.displayItems)[number]) {
     if (item.type === 'tool')
       return html`<session-tool-card .tool=${item.tool}></session-tool-card>`;
     if (item.type === 'approval') return this.renderApproval(item.request);
     if (item.type === 'message') return this.renderMessage(item);
+    if (item.type === 'artifact') return this.renderArtifact(item.activity);
     if (item.type === 'steps') return this.renderStepGroup(item);
     if (item.type === 'browser_step') {
       return html`<div
@@ -1147,8 +1231,16 @@ ${
                 `
               : nothing
           }
+          ${
+            this.artifactKindFilter
+              ? html`<div class="artifact-filter-note" role="status">
+                  Showing only artifact rows of this kind. Remove the filter
+                  chip in the header to see the whole conversation.
+                </div>`
+              : nothing
+          }
           ${repeat(
-            items,
+            items.filter((item) => this.passesArtifactFilter(item)),
             (item) => item.key,
             (item) => this.renderItem(item)
           )}

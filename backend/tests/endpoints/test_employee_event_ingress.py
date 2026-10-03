@@ -58,6 +58,18 @@ def test_glitchtip_hmac_verification_and_bounded_payload(monkeypatch):
         return_value=EmployeeEventReceipt("execution-example", "PENDING", False)
     )
     monkeypatch.setattr(endpoint, "ingest_employee_event", intake)
+
+    class _DummySession:
+        def in_transaction(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            return None
+
+    def _open_dummy():
+        yield _DummySession()
+
+    monkeypatch.setattr(endpoint, "get_db_session", _open_dummy)
     app = FastAPI()
     app.include_router(endpoint.router)
     app.dependency_overrides[get_db_session] = lambda: object()

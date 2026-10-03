@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "20261002_chat_connections"
-down_revision = "20261002_runtime_session_cwd"
+down_revision = "20261003_resume_root_idx"
 branch_labels = None
 depends_on = None
 

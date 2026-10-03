@@ -4784,3 +4784,99 @@ class TestRoutedReasoningEffort:
 
         assert orchestrator._apply_routed_reasoning_effort(context) is None
         assert "reasoning_effort" not in context["model_parameters"]
+
+
+class TestMissingPublication:
+    """A run configured to open a PR that ends without one is not a success."""
+
+    async def _run(
+        self,
+        db_session,
+        test_flow,
+        mock_nats_client,
+        event_data,
+        *,
+        no_commits,
+        is_resume=False,
+    ):
+        executor = _confirmation_executor(artifact={"status": "success"})
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=executor,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator,
+                "_publication_lookup_enabled",
+                return_value=True,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator,
+                "_publication_is_resume",
+                return_value=is_resume,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator,
+                "_publication_target_branch",
+                return_value="preloop/issue-1",
+            ),
+            patch.object(
+                FlowExecutionOrchestrator,
+                "_publication_tracker_clients",
+                AsyncMock(return_value=[]),
+            ),
+        ):
+            orchestrator = FlowExecutionOrchestrator(
+                db=db_session,
+                flow_id=test_flow.id,
+                trigger_event_data=event_data,
+                nats_client=mock_nats_client,
+            )
+            orchestrator._agent_exec_started = True
+            orchestrator._post_exec_no_commits = no_commits
+            await orchestrator.run()
+            return orchestrator
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("no_commits", [True, False])
+    async def test_success_without_a_pull_request_fails_with_a_reason(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+        no_commits: bool,
+    ):
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            no_commits=no_commits,
+        )
+
+        log = orchestrator.execution_log
+        assert log.status == "FAILED"
+        assert log.failure_category == "publication_missing"
+        assert log.error_message.startswith("publication_missing: ")
+        assert "preloop/issue-1" in log.error_message
+        record = log.result["publication_missing"]
+        assert record["status"] == "not_published"
+        assert record["branch"] == "preloop/issue-1"
+        assert ("no commits" in record["reason"]) is no_commits
+
+    @pytest.mark.asyncio
+    async def test_a_resume_onto_an_existing_pr_is_not_judged(
+        self, db_session: Session, test_flow: Flow, mock_nats_client, event_data
+    ):
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            no_commits=True,
+            is_resume=True,
+        )
+
+        assert orchestrator.execution_log.status == "SUCCEEDED"
+        assert "publication_missing" not in (orchestrator.execution_log.result or {})

@@ -17,6 +17,7 @@ from preloop.services.event_webhooks.events import (
     ENVELOPE_VERSION,
     EVENT_AGENT_NOTE_DELIVERED,
     EVENT_AGENT_NOTE_SENT,
+    EVENT_AGENT_ONBOARDED,
     EVENT_APPROVAL_CREATED,
     EVENT_APPROVAL_DECIDED,
     EVENT_BUDGET_EXCEEDED,
@@ -104,6 +105,7 @@ def test_the_v1_catalogue_is_the_documented_list():
         EVENT_AGENT_NOTE_SENT,
         EVENT_AGENT_NOTE_DELIVERED,
         EVENT_CRA_REPORTABLE_VULNERABILITY,
+        EVENT_AGENT_ONBOARDED,
     )
 
 
@@ -440,3 +442,18 @@ class FakeAsync:
 
     async def commit(self):
         self._session.flush()
+
+
+# --- agent.onboarded outcome ----------------------------------------------
+
+
+def test_agent_onboarded_outcome_classification():
+    earlier = datetime(2026, 10, 1, 9, 0, 0)
+    later = datetime(2026, 10, 2, 9, 0, 0, tzinfo=timezone.utc)
+    outcome = emitters.agent_onboarded_outcome
+    assert outcome(prior_onboarding_at=None, latest_merge_at=None) == "created"
+    assert outcome(prior_onboarding_at=earlier, latest_merge_at=None) == "relinked"
+    assert outcome(prior_onboarding_at=None, latest_merge_at=earlier) == "merged"
+    # Naive and aware stamps compare as UTC.
+    assert outcome(prior_onboarding_at=earlier, latest_merge_at=later) == "merged"
+    assert outcome(prior_onboarding_at=later, latest_merge_at=earlier) == "relinked"

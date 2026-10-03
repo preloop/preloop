@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import create_access_token
 from preloop.models import models
 from preloop.models.crud import crud_chat
+from preloop.models.crud.audit_chain import postgres_sqlstate
 from preloop.models.crud.chat import ChatLeaseLostError
 from preloop.models.db.session import get_db_session
 from preloop.services.chat_assistant import ChatBroker
@@ -164,7 +165,7 @@ def test_receipt_preserves_unrelated_integrity_errors(fixture_db, violation):
             external_user_id=external_user_id,
             payload={"text": "List agents"},
         )
-    assert caught.value.orig.sqlstate == (
+    assert postgres_sqlstate(caught.value) == (
         "23503" if violation == "foreign_key" else "23502"
     )
     # The rollback also leaves the session usable for a subsequent valid receipt.

@@ -790,6 +790,53 @@ def test_h5_malformed_extra_scopes_are_skipped_and_logged(
     assert recorded == {str(test_user.account_id), str(parent.id)}
 
 
+def test_h5_scopes_in_the_own_account_are_recorded_once(
+    db_session: Session, test_user: models.User
+) -> None:
+    """A plugin subject in the request's own account (for example ``team``)
+    gets a bucket; a scope equal to one of the request's own buckets does not
+    count the spend twice."""
+    team_id = uuid.uuid4()
+    own_key = uuid.uuid4()
+
+    class OwnAccount(BudgetExtension):
+        def extra_spend_scopes(self, db, *, account_id, subject_scopes, model_alias):
+            return [
+                SpendScope(
+                    account_id=account_id, subject_type="team", subject_id=team_id
+                ),
+                SpendScope(
+                    account_id=account_id, subject_type="team", subject_id=team_id
+                ),
+                SpendScope(account_id=account_id, subject_type="account"),
+                SpendScope(
+                    account_id=account_id, subject_type="api_key", subject_id=own_key
+                ),
+            ]
+
+    account_hooks.register_budget_extension(OwnAccount())
+    record_spend_for_request(
+        db_session,
+        account_id=test_user.account_id,
+        subject_type=None,
+        subject_id=None,
+        model_alias=None,
+        estimated_cost=0.5,
+        timestamp=datetime.now(UTC),
+        subject_scopes=[("api_key", str(own_key))],
+    )
+    rows = db_session.query(models.BudgetSpendActivity).filter(
+        models.BudgetSpendActivity.period == models.BudgetPeriod.all_time,
+        models.BudgetSpendActivity.account_id == test_user.account_id,
+    )
+    spend = {(row.subject_type, row.subject_id): row.spend_usd for row in rows}
+    assert spend == {
+        ("account", None): pytest.approx(0.5),
+        ("api_key", own_key): pytest.approx(0.5),
+        ("team", team_id): pytest.approx(0.5),
+    }
+
+
 # ---------------------------------------------------------------------------
 # H6: halt ancestry
 # ---------------------------------------------------------------------------

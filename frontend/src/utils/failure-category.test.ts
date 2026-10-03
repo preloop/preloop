@@ -25,6 +25,7 @@ describe('failure-category', () => {
       'model_config',
       'no_confirmation',
       'agent_no_progress',
+      'publication_missing',
       'tool_error',
       'agent_error',
       'model_stream_idle',
