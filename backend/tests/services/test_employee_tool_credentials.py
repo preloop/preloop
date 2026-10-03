@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from uuid import uuid4
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
@@ -128,7 +128,8 @@ async def test_employee_token_authenticates_native_and_mcp_with_restricted_ident
     )
     decide = AsyncMock(return_value=("allow", "Synthetic scoped decision", None, False))
     monkeypatch.setattr(agent_permission, "request_agent_permission", decide)
-    monkeypatch.setattr(agent_permission, "_claim_operator_note", lambda identity: None)
+    claim_note = Mock(return_value=None)
+    monkeypatch.setattr(agent_permission, "_claim_operator_note", claim_note)
     result = await agent_permission.agent_permission_check(
         agent_permission.AgentPermissionCheckRequest(
             source="codex_cli",
@@ -139,6 +140,7 @@ async def test_employee_token_authenticates_native_and_mcp_with_restricted_ident
         authorization=f"Bearer {token}",
     )
     assert result.decision == "allow"
+    assert claim_note.call_args.kwargs["origin_session_id"] is None
     assert decide.await_args.kwargs["managed_agent_id"] == agent.id
     assert decide.await_args.kwargs["runtime_session_id"] == session.id
     assert (
