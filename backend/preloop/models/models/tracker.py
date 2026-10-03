@@ -7,7 +7,7 @@ from datetime import datetime
 # Use TYPE_CHECKING to avoid circular imports
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from sqlalchemy import ForeignKey, String, func
+from sqlalchemy import ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from sqlalchemy.types import JSON, DateTime
@@ -47,6 +47,10 @@ class Tracker(Base):
 
     Where each entity is owned by the entity to its left.
     """
+
+    __table_args__ = (
+        UniqueConstraint("id", "account_id", name="uq_tracker_id_account"),
+    )
 
     # Tracker details
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -212,6 +216,8 @@ class Tracker(Base):
         The decrypted value is cached on the instance for the lifetime of the
         ORM object so listing/scanning paths do not re-decrypt on every access.
         """
+        if self.auth_type == "managed_oauth":
+            return ""
         cached = getattr(self, "_resolved_api_key_cache", None)
         if cached is not None:
             return cached

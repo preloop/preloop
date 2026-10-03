@@ -1,5 +1,6 @@
 """ORM model definitions."""
 
+from .oauth_connection import OAuthProviderConfiguration, OAuthConnectionTransaction
 from .account import Account
 from .account_halt import AccountHalt, HALT_SCOPES
 from .agent_control_command import AgentControlCommand
@@ -140,6 +141,8 @@ from .security_maintenance import (
 )
 
 __all__ = [
+    "OAuthProviderConfiguration",
+    "OAuthConnectionTransaction",
     "BillingOperation",
     "HostedSpendAccount",
     "HostedSpendMonth",
