@@ -2491,9 +2491,11 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 			return recoveryErr
 		}
 		// Strip the gateway key's pre-approval from ~/.claude.json while the
-		// managed settings (and therefore the key) are still readable.
+		// managed settings (and therefore the key) are still readable. A
+		// malformed or read-only user config must not strand offboarding
+		// after credentials were recovered.
 		if err := removeClaudeAPIKeyApproval(agent); err != nil {
-			return partial(fmt.Errorf("failed to remove gateway key approval: %w", err))
+			fmt.Printf("  Warning: could not remove the gateway key approval from Claude Code's user config: %v\n", err)
 		}
 		if state != nil {
 			if _, err := restoreAgentFromBackup(agent, state); err != nil {

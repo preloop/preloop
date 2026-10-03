@@ -143,6 +143,61 @@ func TestRestoreSubscriptionLoginWritesClaudeCredentialFile(t *testing.T) {
 	}
 }
 
+func TestRestoreSubscriptionLoginWritesAccessOnlyClaudeCredential(t *testing.T) {
+	isolateOffboardKeychains(t)
+	home := testenv.SetHome(t, t.TempDir())
+	credentialPath := filepath.Join(home, ".claude", ".credentials.json")
+	if err := os.MkdirAll(filepath.Dir(credentialPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{"claudeAiOauth":{"accessToken":"stale-access","scopes":["user:inference"],"subscriptionType":"max"}}`
+	if err := os.WriteFile(credentialPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := exportServerForTest(t, http.StatusOK, exportedModelCredential{
+		CredentialType: anthropicClaudeCodeOAuthCredentialType,
+		Access:         "live-access-only",
+	})
+	defer server.Close()
+
+	client := api.NewClientWithToken(server.URL, "test-token")
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
+	var output bytes.Buffer
+
+	restored, restoreErr := restoreSubscriptionLoginOnOffboard(
+		client, agent, detailWithModelForTest("model-1"), &output,
+	)
+	if restoreErr != nil || restored != subscriptionRestoreSucceeded {
+		t.Fatalf("access-only Claude bundle must restore, err=%v output=%s", restoreErr, output.String())
+	}
+
+	data, err := os.ReadFile(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]interface{}
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	oauth, ok := document["claudeAiOauth"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("claudeAiOauth missing: %s", data)
+	}
+	if oauth["accessToken"] != "live-access-only" {
+		t.Errorf("accessToken not restored: %v", oauth["accessToken"])
+	}
+	if _, exists := oauth["refreshToken"]; exists {
+		t.Errorf("access-only bundle wrote refreshToken: %v", oauth["refreshToken"])
+	}
+	if _, exists := oauth["expiresAt"]; exists {
+		t.Errorf("access-only bundle wrote expiresAt: %v", oauth["expiresAt"])
+	}
+	if oauth["subscriptionType"] != "max" {
+		t.Errorf("subscriptionType lost in merge: %v", oauth["subscriptionType"])
+	}
+}
+
 func TestRestoreSubscriptionLoginWritesCodexAuthFile(t *testing.T) {
 	isolateOffboardKeychains(t)
 	home := testenv.SetHome(t, t.TempDir())
@@ -159,6 +214,7 @@ func TestRestoreSubscriptionLoginWritesCodexAuthFile(t *testing.T) {
 		CredentialType: openaiCodexOAuthCredentialType,
 		Access:         "codex-access",
 		Refresh:        "codex-refresh",
+		Expires:        1900000000000,
 		AccountID:      "chatgpt-account",
 	})
 	defer server.Close()
@@ -260,8 +316,8 @@ func TestRestoreSubscriptionLoginNeedsDetailAndAuth(t *testing.T) {
 		t.Error("nil client must not restore")
 	}
 	client := api.NewClientWithToken("http://127.0.0.1:0", "token")
-	if status, err := restoreSubscriptionLoginOnOffboard(client, AgentConfig{Name: "Claude Code"}, nil, &output); status != subscriptionRestoreFailed || err == nil {
-		t.Error("nil detail must not restore")
+	if status, err := restoreSubscriptionLoginOnOffboard(client, AgentConfig{Name: "Claude Code"}, nil, &output); status != subscriptionRestoreNotApplicable || err != nil {
+		t.Error("nil detail has no remote credential to recover")
 	}
 	if status, err := restoreSubscriptionLoginOnOffboard(client, AgentConfig{Name: "OpenCode"}, detailWithModelForTest("m"), &output); status != subscriptionRestoreNotApplicable || err != nil {
 		t.Error("non-subscription agents must not restore")

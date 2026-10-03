@@ -75,7 +75,12 @@ func restoreSubscriptionLoginOnOffboard(client *api.Client, agent AgentConfig, d
 	fail := func(reason string) (subscriptionRestoreOutcome, error) {
 		return subscriptionRestoreFailed, fmt.Errorf("offboard stopped before cleanup: %s; live remote credentials and enrollment state retained, retry after recovery is available", reason)
 	}
-	if client == nil || !client.IsAuthenticated() || detail == nil {
+	// An unmatched install has no remote model cleanup can delete, so keep the
+	// local-only offboard path. Recovery is required only when detail != nil.
+	if detail == nil {
+		return subscriptionRestoreNotApplicable, nil
+	}
+	if client == nil || !client.IsAuthenticated() {
 		return fail("cannot verify subscription model bindings")
 	}
 	bound := map[string]bool{}
@@ -117,9 +122,14 @@ func restoreSubscriptionLoginOnOffboard(client *api.Client, agent AgentConfig, d
 	if err := client.Post("/api/v1/ai-models/"+url.PathEscape(applicable[0])+"/credentials/export", nil, &bundle); err != nil {
 		return fail("required subscription credential export failed")
 	}
-	if bundle.CredentialType != wantType || strings.TrimSpace(bundle.Access) == "" || strings.TrimSpace(bundle.Refresh) == "" ||
-		(wantType == anthropicClaudeCodeOAuthCredentialType && bundle.Expires <= 0) ||
-		(wantType == openaiCodexOAuthCredentialType && strings.TrimSpace(bundle.AccountID) == "") {
+	// Claude Code accepts a long-lived access-only bundle (access, no refresh or
+	// expires). Codex refreshes a single-use token, so refresh, expires, and
+	// account_id are mandatory there.
+	if bundle.CredentialType != wantType || strings.TrimSpace(bundle.Access) == "" {
+		return fail("required subscription export is incomplete or has the wrong credential type")
+	}
+	if wantType == openaiCodexOAuthCredentialType &&
+		(strings.TrimSpace(bundle.Refresh) == "" || bundle.Expires <= 0 || strings.TrimSpace(bundle.AccountID) == "") {
 		return fail("required subscription export is incomplete or has the wrong credential type")
 	}
 	var destination string
@@ -264,8 +274,12 @@ func writeClaudeSubscriptionCredential(bundle exportedModelCredential) (string, 
 		container = map[string]interface{}{}
 	}
 	container["accessToken"] = strings.TrimSpace(bundle.Access)
-	container["refreshToken"] = strings.TrimSpace(bundle.Refresh)
-	container["expiresAt"] = bundle.Expires
+	if refresh := strings.TrimSpace(bundle.Refresh); refresh != "" {
+		container["refreshToken"] = refresh
+	}
+	if bundle.Expires > 0 {
+		container["expiresAt"] = bundle.Expires
+	}
 	document["claudeAiOauth"] = container
 	data, err := json.MarshalIndent(document, "", "  ")
 	if err != nil {

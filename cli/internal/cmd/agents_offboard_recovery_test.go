@@ -209,7 +209,10 @@ func TestExecuteOffboardRecoveryFaultsAndRetry(t *testing.T) {
 		{"empty", func(t *testing.T, f *offboardRecoveryFixture) { f.exportBody = `{}` }},
 		{"malformed", func(t *testing.T, f *offboardRecoveryFixture) { f.exportBody = `{"access":"synthetic-live-access",` }},
 		{"missing_refresh", func(t *testing.T, f *offboardRecoveryFixture) {
-			f.exportBody = `{"credential_type":"oauth_openai_codex","access":"synthetic-live-access","account_id":"synthetic-account"}`
+			f.exportBody = `{"credential_type":"oauth_openai_codex","access":"synthetic-live-access","expires":1900000000000,"account_id":"synthetic-account"}`
+		}},
+		{"missing_expires", func(t *testing.T, f *offboardRecoveryFixture) {
+			f.exportBody = `{"credential_type":"oauth_openai_codex","access":"synthetic-live-access","refresh":"synthetic-rotated-refresh","account_id":"synthetic-account"}`
 		}},
 		{"file_read", func(t *testing.T, f *offboardRecoveryFixture) {
 			path := filepath.Join(f.home, ".codex", "auth.json")
@@ -243,7 +246,7 @@ func TestExecuteOffboardRecoveryFaultsAndRetry(t *testing.T) {
 			// enrollment survived the failed operation.
 			f.exportStatus = 200
 			f.dropExport = false
-			f.exportBody = `{"credential_type":"oauth_openai_codex","access":"synthetic-live-access","refresh":"synthetic-rotated-refresh","account_id":"synthetic-account"}`
+			f.exportBody = `{"credential_type":"oauth_openai_codex","access":"synthetic-live-access","refresh":"synthetic-rotated-refresh","expires":1900000000000,"account_id":"synthetic-account"}`
 			readCodexOffboardKeychain = func() (string, error) { return "", nil }
 			writeOffboardCredentialStoreFile = writeOffboardCredentialFile
 			authPath := filepath.Join(f.home, ".codex", "auth.json")
@@ -338,6 +341,100 @@ func TestRestoreSubscriptionBindingsCompatibilityAndMultiplicity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExecuteOffboardUnmatchedSubscriptionAgentKeepsLocalPath(t *testing.T) {
+	isolateOffboardKeychains(t)
+	home := testenv.SetTempHome(t)
+	stubClaudeBinary(t)
+	configPath := filepath.Join(home, ".claude", "settings.json")
+	backupPath := filepath.Join(home, "backup.json")
+	mustWriteRecoveryFile(t, configPath, `{"env":{"ANTHROPIC_API_KEY":"synthetic-gateway"}}`)
+	backup := `{"model":"original"}`
+	mustWriteRecoveryFile(t, backupPath, backup)
+	agent := normalizeDiscoveredAgent(AgentConfig{Name: "Claude Code", ConfigPath: configPath})
+	if err := saveLocalEnrollmentState(&localEnrollmentState{
+		AgentName:          agent.Name,
+		ConfigPath:         configPath,
+		BackupPath:         backupPath,
+		ConfigExisted:      true,
+		RuntimePrincipalID: runtimePrincipalIDForAgent(agent),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/agents" {
+			t.Errorf("unmatched install must not touch remote credentials: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(managedAgentListResponse{Items: nil})
+	}))
+	defer server.Close()
+	oldURL, oldToken := FlagURL, FlagToken
+	FlagURL, FlagToken = server.URL, "synthetic-session"
+	t.Cleanup(func() { FlagURL, FlagToken = oldURL, oldToken })
+
+	out := captureStdout(t, func() error {
+		return executeOffboard(agent, true, offboardCleanupNo, offboardCleanupNo)
+	})
+	if !strings.Contains(out, "Could not match a managed record for this install") {
+		t.Fatalf("expected lookup warning, got:\n%s", out)
+	}
+	if !strings.Contains(out, "✓ Offboarded") {
+		t.Fatalf("local-only offboard did not finish:\n%s", out)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil || string(data) != backup {
+		t.Fatalf("backup not restored: %s %v", data, err)
+	}
+	if _, err := loadLocalEnrollmentState(agent); err == nil {
+		t.Error("local enrollment state retained")
+	}
+}
+
+func TestExecuteOffboardClaudeApprovalFailureContinues(t *testing.T) {
+	f := newOffboardRecoveryFixture(t, "claude")
+	stubClaudeBinary(t)
+	backup := "{\"model\":\"original\"}\n"
+	if err := os.WriteFile(filepath.Join(f.home, "backup.toml"), []byte(backup), 0600); err != nil {
+		t.Fatal(err)
+	}
+	approvalPath := filepath.Join(f.home, ".claude.json")
+	if err := os.WriteFile(approvalPath, []byte("{not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runRecoveryOffboard(t, f)
+	if err != nil {
+		t.Fatalf("malformed user config must not block offboard: %v", err)
+	}
+	if !strings.Contains(out, "Warning: could not remove the gateway key approval") {
+		t.Fatalf("expected approval warning, got:\n%s", out)
+	}
+	if !strings.Contains(out, "✓ Offboarded") {
+		t.Fatalf("offboard did not finish:\n%s", out)
+	}
+	data, err := os.ReadFile(approvalPath)
+	if err != nil || string(data) != "{not json" {
+		t.Fatalf("malformed claude.json changed: %s %v", data, err)
+	}
+	restored, err := os.ReadFile(f.agent.ConfigPath)
+	if err != nil || string(restored) != backup {
+		t.Fatalf("config not restored after approval warning: %s %v", restored, err)
+	}
+	if _, err := loadLocalEnrollmentState(f.agent); err == nil {
+		t.Error("successful offboard kept enrollment state")
+	}
+}
+
+func stubClaudeBinary(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestExecuteOffboardClaudeActiveKeychainFailurePreservesHooksAndApproval(t *testing.T) {
