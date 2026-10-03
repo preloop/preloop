@@ -1,8 +1,10 @@
 import { playwrightLauncher } from '@web/test-runner-playwright';
 import { testConcurrency } from './scripts/test-concurrency.mjs';
 
+const concurrency = testConcurrency();
+
 export default {
-  concurrency: testConcurrency(),
+  ...(concurrency === undefined ? {} : { concurrency }),
   files: ['src/**/*.test.ts'],
   nodeResolve: true,
   testsFinishTimeout: 180000, // 3 min for CI; some tests (e.g. mcp-server-form) can be slow

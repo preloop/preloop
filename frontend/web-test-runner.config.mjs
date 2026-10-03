@@ -5,6 +5,7 @@ import path from 'path';
 import { testConcurrency } from './scripts/test-concurrency.mjs';
 
 const headed = process.env.HEADED === 'true';
+const concurrency = testConcurrency();
 
 const cssInlinePlugin = {
   name: 'css-inline-plugin',
@@ -23,7 +24,7 @@ const cssInlinePlugin = {
 };
 
 export default {
-  concurrency: testConcurrency(),
+  ...(concurrency === undefined ? {} : { concurrency }),
   plugins: [
     cssInlinePlugin,
     esbuildPlugin({
