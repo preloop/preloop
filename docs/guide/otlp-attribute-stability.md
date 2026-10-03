@@ -18,10 +18,9 @@ HTTP conventions.
 
 **Experimental.** `gen_ai.*` names follow the upstream
 [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/),
-which are still in Development upstream. The `db.client.connections.*` pool
-gauges use names from the
-[OpenTelemetry database conventions](https://opentelemetry.io/docs/specs/semconv/database/)
-in their earlier, pre-stable form. Both groups track upstream changes.
+which are still in Development upstream. The `db.client.connections.*`
+pool gauges follow the [OpenTelemetry database conventions](https://opentelemetry.io/docs/specs/semconv/db/).
+Both track upstream changes.
 
 **Not covered.** Span names, span kinds, links between spans, resource
 attributes other than `service.name`, instrumentation scope names, and
