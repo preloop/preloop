@@ -2449,9 +2449,14 @@ describe('FlowExecutionView', () => {
       );
       expect((element as any).execution.status).to.equal('RUNNING');
     } finally {
-      document.body.querySelectorAll('sl-alert').forEach((node) => {
-        node.remove();
-      });
+      // Hide rather than remove: a toast takes itself out of the toast stack
+      // once hidden, and removing it first makes that cleanup throw in
+      // whichever test is running when its timer fires.
+      await Promise.all(
+        [...document.body.querySelectorAll('sl-alert')].map((node) =>
+          (node as HTMLElement & { hide: () => Promise<void> }).hide()
+        )
+      );
     }
   });
 });
