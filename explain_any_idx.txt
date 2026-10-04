@@ -1,0 +1,24 @@
+=== IN (current), any
+ Aggregate  (cost=7366.87..7366.88 rows=1 width=8) (actual time=20.672..20.674 rows=1 loops=1)
+     ->  Seq Scan on acct  (cost=0.00..28.50 rows=1850 width=16) (actual time=0.002..0.003 rows=1 loops=1)
+   ->  Hash Join  (cost=6854.08..7313.42 rows=9983 width=0) (actual time=18.792..20.455 rows=10004 loops=1)
+         ->  Seq Scan on runtime_session  (cost=0.00..433.06 rows=10005 width=16) (actual time=0.008..0.876 rows=10005 loops=1)
+               ->  HashAggregate  (cost=6629.46..6729.29 rows=9983 width=16) (actual time=17.904..18.324 rows=10004 loops=1)
+                       ->  Seq Scan on acct acct_1  (cost=0.00..28.50 rows=1850 width=16) (actual time=0.000..0.000 rows=1 loops=1)
+                     ->  Seq Scan on runtime_session_artifact  (cost=0.00..6376.40 rows=89827 width=16) (actual time=0.004..11.556 rows=89933 loops=1)
+ Execution Time: 20.697 ms
+=== EXISTS, any
+ Aggregate  (cost=7673.99..7674.00 rows=1 width=8) (actual time=21.389..21.390 rows=1 loops=1)
+     ->  Seq Scan on acct  (cost=0.00..28.50 rows=1850 width=16) (actual time=0.002..0.002 rows=1 loops=1)
+   ->  Hash Join  (cost=7050.15..7620.53 rows=9983 width=0) (actual time=19.404..21.172 rows=10004 loops=1)
+         ->  Seq Scan on runtime_session rs  (cost=0.00..433.06 rows=10005 width=32) (actual time=0.005..0.925 rows=10005 loops=1)
+               ->  HashAggregate  (cost=6825.53..6925.36 rows=9983 width=32) (actual time=18.384..18.872 rows=10004 loops=1)
+                     ->  Seq Scan on runtime_session_artifact a  (cost=0.00..6376.40 rows=89827 width=32) (actual time=0.002..11.547 rows=89933 loops=1)
+ Execution Time: 21.410 ms
+=== EXISTS, any, page of 50
+     ->  Seq Scan on acct  (cost=0.00..28.50 rows=1850 width=16) (actual time=0.002..0.002 rows=1 loops=1)
+         ->  Hash Join  (cost=7050.15..7620.53 rows=9983 width=24) (actual time=19.720..21.424 rows=10004 loops=1)
+               ->  Seq Scan on runtime_session rs  (cost=0.00..433.06 rows=10005 width=40) (actual time=0.004..0.884 rows=10005 loops=1)
+                     ->  HashAggregate  (cost=6825.53..6925.36 rows=9983 width=32) (actual time=18.703..19.184 rows=10004 loops=1)
+                           ->  Seq Scan on runtime_session_artifact a  (cost=0.00..6376.40 rows=89827 width=32) (actual time=0.002..11.780 rows=89933 loops=1)
+ Execution Time: 21.829 ms
