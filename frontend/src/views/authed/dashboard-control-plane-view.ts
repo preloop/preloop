@@ -30,10 +30,11 @@ import {
   getBudgetPolicies,
   BudgetPolicy,
   getFlowExecutions,
-  getFlows,
+  getFlowSummaries,
   getIssueCount,
   getMCPServers,
-  getTools,
+  getToolsSummary,
+  type ToolSummary,
   getTrackers,
   getUsers,
   getFeatures,
@@ -83,7 +84,6 @@ import {
   pickDefaultModel,
   selectableModels,
 } from '../../utils/ai-model-selection';
-import type { Tool } from '../../components/tool-card';
 import type {
   InventoryAgentRow,
   InventoryFlowRow,
@@ -333,7 +333,7 @@ export class DashboardView extends AuthedElement {
   @state() private trackers: Tracker[] = [];
   @state() private totalIssues = 0;
   @state() private mcpServers: MCPServer[] = [];
-  @state() private tools: Tool[] = [];
+  @state() private tools: ToolSummary[] = [];
   @state() private flowExecutions: FlowExecution[] = [];
   /** Flow ids and names, so the Inventory lists flows that never ran. */
   @state() private flows: Array<{ id: string; name: string }> = [];
@@ -442,6 +442,7 @@ export class DashboardView extends AuthedElement {
 
   private unsubscribeRealtime?: () => void;
   private refreshInFlight = false;
+  private dashboardLoadGeneration = 0;
   private queuedDashboardRefresh: { preserveLoadingState?: boolean } | null =
     null;
   private topicRefreshesInFlight = new Set<string>();
@@ -1500,6 +1501,7 @@ export class DashboardView extends AuthedElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.dashboardLoadGeneration;
     this.pendingTopicRefreshes.clear();
     this.queuedDashboardRefresh = null;
     this.unsubscribeRealtime?.();
@@ -2029,7 +2031,7 @@ export class DashboardView extends AuthedElement {
   /** What a flow execution event can change. */
   private async refreshFlowRuns(): Promise<void> {
     const [flows, flowExecutions] = await Promise.all([
-      this.catchWith403Handling(getFlows(), [] as any[]),
+      this.catchWith403Handling(getFlowSummaries(), [] as any[]),
       this.catchWith403Handling(
         getFlowExecutions({ limit: FLOW_EXECUTIONS_PAGE_SIZE }),
         [] as FlowExecution[]
@@ -2210,6 +2212,7 @@ export class DashboardView extends AuthedElement {
       return;
     }
     this.refreshInFlight = true;
+    const generation = ++this.dashboardLoadGeneration;
     this.lastFetchStartedAt = Date.now();
     markOverviewTiming('overview-fetch-start');
 
@@ -2263,7 +2266,23 @@ export class DashboardView extends AuthedElement {
             includeBreakdown: false,
           }),
           null
-        ),
+        ).then((summary) => {
+          if (
+            this.isConnected &&
+            generation === this.dashboardLoadGeneration &&
+            range === this.gatewayTimeRange
+          ) {
+            this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
+              this.gatewayUsageRange === range ? this.gatewaySummary : null,
+              summary
+            );
+            if (this.gatewayUsageRange !== range) this.gatewayUsageRange = null;
+            this.fetchingGatewaySummary = false;
+            this.updatingUsage = false;
+            this.loading = false;
+          }
+          return summary;
+        }),
         this.catchWith403Handling(
           getAccountGatewayUsageSummary({
             startDate: priorWindow.startDate,
@@ -2281,7 +2300,19 @@ export class DashboardView extends AuthedElement {
         this.catchWith403Handling(
           this.fetchApprovalRequests('pending', 100),
           [] as ApprovalRequest[]
-        ),
+        ).then((approvals) => {
+          if (
+            !this.isConnected ||
+            generation !== this.dashboardLoadGeneration ||
+            range !== this.gatewayTimeRange
+          )
+            return approvals;
+          this.pendingApprovals = approvals.filter((approval) =>
+            this.isUnexpiredPendingApproval(approval)
+          );
+          this.fetchingApprovals = false;
+          return approvals;
+        }),
         // Above the fold a session answers one question - has anything ever
         // run on this account - so a short page is enough. The attention
         // loader asks for the window and the depth its rules need.
@@ -2294,22 +2325,53 @@ export class DashboardView extends AuthedElement {
           {
             items: [],
           } as unknown as Awaited<ReturnType<typeof getAccountRuntimeSessions>>
-        ),
+        ).then((sessions) => {
+          if (
+            !this.isConnected ||
+            generation !== this.dashboardLoadGeneration ||
+            range !== this.gatewayTimeRange
+          )
+            return sessions;
+          this.runtimeSessions = sessions.items || [];
+          this.totalRuntimeSessionsCount =
+            sessions.total ?? this.runtimeSessions.length;
+          return sessions;
+        }),
         this.catchWith403Handling(
           getAccountAgents({ status: 'all', limit: 100 }),
           {
             items: [],
             total: 0,
           } as unknown as Awaited<ReturnType<typeof getAccountAgents>>
-        ),
+        ).then((agents) => {
+          if (
+            !this.isConnected ||
+            generation !== this.dashboardLoadGeneration ||
+            range !== this.gatewayTimeRange
+          )
+            return agents;
+          this.applyAgentsList(agents);
+          this.fetchingAgents = false;
+          return agents;
+        }),
         this.fetchFeatures(),
       ]);
       await adminPromise;
+      if (
+        !this.isConnected ||
+        generation !== this.dashboardLoadGeneration ||
+        range !== this.gatewayTimeRange
+      )
+        return;
 
-      // One batch of assignments with no await between them, so Lit renders
-      // the finished fold once instead of eight times.
+      // The sections above hydrate independently; keep one final snapshot
+      // for the shared cache and deferred inputs.
       this.rateLimitReport = rateLimitReport;
-      if (range === this.gatewayTimeRange) {
+      if (
+        this.isConnected &&
+        generation === this.dashboardLoadGeneration &&
+        range === this.gatewayTimeRange
+      ) {
         this.gatewaySummary = mergeGatewaySummaryPreservingBreakdown(
           this.gatewayUsageRange === range ? this.gatewaySummary : null,
           gatewaySummary
@@ -2350,6 +2412,12 @@ export class DashboardView extends AuthedElement {
         range,
       });
     } catch (error) {
+      if (
+        !this.isConnected ||
+        generation !== this.dashboardLoadGeneration ||
+        range !== this.gatewayTimeRange
+      )
+        return;
       console.error(
         'Failed to complete background loading of overview dashboard',
         error
@@ -2408,6 +2476,7 @@ export class DashboardView extends AuthedElement {
     // The policies are one of the attention inputs, so this is the one place
     // that does wait for them.
     await this.budgetReady.catch(() => undefined);
+    if (!this.isConnected) return;
     // Attention always uses its own rolling 30-day window. The Overview
     // "month" range is a calendar month, which is not the same 30 days.
     await this.refreshAttentionInputs();
@@ -2480,7 +2549,10 @@ export class DashboardView extends AuthedElement {
   private async fetchFlowsList(): Promise<void> {
     this.fetchingFlows = true;
     try {
-      const flows = await this.catchWith403Handling(getFlows(), [] as any[]);
+      const flows = await this.catchWith403Handling(
+        getFlowSummaries(),
+        [] as any[]
+      );
       this.applyFlows(flows);
     } catch (error) {
       console.error('Failed to load the flows list', error);
@@ -2504,7 +2576,7 @@ export class DashboardView extends AuthedElement {
   private async fetchToolsList(): Promise<void> {
     this.fetchingTools = true;
     try {
-      const tools = await this.catchWith403Handling(getTools(), [] as Tool[]);
+      const tools = await this.catchWith403Handling(getToolsSummary(), []);
       this.applyToolsList(tools);
     } catch (error) {
       console.error('Failed to load the tools list', error);
@@ -2532,7 +2604,7 @@ export class DashboardView extends AuthedElement {
     this.aiModelsCount = this.aiModels.length;
   }
 
-  private applyToolsList(tools: Tool[]): void {
+  private applyToolsList(tools: ToolSummary[]): void {
     this.tools = tools || [];
   }
 

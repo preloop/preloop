@@ -1,4 +1,12 @@
-import { LitElement, css, html, unsafeCSS, TemplateResult, nothing } from 'lit';
+import {
+  LitElement,
+  css,
+  html,
+  unsafeCSS,
+  TemplateResult,
+  nothing,
+  PropertyValues,
+} from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -153,6 +161,9 @@ export class AgentDetailView extends LitElement {
 
   @state()
   private associatedFlows: any[] = [];
+  @state() private associatedFlowsLoaded = false;
+  @state() private associatedFlowsLoading = false;
+  @state() private associatedFlowsError: string | null = null;
 
   @state()
   private sshTerminalOutput: string[] = [
@@ -617,6 +628,12 @@ export class AgentDetailView extends LitElement {
     }
 
     if (this.initialized && changed) {
+      ++this.detailLoadGeneration;
+      ++this.editorContextGeneration;
+      this.editorContextRequest = null;
+      this.editorContextReady = false;
+      this.agent = null;
+      this.loading = true;
       void this.loadData();
     }
   }
@@ -632,8 +649,22 @@ export class AgentDetailView extends LitElement {
     }
   }
 
+  protected updated(changed: PropertyValues): void {
+    super.updated(changed);
+    if (
+      changed.has('activeTab') &&
+      this.agentId &&
+      this.isConnected &&
+      (this.activeTab === 'tools' || this.activeTab === 'models')
+    ) {
+      void this.ensureEditorContext();
+    }
+  }
+
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.detailLoadGeneration;
+    ++this.editorContextGeneration;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -675,6 +706,14 @@ export class AgentDetailView extends LitElement {
     }, 250);
   }
 
+  private detailLoadGeneration = 0;
+  private editorContextGeneration = 0;
+  private editorContextAgentId = '';
+  private editorContextReadyGeneration = -1;
+  private editorContextRequest: Promise<void> | null = null;
+  @state() private editorContextReady = false;
+  @state() private editorContextError: string | null = null;
+
   private loadInFlight: Promise<void> | null = null;
   private liveRefreshQueued = false;
   private explicitRefreshWaiters = 0;
@@ -711,6 +750,7 @@ export class AgentDetailView extends LitElement {
   }
 
   private async performLoadData(isSoftRefresh: boolean): Promise<void> {
+    const generation = ++this.detailLoadGeneration;
     if (!this.agentId) {
       if (!isSoftRefresh) this.error = 'Missing agent id.';
       this.loading = false;
@@ -720,6 +760,14 @@ export class AgentDetailView extends LitElement {
     if (!isSoftRefresh) {
       this.loading = true;
       this.error = null;
+      this.editorContextReady = false;
+      ++this.editorContextGeneration;
+      this.editorContextRequest = null;
+      if (this.agent?.id !== this.agentId) {
+        this.agent = null;
+        this.associatedFlowsLoaded = false;
+        this.associatedFlows = [];
+      }
       this.aggregate = null;
       this.usageByModel = [];
       this.activityByServer = [];
@@ -745,33 +793,40 @@ export class AgentDetailView extends LitElement {
     }
 
     try {
-      const [
-        detail,
-        users,
-        governance,
-        tools,
-        servers,
-        workflows,
-        features,
-        models,
-      ] = await Promise.all([
-        getAccountAgent(this.agentId, { start_date: startDate }),
-        this.fetchUsers(),
-        getAgentGovernance(this.agentId),
-        getTools(),
-        getMCPServers(),
-        getApprovalWorkflows(),
-        getFeatures(),
-        getAIModels(),
+      await Promise.all([
+        getAccountAgent(this.agentId, { start_date: startDate }).then(
+          (detail) => {
+            if (generation !== this.detailLoadGeneration) return detail;
+            this.agent = detail.agent;
+            this.aggregate = detail.aggregate;
+            this.usageByModel = detail.usage_by_model;
+            this.activityByServer = detail.activity_by_server;
+            this.activityByTool = detail.activity_by_tool;
+            this.sessions = detail.sessions;
+            this.selectedOwnerUserId = detail.agent.owner_user_id ?? '';
+            if (!isSoftRefresh)
+              this.editableDisplayName = detail.agent.display_name;
+            this.loading = false;
+            return detail;
+          }
+        ),
+        (isSoftRefresh
+          ? Promise.resolve(this.availableUsers)
+          : this.fetchUsers()
+        )
+          .then((users) => {
+            if (generation === this.detailLoadGeneration)
+              this.availableUsers = users;
+          })
+          .catch(() => undefined),
+        getFeatures()
+          .then((features) => {
+            if (generation === this.detailLoadGeneration)
+              this.featureFlags = features?.features || {};
+          })
+          .catch(() => undefined),
       ]);
-      this.agent = detail.agent;
-      this.availableModels = models || [];
-      this.mcpServers = servers || [];
-      this.aggregate = detail.aggregate;
-      this.usageByModel = detail.usage_by_model;
-      this.activityByServer = detail.activity_by_server;
-      this.activityByTool = detail.activity_by_tool;
-      this.sessions = detail.sessions;
+      if (generation !== this.detailLoadGeneration) return;
       if (!isSoftRefresh) {
         this.liveActivity = {
           modelCalls: 0,
@@ -779,72 +834,135 @@ export class AgentDetailView extends LitElement {
           lastActivityAt: null,
         };
       }
-      this.governance = governance.config;
-      this.confirmedGovernance = governance.config;
-      // Resolve what "inherit" currently means for the approvals selector.
-      void getAccountGovernanceDefaults()
-        .then((defaults) => {
-          this.accountNativeApprovalDefault =
-            defaults.defaults.native_tool_approvals ?? 'enforce';
-        })
-        .catch(() => {
-          this.accountNativeApprovalDefault = null;
-        });
-      this.scopedToolRules = normalizeScopedToolRules(
-        governance.config.tool_rules
-      );
-      this.toolEnabledOverrides =
-        governance.config.tool_enabled_overrides || {};
-      this.allowedModelsText = this.formatAllowedModelsText(
-        governance.config.allowed_models
-      );
-      this.modelBudgetsText = JSON.stringify(
-        governance.config.model_budgets || {},
-        null,
-        2
-      );
-      this.toolCatalog = tools || [];
-      this.approvalWorkflows = workflows || [];
-      this.featureFlags = features?.features || {};
-      this.availableUsers = users;
-      this.selectedOwnerUserId = detail.agent.owner_user_id ?? '';
-      if (!isSoftRefresh) {
-        this.editableDisplayName = detail.agent.display_name;
-      }
-
-      // Load and filter associated flows
-      try {
-        const flows = await getFlows();
-        this.associatedFlows = (flows || []).filter((f: any) => {
-          try {
-            const config =
-              typeof f.agent_config === 'string'
-                ? JSON.parse(f.agent_config)
-                : f.agent_config;
-            return (
-              config &&
-              config.execution_path === 'persistent' &&
-              config.target_agent_id === this.agentId
-            );
-          } catch (e) {
-            return false;
-          }
-        });
-      } catch (e) {
-        console.warn('Failed to load associated flows', e);
-      }
+      if (this.activeTab === 'tools' || this.activeTab === 'models')
+        void this.ensureEditorContext(isSoftRefresh);
+      if (this.activeTab === 'associated-flows')
+        void this.loadAssociatedFlows(true);
     } catch (error) {
+      if (generation !== this.detailLoadGeneration) return;
       console.error('Failed to load managed agent detail:', error);
       if (!isSoftRefresh) {
-        this.error =
+        const message =
           error instanceof Error
             ? error.message
             : 'Failed to load managed agent';
+        if (this.agent) this.editorContextError = message;
+        else this.error = message;
       }
     } finally {
-      if (!isSoftRefresh) {
+      if (!isSoftRefresh && generation === this.detailLoadGeneration) {
         this.loading = false;
       }
+    }
+  }
+
+  /** Editor catalogs are needed only after opening Tools or Models. */
+  private ensureEditorContext(refresh = false): Promise<void> {
+    if (this.editorContextRequest) return this.editorContextRequest;
+    if (this.editorContextReady && !refresh) return Promise.resolve();
+    const generation = this.editorContextGeneration;
+    const agentId = this.agentId;
+    const reuseCatalogs = this.editorContextReady;
+    this.editorContextError = null;
+    let request!: Promise<void>;
+    request = (async () => {
+      try {
+        const [governance, tools, servers, workflows, models, defaults] =
+          await Promise.all([
+            getAgentGovernance(agentId),
+            reuseCatalogs ? Promise.resolve(this.toolCatalog) : getTools(),
+            reuseCatalogs ? Promise.resolve(this.mcpServers) : getMCPServers(),
+            reuseCatalogs
+              ? Promise.resolve(this.approvalWorkflows)
+              : getApprovalWorkflows(),
+            reuseCatalogs
+              ? Promise.resolve(this.availableModels)
+              : getAIModels(),
+            getAccountGovernanceDefaults().catch(() => null),
+          ]);
+        if (
+          generation !== this.editorContextGeneration ||
+          agentId !== this.agentId ||
+          !this.isConnected
+        )
+          return;
+        this.availableModels = models || [];
+        this.governance = governance.config;
+        this.confirmedGovernance = governance.config;
+        this.accountNativeApprovalDefault =
+          defaults?.defaults.native_tool_approvals ?? null;
+        this.scopedToolRules = normalizeScopedToolRules(
+          governance.config.tool_rules
+        );
+        this.toolEnabledOverrides =
+          governance.config.tool_enabled_overrides || {};
+        this.allowedModelsText = this.formatAllowedModelsText(
+          governance.config.allowed_models
+        );
+        this.modelBudgetsText = JSON.stringify(
+          governance.config.model_budgets || {},
+          null,
+          2
+        );
+        this.toolCatalog = tools || [];
+        this.mcpServers = servers || [];
+        this.approvalWorkflows = workflows || [];
+        this.availableModels = models || [];
+        this.editorContextAgentId = agentId;
+        this.editorContextReadyGeneration = generation;
+        this.editorContextReady = true;
+      } catch (error) {
+        if (
+          generation !== this.editorContextGeneration ||
+          agentId !== this.agentId ||
+          !this.isConnected
+        )
+          return;
+        this.editorContextReady = false;
+        this.editorContextError =
+          error instanceof Error
+            ? error.message
+            : 'Could not load editor settings';
+      } finally {
+        if (this.editorContextRequest === request)
+          this.editorContextRequest = null;
+      }
+    })();
+    this.editorContextRequest = request;
+    return request;
+  }
+
+  private async loadAssociatedFlows(refresh = false): Promise<void> {
+    if (this.associatedFlowsLoading || (this.associatedFlowsLoaded && !refresh))
+      return;
+    this.associatedFlowsLoading = true;
+    this.associatedFlowsError = null;
+    const generation = this.detailLoadGeneration;
+    const agentId = this.agentId;
+    try {
+      const flows = await getFlows();
+      if (generation !== this.detailLoadGeneration || agentId !== this.agentId)
+        return;
+      this.associatedFlows = (flows || []).filter((flow: any) => {
+        try {
+          const config =
+            typeof flow.agent_config === 'string'
+              ? JSON.parse(flow.agent_config)
+              : flow.agent_config;
+          return (
+            config?.execution_path === 'persistent' &&
+            config.target_agent_id === agentId
+          );
+        } catch {
+          return false;
+        }
+      });
+      this.associatedFlowsLoaded = true;
+    } catch (error) {
+      console.warn('Failed to load associated flows', error);
+      this.associatedFlowsError = 'Could not load associated flows.';
+    } finally {
+      this.associatedFlowsLoading = false;
     }
   }
 
@@ -1485,11 +1603,21 @@ export class AgentDetailView extends LitElement {
     }
   }
 
+  private canSaveEditorContext(): boolean {
+    return (
+      this.isConnected &&
+      this.editorContextReady &&
+      this.editorContextAgentId === this.agentId &&
+      this.editorContextReadyGeneration === this.editorContextGeneration
+    );
+  }
+
   private async saveGovernance(): Promise<void> {
-    if (!this.agentId) {
+    if (!this.canSaveEditorContext()) {
       return;
     }
     this.actionLoading = true;
+    const generation = this.editorContextGeneration;
     try {
       const parsedBudgets = JSON.parse(this.modelBudgetsText || '{}');
       const config: SubjectGovernanceConfig = {
@@ -1503,6 +1631,7 @@ export class AgentDetailView extends LitElement {
         native_tool_approvals: this.governance.native_tool_approvals ?? null,
       };
       const response = await updateAgentGovernance(this.agentId, config);
+      if (generation !== this.editorContextGeneration) return;
       this.governance = response.config;
       this.confirmedGovernance = response.config;
       this.scopedToolRules = normalizeScopedToolRules(
@@ -1536,13 +1665,21 @@ export class AgentDetailView extends LitElement {
    * state instead of leaving unpersisted selections on screen.
    */
   private async saveAllowedModels(models: string[]): Promise<void> {
-    if (!this.agentId) {
+    if (!this.canSaveEditorContext()) {
       return;
     }
     this.governance = { ...this.governance, allowed_models: [...models] };
     this.allowedModelsText = this.formatAllowedModelsText(models);
     this.actionLoading = true;
-    const task = this.modelSaveChain.then(() => this.persistAllowedModels());
+    const generation = this.editorContextGeneration;
+    const agentId = this.agentId;
+    const task = this.modelSaveChain.then(() => {
+      if (
+        generation === this.editorContextGeneration &&
+        agentId === this.agentId
+      )
+        return this.persistAllowedModels();
+    });
     this.modelSaveChain = task.then(
       () => undefined,
       () => undefined
@@ -1555,13 +1692,15 @@ export class AgentDetailView extends LitElement {
   }
 
   private async persistAllowedModels(): Promise<void> {
-    if (!this.agentId) {
+    if (!this.canSaveEditorContext()) {
       return;
     }
+    const generation = this.editorContextGeneration;
     try {
       const response = await updateAgentGovernance(this.agentId, {
         ...this.governance,
       });
+      if (generation !== this.editorContextGeneration) return;
       this.confirmedGovernance = response.config;
       this.governance = response.config;
       this.scopedToolRules = normalizeScopedToolRules(
@@ -2702,6 +2841,11 @@ export class AgentDetailView extends LitElement {
   }
 
   private renderFlowsTab() {
+    if (!this.associatedFlowsLoaded) {
+      return html`<p role="status">
+        ${this.associatedFlowsError || 'Loading associated flows…'}
+      </p>`;
+    }
     return html`
       <sl-card
         style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: #ffffff; width: 100%;"
@@ -2914,8 +3058,13 @@ export class AgentDetailView extends LitElement {
               style="margin-top: var(--sl-spacing-large); margin-bottom: var(--sl-spacing-large); border-bottom: 1px solid var(--sl-color-neutral-200); padding-bottom: 4px;"
             >
               <sl-tab-group
-                @sl-tab-show=${(e: any) =>
-                  (this.activeTab = e.detail.name as any)}
+                @sl-tab-show=${(e: any) => {
+                  this.activeTab = e.detail.name as typeof this.activeTab;
+                  if (this.activeTab === 'tools' || this.activeTab === 'models')
+                    void this.ensureEditorContext();
+                  if (this.activeTab === 'associated-flows')
+                    void this.loadAssociatedFlows();
+                }}
                 style="--indicator-color: var(--sl-color-primary-600);"
               >
                 <sl-tab
@@ -2974,8 +3123,8 @@ export class AgentDetailView extends LitElement {
                           slot="nav"
                           panel="associated-flows"
                           ?active=${this.activeTab === 'associated-flows'}
-                          >Associated flows
-                          (${this.associatedFlows.length})</sl-tab
+                          >Associated
+                          flows${this.associatedFlowsLoaded ? ` (${this.associatedFlows.length})` : ''}</sl-tab
                         >
                       `
                     : nothing
@@ -3040,7 +3189,15 @@ export class AgentDetailView extends LitElement {
                 : nothing
             }
             ${
-              this.activeTab === 'tools'
+              (this.activeTab === 'tools' || this.activeTab === 'models') &&
+              !this.editorContextReady
+                ? html`<p role="status">
+                    ${this.editorContextError || 'Loading governance and model settings…'}
+                  </p>`
+                : nothing
+            }
+            ${
+              this.activeTab === 'tools' && this.editorContextReady
                 ? html`
                     <sl-card
                       class="tools-card"
@@ -3276,7 +3433,7 @@ export class AgentDetailView extends LitElement {
                 : nothing
             }
             ${
-              this.activeTab === 'models'
+              this.activeTab === 'models' && this.editorContextReady
                 ? html`
                     <sl-card
                       style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); width: 100%;"

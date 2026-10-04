@@ -1052,6 +1052,26 @@ paths:
           Default true preserves the historical response shape for API clients; lightweight
           card callers (Overview/Agents) should pass false. Prefer /cost/summary for
           full cost analytics.
+      - name: breakdown
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              enum:
+              - models
+              - flows
+              - sessions
+              - tools
+              - days
+              type: string
+          - type: 'null'
+          description: Selected breakdowns, repeated for multiple sections. Omitted
+            preserves all sections; ignored when include_breakdown=false.
+          title: Breakdown
+        description: Selected breakdowns, repeated for multiple sections. Omitted
+          preserves all sections; ignored when include_breakdown=false.
       responses:
         '200':
           description: Successful Response
@@ -3540,13 +3560,7 @@ paths:
       tags:
       - Tools
       summary: List All Tools
-      description: "List all available tools (builtin + external) with their configuration\
-        \ status.\n\nReturns a comprehensive list of:\n- All builtin tools\n- All\
-        \ tools from active MCP servers\n- Native agent tools from the catalogue,\
-        \ plus any seen agent-source\n  configurations that are not in the catalogue\n\
-        - Configuration status for each tool (enabled/disabled, preloop)\n\nArgs:\n\
-        \    account: Current user's account (from dependency)\n    db: Database session\n\
-        \nReturns:\n    List of tool dictionaries with metadata and configuration"
+      description: Return full tool definitions, preserving the existing API contract.
       operationId: list_all_tools_api_v1_tools_get
       responses:
         '200':
@@ -3559,6 +3573,30 @@ paths:
                   type: object
                 type: array
                 title: Response List All Tools Api V1 Tools Get
+      security:
+      - bearerAuth: []
+  /api/v1/tools/summary:
+    get:
+      tags:
+      - Tools
+      summary: List Tool Summaries
+      description: 'Return list metadata and policy state without input schemas/parameters.
+
+
+        The full ``/tools`` catalogue remains available for editors that need the
+
+        input definitions. Estimates are calculated from those same full definitions.'
+      operationId: list_tool_summaries_api_v1_tools_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ToolSummaryResponse'
+                type: array
+                title: Response List Tool Summaries Api V1 Tools Summary Get
       security:
       - bearerAuth: []
   /api/v1/tool-configurations:
@@ -10466,6 +10504,71 @@ paths:
                 items:
                   $ref: '#/components/schemas/FlowResponse'
                 title: Response Read Flows Api V1 Flows Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/summary:
+    get:
+      tags:
+      - Flows
+      summary: Read Flow Summaries
+      description: 'List flow metadata, optionally including the stated window''s
+        statistics.
+
+
+        Name selectors can omit execution aggregates; lists that show run counts
+
+        request them explicitly. The full ``/flows`` response stays unchanged.'
+      operationId: read_flow_summaries_api_v1_flows_summary_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: include_stats
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Stats
+      - name: stats_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Stats Since
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FlowSummaryResponse'
+                title: Response Read Flow Summaries Api V1 Flows Summary Get
         '422':
           description: Validation Error
           content:
@@ -21949,6 +22052,112 @@ components:
       type: object
       title: FlowSuccessNotifications
       description: What to do when an execution succeeds.
+    FlowSummaryResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        icon:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Icon
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        trigger_event_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Event Source
+        trigger_event_types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Trigger Event Types
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+        ai_model_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ai Model Name
+        agent_type:
+          type: string
+          title: Agent Type
+        is_enabled:
+          type: boolean
+          title: Is Enabled
+        is_preset:
+          type: boolean
+          title: Is Preset
+        source_preset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Source Preset Id
+        prompt_customized:
+          type: boolean
+          title: Prompt Customized
+        tools_customized:
+          type: boolean
+          title: Tools Customized
+        preset_update_available:
+          type: boolean
+          title: Preset Update Available
+        schedule_state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schedule State
+        execution_stats:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Execution Stats
+      type: object
+      required:
+      - id
+      - name
+      - created_at
+      - updated_at
+      - agent_type
+      - is_enabled
+      - is_preset
+      - prompt_customized
+      - tools_customized
+      - preset_update_available
+      title: FlowSummaryResponse
+      description: A flow row without prompts, agent configuration or tool definitions.
     FlowUpdate:
       properties:
         name:
@@ -33084,6 +33293,116 @@ components:
       type: object
       title: ToolConfigurationUpdate
       description: Schema for updating tool configuration.
+    ToolSummaryResponse:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        source:
+          type: string
+          enum:
+          - builtin
+          - mcp
+          - agent
+          title: Source
+        source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Id
+        source_name:
+          type: string
+          title: Source Name
+        is_enabled:
+          type: boolean
+          title: Is Enabled
+        requires_tracker:
+          type: boolean
+          title: Requires Tracker
+        required_tracker_types:
+          items:
+            type: string
+          type: array
+          title: Required Tracker Types
+        is_supported:
+          type: boolean
+          title: Is Supported
+        unsupported_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unsupported Reason
+        approval_workflow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Workflow Id
+        config_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Config Id
+        has_approval_condition:
+          type: boolean
+          title: Has Approval Condition
+        access_rules:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Access Rules
+        justification_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Justification Mode
+        enabled_for_agents:
+          items:
+            type: string
+          type: array
+          title: Enabled For Agents
+        schema_tokens_estimate:
+          type: integer
+          minimum: 0.0
+          title: Schema Tokens Estimate
+        adapters:
+          items:
+            type: string
+          type: array
+          title: Adapters
+        has_condition:
+          type: boolean
+          title: Has Condition
+          default: false
+      type: object
+      required:
+      - name
+      - description
+      - source
+      - source_id
+      - source_name
+      - is_enabled
+      - requires_tracker
+      - required_tracker_types
+      - is_supported
+      - unsupported_reason
+      - approval_workflow_id
+      - config_id
+      - has_approval_condition
+      - access_rules
+      - justification_mode
+      - enabled_for_agents
+      - schema_tokens_estimate
+      title: ToolSummaryResponse
+      description: 'Tool metadata and policy state without its potentially large schema.
+
+
+        Schema token estimates still describe the full tool definition served to
+
+        agents. Access rules remain available for list filtering and policy editing.'
     ToolUsageStatsResponse:
       properties:
         period_start:

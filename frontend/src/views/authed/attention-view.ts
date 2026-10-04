@@ -99,6 +99,8 @@ const DISMISS_REASON_LABELS: Record<string, string> = {
 export class AttentionView extends AuthedElement {
   @state() private loading = true;
   @state() private approvals: AttentionApproval[] = [];
+  @state() private approvalsReady = false;
+  private resolvedApprovalIds = new Set<string>();
   @state() private agents: ManagedAgentSummary[] = [];
   @state() private sessions: RuntimeSessionSummary[] = [];
   @state() private executions: AttentionFlowExecution[] = [];
@@ -119,6 +121,7 @@ export class AttentionView extends AuthedElement {
    * an allow-list otherwise. Writing a dismissal needs `manage_agents`.
    */
   @state() private permissions: UserPermissions = null;
+  @state() private permissionsReady = false;
   @state() private lastUpdatedAt: string | null = null;
   @state() private billingEnabled = false;
   @state() private showLimitsDialog = false;
@@ -613,6 +616,8 @@ export class AttentionView extends AuthedElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.refreshGeneration;
+    this.refreshQueued = false;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -641,8 +646,16 @@ export class AttentionView extends AuthedElement {
     void unifiedWebSocketManager.connect();
   }
 
-  /** Bursts of websocket events collapse into one refetch. */
+  private refreshInFlight: Promise<void> | null = null;
+  private refreshQueued = false;
+  private refreshGeneration = 0;
+
+  /** Bursts collapse into one refresh after the current wave completes. */
   private scheduleRefresh(): void {
+    if (this.refreshInFlight) {
+      this.refreshQueued = true;
+      return;
+    }
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
     }
@@ -653,15 +666,58 @@ export class AttentionView extends AuthedElement {
   }
 
   private async fetchAll(): Promise<void> {
+    if (this.refreshInFlight) {
+      this.refreshQueued = true;
+      return this.refreshInFlight;
+    }
+    if (this.refreshTimer !== null) {
+      window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    this.refreshQueued = false;
+    const pending = this.performFetchAll(++this.refreshGeneration);
+    this.refreshInFlight = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.refreshInFlight === pending) this.refreshInFlight = null;
+      if (this.refreshQueued && this.isConnected) {
+        this.refreshQueued = false;
+        this.scheduleRefresh();
+      }
+    }
+  }
+
+  private async performFetchAll(generation: number): Promise<void> {
     // Exactly the same loader the Overview uses, so the hero count and this
     // page can never be computed from differently shaped data.
     const [inputs, features, profile] = await Promise.all([
-      loadAttentionInputs(),
+      loadAttentionInputs({
+        onApprovalsLoaded: (approvals) => {
+          if (generation !== this.refreshGeneration || !this.isConnected)
+            return;
+          this.approvals = approvals.filter(
+            (approval) => !this.resolvedApprovalIds.has(approval.id)
+          );
+          this.approvalsReady = true;
+        },
+      }),
       getFeatures().catch(() => null),
-      getUserProfile().catch(() => null),
+      getUserProfile()
+        .catch(() => null)
+        .then((profile) => {
+          if (generation === this.refreshGeneration && this.isConnected) {
+            this.permissions = profile?.permissions ?? null;
+            this.permissionsReady = profile !== null;
+          }
+          return profile;
+        }),
     ]);
 
-    this.approvals = (inputs.approvals || []) as AttentionApproval[];
+    if (generation !== this.refreshGeneration || !this.isConnected) return;
+    this.approvals = ((inputs.approvals || []) as AttentionApproval[]).filter(
+      (approval) => !this.resolvedApprovalIds.has(approval.id)
+    );
     this.agents = inputs.agents || [];
     this.sessions = inputs.sessions || [];
     this.executions = (inputs.executions || []) as AttentionFlowExecution[];
@@ -838,7 +894,7 @@ export class AttentionView extends AuthedElement {
           size="small"
           variant="success"
           ?loading=${this.busyItemId === item.id}
-          ?disabled=${this.busyItemId === item.id}
+          ?disabled=${this.busyItemId === item.id || !this.permissionsReady}
           @click=${() => this.approveFromRow(item)}
         >
           Approve
@@ -848,7 +904,7 @@ export class AttentionView extends AuthedElement {
           size="small"
           variant="danger"
           outline
-          ?disabled=${this.busyItemId === item.id}
+          ?disabled=${this.busyItemId === item.id || !this.permissionsReady}
           @click=${() => this.denyFromRow(item)}
         >
           Deny
@@ -939,12 +995,16 @@ export class AttentionView extends AuthedElement {
    */
   private async approveFromRow(item: AttentionItem): Promise<void> {
     const approval = item.approval;
-    if (!approval) return;
+    if (!approval || !this.permissionsReady) return;
     this.busyItemId = item.id;
     try {
       await approveRequest(approval.id);
+      this.resolvedApprovalIds.add(approval.id);
+      this.approvals = this.approvals.filter(
+        (request) => request.id !== approval.id
+      );
       showToast(`Approved ${approval.toolName}.`, 'success');
-      await this.fetchAll();
+      void this.fetchAll();
     } catch (error: any) {
       showToast(error?.message || 'Failed to approve the request', 'danger');
     } finally {
@@ -955,7 +1015,7 @@ export class AttentionView extends AuthedElement {
   /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
   private async denyFromRow(item: AttentionItem): Promise<void> {
     const approval = item.approval;
-    if (!approval) return;
+    if (!approval || !this.permissionsReady) return;
     const confirmed = await confirmDialog({
       title: 'Deny this request?',
       message: `${approval.toolName} will not run.`,
@@ -969,8 +1029,12 @@ export class AttentionView extends AuthedElement {
     this.busyItemId = item.id;
     try {
       await declineRequest(approval.id);
+      this.resolvedApprovalIds.add(approval.id);
+      this.approvals = this.approvals.filter(
+        (request) => request.id !== approval.id
+      );
       showToast(`Denied ${approval.toolName}.`, 'neutral');
-      await this.fetchAll();
+      void this.fetchAll();
     } catch (error: any) {
       showToast(error?.message || 'Failed to deny the request', 'danger');
     } finally {
@@ -1802,9 +1866,11 @@ export class AttentionView extends AuthedElement {
         <div class="main-column">
           ${
             this.loading
-              ? html`<div class="loading-container">
-                  <sl-spinner style="font-size: 2rem;"></sl-spinner>
-                </div>`
+              ? html`${this.approvalsReady ? this.renderSection('approval', grouped.get('approval') || []) : nothing}
+                  <div class="loading-container" role="status">
+                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
+                    <span>Loading other attention items…</span>
+                  </div>`
               : html`
                   ${this.renderChipStrip(grouped)}
                   ${

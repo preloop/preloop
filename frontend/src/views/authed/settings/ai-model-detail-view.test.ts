@@ -22,8 +22,12 @@ describe('AIModelDetailView', () => {
   let repriceCalls: any[];
   let repriceResponse: any;
   let modelPayload: any;
+  let sessionsGate: Promise<void> | null = null;
+  let sessionsFail = false;
 
   beforeEach(() => {
+    sessionsGate = null;
+    sessionsFail = false;
     modelPayload = {
       id: 'model-1',
       name: 'Claude Sonnet Primary',
@@ -223,6 +227,8 @@ describe('AIModelDetailView', () => {
         }
 
         if (url.startsWith('/api/v1/ai-models/model-1/runtime-sessions')) {
+          if (sessionsGate) await sessionsGate;
+          if (sessionsFail) return new Response('{}', { status: 500 });
           return new Response(
             JSON.stringify({
               period_start: '2026-02-08T00:00:00Z',
@@ -443,6 +449,45 @@ describe('AIModelDetailView', () => {
     connectStub.restore();
     subscribeStub.restore();
     localStorage.clear();
+  });
+
+  it('renders usage while sessions are pending without mounting a duplicate observer fetch', async () => {
+    let release!: () => void;
+    sessionsGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const el = await fixture<AIModelDetailView>(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    );
+    try {
+      await waitUntil(
+        () => !!(el as any).summary && !(el as any).summaryLoading
+      );
+      await el.updateComplete;
+      expect(el.shadowRoot!.textContent).to.include('Claude Sonnet Primary');
+      expect(el.shadowRoot!.textContent).to.include('Usage summary');
+      expect(el.shadowRoot!.textContent).to.include('Loading model sessions');
+      expect(el.shadowRoot!.querySelector('preloop-session-observer')).not.to
+        .exist;
+    } finally {
+      release();
+    }
+    await waitUntil(() => !(el as any).sessionsLoading);
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('preloop-session-observer')).to.exist;
+  });
+
+  it('keeps usage and interactions when sessions fail', async () => {
+    sessionsFail = true;
+    const el = await fixture<AIModelDetailView>(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    );
+    await waitUntil(() => !!(el as any).sessionsError && !!(el as any).summary);
+    await el.updateComplete;
+    expect((el as any).summary.total_requests).to.equal(18);
+    expect((el as any).interactions.items).to.have.length(1);
+    expect(el.shadowRoot!.querySelector('preloop-session-observer')).not.to
+      .exist;
   });
 
   it('renders model observability summary, sessions, and interactions', async () => {

@@ -47,6 +47,7 @@ from preloop.services.policy_evaluator import evaluate_cel_expression
 from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
 from preloop.services.tool_usage_stats import ToolUsageStatsService
 from preloop.schemas.gateway_usage import GatewayUsageByTool
+from preloop.schemas.tool_summary import ToolSummaryResponse
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
@@ -520,6 +521,26 @@ def list_all_tools(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> List[Dict]:
+    """Return full tool definitions, preserving the existing API contract."""
+    return _list_tools(account=account, db=db)
+
+
+@router.get("/tools/summary", response_model=List[ToolSummaryResponse])
+@require_permission("view_tools")
+def list_tool_summaries(
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> List[ToolSummaryResponse]:
+    """Return list metadata and policy state without input schemas/parameters.
+
+    The full ``/tools`` catalogue remains available for editors that need the
+    input definitions. Estimates are calculated from those same full definitions.
+    """
+    return [ToolSummaryResponse.model_validate(row) for row in _list_tools(account, db)]
+
+
+def _list_tools(account: Account, db: Session) -> List[Dict]:
     """List all available tools (builtin + external) with their configuration status.
 
     Returns a comprehensive list of:
@@ -661,9 +682,14 @@ def list_all_tools(
 
     # Add external MCP tools
     mcp_servers = crud_mcp_server.get_active_by_account(db, account_id=str(account.id))
+    tools_by_server: Dict[str, list] = {}
+    for tool in crud_mcp_tool.get_by_servers_for_account(
+        db, account_id=str(account.id), server_ids=[server.id for server in mcp_servers]
+    ):
+        tools_by_server.setdefault(str(tool.mcp_server_id), []).append(tool)
 
     for server in mcp_servers:
-        mcp_tools = crud_mcp_tool.get_by_server(db, server_id=server.id)
+        mcp_tools = tools_by_server.get(str(server.id), [])
 
         for mcp_tool in mcp_tools:
             mcp_key = (mcp_tool.name, "mcp", str(server.id))

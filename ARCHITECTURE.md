@@ -60,6 +60,16 @@ Cloud analytics history is resolved through a billing plugin service at reportin
 The Cost console loads totals independently of settings and tab breakdowns.
 Selective reporting queries and per-section loading states are described in
 [Progressive reporting](docs/architecture/cost.md#progressive-reporting).
+Console catalogue lists use typed `/tools/summary` and `/flows/summary` views
+instead of downloading tool schemas and flow prompts/configuration. Full
+`/tools` and `/flows` responses retain their existing defaults for editors and
+API clients. Flow summary statistics are opt-in (`include_stats=true`) and use
+the same period and owned-flow aggregates as the full list. Both account gateway
+and Cost summaries support selecting repeated `breakdown` sections; callers
+needing only totals set `include_breakdown=false`, which skips the unused
+aggregations. The grouped audit timeline resolves correlations and approval
+lifecycle through account-scoped partial JSON-expression indexes. Their
+migration builds indexes concurrently and repairs interrupted invalid builds.
 Cost and cycle time per tracker issue are rolled up across flows into their own
 tables. Each issue row, summary and unassigned bucket also states `cost_coverage`
 (`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
