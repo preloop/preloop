@@ -489,6 +489,62 @@ describe('ApprovalsView', () => {
       expect((element as any).focusedIndex).to.equal(0);
     });
 
+    it('keeps a on the same request when a live insert lands above it', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'first', expires_at: inMinutes(10) }),
+        baseRequest({ id: 'second', expires_at: inMinutes(30) }),
+      ]);
+
+      await press(element, 'j');
+      await press(element, 'j');
+      expect(rows(element)[1].dataset.requestId).to.equal('second');
+
+      // A new request that expires sooner sorts to the top of the waiting
+      // group, pushing every row below it down by one.
+      (element as any).handleWebSocketMessage({
+        type: 'approval_created',
+        approval_request_id: 'arrived',
+        tool_name: 'example_tool',
+        expires_at: inMinutes(1),
+      });
+      await element.updateComplete;
+      expect(rows(element)[0].dataset.requestId).to.equal('arrived');
+
+      const focusedRow = element.shadowRoot?.querySelector<HTMLElement>(
+        '.approval-item[tabindex="0"]'
+      );
+      expect(focusedRow?.dataset.requestId).to.equal('second');
+
+      await press(element, 'a');
+      await waitUntil(() => !!decisionCall('approve'), 'no approve call');
+      expect(String(decisionCall('approve')!.args[0])).to.contain(
+        '/approval-requests/second/approve'
+      );
+    });
+
+    it('clears the focus instead of sliding onto a neighbour when the row leaves', async () => {
+      const element = await renderList([
+        baseRequest({ id: 'first', expires_at: inMinutes(10) }),
+        baseRequest({ id: 'second', expires_at: inMinutes(30) }),
+      ]);
+      await press(element, 'j');
+      expect((element as any).focusedId).to.equal('first');
+
+      // The request drops out of the list (deleted, or filtered away).
+      (element as any).approvalRequests = (
+        element as any
+      ).approvalRequests.filter((r: { id: string }) => r.id !== 'first');
+      (element as any).applyFilters();
+      await element.updateComplete;
+
+      expect((element as any).focusedId).to.equal(null);
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'a', bubbles: true })
+      );
+      await element.updateComplete;
+      expect(decisionCall('approve'), 'approved a neighbour').to.be.undefined;
+    });
+
     it('approves the focused row with a', async () => {
       const element = await renderList([
         baseRequest({ id: 'ar-1', expires_at: inMinutes(10) }),

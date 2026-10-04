@@ -1,5 +1,6 @@
 import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import { Router } from '../../router';
 import {
   AuthedElement,
@@ -148,11 +149,24 @@ export class ApprovalsView extends AuthedElement {
   private nowMs = Date.now();
 
   /**
-   * Which row the keyboard is on, as an index into `navigableRequests`. -1
-   * means the keyboard has not been used yet, so no row steals the tab stop.
+   * Which request the keyboard is on, by id. Null means the keyboard has not
+   * been used yet (so no row steals the tab stop), or the request it was on
+   * has left the list.
+   *
+   * Tracked by id and not by position: live updates insert, re-sort and drop
+   * rows, and a position would then point at a different request, so A would
+   * approve a tool call the operator never read.
    */
   @state()
-  private focusedIndex = -1;
+  private focusedId: string | null = null;
+
+  /** Position of the focused request in `navigableRequests`, or -1. */
+  private get focusedIndex(): number {
+    if (!this.focusedId) return -1;
+    return this.navigableRequests.findIndex(
+      (request) => request.id === this.focusedId
+    );
+  }
 
   /**
    * The shared console selection: the same checkbox, keys and bulk bar every
@@ -603,7 +617,9 @@ export class ApprovalsView extends AuthedElement {
       return;
     }
 
-    const focused = requests[this.focusedIndex];
+    // Looked up by id: if the request the operator was reading has gone,
+    // nothing happens rather than a neighbour being decided.
+    const focused = requests.find((request) => request.id === this.focusedId);
     if (!focused) return;
 
     if (key === 'Enter') {
@@ -635,9 +651,11 @@ export class ApprovalsView extends AuthedElement {
   }
 
   private moveFocus(delta: number) {
-    const last = this.navigableRequests.length - 1;
-    const next = this.focusedIndex < 0 ? 0 : this.focusedIndex + delta;
-    this.focusedIndex = Math.min(Math.max(next, 0), last);
+    const requests = this.navigableRequests;
+    const last = requests.length - 1;
+    const current = this.focusedIndex;
+    const next = current < 0 ? 0 : current + delta;
+    this.focusedId = requests[Math.min(Math.max(next, 0), last)]?.id ?? null;
     this.pendingFocus = true;
   }
 
@@ -652,13 +670,19 @@ export class ApprovalsView extends AuthedElement {
    */
   protected willUpdate() {
     this.selection.setItems(this.selectableRequests);
+    // A focused request that left the list clears the focus. It never slides
+    // onto whichever request now sits at the same position.
+    if (this.focusedId && this.focusedIndex < 0) {
+      this.focusedId = null;
+    }
   }
 
   protected updated() {
     if (!this.pendingFocus) return;
     this.pendingFocus = false;
+    if (!this.focusedId) return;
     const row = this.renderRoot.querySelector<HTMLElement>(
-      `.approval-item[data-index="${this.focusedIndex}"]`
+      `.approval-item[data-request-id="${CSS.escape(this.focusedId)}"]`
     );
     row?.focus();
   }
@@ -1467,8 +1491,11 @@ export class ApprovalsView extends AuthedElement {
           aria-multiselectable="true"
           aria-label=${title}
         >
-          ${requests.map((request, index) =>
-            this.renderRequest(request, waiting, indexOffset + index)
+          ${repeat(
+            requests,
+            (request) => request.id,
+            (request, index) =>
+              this.renderRequest(request, waiting, indexOffset + index)
           )}
         </div>
       </div>
@@ -1514,7 +1541,7 @@ export class ApprovalsView extends AuthedElement {
     waiting: boolean,
     index: number
   ) {
-    const focused = this.focusedIndex === index;
+    const focused = this.focusedId === request.id;
     const actions = this.requestActions(request);
     const detailsAction = actions.find((action) => action.id === 'details');
     // Only a row that can actually be decided is worth selecting: the bulk
@@ -1532,9 +1559,9 @@ export class ApprovalsView extends AuthedElement {
         data-request-id=${request.id}
         data-selection-id=${selectable ? request.id : nothing}
         aria-selected=${selected ? 'true' : 'false'}
-        tabindex=${focused || (this.focusedIndex < 0 && index === 0) ? 0 : -1}
+        tabindex=${focused || (!this.focusedId && index === 0) ? 0 : -1}
         @focus=${() => {
-          this.focusedIndex = index;
+          this.focusedId = request.id;
         }}
       >
         <div class="approval-row" role="gridcell">
