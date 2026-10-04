@@ -2,12 +2,17 @@
 
 These rows are imported from GitHub and are never gateway usage: they do not
 change gateway totals, budgets or ingestion quota.
+
+The ``/mappings`` routes (#1061) let an operator say which GitHub login is
+which Preloop user, so the spend outlier rules can evaluate imported
+premium-request spend per developer. ``/spend-coverage`` reports how much of
+the stored spend those mappings cover and why the rest is left out.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Optional
 
 from anyio import from_thread
@@ -23,8 +28,20 @@ from preloop.models.db.session import get_db_session
 from preloop.schemas.copilot_usage import (
     CopilotConnectionResponse,
     CopilotConnectionUpsert,
+    CopilotSpendCoverageResponse,
     CopilotSyncResponse,
     CopilotUsageSummaryResponse,
+    CopilotUserMappingListResponse,
+    CopilotUserMappingResponse,
+    CopilotUserMappingUpsert,
+)
+from preloop.services.copilot_spend_source import (
+    CopilotMappingError,
+    delete_user_mapping,
+    list_user_mappings,
+    mapping_payload,
+    spend_coverage,
+    upsert_user_mapping,
 )
 from preloop.services.copilot_usage_import import (
     COPILOT_IMPORT_SECRET_KIND,
@@ -32,8 +49,9 @@ from preloop.services.copilot_usage_import import (
     connection_payload,
 )
 from preloop.services.secret_service import get_secret_service
+from preloop.services.spend_outliers import REPLAY_WINDOW_DAYS
 from preloop.sync.services.event_bus import event_bus_service
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -219,3 +237,109 @@ def _delete_secret(db: Session, secret_id: object, account_id: object) -> None:
     )
     if secret is not None:
         crud_secret_reference.delete(db, id=secret.id)
+
+
+# ---------------------------------------------------------------------------
+# Login to user mappings (#1061)
+# ---------------------------------------------------------------------------
+
+
+def _mapping_http_error(exc: CopilotMappingError) -> HTTPException:
+    """The status a refused mapping write gets.
+
+    A missing connection and an unusable target are both 404: the message
+    for a target never says whether the id exists in another account.
+    """
+    if exc.reason == "invalid_login":
+        return HTTPException(status_code=422, detail=str(exc))
+    return HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/mappings", response_model=CopilotUserMappingListResponse)
+@require_permission("view_cost")
+def list_copilot_user_mappings(
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> CopilotUserMappingListResponse:
+    """GitHub login to user mappings for the connected organization."""
+    ensure_permission_in_oss(db, current_user, "view_cost")
+    account = get_account_or_404(db, current_user)
+    listing = list_user_mappings(db, account_id=account.id)
+    items = [CopilotUserMappingResponse(**item) for item in listing["items"]]
+    return CopilotUserMappingListResponse(
+        organization=listing["organization"], items=items, total=len(items)
+    )
+
+
+@router.put("/mappings", response_model=CopilotUserMappingResponse)
+@require_permission("manage_budgets")
+def upsert_copilot_user_mapping(
+    payload: CopilotUserMappingUpsert,
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> CopilotUserMappingResponse:
+    """Map a login to an active user of this account; repeats update the one row.
+
+    Needs an active Copilot connection (404 otherwise). A user id that is not
+    an active user of this account is a 404 with one fixed message, so the
+    response never reveals whether the id belongs to someone else.
+    """
+    ensure_permission_in_oss(db, current_user, "manage_budgets")
+    account = get_account_or_404(db, current_user)
+    try:
+        mapping, user_name = upsert_user_mapping(
+            db,
+            account_id=account.id,
+            github_login=payload.github_login,
+            user_id=payload.user_id,
+        )
+    except CopilotMappingError as exc:
+        raise _mapping_http_error(exc) from exc
+    return CopilotUserMappingResponse(**mapping_payload(mapping, user_name))
+
+
+@router.delete("/mappings/{github_login}", status_code=status.HTTP_204_NO_CONTENT)
+@require_permission("manage_budgets")
+def delete_copilot_user_mapping(
+    github_login: str,
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> Response:
+    """Remove one login's mapping (any letter case)."""
+    ensure_permission_in_oss(db, current_user, "manage_budgets")
+    account = get_account_or_404(db, current_user)
+    try:
+        removed = delete_user_mapping(
+            db, account_id=account.id, github_login=github_login
+        )
+    except CopilotMappingError as exc:
+        raise _mapping_http_error(exc) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="No mapping for that login")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/spend-coverage", response_model=CopilotSpendCoverageResponse)
+@require_permission("view_cost")
+def get_copilot_spend_coverage(
+    start_day: Optional[date] = Query(None),
+    end_day: Optional[date] = Query(None),
+    db: Session = Depends(get_db_session),
+    current_user: models.User = Depends(get_current_active_user),
+) -> CopilotSpendCoverageResponse:
+    """Row counts per outcome for the spend outlier rules, UTC days inclusive.
+
+    Defaults to the completed days ending yesterday that the daily pass
+    replays (:data:`preloop.services.spend_outliers.REPLAY_WINDOW_DAYS`).
+    """
+    ensure_permission_in_oss(db, current_user, "view_cost")
+    account = get_account_or_404(db, current_user)
+    end = end_day or (datetime.now(UTC).date() - timedelta(days=1))
+    start = start_day or (end - timedelta(days=REPLAY_WINDOW_DAYS - 1))
+    if start > end:
+        raise HTTPException(
+            status_code=422, detail="start_day must not be after end_day"
+        )
+    return CopilotSpendCoverageResponse(
+        **spend_coverage(db, account_id=account.id, start_day=start, end_day=end)
+    )

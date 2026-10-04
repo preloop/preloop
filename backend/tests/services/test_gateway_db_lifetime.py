@@ -25,7 +25,7 @@ from preloop.services.model_content_policy import (
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
-from preloop.services.policy.schema import ModelIORule
+from preloop.services.policy.schema import ModelIORule, SensitiveDataConfig
 
 
 @pytest.fixture
@@ -108,9 +108,9 @@ def test_request_policy_releases_before_detector_and_denies(local_gateway: Any) 
         }
     )
 
-    def load(*_args: Any) -> list[ModelIORule]:
+    def load(*_args: Any) -> tuple[list[ModelIORule], SensitiveDataConfig]:
         _checkout(service)
-        return [rule]
+        return [rule], SensitiveDataConfig()
 
     def evaluate(**_kwargs: Any) -> ModelIODecision:
         assert engine.pool.checkedout() == 0
@@ -118,7 +118,7 @@ def test_request_policy_releases_before_detector_and_denies(local_gateway: Any) 
 
     with (
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
             side_effect=load,
         ),
         patch(
@@ -152,9 +152,9 @@ def test_first_policy_stream_pull_does_not_hold_pool(
         else []
     )
 
-    def load(*_args: Any) -> list[ModelIORule]:
+    def load(*_args: Any) -> tuple[list[ModelIORule], SensitiveDataConfig]:
         _checkout(service)
-        return rules
+        return rules, SensitiveDataConfig()
 
     def upstream() -> Iterator[str]:
         assert engine.pool.checkedout() == 0
@@ -165,7 +165,8 @@ def test_first_policy_stream_pull_does_not_hold_pool(
         yield "data: [DONE]\n\n"
 
     with patch(
-        "preloop.services.model_content_policy.load_model_io_rules", side_effect=load
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        side_effect=load,
     ):
         events = list(
             wrap_stream_for_response_policy(

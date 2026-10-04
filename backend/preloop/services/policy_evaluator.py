@@ -367,19 +367,39 @@ def _log_policy_decision_async(
         if not db_factory:
             return
 
-        audit_service.log_policy_decision_async(
-            db_factory=db_factory,
-            account_id=account_id,
-            tool_name=tool_name,
-            action=action,
-            rule_description=rule_description,
-            condition_matched=condition_matched,
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-            correlation_id=correlation_id,
-            extra_details=extra_details,
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+            has_cached_config,
         )
+
+        scope = StorageScope(target="tool.args", tool_name=tool_name)
+
+        def _write(args: Optional[Dict[str, Any]]) -> None:
+            # Stored copy of the arguments: the account's redact rules apply
+            # before the row is written and sealed into the chain (#1123).
+            if args:
+                args = apply_storage_redaction(account_id, args, scope=scope)
+            audit_service.log_policy_decision_async(
+                db_factory=db_factory,
+                account_id=account_id,
+                tool_name=tool_name,
+                action=action,
+                rule_description=rule_description,
+                condition_matched=condition_matched,
+                tool_args=args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+
+        if not tool_args or has_cached_config(account_id):
+            _write(tool_args)
+        else:
+            # A cache miss reads the policy; this can run on the async
+            # evaluator's loop, so move the read and the write off it.
+            submit_off_loop(lambda: _write(tool_args))
     except Exception as e:
         logger.debug(f"Failed to log policy decision to audit: {e}")
 
@@ -943,11 +963,32 @@ def _evaluate_rule_condition(
         return True
 
     if condition_type == "simple":
+        bindings = _extra_bindings(context)
+        if bindings and _references_binding(expression, bindings):
+            return _evaluate_simple_condition_on_bindings(
+                expression, {**bindings, "args": tool_args}
+            )
         return _evaluate_simple_condition(expression, tool_args)
     elif condition_type == "cel":
         return _evaluate_cel_condition(expression, tool_args, context)
     else:
         raise ValueError(f"Unknown condition type: {condition_type}")
+
+
+#: Context key under which detector bindings (``pii.*``) travel with a tool
+#: evaluation so conditions can read them next to ``args``.
+EXTRA_BINDINGS_KEY = "_bindings"
+
+
+def _extra_bindings(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    bindings = (context or {}).get(EXTRA_BINDINGS_KEY)
+    return bindings if isinstance(bindings, dict) else {}
+
+
+def _references_binding(expression: str, bindings: Dict[str, Any]) -> bool:
+    """True when a simple expression starts with a bound root such as ``pii.``."""
+    stripped = expression.strip()
+    return any(stripped.startswith(f"{root}.") for root in bindings)
 
 
 def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bool:
@@ -1319,8 +1360,9 @@ def _evaluate_cel_condition(
         ast = env.compile(expression)
         program = env.program(ast)
 
-        # Evaluate with tool arguments (convert to CEL types)
-        activation = celpy.json_to_cel({"args": tool_args})
+        # Evaluate with tool arguments (convert to CEL types). Detector
+        # bindings (pii.*) sit next to args when the caller supplied them.
+        activation = celpy.json_to_cel({**_extra_bindings(context), "args": tool_args})
         result = program.evaluate(activation)
 
         return bool(result)
@@ -1381,10 +1423,13 @@ async def evaluate_policy_async(
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
+    extra_bindings: Optional[Dict[str, Any]] = None,
 ) -> PolicyDecision:
     """Async version of evaluate_policy.
 
-    See evaluate_policy for full documentation.
+    See evaluate_policy for full documentation. ``extra_bindings`` adds
+    roots next to ``args`` for conditions (``pii.found``, ``pii.types_found``,
+    ``pii.paths`` from the sensitive-data scan).
     """
     denial = _account_authorizer_denial(
         db,
@@ -1449,6 +1494,8 @@ async def evaluate_policy_async(
         "runtime_principal_id": (subject_context or {}).get("runtime_principal_id"),
         "runtime_principal_name": (subject_context or {}).get("runtime_principal_name"),
     }
+    if extra_bindings:
+        context[EXTRA_BINDINGS_KEY] = dict(extra_bindings)
     scoped_decision = _evaluate_rule_candidates(
         rules=scoped_rules,
         tool_name=tool_name,

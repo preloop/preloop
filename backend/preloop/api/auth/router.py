@@ -38,7 +38,9 @@ from preloop.api.auth.jwt import (
     verify_password,
 )
 from preloop.config import settings
+from preloop.plugins import account_hooks
 from preloop.schemas.auth import (
+    LogoutResponse,
     ApiKeyCreate,
     ApiKeyResponse,
     ApiKeySummary,
@@ -1262,6 +1264,37 @@ def revoke_all_sessions(
     crud_cli_session.revoke_all(db, user_id=current_user.id, commit=False)
     new_generation = crud_user.bump_auth_generation(db, user_id=current_user.id)
     return {"auth_generation": new_generation}
+
+
+@router.post("/logout", response_model=LogoutResponse)
+def logout(
+    request: Request,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> LogoutResponse:
+    """Sign the current console session out on the server.
+
+    The client clears its own tokens whatever this returns. Extensions may
+    end server-side state tied to the token and name a same-origin path for
+    the client to go to next; without one the client uses its default. Other
+    sessions of the user are unaffected (see ``/sessions/revoke-all``).
+    """
+    claims = _request_jwt_claims(request)
+    outcome = account_hooks.run_logout_hook(db, current_user, claims)
+    db.commit()
+    return LogoutResponse(redirect_url=outcome.redirect_url)
+
+
+def _request_jwt_claims(request: Request) -> Dict[str, Any]:
+    """Return the claims of the request's bearer JWT; empty for API keys."""
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or "." not in token:
+        return {}
+    try:
+        return decode_token(token.strip()).claims
+    except HTTPException:
+        return {}
 
 
 def _request_cli_session_id(request: Request) -> Optional[str]:

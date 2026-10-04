@@ -1642,6 +1642,13 @@ describe('PreloopSessionObserver session approvals', () => {
 
   it('ignores an approval event for a session nobody is watching', async () => {
     await mount();
+    // Opening the watched session reads its own approvals on its own
+    // schedule: the observer's pending list, plus the live activity line's
+    // history and pending page. Those three are in flight when mount
+    // returns. Snapshot only after they have been issued, or the last one
+    // lands in the wait below and looks like this event refreshed a session
+    // nobody is watching.
+    await waitUntil(() => approvalCalls().length >= 3, '', { timeout: 3000 });
     const before = approvalCalls().length;
 
     approvalsHandler()({
@@ -1651,6 +1658,9 @@ describe('PreloopSessionObserver session approvals', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(approvalCalls().length).to.equal(before);
+    expect(
+      approvalCalls().some((url) => url.includes('some-other-session'))
+    ).to.equal(false);
   });
 
   it('tells the conversation it is waiting on a decision', async () => {

@@ -9,7 +9,7 @@ This module provides API endpoints for declarative policy-as-code management:
 """
 
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 from uuid import UUID
 
 from fastapi import (
@@ -53,9 +53,82 @@ from preloop.services.model_content_policy import (
     serialize_model_io_rules,
     upsert_model_io_rule,
 )
+from preloop.services.policy.schema import (
+    PIIDetectorConfig,
+    SensitiveDataDetectorsConfig,
+)
 from preloop.services.policy_evaluator import is_simple_expression
+from preloop.services.sensitive_data.detectors import (
+    DetectorConfig,
+    DetectorTimeoutError,
+    UnsafePatternError,
+    detect,
+    list_types,
+    types_found,
+)
+from preloop.services.sensitive_data.policy_store import (
+    detector_config_from,
+    load_sensitive_data_config,
+)
+from preloop.services.sensitive_data.redact import redact_text
 from preloop.services.policy_version_service import PolicyVersionService
+from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
+
+
+POLICY_AUDIT_CONFIG_TYPE = "policy"
+
+
+def _policy_object_summary(policy: PolicyDocument) -> dict:
+    """Names of the objects a policy document configures, for the audit trail."""
+    return {
+        "mcp_servers": [s.name for s in policy.mcp_servers or []],
+        "approval_workflows": [w.name for w in policy.approval_workflows or []],
+        "tools": [f"{t.source}:{t.name}" for t in policy.tools or []],
+        "model_io_rules": (
+            None if policy.model_io is None else [r.id for r in policy.model_io]
+        ),
+        "defaults": (
+            policy.defaults.model_dump(mode="json", exclude_none=True)
+            if policy.defaults
+            else None
+        ),
+    }
+
+
+def _snapshot_audit_ref(snapshot) -> Optional[dict]:
+    if snapshot is None:
+        return None
+    return {
+        "name": f"v{snapshot.version_number}",
+        "version_id": str(snapshot.id),
+        "version_number": snapshot.version_number,
+        "tag": snapshot.tag,
+    }
+
+
+def _audit_policy_change(
+    db: Session,
+    user: User,
+    action: str,
+    build: Callable[[], Dict[str, Any]],
+) -> None:
+    """Write a policy configuration_change without risking the committed change.
+
+    ``build`` returns the ``log_config_change`` value kwargs. It runs inside
+    the guard because it may read snapshots after the change was committed;
+    an audit failure is logged and never turns a successful change into a 500.
+    """
+    try:
+        log_config_change(
+            db,
+            user=user,
+            config_type=POLICY_AUDIT_CONFIG_TYPE,
+            action=action,
+            **build(),
+        )
+    except Exception:
+        logger.warning("Failed to audit policy %s", action, exc_info=True)
 
 
 # Pydantic models for version management endpoints
@@ -146,6 +219,62 @@ class ModelIORulePatchRequest(BaseModel):
     """Partial update for enable/disable."""
 
     enabled: Optional[bool] = None
+
+
+class SensitiveDataTypeInfo(BaseModel):
+    """One selectable sensitive-data type (feeds the console page)."""
+
+    id: str
+    label: str
+    description: str
+    example: str
+    locales: List[str] = Field(default_factory=list)
+    checksum: bool = False
+    builtin: bool = True
+
+
+class SensitiveDataTypesResponse(BaseModel):
+    """Built-in, registered and account-defined types."""
+
+    types: List[SensitiveDataTypeInfo]
+    default_types: List[str] = Field(
+        description="Types the pii detector scans when a rule lists none"
+    )
+
+
+class SensitiveDataTestRequest(BaseModel):
+    """Run the detectors on sample text. The text is never logged or stored."""
+
+    text: str = Field(..., max_length=20_000, description="Sample text to scan")
+    types: Optional[List[str]] = Field(
+        None, description="Types to scan; default every type in the config"
+    )
+    config: Optional[SensitiveDataDetectorsConfig] = Field(
+        None,
+        description=(
+            "Detector configuration to test; default the account's stored block"
+        ),
+    )
+
+
+class SensitiveDataMatch(BaseModel):
+    """One detected span (offsets into the submitted text)."""
+
+    type: str
+    start: int
+    end: int
+    confidence: float
+
+
+class SensitiveDataTestResponse(BaseModel):
+    """Detector output for the submitted text."""
+
+    matches: List[SensitiveDataMatch]
+    types_found: List[str]
+    count: int
+    redacted_preview: Optional[str] = Field(
+        None, description="Text with each match replaced by [REDACTED:<type>]"
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -467,6 +596,30 @@ async def upload_policy(
             },
         )
 
+    if not dry_run:
+
+        def _applied_payload() -> Dict[str, Any]:
+            active_snapshot = PolicyVersionService(
+                db, str(account.id)
+            ).get_active_snapshot()
+            return {
+                "new_value": {
+                    "name": policy.metadata.name,
+                    "policy_name": policy.metadata.name,
+                    "source": "upload",
+                    "filename": file.filename,
+                    "active_version": _snapshot_audit_ref(active_snapshot),
+                    "counts": result.model_dump(
+                        exclude={"success", "policy_name", "warnings", "errors"}
+                    ),
+                    "objects": _policy_object_summary(policy),
+                    "skip_missing_servers": skip_missing_servers,
+                    "warnings": result.warnings,
+                }
+            }
+
+        _audit_policy_change(db, current_user, "applied", _applied_payload)
+
     action = "validated (dry run)" if dry_run else "applied"
     logger.info(
         f"Policy '{policy.metadata.name}' {action} for account {account.id}: "
@@ -476,6 +629,106 @@ async def upload_policy(
     )
 
     return result
+
+
+@router.get(
+    "/policies/sensitive-data/types",
+    response_model=SensitiveDataTypesResponse,
+    summary="List sensitive-data detector types",
+)
+@require_permission("view_policies")
+def list_sensitive_data_types(
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SensitiveDataTypesResponse:
+    """Type id, label, description, example and locales for every detector.
+
+    Includes the account's custom patterns and keyword lists so the console
+    can offer them next to the built-ins.
+    """
+    from preloop.services.policy.schema import SUPPORTED_PII_TYPES
+
+    config = detector_config_from(load_sensitive_data_config(db, account.id))
+    return SensitiveDataTypesResponse(
+        types=[SensitiveDataTypeInfo(**info.as_dict()) for info in list_types(config)],
+        # What a rule without its own list scans: the account default when
+        # set, else the legacy three.
+        default_types=list(config.types) if config.types else list(SUPPORTED_PII_TYPES),
+    )
+
+
+@router.post(
+    "/policies/sensitive-data/test",
+    response_model=SensitiveDataTestResponse,
+    summary="Test sensitive-data detectors on sample text",
+)
+@require_permission("view_policies")
+def test_sensitive_data_detectors(
+    request: SensitiveDataTestRequest,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SensitiveDataTestResponse:
+    """Return match spans for ``text``. The input is never logged or stored.
+
+    Account patterns run through the timeout-capable engine, so a
+    pathological regex ends with a 422 instead of a blocked worker.
+    """
+    if request.config is not None:
+        config = DetectorConfig.from_mapping(
+            request.config.model_dump(exclude_none=True, mode="json")
+        )
+    else:
+        config = detector_config_from(load_sensitive_data_config(db, account.id))
+    if request.types is not None:
+        try:
+            PIIDetectorConfig(types=request.types)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        config = config.with_types(request.types)
+    try:
+        matches = detect(request.text, config)
+        preview, _counts = redact_text(request.text, config)
+    except DetectorTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"A custom pattern exceeded its match budget: {exc}",
+        ) from exc
+    except UnsafePatternError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    return SensitiveDataTestResponse(
+        matches=[
+            SensitiveDataMatch(
+                type=m.type, start=m.start, end=m.end, confidence=m.confidence
+            )
+            for m in matches
+        ],
+        types_found=types_found(matches),
+        count=len(matches),
+        redacted_preview=preview if matches else request.text,
+    )
+
+
+def _reject_unknown_pii_types(db: Session, account: Account, rule: ModelIORule) -> None:
+    """Standalone rule writes cannot see a YAML document; check the account."""
+    detectors = rule.detectors
+    if detectors is None or not isinstance(detectors.pii, PIIDetectorConfig):
+        return
+    known = load_sensitive_data_config(db, account.id).known_types()
+    unknown = [item for item in detectors.pii.types if item not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Unknown PII types {unknown}. Define custom patterns or keyword "
+                "lists under sensitive_data.detectors first."
+            ),
+        )
 
 
 @router.get(
@@ -539,6 +792,7 @@ def create_model_io_rule(
 ) -> Dict[str, Any]:
     """Save one model I/O rule from the Policies console form."""
     _reject_cel_syntax_declared_simple(rule)
+    _reject_unknown_pii_types(db, account, rule)
     saved = upsert_model_io_rule(db, account.id, rule)
     db.commit()
     return saved.model_dump(exclude_none=True, mode="json")
@@ -566,6 +820,7 @@ def update_model_io_rule(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"model_io rule '{rule_id}' not found",
         )
+    _reject_unknown_pii_types(db, account, rule)
     saved = upsert_model_io_rule(db, account.id, rule)
     db.commit()
     return saved.model_dump(exclude_none=True, mode="json")
@@ -1128,6 +1383,19 @@ async def rollback_to_version(
 
     if not request.preview_only and success:
         db.commit()
+
+        def _rollback_payload() -> Dict[str, Any]:
+            snapshot = service.get_snapshot(version_id)
+            return {
+                "new_value": {
+                    **(
+                        _snapshot_audit_ref(snapshot) or {"version_id": str(version_id)}
+                    ),
+                    "diff": diff.model_dump(mode="json") if diff else None,
+                }
+            }
+
+        _audit_policy_change(db, current_user, "rolled_back", _rollback_payload)
         logger.info(f"Rolled back to version {version_id} for account {account.id}")
 
     return RollbackResponse(success=success, diff=diff, error=error)
@@ -1159,6 +1427,11 @@ async def delete_policy_version(
         HTTPException: If version not found or is active.
     """
     service = PolicyVersionService(db, str(account.id))
+    try:
+        deleted_ref = _snapshot_audit_ref(service.get_snapshot(version_id))
+    except Exception:
+        logger.warning("Failed to read policy version for audit", exc_info=True)
+        deleted_ref = {"version_id": str(version_id)}
     success, error = service.delete_snapshot(version_id)
 
     if not success:
@@ -1174,6 +1447,9 @@ async def delete_policy_version(
             )
 
     db.commit()
+    _audit_policy_change(
+        db, current_user, "version_deleted", lambda: {"old_value": deleted_ref}
+    )
 
     logger.info(f"Deleted version {version_id} for account {account.id}")
 
@@ -1215,6 +1491,20 @@ async def prune_policy_versions(
     )
 
     db.commit()
+    if deleted_count:
+        _audit_policy_change(
+            db,
+            current_user,
+            "versions_pruned",
+            lambda: {
+                "new_value": {
+                    "deleted_count": deleted_count,
+                    "older_than_days": request.older_than_days,
+                    "keep_tagged": request.keep_tagged,
+                    "keep_count": request.keep_count,
+                }
+            },
+        )
 
     logger.info(f"Pruned {deleted_count} versions for account {account.id}")
 

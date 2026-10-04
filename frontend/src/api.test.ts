@@ -3,7 +3,8 @@ import sinon from 'sinon';
 import { Router } from './router';
 import {
   fetchWithAuth,
-  performLocalSignOut,
+  signOut,
+  isSameOriginPath,
   invalidateApiCaches,
   AuthedElement,
   getFlowExecutions,
@@ -153,27 +154,143 @@ describe('api', () => {
     });
   });
 
-  describe('performLocalSignOut', () => {
-    it('clears tokens, navigates home, and hits /logout', () => {
-      fetchStub.resolves(new Response(null, { status: 204 }));
-      const navigate = sinon.stub();
-      performLocalSignOut(navigate);
+  describe('signOut', () => {
+    const logoutCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter((c) => String(c.args[0]) === '/api/v1/auth/logout');
 
+    it('signs out on the server, clears tokens, navigates home, and hits /logout', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ redirect_url: null }), { status: 200 })
+      );
+      const navigate = sinon.stub();
+      const assign = sinon.stub();
+      const url = await signOut({ navigate, assign });
+
+      expect(url).to.equal('/');
       expect(localStorage.getItem('accessToken')).to.equal(null);
       expect(localStorage.getItem('refreshToken')).to.equal(null);
       expect(navigate).to.have.been.calledWith('/');
-      const logoutCall = fetchStub
+      expect(assign).not.to.have.been.called;
+      const [call] = logoutCalls();
+      expect(call, 'expected POST /api/v1/auth/logout').to.exist;
+      expect(call.args[1].method).to.equal('POST');
+      expect(call.args[1].headers.Authorization).to.equal(
+        'Bearer test-access-token'
+      );
+      const legacy = fetchStub
         .getCalls()
         .find((c) => String(c.args[0]) === '/logout');
-      expect(logoutCall, 'expected GET /logout').to.exist;
+      expect(legacy, 'expected GET /logout').to.exist;
     });
 
-    it('does not throw when fetch returns a non-Promise', () => {
+    it('follows a same-origin redirect named by the server', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ redirect_url: '/next/page' }), {
+          status: 200,
+        })
+      );
+      const navigate = sinon.stub();
+      const assign = sinon.stub();
+      const url = await signOut({ navigate, assign });
+
+      expect(url).to.equal('/next/page');
+      expect(assign).to.have.been.calledOnceWith('/next/page');
+      expect(navigate).not.to.have.been.called;
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+    });
+
+    for (const bad of [
+      'https://evil.example/',
+      '//evil.example',
+      '/\\evil.example',
+      'javascript:alert(1)',
+      42,
+    ]) {
+      it(`ignores a server redirect of ${JSON.stringify(bad)}`, async () => {
+        fetchStub.resolves(
+          new Response(JSON.stringify({ redirect_url: bad }), { status: 200 })
+        );
+        const navigate = sinon.stub();
+        const assign = sinon.stub();
+        await signOut({ navigate, assign });
+        expect(assign).not.to.have.been.called;
+        expect(navigate).to.have.been.calledWith('/');
+      });
+    }
+
+    it('still signs out locally when the server call fails', async () => {
+      fetchStub.rejects(new TypeError('offline'));
+      const navigate = sinon.stub();
+      await signOut({ navigate, destination: '/login' });
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      expect(localStorage.getItem('refreshToken')).to.equal(null);
+      expect(navigate).to.have.been.calledWith('/login');
+    });
+
+    it('does not throw when fetch returns a non-Promise', async () => {
       fetchStub.returns(undefined);
       const navigate = sinon.stub();
-      expect(() => performLocalSignOut(navigate)).not.to.throw();
+      await signOut({ navigate });
       expect(localStorage.getItem('accessToken')).to.equal(null);
       expect(navigate).to.have.been.calledWith('/');
+    });
+
+    it('skips the server when asked and when there is no token', async () => {
+      fetchStub.resolves(new Response(null, { status: 204 }));
+      await signOut({ navigate: sinon.stub(), serverSignOut: false });
+      expect(logoutCalls()).to.have.length(0);
+
+      localStorage.removeItem('accessToken');
+      await signOut({ navigate: sinon.stub() });
+      expect(logoutCalls()).to.have.length(0);
+    });
+
+    it('clears local state before the server answers', async () => {
+      let answer: (r: Response) => void = () => {};
+      fetchStub.callsFake((url: string) =>
+        url === '/api/v1/auth/logout'
+          ? new Promise<Response>((resolve) => {
+              answer = resolve;
+            })
+          : Promise.resolve(new Response(null, { status: 204 }))
+      );
+      const navigate = sinon.stub();
+      const done = signOut({ navigate });
+      await Promise.resolve();
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      expect(localStorage.getItem('refreshToken')).to.equal(null);
+      expect(navigate).not.to.have.been.called;
+      answer(
+        new Response(JSON.stringify({ redirect_url: null }), { status: 200 })
+      );
+      await done;
+      expect(navigate).to.have.been.calledWith('/');
+    });
+
+    it('dispatches auth-change', async () => {
+      fetchStub.resolves(new Response(null, { status: 204 }));
+      const listener = sinon.stub();
+      window.addEventListener('auth-change', listener);
+      try {
+        await signOut({ navigate: sinon.stub() });
+      } finally {
+        window.removeEventListener('auth-change', listener);
+      }
+      expect(listener).to.have.been.called;
+    });
+  });
+
+  describe('isSameOriginPath', () => {
+    it('accepts paths on this origin only', () => {
+      expect(isSameOriginPath('/')).to.equal(true);
+      expect(isSameOriginPath('/a/b?c=1#d')).to.equal(true);
+      expect(isSameOriginPath('//x')).to.equal(false);
+      expect(isSameOriginPath('/\\x')).to.equal(false);
+      expect(isSameOriginPath('/a\nb')).to.equal(false);
+      expect(isSameOriginPath('http://x/')).to.equal(false);
+      expect(isSameOriginPath(null)).to.equal(false);
     });
   });
 
