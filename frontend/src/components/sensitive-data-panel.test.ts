@@ -237,6 +237,8 @@ describe('sensitive-data-panel', () => {
       $(el, '[data-testid="sensitive-test-error"]').textContent
     ).to.contain('Paste some sample text first.');
     const textarea = $<HTMLTextAreaElement>(el, '#sd-test-text');
+    // Same cap as the test endpoint, so a long paste never earns a 422.
+    expect(textarea.maxLength).to.equal(20000);
     textarea.value = 'nothing here';
     textarea.dispatchEvent(new Event('input'));
     $<HTMLButtonElement>(el, '[data-testid="sensitive-test"]').click();

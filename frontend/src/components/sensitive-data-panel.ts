@@ -41,6 +41,9 @@ import {
   type TypeAction,
 } from '../utils/sensitive-data-policy';
 
+/** Server-side cap on the test endpoint's `text` field. */
+export const TEST_TEXT_LIMIT = 20_000;
+
 export interface AgentOption {
   id: string;
   name: string;
@@ -1001,6 +1004,7 @@ export class SensitiveDataPanel extends LitElement {
       >
       <textarea
         id="sd-test-text"
+        maxlength=${TEST_TEXT_LIMIT}
         .value=${this._testText}
         placeholder="mail a@example.com"
         @input=${(e: Event) => {
