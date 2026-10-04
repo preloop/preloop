@@ -533,6 +533,69 @@ class CRUDCiPrincipal:
             raise PermissionError("Restricted CI authorization denied")
         return fresh
 
+    def authorize_principal(
+        self, db: Session, *, context: CiAuthorizationContext, action: CiAction
+    ) -> CiAuthorizationContext:
+        """Authorize future dispatch without tying stable work to one API key.
+
+        The accepted execution snapshot supplies attribution. Key revocation
+        affects API use; account, principal, grant and binding still govern
+        every future launch. This entry point is not request authentication.
+        """
+        principal = self.get(
+            db, account_id=context.account_id, principal_id=context.principal_id
+        )
+        account = (
+            db.query(models.Account)
+            .populate_existing()
+            .filter(models.Account.id == context.account_id)
+            .first()
+        )
+        if (
+            principal is None
+            or not principal.is_active
+            or principal.credential_version != 1
+            or account is None
+            or not account.is_active
+        ):
+            raise PermissionError("Restricted CI dispatch denied")
+        try:
+            grant = CiGrant.model_validate(principal.grant)
+            binding = self._binding(db, account_id=context.account_id, grant=grant)
+            if (
+                grant.project_id != principal.project_id
+                or grant.flow_id != principal.flow_id
+                or binding
+                != (
+                    principal.tracker_id,
+                    principal.repository_identifier,
+                    principal.repository_binding,
+                )
+            ):
+                raise ValueError("CI binding changed")
+            fresh = CiAuthorizationContext(
+                account_id=principal.account_id,
+                principal_id=principal.id,
+                key_id=context.key_id,
+                project_id=grant.project_id,
+                flow_id=grant.flow_id,
+                tracker_id=principal.tracker_id,
+                repository_identifier=principal.repository_identifier,
+                repository_slug=binding[2]["slug"],
+                tracker_type=binding[2]["tracker_type"],
+                tracker_url=binding[2]["tracker_url"],
+                actions=frozenset(grant.actions),
+            )
+        except (ValidationError, ValueError, TypeError):
+            raise PermissionError("Restricted CI dispatch denied") from None
+        if (
+            replace(context, actions=fresh.actions) != fresh
+            or action not in fresh.actions
+            or not can_authorize_ci(fresh, action)
+        ):
+            raise PermissionError("Restricted CI dispatch denied")
+        return fresh
+
     def _context_for_key(
         self, db: Session, *, key: Optional[models.ApiKey]
     ) -> Optional[CiAuthorizationContext]:

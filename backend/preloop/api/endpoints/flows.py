@@ -5,37 +5,103 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, NoReturn, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from preloop.models import schemas
+from preloop.api.auth import get_current_active_user
+from preloop.api.auth.ci import get_current_actor
+from preloop.api.loop_safety import run_db_off_loop
+from preloop.cra.evidence_pack import (
+    EvidenceMemberError,
+    list_evidence_members,
+    read_evidence_member,
+)
+from preloop.models import crud, models, schemas
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
     crud_api_usage,
-    crud_flow_runner,
     crud_flow_feedback,
+    crud_flow_runner,
     crud_runtime_session_activity,
 )
+from preloop.models.crud.ci_principal import CiAuthorizationContext
 from preloop.models.crud.flow import CRUDFlow
 from preloop.models.crud.flow_execution import CRUDFlowExecution
+from preloop.models.crud.flow_execution_log import crud_flow_execution_log
 from preloop.models.db.session import get_db_session as get_db
-from preloop.api.auth import get_current_active_user
 from preloop.models.models.user import User
-from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
-from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
-from preloop.schemas.flow_summary import FlowSummaryResponse
 from preloop.models.schemas.flow import flow_schedule_state
+from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
+from preloop.schemas.ci_execution import (
+    CiExecutionResponse,
+    CiReviewRequest,
+    CiStopRequest,
+)
+from preloop.schemas.ci_principal import CiAction
+from preloop.schemas.flow_continuation import (
+    ContinuationAdoptRequest,
+    ContinuationAdoptResponse,
+    ContinuationPreview,
+)
+from preloop.schemas.flow_summary import FlowSummaryResponse
+from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.schemas.host_exec_usage import HostExecSessionsResponse
-from preloop.services.host_exec_usage import summarize_host_exec_usage
+from preloop.services.ci_execution import (
+    CiReviewUnavailableError,
+    execution_projection,
+    public_ci_result,
+    trigger_ci_review,
+)
 from preloop.services.execution_metrics import (
     project_execution_totals,
     project_resume_lineage,
 )
-from preloop.services.kill_switch import FlowHaltActiveError
+from preloop.services.flow_artifacts import (
+    EvidenceUnavailableError,
+    attach_evidence_signature,
+    integrity_state,
+    load_evidence,
+    public_evidence_status,
+)
+from preloop.services.flow_continuation_adoption import (
+    ContinuationAdoptionError,
+    adopt_continuation,
+    preview_continuation,
+)
+from preloop.services.flow_delegation import (
+    CallableFlowsError,
+    validate_callable_flows,
+)
+from preloop.services.host_exec import (
+    host_exec_flow_error,
+    host_exec_profile_name,
+    host_exec_unavailable_reason,
+)
+from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.issue_triage_controller import TriageControllerError
+from preloop.services.kill_switch import FlowHaltActiveError
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
-from preloop.utils.hashing import compute_content_hash
+from preloop.services.model_routing import (
+    ModelRoutingError,
+)
+from preloop.services.model_routing import (
+    model_usable_for_agent as _model_usable_for_agent,
+)
+from preloop.services.model_routing import validate_stored_model_routing
+from preloop.services.product_provenance import (
+    ProductProvenanceError,
+    extract_product_provenance_payload,
+    validate_mapping_shape,
+)
+from preloop.services.runner_service import (
+    derive_execution_runner,
+    pool_from_session_reference,
+    resolve_runner_pool,
+    runner_id_from_session_reference,
+)
 from preloop.utils.audit import log_config_change
+from preloop.utils.hashing import compute_content_hash
 from preloop.utils.permissions import require_permission
 from preloop.utils.workspace_seed import (
     WORKSPACE_FILES_KEY,
@@ -44,62 +110,33 @@ from preloop.utils.workspace_seed import (
     parse_workspace_files,
     workspace_seed_payload,
 )
-from preloop.models.crud.flow_execution_log import crud_flow_execution_log
-from preloop.services.runner_service import (
-    derive_execution_runner,
-    pool_from_session_reference,
-    resolve_runner_pool,
-    runner_id_from_session_reference,
-)
-from preloop.services.flow_delegation import (
-    CallableFlowsError,
-    validate_callable_flows,
-)
-from preloop.services.model_routing import (
-    ModelRoutingError,
-    model_usable_for_agent as _model_usable_for_agent,
-    validate_stored_model_routing,
-)
-from preloop.services.host_exec import (
-    host_exec_flow_error,
-    host_exec_profile_name,
-    host_exec_unavailable_reason,
-)
-from preloop.services.product_provenance import (
-    ProductProvenanceError,
-    extract_product_provenance_payload,
-    validate_mapping_shape,
-)
-
-from preloop.schemas.flow_continuation import (
-    ContinuationPreview,
-    ContinuationAdoptRequest,
-    ContinuationAdoptResponse,
-)
-from preloop.services.flow_continuation_adoption import (
-    ContinuationAdoptionError,
-    preview_continuation,
-    adopt_continuation,
-)
-from preloop.cra.evidence_pack import (
-    EvidenceMemberError,
-    list_evidence_members,
-    read_evidence_member,
-)
-from preloop.services.flow_artifacts import (
-    EvidenceUnavailableError,
-    attach_evidence_signature,
-    load_evidence,
-    integrity_state,
-    public_evidence_status,
-)
-
 
 router = APIRouter()
 
 
 crud_flow = CRUDFlow()
 crud_flow_execution = CRUDFlowExecution()
+
+
+def _owned_ci_execution(
+    db: Session,
+    context: CiAuthorizationContext,
+    execution_id: uuid.UUID,
+    action: CiAction,
+) -> models.FlowExecution:
+    """Require a fresh grant and principal-owned immutable review snapshot."""
+    try:
+        execution = crud.crud_ci_execution.get(
+            db,
+            context=context,
+            execution_id=execution_id,
+            action=action,
+        )
+    except PermissionError:
+        raise HTTPException(403, "Restricted CI authorization denied") from None
+    if execution is None:
+        raise HTTPException(404, "Flow execution not found")
+    return execution
 
 
 def _reject_host_exec_flow(
@@ -624,8 +661,11 @@ def _normalize_status_filters(status: Optional[List[str]]) -> Optional[List[str]
     return values or None
 
 
-@router.get("/flows/executions", response_model=List[schemas.FlowExecutionListResponse])
-@require_permission("view_flows")
+@router.get(
+    "/flows/executions",
+    response_model=List[CiExecutionResponse | schemas.FlowExecutionListResponse],
+)
+@require_permission("view_flows", ci_action=CiAction.READ_EXECUTION)
 def read_flow_executions(
     # FastAPI injects the response. Optional[Response] makes FastAPI treat it
     # as a Pydantic field and breaks OpenAPI generation, so the default stays
@@ -638,7 +678,7 @@ def read_flow_executions(
     status: Optional[List[str]] = Query(default=None),
     search: Optional[str] = None,
     started_after: Optional[datetime] = None,
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
 ):
     """Retrieve lightweight flow execution summaries for the account.
 
@@ -646,6 +686,29 @@ def read_flow_executions(
     console page of 25 can say "25 of 1,412 executions" honestly.
     """
     statuses = _normalize_status_filters(status)
+    if isinstance(current_user, CiAuthorizationContext):
+        if (flow_id is not None and flow_id != current_user.flow_id) or search:
+            raise HTTPException(403, "Restricted CI list filter denied")
+        try:
+            executions = crud.crud_ci_execution.list(
+                db,
+                context=current_user,
+                skip=skip,
+                limit=limit,
+                statuses=statuses,
+                started_after=started_after,
+            )
+            total = crud.crud_ci_execution.count(
+                db,
+                context=current_user,
+                statuses=statuses,
+                started_after=started_after,
+            )
+        except PermissionError:
+            raise HTTPException(403, "Restricted CI authorization denied") from None
+        if response is not None:
+            response.headers["X-Total-Count"] = str(total)
+        return [CiExecutionResponse(**execution_projection(row)) for row in executions]
     limit = max(1, min(limit, 100))
     search_term = search.strip() if isinstance(search, str) else None
     # Use eager_load=True to load flow relationship in single query (avoids N+1)
@@ -993,16 +1056,22 @@ def read_execution_tree(
 
 
 @router.get(
-    "/flows/executions/{execution_id}", response_model=schemas.FlowExecutionResponse
+    "/flows/executions/{execution_id}",
+    response_model=CiExecutionResponse | schemas.FlowExecutionResponse,
 )
-@require_permission("view_flows")
+@require_permission("view_flows", ci_action=CiAction.READ_EXECUTION)
 def read_flow_execution(
     *,
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
 ):
     """Get flow execution by ID."""
+    if isinstance(current_user, CiAuthorizationContext):
+        execution = _owned_ci_execution(
+            db, current_user, execution_id, CiAction.READ_EXECUTION
+        )
+        return CiExecutionResponse(**execution_projection(execution))
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
     )
@@ -1266,12 +1335,12 @@ def adopt_execution_continuation(
 
 
 @router.get("/flows/executions/{execution_id}/result")
-@require_permission("view_flows")
+@require_permission("view_flows", ci_action=CiAction.READ_RESULT)
 def get_flow_execution_result(
     *,
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
 ) -> Dict[str, Any]:
     """Get the structured result artifact reported by a flow execution.
 
@@ -1283,6 +1352,17 @@ def get_flow_execution_result(
     no decrypt. Availability is not integrity proof; download
     ``GET .../evidence`` to verify digest.
     """
+    if isinstance(current_user, CiAuthorizationContext):
+        execution = _owned_ci_execution(
+            db, current_user, execution_id, CiAction.READ_RESULT
+        )
+        if execution.result is None:
+            raise HTTPException(404, "Flow execution did not report a result artifact")
+        return {
+            "execution_id": str(execution.id),
+            **execution_projection(execution),
+            "result": public_ci_result(execution.result),
+        }
     execution = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
     )
@@ -1972,13 +2052,14 @@ def get_flow_gateway_usage_summary(
 
 
 @router.post("/flows/executions/{execution_id}/command")
-@require_permission("execute_flows")
+@require_permission("execute_flows", ci_action=CiAction.STOP_EXECUTION)
 async def send_execution_command(
     *,
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
     command_data: schemas.FlowExecutionCommand,
-    current_user: User = Depends(get_current_active_user),
+    request: Request = None,  # type: ignore[assignment]
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
 ):
     """Send a command to a running flow execution.
 
@@ -1988,10 +2069,56 @@ async def send_execution_command(
     the status it ended in.
     """
     import logging
+
     from preloop.services.flow_execution_stop import stop_execution
     from preloop.sync.services.event_bus import get_nats_client
 
     logger = logging.getLogger(__name__)
+
+    if isinstance(current_user, CiAuthorizationContext):
+        # Validate the raw body: the human command schema ignores extra keys.
+        try:
+            raw = (
+                await request.json()
+                if request is not None
+                else command_data.model_dump()
+            )
+            CiStopRequest.model_validate(raw)
+        except (ValidationError, ValueError):
+            raise HTTPException(
+                422, "Restricted CI accepts stop without overrides only"
+            ) from None
+        execution = await run_db_off_loop(
+            lambda: _owned_ci_execution(
+                db, current_user, execution_id, CiAction.STOP_EXECUTION
+            )
+        )
+        from preloop.services.flow_tree_stop import is_terminal_status
+
+        if is_terminal_status(execution.status):
+            if execution.status.upper() == "STOPPED":
+                return {"status": "stopped"}
+            return {"status": "not_running", "execution_status": execution.status}
+        try:
+            nats_client = await get_nats_client()
+        except Exception:
+            nats_client = None
+        # Authority can change while the bus connection is established.
+        execution = await run_db_off_loop(
+            lambda: _owned_ci_execution(
+                db, current_user, execution_id, CiAction.STOP_EXECUTION
+            )
+        )
+        outcome = await stop_execution(
+            db,
+            execution,
+            account_id=current_user.account_id,
+            nats_client=nats_client,
+            stop_source="restricted_ci",
+        )
+        if outcome.stopped or outcome.status.upper() == "STOPPED":
+            return {"status": "stopped"}
+        return {"status": "not_running", "execution_status": outcome.status}
 
     # Get NATS client for sending commands
     try:
@@ -2241,12 +2368,12 @@ def _validate_matrix(
 
 
 @router.post("/flows/{flow_id}/trigger")
-@require_permission("execute_flows")
+@require_permission("execute_flows", ci_action=CiAction.TRIGGER)
 async def trigger_flow_execution(
     *,
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     trigger_event_data: Optional[Dict[str, Any]] = None,
 ):
     """
@@ -2267,6 +2394,32 @@ async def trigger_flow_execution(
         Execution details, or batch details (``batch_id`` + per-cell
         ``execution_id``) when a matrix was given
     """
+    if isinstance(current_user, CiAuthorizationContext):
+        if flow_id != current_user.flow_id:
+            raise HTTPException(403, "Restricted CI flow denied")
+        try:
+            request = CiReviewRequest.model_validate(trigger_event_data)
+        except ValidationError:
+            raise HTTPException(
+                422, "Restricted CI requires PR number and exact head only"
+            ) from None
+        try:
+            return await trigger_ci_review(db, context=current_user, request=request)
+        except PermissionError:
+            raise HTTPException(403, "Restricted CI review denied") from None
+        except CiReviewUnavailableError as error:
+            detail: dict[str, Any] = {
+                "message": "Restricted CI review verification unavailable"
+            }
+            if error.execution_id is not None:
+                detail["execution_id"] = str(error.execution_id)
+            raise HTTPException(503, detail) from None
+        except ModelRoutingError:
+            raise HTTPException(
+                422, "Restricted CI server model binding unavailable"
+            ) from None
+        except FlowHaltActiveError:
+            raise _halted_response()
     # Verify flow exists and user has access
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:

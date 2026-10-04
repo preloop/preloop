@@ -1,44 +1,50 @@
 import asyncio
-from datetime import datetime, timezone
 import functools
 import logging
 import threading
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from preloop.utils.bitbucket import (
-    normalize_uuid as normalize_bitbucket_uuid,
-    payload_commit_hash as bitbucket_payload_commit_hash,
-)
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue
+from preloop.models.db.session import get_session_factory
 from preloop.models.models import Flow
 from preloop.models.models.flow_execution import FlowExecution
-from preloop.services.model_routing import (
-    ModelRoutingError,
-    apply_no_progress_escalation,
-    load_source_execution_for_flow,
-    prepare_execution_routing,
-)
 from preloop.models.schemas.flow_execution import (
     FlowExecutionCreate,
     FlowExecutionUpdate,
+)
+from preloop.schemas.issue_triage import provider_revision
+from preloop.services.flow_ci_feedback import (
+    GITHUB_CI_EVENT_TYPES,
+    bind_ci_failure_resume_or_skip,
+    flow_requires_ci_failure_resume,
 )
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_RUNNER_ERROR,
     FAILURE_CATEGORY_UNKNOWN,
     derive_failure_category,
 )
-from preloop.services.flow_ci_feedback import (
-    GITHUB_CI_EVENT_TYPES,
-    bind_ci_failure_resume_or_skip,
-    flow_requires_ci_failure_resume,
+from preloop.services.issue_triage_trigger import (
+    issue_update_touches_content,
+    skip_triage_flow_for_event,
 )
-from .flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.kill_switch import FlowHaltActiveError, flows_halted
+from preloop.services.model_routing import (
+    ModelRoutingError,
+    apply_no_progress_escalation,
+    load_source_execution_for_flow,
+    prepare_execution_routing,
+)
+from preloop.services.webhook_delivery_dedupe import (
+    delivery_key_for_event,
+    find_execution_for_delivery,
+    is_delivery_key_conflict,
+)
 from preloop.sync.event_normalizer import (
     LABEL_CHANGE_ACTIONS,
     LABEL_CHANGE_EVENT_TYPES,
@@ -51,18 +57,11 @@ from preloop.sync.event_normalizer import (
     pr_close_stop_source,
 )
 from preloop.sync.services.event_bus import get_nats_client
-from preloop.services.webhook_delivery_dedupe import (
-    delivery_key_for_event,
-    find_execution_for_delivery,
-    is_delivery_key_conflict,
-)
+from preloop.utils.bitbucket import normalize_uuid as normalize_bitbucket_uuid
+from preloop.utils.bitbucket import payload_commit_hash as bitbucket_payload_commit_hash
 from preloop.utils.workspace_seed import attach_workspace_file_paths
-from preloop.models.db.session import get_session_factory
-from preloop.schemas.issue_triage import provider_revision
-from preloop.services.issue_triage_trigger import (
-    issue_update_touches_content,
-    skip_triage_flow_for_event,
-)
+
+from .flow_orchestrator import FlowExecutionOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -1617,6 +1616,8 @@ class FlowTriggerService:
                 flow executions (#157). No execution row is created and
                 nothing is dispatched.
         """
+        from preloop.api.loop_safety import run_db_off_loop
+        from preloop.models import crud, models
         from preloop.services.flow_execution_dispatcher import (
             dispatch_execute,
             flow_execution_worker_enabled,
@@ -1627,6 +1628,14 @@ class FlowTriggerService:
             is_triage_flow,
             reserve_triage_execution,
         )
+
+        if isinstance(precreated_execution, models.FlowExecution):
+            await run_db_off_loop(
+                lambda: crud.crud_ci_execution.authorize_dispatch(
+                    self.db,
+                    execution=precreated_execution,
+                )
+            )
 
         if self._flows_halted(flow.account_id):
             if precreated_execution is None:

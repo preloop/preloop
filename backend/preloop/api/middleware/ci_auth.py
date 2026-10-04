@@ -23,9 +23,19 @@ from preloop.schemas.ci_principal import CiAction
 
 logger = logging.getLogger(__name__)
 
-# Production handlers remain denied until their typed payloads, own-resource
-# CRUD and downstream checks ship. Dependencies may extend this immutable map.
-CI_ROUTE_POLICIES: Mapping[tuple[str, str], CiAction] = MappingProxyType({})
+# Only typed, principal-owned execution operations opt into machine authority.
+CI_ROUTE_POLICIES: Mapping[tuple[str, str], CiAction] = MappingProxyType(
+    {
+        ("POST", "/api/v1/flows/{flow_id}/trigger"): CiAction.TRIGGER,
+        ("GET", "/api/v1/flows/executions"): CiAction.READ_EXECUTION,
+        ("GET", "/api/v1/flows/executions/{execution_id}"): CiAction.READ_EXECUTION,
+        ("GET", "/api/v1/flows/executions/{execution_id}/result"): CiAction.READ_RESULT,
+        (
+            "POST",
+            "/api/v1/flows/executions/{execution_id}/command",
+        ): CiAction.STOP_EXECUTION,
+    }
+)
 
 
 def _credentials(scope: Scope) -> tuple[tuple[str, ...], bool]:

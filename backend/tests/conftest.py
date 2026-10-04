@@ -1,24 +1,23 @@
 """Pytest configuration file for Preloop tests."""
 
-from typing import Generator
 import inspect
-
-import pytest
 import os
+from typing import Any, Generator
+from unittest.mock import MagicMock, patch
+
 import fastapi
+import pytest
 from dotenv import load_dotenv
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from unittest.mock import patch, MagicMock
-
-from fastapi.testclient import TestClient
-
 from preloop.api.app import create_app
 from preloop.api.auth import get_current_active_user
+from preloop.api.auth.ci import get_current_actor
+from preloop.models.crud import crud_account, crud_user
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.user import User
-from preloop.models.crud import crud_account, crud_user
 
 
 async def maybe_await(result):
@@ -330,6 +329,14 @@ def app(db_session: Session, test_user: User) -> Generator[fastapi.FastAPI, None
     app = create_app()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = override_get_current_active_user
+
+    def override_current_actor(request: fastapi.Request) -> Any:
+        # Exercise real machine authorization; preserve the existing human seam.
+        if getattr(request.state, "ci_context", None) is not None:
+            return get_current_actor(request, db=db_session, token="unused")
+        return app.dependency_overrides[get_current_active_user]()
+
+    app.dependency_overrides[get_current_actor] = override_current_actor
     yield app
 
 

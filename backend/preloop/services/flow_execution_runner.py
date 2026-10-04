@@ -8,6 +8,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional, Set, TypedDict
 
+from preloop.api.loop_safety import run_db_off_loop
+from preloop.models import crud, models
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue_lifecycle
 from preloop.models.db.session import get_db_session
 from preloop.models.schemas.flow_execution import FlowExecutionUpdate
@@ -54,6 +56,22 @@ async def run_existing_execution(
     """
     if orchestrator.execution_log is None:
         raise ValueError("execution_log must be set before run_existing_execution")
+    if isinstance(orchestrator.execution_log, models.FlowExecution):
+        from preloop.services.ci_execution import ensure_ci_dispatch_admission
+
+        try:
+            await ensure_ci_dispatch_admission(
+                orchestrator.db,
+                execution=orchestrator.execution_log,
+            )
+        except Exception:
+            await run_db_off_loop(
+                lambda: crud.crud_ci_execution.reject_dispatch(
+                    orchestrator.db,
+                    execution=orchestrator.execution_log,
+                )
+            )
+            return
     await orchestrator.run()
 
 

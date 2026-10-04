@@ -94,12 +94,10 @@ never relax this mode. The binding snapshots provider identity, clone path,
 tracker host/type and organization lineage; changing any of these invalidates
 access rather than redirecting an existing grant.
 
-This is a staged foundation. There are no public CI provisioning routes or
-usable CI setup controls yet. Generic REST, MCP, model gateway, WebSocket and
+There are no public CI provisioning routes or usable CI setup controls yet. Generic REST, MCP, model gateway, WebSocket and
 session exchange authentication cannot treat a restricted key as its issuing
 human. The legacy key management surface excludes these keys; human CI
-administration must use the dedicated lifecycle seam. Operation enforcement,
-execution ownership and completion dispatch filtering must be implemented
+administration must use the dedicated lifecycle seam. Completion dispatch filtering and setup controls remain separate prerequisites
 before usable provisioning is exposed.
 
 The restricted ASGI guard covers every application role before handler work.
@@ -121,9 +119,54 @@ restricted credentials receive 401, forbidden operations receive 403, and
 protected object handlers apply their consistent not-found policy. Decision
 logs include safe machine/resource identifiers, never token or result contents.
 
-The production operation map remains empty during this stage. Execution and
-completion handlers will opt in only with typed inputs, own-resource CRUD and
-dispatch checks; this foundation does not expose usable CI provisioning.
+The operation map permits exactly the existing flow trigger, execution list,
+execution detail, persisted result and stop-command routes. All other operations
+remain denied. Trigger accepts only `{"pr_number": 7, "head_sha": "<exact SHA>"}`;
+the SHA is 40 or 64 lowercase hexadecimal characters. OpenAPI includes the
+restricted request schema beside the ordinary human request contract. The server
+reads the PR/MR by immutable repository ID using its trusted integration and
+requires an open review, matching immutable repository identity, number and exact
+head. v1 supports hosted GitHub and GitLab repositories; fork reviews and custom
+GitHub hosts are refused. Effective GitLab hosts must match the approved binding.
+No execution row or queue operation is created for an invalid review.
+
+The accepted account, principal, project, flow, integration, repository, provider
+PR identity, head and target branch are persisted with the execution. Attribution
+and that snapshot cannot be edited or backfilled onto historical rows. The target
+branch must be a conventional ASCII Git ref; its accepted value is included in
+clone context, so a non-main target does not fall back to `main`. Dispatch checks
+the current principal/grant/resource binding before queueing and re-reads the
+provider review immediately before a new runtime launch. Provider failures block
+launch with a generic `verification_blocked` failure, without recording provider
+response bodies or credentials. Revoking only the initiating key does not cancel
+accepted work; principal or trigger-grant removal blocks future launch. Recovery
+of an already established runtime remains available to human administrators.
+
+Machine list/detail/result/stop queries require the current key/grant and stable
+principal ownership, before filtering, counting or pagination. Other principals,
+human runs and null-owned history are inaccessible. Detail returns only review
+correlation, status, timestamps and failure category. Result returns the same
+correlation plus the persisted report with controller-private fields, prompts,
+MCP logs and runtime credential/configuration fields removed recursively. A
+missing result returns 404 even for a completed run. An agent-authored report is
+not proof that a review was published to the provider; publication receipts must
+be checked independently.
+
+Stop accepts only `{"command": "stop"}` (an explicit null payload is also
+accepted), with no other fields or command payload. It uses the existing runtime
+teardown path, rechecks authority after connecting to the command bus, and is
+idempotent for owned terminal runs. CI decides which PR/head is obsolete; this
+endpoint does not enforce a supersession policy. v1 is one hosted execution:
+matrix, retry, resume, delegation, flow-feedback loops and triage controllers are
+excluded. Model, agent, runner, credentials, prompts and clone/workspace settings
+remain administrator-controlled flow configuration.
+
+Key rotation preserves principal-owned runs. Principal disablement or grant
+removal denies subsequent API reads/stops without automatically terminating an
+already running agent. An authorized human administrator uses ordinary execution
+controls to inspect or stop that run. Restoring a grant requires the same approved
+resource binding; moving a project/repository requires a new principal rather
+than silently redirecting existing executions.
 
 The account owner can administer through core CRUD. An optional edition hook
 checks human operation/resource authority and may delegate or deny human
