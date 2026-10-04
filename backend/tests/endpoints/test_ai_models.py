@@ -1022,3 +1022,26 @@ def test_put_ai_model_accepts_export_shape(mock_account, mocker: MockerFixture):
     assert response.status_code == 200, response.text
     _, kwargs = crud.update.call_args
     assert kwargs["obj_in"]["credential_payload"] == _CODEX_EXPORT_SHAPE
+
+
+def test_bedrock_api_key_listing_inputs_are_redacted_and_restored() -> None:
+    import json
+    from types import SimpleNamespace
+    from preloop.schemas.ai_model import AvailableModelsRequest
+
+    request_in = AvailableModelsRequest(
+        aws_bearer_token_bedrock="synthetic-bedrock-key", aws_region_name="us-east-1"
+    )
+    assert "synthetic-bedrock-key" not in repr(request_in)
+    assert "synthetic-bedrock-key" not in request_in.model_dump_json()
+    assert ai_models._aws_auth_from_request(request_in) == {
+        "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+        "aws_region_name": "us-east-1",
+    }
+    model = SimpleNamespace(meta_data={"provider_runtime": {"region": "us-east-1"}})
+    assert ai_models._aws_auth_from_stored_bedrock_secret(
+        json.dumps({"aws_bearer_token_bedrock": "synthetic-bedrock-key"}), model
+    ) == {
+        "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+        "aws_region_name": "us-east-1",
+    }

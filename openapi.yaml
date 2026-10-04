@@ -19006,6 +19006,12 @@ components:
           title: Model Kind
           description: Model service kind to fetch
           default: llm
+        aws_bearer_token_bedrock:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aws Bearer Token Bedrock
+          description: Bedrock API key. Never logged or persisted by this endpoint.
         aws_access_key_id:
           anyOf:
           - type: string

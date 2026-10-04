@@ -4663,3 +4663,73 @@ def test_plain_key_integrity_race_attaches_winner_session(
     )
     usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
     assert usage.runtime_session_id == winner.id
+
+
+def test_bedrock_bearer_credentials_are_per_call_and_exclude_iam_keys() -> None:
+    from preloop.services.openai_gateway import _bedrock_credential_kwargs
+
+    assert _bedrock_credential_kwargs(
+        json.dumps(
+            {
+                "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+                "aws_access_key_id": "ignored-key",
+                "aws_secret_access_key": "ignored-secret",
+                "aws_region_name": "us-east-1",
+            }
+        )
+    ) == {"api_key": "synthetic-bedrock-key", "aws_region_name": "us-east-1"}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_call_litellm_passes_bedrock_api_key(stream: bool) -> None:
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    ai_model = SimpleNamespace(
+        provider_name="bedrock",
+        model_identifier="us.anthropic.claude-opus-4-6-v1",
+        api_endpoint=None,
+        meta_data={"provider_runtime": {"region": "us-east-1"}},
+    )
+
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(
+                credential_type="api_key",
+                value=json.dumps(
+                    {
+                        "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+                        "aws_region_name": "eu-central-1",
+                    }
+                ),
+            )
+        )
+        service._call_litellm(
+            ai_model,
+            messages=[{"role": "user", "content": "Hello"}],
+            payload={},
+            provider="openai",
+            stream=stream,
+        )
+
+    upstream_backend.completion.assert_called_once_with(
+        model="bedrock/converse/us.anthropic.claude-opus-4-6-v1",
+        messages=[{"role": "user", "content": "Hello"}],
+        timeout=600,
+        api_key="synthetic-bedrock-key",
+        aws_region_name="eu-central-1",
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
+        **(
+            {"stream": True, "stream_options": {"include_usage": True}}
+            if stream
+            else {}
+        ),
+    )
