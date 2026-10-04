@@ -1188,6 +1188,157 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/discovery-salt:
+    get:
+      tags:
+      - Agent discovery
+      summary: Get Discovery Salt
+      description: Return the account's discovery salt, issuing it on first use.
+      operationId: get_discovery_salt_api_v1_agents_discovery_salt_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoverySaltResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/agents/discovery-reports:
+    post:
+      tags:
+      - Agent discovery
+      summary: Create Discovery Report
+      description: 'Record one workstation''s discovery report.
+
+
+        New candidate rows emit ``agent.discovered`` in the same transaction;
+
+        known rows only get a fresh ``last_seen_at``.'
+      operationId: create_discovery_report_api_v1_agents_discovery_reports_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscoveryReportRequest'
+        required: true
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/agents/discovery-candidates:
+    get:
+      tags:
+      - Agent discovery
+      summary: List Discovery Candidates
+      description: 'List reported candidates, most recently seen first.
+
+
+        The row list is capped. ``total`` is the full matching count and
+
+        ``truncated`` is true when some rows are not in ``items``.'
+      operationId: list_discovery_candidates_api_v1_agents_discovery_candidates_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Status
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveredAgentCandidateList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/discovery-candidates/{candidate_id}:
+    patch:
+      tags:
+      - Agent discovery
+      summary: Update Discovery Candidate
+      description: Mark a candidate ignored, or put an ignored one back to ``new``.
+      operationId: update_discovery_candidate_api_v1_agents_discovery_candidates__candidate_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: candidate_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Candidate Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscoveredAgentCandidateUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveredAgentCandidateSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/details:
     get:
       tags:
@@ -24437,6 +24588,209 @@ components:
         Default is ``deny`` (fail closed). Set ``allow`` to skip the timed-out
 
         rule and continue evaluation.'
+    DiscoveredAgentCandidateList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DiscoveredAgentCandidateSummary'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        truncated:
+          type: boolean
+          title: Truncated
+      type: object
+      required:
+      - items
+      - total
+      - truncated
+      title: DiscoveredAgentCandidateList
+      description: Capped console list plus the count of every matching candidate.
+    DiscoveredAgentCandidateSummary:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        agent_kind:
+          type: string
+          title: Agent Kind
+        agent_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Version
+        workstation_fingerprint:
+          type: string
+          title: Workstation Fingerprint
+        config_path_hash:
+          type: string
+          title: Config Path Hash
+        mcp_server_count:
+          type: integer
+          title: Mcp Server Count
+        enrolled:
+          type: boolean
+          title: Enrolled
+        os_family:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Os Family
+        status:
+          type: string
+          enum:
+          - new
+          - onboarded
+          - ignored
+          title: Status
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+        first_seen_at:
+          type: string
+          format: date-time
+          title: First Seen At
+        last_seen_at:
+          type: string
+          format: date-time
+          title: Last Seen At
+      type: object
+      required:
+      - id
+      - agent_kind
+      - workstation_fingerprint
+      - config_path_hash
+      - mcp_server_count
+      - enrolled
+      - status
+      - first_seen_at
+      - last_seen_at
+      title: DiscoveredAgentCandidateSummary
+      description: One row of the console's "Not yet governed" list.
+    DiscoveredAgentCandidateUpdate:
+      properties:
+        status:
+          type: string
+          enum:
+          - new
+          - ignored
+          title: Status
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      title: DiscoveredAgentCandidateUpdate
+      description: 'Console action on a candidate: mark ignored, or un-ignore.'
+    DiscoveryReportCandidate:
+      properties:
+        agent_kind:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+        agent_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Agent Version
+        config_path_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Config Path Hash
+        mcp_server_count:
+          type: integer
+          maximum: 10000.0
+          minimum: 0.0
+          title: Mcp Server Count
+          default: 0
+        enrolled:
+          type: boolean
+          title: Enrolled
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - agent_kind
+      - config_path_hash
+      title: DiscoveryReportCandidate
+      description: One agent tool found on the workstation.
+    DiscoveryReportRequest:
+      properties:
+        workstation_fingerprint:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Workstation Fingerprint
+        cli_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Cli Version
+        os:
+          anyOf:
+          - type: string
+            enum:
+            - darwin
+            - linux
+            - windows
+            - other
+          - type: 'null'
+          title: Os
+        candidates:
+          items:
+            $ref: '#/components/schemas/DiscoveryReportCandidate'
+          type: array
+          maxItems: 100
+          title: Candidates
+      additionalProperties: false
+      type: object
+      required:
+      - workstation_fingerprint
+      title: DiscoveryReportRequest
+      description: Body of ``POST /api/v1/agents/discovery-reports``.
+    DiscoveryReportResponse:
+      properties:
+        received:
+          type: integer
+          title: Received
+        created:
+          type: integer
+          title: Created
+        updated:
+          type: integer
+          title: Updated
+      type: object
+      required:
+      - received
+      - created
+      - updated
+      title: DiscoveryReportResponse
+      description: What the server did with a report.
+    DiscoverySaltResponse:
+      properties:
+        salt:
+          type: string
+          title: Salt
+        algorithm:
+          type: string
+          const: hmac-sha256
+          title: Algorithm
+          default: hmac-sha256
+        retention_days:
+          type: integer
+          title: Retention Days
+      type: object
+      required:
+      - salt
+      - retention_days
+      title: DiscoverySaltResponse
+      description: The per-account salt the CLI keys its hashes with.
     EffectivePublicationPolicy:
       properties:
         mode:
@@ -29682,6 +30036,18 @@ components:
           additionalProperties: true
           type: object
           title: Validation Result
+        workstation_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Workstation Fingerprint
+        config_path_hash:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Config Path Hash
       type: object
       title: ManagedAgentEnrollmentValidateRequest
       description: Request to update validation state for one enrollment.

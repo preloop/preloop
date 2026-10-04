@@ -15,6 +15,7 @@ from typing import Any, Mapping, Optional
 
 from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
+    EVENT_AGENT_DISCOVERED,
     EVENT_AGENT_NOTE_DELIVERED,
     EVENT_AGENT_NOTE_SENT,
     EVENT_AGENT_ONBOARDED,
@@ -660,6 +661,51 @@ def _discovered_at(candidate: Mapping[str, Any]) -> Optional[datetime]:
     from preloop.cra.reporting import parse_timestamp
 
     return parse_timestamp(candidate.get("discovered_at"))
+
+
+# --- agent discovery --------------------------------------------------------
+
+
+def agent_discovered_data(candidate: Any) -> dict[str, Any]:
+    """Body of ``agent.discovered``.
+
+    Built from a fixed field list on purpose: the candidate row stores salted
+    hashes only, and nothing here may grow a hostname, user name, clear path
+    or MCP detail.
+    """
+    return {
+        "candidate_id": _str(getattr(candidate, "id", None)),
+        "agent_kind": getattr(candidate, "agent_kind", None),
+        "agent_version": getattr(candidate, "agent_version", None),
+        "workstation_fingerprint": getattr(candidate, "workstation_fingerprint", None),
+        "config_path_hash": getattr(candidate, "config_path_hash", None),
+        "mcp_server_count": getattr(candidate, "mcp_server_count", None),
+        "enrolled": bool(getattr(candidate, "reported_enrolled", False)),
+        "os_family": getattr(candidate, "os_family", None),
+        "status": getattr(candidate, "status", None),
+        "first_seen_at": _iso(getattr(candidate, "first_seen_at", None)),
+    }
+
+
+def emit_agent_discovered(db: Any, candidate: Any) -> None:
+    """Enqueue ``agent.discovered`` for a newly created candidate row.
+
+    The natural key is the row id, so a retried emit for the same row is a
+    no-op in the outbox. Callers only invoke this for rows the report just
+    created; re-reports never reach here.
+    """
+    candidate_id = getattr(candidate, "id", None)
+    if candidate_id is None:
+        return
+    outbox.enqueue_event(
+        db,
+        account_id=getattr(candidate, "account_id", None),
+        event_type=EVENT_AGENT_DISCOVERED,
+        data=agent_discovered_data(candidate),
+        occurred_at=getattr(candidate, "first_seen_at", None),
+        natural_key=f"{EVENT_AGENT_DISCOVERED}:{candidate_id}",
+        subject_id=candidate_id,
+    )
 
 
 # --- agent onboarding ------------------------------------------------------

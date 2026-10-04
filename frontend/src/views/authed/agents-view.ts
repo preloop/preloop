@@ -26,6 +26,7 @@ import '../../components/resource-actions.ts';
 import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
+import '../../components/discovered-agents-panel.ts';
 import { totalTokensOf } from '../../components/token-figures';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
@@ -4766,6 +4767,13 @@ export class AgentsView extends LitElement {
             : this.effectiveView === 'list'
               ? this.renderListView()
               : this.renderCardsView()
+        }
+        ${
+          this.effectiveView === 'canvas'
+            ? nothing
+            : html`<div class="content-bounds ${this.pageBoxClass}">
+                <discovered-agents-panel></discovered-agents-panel>
+              </div>`
         }
       </div>
     `;
