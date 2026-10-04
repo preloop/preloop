@@ -215,6 +215,12 @@ describe('SecurityView', () => {
       .find((c) => String(c.args[0]).includes('/auth/sessions/revoke-all'));
     expect(call, 'expected revoke-all POST').to.exist;
     expect((call?.args[1]?.method || '').toUpperCase()).to.equal('POST');
+    // The revoke already ended the session; no server sign out follows.
+    expect(
+      fetchStub
+        .getCalls()
+        .some((c) => String(c.args[0]) === '/api/v1/auth/logout')
+    ).to.equal(false);
     expect(localStorage.getItem('accessToken')).to.equal(null);
     expect(localStorage.getItem('refreshToken')).to.equal(null);
     expect(navigate).to.have.been.calledWith('/');

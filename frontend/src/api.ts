@@ -401,7 +401,10 @@ export function coalesceKey(url: string, passive?: boolean): string {
   return passive === true ? `passive|${url}` : url;
 }
 
-/** How long sign out waits for the server before clearing local state. */
+/**
+ * How long sign out waits for the server's next-page hint before falling
+ * back to the default destination. Local state is cleared before the wait.
+ */
 export const SIGN_OUT_SERVER_TIMEOUT_MS = 5000;
 
 /**
