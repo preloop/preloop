@@ -469,7 +469,9 @@ class CRUDCiPrincipal:
         ):
             return None
         principal = self.get(
-            db, account_id=key.account_id, principal_id=key.ci_principal_id
+            db,
+            account_id=key.account_id,
+            principal_id=key.ci_principal_id,
         )
         account = (
             db.query(models.Account)
