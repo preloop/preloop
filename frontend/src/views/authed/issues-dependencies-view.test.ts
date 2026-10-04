@@ -1,10 +1,8 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './issues-dependencies-view';
 import type { IssuesDependenciesView } from './issues-dependencies-view';
-
-const tick = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 
 /** Two projects whose short ids are what the issues area puts in a link. */
 const PROJECTS = [
@@ -32,7 +30,13 @@ async function renderAt(search: string): Promise<IssuesDependenciesView> {
   const element = (await fixture(
     html`<issues-dependencies-view></issues-dependencies-view>`
   )) as IssuesDependenciesView;
-  await tick();
+  await waitUntil(
+    () =>
+      (element as unknown as { _selectedProjectId: string | null })
+        ._selectedProjectId !== null,
+    'projects and URL selection did not finish loading',
+    { timeout: 10000 }
+  );
   await element.updateComplete;
   return element;
 }

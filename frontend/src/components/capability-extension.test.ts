@@ -59,7 +59,14 @@ describe('capability-extension', () => {
         .context=${{ range: '' }}
       ></capability-extension>`
     );
-    await waitUntil(() => el.querySelector('usage-rollup-panel'));
+    // The module is fetched lazily; its registration is the browser's real
+    // readiness signal, regardless of how many other CI pages are loading.
+    await customElements.whenDefined('usage-rollup-panel');
+    await waitUntil(
+      () => el.querySelector('usage-rollup-panel'),
+      'registered usage extension did not mount',
+      { timeout: 10000 }
+    );
     const panel = el.querySelector('usage-rollup-panel') as HTMLElement & {
       context: Record<string, unknown>;
     };
