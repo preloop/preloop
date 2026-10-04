@@ -58,6 +58,35 @@ class StorageScope:
     managed_agent_id: Optional[str] = None
 
 
+def prime_cache(account_id: Any, config: Optional[SensitiveDataConfig]) -> None:
+    """Store a block a caller already read off-loop, so later redaction calls
+    on the same request do not touch the database."""
+    if account_id is None:
+        return
+    with _lock:
+        _cache[str(account_id)] = (time.monotonic() + CACHE_TTL_SECONDS, config)
+
+
+def cached_config(account_id: Any) -> Optional[SensitiveDataConfig]:
+    """The cached block when present and fresh, else ``None`` (no read)."""
+    if account_id is None:
+        return None
+    with _lock:
+        cached = _cache.get(str(account_id))
+    if cached is None or cached[0] <= time.monotonic():
+        return None
+    return cached[1]
+
+
+def has_cached_config(account_id: Any) -> bool:
+    """True when :func:`cached_config` would not need a database read."""
+    if account_id is None:
+        return False
+    with _lock:
+        cached = _cache.get(str(account_id))
+    return cached is not None and cached[0] > time.monotonic()
+
+
 def invalidate_cache(account_id: Any = None) -> None:
     """Drop the cached block for one account, or for every account."""
     with _lock:
@@ -142,12 +171,21 @@ def detector_config_for(
 
 
 def redact_for_storage(
-    account_id: Any, obj: Any, *, scope: Optional[StorageScope] = None
+    account_id: Any,
+    obj: Any,
+    *,
+    scope: Optional[StorageScope] = None,
+    config: Optional[SensitiveDataConfig] = None,
 ) -> Tuple[Any, Counts, List[SensitiveDataRule]]:
-    """``(redacted, counts_by_type, rules_applied)`` for one value."""
+    """``(redacted, counts_by_type, rules_applied)`` for one value.
+
+    ``config`` lets a caller that already read the block (off-loop) pass it
+    in; otherwise the cached block is used, read on a miss.
+    """
     if obj is None or obj == "" or obj == {} or obj == []:
         return obj, {}, []
-    config = resolve_config(account_id)
+    if config is None:
+        config = resolve_config(account_id)
     rules = redact_rules_for(config, scope)
     if not rules or config is None:
         return obj, {}, []
@@ -160,11 +198,19 @@ def redact_for_storage(
 
 
 def apply_storage_redaction(
-    account_id: Any, obj: Any, *, scope: Optional[StorageScope] = None
+    account_id: Any,
+    obj: Any,
+    *,
+    scope: Optional[StorageScope] = None,
+    config: Optional[SensitiveDataConfig] = None,
 ) -> Any:
     """Return ``obj`` with the account's redact rules applied.
 
-    Byte-identical to the input when no redact rule is in scope.
+    Byte-identical to the input when no redact rule is in scope. Callers on
+    an event loop should pass ``config`` (read off-loop) or prime the cache
+    first; a cache miss reads the policy synchronously.
     """
-    redacted, _counts, _rules = redact_for_storage(account_id, obj, scope=scope)
+    redacted, _counts, _rules = redact_for_storage(
+        account_id, obj, scope=scope, config=config
+    )
     return redacted

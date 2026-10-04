@@ -26919,8 +26919,9 @@ components:
         redact_upstream:
           type: boolean
           title: Redact Upstream
-          description: With a redact condition, also rewrite the request sent to the
-            provider. Default keeps the original upstream and redacts at rest.
+          description: With a redact condition on model.request, also rewrite the
+            request sent to the provider. Default keeps the original upstream and
+            redacts at rest. Not available for model.response.
           default: false
       type: object
       required:

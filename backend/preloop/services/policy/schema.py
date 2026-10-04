@@ -715,6 +715,14 @@ TOOL_TARGETS = frozenset(
 MODEL_TARGETS = frozenset(
     {SensitiveDataTarget.MODEL_REQUEST.value, SensitiveDataTarget.MODEL_RESPONSE.value}
 )
+#: Targets whose upstream copy can be rewritten by ``redact_upstream``.
+UPSTREAM_REDACTABLE_TARGETS = frozenset(
+    {
+        SensitiveDataTarget.TOOL_ARGS.value,
+        SensitiveDataTarget.TOOL_RESULT.value,
+        SensitiveDataTarget.MODEL_REQUEST.value,
+    }
+)
 
 #: Actions a sensitive-data rule may take. ``allow`` is not one of them: a
 #: rule exists to react to a match.
@@ -825,11 +833,26 @@ class SensitiveDataRule(BaseModel):
 
     @model_validator(mode="after")
     def validate_redact_upstream(self) -> "SensitiveDataRule":
-        """``redact_upstream`` only means something with the redact action."""
-        if self.redact_upstream and self.action_value() != ConditionAction.REDACT.value:
+        """``redact_upstream`` needs the redact action and a rewritable target.
+
+        Upstream rewriting exists for tool arguments, tool results and
+        model requests. A model response reaches the client through the
+        provider adapters and is not rewritten; stored copies still are.
+        """
+        if not self.redact_upstream:
+            return self
+        if self.action_value() != ConditionAction.REDACT.value:
             raise ValueError(
                 f"sensitive_data rule '{self.id}': redact_upstream requires "
                 "action 'redact'"
+            )
+        if not any(
+            item in UPSTREAM_REDACTABLE_TARGETS for item in self.target_values()
+        ):
+            raise ValueError(
+                f"sensitive_data rule '{self.id}': redact_upstream applies to "
+                f"{sorted(UPSTREAM_REDACTABLE_TARGETS)}; model.response is "
+                "redacted at rest only"
             )
         return self
 
@@ -1011,8 +1034,9 @@ class ModelIORule(BaseModel):
     redact_upstream: bool = Field(
         False,
         description=(
-            "With a redact condition, also rewrite the request sent to the "
-            "provider. Default keeps the original upstream and redacts at rest."
+            "With a redact condition on model.request, also rewrite the request "
+            "sent to the provider. Default keeps the original upstream and "
+            "redacts at rest. Not available for model.response."
         ),
     )
 
@@ -1026,6 +1050,17 @@ class ModelIORule(BaseModel):
         if not stripped:
             raise ValueError("model_io rule id cannot be empty")
         return stripped
+
+    @model_validator(mode="after")
+    def validate_redact_upstream_target(self) -> "ModelIORule":
+        """Response bodies are not rewritten upstream; reject a silent no-op."""
+        target = str(getattr(self.target, "value", self.target))
+        if self.redact_upstream and target == ModelIOTarget.RESPONSE.value:
+            raise ValueError(
+                f"model_io rule '{self.id}': redact_upstream is not available for "
+                "model.response; responses are redacted at rest only"
+            )
+        return self
 
 
 def _rule_pii_types(rule: ModelIORule) -> List[str]:

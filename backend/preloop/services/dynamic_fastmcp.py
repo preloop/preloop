@@ -422,11 +422,16 @@ def _load_sensitive_data_policy(account_id: str):
         load_sensitive_data_config,
     )
 
+    from preloop.services.sensitive_data.storage import prime_cache
+
     db = next(get_db())
     try:
         config = load_sensitive_data_config(db, account_id, strict=True)
     finally:
         db.close()
+    # This read happened off the event loop; the storage hooks in the audit
+    # and activity writers reuse it instead of reading again on the loop.
+    prime_cache(account_id, config)
     if not config.has_tool_rules():
         return None, None
     return config, detector_config_from(config)

@@ -24,7 +24,7 @@ def redaction_token(type_id: str) -> str:
 
 
 def _apply(text: str, matches: Sequence[Match]) -> str:
-    """Replace spans right to left so earlier offsets stay valid."""
+    """Rebuild the text left to right from non-overlapping, start-sorted spans."""
     pieces = []
     cursor = 0
     for match in matches:  # sorted by start, non-overlapping

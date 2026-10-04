@@ -880,6 +880,16 @@ def redact_request_upstream(
         for name, count in counts.items():
             totals[name] = totals.get(name, 0) + count
 
+    # Mirror canonical_request_text / _content_to_text: bare-string messages
+    # and bare-string content items are scanned there, so they are rewritten
+    # here too.
+    if isinstance(messages, list):
+        for index, message in enumerate(messages):
+            if isinstance(message, str):
+                redacted, counts = redact_text(message, config)
+                if counts:
+                    messages[index] = redacted
+                    add(counts)
     for message in messages or []:
         if not isinstance(message, dict):
             continue
@@ -890,8 +900,13 @@ def redact_request_upstream(
                 message["content"] = redacted
                 add(counts)
         elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
+            for position, block in enumerate(content):
+                if isinstance(block, str):
+                    redacted, counts = redact_text(block, config)
+                    if counts:
+                        content[position] = redacted
+                        add(counts)
+                elif isinstance(block, dict):
                     for key in ("text", "content"):
                         value = block.get(key)
                         if isinstance(value, str):

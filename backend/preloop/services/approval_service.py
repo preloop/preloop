@@ -799,7 +799,9 @@ class ApprovalService:
             correlation_id=corr_id,
             extra_details={
                 "approval_workflow_id": str(approval_workflow_id),
-                "tool_args": redact_dict(tool_args),
+                # Credential scrub over the already policy-redacted copy, so
+                # the lifecycle audit row holds neither secrets nor PII.
+                "tool_args": redact_dict(stored_tool_args or {}),
                 "timeout_seconds": timeout,
                 **({"rule_context": rule_context} if rule_context else {}),
             },
@@ -2131,11 +2133,13 @@ class ApprovalService:
 
             sync_db = await run_db_off_loop(lambda: get_session_factory()())
             try:
+                # The summary is stored on the request and shown on every
+                # surface: generate it from the stored (redacted) arguments.
                 summary = await generate_approval_summary(
                     sync_db,
                     account_id=account_id,
                     tool_name=tool_name,
-                    tool_args=tool_args,
+                    tool_args=approval_request.tool_args or {},
                     agent_reasoning=agent_reasoning,
                     managed_agent_name=managed_agent_name,
                 )

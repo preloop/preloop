@@ -721,7 +721,10 @@ def compile_model_io_rules(
                     detectors=ModelIODetectors(pii=PIIDetectorConfig(types=types)),
                     detector_timeout_ms=rule.detector_timeout_ms,
                     on_detector_timeout=rule.on_detector_timeout,
-                    redact_upstream=bool(getattr(rule, "redact_upstream", False)),
+                    # Only requests are rewritten upstream; a compiled
+                    # response rule redacts stored copies only.
+                    redact_upstream=bool(getattr(rule, "redact_upstream", False))
+                    and target == SensitiveDataTarget.MODEL_REQUEST.value,
                     conditions=[
                         ToolCondition(
                             expression="pii.found == true",
@@ -777,10 +780,14 @@ def redact_tool_result(result: Any, detector_config: DetectorConfig) -> Any:
             is_error=bool(getattr(result, "is_error", False)),
         )
     if isinstance(result, (list, tuple)):
-        return [
-            TextContent(
-                type="text", text=redact_text(_block_text(item), detector_config)[0]
-            )
-            for item in result
-        ]
+        rebuilt = []
+        for item in result:
+            text = _block_text(item)
+            if text:
+                rebuilt.append(
+                    TextContent(type="text", text=redact_text(text, detector_config)[0])
+                )
+            else:
+                rebuilt.append(item)  # images, resources: kept unchanged
+        return rebuilt
     return redact_text(str(result), detector_config)[0]

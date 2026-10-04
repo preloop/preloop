@@ -78,19 +78,25 @@ def _account_for_execution(db: Session, execution_id: Any) -> Optional[str]:
     so one lookup per execution is enough.
     """
     key = str(execution_id)
-    if key in _execution_accounts:
-        return _execution_accounts[key]
+    cached = _execution_accounts.get(key)
+    if cached is not None:
+        return cached
     account_id: Optional[str] = None
     try:
+        # The execution row carries no account; its flow does.
         row = db.execute(
-            select(models.FlowExecution.account_id).where(
-                models.FlowExecution.id == uuid.UUID(key)
-            )
+            select(models.Flow.account_id)
+            .join(models.FlowExecution, models.FlowExecution.flow_id == models.Flow.id)
+            .where(models.FlowExecution.id == uuid.UUID(key))
         ).first()
         if row is not None and row[0] is not None:
             account_id = str(row[0])
     except Exception:  # noqa: BLE001 - redaction degrades, the log is kept
         account_id = None
+    if account_id is None:
+        # A miss or a transient error is retried on the next log line; only
+        # a successful lookup is remembered.
+        return None
     if len(_execution_accounts) >= _EXECUTION_ACCOUNT_CACHE_LIMIT:
         _execution_accounts.clear()
     _execution_accounts[key] = account_id
