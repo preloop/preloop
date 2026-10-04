@@ -39,8 +39,8 @@
     "ws": "^8.18.3"
   },
   "overrides": {
-    "hono": "4.13.5",
-    "fast-uri": "3.1.6",
+    "hono": "4.13.13",
+    "fast-uri": "3.1.8",
     "qs": "6.16.0"
   },
   "devDependencies": {

@@ -20,10 +20,12 @@ if [ ! -d .venv ]; then
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
-pip install -U pip
-pip install -e ".[dev]"
+# Hash-pinned lock, then the local tree with no extra dependency resolution.
+# `--require-hashes` and `npm ci` are what Scorecard treats as pinned.
+pip install --require-hashes -r .github/requirements/app-dev.txt
+pip install --no-deps -e ".[dev]"
 
-npm --prefix frontend install
+npm --prefix frontend ci
 
 if [ ! -f .env ]; then
   cat > .env <<'EOF'

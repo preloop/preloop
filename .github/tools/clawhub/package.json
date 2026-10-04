@@ -4,5 +4,8 @@
   "description": "Lockfile-pinned ClawHub CLI for plugin publish CI. Bump clawhub, then npm install.",
   "dependencies": {
     "clawhub": "0.23.3"
+  },
+  "overrides": {
+    "undici": "7.29.1"
   }
 }

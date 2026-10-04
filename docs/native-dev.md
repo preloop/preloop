@@ -38,9 +38,11 @@ From the repo root:
 ./scripts/native-dev-install.sh
 ```
 
-That creates `.venv`, runs `pip install -e ".[dev]"`, installs `frontend`
-npm packages, and writes a gitignored `.env` if one is missing. Re-run after
-dependency changes; it is idempotent.
+That creates `.venv`, installs the hash-pinned dev lock
+(`.github/requirements/app-dev.txt`), installs this checkout with
+`pip install --no-deps -e ".[dev]"`, installs `frontend` from its lockfile
+with `npm ci`, and writes a gitignored `.env` if one is missing. Re-run after
+dependency changes; it is idempotent. `npm ci` replaces `frontend/node_modules`.
 
 ## Start the stack
 

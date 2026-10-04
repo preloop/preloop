@@ -39,7 +39,12 @@ def _instructions(text: str) -> list[str]:
 
 def test_recipe_extends_a_build_time_base_and_installs_only_perl() -> None:
     text = DOCKERFILE.read_text()
-    assert "ARG CODEX_BASE_IMAGE\nFROM ${CODEX_BASE_IMAGE}" in text
+    assert "FROM ${CODEX_BASE_IMAGE}" in text
+    digest = (
+        "ghcr.io/openai/codex-universal@sha256:"
+        "905e512f36460e1be4cfedb30928a8a28299edb0fcd5de7998ceaa72d27fe304"
+    )
+    assert text.count(f"ARG CODEX_BASE_IMAGE={digest}") == 2
     assert "*@sha256:*" in text, "a mutable base tag must be refused"
     assert _apt_install_packages(text) == list(PACKAGES)
     lowered = "\n".join(

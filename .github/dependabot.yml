@@ -211,6 +211,67 @@ updates:
           - minor
           - patch
 
+  # Lockfiles Scorecard scans that are not the frontend app. Without these,
+  # a transitive advisory (undici, hono, fast-uri, brace-expansion) sits
+  # until someone notices. Security updates stay ungrouped.
+  - package-ecosystem: npm
+    directory: /.github/tools/clawhub
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      clawhub-npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /runtime-plugins/claude-preloop
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      claude-plugin-npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: /runtime-plugins/harness-preloop/agents/pi
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      pi-npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
   # ------------------------------------------------------------------------
   # GitHub Actions
   # ------------------------------------------------------------------------
