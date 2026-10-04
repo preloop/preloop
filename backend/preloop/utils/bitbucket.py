@@ -31,9 +31,12 @@ BITBUCKET_API_BASE_URL = "https://api.bitbucket.org/2.0"
 BITBUCKET_WEB_BASE_URL = "https://bitbucket.org"
 BITBUCKET_HOST = "bitbucket.org"
 
-# Authentication modes stored on ``Tracker.auth_type``.
+# Authentication modes stored on ``Tracker.auth_type``. ``managed_oauth`` is
+# the browser-consent grant whose token is resolved by a provider plugin; it
+# is never created by pasting a token (see ``validate_bitbucket_config``).
 BITBUCKET_AUTH_API_TOKEN = "api_token"
 BITBUCKET_AUTH_OAUTH_TOKEN = "oauth_token"
+BITBUCKET_AUTH_MANAGED_OAUTH = "managed_oauth"
 BITBUCKET_AUTH_TYPES = (BITBUCKET_AUTH_API_TOKEN, BITBUCKET_AUTH_OAUTH_TOKEN)
 
 # Kinds of secret accepted under the ``api_token`` auth mode, stored in
@@ -126,6 +129,11 @@ def validate_bitbucket_config(
 
     if mode == "app_password" or token_kind == "app_password":
         raise BitbucketConfigError(APP_PASSWORD_MESSAGE)
+    if mode == BITBUCKET_AUTH_MANAGED_OAUTH:
+        raise BitbucketConfigError(
+            "Managed Bitbucket Cloud connections are created through the browser "
+            "consent flow, not by pasting a token."
+        )
     if mode not in BITBUCKET_AUTH_TYPES:
         raise BitbucketConfigError(
             f"Unsupported Bitbucket auth_type '{auth_type}'. "
@@ -180,7 +188,10 @@ def git_username_for(
     details = connection_details or {}
     mode = (auth_type or "").lower()
     token_kind = str(details.get("token_kind") or "").lower()
-    if mode == BITBUCKET_AUTH_OAUTH_TOKEN or token_kind == TOKEN_KIND_ACCESS_TOKEN:
+    if (
+        mode in (BITBUCKET_AUTH_OAUTH_TOKEN, BITBUCKET_AUTH_MANAGED_OAUTH)
+        or token_kind == TOKEN_KIND_ACCESS_TOKEN
+    ):
         return GIT_USERNAME_ACCESS_TOKEN
     username = str(details.get("username") or "").strip()
     if username and "@" not in username:

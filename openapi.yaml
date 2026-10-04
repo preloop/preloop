@@ -34028,8 +34028,9 @@ components:
         auth_type:
           type: string
           title: Auth Type
-          description: 'How the tracker authenticates: ''api_token'', ''github_app''
-            or ''oauth_app'''
+          description: 'How the tracker authenticates: ''api_token'', ''oauth_token''
+            (pasted), ''github_app'', ''oauth_app'', or ''managed_oauth'' (browser
+            consent grant resolved by a managed-provider plugin; no stored token)'
           default: api_token
         oauth_installation_id:
           anyOf:
@@ -34064,6 +34065,16 @@ components:
 
             fix the scope instead of the sync retrying forever.'
           readOnly: true
+        managed:
+          type: boolean
+          title: Managed
+          description: 'True for a managed browser-consent grant (no pasted token).
+
+
+            Expiry, actor, capabilities and connection state of a managed grant
+
+            come from the provider''s status endpoint, never from this row.'
+          readOnly: true
         token_expires_at:
           anyOf:
           - type: string
@@ -34076,7 +34087,11 @@ components:
 
             date chosen at creation. The API does not report it, so the tracker
 
-            form stores it in ``connection_details["token_expires_at"]``.'
+            form stores it in ``connection_details["token_expires_at"]``. Managed
+
+            grants report their actual expiry through the provider status
+
+            endpoint instead; the manual field is never used for them.'
           readOnly: true
         token_expiry_status:
           anyOf:
@@ -34094,6 +34109,7 @@ components:
       - created
       - last_updated
       - degraded_projects
+      - managed
       - token_expires_at
       - token_expiry_status
       title: TrackerResponse

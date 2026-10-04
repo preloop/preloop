@@ -214,7 +214,11 @@ class TrackerResponse(TrackerBase):
     )
     auth_type: str = Field(
         "api_token",
-        description="How the tracker authenticates: 'api_token', 'github_app' or 'oauth_app'",
+        description=(
+            "How the tracker authenticates: 'api_token', 'oauth_token' (pasted), "
+            "'github_app', 'oauth_app', or 'managed_oauth' (browser consent "
+            "grant resolved by a managed-provider plugin; no stored token)"
+        ),
     )
     oauth_installation_id: Optional[UUID] = Field(
         None,
@@ -249,13 +253,27 @@ class TrackerResponse(TrackerBase):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def managed(self) -> bool:
+        """True for a managed browser-consent grant (no pasted token).
+
+        Expiry, actor, capabilities and connection state of a managed grant
+        come from the provider's status endpoint, never from this row.
+        """
+        return str(self.auth_type or "").lower() == "managed_oauth"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def token_expires_at(self) -> Optional[str]:
         """When the stored token expires, if the user recorded it.
 
         Bitbucket API tokens and repository access tokens carry an expiry
         date chosen at creation. The API does not report it, so the tracker
-        form stores it in ``connection_details["token_expires_at"]``.
+        form stores it in ``connection_details["token_expires_at"]``. Managed
+        grants report their actual expiry through the provider status
+        endpoint instead; the manual field is never used for them.
         """
+        if self.managed:
+            return None
         value = (self.connection_details or {}).get("token_expires_at")
         return str(value) if value else None
 
