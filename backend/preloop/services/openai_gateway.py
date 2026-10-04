@@ -273,7 +273,10 @@ _GATEWAY_STARTED_EMIT_MAX_PENDING = 32
 # shorter than insert-and-audit under CI load, and QueuePool then raises
 # TimeoutError. Waiting out that peer is what records both rows; the cap
 # stops a dead pool from pinning the worker. Production waits 5s per
-# checkout, so one attempt usually covers a peer.
+# checkout, so one attempt usually covers a peer. The loop runs before a
+# non-streaming response is returned, so this budget is also the worst-case
+# delay added when the pool is exhausted: 10s covers two production
+# checkouts, then the upstream response is returned either way.
 _GATEWAY_USAGE_RECORD_POOL_WAIT_SECONDS = 10.0
 _GATEWAY_USAGE_RECORD_MAX_ATTEMPTS = 64
 _GATEWAY_STARTED_EMIT_PENDING = 0
@@ -9677,7 +9680,14 @@ class OpenAIGatewayService:
                 ),
             },
         )
-        self.last_usage_id = str(usage_row.id)
+        # Identity does not lazy-load. A refresh that lost the pool expires
+        # the row, and reading usage_row.id would check out another connection
+        # and hide the fact that the insert already committed.
+        usage_state = inspect(usage_row, raiseerr=False)
+        usage_identity = usage_state.identity if usage_state is not None else None
+        self.last_usage_id = (
+            str(usage_identity[0]) if usage_identity is not None else str(usage_row.id)
+        )
         observed_at = usage_row.timestamp
 
         if cost_source == "unpriced" and (prompt_tokens or completion_tokens):
