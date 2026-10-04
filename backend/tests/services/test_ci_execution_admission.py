@@ -789,3 +789,23 @@ def test_result_projection_denies_alternate_runtime_field_spellings(field: str) 
         "review": "persisted",
         "nested": [{"score": 1}],
     }
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "providerToken",
+        "apiToken",
+        "authToken",
+        "providerCredential",
+        "providerAuthorization",
+        "requestHeaders",
+        "providerSecrets",
+        "provider.token",
+        "provider-credential",
+        "request headers",
+    ],
+)
+def test_result_projection_denies_prefixed_credential_class_fields(field: str) -> None:
+    value = {"ReviewScore": 1, "nested": [{field: "synthetic-private-value"}]}
+    assert service.public_ci_result(value) == {"ReviewScore": 1, "nested": [{}]}
