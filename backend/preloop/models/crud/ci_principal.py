@@ -1,7 +1,7 @@
 """Transactional restricted CI lifecycle and fresh authorization lookups."""
 
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Optional, TypedDict
 from uuid import UUID
@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.plugins.ci_authorization import can_administer_ci
+from preloop.plugins.ci_authorization import can_administer_ci, can_authorize_ci
 from preloop.schemas.ci_principal import CiAction, CiGrant
 
 from .api_key import CRUDApiKey
@@ -42,6 +42,19 @@ class CiAuthorizationContext:
     tracker_url: Optional[str]
     actions: frozenset[CiAction]
     credential_version: int = 1
+
+
+@dataclass(frozen=True)
+class CiTokenInspection:
+    """Safe attribution distinct from a valid authorization context."""
+
+    recognized: bool
+    context: Optional[CiAuthorizationContext] = None
+    account_id: Optional[UUID] = None
+    principal_id: Optional[UUID] = None
+    key_id: Optional[UUID] = None
+    project_id: Optional[UUID] = None
+    flow_id: Optional[UUID] = None
 
 
 class CRUDCiPrincipal:
@@ -137,7 +150,7 @@ class CRUDCiPrincipal:
     ) -> None:
         """Require a current human and edition-specific resource authority."""
         key = getattr(actor, "_auth_api_key", None)
-        if key is not None and key.requires_machine_authorization:
+        if key is not None and key.requires_machine_authorization is True:
             raise PermissionError("CI credentials cannot administer identities")
         human = (
             db.query(models.User)
@@ -459,6 +472,71 @@ class CRUDCiPrincipal:
         key = CRUDApiKey(models.ApiKey).get_by_key(
             db, key=token, include_restricted=True
         )
+        return self._context_for_key(db, key=key)
+
+    def inspect_tokens(
+        self, db: Session, *, tokens: tuple[str, ...]
+    ) -> CiTokenInspection:
+        """Recognize machine markers, retaining safe IDs on invalid credentials.
+
+        Attribution cannot authorize: a disabled principal or revoked key still
+        has an audit identity, but no valid context. Ambiguous transports never
+        authorize and use the first recognized key solely for denial attribution.
+        """
+        inspection = CiTokenInspection(recognized=False)
+        context = None
+        for token in tokens:
+            key = CRUDApiKey(models.ApiKey).get_by_key(
+                db, key=token, include_restricted=True
+            )
+            if key is not None and key.requires_machine_authorization is True:
+                if not inspection.recognized:
+                    principal = (
+                        self.get(
+                            db,
+                            account_id=key.account_id,
+                            principal_id=key.ci_principal_id,
+                        )
+                        if key.ci_principal_id is not None
+                        else None
+                    )
+                    inspection = CiTokenInspection(
+                        recognized=True,
+                        account_id=key.account_id,
+                        principal_id=key.ci_principal_id,
+                        key_id=key.id,
+                        project_id=principal.project_id if principal else None,
+                        flow_id=principal.flow_id if principal else None,
+                    )
+                context = self._context_for_key(db, key=key)
+        return replace(inspection, context=context if len(tokens) == 1 else None)
+
+    def authorize(
+        self, db: Session, *, context: CiAuthorizationContext, action: CiAction
+    ) -> CiAuthorizationContext:
+        """Revalidate machine authority at every downstream operation boundary.
+
+        A request context conveys attribution, never a durable permission cache.
+        The stored key, principal, account, grant and binding are reread before
+        any protected CRUD or side effect. Extensions can only deny this ceiling.
+        """
+        key = CRUDApiKey(models.ApiKey).get(
+            db, id=context.key_id, account_id=str(context.account_id)
+        )
+        fresh = self._context_for_key(db, key=key)
+        if (
+            fresh is None
+            or replace(context, actions=fresh.actions) != fresh
+            or action not in fresh.actions
+            or not can_authorize_ci(fresh, action)
+        ):
+            raise PermissionError("Restricted CI authorization denied")
+        return fresh
+
+    def _context_for_key(
+        self, db: Session, *, key: Optional[models.ApiKey]
+    ) -> Optional[CiAuthorizationContext]:
+        """Build an independent current context, without invoking human auth."""
         if key is None:
             return None
         db.refresh(key)

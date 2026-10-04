@@ -1510,6 +1510,12 @@ def create_app() -> FastAPI:
 
         app.add_middleware(MCPPathRewriteMiddleware)
 
+    # Registered last so all API/gateway roles deny restricted credentials
+    # before legacy authentication, routing, body parsing or downstream work.
+    from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
+
+    app.add_middleware(RestrictedCiAuthMiddleware)
+
     # --- Custom API Docs Routes (Moved to /docs/api and /docs/redoc) ---
     # FastAPI caches route callables. Resolve the serving app from the request
     # so those caches cannot retain each application created by tests or reloads.
@@ -1597,6 +1603,36 @@ def create_app() -> FastAPI:
                         openapi_schema["paths"][path][method]["security"] = [
                             {"bearerAuth": []}
                         ]
+
+        from preloop.api.middleware.ci_auth import CI_ROUTE_POLICIES
+
+        for path, operations in openapi_schema["paths"].items():
+            for method, operation in operations.items():
+                if method.upper() not in {
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE",
+                    "HEAD",
+                    "OPTIONS",
+                }:
+                    continue
+                action = CI_ROUTE_POLICIES.get((method.upper(), path))
+                operation["x-restricted-ci"] = action.value if action else "deny"
+                responses = operation.setdefault("responses", {})
+                responses.setdefault(
+                    "401", {"description": "Invalid or expired credential"}
+                )
+                responses.setdefault(
+                    "403",
+                    {
+                        "description": "Operation or resource denied for restricted CI credentials"
+                    },
+                )
+                responses.setdefault(
+                    "503", {"description": "Credential verification unavailable"}
+                )
 
         app.openapi_schema = openapi_schema  # type: ignore
         return app.openapi_schema  # type: ignore
