@@ -41,10 +41,20 @@ Example YAML:
         target: model.request
         detectors:
           pii:
-            types: [email, phone, credit_card]
+            types: [email, phone, credit_card, iban, employee_id]
         conditions:
           - expression: "pii.found == true"
             action: deny
+
+    sensitive_data:
+      detectors:
+        locales: [de, nl]
+        custom_patterns:
+          - name: employee_id
+            regex: 'EMP-\\d{6}'
+        keywords:
+          - name: codenames
+            terms: ["Project Phoenix"]
 
     defaults:
       unknown_tools: "deny"
@@ -56,6 +66,18 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from preloop.services.sensitive_data.detectors import (
+    BUILTIN_TYPE_IDS,
+    MAX_CUSTOM_PATTERNS,
+    MAX_KEYWORD_LISTS,
+    TYPE_NAME_RE,
+    UnsafePatternError,
+    compile_keyword_pattern,
+    compile_mrn_pattern,
+    compile_safe_regex,
+    registered_type_ids,
+)
 
 
 class PolicyVersion(str, Enum):
@@ -451,34 +473,248 @@ class DetectorTimeoutFailMode(str, Enum):
     DENY = "deny"
 
 
+#: Types the ``pii`` detector scans when a rule does not list any. New
+#: built-in types are opt-in so rules written before they existed keep
+#: their behaviour.
 SUPPORTED_PII_TYPES = ("email", "phone", "credit_card")
+
+#: Every built-in sensitive-data type a rule may select.
+BUILTIN_SENSITIVE_TYPES = BUILTIN_TYPE_IDS
+
+#: Locales ``national_id`` understands.
+SUPPORTED_NATIONAL_ID_LOCALES = ("us", "de", "uk", "fr", "nl")
+
+
+def _validate_type_names(value: List[str], *, label: str) -> List[str]:
+    """Accept built-in type ids and well-formed custom names.
+
+    Custom names (patterns, keyword lists, registered detectors) are checked
+    against the document's ``sensitive_data.detectors`` block by
+    :class:`PolicyDocument`; here only the shape is enforced so a typo such
+    as ``Email`` or ``credit-card`` is rejected with the full list.
+    """
+    if not value:
+        raise ValueError(f"{label} must not be empty")
+    unknown = [
+        item
+        for item in value
+        if item not in BUILTIN_SENSITIVE_TYPES and not TYPE_NAME_RE.match(str(item))
+    ]
+    if unknown:
+        raise ValueError(
+            f"Unknown PII types: {unknown}. Supported: {list(BUILTIN_SENSITIVE_TYPES)} "
+            "or the name of a custom pattern or keyword list"
+        )
+    return list(dict.fromkeys(value))
 
 
 class PIIDetectorConfig(BaseModel):
     """Deterministic PII detector configuration.
 
-    ``types`` selects which entity recognizers run. Unknown types are
-    rejected at schema validation. Third-party recognizers are out of
-    scope and must stay off by default.
+    ``types`` selects which entity recognizers run: any built-in sensitive
+    data type or the name of a custom pattern or keyword list declared under
+    ``sensitive_data.detectors``. Unknown names are rejected at schema
+    validation. Third-party recognizers must be registered explicitly and
+    stay off by default.
     """
 
     types: List[str] = Field(
         default_factory=lambda: list(SUPPORTED_PII_TYPES),
-        description="PII entity types to scan (email, phone, credit_card)",
+        description=(
+            "Sensitive data types to scan (built-in ids or custom entry names); "
+            "default email, phone, credit_card"
+        ),
     )
 
     @field_validator("types")
     @classmethod
     def validate_pii_types(cls, value: List[str]) -> List[str]:
         """Reject unknown PII types so YAML cannot silently skip a scan."""
-        if not value:
-            raise ValueError("pii.types must not be empty")
-        unknown = [item for item in value if item not in SUPPORTED_PII_TYPES]
+        return _validate_type_names(value, label="pii.types")
+
+
+class CustomPatternDefinition(BaseModel):
+    """Account-defined regex sensitive-data type.
+
+    The regex is compiled through a safety gate: a length cap and a static
+    check that rejects nested quantifiers such as ``(a+)+``. It also runs
+    under the rule's detector timeout.
+    """
+
+    name: str = Field(..., description="Type name used in rules (snake_case)")
+    regex: str = Field(..., description="Python regular expression")
+    flags: List[Literal["i", "m", "s", "x"]] = Field(
+        default_factory=list, description="Regex flags: i, m, s, x"
+    )
+    description: Optional[str] = Field(None, description="Human-readable note")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        """Names are identifiers and cannot shadow a built-in type."""
+        if not TYPE_NAME_RE.match(value or ""):
+            raise ValueError(
+                f"Custom pattern name {value!r} must match {TYPE_NAME_RE.pattern}"
+            )
+        if value in BUILTIN_SENSITIVE_TYPES:
+            raise ValueError(f"Custom pattern name {value!r} is a built-in type")
+        return value
+
+    @model_validator(mode="after")
+    def validate_regex(self) -> "CustomPatternDefinition":
+        """Compile once so an unsafe pattern fails at validation time."""
+        try:
+            compile_safe_regex(self.regex, self.flags)
+        except UnsafePatternError as exc:
+            raise ValueError(f"custom_patterns[{self.name}]: {exc}") from exc
+        return self
+
+
+class KeywordListDefinition(BaseModel):
+    """Account-defined keyword list matched on whole words only."""
+
+    name: str = Field(..., description="Type name used in rules (snake_case)")
+    terms: List[str] = Field(..., min_length=1, description="Terms to match")
+    case_sensitive: bool = Field(False, description="Match case exactly")
+    description: Optional[str] = Field(None, description="Human-readable note")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        """Names are identifiers and cannot shadow a built-in type."""
+        if not TYPE_NAME_RE.match(value or ""):
+            raise ValueError(
+                f"Keyword list name {value!r} must match {TYPE_NAME_RE.pattern}"
+            )
+        if value in BUILTIN_SENSITIVE_TYPES:
+            raise ValueError(f"Keyword list name {value!r} is a built-in type")
+        return value
+
+    @model_validator(mode="after")
+    def validate_terms(self) -> "KeywordListDefinition":
+        """Compile once so an empty or oversized list fails at validation."""
+        try:
+            compile_keyword_pattern(self.terms, self.case_sensitive)
+        except ValueError as exc:
+            raise ValueError(f"keywords[{self.name}]: {exc}") from exc
+        return self
+
+
+class SensitiveDataDetectorsConfig(BaseModel):
+    """Account-wide detector configuration shared by every rule.
+
+    ``types`` is the default scan set for rules that do not list their own.
+    ``locales`` narrows ``national_id``. Custom patterns and keyword lists
+    become selectable type names.
+    """
+
+    types: Optional[List[str]] = Field(
+        None,
+        description="Default types to scan; omit for every built-in and custom type",
+    )
+    locales: List[str] = Field(
+        default_factory=list,
+        description="national_id locales (us, de, uk, fr, nl); empty means all",
+    )
+    custom_patterns: List[CustomPatternDefinition] = Field(
+        default_factory=list, max_length=MAX_CUSTOM_PATTERNS
+    )
+    keywords: List[KeywordListDefinition] = Field(
+        default_factory=list, max_length=MAX_KEYWORD_LISTS
+    )
+    medical_record_number_pattern: Optional[str] = Field(
+        None,
+        description="Identifier regex that follows an MRN keyword (default digits)",
+    )
+
+    @field_validator("types")
+    @classmethod
+    def validate_types(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Shape check; names are cross-checked in ``validate_names``."""
+        if value is None:
+            return None
+        return _validate_type_names(value, label="sensitive_data.detectors.types")
+
+    @field_validator("locales")
+    @classmethod
+    def validate_locales(cls, value: List[str]) -> List[str]:
+        """Only locales with a detector are accepted."""
+        lowered = [str(item).lower() for item in value]
+        unknown = [
+            item for item in lowered if item not in SUPPORTED_NATIONAL_ID_LOCALES
+        ]
         if unknown:
             raise ValueError(
-                f"Unknown PII types: {unknown}. Supported: {list(SUPPORTED_PII_TYPES)}"
+                f"Unknown national_id locales: {unknown}. "
+                f"Supported: {list(SUPPORTED_NATIONAL_ID_LOCALES)}"
             )
-        return list(dict.fromkeys(value))
+        return list(dict.fromkeys(lowered))
+
+    @field_validator("medical_record_number_pattern")
+    @classmethod
+    def validate_mrn_pattern(cls, value: Optional[str]) -> Optional[str]:
+        """Same safety gate as custom patterns, plus the composed form."""
+        if value is None:
+            return None
+        try:
+            compile_mrn_pattern(value)
+        except UnsafePatternError as exc:
+            raise ValueError(f"medical_record_number_pattern: {exc}") from exc
+        return value
+
+    @model_validator(mode="after")
+    def validate_names(self) -> "SensitiveDataDetectorsConfig":
+        """Custom names are unique and ``types`` only names known entries."""
+        seen: set[str] = set()
+        for name in self.custom_names():
+            if name in seen:
+                raise ValueError(f"Duplicate sensitive_data detector name: '{name}'")
+            seen.add(name)
+        if self.types:
+            registered = set(registered_type_ids())
+            unknown = [
+                item
+                for item in self.types
+                if item not in BUILTIN_SENSITIVE_TYPES
+                and item not in seen
+                and item not in registered
+            ]
+            if unknown:
+                raise ValueError(
+                    f"sensitive_data.detectors.types references unknown types "
+                    f"{unknown}. Define them under custom_patterns or keywords."
+                )
+        return self
+
+    def custom_names(self) -> List[str]:
+        """Names of custom patterns and keyword lists."""
+        return [item.name for item in self.custom_patterns] + [
+            item.name for item in self.keywords
+        ]
+
+    def known_types(self) -> List[str]:
+        """Built-in ids, registered detector names and this block's custom names."""
+        return (
+            list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids() + self.custom_names()
+        )
+
+
+class SensitiveDataConfig(BaseModel):
+    """Top-level ``sensitive_data`` block.
+
+    ``detectors`` is shared configuration. Rules (#1122), the redact action
+    (#1123) and reference-only logging (#1124) extend this block.
+    """
+
+    detectors: Optional[SensitiveDataDetectorsConfig] = Field(
+        None, description="Types, locales, custom patterns and keyword lists"
+    )
+
+    def known_types(self) -> List[str]:
+        """Built-in ids, registered detector names and configured custom names."""
+        if self.detectors is None:
+            return list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
+        return self.detectors.known_types()
 
 
 class ModerationDetectorConfig(BaseModel):
@@ -561,6 +797,14 @@ class ModelIORule(BaseModel):
         return stripped
 
 
+def _rule_pii_types(rule: ModelIORule) -> List[str]:
+    """Types a model_io rule's ``pii`` detector lists (empty when implicit)."""
+    detectors = rule.detectors
+    if detectors is None or not isinstance(detectors.pii, PIIDetectorConfig):
+        return []
+    return list(detectors.pii.types)
+
+
 class DefaultsDefinition(BaseModel):
     """Default behaviors for the policy.
 
@@ -600,6 +844,7 @@ class PolicyDocument(BaseModel):
         approval_workflows: List of approval workflow definitions.
         tools: List of tool configuration definitions.
         model_io: List of model request/response content policy rules.
+        sensitive_data: Detector configuration shared by model and tool rules.
         defaults: Default behavior settings.
     """
 
@@ -618,6 +863,9 @@ class PolicyDocument(BaseModel):
     )
     model_io: Optional[List[ModelIORule]] = Field(
         None, description="Model request and response content policy rules"
+    )
+    sensitive_data: Optional[SensitiveDataConfig] = Field(
+        None, description="Sensitive data detectors shared by model and tool rules"
     )
     defaults: Optional[DefaultsDefinition] = Field(
         None, description="Default behavior settings"
@@ -646,11 +894,30 @@ class PolicyDocument(BaseModel):
                 raise ValueError(f"Duplicate approval workflow name: '{workflow.name}'")
             workflow_names.add(workflow.name)
 
+        known_sensitive_types = (
+            self.sensitive_data.known_types()
+            if self.sensitive_data is not None
+            else list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
+        )
+
         model_io_ids: set[str] = set()
         for rule in self.model_io or []:
             if rule.id in model_io_ids:
                 raise ValueError(f"Duplicate model_io rule id: '{rule.id}'")
             model_io_ids.add(rule.id)
+            # Intra-document: a rule may only scan types the document
+            # declares (built-ins, registered detectors, custom entries).
+            unknown_types = [
+                item
+                for item in _rule_pii_types(rule)
+                if item not in known_sensitive_types
+            ]
+            if unknown_types:
+                raise ValueError(
+                    f"model_io rule '{rule.id}' scans unknown PII types "
+                    f"{unknown_types}. Define them under "
+                    "sensitive_data.detectors.custom_patterns or keywords."
+                )
 
         return self
 
@@ -717,6 +984,9 @@ class PolicyImportResult(BaseModel):
     )
     model_io_rules_applied: int = Field(
         0, description="Number of model I/O content rules applied"
+    )
+    sensitive_data_applied: bool = Field(
+        False, description="Whether the sensitive_data block was applied"
     )
     warnings: List[str] = Field(default_factory=list, description="Non-fatal warnings")
     errors: List[str] = Field(default_factory=list, description="Errors that occurred")

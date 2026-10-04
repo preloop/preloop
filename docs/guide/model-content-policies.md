@@ -63,7 +63,7 @@ Also available:
 
 - `model.id`, `model.provider`, `model.name`
 - `session.id` when a runtime session is present
-- `pii.found` (bool), `pii.types_found` (list)
+- `pii.found` (bool), `pii.types_found` (list), `pii.count` (int)
 - `injection.score` (0-1), `injection.matched_patterns` (list)
 - `moderation.flagged` (bool), `moderation.categories` (list)
 
@@ -80,9 +80,57 @@ references their attributes (`pii.`, `injection.`, `moderation.`).
 
 | Detector | Default | Result attributes |
 | --- | --- | --- |
-| PII | email, phone, credit-card (Luhn) | `pii.found`, `pii.types_found` |
+| PII | email, phone, credit-card (Luhn) | `pii.found`, `pii.types_found`, `pii.count` |
 | Injection | `security_screen` regex | `injection.score`, `injection.matched_patterns` |
 | Moderation | local keyword ruleset (`local`) | `moderation.flagged`, `moderation.categories` |
+
+### Sensitive data types
+
+`pii.types` accepts every built-in type and the name of a custom entry
+declared under `sensitive_data.detectors`. A rule that lists no types scans
+the account default (`sensitive_data.detectors.types`), and without one the
+original three.
+
+| Type | What it matches |
+| --- | --- |
+| `email` | mailbox addresses |
+| `phone` | E.164 plus US and European national formats |
+| `credit_card` | 13 to 19 digits that pass the Luhn check |
+| `iban` | IBANs with a valid mod-97 check |
+| `ip_address` | IPv4 and IPv6 addresses that parse |
+| `date_of_birth` | the nearest date to a birth keyword (DOB, born, Geburtsdatum, date de naissance, ...) |
+| `national_id` | US SSN shape, DE tax id (ISO 7064 check), UK NINO, FR NIR (key), NL BSN (11-proef, keyword anchored); narrow with `locales: [us, de, uk, fr, nl]` |
+| `medical_record_number` | an identifier after MRN or patient-id keywords; `medical_record_number_pattern` replaces the identifier shape |
+| `person_name` | honorific or label anchored names (`Dr. X`, `patient: X`); low recall by design |
+
+Account-defined entries:
+
+```yaml
+sensitive_data:
+  detectors:
+    types: [email, iban, employee_id]      # default scan set (optional)
+    locales: [de, nl]                      # national_id locales (optional)
+    custom_patterns:
+      - name: employee_id
+        regex: 'EMP-\d{6}'
+        flags: [i]
+    keywords:
+      - name: codenames
+        terms: ["Project Phoenix"]
+        case_sensitive: false
+```
+
+An account may configure at most 50 custom patterns and 50 keyword lists.
+Custom regexes are capped at 512 characters, must not nest quantifiers
+(`(a+)+`) or use backreferences, and each pattern has a 0.25 second match
+timeout. All account patterns on one text share a one-second budget;
+exceeding either limit counts as a detector timeout for the rule. Keyword
+lists match whole words only.
+
+`GET /api/v1/policies/sensitive-data/types` lists every selectable type
+with a label, description, example and locales. `POST
+/api/v1/policies/sensitive-data/test` runs the detectors on sample text
+and returns the match spans; the text is never logged or stored.
 
 Each rule has `detector_timeout_ms` (default 500) and
 `on_detector_timeout` (default `deny`, fail closed). Set

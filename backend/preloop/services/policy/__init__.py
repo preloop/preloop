@@ -26,6 +26,8 @@ from preloop.services.policy.schema import (
     PolicyValidationError,
     PolicyValidationResult,
     PolicyVersion,
+    SensitiveDataConfig,
+    SensitiveDataDetectorsConfig,
     ToolCondition,
     ToolDefinition,
     ToolSource,
@@ -66,6 +68,9 @@ __all__ = [
     "ModelIOTarget",
     "ModelIODetectors",
     "DetectorTimeoutFailMode",
+    # Sensitive data
+    "SensitiveDataConfig",
+    "SensitiveDataDetectorsConfig",
     # Defaults
     "DefaultsDefinition",
     "UnknownToolsPolicy",
