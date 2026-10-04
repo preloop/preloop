@@ -47,8 +47,14 @@ logger = logging.getLogger(__name__)
 #: Channel label recorded on the timeline for decisions made through the
 #: authenticated API from a browser session (the web console).
 AUTHENTICATED_DECISION_CHANNEL = "console"
-#: Decisions made with an API key (CLI, scripts, receiving systems).
+#: Decisions made with an API key (scripts, receiving systems, or the CLI
+#: when it authenticates with a key).
 API_DECISION_CHANNEL = "api"
+#: Decisions made from the CLI with a user session rather than an API key.
+CLI_DECISION_CHANNEL = "cli"
+#: The CLI's requests carry this User-Agent prefix (see the CLI's
+#: ``version.UserAgent``), e.g. "preloop-cli/0.16.0 (darwin; arm64)".
+_CLI_USER_AGENT_MARKER = "preloop-cli/"
 #: The iOS app's requests carry URLSession's default user agent, which
 #: starts with the app's bundle name ("PreloopAI/<build> CFNetwork/...").
 _MOBILE_USER_AGENT_MARKER = "preloopai"
@@ -58,20 +64,23 @@ def _decision_channel(request: Request, current_user: User) -> str:
     """Name the surface an authenticated decision came through.
 
     ``api`` when the caller authenticated with an API key: that comes from
-    the credential itself. For a browser or app session it is ``mobile``
-    when the request comes from the mobile app, else ``console``. The
-    session label is a hint about the surface, not an authorization fact;
-    who decided is recorded separately from the authenticated user.
+    the credential itself. Otherwise the surface is inferred from the
+    User-Agent, which is a hint, not an authorization fact: ``cli`` for the
+    CLI with a user session, ``mobile`` for the mobile app, else
+    ``console`` (a signed-in browser). Who decided is recorded separately
+    from the authenticated user.
     """
     # Read the instance dict: the attribute is only set by API-key auth.
     if getattr(current_user, "__dict__", {}).get("_auth_api_key") is not None:
         return API_DECISION_CHANNEL
     headers = getattr(request, "headers", None) or {}
     user_agent = headers.get("user-agent")
-    if isinstance(user_agent, str) and user_agent.lower().startswith(
-        _MOBILE_USER_AGENT_MARKER
-    ):
-        return "mobile"
+    if isinstance(user_agent, str):
+        normalized = user_agent.lower()
+        if normalized.startswith(_CLI_USER_AGENT_MARKER):
+            return CLI_DECISION_CHANNEL
+        if normalized.startswith(_MOBILE_USER_AGENT_MARKER):
+            return "mobile"
     return AUTHENTICATED_DECISION_CHANNEL
 
 

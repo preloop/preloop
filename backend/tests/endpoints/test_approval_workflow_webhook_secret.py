@@ -106,6 +106,30 @@ def test_api_key_decision_is_recorded_as_api():
         _http({"x-preloop-client": "console"}), _user(api_key=object())
     )
     assert channel == "api"
+    # The credential decides the channel before the surface hint: a CLI
+    # authenticated with an API key is still "api", not "cli".
+    cli = "preloop-cli/0.16.0 (darwin; arm64)"
+    assert (
+        approval_requests._decision_channel(
+            _http({"user-agent": cli}), _user(api_key=object())
+        )
+        == "api"
+    )
+
+
+def test_cli_session_decision_is_recorded_as_cli():
+    """A user-session CLI is not the browser console."""
+    cli = "preloop-cli/0.16.0 (darwin; arm64)"
+    assert (
+        approval_requests._decision_channel(_http({"user-agent": cli}), _user())
+        == "cli"
+    )
+    # The marker check is case-insensitive, like the mobile one.
+    upper = "PRELOOP-CLI/0.16.0 (darwin; arm64)"
+    assert (
+        approval_requests._decision_channel(_http({"user-agent": upper}), _user())
+        == "cli"
+    )
 
 
 def test_session_decision_channels():
