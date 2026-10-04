@@ -1100,6 +1100,104 @@ describe('PoliciesView', () => {
       expect(form.detectModeration).to.be.false;
     });
 
+    it('sends condition_type for a model rule with a CEL expression', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._patchModelIOForm({
+        id: 'deny-cel',
+        conditionMode: 'custom',
+        action: 'deny',
+        expression: 'pii.types_found.contains("email")',
+      });
+      await element.updateComplete;
+      const rule = (element as any).buildModelIORuleFromForm();
+      expect(rule.conditions[0].condition_type).to.equal('cel');
+
+      (element as any)._patchModelIOForm({ expression: 'pii.found == true' });
+      await element.updateComplete;
+      expect(
+        (element as any).buildModelIORuleFromForm().conditions[0].condition_type
+      ).to.equal('simple');
+    });
+
+    it('posts the model rule condition_type on save', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._patchModelIOForm({
+        id: 'deny-cel',
+        conditionMode: 'custom',
+        action: 'deny',
+        expression: 'pii.types_found.contains("email")',
+      });
+      await element.updateComplete;
+      await (element as any).saveModelIORule();
+
+      const post = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).endsWith('/api/v1/policies/model-io-rules') &&
+            (c.args[1] as RequestInit | undefined)?.method === 'POST'
+        );
+      expect(post, 'model rule POST').to.exist;
+      const body = JSON.parse(
+        String((post!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.conditions[0].condition_type).to.equal('cel');
+    });
+
+    it('keeps PII types and extra conditions when editing a model rule', async () => {
+      const stored = {
+        id: 'pii-strict',
+        target: 'model.request',
+        enabled: true,
+        detectors: { pii: { types: ['email'] } },
+        conditions: [
+          {
+            expression: 'pii.found == true',
+            action: 'deny',
+            condition_type: 'simple',
+          },
+          {
+            expression: 'pii.types_found.contains("ssn")',
+            action: 'require_approval',
+          },
+        ],
+      };
+      fetchStub = createFetchStub({
+        tools: [sampleTool],
+        modelIORules: [stored],
+      });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any).openModelIODialog(stored);
+      await element.updateComplete;
+      await (element as any).saveModelIORule();
+
+      const put = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).includes(
+              '/api/v1/policies/model-io-rules/pii-strict'
+            ) && (c.args[1] as RequestInit | undefined)?.method === 'PUT'
+        );
+      expect(put, 'model rule PUT').to.exist;
+      const body = JSON.parse(
+        String((put!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.detectors.pii.types).to.deep.equal(['email']);
+      expect(body.conditions).to.have.length(2);
+      expect(body.conditions[0].condition_type).to.equal('simple');
+      expect(body.conditions[1].expression).to.equal(
+        'pii.types_found.contains("ssn")'
+      );
+      expect(body.conditions[1].condition_type).to.equal('cel');
+    });
+
     it('refuses to save a deny rule with no condition', async () => {
       const element = await mountWithDialog();
 
