@@ -5,7 +5,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import select
 
+from preloop.models import models
+from preloop.services import issue_cost_rollup
 from preloop.sync import tasks
 
 
@@ -63,3 +66,73 @@ def test_non_review_events_skip_the_rollup_transaction() -> None:
     record_pull_request_event_safely(db, {"type": "issue_opened"})
     db.begin_nested.assert_not_called()
     db.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_approval_and_merge_reach_the_issue_row(
+    monkeypatch: Any, db_session: Any, test_user: Any
+) -> None:
+    """Raw Bitbucket Cloud deliveries go through the worker to the rollup (#1064).
+
+    Before Bitbucket payloads were parsed, the worker passed these events on
+    and the rollup dropped them, so a Jira ticket with a Bitbucket pull
+    request never got approval or merge times.
+    """
+    from tests import issue_cost_reconciliation as rec
+
+    fixture = rec.seed_reconciliation(db_session, test_user.account_id)
+    # Start from a pull request without approval and merge times.
+    pull = db_session.scalars(
+        select(models.IssueCostPullRequest).where(
+            models.IssueCostPullRequest.account_id == test_user.account_id,
+            models.IssueCostPullRequest.pr_key == rec.PR_URL,
+        )
+    ).one()
+    pull.approved_at = None
+    pull.merged_at = None
+    db_session.commit()
+
+    async def process(event: dict[str, Any]) -> None:
+        return None
+
+    monkeypatch.setattr(tasks, "get_db_session", lambda: iter([db_session]))
+    monkeypatch.setattr(db_session, "close", lambda: None)
+    monkeypatch.setattr(
+        "preloop.services.flow_trigger_service.FlowTriggerService",
+        lambda db: SimpleNamespace(process_event=process),
+    )
+    base = {
+        "actor": {"nickname": "reviewer"},
+        "repository": {"full_name": rec.WORKSPACE_REPO},
+    }
+    approved_at = rec.APPROVED.isoformat()
+    for event_key, extra, pull_payload in (
+        (
+            "pullrequest:approved",
+            {"approval": {"date": approved_at}},
+            rec.bitbucket_pull_request(updated=rec.APPROVED),
+        ),
+        (
+            "pullrequest:fulfilled",
+            {},
+            rec.bitbucket_pull_request(state="MERGED", updated=rec.MERGED),
+        ),
+    ):
+        await tasks.process_webhook_event(
+            str(fixture.bitbucket_tracker.id),
+            event_key,
+            {**base, **extra, "pullrequest": pull_payload},
+        )
+
+    row = next(
+        row
+        for row in issue_cost_rollup.build_report(
+            db_session, account_id=test_user.account_id
+        ).issues
+        if row.issue_key == rec.JIRA_KEY
+    )
+    assert row.approved_at == rec.APPROVED
+    assert row.merged_at == rec.MERGED
+    assert row.pr_opened_to_approved_hours == 2.0
+    assert row.approved_to_merged_hours == 1.0
+    assert row.run_count == 5

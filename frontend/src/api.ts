@@ -53,6 +53,7 @@ import type {
   RuntimeSessionSummary,
   RuntimeSessionUpdateRequest,
   RuntimeSessionActivityListResponse,
+  ArtifactSearchResponse,
   RuntimeSessionArtifactDescriptor,
   RuntimeSessionArtifactListResponse,
   RuntimeSessionRequestListResponse,
@@ -260,25 +261,14 @@ async function attemptRefresh(refreshTokenValue: string): Promise<Response> {
 }
 
 function endSessionAndRedirect(): void {
-  localStorage.removeItem('accessToken');
-  localStorage.removeItem('refreshToken');
-
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent('auth-change', { bubbles: true, composed: true })
-    );
-    if (
-      !window.location.pathname.startsWith('/login') &&
-      !window.location.pathname.startsWith('/register')
-    ) {
-      localStorage.setItem(
-        'loginRedirect',
-        window.location.pathname + window.location.search + window.location.hash
-      );
-    }
-  }
-
-  Router.go('/login');
+  // The session is already dead (refresh rejected or missing), so there is
+  // nothing to sign out on the server.
+  void signOut({
+    destination: '/login',
+    rememberLocation: true,
+    serverSignOut: false,
+    navigate: (url) => Router.go(url),
+  });
 }
 
 async function refreshToken(): Promise<RefreshResult> {
@@ -412,25 +402,126 @@ export function coalesceKey(url: string, passive?: boolean): string {
 }
 
 /**
- * Clear local JWT credentials and return to the marketing page.
- *
- * Shared by the header Sign out control and Security "Sign out everywhere"
- * so those two paths cannot drift (tokens, auth-change, navigation, /logout).
+ * How long sign out waits for the server's next-page hint before falling
+ * back to the default destination. Local state is cleared before the wait.
  */
-export function performLocalSignOut(
-  navigate: (url: string) => void = (url) => {
-    window.location.assign(url);
+export const SIGN_OUT_SERVER_TIMEOUT_MS = 5000;
+
+/**
+ * Whether `url` is a path on this origin (`/x`, never `//x` or a scheme).
+ * Server-provided redirects are followed only when this holds.
+ */
+export function isSameOriginPath(url: unknown): url is string {
+  if (typeof url !== 'string' || !url.startsWith('/')) return false;
+  if (url.startsWith('//') || url.startsWith('/\\')) return false;
+  return !/[\\\r\n\t]/.test(url);
+}
+
+export interface SignOutOptions {
+  /** Where to go when the server names no next step. Defaults to `/`. */
+  destination?: string;
+  /** Remember the current location so login can return to it. */
+  rememberLocation?: boolean;
+  /**
+   * Ask the server to end the session first. Skipped when the session is
+   * already known to be dead (refresh rejected).
+   */
+  serverSignOut?: boolean;
+  /** Navigation for the default destination (tests, SPA routing). */
+  navigate?: (url: string) => void;
+  /**
+   * Full page load for a server-named next page, which may belong to
+   * another app on this origin. Defaults to `window.location.assign`.
+   */
+  assign?: (url: string) => void;
+}
+
+async function requestServerSignOut(token: string): Promise<string | null> {
+  const controller =
+    typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), SIGN_OUT_SERVER_TIMEOUT_MS)
+    : null;
+  try {
+    const response = await Promise.resolve(
+      fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller?.signal,
+      })
+    );
+    if (!response || !response.ok) return null;
+    const body = (await response.json()) as { redirect_url?: unknown };
+    return isSameOriginPath(body?.redirect_url) ? body.redirect_url : null;
+  } catch {
+    // Offline or timed out: local sign out still proceeds.
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-): void {
+}
+
+/**
+ * The one sign out path of the console.
+ *
+ * Asks the server to end the current session (it may name a same-origin
+ * page to go to next), clears the local JWT credentials, tells listeners
+ * through `auth-change`, and navigates. Used by the header Sign out
+ * controls, Security "Sign out everywhere" and expired-session handling so
+ * those paths cannot drift.
+ *
+ * @returns The URL navigated to.
+ */
+export async function signOut(options: SignOutOptions = {}): Promise<string> {
+  const {
+    destination = '/',
+    rememberLocation = false,
+    serverSignOut = true,
+    navigate = (url: string) => {
+      window.location.assign(url);
+    },
+    assign = (url: string) => {
+      window.location.assign(url);
+    },
+  } = options;
+
+  // The request carries the captured token, so local state is cleared at
+  // once and the server answer is awaited only for its next-page hint.
+  const token = localStorage.getItem('accessToken');
+  const serverAnswer: Promise<string | null> =
+    serverSignOut && token
+      ? requestServerSignOut(token)
+      : Promise.resolve(null);
+
   localStorage.removeItem('accessToken');
   localStorage.removeItem('refreshToken');
+  invalidateApiCaches();
   window.dispatchEvent(
     new CustomEvent('auth-change', { bubbles: true, composed: true })
   );
-  navigate('/');
+
+  if (
+    rememberLocation &&
+    !window.location.pathname.startsWith('/login') &&
+    !window.location.pathname.startsWith('/register')
+  ) {
+    localStorage.setItem(
+      'loginRedirect',
+      window.location.pathname + window.location.search + window.location.hash
+    );
+  }
+
   void Promise.resolve(fetch('/logout', { method: 'GET' })).catch(() => {
     // Best effort: local credentials are already gone.
   });
+
+  const serverRedirect = await serverAnswer;
+  if (serverRedirect) {
+    assign(serverRedirect);
+    return serverRedirect;
+  }
+  navigate(destination);
+  return destination;
 }
 
 export async function fetchWithAuth(
@@ -1178,10 +1269,18 @@ function buildManagedAgentListQuery(
 }
 
 export async function getAccountGatewayUsageSummary(
-  params: GatewayUsageSummaryParams = {}
+  params: GatewayUsageSummaryParams & {
+    breakdowns?: ('models' | 'flows' | 'sessions' | 'tools' | 'days')[];
+  } = {}
 ): Promise<AccountGatewayUsageSummaryResponse> {
+  const query = new URLSearchParams(
+    buildGatewayUsageQuery(params).replace(/^\?/, '')
+  );
+  for (const section of params.breakdowns || [])
+    query.append('breakdown', section);
+  const queryString = query.size ? `?${query.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/account/gateway-usage/summary${buildGatewayUsageQuery(params)}`
+    `/api/v1/account/gateway-usage/summary${queryString}`
   );
   if (!response.ok) {
     // A period outside the plan's analytics window is a plan fact, not a
@@ -2510,6 +2609,30 @@ export async function getAccountRuntimeSessionActivityTimeline(
     const refused = await historyUnavailableError(response);
     if (refused) throw refused;
     throw new Error('Failed to fetch session activity timeline');
+  }
+  return response.json();
+}
+
+/**
+ * Search the account's artifacts across sessions (`GET /api/v1/artifacts`,
+ * #1086). `params` is passed through as is, so repeated keys (`kind`,
+ * `label`) stay repeated.
+ */
+export async function searchAccountArtifacts(
+  params: URLSearchParams
+): Promise<ArtifactSearchResponse> {
+  const query = params.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/artifacts${query ? `?${query}` : ''}`
+  );
+  if (response.status === 403) {
+    throw await permissionErrorFromResponse(response);
+  }
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to search artifacts')
+    );
   }
   return response.json();
 }
@@ -3968,6 +4091,58 @@ export function uniqueFlowsById<T extends { id?: unknown }>(flows: T[]): T[] {
   return unique;
 }
 
+export interface FlowSummary {
+  id: string;
+  account_id: string | null;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  created_at: string;
+  updated_at: string;
+  trigger_event_source: string | null;
+  trigger_event_types: string[] | null;
+  ai_model_id: string | null;
+  ai_model_name: string | null;
+  agent_type: string;
+  is_enabled: boolean;
+  is_preset: boolean;
+  source_preset_id: string | null;
+  prompt_customized: boolean;
+  tools_customized: boolean;
+  preset_update_available: boolean;
+  schedule_state: {
+    active: boolean;
+    type: string;
+    description: string;
+    timezone: string;
+    next_run_at: string | null;
+    cron?: string;
+  } | null;
+  execution_stats: Record<string, any> | null;
+}
+
+/** List presentation metadata; statistics are opt-in, configurations omitted. */
+export async function getFlowSummaries(
+  options: {
+    includeStats?: boolean;
+    statsSince?: string;
+    skip?: number;
+    limit?: number;
+  } = {}
+): Promise<FlowSummary[]> {
+  const params = new URLSearchParams();
+  if (options.includeStats !== undefined) {
+    params.set('include_stats', String(options.includeStats));
+  }
+  if (options.statsSince) params.set('stats_since', options.statsSince);
+  if (options.skip !== undefined) params.set('skip', String(options.skip));
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  const query = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetchWithAuth(`/api/v1/flows/summary${query}`);
+  if (!response.ok) throw new Error('Failed to fetch flow summaries');
+  return response.json();
+}
+
 /**
  * The account's flows.
  *
@@ -5161,6 +5336,37 @@ export async function getCurrentSubscription() {
 }
 
 // Tools API
+export interface ToolSummary {
+  name: string;
+  description: string;
+  source: 'builtin' | 'mcp' | 'agent';
+  source_id: string | null;
+  source_name: string;
+  is_enabled: boolean;
+  requires_tracker: boolean;
+  required_tracker_types: string[];
+  is_supported: boolean;
+  unsupported_reason: string | null;
+  approval_workflow_id: string | null;
+  config_id: string | null;
+  has_approval_condition: boolean;
+  access_rules: Omit<AccessRule, 'account_id' | 'tool_configuration_id'>[];
+  justification_mode: string | null;
+  enabled_for_agents: string[];
+  schema_tokens_estimate: number;
+  adapters: string[];
+  has_condition: boolean;
+}
+
+/** List metadata and policy state; input definitions stay on the full route. */
+export async function getToolsSummary(): Promise<ToolSummary[]> {
+  const response = await fetchWithAuth('/api/v1/tools/summary');
+  if (!response.ok) {
+    throw new Error('Failed to fetch tool summaries');
+  }
+  return response.json();
+}
+
 export async function getTools(): Promise<any[]> {
   const response = await fetchWithAuth('/api/v1/tools');
   if (!response.ok) {

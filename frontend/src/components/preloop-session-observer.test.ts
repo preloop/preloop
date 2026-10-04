@@ -277,6 +277,56 @@ describe('PreloopSessionObserver', () => {
     return text;
   }
 
+  it('loads optimization model choices only after opening optimization', async () => {
+    const modelCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) => call.args[0].toString().includes('/ai-models'));
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+        .features=${{ optimization: true }}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(
+      () => !!(el as any).activeSessionId && !(el as any).loadingSessionId
+    );
+    expect(modelCalls()).to.have.length(0);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub
+      .withArgs(
+        sinon.match((input: RequestInfo | URL) =>
+          input.toString().includes('/ai-models')
+        )
+      )
+      .callsFake(async () => {
+        await held;
+        return new Response('[]', {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    try {
+      (el as any).setReplayMode('optimize');
+      await waitUntil(() => (el as any).aiModelsLoading);
+      await el.updateComplete;
+      expect(deepText(el.shadowRoot)).to.include('Loading optimization models');
+      (el as any).setReplayMode('replay');
+      (el as any).setReplayMode('optimize');
+      expect(modelCalls()).to.have.length(1);
+    } finally {
+      release();
+    }
+    await waitUntil(() => !(el as any).aiModelsLoading);
+    expect(modelCalls()).to.have.length(1);
+    (el as any).setReplayMode('replay');
+    (el as any).setReplayMode('optimize');
+    await el.updateComplete;
+    expect(modelCalls()).to.have.length(1);
+  });
+
   it('renders normalized sessions and keeps optimizations opt-in', async () => {
     const el = (await fixture(
       html`<preloop-session-observer
@@ -1592,6 +1642,13 @@ describe('PreloopSessionObserver session approvals', () => {
 
   it('ignores an approval event for a session nobody is watching', async () => {
     await mount();
+    // Opening the watched session reads its own approvals on its own
+    // schedule: the observer's pending list, plus the live activity line's
+    // history and pending page. Those three are in flight when mount
+    // returns. Snapshot only after they have been issued, or the last one
+    // lands in the wait below and looks like this event refreshed a session
+    // nobody is watching.
+    await waitUntil(() => approvalCalls().length >= 3, '', { timeout: 3000 });
     const before = approvalCalls().length;
 
     approvalsHandler()({
@@ -1601,6 +1658,9 @@ describe('PreloopSessionObserver session approvals', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(approvalCalls().length).to.equal(before);
+    expect(
+      approvalCalls().some((url) => url.includes('some-other-session'))
+    ).to.equal(false);
   });
 
   it('tells the conversation it is waiting on a decision', async () => {

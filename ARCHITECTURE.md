@@ -60,6 +60,16 @@ Cloud analytics history is resolved through a billing plugin service at reportin
 The Cost console loads totals independently of settings and tab breakdowns.
 Selective reporting queries and per-section loading states are described in
 [Progressive reporting](docs/architecture/cost.md#progressive-reporting).
+Console catalogue lists use typed `/tools/summary` and `/flows/summary` views
+instead of downloading tool schemas and flow prompts/configuration. Full
+`/tools` and `/flows` responses retain their existing defaults for editors and
+API clients. Flow summary statistics are opt-in (`include_stats=true`) and use
+the same period and owned-flow aggregates as the full list. Both account gateway
+and Cost summaries support selecting repeated `breakdown` sections; callers
+needing only totals set `include_breakdown=false`, which skips the unused
+aggregations. The grouped audit timeline resolves correlations and approval
+lifecycle through account-scoped partial JSON-expression indexes. Their
+migration builds indexes concurrently and repairs interrupted invalid builds.
 Cost and cycle time per tracker issue are rolled up across flows into their own
 tables. Each issue row, summary and unassigned bucket also states `cost_coverage`
 (`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
@@ -136,7 +146,7 @@ graph LR
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
-| [Security](docs/architecture/security.md) | Auth and tenancy, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
+| [Security](docs/architecture/security.md) | Auth and tenancy, staged restricted CI machine identities, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
 
@@ -152,6 +162,10 @@ active execution. App signing keys remain on the controller. The runtime replace
 stale git credentials and uses the fresh token for PR REST calls as well.
 The sandboxed-browser allowlist sidecar lives in
 [`environments/egress-proxy`](environments/egress-proxy/README.md).
+An opt-in Codex-compatible image with a distro Perl toolchain is built from
+[`environments/perl`](environments/perl/README.md); hosted executors select it
+with `CODEX_IMAGE`, private Docker runners with `agent_config.image`, and native
+host profiles use no image.
 
 A flow with an enabled `git_clone_config.backport` block runs in a
 control-plane mode: the orchestrator cherry-picks the merge commit onto each

@@ -307,6 +307,31 @@ paths:
                   Post
       security:
       - OAuth2PasswordBearer: []
+  /api/v1/auth/logout:
+    post:
+      tags:
+      - Auth
+      summary: Logout
+      description: 'Sign the current console session out on the server.
+
+
+        The client clears its own tokens whatever this returns. Extensions may
+
+        end server-side state tied to the token and name a same-origin path for
+
+        the client to go to next; without one the client uses its default. Other
+
+        sessions of the user are unaffected (see ``/sessions/revoke-all``).'
+      operationId: logout_api_v1_auth_logout_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+      security:
+      - OAuth2PasswordBearer: []
   /api/v1/auth/sessions/cli:
     get:
       tags:
@@ -1102,6 +1127,26 @@ paths:
           Default true preserves the historical response shape for API clients; lightweight
           card callers (Overview/Agents) should pass false. Prefer /cost/summary for
           full cost analytics.
+      - name: breakdown
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              enum:
+              - models
+              - flows
+              - sessions
+              - tools
+              - days
+              type: string
+          - type: 'null'
+          description: Selected breakdowns, repeated for multiple sections. Omitted
+            preserves all sections; ignored when include_breakdown=false.
+          title: Breakdown
+        description: Selected breakdowns, repeated for multiple sections. Omitted
+          preserves all sections; ignored when include_breakdown=false.
       responses:
         '200':
           description: Successful Response
@@ -3266,6 +3311,122 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook:
+    get:
+      tags:
+      - Trackers
+      summary: Get Bitbucket Dc Webhook Status
+      description: Report callback, secret and (with ``check=true``) hook registration.
+      operationId: get_bitbucket_dc_webhook_status_api_v1_trackers__tracker_id__bitbucket_dc_webhook_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      - name: check
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Check
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitbucketDCWebhookStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook/secret:
+    post:
+      tags:
+      - Trackers
+      summary: Rotate Bitbucket Dc Webhook Secret
+      description: 'Generate a new per-tracker secret, store it encrypted, return
+        it once.
+
+
+        Deliveries signed with the previous secret are rejected from now on, so
+
+        update the hook (or call the register endpoint) right after rotating.'
+      operationId: rotate_bitbucket_dc_webhook_secret_api_v1_trackers__tracker_id__bitbucket_dc_webhook_secret_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitbucketDCWebhookSecret'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook/register:
+    post:
+      tags:
+      - Trackers
+      summary: Register Bitbucket Dc Webhook
+      description: 'Create or update the hook with the tracker''s own credentials.
+
+
+        Idempotent: re-running updates Preloop''s hook in place and never
+
+        deletes or edits other hooks on the repository.'
+      operationId: register_bitbucket_dc_webhook_api_v1_trackers__tracker_id__bitbucket_dc_webhook_register_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/BitbucketDCWebhookRegisterRequest'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitbucketDCWebhookStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/mcp-servers:
     get:
       tags:
@@ -3686,13 +3847,7 @@ paths:
       tags:
       - Tools
       summary: List All Tools
-      description: "List all available tools (builtin + external) with their configuration\
-        \ status.\n\nReturns a comprehensive list of:\n- All builtin tools\n- All\
-        \ tools from active MCP servers\n- Native agent tools from the catalogue,\
-        \ plus any seen agent-source\n  configurations that are not in the catalogue\n\
-        - Configuration status for each tool (enabled/disabled, preloop)\n\nArgs:\n\
-        \    account: Current user's account (from dependency)\n    db: Database session\n\
-        \nReturns:\n    List of tool dictionaries with metadata and configuration"
+      description: Return full tool definitions, preserving the existing API contract.
       operationId: list_all_tools_api_v1_tools_get
       responses:
         '200':
@@ -3705,6 +3860,30 @@ paths:
                   type: object
                 type: array
                 title: Response List All Tools Api V1 Tools Get
+      security:
+      - bearerAuth: []
+  /api/v1/tools/summary:
+    get:
+      tags:
+      - Tools
+      summary: List Tool Summaries
+      description: 'Return list metadata and policy state without input schemas/parameters.
+
+
+        The full ``/tools`` catalogue remains available for editors that need the
+
+        input definitions. Estimates are calculated from those same full definitions.'
+      operationId: list_tool_summaries_api_v1_tools_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ToolSummaryResponse'
+                type: array
+                title: Response List Tool Summaries Api V1 Tools Summary Get
       security:
       - bearerAuth: []
   /api/v1/tool-configurations:
@@ -9413,7 +9592,17 @@ paths:
 
         Writing takes ``manage_budgets``, the same permission as budget limits.
 
-        Changing a threshold does not rewrite findings already recorded.'
+        Saving here changes nothing by itself. Findings already recorded stand
+
+        until the daily pass next judges their day: for accounts without an
+
+        imported-spend replay that never happens, while an account with an
+
+        active Copilot import has its 28 most recent days re-judged with the new
+
+        thresholds on the next pass, which can update or supersede a recent
+
+        finding (see :mod:`preloop.services.spend_outliers`).'
       operationId: update_spend_outlier_settings_api_v1_attention_spend_outliers_settings_put
       requestBody:
         content:
@@ -10063,6 +10252,132 @@ paths:
                 $ref: '#/components/schemas/CopilotSyncResponse'
       security:
       - bearerAuth: []
+  /api/v1/cost/copilot/mappings:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: List Copilot User Mappings
+      description: GitHub login to user mappings for the connected organization.
+      operationId: list_copilot_user_mappings_api_v1_cost_copilot_mappings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotUserMappingListResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Upsert Copilot User Mapping
+      description: 'Map a login to an active user of this account; repeats update
+        the one row.
+
+
+        Needs an active Copilot connection (404 otherwise). A user id that is not
+
+        an active user of this account is a 404 with one fixed message, so the
+
+        response never reveals whether the id belongs to someone else.'
+      operationId: upsert_copilot_user_mapping_api_v1_cost_copilot_mappings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CopilotUserMappingUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotUserMappingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/cost/copilot/mappings/{github_login}:
+    delete:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Delete Copilot User Mapping
+      description: Remove one login's mapping (any letter case).
+      operationId: delete_copilot_user_mapping_api_v1_cost_copilot_mappings__github_login__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: github_login
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Github Login
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/cost/copilot/spend-coverage:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Get Copilot Spend Coverage
+      description: 'Row counts per outcome for the spend outlier rules, UTC days inclusive.
+
+
+        Defaults to the completed days ending yesterday that the daily pass
+
+        replays (:data:`preloop.services.spend_outliers.REPLAY_WINDOW_DAYS`).'
+      operationId: get_copilot_spend_coverage_api_v1_cost_copilot_spend_coverage_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_day
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Start Day
+      - name: end_day
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: End Day
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CopilotSpendCoverageResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/usage/import:
     post:
       tags:
@@ -10484,7 +10799,14 @@ paths:
       description: 'Receive tracker webhooks and queue event processing.
 
 
-        Return HTTP 503 when task publication is not acknowledged.'
+        Return HTTP 503 when task publication is not acknowledged.
+
+
+        Bitbucket Data Center deliveries use ``bitbucket_dc`` as ``tracker_type``
+
+        and the tracker id (not an organization id) as the second path segment:
+
+        the hook belongs to one tracker and its per-tracker secret.'
       operationId: receive_webhook_api_v1_private_webhooks__tracker_type___organization_id__post
       parameters:
       - name: tracker_type
@@ -10636,6 +10958,71 @@ paths:
                 items:
                   $ref: '#/components/schemas/FlowResponse'
                 title: Response Read Flows Api V1 Flows Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/flows/summary:
+    get:
+      tags:
+      - Flows
+      summary: Read Flow Summaries
+      description: 'List flow metadata, optionally including the stated window''s
+        statistics.
+
+
+        Name selectors can omit execution aggregates; lists that show run counts
+
+        request them explicitly. The full ``/flows`` response stays unchanged.'
+      operationId: read_flow_summaries_api_v1_flows_summary_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: include_stats
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Stats
+      - name: stats_since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Stats Since
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FlowSummaryResponse'
+                title: Response Read Flow Summaries Api V1 Flows Summary Get
         '422':
           description: Validation Error
           content:
@@ -12268,6 +12655,61 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/policies/sensitive-data/types:
+    get:
+      tags:
+      - Policies
+      summary: List sensitive-data detector types
+      description: 'Type id, label, description, example and locales for every detector.
+
+
+        Includes the account''s custom patterns and keyword lists so the console
+
+        can offer them next to the built-ins.'
+      operationId: list_sensitive_data_types_api_v1_policies_sensitive_data_types_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensitiveDataTypesResponse'
+      security:
+      - bearerAuth: []
+  /api/v1/policies/sensitive-data/test:
+    post:
+      tags:
+      - Policies
+      summary: Test sensitive-data detectors on sample text
+      description: 'Return match spans for ``text``. The input is never logged or
+        stored.
+
+
+        Account patterns run through the timeout-capable engine, so a
+
+        pathological regex ends with a 422 instead of a blocked worker.'
+      operationId: test_sensitive_data_detectors_api_v1_policies_sensitive_data_test_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SensitiveDataTestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensitiveDataTestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/policies/model-io-rules:
     get:
       tags:
@@ -13209,6 +13651,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentPermissionCheckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/agents/session-start:
+    post:
+      tags:
+      - Agent Permissions
+      - Agent Permissions
+      summary: Agent Session Start
+      description: 'Register a hook-governed harness session and its parent (#1045).
+
+
+        Returns the runtime session id the spawner can record, which is the id
+
+        ``send_note`` and ``list_sessions`` take. The session is keyed exactly as
+
+        the gateway keys the same conversation, so it is one row whichever of
+
+        the two sees it first.'
+      operationId: agent_session_start_api_v1_agents_session_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentSessionStartRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSessionStartResponse'
         '422':
           description: Validation Error
           content:
@@ -16518,6 +17007,81 @@ components:
         bounded: the object travels into approval ``tool_args`` and onto the
 
         session timeline, and this is untrusted network input.'
+    AgentSessionStartRequest:
+      properties:
+        session_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Session Id
+          description: The harness's own session id
+        source:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source
+          description: Agent adapter, e.g. 'claude_code'
+        cwd:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+          title: Cwd
+          description: Working directory
+        parent_session_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Parent Session Id
+          description: Runtime session id of the session that spawned this one, as
+            the hook read it from PRELOOP_PARENT_SESSION_ID. Must be in the caller's
+            account; ignored otherwise. Write-once.
+        first_prompt:
+          anyOf:
+          - type: string
+            maxLength: 20000
+          - type: 'null'
+          title: First Prompt
+          description: The first user prompt. Only a redacted 120 character title
+            is kept.
+      type: object
+      required:
+      - session_id
+      title: AgentSessionStartRequest
+      description: 'A harness session starting (or taking its first prompt) under
+        a hook.
+
+
+        Sent by the SessionStart and UserPromptSubmit hooks (#1045). Every field
+
+        but ``session_id`` is optional, and the call is idempotent: the hook may
+
+        repeat it, and a repeat only fills what is still empty.'
+    AgentSessionStartResponse:
+      properties:
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        parent_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Session Id
+        started_at:
+          type: string
+          title: Started At
+        created:
+          type: boolean
+          title: Created
+      type: object
+      required:
+      - runtime_session_id
+      - started_at
+      - created
+      title: AgentSessionStartResponse
+      description: The runtime session the hook's harness session maps to.
     ApiKeyCreate:
       properties:
         name:
@@ -18912,6 +19476,105 @@ components:
       - by_status
       title: BatchRollup
       description: Aggregate metrics over the executions of one batch.
+    BitbucketDCWebhookRegisterRequest:
+      properties:
+        repository:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repository
+          description: '''PROJECT/slug''; defaults to the bound repository.'
+      type: object
+      title: BitbucketDCWebhookRegisterRequest
+      description: Optional repository override for an unbound tracker.
+    BitbucketDCWebhookSecret:
+      properties:
+        callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Callback Url
+          description: URL the hook must call; null when PRELOOP_URL is unset.
+        callback_configured:
+          type: boolean
+          title: Callback Configured
+        required_events:
+          items:
+            type: string
+          type: array
+          title: Required Events
+        signature:
+          type: string
+          title: Signature
+          description: '''configured'' or ''missing_secret'' (Preloop side).'
+        registration:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Registration
+          description: 'Hook state on the bound repository when checked: registered,
+            inactive, events_missing, missing, permission_denied, unauthorized, unbound_repository
+            (no bound repository to check), configuration_invalid (instance no longer
+            approved or invalid connection details) or unavailable (instance unreachable,
+            rate limited or answering with an error).'
+        instructions:
+          type: string
+          title: Instructions
+        secret:
+          type: string
+          title: Secret
+      type: object
+      required:
+      - callback_configured
+      - required_events
+      - signature
+      - instructions
+      - secret
+      title: BitbucketDCWebhookSecret
+      description: A newly generated secret. It is shown once and stored encrypted.
+    BitbucketDCWebhookStatus:
+      properties:
+        callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Callback Url
+          description: URL the hook must call; null when PRELOOP_URL is unset.
+        callback_configured:
+          type: boolean
+          title: Callback Configured
+        required_events:
+          items:
+            type: string
+          type: array
+          title: Required Events
+        signature:
+          type: string
+          title: Signature
+          description: '''configured'' or ''missing_secret'' (Preloop side).'
+        registration:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Registration
+          description: 'Hook state on the bound repository when checked: registered,
+            inactive, events_missing, missing, permission_denied, unauthorized, unbound_repository
+            (no bound repository to check), configuration_invalid (instance no longer
+            approved or invalid connection details) or unavailable (instance unreachable,
+            rate limited or answering with an error).'
+        instructions:
+          type: string
+          title: Instructions
+      type: object
+      required:
+      - callback_configured
+      - required_events
+      - signature
+      - instructions
+      title: BitbucketDCWebhookStatus
+      description: Webhook readiness of one Data Center tracker.
     Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post:
       properties:
         file:
@@ -19086,8 +19749,10 @@ components:
         check_server_references:
           type: boolean
           title: Check Server References
-          description: If true, validate that MCP server references exist in your
-            account. Set to false for standalone schema validation.
+          description: If true, validate that MCP server references resolve to a server
+            defined in the file or configured in your account. If false, MCP server
+            references are not checked. Approval workflow references are always resolved
+            against the file and your account.
           default: true
       type: object
       required:
@@ -19944,6 +20609,7 @@ components:
       - deny
       - allow
       - notify
+      - redact
       title: ConditionAction
       description: Actions to take when a condition matches.
     ConditionTestRequest:
@@ -20527,6 +21193,80 @@ components:
       type: object
       title: CopilotSeatSummary
       description: Seat count and the operator-priced monthly seat estimate.
+    CopilotSpendCoverageResponse:
+      properties:
+        organization:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Organization
+        connection_active:
+          type: boolean
+          title: Connection Active
+          default: false
+        period_start:
+          type: string
+          format: date
+          title: Period Start
+        period_end:
+          type: string
+          format: date
+          title: Period End
+        mapped_rows:
+          type: integer
+          title: Mapped Rows
+          default: 0
+        mapped_net_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Mapped Net Amount
+          description: Sum of the positive per user, day and model nets, which is
+            exactly what the rules evaluate. Null when no row was mapped.
+        credited_net_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Credited Net Amount
+          description: Per user, day and model nets at or below zero (credits exceeding
+            charges); these reach no rule. Null when there were none.
+        known_zero_rows:
+          type: integer
+          title: Known Zero Rows
+          description: Mapped rows whose billed amount is exactly zero.
+          default: 0
+        excluded:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Excluded
+          description: 'Rows the rules do not see, by reason: unmapped, unknown_amount,
+            unsupported_currency, nonfinite_amount, aggregate_only, unattributed,
+            not_daily.'
+        unmapped_logins:
+          items:
+            type: string
+          type: array
+          title: Unmapped Logins
+        mapped_logins:
+          items:
+            type: string
+          type: array
+          title: Mapped Logins
+      type: object
+      required:
+      - period_start
+      - period_end
+      title: CopilotSpendCoverageResponse
+      description: 'How much stored premium-request spend the spend outlier rules
+        can see.
+
+
+        Counts rows per outcome over ``[period_start, period_end]`` (UTC days)
+
+        for the current organization. ``mapped_net_amount`` is null when no row
+
+        was mapped: unknown is not zero.'
     CopilotSyncResponse:
       properties:
         status:
@@ -20577,6 +21317,84 @@ components:
       - premium_requests
       title: CopilotUsageSummaryResponse
       description: The Copilot section of the Cost page.
+    CopilotUserMappingListResponse:
+      properties:
+        organization:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Organization
+          description: Connected organization; null without a connection.
+        items:
+          items:
+            $ref: '#/components/schemas/CopilotUserMappingResponse'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      title: CopilotUserMappingListResponse
+      description: Mappings for the account's current Copilot organization.
+    CopilotUserMappingResponse:
+      properties:
+        github_login:
+          type: string
+          title: Github Login
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        user_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Name
+        organization:
+          type: string
+          title: Organization
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - github_login
+      - user_id
+      - organization
+      - created_at
+      - updated_at
+      title: CopilotUserMappingResponse
+      description: One stored mapping; the user name is resolved within the account.
+    CopilotUserMappingUpsert:
+      properties:
+        github_login:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Github Login
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+      type: object
+      required:
+      - github_login
+      - user_id
+      title: CopilotUserMappingUpsert
+      description: 'Map one GitHub login of the connected organization to one user.
+
+
+        The login is trimmed and lowercased before it is stored, so writing the
+
+        same login in another letter case updates the one mapping. The user must
+
+        be an active user of the caller''s account.'
     CostAnalyticsSummaryResponse:
       properties:
         period_start:
@@ -20791,6 +21609,46 @@ components:
       type: object
       title: CustomCommands
       description: Configuration for custom commands (admin-only).
+    CustomPatternDefinition:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Type name used in rules (snake_case)
+        regex:
+          type: string
+          title: Regex
+          description: Python regular expression
+        flags:
+          items:
+            type: string
+            enum:
+            - i
+            - m
+            - s
+            - x
+          type: array
+          title: Flags
+          description: 'Regex flags: i, m, s, x'
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable note
+      type: object
+      required:
+      - name
+      - regex
+      title: CustomPatternDefinition
+      description: 'Account-defined regex sensitive-data type.
+
+
+        The regex is compiled through a safety gate: a length cap and a static
+
+        check that rejects nested quantifiers such as ``(a+)+``. It also runs
+
+        under the rule''s detector timeout.'
     DailySchedule:
       properties:
         timezone:
@@ -22634,6 +23492,112 @@ components:
       type: object
       title: FlowSuccessNotifications
       description: What to do when an execution succeeds.
+    FlowSummaryResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Account Id
+        name:
+          type: string
+          title: Name
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        icon:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Icon
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        trigger_event_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Event Source
+        trigger_event_types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Trigger Event Types
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+        ai_model_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ai Model Name
+        agent_type:
+          type: string
+          title: Agent Type
+        is_enabled:
+          type: boolean
+          title: Is Enabled
+        is_preset:
+          type: boolean
+          title: Is Preset
+        source_preset_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Source Preset Id
+        prompt_customized:
+          type: boolean
+          title: Prompt Customized
+        tools_customized:
+          type: boolean
+          title: Tools Customized
+        preset_update_available:
+          type: boolean
+          title: Preset Update Available
+        schedule_state:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Schedule State
+        execution_stats:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Execution Stats
+      type: object
+      required:
+      - id
+      - name
+      - created_at
+      - updated_at
+      - agent_type
+      - is_enabled
+      - is_preset
+      - prompt_customized
+      - tools_customized
+      - preset_update_available
+      title: FlowSummaryResponse
+      description: A flow row without prompts, agent configuration or tool definitions.
     FlowUpdate:
       properties:
         name:
@@ -24348,12 +25312,16 @@ components:
             format: date-time
           - type: 'null'
           title: Start
+          description: Inclusive lower bound on first_event_at. An issue whose first
+            execution started earlier is excluded even when later events fall in the
+            period.
         end:
           anyOf:
           - type: string
             format: date-time
           - type: 'null'
           title: End
+          description: Exclusive upper bound on first_event_at.
         project_id:
           anyOf:
           - type: string
@@ -24366,6 +25334,9 @@ components:
             format: uuid
           - type: 'null'
           title: Flow Id
+          description: When set, cost, token and run figures count only this flow's
+            executions. Selected issues still report lifetime totals of that flow,
+            and their milestones and intervals stay those of the whole issue.
         issues:
           items:
             $ref: '#/components/schemas/IssueCostRow'
@@ -24496,42 +25467,57 @@ components:
             format: date-time
           - type: 'null'
           title: First Event At
+          description: 'The earliest attributed execution start of this issue, over
+            all flows. It is not the ticket creation time: work queued before the
+            first run is not measured. The period filter selects issues by this value.'
         pr_opened_at:
           anyOf:
           - type: string
             format: date-time
           - type: 'null'
           title: Pr Opened At
+          description: When the linked pull request was opened. The forge's own created
+            time wins; otherwise the time Preloop bound it to a run, otherwise the
+            publishing run's end. pr_opened_at_source says which.
         approved_at:
           anyOf:
           - type: string
             format: date-time
           - type: 'null'
           title: Approved At
+          description: 'Earliest recorded approval event on the linked pull request,
+            at the time the forge reported for it. It is not verified mergeability:
+            required checks, approval counts and branch restrictions are not evaluated.'
         merged_at:
           anyOf:
           - type: string
             format: date-time
           - type: 'null'
           title: Merged At
+          description: Earliest recorded merge event on the linked pull request, at
+            the time the forge reported for it.
         first_event_to_pr_opened_hours:
           anyOf:
           - type: number
           - type: 'null'
           title: First Event To Pr Opened Hours
-          description: Blank when the pull request was not opened yet.
+          description: Elapsed hours from first_event_at to pr_opened_at. Blank when
+            the pull request was not opened yet or the times are out of order.
         pr_opened_to_approved_hours:
           anyOf:
           - type: number
           - type: 'null'
           title: Pr Opened To Approved Hours
-          description: Blank when the pull request was not approved yet.
+          description: Elapsed hours from pr_opened_at to approved_at. Blank when
+            the pull request was not approved yet or the times are out of order. Ends
+            at a recorded approval, so it is not a ticket-to-mergeable duration.
         approved_to_merged_hours:
           anyOf:
           - type: number
           - type: 'null'
           title: Approved To Merged Hours
-          description: Blank when the pull request was not merged yet.
+          description: Elapsed hours from approved_at to merged_at. Blank when the
+            pull request was not merged yet or the times are out of order.
         pr_opened_at_source:
           anyOf:
           - type: string
@@ -25020,6 +26006,36 @@ components:
       type: object
       title: IssueUpdate
       description: Model for updating an issue.
+    KeywordListDefinition:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Type name used in rules (snake_case)
+        terms:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Terms
+          description: Terms to match
+        case_sensitive:
+          type: boolean
+          title: Case Sensitive
+          description: Match case exactly
+          default: false
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable note
+      type: object
+      required:
+      - name
+      - terms
+      title: KeywordListDefinition
+      description: Account-defined keyword list matched on whole words only.
     KillSwitchActivateRequest:
       properties:
         scopes:
@@ -25389,6 +26405,16 @@ components:
       - password
       title: LoginRequest
       description: Model for login requests.
+    LogoutResponse:
+      properties:
+        redirect_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Redirect Url
+      type: object
+      title: LogoutResponse
+      description: Result of ``POST /auth/logout``.
     MCPServerCreate:
       properties:
         name:
@@ -26790,6 +27816,13 @@ components:
           minItems: 1
           title: Conditions
           description: First matching condition wins, same as tools
+        redact_upstream:
+          type: boolean
+          title: Redact Upstream
+          description: With a redact condition on model.request, also rewrite the
+            request sent to the provider. Default keeps the original upstream and
+            redacts at rest. Not available for model.response.
+          default: false
       type: object
       required:
       - id
@@ -27368,17 +28401,22 @@ components:
             type: string
           type: array
           title: Types
-          description: PII entity types to scan (email, phone, credit_card)
+          description: Sensitive data types to scan (built-in ids or custom entry
+            names); default email, phone, credit_card
       type: object
       title: PIIDetectorConfig
       description: 'Deterministic PII detector configuration.
 
 
-        ``types`` selects which entity recognizers run. Unknown types are
+        ``types`` selects which entity recognizers run: any built-in sensitive
 
-        rejected at schema validation. Third-party recognizers are out of
+        data type or the name of a custom pattern or keyword list declared under
 
-        scope and must stay off by default.'
+        ``sensitive_data.detectors``. Unknown names are rejected at schema
+
+        validation. Third-party recognizers must be registered explicitly and
+
+        stay off by default.'
     PasskeySummary:
       properties:
         id:
@@ -27575,6 +28613,11 @@ components:
           title: Model Io Rules Applied
           description: Number of model I/O content rules applied
           default: 0
+        sensitive_data_applied:
+          type: boolean
+          title: Sensitive Data Applied
+          description: Whether the sensitive_data block was applied
+          default: false
         warnings:
           items:
             type: string
@@ -31282,6 +32325,180 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SensitiveDataDetectorsConfig:
+      properties:
+        types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Types
+          description: Default types to scan; omit for every built-in and custom type
+        locales:
+          items:
+            type: string
+          type: array
+          title: Locales
+          description: national_id locales (us, de, uk, fr, nl); empty means all
+        custom_patterns:
+          items:
+            $ref: '#/components/schemas/CustomPatternDefinition'
+          type: array
+          maxItems: 50
+          title: Custom Patterns
+        keywords:
+          items:
+            $ref: '#/components/schemas/KeywordListDefinition'
+          type: array
+          maxItems: 50
+          title: Keywords
+        medical_record_number_pattern:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Medical Record Number Pattern
+          description: Identifier regex that follows an MRN keyword (default digits)
+      type: object
+      title: SensitiveDataDetectorsConfig
+      description: 'Account-wide detector configuration shared by every rule.
+
+
+        ``types`` is the default scan set for rules that do not list their own.
+
+        ``locales`` narrows ``national_id``. Custom patterns and keyword lists
+
+        become selectable type names.'
+    SensitiveDataMatch:
+      properties:
+        type:
+          type: string
+          title: Type
+        start:
+          type: integer
+          title: Start
+        end:
+          type: integer
+          title: End
+        confidence:
+          type: number
+          title: Confidence
+      type: object
+      required:
+      - type
+      - start
+      - end
+      - confidence
+      title: SensitiveDataMatch
+      description: One detected span (offsets into the submitted text).
+    SensitiveDataTestRequest:
+      properties:
+        text:
+          type: string
+          maxLength: 20000
+          title: Text
+          description: Sample text to scan
+        types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Types
+          description: Types to scan; default every type in the config
+        config:
+          anyOf:
+          - $ref: '#/components/schemas/SensitiveDataDetectorsConfig'
+          - type: 'null'
+          description: Detector configuration to test; default the account's stored
+            block
+      type: object
+      required:
+      - text
+      title: SensitiveDataTestRequest
+      description: Run the detectors on sample text. The text is never logged or stored.
+    SensitiveDataTestResponse:
+      properties:
+        matches:
+          items:
+            $ref: '#/components/schemas/SensitiveDataMatch'
+          type: array
+          title: Matches
+        types_found:
+          items:
+            type: string
+          type: array
+          title: Types Found
+        count:
+          type: integer
+          title: Count
+        redacted_preview:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Redacted Preview
+          description: Text with each match replaced by [REDACTED:<type>]
+      type: object
+      required:
+      - matches
+      - types_found
+      - count
+      title: SensitiveDataTestResponse
+      description: Detector output for the submitted text.
+    SensitiveDataTypeInfo:
+      properties:
+        id:
+          type: string
+          title: Id
+        label:
+          type: string
+          title: Label
+        description:
+          type: string
+          title: Description
+        example:
+          type: string
+          title: Example
+        locales:
+          items:
+            type: string
+          type: array
+          title: Locales
+        checksum:
+          type: boolean
+          title: Checksum
+          default: false
+        builtin:
+          type: boolean
+          title: Builtin
+          default: true
+      type: object
+      required:
+      - id
+      - label
+      - description
+      - example
+      title: SensitiveDataTypeInfo
+      description: One selectable sensitive-data type (feeds the console page).
+    SensitiveDataTypesResponse:
+      properties:
+        types:
+          items:
+            $ref: '#/components/schemas/SensitiveDataTypeInfo'
+          type: array
+          title: Types
+        default_types:
+          items:
+            type: string
+          type: array
+          title: Default Types
+          description: Types the pii detector scans when a rule lists none
+      type: object
+      required:
+      - types
+      - default_types
+      title: SensitiveDataTypesResponse
+      description: Built-in, registered and account-defined types.
     SessionArtifactSettingsResponse:
       properties:
         audio_storage_enabled:
@@ -33882,6 +35099,116 @@ components:
       type: object
       title: ToolConfigurationUpdate
       description: Schema for updating tool configuration.
+    ToolSummaryResponse:
+      properties:
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          title: Description
+        source:
+          type: string
+          enum:
+          - builtin
+          - mcp
+          - agent
+          title: Source
+        source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Id
+        source_name:
+          type: string
+          title: Source Name
+        is_enabled:
+          type: boolean
+          title: Is Enabled
+        requires_tracker:
+          type: boolean
+          title: Requires Tracker
+        required_tracker_types:
+          items:
+            type: string
+          type: array
+          title: Required Tracker Types
+        is_supported:
+          type: boolean
+          title: Is Supported
+        unsupported_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unsupported Reason
+        approval_workflow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Workflow Id
+        config_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Config Id
+        has_approval_condition:
+          type: boolean
+          title: Has Approval Condition
+        access_rules:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Access Rules
+        justification_mode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Justification Mode
+        enabled_for_agents:
+          items:
+            type: string
+          type: array
+          title: Enabled For Agents
+        schema_tokens_estimate:
+          type: integer
+          minimum: 0.0
+          title: Schema Tokens Estimate
+        adapters:
+          items:
+            type: string
+          type: array
+          title: Adapters
+        has_condition:
+          type: boolean
+          title: Has Condition
+          default: false
+      type: object
+      required:
+      - name
+      - description
+      - source
+      - source_id
+      - source_name
+      - is_enabled
+      - requires_tracker
+      - required_tracker_types
+      - is_supported
+      - unsupported_reason
+      - approval_workflow_id
+      - config_id
+      - has_approval_condition
+      - access_rules
+      - justification_mode
+      - enabled_for_agents
+      - schema_tokens_estimate
+      title: ToolSummaryResponse
+      description: 'Tool metadata and policy state without its potentially large schema.
+
+
+        Schema token estimates still describe the full tool definition served to
+
+        agents. Access rules remain available for list filtering and policy editing.'
     ToolUsageStatsResponse:
       properties:
         period_start:

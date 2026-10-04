@@ -538,6 +538,8 @@ export class ApiUsageView extends LitElement {
       this.searchDebounce = undefined;
     }
     super.disconnectedCallback();
+    ++this.summaryLoadGeneration;
+    ++this.searchRequestId;
   }
 
   /** The selected window, in the shape the gateway endpoints take. */
@@ -556,49 +558,50 @@ export class ApiUsageView extends LitElement {
     return params;
   }
 
+  private summaryLoadGeneration = 0;
+
   private async loadSummary() {
+    const generation = ++this.summaryLoadGeneration;
     this.loading = true;
     this.error = null;
 
     const previousRange = resolvePreviousTimeRange(this.selectedRange);
+    this.previousSummary = null;
+    // The comparison needs totals only and can arrive after current usage.
+    if (previousRange.startDate) {
+      void getAccountGatewayUsageSummary({
+        startDate: previousRange.startDate,
+        endDate: previousRange.endDate ?? undefined,
+        includeBreakdown: false,
+      })
+        .catch(() => null)
+        .then((summary) => {
+          if (generation === this.summaryLoadGeneration)
+            this.previousSummary = summary;
+        });
+    }
 
     try {
       const params = this.rangeParams();
-      const searchQuery = this.searchQuery.trim();
-      const [summary, searchResults, rateLimitReport, previousSummary] =
-        await Promise.all([
-          getAccountGatewayUsageSummary({
-            ...params,
-            // This view renders model/flow/session/day breakdowns.
-            includeBreakdown: true,
-          }),
-          getAccountGatewayUsageSearch({
-            ...params,
-            query: searchQuery || undefined,
-            limit: 10,
-          }),
-          // Rate-limit telemetry is supplementary; a failure here must not
-          // blank the whole usage view.
-          getAccountRateLimitReport(params).catch((error: unknown) => {
-            console.error('Failed to load rate limit report:', error);
-            return null;
-          }),
-          // The comparison window is a garnish on one stat: if it fails, the
-          // stat says it has no comparison rather than the page failing. All
-          // time has nothing before it, so it costs no request.
-          previousRange.startDate
-            ? getAccountGatewayUsageSummary({
-                startDate: previousRange.startDate,
-                endDate: previousRange.endDate ?? undefined,
-              }).catch(() => null)
-            : Promise.resolve(null),
-        ]);
+      void this.loadSearchResults();
+      this.rateLimitReport = null;
+      void getAccountRateLimitReport(params)
+        .then((report) => {
+          if (generation === this.summaryLoadGeneration)
+            this.rateLimitReport = report;
+        })
+        .catch((error: unknown) =>
+          console.error('Failed to load rate limit report:', error)
+        );
+      const summary = await getAccountGatewayUsageSummary({
+        ...params,
+        includeBreakdown: true,
+        breakdowns: ['models', 'flows', 'sessions', 'days'],
+      });
+      if (generation !== this.summaryLoadGeneration) return;
       this.summary = summary;
-      this.searchResults = searchResults;
-      this.searchError = null;
-      this.rateLimitReport = rateLimitReport;
-      this.previousSummary = previousSummary;
     } catch (error) {
+      if (generation !== this.summaryLoadGeneration) return;
       console.error('Failed to load account gateway usage summary:', error);
       if (isHistoryUnavailable(error) && this.rangeChosenByUser) {
         // The person picked a window their plan does not show. That is a
@@ -616,7 +619,7 @@ export class ApiUsageView extends LitElement {
       this.rateLimitReport = null;
       this.previousSummary = null;
     } finally {
-      this.loading = false;
+      if (generation === this.summaryLoadGeneration) this.loading = false;
     }
   }
 
@@ -1393,6 +1396,13 @@ export class ApiUsageView extends LitElement {
           <div>${this.searchError}</div>
         </div>
       `;
+    }
+
+    if (this.searchLoading && !results) {
+      return html`<div class="empty-state" role="status">
+        <sl-spinner></sl-spinner>
+        <div>Loading captured interactions…</div>
+      </div>`;
     }
 
     if (!results || results.items.length === 0) {

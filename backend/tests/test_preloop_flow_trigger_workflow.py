@@ -213,3 +213,103 @@ def test_cleanup_never_stops_a_terminal_execution() -> None:
         "INITIALIZING",
         "PENDING",
     }
+
+
+def _run_gate(
+    tmp_path: Path,
+    *,
+    author_association: str,
+    labels: list[str],
+    event_name: str = "pull_request_target",
+    is_fork: bool = True,
+) -> tuple[str, str]:
+    """Run the gate step's shell with a stubbed ``gh`` and return (notice, skip)."""
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    meta = json.dumps(
+        {
+            "state": "OPEN",
+            "isDraft": False,
+            "labels": [{"name": name} for name in labels],
+        }
+    )
+    gh = bin_dir / "gh"
+    gh.write_text(f"#!/bin/sh\nprintf '%s' '{meta}'\n", encoding="utf-8")
+    gh.chmod(0o755)
+    output = tmp_path / "github_output"
+    output.touch()
+    env = {
+        "PATH": f"{bin_dir}:{shutil.os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "GH_TOKEN": "x",
+        "GH_REPO": "preloop/preloop",
+        "PR_NUMBER": "1116",
+        "EVENT_NAME": event_name,
+        "PROD_REVIEW": "enabled",
+        "IS_FORK": "true" if is_fork else "false",
+        "AUTHOR_ASSOCIATION": author_association,
+    }
+    out = subprocess.run(
+        ["bash", "-c", _steps()["gate"]["run"]],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    notice = re.search(r"::notice title=Preloop review skipped::(.*)", out.stdout)
+    skip = output.read_text(encoding="utf-8").strip()
+    return (notice.group(1) if notice else "", skip)
+
+
+def test_gate_skips_a_fork_pr_from_a_contributor_without_the_label(
+    tmp_path: Path,
+) -> None:
+    # PR #1116 (2026-10-01): a CONTRIBUTOR fork PR never reached the reviewer.
+    notice, skip = _run_gate(tmp_path, author_association="CONTRIBUTOR", labels=[])
+    assert skip == "skip=true"
+    assert "Fork PR #1116 from a CONTRIBUTOR author" in notice
+    assert "preloop-review" in notice
+
+
+def test_gate_reviews_a_fork_pr_a_maintainer_labelled(tmp_path: Path) -> None:
+    notice, skip = _run_gate(
+        tmp_path, author_association="CONTRIBUTOR", labels=["preloop-review"]
+    )
+    assert skip == "skip=false"
+    assert notice == ""
+
+
+def test_gate_skip_label_beats_the_opt_in_label(tmp_path: Path) -> None:
+    notice, skip = _run_gate(
+        tmp_path,
+        author_association="MEMBER",
+        labels=["preloop-review", "preloop-skip-review"],
+    )
+    assert skip == "skip=true"
+    assert "preloop-skip-review" in notice
+
+
+def test_gate_reviews_a_fork_pr_from_a_member_without_a_label(tmp_path: Path) -> None:
+    for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+        _, skip = _run_gate(
+            tmp_path / association, author_association=association, labels=[]
+        )
+        assert skip == "skip=false", association
+
+
+def test_label_events_only_retrigger_for_the_two_owned_labels() -> None:
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    on = doc.get("on") or doc[True]
+    for event in ("pull_request", "pull_request_target"):
+        assert {"labeled", "unlabeled"} <= set(on[event]["types"]), event
+    condition = doc["jobs"]["trigger"]["if"]
+    assert (
+        "github.event.action != 'labeled' || github.event.label.name == 'preloop-review'"
+        in condition
+    )
+    assert (
+        "github.event.action != 'unlabeled' || github.event.label.name == 'preloop-skip-review'"
+        in condition
+    )

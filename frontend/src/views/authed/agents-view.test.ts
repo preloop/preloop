@@ -93,6 +93,7 @@ describe('AgentsView', () => {
   let fetchStub: sinon.SinonStub;
   let agentItems: Array<Record<string, unknown>>;
   let flowItems: Array<Record<string, unknown>>;
+  let defaultFetch: (input: RequestInfo | URL) => Promise<Response>;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
@@ -102,7 +103,7 @@ describe('AgentsView', () => {
     flowItems = [];
 
     fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+    defaultFetch = async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url.startsWith('/api/v1/agents')) {
@@ -167,12 +168,48 @@ describe('AgentsView', () => {
       }
 
       return new Response('Not found', { status: 404 });
-    });
+    };
+    fetchStub.callsFake(defaultFetch);
   });
 
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();
+  });
+
+  it('renders agents while flows and editor catalogs are still pending', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (
+        input.toString().startsWith('/api/v1/flows') ||
+        input.toString() === '/api/v1/ai-models'
+      )
+        await pending;
+      return defaultFetch(input);
+    });
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    try {
+      await waitForAgents(el);
+      expect(el.shadowRoot!.textContent).to.include('Claude Code Workspace');
+    } finally {
+      release();
+    }
+  });
+
+  it('does not request flows when flow kinds are filtered out', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    fetchStub.resetHistory();
+    (el as any).agentKinds = ['claude_code'];
+    await (el as any).loadAgents();
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => call.args[0].toString().startsWith('/api/v1/flows'))
+    ).to.have.length(0);
   });
 
   it('keeps the Agent column readable at the table minimum width', async () => {

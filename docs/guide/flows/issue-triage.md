@@ -80,6 +80,28 @@ label it carries, so the complexity, risk and readiness label events of the same
 write do not start it; only the dispatch label event does, once. Those label
 events are not `issue_updated` content changes, so they do not re-trigger triage.
 
+### Route by tags
+
+`trigger_config.labels` is any-of and, on a label event, reads the label the
+event added. `trigger_config.labels_all` adds a second condition: the issue must
+carry every listed label on its current label list (after the change, as the
+GitHub or GitLab payload reports it). Both apply together, so
+`labels` reads "this event added one of" and `labels_all` reads "and the issue
+carries all of". An event without a label list never satisfies `labels_all`.
+
+To send low-complexity issues to a fast model and medium ones to a stronger
+model, create two implementation flows from the same preset:
+
+| Flow | `trigger_config` | Model |
+| --- | --- | --- |
+| Automated Issue Implementation (low) | `{"labels": ["agent-ready"], "labels_all": ["complexity:low"]}` | fast model |
+| Automated Issue Implementation (medium) | `{"labels": ["agent-ready"], "labels_all": ["complexity:medium"]}` | stronger model |
+
+Triage writes `complexity:*` in the same label delta as `agent-ready`, so the
+single `agent-ready` event starts exactly one of them. In the console the field
+is **Issue must also carry all of these labels** under the trigger filters. To
+switch models inside one flow instead, see [model routing](model-routing.md).
+
 Triage has no tools of its own. It is an option on the standard `get_issue` and
 `update_issue` tools, so an agent that already has them needs no extra unlock, and
 no agent receives a separate triage schema. Passing no `include` leaves `get_issue`

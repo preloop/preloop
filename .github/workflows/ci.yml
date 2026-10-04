@@ -73,6 +73,10 @@ jobs:
           filters: |
             backend:
               - 'backend/**'
+              # backend/tests/test_perl_agent_image.py and
+              # test_preloop_perl_toolchain.py pin these recipes.
+              - 'environments/perl/**'
+              - 'environments/preloop/Dockerfile'
               - 'pyproject.toml'
               - 'requirements/**'
               - '.github/requirements/app-dev.txt'

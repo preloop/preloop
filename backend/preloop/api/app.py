@@ -43,8 +43,7 @@ from preloop.sync.services.event_bus import connect_nats, close_nats  # NATS int
 # Pin before create_app's role-gated imports can pull litellm.
 pin_local_litellm_cost_map()
 
-# Enterprise endpoints (impersonation, issue_compliance, issue_duplicates, issue_dependencies)
-# are now loaded exclusively via the plugin system - see plugins/admin and plugins/analytics
+# Enterprise endpoints are loaded exclusively via the plugin system.
 
 
 logger = logging.getLogger(__name__)
@@ -898,6 +897,7 @@ def _register_control_plane_routes(
         spend_outliers,
         tools,
         trackers,
+        bitbucket_dc_webhooks,
         usage_import,
         embedding as embedding_router,
         webhooks,
@@ -964,6 +964,12 @@ def _register_control_plane_routes(
     )  # No auth required
     app.include_router(
         trackers.router,
+        prefix="/api/v1",
+        tags=["Trackers"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        bitbucket_dc_webhooks.router,
         prefix="/api/v1",
         tags=["Trackers"],
         dependencies=[Depends(get_current_active_user)],
@@ -1258,9 +1264,6 @@ def _register_control_plane_routes(
         tags=["Runtime Sessions"],
         dependencies=[Depends(get_current_active_user)],
     )
-
-    # Impersonation router - Enterprise feature (loaded via admin plugin)
-    # No longer loaded from core - handled by plugins/admin
 
     app.include_router(
         roles.router,
