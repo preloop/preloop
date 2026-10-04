@@ -43,6 +43,7 @@ from sqlalchemy import (
     union_all,
     update,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -110,13 +111,6 @@ HEADLINE_OPTIONS = (
 #: without confusing them with markup that is part of the artifact text.
 EXCERPT_START = "\x02"
 EXCERPT_STOP = "\x03"
-#: The metadata header :func:`index_artifact_text` writes at the top of an
-#: artifact's first chunk (``kind: artifact`` then artifact_kind, name,
-#: tool_name and labels lines). It makes those fields searchable; an excerpt
-#: leaves it out so it shows the artifact's own text.
-ARTIFACT_HEADER_PATTERN = (
-    r"^kind: artifact(\n(artifact_kind|name|tool_name|labels): [^\n]*)*\n?"
-)
 EXCERPT_HEADLINE_OPTIONS = (
     f"StartSel={EXCERPT_START}, StopSel={EXCERPT_STOP}, "
     "MaxWords=35, MinWords=10, ShortWord=3, "
@@ -2137,6 +2131,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         account_id: Any,
         artifact_ids: Sequence[Any],
         query: str,
+        headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Tuple[str, Optional[float]]]:
         """Best matching chunk of each artifact as a highlighted excerpt.
 
@@ -2150,6 +2145,12 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             account_id: Account the caller is allowed to read.
             artifact_ids: Artifacts of the current page.
             query: Raw search text, parsed with ``websearch_to_tsquery``.
+            headers: ``artifact_id -> header`` as the indexer wrote it at the
+                top of the first chunk (kind, name, tool and label lines).
+                A chunk that starts with exactly that text has it removed, so
+                the excerpt shows the artifact's own text. The match is on
+                the whole header string, never on line prefixes, so body
+                lines that look like metadata are kept.
 
         Returns:
             ``artifact_id -> (headline, cue_start)``. The headline marks hits
@@ -2190,16 +2191,38 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             )
             .subquery()
         )
-        body = func.regexp_replace(ranked.c.content, ARTIFACT_HEADER_PATTERN, "")
-        rows = db.execute(
-            select(
-                ranked.c.source_id,
-                func.ts_headline(
-                    SEARCH_CONFIG, body, tsquery, EXCERPT_HEADLINE_OPTIONS
-                ),
-                ranked.c.meta_data,
-            ).where(ranked.c.position == 1)
+        best = db.execute(
+            select(ranked.c.source_id, ranked.c.content, ranked.c.meta_data).where(
+                ranked.c.position == 1
+            )
         ).all()
+        if not best:
+            return {}
+        bodies: List[str] = []
+        for source_id, content, _meta in best:
+            text_value = content or ""
+            header = (headers or {}).get(str(source_id))
+            if header and text_value.startswith(header):
+                text_value = text_value[len(header) :].lstrip("\n")
+            bodies.append(text_value)
+        texts = (
+            func.unnest(cast(bodies, ARRAY(Text)))
+            .table_valued("value", with_ordinality="position")
+            .render_derived(name="excerpt_body")
+        )
+        headlines = db.execute(
+            select(
+                texts.c.position,
+                func.ts_headline(
+                    SEARCH_CONFIG, texts.c.value, tsquery, EXCERPT_HEADLINE_OPTIONS
+                ),
+            )
+        ).all()
+        by_position = {int(position): headline for position, headline in headlines}
+        rows = [
+            (source_id, by_position.get(index + 1), meta)
+            for index, (source_id, _content, meta) in enumerate(best)
+        ]
         out: Dict[str, Tuple[str, Optional[float]]] = {}
         for source_id, headline, meta in rows:
             if not (headline or "").strip():

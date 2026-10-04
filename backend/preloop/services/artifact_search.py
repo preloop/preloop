@@ -37,6 +37,7 @@ from preloop.services.artifact_deposit import (
     parse_label_filters,
 )
 from preloop.services.artifact_media import ARTIFACT_KINDS
+from preloop.services.session_search_index import artifact_header
 
 AVAILABILITIES: frozenset[str] = frozenset({"available", "evicted", "expired"})
 Q_MAX_CHARS = 500
@@ -148,6 +149,9 @@ def search(
             account_id=account_id,
             artifact_ids=[artifact.id for artifact, _t, _a in page],
             query=query,
+            headers={
+                str(artifact.id): artifact_header(artifact) for artifact, _t, _a in page
+            },
         )
         if query
         else {}
