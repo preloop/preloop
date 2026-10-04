@@ -530,6 +530,22 @@ def index_tool_call(
         )
         if line
     )
+    if summary and content_captured and tool_name:
+        # Reference-only tools (#1124): the index holds the tool name and
+        # the reference summary (kept fields and fingerprints), never the
+        # summary text of the call.
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+        )
+
+        summary = apply_storage_redaction(
+            account_id,
+            summary,
+            scope=StorageScope(
+                target="tool.result", tool_name=tool_name, server_name=server_name
+            ),
+        )
     text = f"{header}\n{summary}" if (summary and content_captured) else header
     return write_source_chunks(
         db,

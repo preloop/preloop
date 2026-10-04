@@ -4411,6 +4411,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/approval-requests/{request_id}/original-args:
+    get:
+      tags:
+      - Approval Requests
+      - approval_requests
+      summary: Get Approval Original Args
+      description: 'Raw arguments of a pending reference-only approval (console only).
+
+
+        Available only while the request is pending and only when the
+
+        reference-only rule set ``approver_view: original_until_decided``. The
+
+        sealed copy is deleted at decision, so a decided request returns 404.
+
+        Email, webhook and push payloads never carry it.'
+      operationId: get_approval_original_args_api_v1_approval_requests__request_id__original_args_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Approval Original Args Api V1 Approval Requests  Request
+                  Id  Original Args Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/approval-requests/{request_id}/history:
     get:
       tags:
@@ -12315,6 +12358,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SensitiveDataTestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/policies/sensitive-data/hash-check:
+    post:
+      tags:
+      - Policies
+      summary: Check a candidate payload against a reference-only fingerprint
+      description: 'Return whether ``payload`` produces ``args_hmac`` under this account''s
+        salts.
+
+
+        Account scoped: only the caller''s salts are tried, so a fingerprint from
+
+        another account never matches. Nothing is stored or logged.'
+      operationId: sensitive_data_hash_check_api_v1_policies_sensitive_data_hash_check_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SensitiveDataHashCheckRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensitiveDataHashCheckResponse'
         '422':
           description: Validation Error
           content:
@@ -31467,6 +31544,44 @@ components:
         ``locales`` narrows ``national_id``. Custom patterns and keyword lists
 
         become selectable type names.'
+    SensitiveDataHashCheckRequest:
+      properties:
+        payload:
+          title: Payload
+          description: Candidate arguments or result
+        args_hmac:
+          type: string
+          maxLength: 128
+          minLength: 16
+          title: Args Hmac
+          description: Stored HMAC
+        salt_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Salt Id
+          description: Salt id from the record; omit to try every account salt
+      type: object
+      required:
+      - payload
+      - args_hmac
+      title: SensitiveDataHashCheckRequest
+      description: Equality check of a candidate payload against a stored fingerprint.
+    SensitiveDataHashCheckResponse:
+      properties:
+        match:
+          type: boolean
+          title: Match
+        salt_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Salt Id
+      type: object
+      required:
+      - match
+      title: SensitiveDataHashCheckResponse
+      description: Whether the candidate matches. The payload is never stored.
     SensitiveDataMatch:
       properties:
         type:

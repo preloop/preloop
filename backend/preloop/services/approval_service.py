@@ -864,6 +864,21 @@ class ApprovalService:
         for field, value in update.model_dump(exclude_unset=True).items():
             setattr(approval_request, field, value)
 
+        if str(getattr(approval_request, "status", "")) in self._TERMINAL_STATUSES:
+            # A sealed original (reference-only, original_until_decided) is
+            # deleted in the same transaction as the decision; the reference
+            # record is what remains on the row.
+            from sqlalchemy.orm.attributes import flag_modified
+
+            from preloop.services.sensitive_data.reference import (
+                strip_sealed_original,
+            )
+
+            cleaned, removed = strip_sealed_original(approval_request.tool_args)
+            if removed:
+                approval_request.tool_args = cleaned
+                flag_modified(approval_request, "tool_args")
+
         await self.db.commit()
         await self.db.refresh(approval_request)
 
@@ -2044,15 +2059,42 @@ class ApprovalService:
             apply_storage_redaction,
         )
 
+        from preloop.services.sensitive_data import reference as reference_module
+        from preloop.services.sensitive_data.storage import resolve_config
+
         scope = StorageScope(
             target="tool.args",
             tool_name=tool_name,
             managed_agent_id=str(managed_agent_id) if managed_agent_id else None,
         )
-        try:
-            return await run_db_off_loop(
-                lambda: apply_storage_redaction(account_id, tool_args, scope=scope)
+
+        def _stored() -> Dict[str, Any]:
+            config = resolve_config(account_id)
+            stored = apply_storage_redaction(
+                account_id, tool_args, scope=scope, config=config
             )
+            rule = reference_module.reference_rule_for(
+                config,
+                tool_name=tool_name,
+                managed_agent_id=scope.managed_agent_id,
+            )
+            if reference_module.wants_original_until_decided(rule) and isinstance(
+                stored, dict
+            ):
+                # original_until_decided: the raw arguments ride encrypted on
+                # the pending row, console only, and are removed at decision
+                # (see update_approval_request). Email, webhook and push
+                # payloads mask this key (redact_dict treats it as secret).
+                stored = {
+                    **stored,
+                    reference_module.SEALED_ARGS_KEY: reference_module.seal_original(
+                        tool_args
+                    ),
+                }
+            return stored
+
+        try:
+            return await run_db_off_loop(_stored)
         except Exception:  # noqa: BLE001 - never block an approval on this
             logger.warning("Approval storage redaction failed", exc_info=True)
             return tool_args
