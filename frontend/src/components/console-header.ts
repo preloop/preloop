@@ -35,6 +35,16 @@ import {
   type AttentionSummary,
 } from '../utils/attention-summary';
 import { debugLog } from '../utils/debug';
+import { showToast } from './confirm-dialog';
+
+/** The sentence for a failed bell decision: the server's words when it sent any. */
+function decisionErrorMessage(
+  error: unknown,
+  action: 'approve' | 'decline'
+): string {
+  const message = error instanceof Error ? error.message.trim() : '';
+  return message || `Could not ${action} the request. Try again.`;
+}
 
 interface UserDetails {
   username: string;
@@ -263,9 +273,10 @@ export class ConsoleHeader extends LitElement {
       background-color: var(--sl-color-danger-500);
       border-radius: 9px;
     }
+    /* Never wider than a phone: a fixed 380px overflowed 360-375px screens. */
     .notification-dropdown {
-      min-width: 380px;
-      max-width: 420px;
+      min-width: min(380px, calc(100vw - 16px));
+      max-width: min(420px, calc(100vw - 16px));
       max-height: 500px;
       overflow-y: auto;
       /* A popover is the one thing allowed on the raised rung. */
@@ -354,6 +365,22 @@ export class ConsoleHeader extends LitElement {
       margin-bottom: 0.25rem;
       font-size: 0.875rem;
     }
+    /* The tool name is the approval row's link: it reads as the title. */
+    a.approval-name {
+      display: block;
+      color: inherit;
+      text-decoration: none;
+    }
+    a.approval-name:hover {
+      text-decoration: underline;
+    }
+    .section-link:focus-visible,
+    a.approval-name:focus-visible,
+    .execution-item:focus-visible,
+    .notification-item:focus-visible {
+      outline: var(--sl-focus-ring);
+      outline-offset: calc(-1 * var(--sl-focus-ring-width));
+    }
     .execution-time,
     .approval-time,
     .notification-time {
@@ -428,9 +455,10 @@ export class ConsoleHeader extends LitElement {
     this.connectToNotificationUpdates();
     this.loadRunningExecutions();
     this.loadPendingApprovals();
-    // Request desktop notification permission when console loads.
-    // Browsers may require a user gesture; if so, user can click the bell icon.
-    this.requestNotificationPermission();
+    // No desktop-notification prompt here. A permission dialog before the
+    // person has done anything is denied out of hand (and browsers demote
+    // sites that do it), after which approval alerts can never be shown.
+    // The bell asks when it is clicked, which is a deliberate act.
   }
 
   disconnectedCallback() {
@@ -565,6 +593,9 @@ export class ConsoleHeader extends LitElement {
       this.markApprovalResolved(approvalId);
     } catch (error) {
       console.error('Failed to approve request:', error);
+      // An expired request, a missing permission or a quorum rule all fail
+      // here. A row that silently stays put looks like a broken button.
+      showToast(decisionErrorMessage(error, 'approve'), 'danger');
     } finally {
       this._processingApproval = null;
     }
@@ -578,6 +609,7 @@ export class ConsoleHeader extends LitElement {
       this.markApprovalResolved(approvalId);
     } catch (error) {
       console.error('Failed to decline request:', error);
+      showToast(decisionErrorMessage(error, 'decline'), 'danger');
     } finally {
       this._processingApproval = null;
     }
@@ -1083,18 +1115,24 @@ export class ConsoleHeader extends LitElement {
               >(${this._runningExecutions.length})</span
             >
           </div>
-          <a
-            class="section-link"
-            @click=${() => Router.go('/console/flow-executions')}
-            >View all</a
-          >
+          <!-- A real href: focusable, and the router intercepts it. -->
+          <a class="section-link" href="/console/flows/executions">View all</a>
         </div>
         <div class="execution-list">
           ${this._runningExecutions.slice(0, 5).map(
             (exec) => html`
               <div
                 class="execution-item"
+                role="link"
+                tabindex="0"
+                data-href="/console/flows/executions/${exec.id}"
                 @click=${() => this.navigateToExecution(exec.id)}
+                @keydown=${(event: KeyboardEvent) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    this.navigateToExecution(exec.id);
+                  }
+                }}
               >
                 <div class="execution-name">
                   ${exec.flow_name || 'Flow Execution'}
@@ -1123,20 +1161,28 @@ export class ConsoleHeader extends LitElement {
             Pending approvals
             <span class="section-count">(${pending.length})</span>
           </div>
-          <a
-            class="section-link"
-            @click=${() => Router.go('/console/approvals')}
-            >View all</a
-          >
+          <a class="section-link" href="/console/approvals">View all</a>
         </div>
         <div class="approval-list">
           ${pending.slice(0, 5).map(
             (approval) => html`
+              <!--
+                The row holds its own Approve and Decline buttons, so it
+                cannot be a role="link" itself (a link's children are
+                presentational, which would hide the buttons from a screen
+                reader). The tool name is the keyboard way in instead; the
+                rest of the row stays a mouse convenience.
+              -->
               <div
                 class="approval-item"
-                @click=${() => Router.go(`/console/approval/${approval.id}`)}
+                @click=${(event: Event) => {
+                  if ((event.target as Element | null)?.closest?.('a')) return;
+                  Router.go(`/console/approval/${approval.id}`);
+                }}
               >
-                <div class="approval-name">${approval.tool_name}</div>
+                <a class="approval-name" href="/console/approval/${approval.id}"
+                  >${approval.tool_name}</a
+                >
                 <div class="approval-time">
                   ${approvalRequesterName(approval)} •
                   ${formatRelativeTime(approval.requested_at)}
@@ -1298,7 +1344,11 @@ export class ConsoleHeader extends LitElement {
             >
               <sl-icon-button
                 name="bell"
-                label="Notifications"
+                label=${
+                  this.totalNotificationCount > 0
+                    ? `Notifications, ${this.totalNotificationCount} pending`
+                    : 'Notifications'
+                }
               ></sl-icon-button>
               ${
                 this.totalNotificationCount > 0
