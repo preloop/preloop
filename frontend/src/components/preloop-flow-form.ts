@@ -1195,13 +1195,56 @@ export class PreloopFlowForm extends LitElement {
     };
   }
 
+  /**
+   * Reports a validation error and moves the reader to the field behind it.
+   *
+   * The banner sits at the end of a long form, so on its own it is easy to
+   * miss: focusing and scrolling to the first invalid field shows what to
+   * fix, and the banner's `role="alert"` announces why.
+   */
+  private async failField(selector: string, message: string): Promise<void> {
+    this.formError = message;
+    await this.updateComplete;
+    const field = this.renderRoot.querySelector<HTMLElement>(selector);
+    if (!field) {
+      return;
+    }
+    field.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    field.focus?.({ preventScroll: true });
+  }
+
   private async handleFormSubmit(e: Event) {
     e.preventDefault();
+    // A second click while the parent is still saving must not create a
+    // second flow.
+    if (this.isSaving) {
+      return;
+    }
     this.formError = null;
 
     if (!this.flow.name) {
-      this.formError = 'Flow name is required.';
+      await this.failField('[data-field="name"]', 'Flow name is required.');
       return;
+    }
+
+    // A tracker trigger with no tracker or no events would be saved as a
+    // flow that never fires, so it is refused here instead of being sent
+    // with webhook values filled in.
+    if (this.triggerType === 'tracker') {
+      if (!this.flow.trigger_event_source) {
+        await this.failField(
+          '[data-field="tracker"]',
+          'Choose a tracker for this trigger.'
+        );
+        return;
+      }
+      if (!this.flow.trigger_event_types?.length) {
+        await this.failField(
+          '[data-field="events"]',
+          'Choose at least one event that triggers this flow.'
+        );
+        return;
+      }
     }
 
     const timeoutSeconds = this.flow.timeout_seconds ?? null;
@@ -1211,7 +1254,10 @@ export class PreloopFlowForm extends LitElement {
         timeoutSeconds < FLOW_TIMEOUT_MIN_SECONDS ||
         timeoutSeconds > FLOW_TIMEOUT_MAX_SECONDS)
     ) {
-      this.formError = `Execution timeout must be a whole number between ${FLOW_TIMEOUT_MIN_SECONDS} and ${FLOW_TIMEOUT_MAX_SECONDS} seconds, or blank for the deployment default.`;
+      await this.failField(
+        'sl-input[name="timeout_seconds"]',
+        `Execution timeout must be a whole number between ${FLOW_TIMEOUT_MIN_SECONDS} and ${FLOW_TIMEOUT_MAX_SECONDS} seconds, or blank for the deployment default.`
+      );
       return;
     }
 
@@ -1222,9 +1268,11 @@ export class PreloopFlowForm extends LitElement {
         approvalWindowSeconds < APPROVAL_WINDOW_MIN_SECONDS ||
         approvalWindowSeconds > APPROVAL_WINDOW_MAX_SECONDS)
     ) {
-      this.formError =
+      await this.failField(
+        'sl-input[name="approval_window_amount"]',
         'Approval window must be between 1 minute and 30 days, or blank for ' +
-        'the deployment default.';
+          'the deployment default.'
+      );
       return;
     }
 
@@ -1234,10 +1282,15 @@ export class PreloopFlowForm extends LitElement {
         this.flow.name
       );
       if (callableFlowsError) {
-        this.formError = callableFlowsError;
+        await this.failField('[data-callable-flows]', callableFlowsError);
         return;
       }
     }
+
+    // Only a webhook or schedule trigger has a fixed source to fall back to.
+    // A tracker trigger was validated above and is never sent as a webhook.
+    const fallbackSource =
+      this.triggerType === 'tracker' ? undefined : this.triggerType;
 
     this.isSaving = true;
     try {
@@ -1250,8 +1303,10 @@ export class PreloopFlowForm extends LitElement {
         allowed_mcp_servers: this.flow.allowed_mcp_servers || ['preloop-mcp'],
         allowed_mcp_tools: this.flow.allowed_mcp_tools || [],
         ai_model_id: this.flow.ai_model_id || undefined,
-        trigger_event_source: this.flow.trigger_event_source || 'webhook',
-        trigger_event_types: this.flow.trigger_event_types || ['webhook'],
+        trigger_event_source: this.flow.trigger_event_source || fallbackSource,
+        trigger_event_types:
+          this.flow.trigger_event_types ||
+          (fallbackSource ? [fallbackSource] : undefined),
         trigger_organization_id: this.flow.trigger_organization_id || undefined,
         trigger_project_ids: this.flow.trigger_project_ids || undefined,
         // Explicit null (not undefined) so the backend's exclude_unset update
@@ -1304,13 +1359,26 @@ export class PreloopFlowForm extends LitElement {
         payload.preset_update_available = false;
       }
 
+      // The parent saves asynchronously. It hands that save back through
+      // `waitUntil`, so the button stays busy (and a second click is
+      // ignored) until the request settles, not just until this event is
+      // dispatched. A listener that never calls it ends the busy state here.
+      const pending: Promise<unknown>[] = [];
       this.dispatchEvent(
         new CustomEvent('flow-submit', {
           bubbles: true,
           composed: true,
-          detail: { flow: payload },
+          detail: {
+            flow: payload,
+            waitUntil: (work: Promise<unknown>) => {
+              pending.push(Promise.resolve(work));
+            },
+          },
         })
       );
+      if (pending.length > 0) {
+        await Promise.allSettled(pending);
+      }
     } catch (e) {
       this.formError =
         e instanceof Error ? e.message : 'Failed to configure flow.';
@@ -3510,6 +3578,7 @@ export class PreloopFlowForm extends LitElement {
           </div>
           <sl-input
             label="Flow name"
+            data-field="name"
             .value=${this.flow.name || ''}
             @sl-input=${(e: Event) => this.handleInputChange('name', e)}
             required
@@ -3529,12 +3598,8 @@ export class PreloopFlowForm extends LitElement {
           </div>
 
           <div style="margin-bottom: var(--sl-spacing-large);">
-            <label
-              style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
-            >
-              Trigger type
-            </label>
             <sl-radio-group
+              label="Trigger type"
               value=${this.triggerType}
               @sl-change=${(e: any) =>
                 this.handleTriggerTypeChange(e.target.value)}
@@ -3583,6 +3648,8 @@ export class PreloopFlowForm extends LitElement {
                       >
                         <sl-select
                           label="Tracker"
+                          data-field="tracker"
+                          required
                           placeholder="Select a tracker"
                           .value=${this.flow.trigger_event_source || ''}
                           @sl-change=${this.handleTrackerChange}
@@ -3651,6 +3718,8 @@ export class PreloopFlowForm extends LitElement {
 
                       <sl-select
                         label="Events"
+                        data-field="events"
+                        required
                         placeholder="Select the events that trigger this flow"
                         multiple
                         .value=${this.flow.trigger_event_types || []}
@@ -3685,12 +3754,8 @@ export class PreloopFlowForm extends LitElement {
             this.longRunningAgents.length > 0
               ? html`
                   <div style="margin-bottom: var(--sl-spacing-large);">
-                    <label
-                      style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
-                    >
-                      Execution mode
-                    </label>
                     <sl-radio-group
+                      label="Execution mode"
                       value=${this.flowExecutionPath}
                       @sl-change=${(e: Event) => {
                         const target = e.target as HTMLInputElement | null;
@@ -4163,7 +4228,7 @@ export class PreloopFlowForm extends LitElement {
         ${
           this.formError
             ? html`
-                <sl-alert variant="danger" open>
+                <sl-alert variant="danger" open role="alert" data-form-error>
                   <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
                   <strong>Error:</strong> ${this.formError}
                 </sl-alert>

@@ -1479,29 +1479,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       () => html`
         <preloop-flow-form
           .flow=${this.flow}
-          @flow-submit=${async (e: CustomEvent) => {
-            const payload = e.detail.flow;
-            try {
-              if (this.isNew) {
-                if (this.sourcePresetId) {
-                  payload.source_preset_id = this.sourcePresetId;
-                  payload.prompt_customized = false;
-                  payload.tools_customized = false;
-                  payload.preset_update_available = false;
-                }
-                const newFlow = await createFlow(payload);
-                Router.go(`/console/flows/${newFlow.id}`);
-              } else {
-                await updateFlow(this.flowId!, payload);
-                Router.go(`/console/flows/${this.flowId}`);
-              }
-            } catch (error: any) {
-              const target = e.target as { formError?: string } | null;
-              if (target) {
-                target.formError =
-                  error?.message || 'Failed to save flow. Please try again.';
-              }
-            }
+          @flow-submit=${(e: CustomEvent) => {
+            // Hand the save back so the form's button stays busy until the
+            // request settles; a double click must not create two flows.
+            const save = this.saveFlowFromForm(e);
+            e.detail.waitUntil?.(save);
           }}
           @flow-cancel=${() =>
             Router.go(
@@ -1510,6 +1492,33 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         ></preloop-flow-form>
       `
     );
+  }
+
+  private async saveFlowFromForm(e: CustomEvent): Promise<void> {
+    const payload = e.detail.flow;
+    // Read the form now: once dispatch ends, a target inside this view's
+    // shadow root is cleared, so a later server error had nowhere to go.
+    const form = e.target as { formError?: string } | null;
+    try {
+      if (this.isNew) {
+        if (this.sourcePresetId) {
+          payload.source_preset_id = this.sourcePresetId;
+          payload.prompt_customized = false;
+          payload.tools_customized = false;
+          payload.preset_update_available = false;
+        }
+        const newFlow = await createFlow(payload);
+        Router.go(`/console/flows/${newFlow.id}`);
+      } else {
+        await updateFlow(this.flowId!, payload);
+        Router.go(`/console/flows/${this.flowId}`);
+      }
+    } catch (error: any) {
+      if (form) {
+        form.formError =
+          error?.message || 'Failed to save flow. Please try again.';
+      }
+    }
   }
 
   handleInputChange(field: keyof Flow, e: Event) {

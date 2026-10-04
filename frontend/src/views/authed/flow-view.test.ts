@@ -672,3 +672,56 @@ describe('FlowView all-of labels filter', () => {
     }
   });
 });
+
+describe('FlowView saving from the form', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('hands the save back to the form and puts a server error on it', async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    const fetchStub = sinon.stub(window, 'fetch').callsFake(async () => {
+      return new Response(JSON.stringify({ detail: 'Name already taken' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const element = document.createElement('flow-view') as any;
+    element.isNew = false;
+    element.flowId = 'flow-1';
+
+    // The form lives in the view's shadow root, so once dispatch ends the
+    // event's target is cleared. The error must still reach the form.
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    const form = document.createElement('div') as HTMLElement & {
+      formError?: string;
+    };
+    root.appendChild(form);
+    document.body.appendChild(host);
+    const waited: Promise<unknown>[] = [];
+    form.addEventListener('flow-submit', (event) => {
+      const save = element.saveFlowFromForm(event as CustomEvent);
+      (event as CustomEvent).detail.waitUntil(save);
+    });
+
+    try {
+      form.dispatchEvent(
+        new CustomEvent('flow-submit', {
+          bubbles: true,
+          composed: true,
+          detail: {
+            flow: { name: 'Example flow' },
+            waitUntil: (work: Promise<unknown>) => waited.push(work),
+          },
+        })
+      );
+      expect(waited).to.have.length(1);
+      await waited[0];
+      expect(form.formError).to.equal('Name already taken');
+    } finally {
+      host.remove();
+      fetchStub.restore();
+    }
+  });
+});
