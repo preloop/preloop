@@ -6,7 +6,7 @@ migration's DDL. That leaves two failure modes invisible until deploy: a
 column the ORM has and the migration forgot (or vice versa), and a
 downgrade that cannot run because the drops are ordered against the foreign
 key. These tests run downgrade() then upgrade() inside the test transaction
-and diff the rebuilt tables against the ORM definition.
+and diff the rebuilt tables against the ORM shape at that revision.
 """
 
 import importlib.util
@@ -65,10 +65,13 @@ def test_downgrade_drops_both_tables(db_session):
     assert not inspector.has_table("webhook_endpoint")
 
 
-def test_upgrade_after_downgrade_rebuilds_the_orm_shape(db_session):
-    """A full down/up cycle leaves exactly the columns the ORM expects."""
+def test_upgrade_after_downgrade_rebuilds_the_original_orm_shape(db_session):
+    """Rebuild the webhook shape before later CI ownership additions."""
     migration = _load_migration()
-    expected_endpoint = {c.name for c in WebhookEndpoint.__table__.columns}
+    expected_endpoint = {c.name for c in WebhookEndpoint.__table__.columns} - {
+        "ci_principal_id",
+        "initiating_ci_key_id",
+    }
     expected_delivery = {c.name for c in WebhookDelivery.__table__.columns}
 
     with _operations(db_session):

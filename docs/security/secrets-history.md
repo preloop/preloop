@@ -16,14 +16,14 @@ permanent.
 
 The register below covers all 11 classified findings (commit and path pairs)
 from the release audit's independent history scan, matching the audit's
-freeze floor: no row has been dropped. It also covers the two scanner
+freeze floor: no row has been dropped. It also covers the three scanner
 false-positive fingerprints that exist only in `.gitleaksignore`, so every
 entry in that file has a disposition row here. One commit-and-path row below
 can stand for several `.gitleaksignore` fingerprints (a fingerprint is
 commit, path, rule and line). To keep the two files reconcilable, each
 section below names the `.gitleaksignore` section it pairs with and that
 section's fingerprint count, and every fingerprint's commit and path appear
-as a row in the paired section here (13 fingerprints in total).
+as a row in the paired section here (14 fingerprints in total).
 `backend/tests/test_secrets_history_parity.py` checks this pairing. Any new
 finding must be added to both files in the same change.
 
@@ -108,15 +108,16 @@ is the rotation guide for the second one.
 
 ## Scanner false positives: baselined so the history scan stays green
 
-Pairs with `.gitleaksignore` section: `false positive on an unmerged feature branch` (2 fingerprints).
+Pairs with `.gitleaksignore` section: `false positive on an unmerged feature branch` (3 fingerprints).
 
-These two fingerprints exist only in `.gitleaksignore` (they are not among
+These three fingerprints exist only in `.gitleaksignore` (they are not among
 the audit's 11 classified findings) and involve no credential at all:
 
 | Commit | Path | Disposition |
 | --- | --- | --- |
 | `480bd991973f8a921d902b0dd3a401e6e11d3724` | `backend/preloop/services/record_signing.py` | a signing-key dataclass field annotated with a cryptography class name; a type name, not key material |
 | `b8970d2a6f8d0354a26b271e65a052876861da2f` | `.gitleaksignore` | an earlier wording of the ignore file itself named the same field and tripped the same rule |
+| `2895962e34089bf789a87fdf4870525cb4f59e8b` | `backend/preloop/models/crud/ci_principal.py` | adjacent Python call arguments interpreted as an API key; source syntax with no credential value, as detailed below |
 
 Nothing was live, nothing rotates. They stay baselined because the history
 scan walks every fetched commit and would otherwise fail every PR.
