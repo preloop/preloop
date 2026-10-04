@@ -152,6 +152,10 @@ active execution. App signing keys remain on the controller. The runtime replace
 stale git credentials and uses the fresh token for PR REST calls as well.
 The sandboxed-browser allowlist sidecar lives in
 [`environments/egress-proxy`](environments/egress-proxy/README.md).
+An opt-in Codex-compatible image with a distro Perl toolchain is built from
+[`environments/perl`](environments/perl/README.md); hosted executors select it
+with `CODEX_IMAGE`, private Docker runners with `agent_config.image`, and native
+host profiles use no image.
 
 A flow with an enabled `git_clone_config.backport` block runs in a
 control-plane mode: the orchestrator cherry-picks the merge commit onto each
