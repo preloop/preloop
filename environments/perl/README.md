@@ -43,16 +43,23 @@ docker buildx imagetools inspect <registry>/preloop-codex-perl:<tag> \
 ```
 
 The build refuses a base without `@sha256:`. The smoke runs during the
-build, so a missing tool fails the build. The image sets no `USER`,
-`WORKDIR`, `ENTRYPOINT` or `CMD`: the base entrypoint stays, and the
-executor chooses the user (the hosted Docker executor runs `10000:10000`;
-Kubernetes runs root, or uid 1000 with `AGENT_RUN_AS_NON_ROOT=true`).
+build, so a missing tool fails the build. The image sets no `WORKDIR`,
+`ENTRYPOINT` or `CMD`, so the base entrypoint stays. It installs as root
+and then switches back to `BASE_USER` (default `root`, which is what
+codex-universal uses). If your base has another default user, pass it:
+`--build-arg BASE_USER="$(docker image inspect --format '{{.Config.User}}' "$BASE")"`.
+
+Which user the agent runs as depends on the executor. Hosted Codex on
+Docker and the private Docker runner pass no user, so they use the image
+default. Hosted Kubernetes runs root, or uid 1000 with
+`AGENT_RUN_AS_NON_ROOT=true`.
 
 ## Smoke as the agent user, offline
 
 ```bash
-environments/perl/run-smoke.sh <image>                     # as 10000:10000
+environments/perl/run-smoke.sh <image>                     # image default user
 environments/perl/run-smoke.sh <image> --user 1000:1000    # Kubernetes non-root
+environments/perl/run-smoke.sh <image> --user 10000:10000  # any other non-root uid
 environments/perl/run-smoke.sh <image> --negative-tool prove
 ```
 

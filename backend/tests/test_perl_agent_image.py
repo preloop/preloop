@@ -57,7 +57,8 @@ def test_recipe_preserves_base_entrypoint_workdir_and_user() -> None:
     users = [
         line for line in DOCKERFILE.read_text().splitlines() if line.startswith("USER")
     ]
-    assert users == ["USER root"], "install as root, then leave the base user alone"
+    assert users == ["USER root", "USER ${BASE_USER}"], "restore the base user last"
+    assert "ARG BASE_USER=root" in DOCKERFILE.read_text()
 
 
 def test_both_images_run_the_one_shared_smoke() -> None:

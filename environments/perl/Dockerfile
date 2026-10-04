@@ -8,16 +8,20 @@
 #     -t <registry>/preloop-codex-perl:<tag> .
 #
 # It adds only perl, cpanm, perlver (Perl::MinimumVersion), perlcritic and
-# prove. No application, PostgreSQL or browser layers. It sets no USER,
-# WORKDIR, ENTRYPOINT or CMD, so the base's Codex entrypoint and working
-# directory stay in force and the executor still chooses the user (the
-# hosted Docker executor runs 10000:10000). The tools land in /usr/bin and
-# are world-readable, so the smoke below also runs as a non-root user.
+# prove. No application, PostgreSQL or browser layers. It sets no WORKDIR,
+# ENTRYPOINT or CMD, so the base's Codex entrypoint and working directory
+# stay in force. It installs as root and then restores BASE_USER, the base
+# image's default user (root for codex-universal; pass the base's
+# `docker image inspect --format '{{.Config.User}}'` value otherwise). Hosted
+# Codex on Docker and the private Docker runner pass no user, so they run as
+# that default. The tools land in /usr/bin and are world-readable, so any
+# user the executor picks can run them.
 # See environments/perl/README.md. This is never a default agent image.
 ARG CODEX_BASE_IMAGE
 FROM ${CODEX_BASE_IMAGE}
 
 ARG CODEX_BASE_IMAGE
+ARG BASE_USER=root
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Refuse a mutable tag: the evidence must name the exact base.
@@ -44,3 +48,4 @@ RUN apt-get update \
 LABEL org.opencontainers.image.title="preloop-codex-perl" \
       org.opencontainers.image.description="Opt-in Codex-compatible image with a distro Perl toolchain" \
       org.opencontainers.image.base.name="${CODEX_BASE_IMAGE}"
+USER ${BASE_USER}

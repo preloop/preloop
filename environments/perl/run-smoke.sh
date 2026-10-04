@@ -5,8 +5,8 @@
 # Usage:
 #   environments/perl/run-smoke.sh IMAGE [--user UID:GID] [--negative-tool TOOL]
 #
-# --user defaults to 10000:10000, the user the hosted Docker executor runs
-# agent containers as. --negative-tool removes one required tool in a
+# Without --user the image's default user runs the smoke, as it does under
+# hosted Codex on Docker and the private Docker runner (neither passes one). --negative-tool removes one required tool in a
 # throwaway layer and succeeds only if the smoke then fails and names it.
 set -euo pipefail
 
@@ -18,11 +18,11 @@ usage() {
 [ $# -ge 1 ] || usage
 image="$1"
 shift
-user="10000:10000"
+user_args=()
 negative_tool=""
 while [ $# -gt 0 ]; do
     case "$1" in
-        --user) user="${2:?}"; shift 2 ;;
+        --user) user_args=(--user "${2:?}"); shift 2 ;;
         --negative-tool) negative_tool="${2:?}"; shift 2 ;;
         *) usage ;;
     esac
@@ -36,12 +36,13 @@ if [ -n "$negative_tool" ]; then
         *) echo "unknown tool: $negative_tool" >&2; exit 2 ;;
     esac
     broken="preloop-perl-smoke-negative:$negative_tool"
-    # Shadow the tool on PATH with nothing: remove every copy found.
-    printf 'FROM %s\nUSER root\nRUN for p in $(which -a %s); do rm -f "$p"; done; ! command -v %s\n' \
-        "$image" "$negative_tool" "$negative_tool" |
+    default_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
+    # Remove every copy of the tool on PATH, then restore the default user.
+    printf 'FROM %s\nUSER root\nRUN for p in $(which -a %s); do rm -f "$p"; done; ! command -v %s\nUSER %s\n' \
+        "$image" "$negative_tool" "$negative_tool" "${default_user:-root}" |
         docker build -q -t "$broken" - >/dev/null
     set +e
-    output="$(docker run --rm --network none --user "$user" --entrypoint bash "$broken" "$smoke" 2>&1)"
+    output="$(docker run --rm --network none ${user_args[@]+"${user_args[@]}"} --entrypoint bash "$broken" "$smoke" 2>&1)"
     status=$?
     set -e
     docker rmi -f "$broken" >/dev/null
@@ -66,7 +67,7 @@ echo "base image: $(docker image inspect --format '{{index .Config.Labels "org.o
 echo "entrypoint: $(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")"
 echo "network: none"
 set +e
-docker run --rm --network none --user "$user" --entrypoint bash "$image" "$smoke"
+docker run --rm --network none ${user_args[@]+"${user_args[@]}"} --entrypoint bash "$image" "$smoke"
 status=$?
 set -e
 echo "smoke exit status: $status"
