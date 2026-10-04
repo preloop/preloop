@@ -470,7 +470,11 @@ def test_day_bounds_are_inclusive_and_utc(db_session, test_user, connection):
 
 def test_blank_stored_login_is_unmapped_not_an_error(db_session, test_user, connection):
     crud_copilot_user_mapping.upsert(
-        db_session, connection=connection, github_login="alice", user_id=test_user.id, commit=False
+        db_session,
+        connection=connection,
+        github_login="alice",
+        user_id=test_user.id,
+        commit=False,
     )
     store(db_session, test_user.account_id, premium_row(DAY, login="   ", amount=5.0))
 
