@@ -1594,9 +1594,17 @@ describe('AIModelDetailView', () => {
     await element.updateComplete;
 
     const newCalls = apiCalls().slice(callsAfterLoad);
-    expect(newCalls).to.have.length(1);
-    expect(newCalls[0]).to.contain('/api/v1/ai-models/model-1/interactions');
-    expect(newCalls[0]).to.contain('query=timeout');
+    // A late price or failure-window read can land in this same pause. The
+    // search itself is one interactions request and does not reload the page.
+    const searchCalls = newCalls.filter((url) => url.includes('/interactions'));
+    expect(searchCalls).to.have.length(1);
+    expect(searchCalls[0]).to.contain('/api/v1/ai-models/model-1/interactions');
+    expect(searchCalls[0]).to.contain('query=timeout');
+    expect(
+      newCalls.filter(
+        (url) => url.includes('/summary') || url.includes('/runtime-sessions')
+      )
+    ).to.have.length(0);
 
     // The summary the search did not touch is still on screen.
     expect(element.shadowRoot?.textContent).to.contain('Usage summary');
