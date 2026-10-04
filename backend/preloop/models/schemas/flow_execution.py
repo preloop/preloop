@@ -27,8 +27,13 @@ class ExecutionResumeTotals(BaseModel):
     """Combined tokens and cost for a publishing execution and its repairs."""
 
     total_tokens: int = Field(0, description="Summed tokens across the resume chain")
-    estimated_cost: float = Field(
-        0.0, description="Summed estimated cost across the resume chain"
+    estimated_cost: Optional[float] = Field(
+        0.0,
+        description=(
+            "Summed estimated cost across the resume chain. Null when a member "
+            "spent gateway tokens that could not be priced, matching that "
+            "member's own null (unknown, not free) cost."
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)

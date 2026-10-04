@@ -25065,9 +25065,13 @@ components:
           description: Summed tokens across the resume chain
           default: 0
         estimated_cost:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Estimated Cost
-          description: Summed estimated cost across the resume chain
+          description: Summed estimated cost across the resume chain. Null when a
+            member spent gateway tokens that could not be priced, matching that member's
+            own null (unknown, not free) cost.
           default: 0.0
       type: object
       title: ExecutionResumeTotals

@@ -78,7 +78,7 @@ def _usage(db_session, test_user, flow, execution, cost):
         completion_tokens=100,
         total_tokens=1100,
         estimated_cost=cost,
-        cost_source="catalog",
+        cost_source="catalog" if cost is not None else "unpriced",
         meta_data={},
     )
 
@@ -149,7 +149,9 @@ async def test_late_usage_rows_move_every_surface_together(db_session, test_user
     # them to read the stored column.
     db_session.expire_all()
     for run, expected in ((publisher, pub_list), (repair, rep_list)):
-        assert sync_finished_execution_cost_rollup(db_session, run.id)
+        assert sync_finished_execution_cost_rollup(
+            db_session, run.id, account_id=test_user.account_id
+        )
         db_session.refresh(run)
         assert float(run.estimated_cost) == pytest.approx(expected)
 
@@ -160,4 +162,34 @@ def test_running_execution_rollup_is_left_to_the_orchestrator(db_session, test_u
     run.status = "RUNNING"
     db_session.flush()
     _usage(db_session, test_user, flow, run, 0.3)
-    assert sync_finished_execution_cost_rollup(db_session, run.id) is False
+    assert (
+        sync_finished_execution_cost_rollup(
+            db_session, run.id, account_id=test_user.account_id
+        )
+        is False
+    )
+    # Another account's id never resolves the run.
+    run.status = "SUCCEEDED"
+    db_session.flush()
+    assert (
+        sync_finished_execution_cost_rollup(db_session, run.id, account_id=uuid.uuid4())
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_chain_with_an_unpriced_member_has_no_dollar_total(db_session, test_user):
+    """A member the list shows as "Not priced" leaves the chain cost unknown."""
+    flow = _flow(db_session, test_user)
+    publisher = _execution(db_session, flow, stored_cost=0.2)
+    repair = _execution(
+        db_session, flow, stored_cost=None, resume_root=str(publisher.id)
+    )
+    _usage(db_session, test_user, flow, publisher, 0.2)
+    _usage(db_session, test_user, flow, repair, None)
+
+    listed, detail = await _surfaces(db_session, test_user, flow, repair)
+    assert listed[str(repair.id)].estimated_cost is None
+    assert detail.resume_totals is not None
+    assert detail.resume_totals.estimated_cost is None
+    assert detail.resume_totals.total_tokens == 2200

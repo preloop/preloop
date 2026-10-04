@@ -9705,7 +9705,11 @@ class OpenAIGatewayService:
                     sync_finished_execution_cost_rollup,
                 )
 
-                sync_finished_execution_cost_rollup(self.db, late_execution_id)
+                sync_finished_execution_cost_rollup(
+                    self.db,
+                    late_execution_id,
+                    account_id=self.auth_context.account_id,
+                )
             except Exception:
                 logger.warning(
                     "Could not refresh cost rollup for execution %s",

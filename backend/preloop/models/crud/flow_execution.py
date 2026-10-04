@@ -1573,49 +1573,6 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         return query
 
-    def get_resume_chain_totals(
-        self,
-        db: Session,
-        *,
-        account_id: Any,
-        roots: List[uuid.UUID],
-        root_texts: List[str],
-    ) -> List[Any]:
-        """Tokens, cost and member count per resume chain root.
-
-        A chain is the publishing execution (``id`` in ``roots``) plus every
-        repair turn whose ``_resume.resume_root`` names it. Both halves are
-        index lookups: the primary key, and the partial expression index
-        ``ix_flow_execution_resume_root`` that holds repair turns only. The
-        expression is spelled as :data:`RESUME_ROOT_SQL` so the planner can
-        match it to that index; written any other way the lookup reads (and
-        detoasts) the trigger payload of every execution in the account.
-
-        Returns:
-            Rows of ``(chain_root, total_tokens, estimated_cost, members)``.
-        """
-        if not roots and not root_texts:
-            return []
-        resume_root = literal_column(RESUME_ROOT_SQL, type_=String)
-        chain_key = func.coalesce(resume_root, cast(FlowExecution.id, String))
-        return db.execute(
-            select(
-                chain_key.label("chain_root"),
-                func.coalesce(func.sum(FlowExecution.total_tokens), 0),
-                func.coalesce(func.sum(FlowExecution.estimated_cost), 0),
-                func.count(FlowExecution.id),
-            )
-            .join(Flow, Flow.id == FlowExecution.flow_id)
-            .where(
-                Flow.account_id == account_id,
-                or_(
-                    FlowExecution.id.in_(list(roots)),
-                    resume_root.in_(list(root_texts)),
-                ),
-            )
-            .group_by(chain_key)
-        ).all()
-
     def get_resume_chain_cost_totals(
         self,
         db: Session,
@@ -1626,7 +1583,15 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     ) -> List[Any]:
         """Chain totals summed from each member's displayed per-run figures.
 
-        Same chain lookup as :meth:`get_resume_chain_totals`, but each member
+        A chain is the publishing execution (``id`` in ``roots``) plus every
+        repair turn whose ``_resume.resume_root`` names it. Both halves are
+        index lookups: the primary key, and the partial expression index
+        ``ix_flow_execution_resume_root`` that holds repair turns only. The
+        expression is spelled as :data:`RESUME_ROOT_SQL` so the planner can
+        match it to that index; written any other way the lookup reads (and
+        detoasts) the trigger payload of every execution in the account.
+
+        Each member
         contributes the figure the list and the execution page show for it:
         the sum of its attributed gateway usage rows (``model_gateway``,
         replay traffic excluded, rounded like
@@ -1637,7 +1602,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         list keeps its query budget.
 
         Returns:
-            Rows of ``(chain_root, total_tokens, estimated_cost, members)``.
+            Rows of ``(chain_root, total_tokens, estimated_cost, members,
+            unpriced)``; ``unpriced`` counts members whose gateway usage could
+            not be priced at all.
         """
         if not roots and not root_texts:
             return []
@@ -1689,12 +1656,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             (has_usage, func.coalesce(usage.c.cost, 0)),
             else_=func.coalesce(members.c.stored_cost, 0),
         )
+        # A member with gateway usage none of which could be priced shows
+        # "Not priced" on its own row; the chain cannot claim a dollar figure.
+        unpriced_member = case(
+            (and_(has_usage, usage.c.cost.is_(None)), 1),
+            else_=0,
+        )
         return db.execute(
             select(
                 members.c.chain_root,
                 func.coalesce(func.sum(member_tokens), 0),
                 func.coalesce(func.sum(member_cost), 0),
                 func.count(members.c.execution_id),
+                func.coalesce(func.sum(unpriced_member), 0).label("unpriced"),
             )
             .select_from(
                 members.outerjoin(usage, usage.c.execution_id == members.c.execution_id)

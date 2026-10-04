@@ -97,7 +97,9 @@ def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
     return True
 
 
-def sync_finished_execution_cost_rollup(db: Session, execution_id: Any) -> bool:
+def sync_finished_execution_cost_rollup(
+    db: Session, execution_id: Any, *, account_id: Any
+) -> bool:
     """Refresh a finished run's stored rollup after a late usage row lands.
 
     The orchestrator writes ``flow_execution.estimated_cost`` once, when the
@@ -107,9 +109,16 @@ def sync_finished_execution_cost_rollup(db: Session, execution_id: Any) -> bool:
     execution page (issue #1275). Runs still in flight are skipped: the
     orchestrator writes their rollup at completion.
 
+    Called for every gateway usage row attributed to a run, so the common
+    (still running) case costs one single-column primary-key lookup. Flow
+    execution keys are rejected at authentication once the run has ended,
+    so a terminal status here means the run finished while this request was
+    in flight, which is exactly the row the completion-time rollup missed.
+
     Args:
         db: Database session.
         execution_id: Execution the new usage row is attributed to.
+        account_id: Account that must own the execution.
 
     Returns:
         True when the execution is finished and its rollup was recomputed.
@@ -118,10 +127,12 @@ def sync_finished_execution_cost_rollup(db: Session, execution_id: Any) -> bool:
 
     if not execution_id:
         return False
-    execution = crud_flow_execution.get(db, id=execution_id)
-    if execution is None:
+    status = crud_flow_execution.get_status(
+        db, execution_id=execution_id, account_id=account_id
+    )
+    if status is None:
         return False
-    if execution.status not in crud_flow_execution.TERMINAL_EXECUTION_STATUSES:
+    if str(status).upper() not in crud_flow_execution.TERMINAL_EXECUTION_STATUSES:
         return False
     if not sync_execution_cost_rollup(db, str(execution_id)):
         return False
@@ -410,12 +421,16 @@ def project_resume_lineage(
         db, account_id=account_id, roots=list(roots), root_texts=root_texts
     )
     by_root: Dict[str, Dict[str, Any]] = {}
-    for chain_root, tokens, cost, members in rows:
+    for chain_root, tokens, cost, members, unpriced in rows:
         if int(members or 0) < 2:
             continue
         by_root[str(chain_root)] = {
             "total_tokens": int(tokens or 0),
-            "estimated_cost": round(float(cost or 0), _ROLLUP_DECIMALS),
+            "estimated_cost": (
+                None
+                if int(unpriced or 0) > 0
+                else round(float(cost or 0), _ROLLUP_DECIMALS)
+            ),
         }
     for execution in executions:
         resume_of = getattr(execution, "resume_of", None)
