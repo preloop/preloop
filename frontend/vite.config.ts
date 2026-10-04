@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import cssInjectedByJsPlugin from 'vite-plugin-css-injected-by-js';
 import { brandPlugin } from './vite-plugin-brand';
+import { shoelaceVendorPlugin } from './vite-plugin-shoelace-vendor';
 import { resolveAllowedHosts } from './src/vite-allowed-hosts';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -51,6 +52,9 @@ export default defineConfig({
       },
     }),
     brandPlugin(brand),
+    shoelaceVendorPlugin(
+      resolve(__dirname, 'node_modules/@shoelace-style/shoelace/cdn')
+    ),
   ],
   resolve: {
     alias: [

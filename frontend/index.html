@@ -31,11 +31,13 @@
   <!-- JSON-LD structured data (replaced per-route at build time by vite-plugin-brand) -->
   <script id="preloop-structured-data" type="application/ld+json">[]</script>
 
-  <!-- Shoelace Styles & Icons -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.1/cdn/themes/light.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.1/cdn/themes/dark.css" />
-  <script type="module"
-    src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.1/cdn/shoelace-autoloader.js"></script>
+  <!-- Shoelace styles, icons and autoloader, served from this origin by
+       vite-plugin-shoelace-vendor (no CDN, so air-gapped installs render).
+       vite-ignore keeps Vite from bundling them: the autoloader takes its
+       base path for icons and lazily loaded components from its own src. -->
+  <link rel="stylesheet" href="/vendor/shoelace/themes/light.css" vite-ignore />
+  <link rel="stylesheet" href="/vendor/shoelace/themes/dark.css" vite-ignore />
+  <script type="module" src="/vendor/shoelace/shoelace-autoloader.js" vite-ignore></script>
 
   <!-- Critical CSS to prevent FOUC (Flash of Unstyled Content) -->
   <style>
