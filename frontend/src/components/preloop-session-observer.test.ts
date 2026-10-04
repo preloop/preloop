@@ -607,6 +607,43 @@ describe('PreloopSessionObserver', () => {
     expect(el.shadowRoot?.querySelector('.toolbar sl-button')).to.exist;
   });
 
+  it('links the toolbar to the evidence export pre-filtered to the session', async () => {
+    const id = '7d3c1e2a-4b5f-4c6d-8e9f-0a1b2c3d4e5f';
+    const el = (await fixture(
+      html`<preloop-session-observer
+        .sessions=${[{ ...session, id }]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('[data-testid="add-to-evidence-export"]'),
+      'export entry point did not render'
+    );
+    const button = el.shadowRoot!.querySelector(
+      '[data-testid="add-to-evidence-export"]'
+    ) as HTMLElement & { href: string };
+    expect(button.textContent).to.contain('Add to evidence export');
+    const url = new URL(button.href, 'http://x');
+    expect(url.pathname).to.equal('/console/settings/records');
+    expect(url.hash).to.equal('#period-exports');
+    expect(url.searchParams.get('runtime_session_id')).to.equal(id);
+    expect(url.searchParams.get('start')).to.equal('2026-03-09');
+    expect(url.searchParams.get('end')).to.equal('2026-03-10');
+  });
+
+  it('offers no evidence export for a row that is not a runtime session', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('.toolbar sl-button')).to.exist;
+    expect(
+      el.shadowRoot?.querySelector('[data-testid="add-to-evidence-export"]')
+    ).to.not.exist;
+  });
+
   describe('Collapsing session list', () => {
     const secondSession = {
       ...session,
@@ -1460,6 +1497,67 @@ describe('PreloopSessionObserver session approvals', () => {
     await waitUntil(() => approvalCalls().length > 0, '', { timeout: 3000 });
     return el;
   }
+
+  function activityCalls(): string[] {
+    return fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/activity'));
+  }
+
+  function runtimeSessionsHandler(): (message: {
+    payload?: Record<string, unknown>;
+  }) => void {
+    return subscriptions.find((entry) => entry.topic === 'runtime_sessions')!
+      .handler;
+  }
+
+  it('re-reads the open session timeline at once when an operator message lands', async () => {
+    await mount();
+    await waitUntil(() => activityCalls().length > 0, '', { timeout: 3000 });
+    const before = activityCalls().length;
+
+    runtimeSessionsHandler()({
+      payload: {
+        runtime_session_id: 'runtime-session-1',
+        activity_type: 'agent_control_message',
+        status: 'delivered',
+        summary: 'recount zone B',
+        metadata: { kind: 'operator_command', command_id: 'cmd-1' },
+      },
+    });
+
+    // Immediately, not after the 500 ms scope refresh.
+    await waitUntil(() => activityCalls().length > before, '', {
+      timeout: 200,
+    });
+    expect(activityCalls()[activityCalls().length - 1]).to.contain(
+      'runtime-session-1'
+    );
+  });
+
+  it('does not re-read the timeline for another session or other activity', async () => {
+    await mount();
+    await waitUntil(() => activityCalls().length > 0, '', { timeout: 3000 });
+    const before = activityCalls().length;
+
+    runtimeSessionsHandler()({
+      payload: {
+        runtime_session_id: 'another-session',
+        activity_type: 'agent_control_message',
+      },
+    });
+    runtimeSessionsHandler()({
+      payload: {
+        runtime_session_id: 'runtime-session-1',
+        tool_name: 'Read',
+        status: 'allowed',
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(activityCalls().length).to.equal(before);
+  });
 
   it('subscribes to the approvals topic, which is where "wait for me" arrives', async () => {
     await mount();

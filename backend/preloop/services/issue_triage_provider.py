@@ -1,4 +1,4 @@
-"""Scoped provider operations for issue text and complexity labels."""
+"""Scoped provider operations for issue text and triage labels."""
 
 from __future__ import annotations
 
@@ -15,6 +15,14 @@ STANDARD_LABEL_COLORS = {
     "complexity:low": "0e8a16",
     "complexity:medium": "fbca04",
     "complexity:high": "b60205",
+    "risk:low": "0e8a16",
+    "risk:medium": "fbca04",
+    "risk:high": "b60205",
+    "readiness:ready": "0e8a16",
+    "readiness:needs-spec": "fbca04",
+    "readiness:blocked": "b60205",
+    "readiness:in-progress": "1d76db",
+    "readiness:needs-verification": "5319e7",
 }
 
 
@@ -188,10 +196,11 @@ class IssueTriageProvider:
         raise TriageProviderError("label_catalogue_limit_exceeded")
 
     async def create_label(self, name: str) -> None:
-        """Create only the standard complexity family with managed descriptions."""
+        """Create only the standard triage families with managed descriptions."""
         if name not in STANDARD_LABEL_COLORS:
             raise TriageProviderError("invalid_standard_complexity_label")
-        description = f"Preloop issue complexity: {name.split(':')[1]}"
+        family, value = name.split(":", 1)
+        description = f"Preloop issue {family}: {value}"
         color = STANDARD_LABEL_COLORS[name]
         if self.kind == "gitlab":
             color = f"#{color}"

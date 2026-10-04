@@ -143,6 +143,7 @@ class UserContext:
         api_key_name: Optional[str] = None,
         managed_agent_id: Optional[str] = None,
         mcp_tools_cache: Optional[List[Any]] = None,
+        flow_id: Optional[str] = None,
     ):
         self.user_id = user_id
         self.account_id = account_id
@@ -162,6 +163,9 @@ class UserContext:
         self.api_key_name = api_key_name
         self.managed_agent_id = managed_agent_id
         self.mcp_tools_cache = mcp_tools_cache
+        # Set only for a flow execution's credential; selects the per-flow
+        # governance override (subject type ``flows``).
+        self.flow_id = flow_id
 
 
 class DynamicMCPServer:
@@ -566,6 +570,7 @@ class DynamicMCPServer:
                     execution_id=getattr(user_context, "execution_id", None),
                     subject_context={
                         "api_key_id": getattr(user_context, "api_key_id", None),
+                        "flow_id": getattr(user_context, "flow_id", None),
                         "managed_agent_id": getattr(
                             user_context, "managed_agent_id", None
                         ),

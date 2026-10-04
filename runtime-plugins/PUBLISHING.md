@@ -16,9 +16,19 @@ jobs mirroring `publish:langchain-preloop`:
   `dist.shasum` matches ClawHub's `npmShasum` and fails if they differ.
 - `publish:hermes-plugin` builds and publishes `preloop-hermes-plugin` to
   PyPI (requires the `HERMES_PYPI_TOKEN` CI variable).
+- `publish:codex-plugin` builds, tests, and publishes `@preloop-ai/codex-plugin`
+  to npm (requires the shared `NPM_TOKEN` CI variable). The job runs
+  `npm ci`, `npm run build`, and `npm test` before publish, and refuses a
+  version that already exists on npm.
+- `publish:nanobot-plugin` builds and publishes `preloop-nanobot-plugin` to
+  PyPI (requires the `NANOBOT_PYPI_TOKEN` CI variable). PyPI project-scoped
+  tokens cannot exist before the first release, so the first publish needs
+  an account-scoped token that is re-scoped to the project afterwards.
+  Nanobot tests run in `test:unit:runtime-plugins`, which this job needs.
 
-Both jobs fail fast if the package version and its plugin manifest version
-disagree, or if the version is already on the registry. Release flow:
+These jobs fail fast if a package version and its plugin manifest version
+disagree (where a second manifest exists), or if the version is already on
+the registry. Release flow:
 
 1. Bump the versions (see Release Preconditions below) in the preloop repo.
 2. Land the preloop submodule bump on preloop-ee `main`.
@@ -39,10 +49,15 @@ ClawHub steps and smoke tests.
   - `hermes-preloop/pyproject.toml`
   - `hermes-preloop/preloop-plugin.json`
   - `opencode-preloop/package.json`
+  - `codex-preloop/package.json`
+  - `nanobot-preloop/pyproject.toml`
+  - `nanobot-preloop/preloop-plugin.json`
 - Confirm the package names are final:
   - npm/OpenClaw: `@preloop-ai/openclaw-plugin`
   - PyPI/Hermes: `preloop-hermes-plugin`
   - npm/OpenCode: `@preloop-ai/opencode-plugin`
+  - npm/Codex: `@preloop-ai/codex-plugin`
+  - PyPI/Nanobot: `preloop-nanobot-plugin`
 - Confirm Hermes entry points use the `hermes_agent.plugins` group and point at
   the module that exposes `register(ctx)` (`preloop_hermes_plugin.plugin`).
 - Confirm OpenClaw `package.json` includes ClawHub-required metadata:
@@ -249,9 +264,13 @@ tokens.
 
 Codex CLI has no plugin marketplace. The sidecar is an npm package, same
 shape as `@preloop-ai/claude-plugin`: install with npm, then run the bin.
-`publish-runtime-plugins.yml` enumerates OpenClaw, Hermes, and the harness
-plugin only (the Claude sidecar is not in that workflow either), so this
-package is published by hand the same way.
+The preloop-ee job `publish:codex-plugin` publishes it: manual, on the main
+pipeline, after the preloop submodule bump lands on preloop-ee `main`. It
+uses the shared `NPM_TOKEN`, refuses a version already on npm, and runs
+`npm ci`, `npm run build`, and `npm test` before publish.
+`publish-runtime-plugins.yml` still enumerates OpenClaw, Hermes, and the
+harness plugin only (the Claude sidecar is not in that workflow either), so
+the commands below remain the local fallback.
 
 Versions are a single `package.json` field (there is no second manifest to
 keep in lockstep). Confirm the name is `@preloop-ai/codex-plugin` and the
@@ -333,3 +352,73 @@ flow (`client_id=cli`, `redirect_uri=urn:ietf:wg:oauth:2.0:oob`) to obtain a
 Preloop API token, call the runtime-session bootstrap endpoint for the current
 Hermes runtime, then write `preloop.control` with the generated runtime bearer
 token. Users should never have to hand-author runtime bearer tokens.
+
+## Nanobot Plugin
+
+Nanobot has no central plugin marketplace. Discovery is PyPI plus the
+`preloop-nanobot-plugin` console script, so a dedicated virtualenv can run
+the package after `pip install`.
+
+Keep `nanobot-preloop/pyproject.toml` and `nanobot-preloop/preloop-plugin.json`
+on the same `version`. The publish job fails if those versions disagree or
+if the version is already on PyPI.
+
+Build and validate the Python package:
+
+```bash
+cd preloop/runtime-plugins/nanobot-preloop
+python -m pip install --upgrade build twine
+python -m build
+python -m twine check dist/*
+```
+
+Publish from the preloop-ee GitLab job `publish:nanobot-plugin` (manual, on
+the main pipeline, after the submodule bump). It needs CI/CD variable
+`NANOBOT_PYPI_TOKEN` (masked and protected). PyPI project-scoped tokens
+cannot exist before the first release, so the first publish needs an
+account-scoped token. Re-scope that token to the `preloop-nanobot-plugin`
+project afterwards. Nanobot tests run in the preloop-ee job
+`test:unit:runtime-plugins` (with
+`PYTHONPATH=backend:runtime-plugins/nanobot-preloop/src`).
+`publish:nanobot-plugin` needs that job and does not repeat the suite.
+This repo's `.gitlab-ci.yml` job of the same name, and the GitHub Actions
+job `test-runtime-plugins`, run the same suite.
+
+Local fallback:
+
+```bash
+python -m twine upload dist/*
+```
+
+Install verification from PyPI, then the `preloop-nanobot-plugin` entry
+point. `verify` and `run` read `~/.nanobot/preloop.json`, so enroll first.
+Put `PRELOOP_ACCESS_TOKEN` in the environment. Do not pass it on the
+command line. `verify` also checks that the installed SDK is
+`nanobot-ai==0.1.4.post3` (the pin in `pyproject.toml` and
+`preloop-plugin.json`).
+
+```bash
+pip install preloop-nanobot-plugin
+preloop-nanobot-plugin enroll --base-url https://app.preloop.ai
+preloop-nanobot-plugin verify
+preloop-nanobot-plugin run
+```
+
+The package README documents a pinned virtualenv install from a checkout
+instead of PyPI. Enrollment is the same step:
+
+```bash
+python3 -m venv ~/.local/share/preloop-nanobot/venv
+~/.local/share/preloop-nanobot/venv/bin/pip install ./runtime-plugins/nanobot-preloop
+preloop-nanobot-plugin enroll --base-url https://app.preloop.ai
+preloop-nanobot-plugin verify
+preloop-nanobot-plugin run
+```
+
+Run the package tests from the preloop repo root before publishing locally:
+
+```bash
+PRELOOP_DISABLE_TELEMETRY=true \
+PYTHONPATH=backend:runtime-plugins/nanobot-preloop/src \
+pytest runtime-plugins/nanobot-preloop/tests
+```

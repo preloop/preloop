@@ -682,7 +682,8 @@ GET_ISSUE_DESCRIPTION = (
     "Get detailed information about an issue by its identifier (URL, key, or "
     "ID). Returns the synchronized snapshot. Pass include to add blocks read "
     "live from the tracker: label_catalog for the complete project label "
-    "catalogue and the recognized complexity scheme, revision for the "
+    "catalogue and the recognized complexity, risk and readiness schemes, "
+    "revision for the "
     "authoritative provider content and the expected_revision that a triage "
     "update_issue call must quote."
 )
@@ -711,10 +712,11 @@ UPDATE_ISSUE_DESCRIPTION = (
     "and/or manage GitHub issue reactions. To add or remove a reaction only, "
     "pass add_reaction or remove_reaction without other fields. To record a "
     "triage assessment, pass expected_revision (from get_issue with "
-    'include=["revision"]) and assessment, optionally complexity_label and '
-    "title: that path preserves issue content outside the managed section, "
-    "moves only labels in the recognized complexity family, creates standard "
-    "complexity labels only when the project has no scheme, and returns a "
+    'include=["revision"]) and assessment, optionally complexity_label, '
+    "risk_label, readiness_label and title: that path preserves issue content "
+    "outside the managed section, moves only labels in each recognized "
+    "family, creates a standard family only when the project has none, and "
+    "returns a "
     "truthful conflict or partial-write receipt instead of the plain update "
     "response. It cannot be combined with the other metadata fields."
 )
@@ -767,6 +769,28 @@ UPDATE_ISSUE_SCHEMA: Dict[str, Any] = {
             "description": (
                 "Exact name from the complexity scheme returned by get_issue "
                 "include=label_catalog. Null leaves complexity unset."
+            ),
+        },
+        "risk_label": {
+            "anyOf": [
+                {"type": "string", "minLength": 1, "maxLength": 255},
+                {"type": "null"},
+            ],
+            "default": None,
+            "description": (
+                "Exact name from the risk scheme returned by get_issue "
+                "include=label_catalog. Null leaves risk unset."
+            ),
+        },
+        "readiness_label": {
+            "anyOf": [
+                {"type": "string", "minLength": 1, "maxLength": 255},
+                {"type": "null"},
+            ],
+            "default": None,
+            "description": (
+                "Exact name from the readiness scheme returned by get_issue "
+                "include=label_catalog. Null leaves readiness unset."
             ),
         },
     },
@@ -834,5 +858,119 @@ DEPOSIT_ARTIFACT_TOOL: Dict[str, Any] = {
             "activity_id": {"type": "string"},
         },
         "required": ["content", "name"],
+    },
+}
+
+
+#: Artifacts one ``search_artifacts`` call returns when the caller says
+#: nothing, and the most it may ask for (#1104).
+SEARCH_ARTIFACTS_DEFAULT_LIMIT = 20
+SEARCH_ARTIFACTS_MAX_LIMIT = 50
+
+#: ``get_artifact`` inlines text up to ``max_bytes`` (this default when the
+#: caller says nothing) and binaries up to the blob cap; anything larger is
+#: answered with a ``resource_link``.
+GET_ARTIFACT_DEFAULT_MAX_BYTES = 64 * 1024
+GET_ARTIFACT_BLOB_MAX_BYTES = 1024 * 1024
+
+#: Same scope vocabulary as ``search_sessions``: ``own`` is the calling
+#: agent's own sessions, ``account`` needs ``artifact_search.account_scope``.
+ARTIFACT_READ_SCOPE_OWN = "own"
+ARTIFACT_READ_SCOPE_ACCOUNT = "account"
+ARTIFACT_READ_SCOPES = (ARTIFACT_READ_SCOPE_OWN, ARTIFACT_READ_SCOPE_ACCOUNT)
+
+_ARTIFACT_SCOPE_PROPERTY: Dict[str, Any] = {
+    "type": "string",
+    "enum": list(ARTIFACT_READ_SCOPES),
+    "description": (
+        "'own' (default): artifacts of sessions you ran, across runs. "
+        "'account': every artifact of the account; refused "
+        "(account_scope_not_granted) unless an operator granted "
+        "artifact_search.account_scope."
+    ),
+}
+
+
+SEARCH_ARTIFACTS_TOOL: Dict[str, Any] = {
+    "name": "search_artifacts",
+    "description": (
+        "Find stored artifacts (transcripts, documents, screenshots, "
+        "recordings) by kind, labels and time window, newest first. Returns "
+        "resource_link blocks and structuredContent.items with each "
+        "artifact's descriptor and a short text excerpt. Read one with "
+        "get_artifact. since is inclusive, until exclusive (created_at, ISO "
+        "8601 with offset). Scope is your own sessions unless you ask for "
+        "'account', which needs an operator grant and is refused by name "
+        "without it."
+    ),
+    "source": "builtin",
+    # Default-off like search_sessions and deposit_artifact (#128): a flow
+    # opts in through allowed_mcp_tools, an account through the Tools page.
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "q": {
+                "type": "string",
+                "maxLength": 512,
+                "description": (
+                    "Words to find in the artifact's text (web search "
+                    "syntax) or its name."
+                ),
+            },
+            "kind": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(DEPOSIT_ARTIFACT_KINDS)},
+            },
+            "labels": {
+                "type": "object",
+                "description": (
+                    "Only artifacts whose labels contain all of these "
+                    "key: value pairs. An empty value matches any."
+                ),
+            },
+            "since": {"type": "string", "format": "date-time"},
+            "until": {"type": "string", "format": "date-time"},
+            "scope": _ARTIFACT_SCOPE_PROPERTY,
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": SEARCH_ARTIFACTS_MAX_LIMIT,
+            },
+            "cursor": {"type": "string", "description": "next_cursor of a page."},
+        },
+    },
+}
+
+
+GET_ARTIFACT_TOOL: Dict[str, Any] = {
+    "name": "get_artifact",
+    "description": (
+        "Read one artifact found with search_artifacts. Text kinds come back "
+        "as an embedded resource with the first max_bytes (default 64 KiB; "
+        "_meta['preloop.dev/artifact'].truncated says when it was cut); "
+        "binaries up to 1 MiB inline, larger ones as a resource_link. Same "
+        "scope as search_artifacts: an artifact outside it is "
+        "artifact_not_found."
+    ),
+    "source": "builtin",
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "artifact_id": {"type": "string", "format": "uuid"},
+            "max_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": GET_ARTIFACT_BLOB_MAX_BYTES,
+            },
+        },
+        "required": ["artifact_id"],
     },
 }

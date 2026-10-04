@@ -112,6 +112,7 @@ def account_scope_granted(
     meta_data: Optional[Dict[str, Any]],
     *,
     subject_context: Dict[str, Optional[str]],
+    grant: str = ACCOUNT_SCOPE_GRANT,
 ) -> bool:
     """Whether this caller may search the whole account, not only itself.
 
@@ -126,6 +127,10 @@ def account_scope_granted(
         meta_data: The account's ``meta_data`` document, or None.
         subject_context: The calling identity, as ``api_key_id`` and
             ``managed_agent_id``.
+        grant: The grant key to read. ``search_sessions`` reads
+            ``session_search.account_scope``; the artifact read tools
+            (#1104) read ``artifact_search.account_scope`` from the same
+            store with the same precedence.
 
     Returns:
         True only when a grant says so. Absence is refusal: this is the
@@ -135,21 +140,23 @@ def account_scope_granted(
         config = get_subject_governance(
             meta_data, subject_type=subject_type, subject_id=subject_id
         )
-        granted = _grant_value(config)
+        granted = _grant_value(config, grant)
         if granted is not None:
             return granted
-    granted = _grant_value(get_account_governance_defaults(meta_data))
+    granted = _grant_value(get_account_governance_defaults(meta_data), grant)
     return bool(granted)
 
 
-def _grant_value(config: Optional[Dict[str, Any]]) -> Optional[bool]:
+def _grant_value(
+    config: Optional[Dict[str, Any]], grant: str = ACCOUNT_SCOPE_GRANT
+) -> Optional[bool]:
     """Read the account scope grant out of one governance config."""
     if not isinstance(config, dict):
         return None
     grants = config.get(TOOL_GRANTS_KEY)
     if not isinstance(grants, dict):
         return None
-    value = grants.get(ACCOUNT_SCOPE_GRANT)
+    value = grants.get(grant)
     return value if isinstance(value, bool) else None
 
 

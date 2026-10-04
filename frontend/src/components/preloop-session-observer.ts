@@ -93,6 +93,7 @@ import {
   type ArtifactKindGroup,
 } from '../utils/session-artifacts';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import { isUuid, sessionExportHref } from '../utils/records-format';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
 type EventPageState = {
@@ -878,9 +879,40 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   private handleRuntimeSessionActivity(message: any): void {
-    if (!this.matchesScope(message?.payload ?? {})) return;
+    const payload = message?.payload ?? {};
+    if (!this.matchesScope(payload)) return;
     this.pulseLive();
+    // An operator message (a note, or a command that starts a new turn) is a
+    // timeline row with no gateway twin, so nothing else would put it on the
+    // open session until the agent's next call. Re-read that session's
+    // timeline now: the person who typed it is usually watching.
+    if (
+      payload.activity_type === 'agent_control_message' &&
+      payload.runtime_session_id &&
+      payload.runtime_session_id === this.activeSessionId
+    ) {
+      void this.refreshActivity(payload.runtime_session_id);
+    }
     this.scheduleScopeRefresh();
+  }
+
+  /** Re-read one loaded session's activity timeline in place. */
+  private async refreshActivity(sessionId: string): Promise<void> {
+    if (!this.loadedActivity[sessionId]) return;
+    try {
+      const activity =
+        await getAccountRuntimeSessionActivityTimeline(sessionId);
+      // The selection may have moved while the read was in flight.
+      if (!this.loadedActivity[sessionId]) return;
+      this.loadedActivity = {
+        ...this.loadedActivity,
+        [sessionId]: activity.items || [],
+      };
+    } catch (error) {
+      // The scheduled scope refresh still runs; a failed read here only
+      // means the row shows up a little later.
+      console.error('Failed to refresh session activity:', error);
+    }
   }
 
   private handleGatewayActivity(message: any): void {
@@ -2427,7 +2459,7 @@ export class PreloopSessionObserver extends LitElement {
             <sl-icon slot="prefix" name="list-columns-reverse"></sl-icon>
             Requests
           </sl-button>
-          ${this.renderTalkButton()}
+          ${this.renderEvidenceExportButton(session)} ${this.renderTalkButton()}
           <sl-button size="small" @click=${() => this.reloadActiveSession()}>
             Refresh
           </sl-button>
@@ -2452,6 +2484,29 @@ export class PreloopSessionObserver extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Open the period export pre-filtered to this session (#1088), so its
+   * transcripts, screenshots and files leave with a sha256 each.
+   */
+  private renderEvidenceExportButton(session: ObservedSession | null) {
+    // Synthetic observer rows (gateway-only traffic) have no session to export.
+    if (!session || !isUuid(session.id)) return nothing;
+    return html`<sl-button
+      size="small"
+      data-testid="add-to-evidence-export"
+      href=${sessionExportHref({
+        id: session.id,
+        started_at: session.startedAt,
+        last_activity_at: session.lastActivityAt,
+        ended_at: session.endedAt,
+      })}
+      title="Open the signed period export limited to this session's artifacts"
+    >
+      <sl-icon slot="prefix" name="box-arrow-up"></sl-icon>
+      Add to evidence export
+    </sl-button>`;
   }
 
   /**

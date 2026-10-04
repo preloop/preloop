@@ -410,9 +410,13 @@ async function readBinary(
 /** One request. Callers must not retry a failed or slow export. */
 export async function createPeriodExport(
   start: string,
-  end: string
+  end: string,
+  runtimeSessionId?: string | null
 ): Promise<BinaryDownload> {
   const query = new URLSearchParams({ start, end });
+  if (runtimeSessionId) {
+    query.set('runtime_session_id', runtimeSessionId);
+  }
   const response = await fetchWithAuth(
     `/api/v1/retention/exports?${query.toString()}`,
     { method: 'POST' }

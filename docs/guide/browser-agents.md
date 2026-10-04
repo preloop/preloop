@@ -66,6 +66,24 @@ ended is accepted, including a key pinned to that session, so an adapter
 can flush after the run. The model gateway still rejects that key for
 inference.
 
+## Browser Use
+
+The `preloop-browser-use` package in
+[`runtime-plugins/browser-use-preloop`](https://github.com/preloop/preloop/tree/main/runtime-plugins/browser-use-preloop)
+is a Browser Use `on_step_end` callback. It posts each step with its
+screenshot as `source: browser_use`, in batches, and never stops the agent
+when Preloop is unreachable:
+
+```python
+from preloop_browser_use import PreloopBrowserUseReporter
+
+reporter = PreloopBrowserUseReporter.from_env()
+history = await reporter.run(agent)
+```
+
+Setup, the field mapping and the supported versions are in its
+[README](https://github.com/preloop/preloop/blob/main/runtime-plugins/browser-use-preloop/README.md).
+
 ## Screenshots
 
 Add a `screenshot` object to a step:

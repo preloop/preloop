@@ -105,3 +105,50 @@ class RuntimeSessionArtifactListOut(BaseModel):
     next_cursor: Optional[str] = Field(
         None, description="Pass as `cursor` for the next page; null on the last page."
     )
+
+
+class ArtifactExcerpt(BaseModel):
+    """Redacted text of the best matching chunk, with hit offsets."""
+
+    text: str
+    highlights: list[tuple[int, int]] = Field(
+        default_factory=list,
+        description="`[start, end)` character offsets of query hits in `text`.",
+    )
+
+
+class ArtifactSearchItem(RuntimeSessionArtifactOut):
+    """The session artifact descriptor plus its session and agent names."""
+
+    session_title: Optional[str] = None
+    agent_name: Optional[str] = None
+    excerpt: Optional[ArtifactExcerpt] = Field(
+        None, description="Set when `q` is given and a text chunk matched."
+    )
+    cue_start: Optional[float] = Field(
+        None,
+        description="Transcript only: start in seconds of the cue the excerpt is in.",
+    )
+
+
+class ArtifactSearchFacets(BaseModel):
+    """Counts for the current filter, cursor excluded."""
+
+    kind: dict[str, int] = Field(default_factory=dict)
+    site: dict[str, int] = Field(
+        default_factory=dict, description="Counts by `labels.site`."
+    )
+
+
+class ArtifactSearchOut(BaseModel):
+    """One page of account-wide artifact search, newest first."""
+
+    items: list[ArtifactSearchItem]
+    next_cursor: Optional[str] = Field(
+        None, description="Pass as `cursor` for the next page; null on the last page."
+    )
+    facets: ArtifactSearchFacets
+    facets_truncated: bool = Field(
+        False,
+        description="More than 10000 rows matched; facets count the newest 10000.",
+    )

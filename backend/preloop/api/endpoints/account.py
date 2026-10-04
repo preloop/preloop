@@ -31,7 +31,9 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_key,
     crud_attention_dismissal,
+    crud_audit_log,
     crud_approval_workflow,
+    crud_flow,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
     crud_managed_agent_credential,
@@ -95,6 +97,7 @@ from preloop.schemas.gateway_usage import (
 from preloop.schemas.subject_governance import (
     AccountGovernanceDefaults,
     AccountGovernanceDefaultsResponse,
+    FlowGovernanceResponse,
     SubjectGovernanceConfig,
     SubjectGovernanceResponse,
 )
@@ -136,6 +139,7 @@ from preloop.services.model_credentials import (
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.services.subject_governance import (
+    SUBJECT_TYPE_FLOWS,
     SUBJECT_TYPE_MANAGED_AGENTS,
     get_account_governance_defaults,
     get_subject_governance,
@@ -1175,6 +1179,115 @@ def get_session_artifact_usage(
     )
 
 
+class SessionArtifactSettingsResponse(BaseModel):
+    """Account artifact storage settings (#1102)."""
+
+    audio_storage_enabled: bool = Field(
+        description="Store raw audio deposited by agents. Off by default."
+    )
+    audio_retention_days: int = Field(
+        description="Days raw audio is kept before its bytes expire."
+    )
+    audio_retention_max_days: int = Field(
+        description="Longest allowed audio retention (the session retention)."
+    )
+    updated_by_user_id: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SessionArtifactSettingsUpdate(BaseModel):
+    """Change artifact storage settings; omitted fields are left as they are."""
+
+    audio_storage_enabled: Optional[bool] = None
+    audio_retention_days: Optional[int] = Field(default=None, ge=1)
+
+
+def _artifact_settings_response(account: Account) -> SessionArtifactSettingsResponse:
+    from preloop.services import audio_storage
+
+    resolved = audio_storage.resolve(account.meta_data)
+    return SessionArtifactSettingsResponse(**resolved.__dict__)
+
+
+@router.get(
+    "/account/session-artifacts/settings",
+    response_model=SessionArtifactSettingsResponse,
+)
+@require_permission("view_policies")
+def get_session_artifact_settings(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactSettingsResponse:
+    """Return whether raw audio is stored, and for how long."""
+    return _artifact_settings_response(account)
+
+
+@router.put(
+    "/account/session-artifacts/settings",
+    response_model=SessionArtifactSettingsResponse,
+    responses={
+        403: {"description": "Caller may not manage account policies"},
+        422: {"description": "audio_retention_days_invalid"},
+    },
+)
+@require_permission("manage_policies")
+def update_session_artifact_settings(
+    payload: SessionArtifactSettingsUpdate,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactSettingsResponse:
+    """Opt the account in or out of raw audio storage; admin only, audited.
+
+    Uses ``manage_policies`` like the retention settings: it governs what
+    the account keeps. Every change writes an ``artifact_settings_updated``
+    audit row with the before and after value of each changed field; a
+    request that changes nothing writes no row.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from preloop.services import audio_storage
+
+    before = audio_storage.resolve(account.meta_data)
+    try:
+        updated = audio_storage.apply_update(
+            account.meta_data,
+            audio_storage_enabled=payload.audio_storage_enabled,
+            audio_retention_days=payload.audio_retention_days,
+            user_id=current_user.id,
+            now=datetime.now(UTC),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    after = audio_storage.resolve(updated)
+    changed = {
+        field: {"from": getattr(before, field), "to": getattr(after, field)}
+        for field in ("audio_storage_enabled", "audio_retention_days")
+        if getattr(before, field) != getattr(after, field)
+    }
+    if not changed:
+        # A no-op request neither logs nor restamps who changed it.
+        return _artifact_settings_response(account)
+    account.meta_data = updated
+    flag_modified(account, "meta_data")
+    db.add(account)
+    crud_audit_log.log_action(
+        db,
+        account_id=account.id,
+        user_id=current_user.id,
+        action=audio_storage.AUDIT_ACTION,
+        resource_type="account_settings",
+        resource_id="artifacts",
+        status="success",
+        details={"changed": changed},
+        commit=False,
+    )
+    db.commit()
+    db.refresh(account)
+    return _artifact_settings_response(account)
+
+
 @router.patch("/account/details", response_model=AccountDetailsResponse)
 async def update_account_details(
     update_data: AccountDetailsUpdate,
@@ -1657,6 +1770,134 @@ async def update_account_governance_defaults_endpoint(
     return _governance_defaults_response(account)
 
 
+def _validate_governance_workflow(
+    db: Session, account: Account, approval_workflow_id: Optional[str]
+) -> None:
+    """Reject a governance workflow pin that is malformed or foreign."""
+    if not approval_workflow_id:
+        return
+    try:
+        workflow_id = UUID(approval_workflow_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid approval workflow id",
+        )
+    workflow = crud_approval_workflow.get(
+        db, id=workflow_id, account_id=str(account.id)
+    )
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Approval workflow not found in this account",
+        )
+
+
+def _require_account_flow(db: Session, account: Account, flow_id: str) -> None:
+    """404 unless ``flow_id`` names a flow owned by this account."""
+    try:
+        UUID(flow_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Flow not found"
+        )
+    if crud_flow.get(db, id=flow_id, account_id=str(account.id)) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Flow not found"
+        )
+
+
+def _flow_governance_response(account: Account, flow_id: str) -> FlowGovernanceResponse:
+    """Build the per-flow governance response (override + inherited defaults)."""
+    meta = account.meta_data or {}
+    config = get_subject_governance(
+        meta, subject_type=SUBJECT_TYPE_FLOWS, subject_id=flow_id
+    )
+    return FlowGovernanceResponse(
+        subject_type=SUBJECT_TYPE_FLOWS,
+        subject_id=flow_id,
+        config=SubjectGovernanceConfig.model_validate(config),
+        has_override=bool(config),
+        account_defaults=AccountGovernanceDefaults.model_validate(
+            get_account_governance_defaults(meta)
+        ),
+    )
+
+
+@router.get(
+    "/account/governance/flows/{flow_id}",
+    response_model=FlowGovernanceResponse,
+)
+@require_permission("view_flows")
+def get_account_flow_governance(
+    flow_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> FlowGovernanceResponse:
+    """Per-flow governance override for every execution of one flow.
+
+    Sync on purpose: FastAPI runs it in the threadpool, so the sync DB
+    session never blocks the event loop.
+    """
+    _require_account_flow(db, account, flow_id)
+    return _flow_governance_response(account, flow_id)
+
+
+@router.put(
+    "/account/governance/flows/{flow_id}",
+    response_model=FlowGovernanceResponse,
+)
+@require_permission("edit_flows")
+def update_account_flow_governance(
+    flow_id: str,
+    payload: SubjectGovernanceConfig,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> FlowGovernanceResponse:
+    """Store a governance override for one flow's executions."""
+    _require_account_flow(db, account, flow_id)
+    _validate_governance_workflow(db, account, payload.approval_workflow_id)
+    account.meta_data = set_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_FLOWS,
+        subject_id=flow_id,
+        config=payload.model_dump(),
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    invalidate_account_governance_cache(str(account.id))
+    return _flow_governance_response(account, flow_id)
+
+
+@router.delete(
+    "/account/governance/flows/{flow_id}",
+    response_model=FlowGovernanceResponse,
+)
+@require_permission("edit_flows")
+def reset_account_flow_governance(
+    flow_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> FlowGovernanceResponse:
+    """Drop the flow's override so it inherits the account policy again."""
+    _require_account_flow(db, account, flow_id)
+    account.meta_data = set_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_FLOWS,
+        subject_id=flow_id,
+        config=None,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    invalidate_account_governance_cache(str(account.id))
+    return _flow_governance_response(account, flow_id)
+
+
 @router.get(
     "/agents/{agent_id}/governance",
     response_model=SubjectGovernanceResponse,
@@ -1707,22 +1948,7 @@ async def update_account_managed_agent_governance(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
-    if payload.approval_workflow_id:
-        try:
-            workflow_id = UUID(payload.approval_workflow_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid approval workflow id",
-            )
-        workflow = crud_approval_workflow.get(
-            db, id=workflow_id, account_id=str(account.id)
-        )
-        if workflow is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Approval workflow not found in this account",
-            )
+    _validate_governance_workflow(db, account, payload.approval_workflow_id)
     account.meta_data = set_subject_governance(
         account.meta_data or {},
         subject_type=SUBJECT_TYPE_MANAGED_AGENTS,

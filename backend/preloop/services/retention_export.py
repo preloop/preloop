@@ -26,6 +26,15 @@ the signature shows we built it, both of which are claims about bytes, not
 about the world. The signing key lives on the same platform that wrote the
 records. Saying so here is cheaper than having someone infer it.
 
+Session artifacts (#1088) are the one place bytes are inlined: each available
+artifact becomes ``artifacts/<session_id>/<artifact_id>-<safe name>`` with its
+decrypted bytes, and ``artifacts/manifest.json`` lists every artifact in the
+period as an A2A ``Artifact`` whose single ``Part`` points at the member with
+``url: "artifact:<path>"``. Evicted artifacts are listed with
+``metadata.availability`` and no member. Artifact bytes are written one at a
+time into a spooled temporary file, never all held at once, and the total is
+capped by ``RETENTION_EXPORT_MAX_ARTIFACT_BYTES``.
+
 Bounded on purpose: ``RETENTION_EXPORT_MAX_ROWS`` per record class, and going
 over is an error telling the caller to narrow the period. A compliance export
 that silently drops the rows past a limit is worse than no export.
@@ -38,21 +47,26 @@ import hashlib
 import io
 import json
 import logging
+import re
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, BinaryIO, Iterable, Iterator, Optional, Sequence
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from preloop.config import settings
 from preloop.cra.evidence_pack import canonical_manifest_json
 from preloop.models.crud import crud_audit_log
+from preloop.models.crud import runtime_session_artifact as artifact_crud
 from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.models.audit_log import AuditLog
 from preloop.models.models.flow_artifact import FlowArtifact
 from preloop.models.models.legal_hold import LegalHold
+from preloop.models.models.runtime_session_artifact import RuntimeSessionArtifact
+from preloop.services.artifact_shapes import make_payload, to_a2a_artifact
 from preloop.services.legal_hold import hold_summary
 from preloop.services.record_signing import (
     PAYLOAD_PERIOD_EXPORT,
@@ -70,6 +84,13 @@ MEMBER_AUDIT = "audit/audit_log.jsonl"
 MEMBER_APPROVALS = "approvals/approval_request.jsonl"
 MEMBER_EVIDENCE = "evidence/receipts.jsonl"
 MEMBER_HOLDS = "holds/legal_hold.jsonl"
+MEMBER_ARTIFACT_MANIFEST = "artifacts/manifest.json"
+ARTIFACT_MEMBER_PREFIX = "artifacts/"
+ARTIFACT_URL_SCHEME = "artifact:"
+
+#: Archives up to this size stay in memory; larger ones spill to disk.
+_SPOOL_BYTES = 64 * 1024 * 1024
+_STREAM_CHUNK = 1024 * 1024
 
 AUDIT_ACTION_EXPORT = "retention_period_export"
 
@@ -86,7 +107,9 @@ class PeriodExportError(ValueError):
 class PeriodExport:
     """One built archive and the manifest that describes it."""
 
-    archive: bytes
+    file: BinaryIO
+    size_bytes: int
+    sha256: str
     manifest: dict[str, Any]
     counts: dict[str, int]
     #: Detached signature over the manifest digest, or None when the account
@@ -94,9 +117,19 @@ class PeriodExport:
     signature: Optional[dict[str, Any]] = None
 
     @property
-    def sha256(self) -> str:
-        """Digest of the archive bytes as served."""
-        return hashlib.sha256(self.archive).hexdigest()
+    def archive(self) -> bytes:
+        """The whole archive in memory. Prefer :meth:`iter_chunks` to serve it."""
+        self.file.seek(0)
+        return self.file.read()
+
+    def iter_chunks(self) -> Iterator[bytes]:
+        """Yield the archive in bounded chunks, then close the spool."""
+        try:
+            self.file.seek(0)
+            while chunk := self.file.read(_STREAM_CHUNK):
+                yield chunk
+        finally:
+            self.file.close()
 
     @property
     def manifest_sha256(self) -> str:
@@ -295,6 +328,136 @@ def _hold_rows(
     return [hold_summary(row) for row in _fetch(db, stmt)]
 
 
+def _safe_name(value: Optional[str], fallback: str) -> str:
+    """A file name that cannot leave its directory or upset a tar reader."""
+    base = (value or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._")[:120]
+    return base or fallback
+
+
+def _max_artifact_bytes() -> int:
+    return max(1, int(settings.retention_export_max_artifact_bytes))
+
+
+def _artifact_rows(
+    db: Session,
+    *,
+    account_id: Any,
+    start: datetime,
+    end: datetime,
+    runtime_session_id: Any = None,
+) -> list[tuple[RuntimeSessionArtifact, bool]]:
+    """Session artifacts created in the period, with whether bytes remain.
+
+    The ciphertext column is deferred; only a null check rides along, so the
+    plan is built without reading any payload.
+
+    Expiry is not a filter: an artifact past ``expires_at`` whose bytes are
+    still present (because it, or its session, is held) is exported.
+    """
+    stmt = (
+        select(
+            RuntimeSessionArtifact,
+            RuntimeSessionArtifact.ciphertext.is_not(None).label("has_bytes"),
+        )
+        .options(defer(RuntimeSessionArtifact.ciphertext))
+        .where(
+            RuntimeSessionArtifact.account_id == account_id,
+            RuntimeSessionArtifact.created_at >= start,
+            RuntimeSessionArtifact.created_at < end,
+        )
+        .order_by(RuntimeSessionArtifact.created_at, RuntimeSessionArtifact.id)
+    )
+    if runtime_session_id is not None:
+        stmt = stmt.where(
+            RuntimeSessionArtifact.runtime_session_id == runtime_session_id
+        )
+    limit = _max_rows()
+    rows = [(row, bool(has)) for row, has in db.execute(stmt.limit(limit + 1)).all()]
+    if len(rows) > limit:
+        raise PeriodExportError(
+            "period_too_large",
+            f"the period holds more than {limit} artifacts; narrow the date "
+            "range and export it in parts",
+        )
+    return rows
+
+
+@dataclass(frozen=True)
+class _ArtifactPlan:
+    row: RuntimeSessionArtifact
+    member: Optional[str]
+    descriptor: dict[str, Any]
+
+
+def _plan_artifacts(
+    rows: Sequence[tuple[RuntimeSessionArtifact, bool]],
+) -> list[_ArtifactPlan]:
+    """Decide each artifact's member path and A2A descriptor, no bytes read."""
+    plans = []
+    for row, has_bytes in rows:
+        artifact_id = str(row.id)
+        filename = _safe_name(row.name, row.kind)
+        path = (
+            f"{ARTIFACT_MEMBER_PREFIX}{row.runtime_session_id}/{artifact_id}-{filename}"
+        )
+        available = row.availability == "available" and has_bytes
+        labels = dict(row.labels or {})
+        payload = make_payload(
+            kind=row.kind,
+            name=filename,
+            content_type=row.content_type,
+            uri=f"{ARTIFACT_URL_SCHEME}{path}",
+            labels=labels,
+            sha256=row.sha256,
+        )
+        metadata = {
+            "kind": row.kind,
+            "labels": labels,
+            "sha256": row.sha256,
+            "size_bytes": row.size_bytes,
+            "producer": row.producer,
+            "runtime_session_id": str(row.runtime_session_id),
+            "created_at": _iso(row.created_at),
+            "legal_hold": bool(row.legal_hold),
+            "availability": (
+                "available"
+                if available
+                else (
+                    "evicted" if row.availability == "available" else row.availability
+                )
+            ),
+        }
+        descriptor = to_a2a_artifact(
+            artifact_id, row.name or filename, [payload], metadata=metadata
+        )
+        plans.append(
+            _ArtifactPlan(
+                row=row, member=path if available else None, descriptor=descriptor
+            )
+        )
+    return plans
+
+
+class _HashingWriter(io.RawIOBase):
+    """Write-through file wrapper that digests and counts what passes."""
+
+    def __init__(self, target: BinaryIO) -> None:
+        self._target = target
+        self.digest = hashlib.sha256()
+        self.size = 0
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data) -> int:  # type: ignore[override]
+        view = bytes(data)
+        self._target.write(view)
+        self.digest.update(view)
+        self.size += len(view)
+        return len(view)
+
+
 def _jsonl(rows: Iterable[dict[str, Any]]) -> bytes:
     """One JSON object per line, sorted keys, so a diff is readable."""
     buffer = io.BytesIO()
@@ -337,11 +500,15 @@ def build_period_export(
     generated_at: Optional[datetime] = None,
     record_classes: Sequence[str] = RECORD_CLASSES,
     sign: bool = True,
+    runtime_session_id: Any = None,
 ) -> PeriodExport:
     """Build the archive for one account and one half-open period.
 
     ``start`` is inclusive and ``end`` exclusive, so consecutive periods tile
     without a row landing in both bundles or in neither.
+
+    ``runtime_session_id`` limits the artifact members to one session; the
+    record classes still cover the whole period.
     """
     if end <= start:
         raise PeriodExportError("invalid_period", "end must be after start")
@@ -365,7 +532,41 @@ def build_period_export(
     bodies[MEMBER_HOLDS] = _jsonl(holds)
     counts["legal_holds"] = len(holds)
 
-    members = [_member_entry(name, body) for name, body in sorted(bodies.items())]
+    plans = _plan_artifacts(
+        _artifact_rows(
+            db,
+            account_id=account_id,
+            start=start,
+            end=end,
+            runtime_session_id=runtime_session_id,
+        ),
+    )
+    included = [plan for plan in plans if plan.member]
+    artifact_bytes = sum(int(plan.row.size_bytes or 0) for plan in included)
+    cap = _max_artifact_bytes()
+    if artifact_bytes > cap:
+        raise PeriodExportError(
+            "export_too_large",
+            f"export_too_large: the export would carry {len(included)} artifacts "
+            f"totalling {artifact_bytes} bytes, over the {cap} byte cap; narrow "
+            "the date range or export one session at a time",
+        )
+    bodies[MEMBER_ARTIFACT_MANIFEST] = canonical_manifest_json(
+        [plan.descriptor for plan in plans]
+    )
+    counts["artifacts"] = len(included)
+    counts["artifacts_unavailable"] = len(plans) - len(included)
+
+    members = [_member_entry(name, body) for name, body in bodies.items()]
+    members += [
+        {
+            "name": plan.member,
+            "size_bytes": int(plan.row.size_bytes),
+            "sha256": plan.row.sha256,
+        }
+        for plan in included
+    ]
+    members.sort(key=lambda entry: entry["name"])
     stamp = generated_at or datetime.now(UTC)
     manifest = {
         "schema": EXPORT_MANIFEST_SCHEMA,
@@ -381,6 +582,13 @@ def build_period_export(
         # covers both and #558 has one thing to sign.
         "members_digest": hashlib.sha256(canonical_manifest_json(members)).hexdigest(),
         "counts": counts,
+        # Which artifacts the bundle carries. A session-limited export says
+        # so under the signature, so it cannot pass for the whole period.
+        "artifact_scope": {
+            "runtime_session_id": (
+                str(runtime_session_id) if runtime_session_id is not None else None
+            ),
+        },
         "retention": {
             record_class: resolve_retention(
                 account.meta_data, record_class=record_class
@@ -419,27 +627,58 @@ def build_period_export(
             signed_at=stamp,
         )
 
-    buffer = io.BytesIO()
+    spool = tempfile.SpooledTemporaryFile(max_size=_SPOOL_BYTES)
+    writer = _HashingWriter(spool)  # type: ignore[arg-type]
     # tarfile's "w:gz" mode stamps the gzip header with the current time, so
     # two builds straddling a second boundary would differ. Open the gzip
     # stream ourselves with a fixed mtime (and no file name) instead.
     with (
         gzip.GzipFile(
-            filename="", mode="wb", compresslevel=9, fileobj=buffer, mtime=0
+            filename="", mode="wb", compresslevel=9, fileobj=writer, mtime=0
         ) as gz,
         tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar,
     ):
         _add(tar, EXPORT_MANIFEST_NAME, manifest_body)
         for name, body in sorted(bodies.items()):
             _add(tar, name, body)
+        for plan in included:
+            _add(tar, plan.member, _artifact_bytes(db, plan.row))
         if signature is not None:
             _add(tar, SIGNATURE_MEMBER_NAME, canonical_manifest_json(signature))
     return PeriodExport(
-        archive=buffer.getvalue(),
+        file=spool,  # type: ignore[arg-type]
+        size_bytes=writer.size,
+        sha256=writer.digest.hexdigest(),
         manifest=manifest,
         counts=counts,
         signature=signature,
     )
+
+
+def _artifact_bytes(db: Session, row: RuntimeSessionArtifact) -> bytes:
+    """Decrypt one artifact, check it against its row, then drop the ciphertext.
+
+    The manifest was written from the stored digest before any bytes were
+    read, so a mismatch here fails the export rather than shipping an archive
+    whose manifest lies.
+    """
+    try:
+        body = artifact_crud.decrypt(row)
+    except ValueError as exc:
+        raise PeriodExportError(
+            "artifact_unreadable",
+            f"artifact {row.id} could not be read ({exc}); export aborted",
+        ) from exc
+    finally:
+        db.expire(row, ["ciphertext"])
+    if hashlib.sha256(body).hexdigest() != row.sha256 or len(body) != int(
+        row.size_bytes
+    ):
+        raise PeriodExportError(
+            "artifact_integrity",
+            f"artifact {row.id} does not match its stored digest; export aborted",
+        )
+    return body
 
 
 def audit_period_export(
@@ -469,11 +708,12 @@ def audit_period_export(
                 "period_start": period.get("start"),
                 "period_end": period.get("end"),
                 "counts": export.counts,
+                "artifact_scope": export.manifest.get("artifact_scope"),
                 "archive_sha256": export.sha256,
                 "members_digest": export.manifest.get("members_digest"),
                 "manifest_sha256": export.manifest_sha256,
                 "signing_key_id": export.key_id,
-                "size_bytes": len(export.archive),
+                "size_bytes": export.size_bytes,
             },
         )
     except Exception:

@@ -7,10 +7,10 @@
 // the session over the session-scoped websocket, and turns a typed line into
 // an operator note and `a`/`d` into an approval decision.
 //
-// Tier 1 only. A hook-governed agent cannot be given a new turn: a note is
-// read at its next tool or model call, and the UI says so. Sending commands
-// that start a new turn is Agent Control's job (#1150); attachInput is the
-// seam for it.
+// A hook-governed agent cannot be given a new turn: a note is read at its
+// next tool or model call, and the UI says so. A session run by a managed
+// agent with a live Agent Control connection switches to command mode, where
+// a typed line starts a new turn (#1150, sessions_attach_command.go).
 //
 // Nothing here bypasses a permission. Notes and decisions use the same REST
 // endpoints as `preloop notes send` and `preloop approvals approve`, so the
@@ -103,7 +103,15 @@ Talk back by typing:
   a <id> / d <id>   approve or decline a specific one (short id is enough)
 
 The agent reads a note at its next tool or model call, not as typed input.
---read-only turns both off. Detach with Ctrl-C; the session keeps running. A
+
+Command mode: when the session belongs to a managed agent with a live Agent
+Control connection (Hermes, a Claude workspace, the Codex sidecar), a typed
+line starts a new turn instead, through the console's command path, and its
+delivery (queued, delivered, started, finished) is shown inline. /note <text>
+sends a note anyway and /mode prints the current mode. Any other session
+stays in note mode and the attach says why.
+
+--read-only turns all of this off. Detach with Ctrl-C; the session keeps running. A
 dropped connection is retried with backoff, and the events missed while it
 was down are replayed once it is back.
 
@@ -118,8 +126,8 @@ timeline items as GET /runtime-sessions/{id}/activity returns them (they
 carry "activity_type") and pending approvals as GET /approval-requests
 returns them (they carry "approval_workflow_id"). Notices go to stderr.
 
-Permissions: attaching needs session read, notes need the agent control
-permission and decisions need the approval decision permission. A refusal
+Permissions: attaching needs session read, notes and commands need the
+agent control permission and decisions need the approval decision permission. A refusal
 is printed and the attach continues.
 
 Examples:
@@ -230,6 +238,7 @@ type attachSession struct {
 	seen    map[string]bool
 	pending []attachApproval
 	ended   bool
+	control attachControl
 }
 
 // attachApproval is a pending approval this attach can decide.
@@ -250,6 +259,9 @@ func (s *attachSession) run(ctx context.Context) error {
 	detail, err := s.fetchDetail()
 	if err != nil {
 		return err
+	}
+	if detail.EndedAt.IsZero() && !s.opts.readOnly {
+		s.loadControl()
 	}
 	s.printHeader(detail)
 
@@ -354,9 +366,16 @@ func (s *attachSession) printHeader(detail attachDetail) {
 		s.notice("this session has ended; replaying the last " + s.opts.since.String())
 		return
 	}
-	if s.opts.readOnly {
+	control := s.currentControl()
+	switch {
+	case s.opts.readOnly:
 		s.notice("read-only: typed lines are not sent")
-	} else {
+	case control.isCommand():
+		s.notice(control.indicator())
+	default:
+		if control.Mode != "" {
+			s.notice(control.indicator())
+		}
 		s.notice(attachNoteNotice + "; type a line and press Enter to send one")
 	}
 	s.notice("Ctrl-C detaches; the session keeps running")
@@ -721,25 +740,35 @@ func (s *attachSession) readInput(ctx context.Context) {
 			}
 			continue
 		}
-		s.handleInput(line)
+		s.handleInput(ctx, line)
 	}
 }
 
-// attachInput is what one typed line asks for. #1150 adds a command kind for
-// Agent Control agents; tier 1 has notes and decisions only.
+// attachInput is what one typed line asks for.
 type attachInput struct {
-	kind       string // "note", "approve", "decline", "" (nothing to do)
+	kind       string // "note", "command", "approve", "decline", "mode", "" (nothing to do)
 	text       string
 	approvalID string
 }
 
 // parseAttachInput reads one line against the approvals currently pending.
 // A bare a or d, or one followed by an id prefix, is a decision only while
-// something is pending; at any other time it is a one-letter note.
-func parseAttachInput(line string, pending []attachApproval) (attachInput, error) {
+// something is pending. "/note <text>" is always a note and "/mode" shows
+// the mode. Anything else is a command in command mode and a note otherwise.
+func parseAttachInput(line string, pending []attachApproval, commandMode bool) (attachInput, error) {
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
 		return attachInput{}, nil
+	}
+	if strings.EqualFold(trimmed, attachModeVerb) {
+		return attachInput{kind: "mode"}, nil
+	}
+	if head := strings.Fields(trimmed)[0]; strings.EqualFold(head, attachNotePrefix) {
+		text := strings.TrimSpace(trimmed[len(head):])
+		if text == "" {
+			return attachInput{}, errors.New("usage: /note <text>")
+		}
+		return attachInput{kind: "note", text: text}, nil
 	}
 	fields := strings.Fields(trimmed)
 	verb := strings.ToLower(fields[0])
@@ -765,20 +794,28 @@ func parseAttachInput(line string, pending []attachApproval) (attachInput, error
 			return attachInput{kind: kind, approvalID: match}, nil
 		}
 	}
+	if commandMode {
+		return attachInput{kind: "command", text: line}, nil
+	}
 	return attachInput{kind: "note", text: line}, nil
 }
 
-func (s *attachSession) handleInput(line string) {
+func (s *attachSession) handleInput(ctx context.Context, line string) {
 	s.mu.Lock()
 	pending := append([]attachApproval(nil), s.pending...)
+	control := s.control
 	s.mu.Unlock()
 
-	input, err := parseAttachInput(line, pending)
+	input, err := parseAttachInput(line, pending, control.isCommand())
 	if err != nil {
 		s.notice(err.Error())
 		return
 	}
 	switch input.kind {
+	case "mode":
+		s.notice(s.loadControl().indicator())
+	case "command":
+		s.sendCommand(ctx, control, input.text)
 	case "note":
 		var note operatorNoteResponse
 		body := operatorNoteCreate{Text: input.text, RuntimeSessionID: s.sessionID}
