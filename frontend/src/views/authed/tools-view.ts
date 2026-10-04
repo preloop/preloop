@@ -72,6 +72,7 @@ import { consoleDialogStyles } from '../../styles/console-dialog';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { ruleActionLabel } from '../../utils/rule-actions';
 import { Router } from '../../router';
+import '../../components/view-header';
 
 type ToolsTab = 'mcp' | 'native';
 

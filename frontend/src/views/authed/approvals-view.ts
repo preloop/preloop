@@ -67,6 +67,7 @@ import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { debugLog } from '../../utils/debug';
+import '../../components/view-header';
 
 /**
  * Ids the operator has already had on screen, so a request that arrived since

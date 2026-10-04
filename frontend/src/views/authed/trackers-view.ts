@@ -7,6 +7,7 @@ import '../../components/unlocked-tools-review-dialog.ts';
 import type { Tracker } from '../../components/tracker-item.ts';
 import type { TrackerList } from '../../components/tracker-list.ts';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import '../../components/view-header';
 
 @customElement('trackers-view')
 export class TrackersView extends LitElement {

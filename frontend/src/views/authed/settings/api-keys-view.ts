@@ -47,6 +47,7 @@ import {
   type ScopedToolRules,
 } from '../../../utils/scoped-governance';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
+import '../../../components/view-header';
 
 interface GovernanceToolDefinition {
   name: string;

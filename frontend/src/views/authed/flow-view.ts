@@ -60,6 +60,7 @@ import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import '../../components/capability-extension';
+import '../../components/view-header';
 
 /**
  * Runtime ids as the product spells them.

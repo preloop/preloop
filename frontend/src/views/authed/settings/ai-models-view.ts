@@ -64,6 +64,7 @@ import {
 } from '../../../utils/view-mode';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
+import '../../../components/view-header';
 
 const VIEW_MODE_KEY = 'preloop.models.view_mode';
 

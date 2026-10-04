@@ -35,6 +35,7 @@ import type {
 import consoleStyles from '../../styles/console-styles.css?inline';
 import '../../components/pagination-controls.ts';
 import { getStatusVariant } from '../../utils/verdict';
+import '../../components/view-header';
 
 @customElement('issues-dependencies-view')
 export class IssuesDependenciesView extends LitElement {

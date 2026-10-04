@@ -20,6 +20,7 @@ import {
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import '../../../components/view-header';
 
 @customElement('security-view')
 export class SecurityView extends LitElement {

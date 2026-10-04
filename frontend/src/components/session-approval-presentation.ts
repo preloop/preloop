@@ -10,6 +10,7 @@ import {
   type SessionApprovalState,
   type SessionLiveActivity,
 } from './session-live-activity';
+import './session-approval-card';
 
 /** Shared inline decision wiring; surfaces retain their reactive state and visibility. */
 export function renderSessionApproval(

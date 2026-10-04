@@ -75,6 +75,7 @@ import {
   type ListViewMode,
   type NarrowViewportSubscription,
 } from '../../utils/view-mode';
+import '../../components/view-header';
 
 export { flowTriggerSummary };
 
