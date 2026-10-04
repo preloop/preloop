@@ -14,6 +14,7 @@ from preloop.api.auth.jwt import (
     get_user_from_token_if_valid_sync,
     _managed_agent_for_api_key,
 )
+from preloop.api.auth.key_scopes import is_device_scoped_api_key
 from preloop.models import models
 from preloop.models.db.gateway_session import release_gateway_session
 from preloop.models.crud import (
@@ -214,6 +215,15 @@ def _resolve_bearer_context(
     """
     if user:
         api_key = crud_api_key.get_by_key(db, key=token)
+        # This path never calls enforce_api_key_route_scope. A key whose only
+        # scope is report_discovery must not become a gateway principal.
+        presented_key = api_key or getattr(user, "_auth_api_key", None)
+        if is_device_scoped_api_key(presented_key):
+            logger.info(
+                "Denied device-scoped API key %s on the model gateway",
+                getattr(presented_key, "id", None),
+            )
+            return None
         if api_key is not None:
             if not api_key.is_active or api_key.is_expired:
                 return None

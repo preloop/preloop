@@ -63,6 +63,23 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
                 pending = pending.filter(
                     self.model.expires_at < halted.activated_at.replace(tzinfo=None)
                 )
+            # The sealed original is deleted on every terminal status,
+            # including this bulk expiry. update_approval_request does the
+            # same for a single row; a query.update() would leave the
+            # ciphertext on the expired row.
+            from sqlalchemy.orm.attributes import flag_modified
+
+            from preloop.services.sensitive_data.reference import (
+                strip_sealed_original,
+            )
+
+            for row in pending.all():
+                cleaned, removed = strip_sealed_original(
+                    getattr(row, "tool_args", None)
+                )
+                if removed:
+                    row.tool_args = cleaned
+                    flag_modified(row, "tool_args")
             expired += pending.update(
                 {"status": "expired", "resolved_at": now},
                 synchronize_session="fetch",

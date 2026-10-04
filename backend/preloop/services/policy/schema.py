@@ -61,6 +61,7 @@ Example YAML:
       require_approval_for_new_tools: true
 """
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
@@ -906,6 +907,89 @@ class SensitiveDataRule(BaseModel):
         return str(getattr(self.action, "value", self.action))
 
 
+class ApproverView(str, Enum):
+    """What an approver sees for a reference-only call."""
+
+    REDACTED = "redacted"
+    ORIGINAL_UNTIL_DECIDED = "original_until_decided"
+
+
+#: JSONPath subset for ``keep_fields``: dotted keys, ``[n]`` and ``[*]``.
+KEEP_FIELD_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_\-]*|\[\d+\]|\[\*\])+$")
+MAX_KEEP_FIELDS = 32
+
+
+class ReferenceOnlyRule(BaseModel):
+    """Store references, never payloads, for the calls in scope (#1124).
+
+    Every store that would hold the arguments or the result of an in-scope
+    call holds a reference record instead: tool, server, principal, rule
+    id, the values named by ``keep_fields``, HMAC-SHA256 fingerprints of
+    the arguments and the result under a per-account salt, byte sizes,
+    key names, timing and cost.
+    """
+
+    id: str = Field(..., min_length=1, description="Stable rule identifier")
+    enabled: bool = Field(True, description="Whether this rule applies")
+    description: Optional[str] = Field(None, description="Human-readable description")
+    scope: SensitiveDataScope = Field(
+        default_factory=SensitiveDataScope, description="Agents, tools, servers"
+    )
+    keep_fields: List[str] = Field(
+        default_factory=list,
+        max_length=MAX_KEEP_FIELDS,
+        description="JSONPath subset of argument fields kept in the record",
+    )
+    approver_view: ApproverView = Field(
+        ApproverView.REDACTED,
+        description=(
+            "redacted: approvers see the reference record. "
+            "original_until_decided: the raw arguments are kept encrypted on "
+            "the pending approval, shown in the console only, and deleted "
+            "at decision."
+        ),
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        """Rule ids appear in reference records."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("reference_only rule id cannot be empty")
+        return stripped
+
+    @field_validator("keep_fields")
+    @classmethod
+    def validate_keep_fields(cls, value: List[str]) -> List[str]:
+        """Only the documented JSONPath subset is accepted."""
+        for path in value:
+            if not KEEP_FIELD_RE.match(path or ""):
+                raise ValueError(
+                    f"keep_fields entry {path!r} is not supported. Use dotted "
+                    "keys, [n] or [*] after $, for example $.consent_id or "
+                    "$.items[*].id"
+                )
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def validate_scope_names_something(self) -> "ReferenceOnlyRule":
+        """A reference-only rule must name a tool, a server or an agent."""
+        if self.scope.is_empty():
+            raise ValueError(
+                f"reference_only rule '{self.id}' must set scope.tools, "
+                "scope.servers or scope.agents; an empty scope would stop "
+                "every store from holding any tool payload"
+            )
+        return self
+
+    def approver_view_value(self) -> str:
+        """Approver view as a plain string."""
+        return str(getattr(self.approver_view, "value", self.approver_view))
+
+
 class SensitiveDataConfig(BaseModel):
     """Top-level ``sensitive_data`` block.
 
@@ -920,12 +1004,23 @@ class SensitiveDataConfig(BaseModel):
     rules: List[SensitiveDataRule] = Field(
         default_factory=list, description="Rules over tool and model payloads"
     )
+    reference_only: List[ReferenceOnlyRule] = Field(
+        default_factory=list,
+        description="Tools, servers and agents whose calls are stored as references",
+    )
 
     @model_validator(mode="after")
     def validate_rules(self) -> "SensitiveDataConfig":
         """Rule ids are unique and rule types are declared."""
         known = self.known_types()
         seen: set[str] = set()
+        reference_ids: set[str] = set()
+        for reference in self.reference_only:
+            if reference.id in reference_ids:
+                raise ValueError(
+                    f"Duplicate sensitive_data reference_only id: '{reference.id}'"
+                )
+            reference_ids.add(reference.id)
         for rule in self.rules:
             if rule.id in seen:
                 raise ValueError(f"Duplicate sensitive_data rule id: '{rule.id}'")
@@ -962,6 +1057,10 @@ class SensitiveDataConfig(BaseModel):
     def has_tool_rules(self) -> bool:
         """True when any enabled rule watches a tool target."""
         return any(rule.has_tool_target() for rule in self.enabled_rules())
+
+    def enabled_reference_rules(self) -> List[ReferenceOnlyRule]:
+        """Reference-only rules that are switched on, in document order."""
+        return [rule for rule in self.reference_only if rule.enabled]
 
     def has_redact_rules(self) -> bool:
         """True when any enabled rule redacts."""

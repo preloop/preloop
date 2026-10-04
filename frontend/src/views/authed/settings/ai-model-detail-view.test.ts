@@ -1622,6 +1622,9 @@ describe('AIModelDetailView', () => {
           (url) => url.includes('/summary') || url.includes('/runtime-sessions')
         )
     ).to.have.length(0);
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Deployment risk summary completed'
+    );
 
     // The summary the search did not touch is still on screen.
     expect(element.shadowRoot?.textContent).to.contain('Usage summary');

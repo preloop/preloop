@@ -20,6 +20,8 @@ from ..models import (
     IssueRelationship,
     IssueSet,
     GatewayUsageSearchDocument,
+    AccountDiscoverySalt,
+    DiscoveredAgentCandidate,
     ManagedAgent,
     ManagedAgentAIModelBinding,
     ManagedAgentCredential,
@@ -71,6 +73,10 @@ from .issue_compliance_result import (
 )
 from .issue_relationship import CRUDIssueRelationship
 from .issue_set import CRUDIssueSet
+from .discovered_agent_candidate import (
+    CRUDAccountDiscoverySalt,
+    CRUDDiscoveredAgentCandidate,
+)
 from .managed_agent import CRUDManagedAgent
 from .managed_agent_ai_model_binding import CRUDManagedAgentAIModelBinding
 from .managed_agent_credential import CRUDManagedAgentCredential
@@ -212,6 +218,8 @@ crud_issue_set = CRUDIssueSet(IssueSet)
 crud_gateway_usage_search_document = CRUDGatewayUsageSearchDocument(
     GatewayUsageSearchDocument
 )
+crud_account_discovery_salt = CRUDAccountDiscoverySalt(AccountDiscoverySalt)
+crud_discovered_agent_candidate = CRUDDiscoveredAgentCandidate(DiscoveredAgentCandidate)
 crud_managed_agent = CRUDManagedAgent(ManagedAgent)
 crud_managed_agent_ai_model_binding = CRUDManagedAgentAIModelBinding(
     ManagedAgentAIModelBinding
@@ -284,6 +292,8 @@ __all__ = [
     "CRUDIssueComplianceResult",
     "CRUDIssueSet",
     "CRUDGatewayUsageSearchDocument",
+    "CRUDAccountDiscoverySalt",
+    "CRUDDiscoveredAgentCandidate",
     "CRUDManagedAgent",
     "CRUDManagedAgentAIModelBinding",
     "CRUDManagedAgentCredential",
@@ -338,6 +348,8 @@ __all__ = [
     "SessionEmbeddingConfigError",
     "SessionSavedSearchNameConflictError",
     "SessionSearchChunk",
+    "crud_account_discovery_salt",
+    "crud_discovered_agent_candidate",
     "crud_managed_agent",
     "crud_managed_agent_ai_model_binding",
     "crud_managed_agent_credential",

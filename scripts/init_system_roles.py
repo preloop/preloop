@@ -207,6 +207,15 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
             "name": "control_managed_agent",
             "description": "Send commands and prompts to managed agents",
         },
+        # Grantable on its own to a device-scoped API key (scopes
+        # ["report_discovery"]) so an MDM job can report without any other
+        # reach into the account.
+        {
+            "name": "report_discovery",
+            "description": (
+                "Report agent tools found on a workstation by opt-in discovery"
+            ),
+        },
     ],
     "sessions": [
         {
@@ -303,6 +312,7 @@ _CONFIGURE_CONTROL_PLANE = [
     "view_cost",
     "manage_agents",
     "control_managed_agent",
+    "report_discovery",
     "manage_runtime_sessions",
 ]
 

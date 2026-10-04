@@ -392,6 +392,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             service_role,
         )
 
+    # Purge discovery candidates unseen for 90 days. Always on: the window
+    # is part of the discovery reporting privacy promise, not an opt-in.
+    discovery_candidate_purge_sweeper = None
+    if not is_testing and is_api_role:
+        from preloop.services.discovery_candidate_purge import (
+            get_discovery_candidate_purge_sweeper,
+        )
+
+        discovery_candidate_purge_sweeper = get_discovery_candidate_purge_sweeper()
+        await discovery_candidate_purge_sweeper.start()
+
     # Start the scheduled issue cost rebuild (skip in testing mode). It records
     # finished executions that no terminal hook recorded and refreshes issue
     # estimates. Idempotent, additive and per-account locked, so several API
@@ -732,6 +743,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 f"Error stopping session search backfill sweeper: {e}", exc_info=True
             )
 
+    if not is_testing and discovery_candidate_purge_sweeper:
+        try:
+            await discovery_candidate_purge_sweeper.stop()
+        except Exception as e:
+            logger.error(
+                f"Error stopping discovery candidate purge: {e}", exc_info=True
+            )
+
     if not is_testing and issue_cost_rebuild_sweeper:
         try:
             await issue_cost_rebuild_sweeper.stop()
@@ -857,6 +876,7 @@ def _register_control_plane_routes(
         account,
         issue_lifecycle,
         agent_control,
+        agent_discovery,
         agent_permission,
         audio,
         approval_bypass,
@@ -941,6 +961,14 @@ def _register_control_plane_routes(
         webauthn_router,
         prefix="/api/v1/auth/webauthn",
         tags=["Auth", "Passkeys"],
+    )
+    # Before account.router: its "/agents/{agent_id}" routes would otherwise
+    # capture "/agents/discovery-candidates".
+    app.include_router(
+        agent_discovery.router,
+        prefix="/api/v1",
+        tags=["Agent discovery"],
+        dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(
         account.router,

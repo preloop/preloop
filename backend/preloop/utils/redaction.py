@@ -53,6 +53,10 @@ SENSITIVE_FIELD_NAMES: Set[str] = {
     "approvaltoken",
     "key",
     "keys",
+    # Encrypted original arguments on a pending reference-only approval
+    # (#1124): shown in the console only, never in emails or webhooks.
+    "_preloop_sealed_args",
+    "sealed_args",
 }
 
 
