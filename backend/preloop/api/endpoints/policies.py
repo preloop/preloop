@@ -163,8 +163,10 @@ async def validate_policy(
     check_server_references: bool = Form(
         True,
         description=(
-            "If true, validate that MCP server references exist in your account. "
-            "Set to false for standalone schema validation."
+            "If true, validate that MCP server references resolve to a server "
+            "defined in the file or configured in your account. If false, MCP "
+            "server references are not checked. Approval workflow references "
+            "are always resolved against the file and your account."
         ),
     ),
     account: Account = Depends(get_account_for_user),
@@ -177,14 +179,16 @@ async def validate_policy(
     checking for:
     - Valid YAML/JSON syntax
     - Required fields
-    - Valid references (approval workflows, MCP servers)
+    - Approval workflow references (tools, model_io rules, defaults and
+      escalation), resolved against the file and the account
     - Expression syntax
-    - MCP server availability (if check_server_references=true)
+    - MCP server references, resolved against the file and the account
+      (only if check_server_references=true)
 
     Args:
         file: The policy file to validate (YAML or JSON).
         check_server_references: If True, also validate that referenced MCP
-            servers exist in your account.
+            servers are defined in the file or configured in your account.
         account: Current user's account.
         db: Database session.
 
@@ -222,12 +226,12 @@ async def validate_policy(
         policy_servers = {s.name.lower() for s in policy.mcp_servers or []}
         policy_approval_workflows = {w.name for w in policy.approval_workflows or []}
 
-        existing_workflows = crud_approval_workflow.get_multi_by_account(
-            db, account_id=str(account.id)
+        all_available_workflows = (
+            policy_approval_workflows
+            | crud_approval_workflow.get_names_by_account(
+                db, account_id=str(account.id)
+            )
         )
-        all_available_workflows = policy_approval_workflows | {
-            w.name for w in existing_workflows
-        }
         all_available_servers: set[str] = set()
         if check_server_references:
             existing_servers = crud_mcp_server.get_active_by_account(

@@ -517,3 +517,16 @@ approval_workflows:
         applied = applier.apply(policy, dry_run=True)
         assert applied.success is False
         assert any("absent" in e for e in applied.errors)
+
+    def test_resolves_workflows_beyond_first_page(self, db_session, test_user):
+        from preloop.models import models
+
+        db_session.add_all(
+            models.ApprovalWorkflow(account_id=test_user.account_id, name=f"wf-{i:03d}")
+            for i in range(105)
+        )
+        db_session.flush()
+        policy, _ = load_policy_from_string(self._yaml("builtin", "wf-104"))
+        applier = PolicyApplier(db_session, account_id=str(test_user.account_id))
+        applied = applier.apply(policy, dry_run=True)
+        assert applied.errors == []

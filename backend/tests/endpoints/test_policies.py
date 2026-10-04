@@ -703,6 +703,83 @@ tools:
         assert "Available MCP servers: [my-server]" in result.warnings
         assert "Available approval workflows: [my-workflow]" in result.warnings
 
+    async def test_workflow_references_outside_tools_are_resolved(
+        self, db_session, account_objects, mock_upload_file
+    ):
+        valid = await self._validate(
+            db_session,
+            account_objects,
+            mock_upload_file,
+            """
+version: "1.0"
+metadata:
+  name: "refs"
+approval_workflows:
+  - name: "ai"
+    approval_type: "ai_driven"
+    ai_model: "claude-sonnet-4-20250514"
+    escalation_workflow: "my-workflow"
+defaults:
+  default_approval_workflow: "my-workflow"
+""",
+        )
+        assert valid.is_valid is True, valid.errors
+
+        invalid = await self._validate(
+            db_session,
+            account_objects,
+            mock_upload_file,
+            """
+version: "1.0"
+metadata:
+  name: "refs"
+approval_workflows:
+  - name: "ai"
+    approval_type: "ai_driven"
+    ai_model: "claude-sonnet-4-20250514"
+    escalation_workflow: "gone-1"
+model_io:
+  - id: "r1"
+    target: "model.response"
+    approval_workflow: "gone-2"
+    conditions:
+      - expression: "true"
+        action: "require_approval"
+defaults:
+  default_approval_workflow: "gone-3"
+""",
+        )
+        assert invalid.is_valid is False
+        assert {e.path: e.value for e in invalid.errors} == {
+            "$.approval_workflows[0].escalation_workflow": "gone-1",
+            "$.model_io[0].approval_workflow": "gone-2",
+            "$.defaults.default_approval_workflow": "gone-3",
+        }
+
+    async def test_resolves_workflows_beyond_first_page(
+        self, db_session, test_user, mock_upload_file
+    ):
+        from preloop.models import models
+
+        db_session.add_all(
+            models.ApprovalWorkflow(account_id=test_user.account_id, name=f"wf-{i:03d}")
+            for i in range(105)
+        )
+        db_session.flush()
+        result = await self._validate(
+            db_session,
+            test_user,
+            mock_upload_file,
+            """
+version: "1.0"
+metadata:
+  name: "refs"
+defaults:
+  default_approval_workflow: "wf-104"
+""",
+        )
+        assert result.is_valid is True, result.errors
+
 
 # ============================================================================
 # Policy Version Management Endpoint Tests

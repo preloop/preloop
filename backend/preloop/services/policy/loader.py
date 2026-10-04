@@ -845,10 +845,9 @@ class PolicyApplier:
         all_available_servers = policy_servers | existing_server_names
 
         # Get existing policies from the database
-        existing_workflows = crud_approval_workflow.get_multi_by_account(
+        existing_workflow_names = crud_approval_workflow.get_names_by_account(
             self.db, account_id=self.account_id
         )
-        existing_workflow_names = {p.name for p in existing_workflows}
         all_available_workflows = policy_approval_workflows | existing_workflow_names
 
         # Validate tool references
