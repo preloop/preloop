@@ -297,4 +297,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     discovery = script.get_revision("20261003_discovery_candidates")
     assert discovery.down_revision == "20261004_ci_copilot_merge"
-    assert script.get_heads() == ["20261003_discovery_candidates"]
+    artifact_avail = script.get_revision("20261004_artifact_avail_idx")
+    assert artifact_avail.down_revision == "20261003_discovery_candidates"
+    assert script.get_heads() == ["20261004_artifact_avail_idx"]

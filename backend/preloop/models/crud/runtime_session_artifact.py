@@ -9,7 +9,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import String, func, select
+from sqlalchemy import String, func, literal_column, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -440,6 +440,69 @@ def list_page_for_session(
     return list(
         query.order_by(table.created_at.desc(), table.id.desc()).limit(limit).all()
     )
+
+
+def available_counts_by_session(
+    db: Session, *, account_id: UUID, runtime_session_ids: list[Any]
+) -> dict[str, dict[str, int]]:
+    """Count available artifacts per kind for a page of sessions.
+
+    One grouped query covers the whole page, so a list of fifty sessions
+    costs one round trip instead of fifty. Evicted and expired rows are left
+    out: a count the console cannot open would be a broken promise.
+
+    Args:
+        db: Database session.
+        account_id: Account the caller is allowed to read.
+        runtime_session_ids: Sessions on the page.
+
+    Returns:
+        ``{session_id: {kind: count}}``; sessions without available artifacts
+        are absent.
+    """
+    if not runtime_session_ids:
+        return {}
+    table = models.RuntimeSessionArtifact
+    rows = (
+        db.query(table.runtime_session_id, table.kind, func.count(table.id))
+        .filter(
+            table.account_id == account_id,
+            table.runtime_session_id.in_(runtime_session_ids),
+            table.availability == "available",
+        )
+        .group_by(table.runtime_session_id, table.kind)
+        .all()
+    )
+    counts: dict[str, dict[str, int]] = {}
+    for session_id, kind, count in rows:
+        counts.setdefault(str(session_id), {})[kind] = int(count)
+    return counts
+
+
+def sessions_with_available_artifacts(
+    db: Session, *, account_id: Any, kind: str | None = None
+) -> Any:
+    """Return a subquery of session ids holding an available artifact.
+
+    Args:
+        db: Database session.
+        account_id: Account the caller is allowed to read.
+        kind: When set, only artifacts of this kind count.
+
+    Returns:
+        A ``SELECT runtime_session_id`` query usable in ``IN (...)``.
+    """
+    table = models.RuntimeSessionArtifact
+    # Literal, not a bind parameter. The partial index predicate is
+    # ``availability = 'available'``; a generic plan cannot prove that a
+    # parameter implies it, and the list request would scan the table again.
+    query = db.query(table.runtime_session_id).filter(
+        table.account_id == account_id,
+        table.availability == literal_column("'available'"),
+    )
+    if kind is not None:
+        query = query.filter(table.kind == kind)
+    return query
 
 
 def own_session_ids(
