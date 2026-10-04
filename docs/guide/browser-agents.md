@@ -84,6 +84,23 @@ history = await reporter.run(agent)
 Setup, the field mapping and the supported versions are in its
 [README](https://github.com/preloop/preloop/blob/main/runtime-plugins/browser-use-preloop/README.md).
 
+## Skyvern
+
+The `preloop-skyvern` package in
+[`runtime-plugins/skyvern-preloop`](https://github.com/preloop/preloop/tree/main/runtime-plugins/skyvern-preloop)
+imports a finished Skyvern task: each step becomes a browser step with
+`source: skyvern` and its screenshot, the HAR and Playwright trace become
+`trace` artifacts and the video a `recording` artifact. Run it once per
+task, or from Skyvern's task webhook:
+
+```bash
+preloop-skyvern-import --task tsk_123 --session "$SESSION_ID"
+```
+
+Re-importing the same task stores nothing new. Webhook setup and the field
+mapping are in its
+[README](https://github.com/preloop/preloop/blob/main/runtime-plugins/skyvern-preloop/README.md).
+
 ## Screenshots
 
 Add a `screenshot` object to a step:

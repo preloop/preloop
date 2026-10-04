@@ -43,3 +43,8 @@ Packages:
   path), a Browser Use `on_step_end` callback that reports each step and
   its screenshot to the runtime session timeline. See
   [the README](browser-use-preloop/README.md).
+
+- `skyvern-preloop`: `preloop-skyvern` (pip install from this path),
+  `preloop-skyvern-import` CLI and a webhook handler that import a Skyvern
+  task's steps, screenshots, HAR, trace and recording into a runtime
+  session. See [the README](skyvern-preloop/README.md).
