@@ -187,6 +187,12 @@ def send_note_from_agent(
             f"{len(named)} ({named_text}).",
         )
 
+    # The body is checked before an alias fans out, so ``children="all"``
+    # with an empty note gets one actionable refusal, not one per child.
+    body_refusal = _body_refusal(text)
+    if body_refusal is not None:
+        return body_refusal
+
     if named[0] in aliases:
         return _send_to_alias(
             db,
@@ -217,14 +223,6 @@ def send_note_from_agent(
     execution_id = parsed["execution_id"]
 
     body = (text or "").strip()
-    if not body:
-        return _refusal(ERROR_EMPTY_BODY, "The note body is empty.")
-    if len(body) > operator_notes.MAX_NOTE_BODY_CHARS:
-        return _refusal(
-            ERROR_BODY_TOO_LONG,
-            f"The note body is {len(body)} characters; the limit is "
-            f"{operator_notes.MAX_NOTE_BODY_CHARS}.",
-        )
 
     try:
         author_uuid = (
@@ -392,6 +390,20 @@ def send_note_from_agent(
         target_session_id,
     )
     return {"ok": True, "note": note_result(note)}
+
+
+def _body_refusal(text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The refusal for an empty or over-long note body, or None."""
+    body = (text or "").strip()
+    if not body:
+        return _refusal(ERROR_EMPTY_BODY, "The note body is empty.")
+    if len(body) > operator_notes.MAX_NOTE_BODY_CHARS:
+        return _refusal(
+            ERROR_BODY_TOO_LONG,
+            f"The note body is {len(body)} characters; the limit is "
+            f"{operator_notes.MAX_NOTE_BODY_CHARS}.",
+        )
+    return None
 
 
 def _send_to_alias(

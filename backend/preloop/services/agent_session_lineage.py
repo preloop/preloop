@@ -37,6 +37,7 @@ from datetime import UTC, datetime
 from typing import Any, Iterable, List, Mapping, Optional, Sequence
 
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_runtime_session
@@ -313,8 +314,7 @@ def register_session_start(
     if existing is not None and parent_id == existing.id:
         parent_id = None
     now = datetime.now(UTC)
-    session = crud_runtime_session.upsert_by_source(
-        db,
+    upsert_kwargs = dict(
         account_id=account_id,
         session_source_type=principal_type,
         session_source_id=source_id,
@@ -325,6 +325,15 @@ def register_session_start(
         reopen_if_ended=True,
         parent_session_id=parent_id,
     )
+    raced = False
+    try:
+        session = crud_runtime_session.upsert_by_source(db, **upsert_kwargs)
+    except IntegrityError:
+        raced = True
+        # The gateway created the same row between our read and our insert.
+        # One retry finds it and goes through the update path instead.
+        db.rollback()
+        session = crud_runtime_session.upsert_by_source(db, **upsert_kwargs)
     if cwd and not session.cwd:
         session.cwd = cwd[:1024]
     label = principal_label(agent_kind or principal_type, cwd or session.cwd)
@@ -342,5 +351,5 @@ def register_session_start(
             str(session.parent_session_id) if session.parent_session_id else None
         ),
         started_at=session.started_at,
-        created=existing is None,
+        created=existing is None and not raced,
     )

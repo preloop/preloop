@@ -395,3 +395,149 @@ def test_list_sessions_started_since_filter(db_session, account, agent, family):
         started_since="yesterday",
     )
     assert bad["reason"] == "invalid_request"
+
+
+def test_session_start_survives_the_gateway_creating_the_row_first(
+    db_session, account, monkeypatch
+):
+    """The losing insert of a gateway/hook race retries onto the gateway's row."""
+    from unittest.mock import MagicMock
+
+    from sqlalchemy.exc import IntegrityError
+
+    real_upsert = crud_runtime_session.upsert_by_source
+    calls = {"n": 0}
+
+    def racing_upsert(db, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The gateway's row lands while the hook is between read and insert.
+            real_upsert(db, **kwargs)
+            raise IntegrityError("insert", {}, Exception("uq_runtime_session"))
+        return real_upsert(db, **kwargs)
+
+    rollback = MagicMock()
+    monkeypatch.setattr(crud_runtime_session, "upsert_by_source", racing_upsert)
+    monkeypatch.setattr(db_session, "rollback", rollback)
+
+    result = _start(db_session, account, "ext-race")
+
+    assert calls["n"] == 2
+    rollback.assert_called_once()
+    assert result.created is False
+    rows = (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.account_id == account.id)
+        .filter(RuntimeSession.session_source_id == f"{PRINCIPAL_ID}:ext-race")
+        .all()
+    )
+    assert [str(r.id) for r in rows] == [result.runtime_session_id]
+
+
+@pytest.mark.parametrize(
+    "text, code",
+    [("   ", "empty_body"), ("x" * 5000, "body_too_long")],
+    ids=["empty", "too_long"],
+)
+def test_children_all_refuses_a_bad_body_once_before_fanning_out(
+    db_session, account, agent, family, monkeypatch, text, code
+):
+    from preloop.services import agent_session_lineage
+
+    parent, _, _ = family
+    fanned = {"n": 0}
+    real_children = agent_session_lineage.live_children
+
+    def counting_children(*args, **kwargs):
+        fanned["n"] += 1
+        return real_children(*args, **kwargs)
+
+    monkeypatch.setattr(agent_session_lineage, "live_children", counting_children)
+    result = send_note_from_agent(
+        db_session,
+        account_id=str(account.id),
+        author_agent_id=agent.id,
+        text=text,
+        children="all",
+        author_session_ids=[parent.runtime_session_id],
+    )
+    assert result["ok"] is False
+    assert result["error"]["code"] == code
+    assert "refused" not in result
+    assert fanned["n"] == 0
+
+
+def _list(db, account, agent, parent, **kwargs):
+    return list_for_agent(
+        db,
+        account_id=account.id,
+        managed_agent_id=agent.id,
+        caller_session_ids=[parent.runtime_session_id],
+        subject_context={"managed_agent_id": str(agent.id)},
+        **kwargs,
+    )
+
+
+def test_list_sessions_filters_cwd_kind_external_active_and_limit(
+    db_session, account, agent, family
+):
+    parent, child_a, child_b = family
+    in_repo = _start(
+        db_session,
+        account,
+        "ext-in-repo",
+        parent=parent.runtime_session_id,
+        cwd="/work/repo_x/sub",
+    )
+    ended = _start(db_session, account, "ext-done", parent=parent.runtime_session_id)
+    db_session.get(RuntimeSession, ended.runtime_session_id).ended_at = datetime.now(
+        UTC
+    )
+    db_session.flush()
+
+    def ids(result):
+        assert result.get("refused") is None, result
+        return {r["id"] for r in result["results"]}
+
+    # cwd is a prefix match, and "_" is literal, not a LIKE wildcard.
+    assert ids(_list(db_session, account, agent, parent, cwd="/work/repo_x")) == {
+        in_repo.runtime_session_id
+    }
+    assert ids(_list(db_session, account, agent, parent, cwd="/work/repoXx")) == set()
+
+    assert ids(_list(db_session, account, agent, parent, agent_kind="codex")) == set()
+    assert (
+        len(ids(_list(db_session, account, agent, parent, agent_kind=PRINCIPAL_TYPE)))
+        == 3
+    )
+
+    assert ids(
+        _list(db_session, account, agent, parent, external_session_id="ext-child-b")
+    ) == {child_b.runtime_session_id}
+    assert (
+        ids(_list(db_session, account, agent, parent, external_session_id="ext-nope"))
+        == set()
+    )
+
+    with_ended = ids(_list(db_session, account, agent, parent, active_only=False))
+    assert ended.runtime_session_id in with_ended
+    assert ended.runtime_session_id not in ids(
+        _list(db_session, account, agent, parent)
+    )
+
+    one = _list(db_session, account, agent, parent, limit=1)
+    assert len(one["results"]) == 1
+    assert one["total"] == 3 and one["truncated"] is True
+
+
+def test_list_sessions_limit_is_clamped_to_the_schema_maximum(
+    db_session, account, agent
+):
+    from preloop.tools.builtin_defs import LIST_SESSIONS_MAX_LIMIT
+
+    parent = _start(db_session, account, "ext-big-parent")
+    for i in range(LIST_SESSIONS_MAX_LIMIT + 2):
+        _start(db_session, account, f"ext-big-{i}", parent=parent.runtime_session_id)
+    result = _list(db_session, account, agent, parent, limit=10_000)
+    assert len(result["results"]) == LIST_SESSIONS_MAX_LIMIT
+    assert result["truncated"] is True
