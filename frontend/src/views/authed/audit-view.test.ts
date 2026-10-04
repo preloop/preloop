@@ -1259,6 +1259,42 @@ describe('AuditView', () => {
       element.remove();
     });
 
+    it('clears a permission error when a live refresh succeeds', async function () {
+      this.timeout(10000);
+      let calls = 0;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          calls += 1;
+          if (calls === 1) {
+            return new Response(JSON.stringify({ detail: 'Forbidden' }), {
+              status: 403,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify(groupsFor('granted')), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => (element as any)._permissionError, 'first 403');
+      wsCallback?.({ type: 'audit_event', action: 'tool_call' });
+      await waitUntil(
+        () => !(element as any)._permissionError,
+        'live refresh should bring the list back',
+        { timeout: 4000 }
+      );
+      expect(rowIds(element)).to.deep.equal(['granted']);
+      element.remove();
+    });
+
     it('does not starve the refresh when events arrive faster than the debounce', async function () {
       this.timeout(10000);
       const stats = slowGrouped(50);
