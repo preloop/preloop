@@ -16,7 +16,9 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/preloop-browsers \
 # point releases, so an exact pin fails the next security update.
 # Dockerfile.dev installs the same way. The smoke script is the build gate.
 # perlver has no --version flag; the smoke runs it on a fixture.
-COPY environments/preloop/perl-toolchain-smoke.sh /opt/preloop-perl/perl-toolchain-smoke.sh
+# The smoke and its fixtures are shared with the opt-in environments/perl image.
+COPY environments/perl/perl-toolchain-smoke.sh /opt/preloop-perl/perl-toolchain-smoke.sh
+COPY environments/perl/fixtures /opt/preloop-perl/fixtures
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         perl \

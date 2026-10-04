@@ -1032,7 +1032,8 @@ When configuring tracker triggers, you can add filters to narrow when flows trig
 | Author/Creator | All | Username who created the issue/PR/MR |
 | Assignee | All | Who it's assigned to |
 | Reviewer | PR/MR only | Requested reviewer |
-| Labels | All | Must have ALL specified labels |
+| Labels (`labels`) | All | At least one of the specified labels. On a labeled/unlabeled event, the label the event carries |
+| Labels, all of (`labels_all`) | All | The issue must carry every specified label (current list, after the change). Combines with `labels`; see [Route by tags](issue-triage.md#route-by-tags) |
 | Milestone | GitHub/GitLab | Milestone name |
 | Priority | Jira only | Priority level |
 | Issue Type | Jira only | Issue type name |

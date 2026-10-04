@@ -1,6 +1,6 @@
 """CRUD operations for ApprovalWorkflow model."""
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Set, Union
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -87,6 +87,17 @@ class CRUDApprovalWorkflow(CRUDBase[models.ApprovalWorkflow]):
             .limit(limit)
             .all()
         )
+
+    def get_names_by_account(self, db: Session, account_id: str) -> Set[str]:
+        """Return the names of every approval workflow in an account.
+
+        Unpaginated on purpose: reference validation needs every name, and
+        ``get_multi_by_account`` caps results at its page size.
+        """
+        rows = (
+            db.query(self.model.name).filter(self.model.account_id == account_id).all()
+        )
+        return {row[0] for row in rows}
 
     def get_default(
         self, db: Session, account_id: str

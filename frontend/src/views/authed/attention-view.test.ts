@@ -15,6 +15,7 @@ import type { AttentionView } from './attention-view';
 
 describe('AttentionView', () => {
   let fetchStub: sinon.SinonStub;
+  let pendingGatewaySummary: Promise<void> | null = null;
   let connectStub: sinon.SinonStub;
   let subscribeStub: sinon.SinonStub;
   let approvalsResponse: any[];
@@ -40,6 +41,7 @@ describe('AttentionView', () => {
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
+    pendingGatewaySummary = null;
     invalidateApiCaches();
     rejectPolicies = false;
     gatePriceOverrides = false;
@@ -88,6 +90,9 @@ describe('AttentionView', () => {
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/gateway-usage/summary') && pendingGatewaySummary) {
+          await pendingGatewaySummary;
+        }
 
         if (url.startsWith('/api/v1/attention/dismissals')) {
           if (!dismissalsSupported) {
@@ -225,6 +230,195 @@ describe('AttentionView', () => {
     connectStub.restore();
     subscribeStub.restore();
     localStorage.clear();
+  });
+
+  it('explains a permissions failure and retries decisions independently of pending analytics', async () => {
+    let release!: () => void;
+    pendingGatewaySummary = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub
+      .withArgs('/api/v1/auth/users/me')
+      .onFirstCall()
+      .resolves(new Response('{}', { status: 500 }));
+    fetchStub
+      .withArgs('/api/v1/auth/users/me')
+      .onSecondCall()
+      .resolves(json({ id: 'user-1', permissions: null }));
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    try {
+      await waitUntil(
+        () => (el as any).approvalsReady && !!(el as any).permissionsError
+      );
+      await el.updateComplete;
+      expect(el.shadowRoot!.textContent).to.include(
+        'Could not load your permissions'
+      );
+      expect(
+        (el.shadowRoot!.querySelector('.row-approve') as any).disabled
+      ).to.equal(true);
+      (
+        el.shadowRoot!.querySelector('.retry-permissions') as HTMLElement
+      ).click();
+      await waitUntil(() => (el as any).permissionsReady);
+      await el.updateComplete;
+      expect((el as any).loading).to.equal(true);
+      expect(el.shadowRoot!.querySelector('.retry-permissions')).to.equal(null);
+      expect(
+        (el.shadowRoot!.querySelector('.row-approve') as any).disabled
+      ).to.equal(false);
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) =>
+            call.args[0].toString().includes('/gateway-usage/summary')
+          )
+      ).to.have.length(1);
+      (el.shadowRoot!.querySelector('.row-approve') as HTMLElement).click();
+      await waitUntil(() => (el as any).resolvedApprovalIds.has('approval-1'));
+    } finally {
+      release();
+    }
+    await (el as any).refreshInFlight;
+  });
+
+  it('loads current permissions after reconnect while old profile and analytics remain pending', async () => {
+    let releaseOldProfile!: () => void;
+    let releaseAnalytics!: () => void;
+    const oldProfile = new Promise<void>((resolve) => {
+      releaseOldProfile = resolve;
+    });
+    pendingGatewaySummary = new Promise<void>((resolve) => {
+      releaseAnalytics = resolve;
+    });
+    let profileCalls = 0;
+    fetchStub.withArgs('/api/v1/auth/users/me').callsFake(async () => {
+      if (++profileCalls === 1) {
+        await oldProfile;
+        return json({ id: 'old-user', permissions: [] });
+      }
+      return json({ id: 'current-user', permissions: ['approve_requests'] });
+    });
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    await waitUntil(() => profileCalls === 1 && (el as any).approvalsReady);
+    const parent = el.parentElement!;
+    el.remove();
+    expect((el as any).permissionsLoading).to.equal(false);
+    expect((el as any).permissionsReady).to.equal(false);
+    // Simulate a changed identity on reconnection; normal same-identity
+    // reconnects can reuse the transport but need fresh lifecycle callbacks.
+    invalidateApiCaches();
+    try {
+      parent.append(el);
+      await waitUntil(() => profileCalls === 2 && (el as any).permissionsReady);
+      expect((el as any).permissions).to.deep.equal(['approve_requests']);
+      expect((el as any).loading).to.equal(true);
+      releaseOldProfile();
+      await oldProfile;
+      await aTimeout(0);
+      expect((el as any).permissions).to.deep.equal(['approve_requests']);
+    } finally {
+      releaseOldProfile();
+      releaseAnalytics();
+    }
+    await (el as any).refreshInFlight;
+  });
+
+  it('shows approvals while analytics are pending without claiming all-clear or complete counts', async () => {
+    let release!: () => void;
+    pendingGatewaySummary = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    try {
+      await waitUntil(() => (el as any).approvalsReady);
+      await el.updateComplete;
+      expect(el.shadowRoot!.textContent).to.include('refund_order');
+      expect(el.shadowRoot!.textContent).to.include(
+        'Loading other attention items'
+      );
+      expect(el.shadowRoot!.textContent).not.to.include(
+        'Nothing needs you right now'
+      );
+      expect(el.shadowRoot!.querySelector('.chip-strip')).not.to.exist;
+      expect(el.shadowRoot!.querySelector('#approvals')).to.exist;
+    } finally {
+      release();
+    }
+    await (el as any).refreshInFlight;
+  });
+
+  it('holds websocket bursts to one active wave and one trailing refresh', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    pendingGatewaySummary = pending;
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          call.args[0].toString().includes('/gateway-usage/summary')
+        )
+    );
+    const clock = sinon.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout'],
+    });
+    const count = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) =>
+          call.args[0].toString().includes('/gateway-usage/summary')
+        ).length;
+    try {
+      for (let i = 0; i < 20; i++) {
+        (el as any).scheduleRefresh();
+        await clock.tickAsync(2000);
+      }
+      expect(count()).to.equal(1);
+      const active = (el as any).refreshInFlight;
+      release();
+      await active;
+      expect(count()).to.equal(1);
+      await clock.tickAsync(1499);
+      expect(count()).to.equal(1);
+      await clock.tickAsync(1);
+      if ((el as any).refreshInFlight) await (el as any).refreshInFlight;
+      expect(count()).to.equal(2);
+      await clock.tickAsync(10_000);
+      expect(count()).to.equal(2);
+    } finally {
+      release();
+      clock.restore();
+    }
+  });
+
+  it('ignores a pending wave after disconnect and drops its queued refresh', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    pendingGatewaySummary = pending;
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    const active = (el as any).refreshInFlight;
+    (el as any).scheduleRefresh();
+    el.remove();
+    release();
+    await active;
+    expect((el as any).lastUpdatedAt).to.equal(null);
+    expect((el as any).refreshTimer).to.equal(null);
+    expect((el as any).refreshQueued).to.equal(false);
   });
 
   const mount = async (): Promise<AttentionView> => {
@@ -472,6 +666,61 @@ describe('AttentionView', () => {
     await waitUntil(declined, 'no decline call');
     resetConfirmDialogForTests();
   });
+
+  for (const action of ['approve', 'deny'] as const) {
+    it(`keeps a successful ${action} removed when held analytics return an old approval snapshot`, async () => {
+      let release!: () => void;
+      pendingGatewaySummary = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const el = await fixture<AttentionView>(
+        html`<attention-view></attention-view>`
+      );
+      try {
+        await waitUntil(
+          () => (el as any).approvalsReady && (el as any).permissionsReady
+        );
+        await el.updateComplete;
+        const wave = (el as any).refreshInFlight;
+        const button = el.shadowRoot!.querySelector(
+          `#approvals .row-${action}`
+        ) as HTMLElement;
+        expect(button).to.exist;
+        button.click();
+        if (action === 'deny') {
+          await waitUntil(() => !!document.querySelector('confirm-dialog'));
+          (
+            document
+              .querySelector('confirm-dialog')!
+              .shadowRoot!.querySelector(
+                '[data-testid="confirm-dialog-confirm"]'
+              ) as HTMLElement
+          ).click();
+        }
+        await waitUntil(() =>
+          (el as any).resolvedApprovalIds.has('approval-1')
+        );
+        await el.updateComplete;
+        expect((el as any).busyItemId).to.equal(null);
+        expect((el as any).loading).to.equal(true);
+        expect((el as any).approvals).to.have.length(0);
+        expect(el.shadowRoot!.querySelector('#approvals')).not.to.exist;
+        // The original request deliberately still contains the decided row.
+        expect(approvalsResponse[0].id).to.equal('approval-1');
+        release();
+        await wave;
+        await el.updateComplete;
+        expect((el as any).loading).to.equal(false);
+        expect((el as any).approvals).to.have.length(0);
+        expect(el.shadowRoot!.querySelector('#approvals')).not.to.exist;
+      } finally {
+        release();
+        await (el as any).refreshInFlight;
+        el.remove();
+        resetConfirmDialogForTests();
+      }
+    });
+  }
 
   it('sends a question to its detail page instead of a yes or no', async () => {
     approvalsResponse = [
