@@ -322,3 +322,70 @@ describe('preloop-flow-preset-picker', () => {
     expect(event.detail.presetId).to.equal('preset-002');
   });
 });
+
+describe('scheduled presets that read artifacts (#1106)', () => {
+  const EVALUATION: FlowPresetRecord = {
+    id: 'preset-021',
+    name: 'Transcript evaluation',
+    description:
+      'Every hour, read the transcripts deposited since the last run and ' +
+      'turn what they say into suggestions for a person and approved ' +
+      'actions, with a report artifact listing every transcript evaluated. ' +
+      'Same-agent mode works out of the box.',
+    icon: 'chat-square-text',
+    trigger_event_source: 'schedule',
+    trigger_event_types: ['schedule'],
+    allowed_mcp_tools: [
+      { name: 'search_artifacts' },
+      { name: 'get_artifact' },
+      { name: 'deposit_artifact' },
+      { name: 'ask_user' },
+      { name: 'request_approval' },
+      { name: 'send_note' },
+    ],
+  };
+
+  it('groups a schedule preset under Scheduled with a Scheduled chip', () => {
+    const groups = presetGroups([EVALUATION]);
+    expect(groups.map((group) => group.id)).to.deep.equal(['scheduled']);
+    const keys = presetChips(EVALUATION).map((chip) => chip.key);
+    expect(keys).to.include('schedule');
+    expect(keys).not.to.include('tracker');
+  });
+
+  it('card explains same-agent versus cross-agent scope', async () => {
+    const el = await fixture<PreloopFlowPresetPicker>(html`
+      <preloop-flow-preset-picker
+        .presets=${[EVALUATION]}
+      ></preloop-flow-preset-picker>
+    `);
+    const row = el.shadowRoot!.querySelector(
+      '[data-preset-id="preset-021"]'
+    ) as HTMLElement;
+    expect(row).to.exist;
+    expect(row.textContent).to.contain('Scheduled');
+    expect(row.querySelector('.row-desc')!.textContent).to.contain(
+      'Every hour, read the transcripts deposited since the last run'
+    );
+    const note = row.querySelector('[data-testid="preset-scope-note"]');
+    expect(note).to.exist;
+    const text = note!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain(
+      "Same-agent: reads artifacts from this flow's own runs"
+    );
+    expect(text).to.contain(
+      "Cross-agent: other agents' artifacts need the artifact_search.account_scope grant"
+    );
+  });
+
+  it('presets that do not read artifacts carry no scope note', async () => {
+    const el = await fixture<PreloopFlowPresetPicker>(html`
+      <preloop-flow-preset-picker
+        .presets=${[{ ...EVALUATION, id: 'p-x', allowed_mcp_tools: [] }]}
+      ></preloop-flow-preset-picker>
+    `);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="preset-scope-note"]')
+    ).to.equal(null);
+  });
+});
