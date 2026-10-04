@@ -9,6 +9,7 @@ import {
 import { customElement, query, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
+import '@shoelace-style/shoelace/dist/components/menu-label/menu-label.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
@@ -498,6 +499,26 @@ export class ConsoleShell extends LitElement {
       sl-details.nav-section[open]::part(summary) {
         font-weight: var(--sl-font-weight-bold);
       }
+
+      /* Child links read at the same size as top-level ones; Shoelace's
+         default menu-item size made Audit and Settings children larger
+         than the items they sit under. */
+      sl-details sl-menu-item::part(label) {
+        font-size: var(--console-text-body);
+      }
+
+      sl-menu-label.nav-group-label::part(base) {
+        padding: var(--sl-spacing-small) 0.5em var(--sl-spacing-3x-small);
+        font-size: var(--sl-font-size-x-small);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--console-meta-color);
+      }
+
+      .nav-emergency sl-icon,
+      .nav-emergency .sidebar-label {
+        color: var(--sl-color-danger-600);
+      }
     `,
   ];
 
@@ -803,7 +824,25 @@ export class ConsoleShell extends LitElement {
   }
 
   private _isSettingsActive(): boolean {
-    return this._isNavActive('/console/settings');
+    return (
+      this._isNavActive('/console/settings') &&
+      !this._isNavActive('/console/settings/emergency')
+    );
+  }
+
+  /**
+   * One labelled block of the Settings menu. The label renders only when at
+   * least one of its links survives the edition and permission gates, so a
+   * deployment never shows a heading over nothing.
+   */
+  private _renderNavGroup(
+    label: string,
+    links: ReadonlyArray<unknown>
+  ): TemplateResult | typeof nothing {
+    const visible = links.filter((link) => link !== nothing);
+    if (visible.length === 0) return nothing;
+    return html`<sl-menu-label class="nav-group-label">${label}</sl-menu-label
+      >${visible}`;
   }
 
   /** True when any Audit child is visible for this user/edition. */
@@ -1118,92 +1157,84 @@ export class ConsoleShell extends LitElement {
                         <span class="sidebar-label">Settings</span>
                       </span>
                       <sl-menu>
-                        ${
-                          this.features.user_management
-                            ? this._renderNavLink(
-                                '/console/settings/account',
-                                html`<sl-menu-item>Account</sl-menu-item>`
-                              )
-                            : ''
-                        }
-                        ${
+                        ${this._renderNavGroup('Account', [
+                          // Account holds the account name and the session
+                          // artifact storage card, which every edition has
+                          // and core pages link to. It used to hang off
+                          // user_management, a flag only plugins set, so an
+                          // open-source install had no way in from the nav.
+                          this._renderNavLink(
+                            '/console/settings/account',
+                            html`<sl-menu-item>Account</sl-menu-item>`
+                          ),
                           // Plans exist only where something is sold. Without
                           // the billing plugin the deployment has no catalog,
                           // no subscription and nothing for this page to say.
-                          //
-                          // It sits directly under Account and above Users
-                          // because that is what it is about: what this
-                          // account pays for. Below Users it read as a
-                          // per-person setting, which is the one thing a plan
-                          // is not. The two conditions stay separate so a
-                          // deployment without user management still reaches
-                          // its plan.
+                          // It sits under Account because that is what it is
+                          // about: what this account pays for.
                           this.features.billing
                             ? this._renderNavLink(
                                 '/console/settings/plan',
                                 html`<sl-menu-item>Plan</sl-menu-item>`
                               )
-                            : ''
-                        }
-                        ${
+                            : nothing,
                           this._permissionsLoaded
                             ? this._renderNavLink(
                                 '/console/settings/records',
                                 html`<sl-menu-item>Records</sl-menu-item>`
                               )
-                            : ''
-                        }
-                        ${
+                            : nothing,
+                        ])}
+                        ${this._renderNavGroup('People & access', [
                           this.features.user_management
                             ? this._renderNavLink(
                                 '/console/settings/users',
                                 html`<sl-menu-item>Users</sl-menu-item>`
                               )
-                            : ''
-                        }
-                        ${
+                            : nothing,
                           this.features.team_management
                             ? this._renderNavLink(
                                 '/console/settings/teams',
                                 html`<sl-menu-item>Teams</sl-menu-item>`
                               )
-                            : ''
-                        }
-                        ${
+                            : nothing,
                           this.features.user_management ||
                           this.features.team_management
                             ? this._renderNavLink(
                                 '/console/settings/invitations',
                                 html`<sl-menu-item>Invitations</sl-menu-item>`
                               )
-                            : ''
-                        }
-                        ${
+                            : nothing,
                           // Served by an extension plugin; the capability in
                           // /features is the only switch.
-                          hasCapability(this.features, 'account_hierarchy')
-                            ? html`${this._renderNavLink(
-                                '/console/settings/subaccounts',
-                                html`<sl-menu-item>Subaccounts</sl-menu-item>`
-                              )}${this._renderNavLink(
-                                '/console/settings/access-grants',
-                                html`<sl-menu-item>Access grants</sl-menu-item>`
-                              )}`
-                            : nothing
-                        }
-                        ${this._renderNavLink(
-                          '/console/settings/api-keys',
-                          html`<sl-menu-item>API Keys</sl-menu-item>`
-                        )}
-                        ${this._renderNavLink(
-                          '/console/settings/runners',
-                          html`<sl-menu-item>Runners</sl-menu-item>`
-                        )}
-                        ${this._renderNavLink(
-                          '/console/settings/webhooks',
-                          html`<sl-menu-item>Webhooks</sl-menu-item>`
-                        )}
-                        ${
+                          ...(hasCapability(this.features, 'account_hierarchy')
+                            ? [
+                                this._renderNavLink(
+                                  '/console/settings/subaccounts',
+                                  html`<sl-menu-item>Subaccounts</sl-menu-item>`
+                                ),
+                                this._renderNavLink(
+                                  '/console/settings/access-grants',
+                                  html`<sl-menu-item
+                                    >Access grants</sl-menu-item
+                                  >`
+                                ),
+                              ]
+                            : []),
+                        ])}
+                        ${this._renderNavGroup('Developers', [
+                          this._renderNavLink(
+                            '/console/settings/api-keys',
+                            html`<sl-menu-item>API keys</sl-menu-item>`
+                          ),
+                          this._renderNavLink(
+                            '/console/settings/runners',
+                            html`<sl-menu-item>Runners</sl-menu-item>`
+                          ),
+                          this._renderNavLink(
+                            '/console/settings/webhooks',
+                            html`<sl-menu-item>Webhooks</sl-menu-item>`
+                          ),
                           hasCapability(this.features, 'chat_connections')
                             ? this._renderNavLink(
                                 '/console/settings/chat',
@@ -1211,38 +1242,42 @@ export class ConsoleShell extends LitElement {
                                   >Chat connections</sl-menu-item
                                 >`
                               )
-                            : nothing
-                        }
-                        <!-- The four personal pages had routes and a place in
-                             the avatar menu, but no way in from the sidebar,
-                             so Appearance in particular was unreachable for
-                             anyone who did not know the URL. -->
-                        ${this._renderNavLink(
-                          '/console/settings/profile',
-                          html`<sl-menu-item>Profile</sl-menu-item>`
-                        )}
-                        ${this._renderNavLink(
-                          '/console/settings/security',
-                          html`<sl-menu-item>Security</sl-menu-item>`
-                        )}
-                        ${this._renderNavLink(
-                          '/console/settings/appearance',
-                          html`<sl-menu-item>Appearance</sl-menu-item>`
-                        )}
-                        ${this._renderNavLink(
-                          '/console/settings/notification-preferences',
-                          html`<sl-menu-item>Notifications</sl-menu-item>`
-                        )}
-                        <!-- The kill switch. Last in the list and reachable
-                             in one click, rather than halfway down the
-                             account page where an operator in a hurry has to
-                             scroll past an organisation name to find it. -->
-                        ${this._renderNavLink(
-                          '/console/settings/emergency',
-                          html`<sl-menu-item>Emergency</sl-menu-item>`
-                        )}
+                            : nothing,
+                        ])}
+                        ${this._renderNavGroup('Personal', [
+                          this._renderNavLink(
+                            '/console/settings/profile',
+                            html`<sl-menu-item>Profile</sl-menu-item>`
+                          ),
+                          this._renderNavLink(
+                            '/console/settings/security',
+                            html`<sl-menu-item>Security</sl-menu-item>`
+                          ),
+                          this._renderNavLink(
+                            '/console/settings/appearance',
+                            html`<sl-menu-item>Appearance</sl-menu-item>`
+                          ),
+                          this._renderNavLink(
+                            '/console/settings/notification-preferences',
+                            html`<sl-menu-item>Notifications</sl-menu-item>`
+                          ),
+                        ])}
                       </sl-menu>
                     </sl-details>
+                    <!-- The kill switch sits outside Settings, at the foot of
+                         the nav: an operator in an incident reaches it in one
+                         click instead of expanding Settings and scanning past
+                         a dozen configuration pages. -->
+                    ${this._renderNavLink(
+                      '/console/settings/emergency',
+                      html`<sl-menu-item class="nav-emergency">
+                        <sl-icon
+                          name="exclamation-octagon"
+                          slot="prefix"
+                        ></sl-icon>
+                        <span class="sidebar-label">Emergency</span>
+                      </sl-menu-item>`
+                    )}
                   </sl-menu>
                 </div>
               </div>`

@@ -982,10 +982,66 @@ describe('ConsoleShell', () => {
         null,
       'Plan link did not render'
     );
+    // Account is core (account name, artifact storage), so it stays; the
+    // people pages need user management and do not.
     expect(el.shadowRoot?.querySelector('a[href="/console/settings/account"]'))
-      .to.not.exist;
+      .to.exist;
     expect(el.shadowRoot?.querySelector('a[href="/console/settings/users"]')).to
       .not.exist;
+  });
+
+  it('offers Account on an open-source install without user management', async () => {
+    // Default stub: no plugins. The account page holds the account name and
+    // the session artifact storage card, which core pages deep-link to.
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
+        null,
+      'Settings links did not render'
+    );
+    expect(el.shadowRoot?.querySelector('a[href="/console/settings/account"]'))
+      .to.exist;
+  });
+
+  it('groups Settings under labels and hides a label with nothing under it', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
+        null,
+      'Settings links did not render'
+    );
+    const labels = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-menu-label.nav-group-label') ?? []
+    ).map((label) => label.textContent?.trim());
+    // No user or team management in the default stub: no people heading.
+    expect(labels).to.deep.equal(['Account', 'Developers', 'Personal']);
+    expect(
+      el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]')
+        ?.textContent
+    ).to.contain('API keys');
+  });
+
+  it('puts the kill switch outside Settings, one click from any page', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector(
+          'a[href="/console/settings/emergency"]'
+        ) !== null,
+      'Emergency link did not render'
+    );
+    const emergency = el.shadowRoot?.querySelector(
+      'a[href="/console/settings/emergency"]'
+    );
+    expect(emergency?.closest('sl-details')).to.equal(null);
   });
 
   it('shows All events under Audit when audit_logs is enabled', async () => {
