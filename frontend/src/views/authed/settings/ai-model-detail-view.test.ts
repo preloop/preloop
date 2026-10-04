@@ -1581,29 +1581,46 @@ describe('AIModelDetailView', () => {
     search.value = 'timeout';
     search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
 
+    // The debounce is 300ms. A late price, summary, or failure-window read
+    // can land first, so this waits for the interactions request itself and
+    // fails if that request never arrives. Other calls in the same pause
+    // are not this search.
+    const searchCalls = () =>
+      apiCalls()
+        .slice(callsAfterLoad)
+        .filter(
+          (url) =>
+            url.includes('/interactions') && url.includes('query=timeout')
+        );
     await waitUntil(
-      () => apiCalls().length > callsAfterLoad,
+      () => searchCalls().length >= 1,
       'the debounced search never reached the server',
       { timeout: 3000 }
     );
     await waitUntil(
-      () => !(element as any).interactionsLoading,
+      () => searchCalls().length === 1 && !(element as any).interactionsLoading,
       'the search never settled',
       { timeout: 3000 }
     );
     await element.updateComplete;
 
-    const newCalls = apiCalls().slice(callsAfterLoad);
-    // A late price or failure-window read can land in this same pause. The
-    // search itself is one interactions request and does not reload the page.
-    const searchCalls = newCalls.filter((url) => url.includes('/interactions'));
-    expect(searchCalls).to.have.length(1);
-    expect(searchCalls[0]).to.contain('/api/v1/ai-models/model-1/interactions');
-    expect(searchCalls[0]).to.contain('query=timeout');
+    expect(searchCalls()).to.have.length(1);
+    expect(searchCalls()[0]).to.contain(
+      '/api/v1/ai-models/model-1/interactions'
+    );
+    expect(searchCalls()[0]).to.contain('query=timeout');
+    // Late price, summary, or sessions reads from the initial load can land
+    // before this search. Only calls after the search request are a reload.
+    const ordered = apiCalls().slice(callsAfterLoad);
+    const searchAt = ordered.findIndex(
+      (url) => url.includes('/interactions') && url.includes('query=timeout')
+    );
     expect(
-      newCalls.filter(
-        (url) => url.includes('/summary') || url.includes('/runtime-sessions')
-      )
+      ordered
+        .slice(searchAt + 1)
+        .filter(
+          (url) => url.includes('/summary') || url.includes('/runtime-sessions')
+        )
     ).to.have.length(0);
 
     // The summary the search did not touch is still on screen.
