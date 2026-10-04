@@ -62,7 +62,14 @@ from preloop.services.policy_evaluator import (
     evaluate_condition_against_bindings,
 )
 from preloop.services.sensitive_data.detectors import DetectorConfig
-from preloop.services.sensitive_data.policy_store import load_detector_config
+from preloop.services.sensitive_data.policy_store import (
+    detector_config_from,
+    load_sensitive_data_config,
+)
+from preloop.services.sensitive_data.tool_policy import (
+    compile_model_io_rules,
+    merge_model_io_rules,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1015,20 +1022,36 @@ def _load_gateway_policy_rules(
 ) -> List[ModelIORule]:
     """Finish the policy read before waits, and fail closed on database errors.
 
-    The account's detector configuration is read in the same window and
-    parked on ``gateway._sensitive_detector_config`` so the evaluator can
-    use custom patterns after the connection has been released.
+    The account's ``sensitive_data`` block is read in the same window: its
+    model targets compile into model I/O rules appended after the stored
+    ones, and its detector configuration is parked on
+    ``gateway._sensitive_detector_config`` so custom patterns work after the
+    connection has been released.
     """
     try:
         try:
-            rules = load_model_io_rules(gateway.db, gateway.auth_context.account_id)
-            if rules:
-                try:
-                    gateway._sensitive_detector_config = load_detector_config(
-                        gateway.db, gateway.auth_context.account_id
-                    )
-                except Exception:  # noqa: BLE001 - built-ins only is a safe default
-                    gateway._sensitive_detector_config = None
+            account_id = gateway.auth_context.account_id
+            rules = load_model_io_rules(gateway.db, account_id)
+            try:
+                sensitive = load_sensitive_data_config(gateway.db, account_id)
+            except Exception:  # noqa: BLE001 - built-ins only is a safe default
+                sensitive = None
+            if sensitive is not None and sensitive.rules:
+                agent_id = None
+                if any(rule.scope.agents for rule in sensitive.enabled_rules()):
+                    resolver = getattr(gateway, "_resolve_managed_agent_id", None)
+                    if callable(resolver):
+                        try:
+                            agent_id = resolver()
+                        except Exception:  # noqa: BLE001 - scope then excludes
+                            agent_id = None
+                rules = merge_model_io_rules(
+                    rules,
+                    compile_model_io_rules(sensitive, managed_agent_id=agent_id),
+                )
+            gateway._sensitive_detector_config = (
+                detector_config_from(sensitive) if rules and sensitive else None
+            )
             return rules
         finally:
             release = getattr(gateway, "release_db_for_wait", None)

@@ -13,8 +13,16 @@ from preloop.services.model_content_policy import (
     enforce_request_policy,
     evaluate_model_io,
 )
-from preloop.services.policy.schema import ModelIORule, ToolCondition
+from preloop.services.policy.schema import (
+    ModelIORule,
+    SensitiveDataConfig,
+    ToolCondition,
+)
 from preloop.services.sensitive_data.detectors import CustomPattern, DetectorConfig
+
+EMPLOYEE_ID_BLOCK = SensitiveDataConfig.model_validate(
+    {"detectors": {"custom_patterns": [{"name": "employee_id", "regex": r"EMP-\d{6}"}]}}
+)
 
 
 def _rule(**kwargs) -> ModelIORule:
@@ -91,28 +99,31 @@ def test_gateway_loads_detector_config_before_releasing_db(mocker) -> None:
     mocker.patch(
         "preloop.services.model_content_policy.load_model_io_rules", return_value=rules
     )
-    config = DetectorConfig(
-        custom_patterns=(CustomPattern("employee_id", r"EMP-\d{6}"),)
-    )
     loader = mocker.patch(
-        "preloop.services.model_content_policy.load_detector_config",
-        return_value=config,
+        "preloop.services.model_content_policy.load_sensitive_data_config",
+        return_value=EMPLOYEE_ID_BLOCK,
     )
     gateway = _gateway(rules)
     loaded = _load_gateway_policy_rules(gateway, ai_model=None, provider="openai")
     assert loaded == rules
     loader.assert_called_once_with(gateway.db, "acc")
     gateway.release_db_for_wait.assert_called_once()
-    assert gateway._sensitive_detector_config is config
+    config = gateway._sensitive_detector_config
+    assert isinstance(config, DetectorConfig)
+    assert config.custom_names() == ["employee_id"]
 
 
-def test_gateway_skips_detector_config_when_no_rules(mocker) -> None:
+def test_gateway_parks_no_config_when_no_rules(mocker) -> None:
     mocker.patch(
         "preloop.services.model_content_policy.load_model_io_rules", return_value=[]
     )
-    loader = mocker.patch("preloop.services.model_content_policy.load_detector_config")
-    _load_gateway_policy_rules(_gateway([]), ai_model=None, provider="openai")
-    loader.assert_not_called()
+    mocker.patch(
+        "preloop.services.model_content_policy.load_sensitive_data_config",
+        return_value=EMPLOYEE_ID_BLOCK,
+    )
+    gateway = _gateway([])
+    assert _load_gateway_policy_rules(gateway, ai_model=None, provider="openai") == []
+    assert gateway._sensitive_detector_config is None
 
 
 def test_enforce_request_policy_uses_custom_pattern(mocker) -> None:
@@ -121,10 +132,8 @@ def test_enforce_request_policy_uses_custom_pattern(mocker) -> None:
         "preloop.services.model_content_policy.load_model_io_rules", return_value=rules
     )
     mocker.patch(
-        "preloop.services.model_content_policy.load_detector_config",
-        return_value=DetectorConfig(
-            custom_patterns=(CustomPattern("employee_id", r"EMP-\d{6}"),)
-        ),
+        "preloop.services.model_content_policy.load_sensitive_data_config",
+        return_value=EMPLOYEE_ID_BLOCK,
     )
     gateway = _gateway(rules)
     import pytest

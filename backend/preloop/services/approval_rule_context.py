@@ -47,6 +47,9 @@ SOURCE_AGENT_PERMISSION_HOOK = "agent_permission_hook"
 #: A model.request or model.response content policy required approval.
 SOURCE_MODEL_IO_RULE = "model_io_rule"
 
+#: A sensitive-data rule matched tool arguments or a tool result.
+SOURCE_SENSITIVE_DATA_RULE = "sensitive_data_rule"
+
 #: Every ``source`` value a caller may persist.
 KNOWN_SOURCES = frozenset(
     {
@@ -56,6 +59,7 @@ KNOWN_SOURCES = frozenset(
         SOURCE_RULE_EVALUATION_ERROR,
         SOURCE_AGENT_PERMISSION_HOOK,
         SOURCE_MODEL_IO_RULE,
+        SOURCE_SENSITIVE_DATA_RULE,
     }
 )
 
@@ -77,6 +81,10 @@ _DEFAULT_EXPLANATIONS = {
     SOURCE_MODEL_IO_RULE: (
         "A model request or response content policy required approval."
     ),
+    SOURCE_SENSITIVE_DATA_RULE: (
+        "A sensitive data rule found regulated data in the tool call and "
+        "required approval."
+    ),
 }
 
 #: Label of last resort when a rule has neither description nor expression.
@@ -87,6 +95,7 @@ _GENERIC_LABELS = {
     SOURCE_RULE_EVALUATION_ERROR: "Rule evaluation error",
     SOURCE_AGENT_PERMISSION_HOOK: "Agent permission hook",
     SOURCE_MODEL_IO_RULE: "Model content policy",
+    SOURCE_SENSITIVE_DATA_RULE: "Sensitive data rule",
 }
 
 #: Identifiers referenced through ``args.`` in an expression, e.g. the
