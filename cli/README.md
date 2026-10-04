@@ -285,6 +285,15 @@ still skips onboarding prompts, but can perform authenticated enrollment
 lookups and local telemetry counting. Root update checks are skipped so they
 cannot add an update prompt or notification to the JSON stream.
 
+`preloop agents status <agent> --json` uses the same agent allowlist (`name`,
+`app_id`, `mcp_server_count`, and the fixed auth, runtime, onboarding, and
+support enums). Local state keeps registered agent name, enrollment id, whether
+a config existed, the managed server name, and apply timestamps. Remote state
+keeps lifecycle, activity, gateway flags, credential status, and an allowlisted
+validation result. Model rows keep identifier and credential status. Env,
+headers, auth, config paths, tokens, raw local config, and raw remote config
+are omitted. The text status command is unchanged.
+
 Use `preloop agents discover --inventory` for an explicitly offline collection.
 The `preloop.inventory.v1` envelope contains a UTC `observed_at`, collector and
 detector versions, the fixed scope (`user=current`, `coverage=known-registry`),

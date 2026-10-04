@@ -851,7 +851,7 @@ func init() {
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
-	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
+	agentsStatusCmd.Flags().Bool("json", false, "output allowlisted managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported direct gateway route/accounting probe in addition to config validation (application behavior unverified)")
 	agentsInstallPluginCmd.Flags().Bool("dry-run", false, "print the runtime plugin installation command without running it")
 	agentsRestoreCmd.Flags().BoolP("yes", "y", false, "skip the restore confirmation prompt")
@@ -1706,13 +1706,7 @@ func runAgentsStatus(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		payload := map[string]interface{}{
-			"agent":        agent,
-			"local_state":  localState,
-			"remote_state": detail,
-			"models":       agentModels,
-			"desktop":      desktop,
-		}
+		payload := safeStatusJSON(agent, localState, detail, agentModels, desktop)
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(payload)
