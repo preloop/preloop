@@ -62,6 +62,75 @@ def test_tracker_client_without_credentials() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scanner_client_for_managed_grant_resolves_per_request() -> None:
+    """A long-lived scanner client asks the resolver before every call (#1065)."""
+    import uuid
+    from datetime import timedelta, timezone
+
+    import httpx
+
+    from preloop.services import managed_credentials as mc
+
+    tracker = _tracker(repository="repo")
+    tracker.id = uuid.uuid4()
+    tracker.account_id = uuid.uuid4()
+    tracker.auth_type = "managed_oauth"
+    tracker.resolved_api_key = ""
+
+    class Resolver:
+        version = 0
+        calls: list = []
+
+        async def resolve(self, **kwargs):
+            self.calls.append(kwargs)
+            type(self).version += 1
+            return SimpleNamespace(
+                access_token=f"scan-token-{self.version}",
+                expires_at=datetime.datetime.now(timezone.utc) + timedelta(hours=1),
+                rotation_version=self.version,
+            )
+
+    mc.register_managed_resolver("bitbucket", Resolver())
+    try:
+        client = TrackerClient(tracker).client
+        assert isinstance(client, BitbucketTracker)
+        assert client.managed is True
+        assert client.api_key == ""
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"values": []})
+
+        client._transport = httpx.MockTransport(handler)
+        await client.get_projects("ws")
+        await client.get_projects("ws")
+        assert [r.headers["Authorization"] for r in requests] == [
+            "Bearer scan-token-1",
+            "Bearer scan-token-2",
+        ]
+        assert Resolver.calls[0]["account_id"] == tracker.account_id
+        assert Resolver.calls[0]["tracker_id"] == tracker.id
+        assert Resolver.calls[0]["repository"] == "repo"
+    finally:
+        mc.register_managed_resolver("bitbucket", None)
+
+
+def test_scanner_client_for_managed_grant_without_plugin_is_inert() -> None:
+    """No plugin: the client exists for payload transforms but cannot call out."""
+    import uuid
+
+    tracker = _tracker()
+    tracker.id = uuid.uuid4()
+    tracker.account_id = uuid.uuid4()
+    tracker.auth_type = "managed_oauth"
+    tracker.resolved_api_key = ""
+    client = TrackerClient(tracker).client
+    assert client.managed is True
+    assert client.api_key == ""
+
+
+@pytest.mark.asyncio
 @patch("preloop.sync.scanner.core.crud_organization")
 @patch("os.getenv")
 async def test_scanner_registers_hooks_per_repository(

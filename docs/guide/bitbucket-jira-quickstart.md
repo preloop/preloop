@@ -28,6 +28,14 @@ The pipeline, end to end:
 Follow [Bitbucket Cloud tracker](bitbucket-tracker.md). Notes that matter for
 this pipeline:
 
+- On a deployment that advertises `bitbucket_cloud_oauth` (the managed
+  provider is an Enterprise plugin), prefer **Connect Bitbucket**: the
+  connection is authorized in the browser, stores no pasted token, is renewed
+  automatically, and the late push and pull request creation of a long
+  implementation run reacquire a fresh access token from the control plane.
+  The tracker page shows the real token expiry and the connection state;
+  **Reconnect** repairs a revoked grant. Pasted tokens keep working as
+  before and are never converted.
 - With a personal API token (`auth_type: api_token`,
   `token_kind: api_token`), also enter the Atlassian account email. It is
   used for the HTTP Basic fallback on the REST API and for pull request

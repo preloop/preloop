@@ -6,6 +6,12 @@ import '../../components/add-tracker-modal.ts';
 import '../../components/unlocked-tools-review-dialog.ts';
 import type { Tracker } from '../../components/tracker-item.ts';
 import type { TrackerList } from '../../components/tracker-list.ts';
+import {
+  BITBUCKET_CONNECT_ERROR_PARAM,
+  BITBUCKET_CONNECT_HANDLE_PARAM,
+  BITBUCKET_CONNECT_TRACKER_PARAM,
+  describeBitbucketConnectError,
+} from '../../api';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 @customElement('trackers-view')
@@ -24,6 +30,17 @@ export class TrackersView extends LitElement {
 
   @state()
   private githubError: string | null = null;
+
+  /** Opaque Bitbucket consent completion handle from the callback redirect. */
+  @state()
+  private bitbucketConnectHandle: string | null = null;
+
+  /** Managed tracker being reconnected, when the handle belongs to one. */
+  @state()
+  private bitbucketReconnectTrackerId: string | null = null;
+
+  @state()
+  private bitbucketError: string | null = null;
 
   /** Stashed until the add-tracker modal fully closes (incl. warnings flow). */
   @state()
@@ -44,6 +61,34 @@ export class TrackersView extends LitElement {
     super.connectedCallback();
     this._handleUrlAction();
     this._handleGitHubCallback();
+    this._handleBitbucketCallback();
+  }
+
+  /**
+   * Bitbucket consent callback. The URL carries only an opaque completion
+   * handle (or a sanitized error code); both are removed from the address bar
+   * and history immediately so a reload or a shared link cannot replay them.
+   */
+  private _handleBitbucketCallback() {
+    const params = new URLSearchParams(window.location.search);
+    const handle = params.get(BITBUCKET_CONNECT_HANDLE_PARAM);
+    const trackerId = params.get(BITBUCKET_CONNECT_TRACKER_PARAM);
+    const error = params.get(BITBUCKET_CONNECT_ERROR_PARAM);
+    if (!handle && !error) {
+      return;
+    }
+    const cleaned = new URL(window.location.href);
+    cleaned.searchParams.delete(BITBUCKET_CONNECT_HANDLE_PARAM);
+    cleaned.searchParams.delete(BITBUCKET_CONNECT_TRACKER_PARAM);
+    cleaned.searchParams.delete(BITBUCKET_CONNECT_ERROR_PARAM);
+    window.history.replaceState({}, '', cleaned.toString());
+    if (error) {
+      this.bitbucketError = describeBitbucketConnectError(error);
+      return;
+    }
+    this.bitbucketConnectHandle = handle;
+    this.bitbucketReconnectTrackerId = trackerId;
+    this.isAddingTracker = true;
   }
 
   private _handleUrlAction() {
@@ -150,6 +195,8 @@ export class TrackersView extends LitElement {
   private _closeAddTrackerForm() {
     this.isAddingTracker = false;
     this.editingTracker = null;
+    this.bitbucketConnectHandle = null;
+    this.bitbucketReconnectTrackerId = null;
 
     if (this._maybeRedirectAfterTrackerModal()) {
       return;
@@ -202,6 +249,10 @@ export class TrackersView extends LitElement {
     this.githubError = null;
   }
 
+  private _dismissBitbucketError() {
+    this.bitbucketError = null;
+  }
+
   render() {
     return html`
       <view-header
@@ -244,12 +295,32 @@ export class TrackersView extends LitElement {
               : ''
           }
           ${
+            this.bitbucketError
+              ? html`
+                  <sl-alert
+                    variant="danger"
+                    open
+                    closable
+                    class="bitbucket-connect-error"
+                    @sl-after-hide=${this._dismissBitbucketError}
+                  >
+                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                    <strong>Bitbucket Connection Failed</strong><br />
+                    ${this.bitbucketError}
+                  </sl-alert>
+                `
+              : ''
+          }
+          ${
             this.isAddingTracker
               ? html`<add-tracker-modal
                   .githubInstallationId=${this.githubInstallationId}
                   .githubTargetLogin=${this.githubTargetLogin}
+                  .bitbucketConnectHandle=${this.bitbucketConnectHandle}
+                  .bitbucketReconnectTrackerId=${this.bitbucketReconnectTrackerId}
                   .existingTrackers=${this.accountTrackers}
                   @tracker-added=${this._handleTrackerAdded}
+                  @tracker-updated=${this._handleTrackerUpdated}
                   @close-modal=${this._closeAddTrackerForm}
                 ></add-tracker-modal>`
               : ''

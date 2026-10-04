@@ -337,6 +337,21 @@ normal authenticated account scoping; URL account context grants no access.
 
 Managed tracker OAuth persistence uses the [provider-neutral storage contract](docs/architecture/managed-oauth-storage.md),
 with tenant-bound connection transactions and serialized token-pair rotation.
+Consumption is the resolver contract in `preloop.services.managed_credentials`:
+a tracker with `auth_type == "managed_oauth"` stores no token, and every
+caller (tracker factory and scanner clients, `api.common.get_tracker_client`
+behind MCP and REST, connection/scope testing, feedback reads, flow clone
+credentials, and the execution-bound publication credential endpoint) asks the
+plugin service `managed_oauth_resolver:<provider>` for a fresh credential
+right before network I/O, after the usual account/project authorization. The
+Bitbucket Cloud client pins the API origin, refuses redirects, forces exactly
+one refresh on a 401 and has no Basic or stale-key fallback; typed
+unavailable/reconnect-required/permission failures propagate instead of an
+anonymous clone or a GitHub fallback. Late publication reuses the GitHub App
+refresh wrapper: the runner's execution-bound capability is exchanged for the
+current access token plus its git username (`x-token-auth`) only while the
+execution is running and the destination lies inside the tracker's workspace
+binding; refresh tokens and consumer secrets never enter containers.
 
 ### Nanobot managed runtime
 

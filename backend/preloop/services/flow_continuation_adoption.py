@@ -35,6 +35,7 @@ from preloop.services.flow_feedback_provider import (
     FeedbackProvider,
     feedback_tracker_options,
 )
+from preloop.services.managed_credentials import tracker_credential_source
 from preloop.sync.trackers.factory import create_tracker_client
 
 
@@ -212,6 +213,7 @@ def _load_source(
             "tracker_id": tracker_id,
             "tracker_key": tracker.resolved_api_key,
             "tracker_options": feedback_tracker_options(db, tracker),
+            "credential_source": tracker_credential_source(tracker),
         }
 
 
@@ -278,6 +280,7 @@ async def _read_publication(source: dict[str, Any]) -> dict[str, Any]:
         str(source["tracker_id"]),
         source["tracker_key"],
         source["tracker_options"],
+        credential_source=source.get("credential_source"),
     )
     if client is None:
         raise ContinuationAdoptionError("Tracker cannot read the published PR")

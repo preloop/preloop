@@ -346,3 +346,148 @@ describe('TrackersView', () => {
     );
   });
 });
+describe('TrackersView managed Bitbucket callback (issue #1065)', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    localStorage.setItem('refreshToken', 'test-refresh-token');
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      const url = String(input);
+      const json = (data: unknown) =>
+        new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      if (url.includes('/api/v1/features')) {
+        return json({ plugins: [], features: { bitbucket_cloud_oauth: true } });
+      }
+      if (url.includes('/api/v1/auth/bitbucket/complete')) {
+        return json({
+          tracker_id: 'managed-1',
+          name: 'Bitbucket Cloud',
+          provider: 'bitbucket',
+          managed: true,
+          state: 'workspace_required',
+          consumer_configured: true,
+          actor: { display_name: 'Jane Doe' },
+          capabilities: {},
+          capabilities_verified: false,
+        });
+      }
+      if (url.includes('/api/v1/auth/bitbucket/trackers/managed-1/discovery')) {
+        return json({ actor: null, workspaces: [], repositories: null });
+      }
+      if (url.includes('/api/v1/trackers/auth-methods')) {
+        return json({ methods: ['api_token'], github_app_configured: false });
+      }
+      return json([]);
+    });
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+    localStorage.clear();
+    sessionStorage.clear();
+    window.history.replaceState({}, '', window.location.pathname);
+  });
+
+  async function mount() {
+    const el = (await fixture(
+      html`<trackers-view></trackers-view>`
+    )) as TrackersView;
+    await el.updateComplete;
+    return el;
+  }
+
+  it('opens the modal with the opaque handle and clears every callback parameter', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/trackers?bitbucket_connect=opaque-handle&other=keep'
+    );
+    const el = await mount();
+    expect(window.location.search).to.equal('?other=keep');
+    expect(window.location.href).to.not.contain('opaque-handle');
+    const modal = el.shadowRoot?.querySelector('add-tracker-modal') as any;
+    expect(modal).to.exist;
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some((call) =>
+            String(call.args[0]).includes('/auth/bitbucket/complete')
+          ),
+      'completion was not requested'
+    );
+    const completion = fetchStub
+      .getCalls()
+      .find((call) =>
+        String(call.args[0]).includes('/auth/bitbucket/complete')
+      );
+    expect(JSON.parse(String(completion?.args[1]?.body))).to.deep.equal({
+      handle: 'opaque-handle',
+    });
+    // The handle is used exactly once and never kept in browser storage.
+    expect(modal.bitbucketConnectHandle).to.equal(null);
+    for (const store of [localStorage, sessionStorage]) {
+      for (let i = 0; i < store.length; i += 1) {
+        expect(store.getItem(store.key(i)!)).to.not.contain('opaque-handle');
+      }
+    }
+  });
+
+  it('routes a reconnect handle to the named tracker', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/trackers?bitbucket_connect=opaque-handle&bitbucket_tracker=managed-1'
+    );
+    const el = await mount();
+    expect(window.location.search).to.equal('');
+    const modal = el.shadowRoot?.querySelector('add-tracker-modal') as any;
+    expect(modal).to.exist;
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some((call) =>
+            String(call.args[0]).includes(
+              '/auth/bitbucket/trackers/managed-1/reconnect/complete'
+            )
+          ),
+      'reconnect completion was not requested'
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).endsWith('/auth/bitbucket/complete')
+        )
+    ).to.equal(false);
+  });
+
+  it('shows a sanitized error and clears the parameter', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/trackers?bitbucket_error=access_denied'
+    );
+    const el = await mount();
+    expect(window.location.search).to.equal('');
+    const alert = el.shadowRoot?.querySelector(
+      'sl-alert.bitbucket-connect-error'
+    );
+    expect(alert).to.exist;
+    expect(alert?.textContent).to.contain('declined');
+    expect(el.shadowRoot?.querySelector('add-tracker-modal')).to.not.exist;
+  });
+
+  it('does nothing without callback parameters', async () => {
+    window.history.replaceState({}, '', '/console/trackers');
+    const el = await mount();
+    expect(el.shadowRoot?.querySelector('add-tracker-modal')).to.not.exist;
+    expect(el.shadowRoot?.querySelector('sl-alert.bitbucket-connect-error')).to
+      .not.exist;
+  });
+});

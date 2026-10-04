@@ -35,7 +35,18 @@ endpoints outright, and the `update_pull_request` tool rejects
 
 ## Authentication
 
-Pick one of two modes when you add the tracker.
+Pick one of three modes when you add the tracker. The first two store a
+token you paste (unmanaged); the third stores no token at all.
+
+| Mode | `auth_type` | Token on the row | Renewed | Expiry shown |
+| --- | --- | --- | --- | --- |
+| API token or repository access token | `api_token` | yes, encrypted | no | the date you enter |
+| Pasted OAuth access token | `oauth_token` | yes, encrypted | no | the date you enter |
+| Managed Bitbucket Cloud connection | `managed_oauth` | no | yes, by the provider service | the real expiry from the provider status |
+
+Editing a pasted-token tracker never converts it into a managed connection,
+and a managed tracker never accepts a pasted token: `PUT /api/v1/trackers/{id}`
+with `api_key` answers 409 for it. Use **Reconnect** or **Disconnect** instead.
 
 ### API token or repository access token (`auth_type: api_token`)
 
@@ -66,35 +77,95 @@ task call is refused (403), Preloop skips the task and says so in the result.
 secret that starts with the app password prefix `ATBB` and an `auth_type` or
 `token_kind` of `app_password`, and tells you to create an API token instead.
 
-### OAuth access token (`auth_type: oauth_token`)
+### Pasted OAuth access token (`auth_type: oauth_token`)
 
-Paste an OAuth access token. Preloop sends it as Bearer. Preloop does not
-refresh OAuth tokens yet, so replace the token before it expires.
+Paste an OAuth access token. Preloop sends it as Bearer. A pasted token is
+unmanaged: Preloop does not refresh it, so replace the token before it expires
+(or use the managed connection below).
+
+### Managed Bitbucket Cloud connection (`auth_type: managed_oauth`)
+
+Editions: Enterprise (the consent and refresh service is a managed-provider
+plugin). The console, REST, MCP, scanner, flow clone and publication paths
+that consume it ship in OSS and stay inert without the plugin.
+
+When the deployment advertises `bitbucket_cloud_oauth` in `/api/v1/features`,
+**Add tracker > Bitbucket Cloud** offers **Connect Bitbucket**. The browser is
+sent to Bitbucket for consent; the callback returns to the console with an
+opaque completion handle only (never the authorization code or a token), the
+console exchanges it once, and the tracker is created with `auth_type:
+managed_oauth` and no `api_key`. The modal then shows the authorizing actor,
+the workspaces the actor can access, an optional repository, and the existing
+scope step. The handle and the error code are removed from the address bar
+immediately.
+
+Before every Bitbucket call Preloop asks the provider resolver for the current
+access token: REST calls from the console and MCP tools, the scanner, the
+flow clone, late push and PR creation, and feedback reads. Requests are
+pinned to `https://api.bitbucket.org/2.0`, redirects are refused, a 401
+forces exactly one refresh, and there is no Basic fallback and no fallback to a
+stale stored token or an anonymous clone. If the resolver is missing (plugin
+not installed), the grant needs reconnect, or the provider refuses, the
+operation fails with that reason instead.
+
+The tracker page shows the connection state (`connected`,
+`workspace_required`, `reconnect_required`, `disconnected`, `unavailable`),
+the actor, the real access-token expiry reported by the provider (there is no
+date to enter), and the capabilities derived from the consented scopes. A
+capability is shown as granted, missing or unknown; discovery success is not
+presented as proof that push, approval or webhook registration work until
+they are first exercised. **Reconnect** starts consent again for the same
+tracker; **Disconnect** erases the grant locally and disables the tracker.
+With the feature flag off, managed trackers are marked `provider unavailable`
+and cannot refresh; pasted-token trackers are unaffected.
 
 ### Git credentials
 
-Clones and pushes use HTTPS with the token as the password. The username is
+Clones and pushes use HTTPS with the token as the password, installed through
+a git credential helper so the remote URL never carries it. The username is
 never your email:
 
 | Token | Git username |
 | --- | --- |
 | Personal API token, `username` set | your Bitbucket username |
 | Personal API token, no `username` | `x-bitbucket-api-token-auth` |
-| Repository access token or OAuth token | `x-token-auth` |
+| Repository access token, pasted OAuth token or managed connection | `x-token-auth` |
 
 Preloop rejects a `username` that contains `@`. Put the email in `email`.
 
+For a managed connection the clone uses the access token current at launch.
+Hosted legacy publication then reacquires a fresh token from the control
+plane immediately before the late push and the pull request REST calls,
+through the same execution-bound broker GitHub App flows use: the runner
+presents its capability, the control plane checks that the execution is still
+running and not stopped, that the tracker belongs to the account, and that the
+repository is inside the tracker's workspace (and bound repository), and
+returns the current access token with its git username. Refresh tokens and the
+OAuth consumer secret never enter the agent container. If the grant was revoked
+or disconnected meanwhile, publication fails with `reconnect required`, the
+recovery bundle under the evidence directory is kept, and a retry reuses the
+existing branch and pull request rather than opening a second one. Isolated
+publication and OAuth downscoping are not available on Bitbucket Cloud; a
+managed grant still publishes in legacy mode with its documented credential
+exposure.
+
 ### Token expiry
 
-Bitbucket does not report a token's expiry through the API. Enter the date in
-**Token expires on** when you add or edit the tracker. The tracker page then
-shows **Token expires <date>** from 14 days before the date, and
+Bitbucket does not report a pasted token's expiry through the API. Enter the
+date in **Token expires on** when you add or edit the tracker. The tracker
+page then shows **Token expires <date>** from 14 days before the date, and
 **Token expired** after it. A 401 from Bitbucket also names expiry as a likely
 cause.
 
+A managed connection has no such field: its access token is short-lived and
+renewed by the provider service, and the tracker page shows the actual expiry
+from the provider status.
+
 ## Add the tracker
 
-Console: **Trackers > Add tracker**, type **Bitbucket Cloud**.
+Console: **Trackers > Add tracker**, type **Bitbucket Cloud**. With the
+managed provider configured, **Connect Bitbucket** is offered first and the
+fields below sit under **Or paste a token instead**.
 
 | Field | Required | Notes |
 | --- | --- | --- |
@@ -128,7 +199,9 @@ API (`POST /api/v1/trackers`):
 ```
 
 The configuration is checked before any network call. A bad configuration is
-answered with 400 and a message that says what to fix.
+answered with 400 and a message that says what to fix. `auth_type:
+managed_oauth` is rejected here as well: managed connections are only created
+by the consent completion endpoint.
 
 In the scope step, repositories are grouped by their Bitbucket project. The
 tracker page groups synced repositories the same way.
@@ -249,9 +322,12 @@ the status before merge.
 
 ## Not supported yet
 
-- Bitbucket Data Center.
-- OAuth token refresh: an expiring OAuth access token is not renewed, the
-  tracker must be reconnected when it expires.
-- Isolated publication. Bitbucket tokens cannot be downscoped to one
-  repository the way a GitHub App lease can, so multi-repository flows that
+- Bitbucket Data Center (see the separate guide for the 10.2 adapter).
+- Refresh of a pasted OAuth access token: it is not renewed, the tracker must
+  be edited with a new token when it expires. Only the managed connection is
+  renewed.
+- Isolated publication. Bitbucket tokens, managed or pasted, cannot be
+  downscoped to one repository the way a GitHub App lease can, so flows that
   publish to Bitbucket use legacy publication mode.
+- Merge and decline policy: Preloop never merges or declines on Bitbucket,
+  with any credential kind.

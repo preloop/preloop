@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from preloop.models.db.session import get_db_session
 from preloop.api.auth import get_current_active_user
 from preloop.schemas.issue_compliance import CompliancePromptMetadata
+from preloop.services.managed_credentials import tracker_credential_source
 from preloop.sync.trackers import create_tracker_client
 from preloop.models.crud import (
     CRUDOrganization,
@@ -294,12 +295,16 @@ async def get_tracker_client(
     )
 
     try:
-        # Create the tracker client using the combined config
+        # Create the tracker client using the combined config. A managed grant
+        # (auth_type managed_oauth) carries no stored key: the client resolves
+        # a fresh credential through the provider plugin before each request,
+        # after the account/project authorization checks above.
         tracker_client = await create_tracker_client(
             tracker_type=tracker_type,
             tracker_id=str(tracker.id),
             api_key=tracker.resolved_api_key,  # May be empty for OAuth
             connection_details=full_config,
+            credential_source=tracker_credential_source(tracker),
         )
         if not tracker_client:
             # Raise specific error if factory returns None (e.g., unsupported type or config error)

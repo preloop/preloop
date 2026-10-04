@@ -13,14 +13,16 @@ from sqlalchemy import (
     case,
     cast,
     func,
+    inspect,
     literal_column,
     or_,
     select,
     true,
     union_all,
 )
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, aliased, joinedload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from preloop.models import models
 from ...services.cache_accounting import uncached_input_tokens
@@ -36,6 +38,37 @@ RuntimeSession = models.RuntimeSession
 User = models.User
 
 logger = logging.getLogger(__name__)
+
+
+def _refresh_committed_row(db: Session, db_obj: Any) -> None:
+    """Reload server defaults without expiring a row the pool cannot reread.
+
+    ``Session.refresh`` expires the instance before it loads. A
+    ``SQLAlchemyTimeoutError`` then leaves the primary key expired, and the
+    next attribute read checks out another connection. The gateway session
+    uses ``expire_on_commit=False``, so the values already on the instance
+    are the committed row. Snapshot them and put them back when the reload
+    cannot get a connection.
+
+    Args:
+        db: Session that just committed ``db_obj``.
+        db_obj: Persistent instance whose server defaults should be reloaded.
+    """
+    state = inspect(db_obj)
+    column_keys = set(state.mapper.column_attrs.keys())
+    snapshot = {key: state.dict[key] for key in column_keys if key in state.dict}
+    identity = state.identity
+    usage_id = identity[0] if identity else snapshot.get("id")
+    try:
+        db.refresh(db_obj)
+    except SQLAlchemyTimeoutError:
+        logger.warning(
+            "Gateway usage row %s committed but refresh lost the pool",
+            usage_id,
+        )
+        for key, value in snapshot.items():
+            set_committed_value(db_obj, key, value)
+
 
 # Known ``meta_data.purpose`` tags for internal model-gateway usage rows.
 GATEWAY_USAGE_PURPOSES = frozenset(
@@ -445,7 +478,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 )
 
         db.commit()
-        db.refresh(db_obj)
+        # Flush already assigned the id and commit persisted the row.
+        # Refresh is a second checkout for server defaults. A peer holding
+        # the only pool slot must not expire this committed row, or the
+        # caller retries the insert and records the call twice.
+        _refresh_committed_row(db, db_obj)
         return db_obj
 
     def get_gateway_cost_by_provider_day(
