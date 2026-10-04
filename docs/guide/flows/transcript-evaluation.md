@@ -40,6 +40,17 @@ under *Scheduled*, review the options below and enable it.
 | `scope` | `own` | `own`: transcripts from sessions of this flow's own runs. `account`: every agent's transcripts. |
 | `labels.site` | `""` | Only transcripts with this `site` label. Empty matches every site. |
 | `kinds` | `[transcript]` | Artifact kinds to evaluate. |
+| `answers` | `{}` | Filled by the platform when a parked run resumes; leave it empty. |
+
+### Questions are asked once
+
+`ask_user` and `request_approval` park the run until a person decides; the
+run then resumes. A run that parks twice (the question, then an approval)
+resumes the second time with a prompt that names only the latest decision,
+and a harness that cannot continue its session starts again from step 1.
+The platform keeps every decision of the run in
+`trigger_event.payload.answers`, and the prompt shows that map, so the run
+uses the earlier answer instead of asking the person again.
 
 The schedule is hourly (`0 * * * *`, UTC). Change it on the flow like any
 other schedule; the window follows.

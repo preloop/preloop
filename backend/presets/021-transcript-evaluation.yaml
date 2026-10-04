@@ -30,6 +30,10 @@ schedule_config:
       site: ""
     kinds:
       - transcript
+    # Filled by the platform when a parked run resumes: every decision this
+    # run already received (ask_user answers, request_approval verdicts),
+    # keyed by request id. Empty on a fresh run.
+    answers: {}
 agent_type: codex
 agent_config:
   sandbox_type: exec
@@ -63,6 +67,14 @@ prompt_template: |
   Site label: "{{trigger_event.payload.labels.site}}" (empty means every site)
   Artifact kinds: {{trigger_event.payload.kinds}}
   Scope: {{trigger_event.payload.scope}}
+
+  Decisions this run already received ({} on a fresh run; filled when the
+  run resumed after a person answered):
+  {{trigger_event.payload.answers}}
+  Each entry has the tool (ask_user or request_approval), its status and
+  the answer. A run that asked and was parked restarts from step 1 when it
+  resumes: never ask a question or request an approval again when an entry
+  for it exists here or in a RESUMED block below; use that decision.
 
   1. Find the transcripts. Call search_artifacts with
      kind = the artifact kinds above,
