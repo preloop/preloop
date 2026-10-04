@@ -3266,6 +3266,122 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook:
+    get:
+      tags:
+      - Trackers
+      summary: Get Bitbucket Dc Webhook Status
+      description: Report callback, secret and (with ``check=true``) hook registration.
+      operationId: get_bitbucket_dc_webhook_status_api_v1_trackers__tracker_id__bitbucket_dc_webhook_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      - name: check
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Check
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitbucketDCWebhookStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook/secret:
+    post:
+      tags:
+      - Trackers
+      summary: Rotate Bitbucket Dc Webhook Secret
+      description: 'Generate a new per-tracker secret, store it encrypted, return
+        it once.
+
+
+        Deliveries signed with the previous secret are rejected from now on, so
+
+        update the hook (or call the register endpoint) right after rotating.'
+      operationId: rotate_bitbucket_dc_webhook_secret_api_v1_trackers__tracker_id__bitbucket_dc_webhook_secret_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitbucketDCWebhookSecret'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook/register:
+    post:
+      tags:
+      - Trackers
+      summary: Register Bitbucket Dc Webhook
+      description: 'Create or update the hook with the tracker''s own credentials.
+
+
+        Idempotent: re-running updates Preloop''s hook in place and never
+
+        deletes or edits other hooks on the repository.'
+      operationId: register_bitbucket_dc_webhook_api_v1_trackers__tracker_id__bitbucket_dc_webhook_register_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/BitbucketDCWebhookRegisterRequest'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitbucketDCWebhookStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/mcp-servers:
     get:
       tags:
@@ -10484,7 +10600,14 @@ paths:
       description: 'Receive tracker webhooks and queue event processing.
 
 
-        Return HTTP 503 when task publication is not acknowledged.'
+        Return HTTP 503 when task publication is not acknowledged.
+
+
+        Bitbucket Data Center deliveries use ``bitbucket_dc`` as ``tracker_type``
+
+        and the tracker id (not an organization id) as the second path segment:
+
+        the hook belongs to one tracker and its per-tracker secret.'
       operationId: receive_webhook_api_v1_private_webhooks__tracker_type___organization_id__post
       parameters:
       - name: tracker_type
@@ -18912,6 +19035,105 @@ components:
       - by_status
       title: BatchRollup
       description: Aggregate metrics over the executions of one batch.
+    BitbucketDCWebhookRegisterRequest:
+      properties:
+        repository:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repository
+          description: '''PROJECT/slug''; defaults to the bound repository.'
+      type: object
+      title: BitbucketDCWebhookRegisterRequest
+      description: Optional repository override for an unbound tracker.
+    BitbucketDCWebhookSecret:
+      properties:
+        callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Callback Url
+          description: URL the hook must call; null when PRELOOP_URL is unset.
+        callback_configured:
+          type: boolean
+          title: Callback Configured
+        required_events:
+          items:
+            type: string
+          type: array
+          title: Required Events
+        signature:
+          type: string
+          title: Signature
+          description: '''configured'' or ''missing_secret'' (Preloop side).'
+        registration:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Registration
+          description: 'Hook state on the bound repository when checked: registered,
+            inactive, events_missing, missing, permission_denied, unauthorized, unbound_repository
+            (no bound repository to check), configuration_invalid (instance no longer
+            approved or invalid connection details) or unavailable (instance unreachable,
+            rate limited or answering with an error).'
+        instructions:
+          type: string
+          title: Instructions
+        secret:
+          type: string
+          title: Secret
+      type: object
+      required:
+      - callback_configured
+      - required_events
+      - signature
+      - instructions
+      - secret
+      title: BitbucketDCWebhookSecret
+      description: A newly generated secret. It is shown once and stored encrypted.
+    BitbucketDCWebhookStatus:
+      properties:
+        callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Callback Url
+          description: URL the hook must call; null when PRELOOP_URL is unset.
+        callback_configured:
+          type: boolean
+          title: Callback Configured
+        required_events:
+          items:
+            type: string
+          type: array
+          title: Required Events
+        signature:
+          type: string
+          title: Signature
+          description: '''configured'' or ''missing_secret'' (Preloop side).'
+        registration:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Registration
+          description: 'Hook state on the bound repository when checked: registered,
+            inactive, events_missing, missing, permission_denied, unauthorized, unbound_repository
+            (no bound repository to check), configuration_invalid (instance no longer
+            approved or invalid connection details) or unavailable (instance unreachable,
+            rate limited or answering with an error).'
+        instructions:
+          type: string
+          title: Instructions
+      type: object
+      required:
+      - callback_configured
+      - required_events
+      - signature
+      - instructions
+      title: BitbucketDCWebhookStatus
+      description: Webhook readiness of one Data Center tracker.
     Body_backfill_from_provider_ledger_csv_api_v1_cost_ledger_backfill_csv_post:
       properties:
         file:
