@@ -1878,6 +1878,91 @@ class TestCreateAndNotify:
             )
 
     @patch("preloop.services.approval_service.get_task_publisher")
+    async def test_create_and_notify_persists_fallback_when_summary_raises(
+        self,
+        mock_get_publisher,
+        approval_service,
+        sample_approval_workflow,
+        mock_task_publisher,
+        caplog,
+    ):
+        """A raising summary pipeline still persists the deterministic fallback.
+
+        Regression for #1282: an exception from ``generate_approval_summary``
+        (or from opening/closing the sync session) used to skip the update and
+        leave the created request's ``summary`` null. The fallback is now put
+        in place before the model path and persisted regardless.
+        """
+        mock_get_publisher.return_value = mock_task_publisher
+
+        mock_approval_request = MagicMock(spec=ApprovalRequest)
+        mock_approval_request.id = uuid.uuid4()
+        mock_approval_request.summary = None
+        mock_approval_request.requested_at = datetime.utcnow()
+        mock_approval_request.tool_args = {"owner": "did:web:example:u:abc"}
+
+        updated_request = MagicMock(spec=ApprovalRequest)
+        updated_request.id = mock_approval_request.id
+        updated_request.summary = (
+            "Allow get_weekly_summary with owner=did:web:example:u:abc?"
+        )
+
+        sync_db = MagicMock()
+
+        with (
+            patch.object(
+                approval_service,
+                "create_approval_request",
+                new_callable=AsyncMock,
+                return_value=mock_approval_request,
+            ),
+            patch.object(
+                approval_service,
+                "update_approval_request",
+                new_callable=AsyncMock,
+                return_value=updated_request,
+            ) as mock_update,
+            patch.object(
+                approval_service,
+                "send_notifications",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "preloop.models.db.session.get_session_factory",
+                return_value=MagicMock(return_value=sync_db),
+            ),
+            patch(
+                "preloop.services.approval_summary.generate_approval_summary",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("model backend unavailable"),
+            ) as mock_generate,
+        ):
+            result = await approval_service.create_and_notify(
+                account_id="test_account",
+                tool_configuration_id=uuid.uuid4(),
+                approval_workflow=sample_approval_workflow,
+                tool_name="get_weekly_summary",
+                tool_args={"owner": "did:web:example:u:abc"},
+                managed_agent_name="coder",
+            )
+
+            assert result is updated_request
+            mock_generate.assert_awaited_once()
+            mock_update.assert_awaited_once()
+            update_arg = mock_update.await_args.args[1]
+            assert isinstance(update_arg, ApprovalRequestUpdate)
+            assert update_arg.summary == (
+                "Allow get_weekly_summary with owner=did:web:example:u:abc?"
+            )
+            sync_db.close.assert_called_once()
+            assert any(
+                record.levelname == "WARNING"
+                and "storing deterministic fallback" in record.getMessage()
+                for record in caplog.records
+            )
+
+    @patch("preloop.services.approval_service.get_task_publisher")
     async def test_create_and_notify_with_execution_id(
         self,
         mock_get_publisher,

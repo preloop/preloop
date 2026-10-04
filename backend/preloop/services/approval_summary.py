@@ -202,8 +202,10 @@ async def generate_approval_summary(
     """Produce a user-facing approval ask, or None when unavailable.
 
     Prefer the ask_user question when present. Otherwise call the account's
-    default (or system) LLM with a short timeout. Failures return None so
-    callers keep the existing tool_name / JSON UX.
+    default (or system) LLM with a short timeout. Returns ``None`` when no
+    summary is available (no default model, timeout, empty or rejected
+    output); callers are expected to apply :func:`fallback_approval_summary`
+    so a stored request never keeps a null summary.
     """
     args = tool_args or {}
     question = _ask_user_question(args)
