@@ -24,6 +24,23 @@ from .base import CRUDBase
 #: Candidates not reported for this long are deleted.
 CANDIDATE_RETENTION_DAYS = 90
 
+#: Console list cap. Larger fleets still report ``total`` so the truncation
+#: is visible instead of looking like a complete count.
+CONSOLE_LIST_LIMIT = 500
+
+
+@dataclass(frozen=True)
+class CandidateList:
+    """Capped rows for one account plus the full matching count."""
+
+    items: list[DiscoveredAgentCandidate]
+    total: int
+
+    @property
+    def truncated(self) -> bool:
+        """True when ``items`` is shorter than ``total``."""
+        return self.total > len(self.items)
+
 
 def utc_now_naive() -> datetime:
     """Current UTC time without tzinfo, matching the naive timestamp columns."""
@@ -175,14 +192,38 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
         *,
         account_id: Any,
         statuses: Optional[Sequence[str]] = None,
-        limit: int = 500,
-    ) -> list[DiscoveredAgentCandidate]:
-        """Candidates for one account, most recently seen first."""
-        stmt = select(self.model).where(self.model.account_id == account_id)
+        limit: int = CONSOLE_LIST_LIMIT,
+    ) -> CandidateList:
+        """Candidates for one account, most recently seen first.
+
+        ``items`` is at most ``CONSOLE_LIST_LIMIT`` rows. ``total`` counts
+        every matching row, including ones past that cap.
+
+        Args:
+            db: Active session.
+            account_id: Owning account.
+            statuses: Optional status filter applied to both the page and
+                the total.
+            limit: Page size. Values above ``CONSOLE_LIST_LIMIT`` are capped.
+
+        Returns:
+            The page, the full matching count, and whether it was cut.
+        """
+        page_limit = min(limit, CONSOLE_LIST_LIMIT)
+        filters = [self.model.account_id == account_id]
         if statuses:
-            stmt = stmt.where(self.model.status.in_(list(statuses)))
-        stmt = stmt.order_by(self.model.last_seen_at.desc()).limit(limit)
-        return list(db.scalars(stmt).all())
+            filters.append(self.model.status.in_(list(statuses)))
+        total = db.scalar(select(func.count()).select_from(self.model).where(*filters))
+        stmt = (
+            select(self.model)
+            .where(*filters)
+            .order_by(self.model.last_seen_at.desc())
+            .limit(page_limit)
+        )
+        return CandidateList(
+            items=list(db.scalars(stmt).all()),
+            total=int(total or 0),
+        )
 
     def get_for_account(
         self, db: Session, *, account_id: Any, candidate_id: Any

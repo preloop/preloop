@@ -8,6 +8,7 @@ import {
   getDiscoveryCandidates,
   updateDiscoveryCandidate,
   type DiscoveredAgentCandidate,
+  type DiscoveryCandidatePage,
 } from '../api';
 import { formatRelativeTime } from '../utils/date';
 
@@ -31,7 +32,7 @@ export function shortWorkstation(fingerprint: string): string {
 export class DiscoveredAgentsPanel extends LitElement {
   /** Overridable for tests. */
   @property({ attribute: false })
-  loader: () => Promise<DiscoveredAgentCandidate[]> = () =>
+  loader: () => Promise<DiscoveryCandidatePage> = () =>
     getDiscoveryCandidates(['new']);
 
   /** Overridable for tests. */
@@ -42,6 +43,8 @@ export class DiscoveredAgentsPanel extends LitElement {
   ) => Promise<DiscoveredAgentCandidate> = updateDiscoveryCandidate;
 
   @state() private candidates: DiscoveredAgentCandidate[] = [];
+  @state() private total = 0;
+  @state() private truncated = false;
   @state() private loaded = false;
   @state() private error: string | null = null;
   @state() private busyId: string | null = null;
@@ -94,12 +97,17 @@ export class DiscoveredAgentsPanel extends LitElement {
 
   async refresh(): Promise<void> {
     try {
-      this.candidates = await this.loader();
+      const page = await this.loader();
+      this.candidates = page.items;
+      this.total = page.total;
+      this.truncated = page.truncated;
       this.error = null;
     } catch {
       // A load failure (older server, no view permission) hides the section:
       // it is an add-on to the Agents page, not something to alarm about.
       this.candidates = [];
+      this.total = 0;
+      this.truncated = false;
     } finally {
       this.loaded = true;
     }
@@ -110,6 +118,11 @@ export class DiscoveredAgentsPanel extends LitElement {
     try {
       await this.updater(candidate.id, 'ignored');
       this.candidates = this.candidates.filter((c) => c.id !== candidate.id);
+      this.total = Math.max(0, this.total - 1);
+      this.truncated = this.total > this.candidates.length;
+      if (this.candidates.length === 0 && this.total > 0) {
+        await this.refresh();
+      }
     } catch (err) {
       this.error =
         err instanceof Error
@@ -118,6 +131,12 @@ export class DiscoveredAgentsPanel extends LitElement {
     } finally {
       this.busyId = null;
     }
+  }
+
+  private truncationNotice(): string {
+    const shown = this.candidates.length;
+    const total = this.total;
+    return `Showing the first ${shown} of ${total}.`;
   }
 
   render() {
@@ -130,12 +149,13 @@ export class DiscoveredAgentsPanel extends LitElement {
       <section aria-labelledby="not-yet-governed">
         <h2 id="not-yet-governed">
           Not yet governed
-          <sl-badge variant="warning" pill>${this.candidates.length}</sl-badge>
+          <sl-badge variant="warning" pill>${this.total}</sl-badge>
         </h2>
         <p class="hint">
           Agent tools reported by <code>preloop agents discover --report</code>.
           Workstations are shown as salted hashes; no hostnames, user names or
           paths are collected.
+          ${this.truncated ? html`${this.truncationNotice()}` : nothing}
         </p>
         ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
         <table>

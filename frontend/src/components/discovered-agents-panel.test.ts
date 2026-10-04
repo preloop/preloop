@@ -6,7 +6,7 @@ import {
   shortWorkstation,
   type DiscoveredAgentsPanel,
 } from './discovered-agents-panel';
-import type { DiscoveredAgentCandidate } from '../api';
+import type { DiscoveredAgentCandidate, DiscoveryCandidatePage } from '../api';
 
 function candidate(
   overrides: Partial<DiscoveredAgentCandidate> = {}
@@ -30,11 +30,18 @@ function candidate(
 
 async function mount(
   rows: DiscoveredAgentCandidate[],
-  updater?: DiscoveredAgentsPanel['updater']
+  updater?: DiscoveredAgentsPanel['updater'],
+  page: Partial<DiscoveryCandidatePage> = {}
 ): Promise<DiscoveredAgentsPanel> {
+  const loaded: DiscoveryCandidatePage = {
+    items: rows,
+    total: rows.length,
+    truncated: false,
+    ...page,
+  };
   const el = await fixture<DiscoveredAgentsPanel>(
     html`<discovered-agents-panel
-      .loader=${async () => rows}
+      .loader=${async () => loaded}
       .updater=${updater ?? (async () => rows[0])}
     ></discovered-agents-panel>`
   );
@@ -55,6 +62,8 @@ describe('discovered-agents-panel', () => {
     expect(root.querySelector('h2')?.textContent).to.contain(
       'Not yet governed'
     );
+    expect(root.querySelector('sl-badge')?.textContent?.trim()).to.equal('2');
+    expect(root.textContent).to.not.contain('Showing the first');
     const rows = root.querySelectorAll('tbody tr');
     expect(rows.length).to.equal(2);
     expect(rows[0].textContent).to.contain('cursor');
@@ -66,6 +75,17 @@ describe('discovered-agents-panel', () => {
       'preloop agents onboard claude_code'
     );
     expect(rows[0].querySelector('sl-button.mark-ignored')).to.exist;
+  });
+
+  it('shows the full total when the list is capped', async () => {
+    const el = await mount([candidate()], undefined, {
+      total: 501,
+      truncated: true,
+    });
+    const root = el.shadowRoot!;
+    expect(root.querySelector('sl-badge')?.textContent?.trim()).to.equal('501');
+    expect(root.querySelectorAll('tbody tr').length).to.equal(1);
+    expect(root.textContent).to.contain('Showing the first 1 of 501');
   });
 
   it('renders nothing when no candidates were reported', async () => {

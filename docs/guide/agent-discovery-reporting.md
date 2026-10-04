@@ -87,3 +87,8 @@ status: `new`, `onboarded` or `ignored`.
 | `POST /api/v1/agents/discovery-reports` | `report_discovery` |
 | `GET /api/v1/agents/discovery-candidates?status=new` | `view_agents` |
 | `PATCH /api/v1/agents/discovery-candidates/{id}` (`{"status": "ignored"}`) | `manage_agents` |
+
+`GET /api/v1/agents/discovery-candidates` returns `{items, total, truncated}`.
+`items` is the newest 500 matching rows. `total` counts every match, and
+`truncated` is true when the fleet is larger than that page, so the console
+can say it is showing the first 500.

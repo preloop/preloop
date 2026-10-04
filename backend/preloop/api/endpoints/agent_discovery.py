@@ -36,6 +36,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User as UserModel
 from preloop.schemas.agent_discovery import (
+    DiscoveredAgentCandidateList,
     DiscoveredAgentCandidateSummary,
     DiscoveredAgentCandidateUpdate,
     DiscoveryReportRequest,
@@ -151,7 +152,7 @@ def create_discovery_report(
 
 @router.get(
     "/agents/discovery-candidates",
-    response_model=list[DiscoveredAgentCandidateSummary],
+    response_model=DiscoveredAgentCandidateList,
 )
 @require_permission("view_agents")
 def list_discovery_candidates(
@@ -159,12 +160,20 @@ def list_discovery_candidates(
     status_filter: Optional[list[str]] = Query(default=None, alias="status"),
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> list[DiscoveredAgentCandidateSummary]:
-    """List reported candidates, most recently seen first."""
-    rows = crud_discovered_agent_candidate.list_for_account(
+) -> DiscoveredAgentCandidateList:
+    """List reported candidates, most recently seen first.
+
+    The row list is capped. ``total`` is the full matching count and
+    ``truncated`` is true when some rows are not in ``items``.
+    """
+    page = crud_discovered_agent_candidate.list_for_account(
         db, account_id=account.id, statuses=status_filter
     )
-    return [_summary(row) for row in rows]
+    return DiscoveredAgentCandidateList(
+        items=[_summary(row) for row in page.items],
+        total=page.total,
+        truncated=page.truncated,
+    )
 
 
 @router.patch(

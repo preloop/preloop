@@ -84,6 +84,14 @@ class DiscoveredAgentCandidateSummary(BaseModel):
     last_seen_at: datetime
 
 
+class DiscoveredAgentCandidateList(BaseModel):
+    """Capped console list plus the count of every matching candidate."""
+
+    items: list[DiscoveredAgentCandidateSummary]
+    total: int
+    truncated: bool
+
+
 class DiscoveredAgentCandidateUpdate(BaseModel):
     """Console action on a candidate: mark ignored, or un-ignore."""
 

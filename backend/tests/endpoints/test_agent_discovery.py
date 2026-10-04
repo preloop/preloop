@@ -25,6 +25,7 @@ from preloop.api.auth.key_scopes import (
 )
 from preloop.models.crud import crud_api_key, crud_discovered_agent_candidate, crud_user
 from preloop.models.crud.discovered_agent_candidate import (
+    CONSOLE_LIST_LIMIT,
     ReportedCandidate,
     utc_now_naive,
 )
@@ -123,7 +124,7 @@ def test_new_candidate_emits_agent_discovered_once(
 
     rows = crud_discovered_agent_candidate.list_for_account(
         db_session, account_id=test_user.account_id
-    )
+    ).items
     assert len(rows) == 1
     row = rows[0]
     assert row.status == "new"
@@ -159,7 +160,7 @@ def test_rereport_updates_last_seen_only_and_emits_nothing(
     assert client.post(REPORTS, json=_report(fingerprint, _candidate())).status_code
     row = crud_discovered_agent_candidate.list_for_account(
         db_session, account_id=test_user.account_id
-    )[0]
+    ).items[0]
     # Age the row so the bump is visible.
     earlier = row.last_seen_at - timedelta(days=3)
     row.last_seen_at = earlier
@@ -176,7 +177,7 @@ def test_rereport_updates_last_seen_only_and_emits_nothing(
 
     rows = crud_discovered_agent_candidate.list_for_account(
         db_session, account_id=test_user.account_id
-    )
+    ).items
     assert len(rows) == 1
     db_session.refresh(rows[0])
     assert rows[0].last_seen_at > earlier
@@ -203,7 +204,7 @@ def test_distinct_key_parts_make_distinct_candidates(client, db_session, test_us
         len(
             crud_discovered_agent_candidate.list_for_account(
                 db_session, account_id=test_user.account_id
-            )
+            ).items
         )
         == 4
     )
@@ -247,7 +248,7 @@ def test_purge_removes_candidates_unseen_for_90_days(db_session, test_user):
     ages = {"stale": 91, "edge": 89, "fresh": 0}
     for row in crud_discovered_agent_candidate.list_for_account(
         db_session, account_id=test_user.account_id
-    ):
+    ).items:
         row.last_seen_at = now - timedelta(days=ages[row.agent_kind])
     db_session.commit()
 
@@ -259,7 +260,7 @@ def test_purge_removes_candidates_unseen_for_90_days(db_session, test_user):
         row.agent_kind
         for row in crud_discovered_agent_candidate.list_for_account(
             db_session, account_id=test_user.account_id
-        )
+        ).items
     }
     assert kinds == {"edge", "fresh"}
 
@@ -405,7 +406,10 @@ def test_console_list_and_mark_ignored(client, db_session, test_user):
     client.post(REPORTS, json=_report("a" * 64, _candidate("cursor")))
     listed = client.get(CANDIDATES)
     assert listed.status_code == 200
-    items = listed.json()
+    body = listed.json()
+    assert body["total"] == 1
+    assert body["truncated"] is False
+    items = body["items"]
     assert len(items) == 1
     assert items[0]["status"] == "new"
     candidate_id = items[0]["id"]
@@ -413,7 +417,10 @@ def test_console_list_and_mark_ignored(client, db_session, test_user):
     ignored = client.patch(f"{CANDIDATES}/{candidate_id}", json={"status": "ignored"})
     assert ignored.status_code == 200
     assert ignored.json()["status"] == "ignored"
-    assert client.get(CANDIDATES, params={"status": "new"}).json() == []
+    fresh = client.get(CANDIDATES, params={"status": "new"}).json()
+    assert fresh["items"] == []
+    assert fresh["total"] == 0
+    assert fresh["truncated"] is False
 
     # Onboarded is set by enrollment linking only.
     assert (
@@ -422,6 +429,36 @@ def test_console_list_and_mark_ignored(client, db_session, test_user):
         ).status_code
         == 422
     )
+
+
+def test_console_list_returns_total_above_the_cap(client, db_session, test_user):
+    """A fleet larger than the console cap is counted, not silently dropped."""
+    now = utc_now_naive()
+    total = CONSOLE_LIST_LIMIT + 1
+    db_session.add_all(
+        [
+            DiscoveredAgentCandidate(
+                account_id=test_user.account_id,
+                workstation_fingerprint="a" * 64,
+                agent_kind="cursor",
+                config_path_hash=f"{index:064x}",
+                mcp_server_count=0,
+                reported_enrolled=False,
+                status="new",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            for index in range(total)
+        ]
+    )
+    db_session.commit()
+
+    listed = client.get(CANDIDATES)
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body["total"] == total
+    assert body["truncated"] is True
+    assert len(body["items"]) == CONSOLE_LIST_LIMIT
 
 
 def test_mark_ignored_is_scoped_to_the_account(client, db_session):
@@ -483,7 +520,7 @@ def test_validated_enrollment_links_candidate(client, db_session, test_user):
         },
     )
     assert failed.status_code == 200
-    assert {c["status"] for c in client.get(CANDIDATES).json()} == {"new"}
+    assert {c["status"] for c in client.get(CANDIDATES).json()["items"]} == {"new"}
 
     ok = client.post(
         f"/api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate",
@@ -494,7 +531,7 @@ def test_validated_enrollment_links_candidate(client, db_session, test_user):
         },
     )
     assert ok.status_code == 200
-    by_path = {c["config_path_hash"]: c for c in client.get(CANDIDATES).json()}
+    by_path = {c["config_path_hash"]: c for c in client.get(CANDIDATES).json()["items"]}
     assert by_path["1" * 64]["status"] == "onboarded"
     assert by_path["1" * 64]["managed_agent_id"] == agent_id
     assert by_path["2" * 64]["status"] == "new"

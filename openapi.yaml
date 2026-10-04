@@ -993,7 +993,12 @@ paths:
       tags:
       - Agent discovery
       summary: List Discovery Candidates
-      description: List reported candidates, most recently seen first.
+      description: 'List reported candidates, most recently seen first.
+
+
+        The row list is capped. ``total`` is the full matching count and
+
+        ``truncated`` is true when some rows are not in ``items``.'
       operationId: list_discovery_candidates_api_v1_agents_discovery_candidates_get
       security:
       - bearerAuth: []
@@ -1014,11 +1019,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/DiscoveredAgentCandidateSummary'
-                title: Response List Discovery Candidates Api V1 Agents Discovery
-                  Candidates Get
+                $ref: '#/components/schemas/DiscoveredAgentCandidateList'
         '422':
           description: Validation Error
           content:
@@ -21447,6 +21448,26 @@ components:
         Default is ``deny`` (fail closed). Set ``allow`` to skip the timed-out
 
         rule and continue evaluation.'
+    DiscoveredAgentCandidateList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DiscoveredAgentCandidateSummary'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        truncated:
+          type: boolean
+          title: Truncated
+      type: object
+      required:
+      - items
+      - total
+      - truncated
+      title: DiscoveredAgentCandidateList
+      description: Capped console list plus the count of every matching candidate.
     DiscoveredAgentCandidateSummary:
       properties:
         id:

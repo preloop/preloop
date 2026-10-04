@@ -7238,13 +7238,23 @@ export interface DiscoveredAgentCandidate {
   last_seen_at: string;
 }
 
+/** Capped console list plus the full matching count. */
+export interface DiscoveryCandidatePage {
+  items: DiscoveredAgentCandidate[];
+  total: number;
+  truncated: boolean;
+}
+
 /**
  * List candidates reported by `preloop agents discover --report`.
  * GET /api/v1/agents/discovery-candidates
+ *
+ * `items` is at most the server cap. `total` counts every match, and
+ * `truncated` is true when the fleet is larger than `items`.
  */
 export async function getDiscoveryCandidates(
   statuses: Array<DiscoveredAgentCandidate['status']> = []
-): Promise<DiscoveredAgentCandidate[]> {
+): Promise<DiscoveryCandidatePage> {
   const params = new URLSearchParams();
   statuses.forEach((status) => params.append('status', status));
   const query = params.toString();
