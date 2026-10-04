@@ -27,7 +27,13 @@ describe('LitApp routing', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
-    fetchStub = sinon.stub(window, 'fetch');
+    // One stub for the whole file (see after()): several tests mount the
+    // console shell, whose requests can still be in flight when a test
+    // ends. Restoring the real fetch between tests let those late requests
+    // reach the test server and its auth handling, which made the file
+    // hang under CI load.
+    if (!fetchStub) fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.resetHistory();
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('/api/v1/features')) {
@@ -56,11 +62,18 @@ describe('LitApp routing', () => {
     });
   });
 
-  afterEach(() => {
-    fetchStub.restore();
+  afterEach(async () => {
+    // Leave the console before clearing credentials, so a mounted shell
+    // unmounts while its requests still resolve against the stub.
+    Router.go('/');
+    await new Promise((resolve) => setTimeout(resolve, 0));
     localStorage.clear();
     delete (window as any).BRAND_CONFIG;
     window.history.replaceState({}, '', '/');
+  });
+
+  after(() => {
+    fetchStub.restore();
   });
 
   it('keeps console pages out of the initial public page registration', () => {
