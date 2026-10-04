@@ -120,8 +120,10 @@ func runAgentsAttach(cmd *cobra.Command, args []string) error {
 }
 
 // agentOpenSession returns the agent's most recently active open session.
+// The server filters to open sessions, so an idle one is not lost behind
+// sessions that ended more recently.
 func agentOpenSession(client attachClient, agentID string) (string, error) {
-	query := url.Values{"agent": {agentID}, "limit": {"20"}}
+	query := url.Values{"agent": {agentID}, "status": {"active"}, "limit": {"1"}}
 	var page sessionsListPage
 	if err := client.Get(runtimeSessionsPath+"?"+query.Encode(), &page); err != nil {
 		return "", explainSessionsListError(err)

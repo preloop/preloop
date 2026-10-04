@@ -353,7 +353,10 @@ func describeControlMessage(event *attachEvent, metadata map[string]interface{},
 			line += ": " + truncateAttach(text, 160)
 		}
 		event.text = line
-	case stringField(metadata, "kind") == "operator_command" || (commandID != "" && stringField(metadata, "note_id") == ""):
+	case stringField(metadata, "kind") == "operator_command":
+		// Only rows the command path marks. Other rows carry a command_id too
+		// (a question notice to the agent, a flow start) and are not a person
+		// starting a turn, so they keep the neutral note label.
 		event.kind = attachKindCommand
 		if commandID != "" {
 			event.key = "command|" + commandID

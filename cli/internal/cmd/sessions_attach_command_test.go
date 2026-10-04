@@ -247,15 +247,16 @@ func TestAgentsAttachResolvesTheOpenSessionOrWaitsForTheNext(t *testing.T) {
 		if r.URL.Path != runtimeSessionsPath {
 			return false
 		}
-		if got := r.URL.Query().Get("agent"); got != attachTestAgent {
-			t.Errorf("sessions must be filtered by the agent id, got %q", got)
+		query := r.URL.Query()
+		if query.Get("agent") != attachTestAgent || query.Get("status") != "active" {
+			t.Errorf("sessions must be filtered by the agent id and to open ones by the server, got %v", query)
 		}
 		calls++
 		switch {
 		case calls < 3:
-			_, _ = io.WriteString(w, `{"total":1,"items":[{"id":"aaaaaaaa-1111-4111-8111-111111111111","ended_at":"2026-10-02T10:00:00"}]}`)
+			_, _ = io.WriteString(w, `{"total":0,"items":[]}`)
 		default:
-			_, _ = io.WriteString(w, `{"total":2,"items":[{"id":"`+attachTestSession+`","ended_at":null},{"id":"aaaaaaaa-1111-4111-8111-111111111111","ended_at":"2026-10-02T10:00:00"}]}`)
+			_, _ = io.WriteString(w, `{"total":1,"items":[{"id":"`+attachTestSession+`","ended_at":null}]}`)
 		}
 		return true
 	}
@@ -264,7 +265,7 @@ func TestAgentsAttachResolvesTheOpenSessionOrWaitsForTheNext(t *testing.T) {
 
 	if _, err := waitForAgentSession(t.Context(), client, agent, false, func(string) {}); err == nil ||
 		!strings.Contains(err.Error(), "Hermes main has no open session") {
-		t.Fatalf("--no-wait with only ended sessions must say so, got %v", err)
+		t.Fatalf("--no-wait with no open session must say so, got %v", err)
 	}
 	var notices []string
 	id, err := waitForAgentSession(t.Context(), client, agent, true, func(m string) { notices = append(notices, m) })
@@ -303,5 +304,26 @@ func TestAttachShowsCommandsAndRepliesOnceAcrossReplayAndLive(t *testing.T) {
 	}
 	if strings.Contains(out, "note     from") {
 		t.Errorf("commands and replies must not be shown as notes:\n%s", out)
+	}
+}
+
+func TestDescribeControlMessageLabelsOnlyOperatorCommandsAsCommands(t *testing.T) {
+	cases := []struct {
+		name     string
+		metadata map[string]interface{}
+		want     attachKind
+	}{
+		{"operator command", map[string]interface{}{"kind": "operator_command", "command_id": "c1"}, attachKindCommand},
+		{"question notice to the agent", map[string]interface{}{"kind": "preloop_question_notice", "command_id": "c2"}, attachKindNote},
+		{"flow start without a kind", map[string]interface{}{"command_id": "c3", "managed_agent_id": "a"}, attachKindNote},
+		{"operator note", map[string]interface{}{"kind": "operator_note", "note_id": "n1"}, attachKindNote},
+		{"agent reply", map[string]interface{}{"command_id": "c1", "direction": "agent_to_operator"}, attachKindReply},
+	}
+	for _, c := range cases {
+		var event attachEvent
+		describeControlMessage(&event, c.metadata, "text", "delivered")
+		if event.kind != c.want {
+			t.Errorf("%s: kind %q, want %q", c.name, event.kind, c.want)
+		}
 	}
 }
