@@ -187,7 +187,7 @@ through tool policy, approvals and redaction; it does not detect injection
 semantically. Content-safety firewalls such as Lakera or Llama Guard can run in front
 of the gateway.
 
-<a id="sensitive-information-disclosure"></a>
+<a id="sensitive-information-disclosure" name="sensitive-information-disclosure"></a>
 
 ### LLM02:2026 Sensitive Information Disclosure
 
