@@ -5,6 +5,8 @@
  * Email addresses to Redact in logs, tests "mail a@example.com" against the
  * real detector endpoint, saves through the policy diff and import path,
  * reloads and checks that the choice persisted (read back from the export).
+ * Also adds a reference-only scope (#1124) with one kept field and checks
+ * that an invalid JSON path is flagged inline before saving.
  *
  * HOW TO RUN: a local backend seeded with INIT_TEST_DATA=true (admin/admin)
  * and the dev frontend, then
@@ -80,6 +82,27 @@ test('sensitive data tab: redact email, test, save, reload', async ({
   );
   await shot(page, 'sensitive-data-tab-test');
 
+  // Reference-only scope (#1124): one tool, one kept field. An invalid
+  // path is flagged inline before anything is saved.
+  await panel.getByRole('button', { name: 'Add reference-only scope' }).click();
+  const entry = panel.locator('[data-ref="0"]');
+  await entry.getByLabel('Scope name').fill('patient-tools');
+  const tools = entry.getByLabel('Tools', { exact: true });
+  const firstTool = await tools.locator('option').first().getAttribute('value');
+  expect(firstTool).toBeTruthy();
+  await tools.selectOption([firstTool as string]);
+  const keep = entry.getByLabel('Field to keep 1');
+  await keep.fill('consent id');
+  await expect(keep).toHaveAttribute('aria-invalid', 'true');
+  await expect(entry).toContainText('Use a path like $.consent_id');
+  await keep.fill('$.consent_id');
+  await expect(keep).toHaveAttribute('aria-invalid', 'false');
+  await expect(panel.getByTestId('sensitive-summary')).toContainText(
+    `Calls to ${firstTool} keep only consent_id and a fingerprint.`
+  );
+  await entry.scrollIntoViewIfNeeded();
+  await shot(page, 'sensitive-data-tab-reference-only');
+
   await panel.getByTestId('sensitive-save').click();
   const apply = page.locator('sl-button', { hasText: 'Apply changes' });
   await expect(apply).toBeVisible({ timeout: 30_000 });
@@ -96,5 +119,11 @@ test('sensitive data tab: redact email, test, save, reload', async ({
   await expect(panel.getByTestId('sensitive-summary')).toContainText(
     'matches are stored as [REDACTED:email].'
   );
+  const saved = panel.locator('[data-ref="0"]');
+  await expect(saved.getByLabel('Scope name')).toHaveValue('patient-tools');
+  await expect(saved.getByLabel('Field to keep 1')).toHaveValue('$.consent_id');
+  await expect(saved.getByLabel('Tools', { exact: true })).toHaveValues([
+    firstTool as string,
+  ]);
   await shot(page, 'sensitive-data-tab-persisted');
 });
