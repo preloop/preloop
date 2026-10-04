@@ -112,6 +112,8 @@ export interface LoadAttentionInputsOptions {
   includeBudgetPolicies?: boolean;
   /** Data the caller already fetched; each entry removes one request. */
   prefetched?: PrefetchedAttentionInputs;
+  /** Deliver actionable approvals without waiting for background analytics. */
+  onApprovalsLoaded?: (approvals: AttentionApproval[]) => void;
 }
 
 /**
@@ -146,12 +148,21 @@ export async function loadAttentionInputs(
     priceOverrides,
     spendOutliers,
   ] = await Promise.allSettled([
-    prefetched.approvals
+    (prefetched.approvals
       ? Promise.resolve(prefetched.approvals)
       : listApprovalRequests({
           status: 'pending',
           limit: ATTENTION_QUERY.approvalsLimit,
-        }),
+        })
+    ).then((approvals) => {
+      const pending = Array.isArray(approvals)
+        ? approvals.filter((approval) =>
+            isUnexpiredPendingApproval(approval, now)
+          )
+        : [];
+      options.onApprovalsLoaded?.(pending);
+      return pending;
+    }),
     prefetched.agents
       ? Promise.resolve({ items: prefetched.agents })
       : getAccountAgents({ status: 'all', limit: ATTENTION_QUERY.agentsLimit }),

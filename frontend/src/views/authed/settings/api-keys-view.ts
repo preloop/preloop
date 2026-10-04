@@ -153,10 +153,7 @@ export class ApiKeysView extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
-    await Promise.all([
-      this.fetchApiKeys(),
-      this.fetchGovernanceEditorContext(),
-    ]);
+    await this.fetchApiKeys();
     this.connectRealtime();
   }
 
@@ -411,7 +408,10 @@ export class ApiKeysView extends LitElement {
     this.governanceKeyId = key.id;
     this.governanceKeyName = key.name;
     try {
-      const response = await getApiKeyGovernance(key.id);
+      const [response] = await Promise.all([
+        getApiKeyGovernance(key.id),
+        this.fetchGovernanceEditorContext(),
+      ]);
       this.governanceAllowedModels = response.config.allowed_models.join(', ');
       this.governanceModelBudgets = JSON.stringify(
         response.config.model_budgets || {},

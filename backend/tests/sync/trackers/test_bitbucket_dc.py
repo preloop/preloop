@@ -592,20 +592,20 @@ async def test_public_merge_decline_methods_refused() -> None:
     assert tracker.hosts_repositories is True and tracker.hosts_issues is False
 
 
-async def test_issue_and_webhook_operations_are_explicitly_unsupported() -> None:
+async def test_issue_and_hook_deletion_operations_are_explicitly_unsupported() -> None:
     tracker = make_tracker(lambda r: ok(), [])
     with pytest.raises(BitbucketDCUnsupportedOperationError):
         await tracker.get_issue("1")
     with pytest.raises(BitbucketDCUnsupportedOperationError):
         await tracker.add_comment("1", "x")
+    # Hook registration is supported (see test_bitbucket_dc_webhooks.py);
+    # deleting hooks is left to repository administrators.
     with pytest.raises(BitbucketDCUnsupportedOperationError):
-        await tracker.register_webhook(
-            db=None, project=None, webhook_url="https://p.example.com", secret="s"
-        )
+        await tracker.unregister_webhook(db=None, webhook=None)
+    with pytest.raises(BitbucketDCUnsupportedOperationError):
+        await tracker.delete_webhook({"id": 1})
     assert await tracker.get_issues("PRJ", "42") == []
     assert await tracker.search_issues("PRJ/my-repo", None) == ([], 0)  # type: ignore[arg-type]
-    assert await tracker.get_webhooks() == []
-    assert await tracker.is_webhook_registered_for_project(None, "u") is False  # type: ignore[arg-type]
     assert await tracker.unregister_all_webhooks(None) == {
         "unregistered": 0,
         "failed": 0,

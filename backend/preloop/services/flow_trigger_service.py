@@ -204,6 +204,37 @@ def _label_names_from_payload(payload: Dict[str, Any]) -> List[str]:
     return names
 
 
+def _object_label_names(payload: Dict[str, Any]) -> List[str]:
+    """Label names currently on the issue or merge request.
+
+    Unlike ``_label_names_from_payload`` this ignores the event's single
+    ``label`` subject, so an ``unlabeled`` delivery does not count the label
+    that just left. GitHub ``issue.labels`` / ``pull_request.labels`` and
+    GitLab top-level ``labels`` already reflect the state after the change.
+    """
+    names: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        if not isinstance(value, list):
+            return
+        for item in value:
+            name = _label_name(item)
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+
+    _add(payload.get("labels"))
+    for key in ("issue", "pull_request", "object_attributes"):
+        obj = payload.get(key)
+        if isinstance(obj, dict):
+            _add(obj.get("labels"))
+            fields = obj.get("fields")  # Jira issue.fields.labels
+            if isinstance(fields, dict):
+                _add(fields.get("labels"))
+    return names
+
+
 def _is_label_change_event(event_data: Dict[str, Any]) -> bool:
     """True when this delivery is about one label being added or removed.
 
@@ -599,6 +630,13 @@ class FlowTriggerService:
             repo_full_name = (payload.get("repository") or {}).get("full_name", "")
             if isinstance(pr, dict) and pr.get("id") and repo_full_name:
                 return f"bitbucket:{repo_full_name}:pr:{pr['id']}"
+
+        elif source == "bitbucket_dc":
+            # Keyed on the immutable repository id, never the mutable slug.
+            pr = payload.get("pull_request") or {}
+            repo_id = (payload.get("repository") or {}).get("id")
+            if isinstance(pr, dict) and pr.get("number") and repo_id:
+                return f"bitbucket_dc:{repo_id}:pr:{pr['number']}"
 
         return None
 
@@ -1023,6 +1061,47 @@ class FlowTriggerService:
                 self._rollback_quietly()
         return stopped
 
+    @staticmethod
+    def _pull_request_version(event_data: Dict[str, Any]) -> Optional[int]:
+        """Data Center pull request ``version`` carried by an event, if any."""
+        if str(event_data.get("source") or "").lower() != "bitbucket_dc":
+            return None
+        pr = (event_data.get("payload") or {}).get("pull_request")
+        version = pr.get("version") if isinstance(pr, dict) else None
+        if isinstance(version, bool) or not isinstance(version, int):
+            return None
+        return version
+
+    def _is_out_of_order_head(self, flow: Flow, event_data: Dict[str, Any]) -> bool:
+        """True when a Data Center PR update is older than one already seen.
+
+        Data Center increments the pull request ``version`` on every change,
+        and deliveries are not ordered. A late delivery for an older state
+        must neither supersede the run on the newer head nor start a review
+        of the stale one, whether the newer run is still active or has
+        already finished.
+        """
+        version = self._pull_request_version(event_data)
+        if version is None:
+            return False
+        object_key = self._extract_pr_object_key(event_data)
+        if not object_key:
+            return False
+        recent = crud_flow_execution.get_recent_for_pull_request(
+            self.db,
+            flow_id=flow.id,
+            account_id=flow.account_id,
+            tracker_object_key=object_key,
+        )
+        for execution in recent:
+            exec_event = self._execution_event_data(execution)
+            if self._extract_pr_object_key(exec_event) != object_key:
+                continue
+            active_version = self._pull_request_version(exec_event)
+            if active_version is not None and active_version > version:
+                return True
+        return False
+
     async def supersede_older_heads(
         self,
         flow: Flow,
@@ -1127,6 +1206,11 @@ class FlowTriggerService:
             if repo_full_name:
                 return f"bitbucket:{repo_full_name}"
 
+        elif source == "bitbucket_dc":
+            repo = payload.get("repository") or {}
+            if isinstance(repo, dict) and repo.get("id"):
+                return f"bitbucket_dc:{repo['id']}"
+
         return None
 
     def _extract_project_id(self, event_data: Dict[str, Any]) -> Optional[str]:
@@ -1184,6 +1268,18 @@ class FlowTriggerService:
 
         elif source == "jira":
             return self._extract_jira_project_id(payload, tracker_id)
+
+        elif source == "bitbucket_dc":
+            # Data Center projects store the immutable repository id as the
+            # identifier; a slug or display name never selects the project.
+            repo = payload.get("repository") or {}
+            repo_id = repo.get("id") if isinstance(repo, dict) else None
+            if not repo_id:
+                return None
+            project = crud_project.get_for_tracker_by_identifier(
+                self.db, tracker_id=tracker_id, identifier=str(repo_id)
+            )
+            return str(project.id) if project else None
 
         if not repo_identifier:
             return None
@@ -1751,6 +1847,20 @@ class FlowTriggerService:
         """
         Check if the event matches the flow's trigger_config (if specified).
 
+        Two label conditions combine with AND:
+
+        * ``labels`` (any-of): "this event added one of". On a label-change
+          delivery it reads the label the event carries; otherwise the
+          object's label list.
+        * ``labels_all`` (all-of): "and the issue carries all of". Always read
+          from the object's current label list (after the change), so
+          ``{"labels": ["agent-ready"], "labels_all": ["complexity:low"]}``
+          routes one ``agent-ready`` delivery to the complexity:low flow only.
+          An event with no label list never satisfies ``labels_all``.
+
+        A bound implementation comment (its PR need not repeat intake
+        labels) skips both label conditions.
+
         Args:
             flow: The flow definition
             event_data: The event data containing payload and metadata
@@ -1803,13 +1913,44 @@ class FlowTriggerService:
             f"Payload keys: {list(payload.keys())}"
         )
 
-        for key, expected_value in flattened_config.items():
-            if key == "labels":
+        bound_cache: List[bool] = []
+
+        def _bound_comment() -> bool:
+            # Shared by both label conditions so the bound-execution lookup
+            # runs at most once per event.
+            if not bound_cache:
                 from preloop.services.flow_pr_binding import (
                     is_bound_implementation_comment,
                 )
 
-                if is_bound_implementation_comment(self.db, flow, event_data):
+                bound_cache.append(
+                    bool(is_bound_implementation_comment(self.db, flow, event_data))
+                )
+            return bound_cache[0]
+
+        for key, expected_value in flattened_config.items():
+            if key == "labels_all":
+                required = (
+                    expected_value
+                    if isinstance(expected_value, list)
+                    else [expected_value]
+                )
+                required = [r for r in required if isinstance(r, str) and r]
+                if not required:
+                    continue
+                if _bound_comment():
+                    continue
+                present = _object_label_names(payload)
+                missing = [r for r in required if r not in present]
+                if missing:
+                    logger.debug(
+                        f"Flow {flow.id} trigger_config mismatch: "
+                        f"labels_all missing {missing} (issue has {present})"
+                    )
+                    return False
+                continue
+            if key == "labels":
+                if _bound_comment():
                     # The issue qualified at intake; its PR need not duplicate
                     # that label. Every other configured condition still applies.
                     continue
@@ -1982,6 +2123,16 @@ class FlowTriggerService:
                 author = obj_attrs.get("author", {})
                 if isinstance(author, dict):
                     sender = author.get("username", "").lower()
+        elif source == "bitbucket_dc":
+            # The intake compares the actor with the user Preloop acts as on
+            # that instance; the configured user slug is not a fixed bot name.
+            dc = payload.get("bitbucket_dc") or {}
+            if isinstance(dc, dict) and dc.get("self_generated") is True:
+                logger.info("Ignoring Bitbucket Data Center event sent by Preloop")
+                return True
+            sender_obj = payload.get("sender")
+            if isinstance(sender_obj, str):
+                sender = sender_obj.lower()
         elif source == "bitbucket":
             # Bitbucket names the acting user "actor"; filter_fields adds the
             # nickname as "sender".
@@ -2425,6 +2576,19 @@ class FlowTriggerService:
                     # Stopped before the new execution is created, and before
                     # the one-active-run guard below, which would otherwise
                     # keep the stale run and drop the new head.
+                    if (
+                        account_id
+                        and event_type in PR_HEAD_UPDATE_EVENT_TYPES
+                        and self._is_out_of_order_head(flow, event_data)
+                    ):
+                        logger.info(
+                            "Skipping flow '%s' (%s): the pull request update "
+                            "is older than the head an active run works on",
+                            flow.name,
+                            flow.id,
+                        )
+                        continue
+
                     if (
                         commit_sha
                         and account_id
