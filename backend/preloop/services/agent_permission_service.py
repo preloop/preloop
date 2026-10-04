@@ -31,6 +31,7 @@ from preloop.schemas.subject_governance import (
 )
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
 from preloop.services.subject_governance import (
+    SUBJECT_TYPE_FLOWS,
     SUBJECT_TYPE_MANAGED_AGENTS,
     get_subject_governance,
 )
@@ -59,7 +60,14 @@ _NO_MATCH_ALLOW_REASONS = {
 
 
 def _managed_agent_governance_field(managed_agent_id: uuid.UUID, field: str):
-    """SQL expression extracting a managed-agent governance field as text.
+    """SQL expression extracting a managed-agent governance field as text."""
+    return _subject_governance_field(
+        SUBJECT_TYPE_MANAGED_AGENTS, managed_agent_id, field
+    )
+
+
+def _subject_governance_field(subject_type: str, subject_id: Any, field: str):
+    """SQL expression extracting one subject's governance field as text.
 
     Uses ``json_extract_path_text(meta_data, ...)`` with one text argument
     per path segment. Do NOT use ``meta_data.op("#>>")(<python string>)``
@@ -69,16 +77,14 @@ def _managed_agent_governance_field(managed_agent_id: uuid.UUID, field: str):
     database catches it). Coerces to ``uuid.UUID`` first so the segment is
     always a well-formed UUID string.
     """
-    agent_uuid = (
-        managed_agent_id
-        if isinstance(managed_agent_id, uuid.UUID)
-        else uuid.UUID(str(managed_agent_id))
+    subject_uuid = (
+        subject_id if isinstance(subject_id, uuid.UUID) else uuid.UUID(str(subject_id))
     )
     return func.json_extract_path_text(
         models.Account.meta_data,
         "subject_governance",
-        "managed_agents",
-        str(agent_uuid),
+        subject_type,
+        str(subject_uuid),
         field,
     )
 
@@ -102,26 +108,53 @@ def _account_defaults_governance_field(field: str):
     )
 
 
+def _subject_chain(
+    managed_agent_id: Optional[uuid.UUID], flow_id: Optional[uuid.UUID]
+) -> list[tuple[str, Any]]:
+    """Per-subject governance scopes for a native call, most specific first.
+
+    A flow execution's override wins over the managed agent it may run as
+    (employee flows), matching ``subject_scope_chain`` for MCP traffic.
+    """
+    chain: list[tuple[str, Any]] = []
+    if flow_id is not None:
+        chain.append((SUBJECT_TYPE_FLOWS, flow_id))
+    if managed_agent_id is not None:
+        chain.append((SUBJECT_TYPE_MANAGED_AGENTS, managed_agent_id))
+    return chain
+
+
 async def native_tool_approvals_disabled(
-    db: Any, account_id: str, managed_agent_id: uuid.UUID
+    db: Any,
+    account_id: str,
+    managed_agent_id: Optional[uuid.UUID],
+    flow_id: Optional[uuid.UUID] = None,
 ) -> bool:
-    """Return True when native tool approvals are switched off for this agent.
+    """Return True when native tool approvals are switched off for this caller.
 
     Resolution chain, first explicit value wins:
 
-    1. Per-agent ``subject_governance.managed_agents.<agent_id>.
+    1. Per-flow ``subject_governance.flows.<flow_id>.native_tool_approvals``
+       when the caller is a flow execution.
+    2. Per-agent ``subject_governance.managed_agents.<agent_id>.
        native_tool_approvals`` ("enforce" or "off").
-    2. Account-wide ``subject_governance.account_defaults.
+    3. Account-wide ``subject_governance.account_defaults.
        native_tool_approvals``.
-    3. Enforce (fail safe) when neither is set.
+    4. Enforce (fail safe) when none is set.
 
-    An explicit per-agent "enforce" therefore shields the agent from an
-    account default of "off" — overrides are bidirectional, not just
+    An explicit per-subject "enforce" therefore shields the caller from an
+    account default of "off": overrides are bidirectional, not just
     "off wins".
     """
+    chain = _subject_chain(managed_agent_id, flow_id)
     result = await db.execute(
         select(
-            _managed_agent_governance_field(managed_agent_id, "native_tool_approvals"),
+            *[
+                _subject_governance_field(
+                    subject_type, subject_id, "native_tool_approvals"
+                )
+                for subject_type, subject_id in chain
+            ],
             _account_defaults_governance_field("native_tool_approvals"),
         )
         .select_from(models.Account)
@@ -129,11 +162,12 @@ async def native_tool_approvals_disabled(
         .limit(1)
     )
     row = result.first()
-    agent_setting = str((row[0] if row else None) or "").strip().lower()
-    account_setting = str((row[1] if row else None) or "").strip().lower()
-    if agent_setting in (NATIVE_TOOL_APPROVALS_ENFORCE, NATIVE_TOOL_APPROVALS_OFF):
-        return agent_setting == NATIVE_TOOL_APPROVALS_OFF
-    return account_setting == NATIVE_TOOL_APPROVALS_OFF
+    values = list(row) if row else [None] * (len(chain) + 1)
+    for value in values:
+        setting = str(value or "").strip().lower()
+        if setting in (NATIVE_TOOL_APPROVALS_ENFORCE, NATIVE_TOOL_APPROVALS_OFF):
+            return setting == NATIVE_TOOL_APPROVALS_OFF
+    return False
 
 
 async def _fetch_agent_tool_approvals_workflow(
@@ -154,11 +188,20 @@ async def _fetch_agent_tool_approvals_workflow(
 async def _resolve_agent_configured_workflow(
     db: Any, account_id: str, managed_agent_id: uuid.UUID
 ) -> models.ApprovalWorkflow | None:
-    """Return the workflow configured for this agent via subject governance.
+    """Return the workflow pinned for a managed agent, if any."""
+    return await _resolve_subject_configured_workflow(
+        db, account_id, SUBJECT_TYPE_MANAGED_AGENTS, managed_agent_id
+    )
 
-    Operators can pin an approval workflow per managed agent in the agent
-    detail view; the choice is stored in the account's subject-governance
-    config under the agent's id. Returns None when unset or when the
+
+async def _resolve_subject_configured_workflow(
+    db: Any, account_id: str, subject_type: str, subject_id: Any
+) -> models.ApprovalWorkflow | None:
+    """Return the workflow pinned for one subject via subject governance.
+
+    Operators can pin an approval workflow per managed agent (agent detail
+    view) or per flow (flow Governance card); the choice is stored in the
+    account's subject-governance config under the subject's id. Returns None when unset or when the
     configured workflow no longer exists in the account.
 
     Loads the account and matching workflow in one round-trip: the pin lives
@@ -168,7 +211,9 @@ async def _resolve_agent_configured_workflow(
     """
     # Extract the pin as unquoted text so the join compares plain UUID
     # strings (JSON -> / CAST can leave quoted JSON scalar text).
-    pinned_workflow_id = _managed_agent_approval_workflow_pin(managed_agent_id)
+    pinned_workflow_id = _subject_governance_field(
+        subject_type, subject_id, "approval_workflow_id"
+    )
 
     result = await db.execute(
         select(models.Account, models.ApprovalWorkflow)
@@ -189,8 +234,8 @@ async def _resolve_agent_configured_workflow(
     account, workflow = row
     config = get_subject_governance(
         account.meta_data or {},
-        subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
-        subject_id=str(managed_agent_id),
+        subject_type=subject_type,
+        subject_id=str(subject_id),
     )
     workflow_id = (config or {}).get("approval_workflow_id")
     if not workflow_id:
@@ -199,9 +244,10 @@ async def _resolve_agent_configured_workflow(
         uuid.UUID(str(workflow_id))
     except ValueError:
         logger.warning(
-            "Ignoring invalid approval_workflow_id %r configured for managed agent %s",
+            "Ignoring invalid approval_workflow_id %r configured for %s %s",
             workflow_id,
-            managed_agent_id,
+            subject_type,
+            subject_id,
         )
         return None
     return workflow
@@ -212,6 +258,7 @@ async def resolve_workflow(
     account_id: str,
     approver_user_id: Optional[uuid.UUID],
     managed_agent_id: Optional[uuid.UUID] = None,
+    flow_id: Optional[uuid.UUID] = None,
 ) -> models.ApprovalWorkflow:
     """Resolve the approval workflow to use, creating a minimal one if needed.
 
@@ -221,9 +268,9 @@ async def resolve_workflow(
     dedicated "Agent Tool Approvals" standard workflow that notifies the
     calling user so the request can reach their devices.
     """
-    if managed_agent_id is not None:
-        workflow = await _resolve_agent_configured_workflow(
-            db, account_id, managed_agent_id
+    for subject_type, subject_id in _subject_chain(managed_agent_id, flow_id):
+        workflow = await _resolve_subject_configured_workflow(
+            db, account_id, subject_type, subject_id
         )
         if workflow is not None:
             return workflow
@@ -418,6 +465,7 @@ async def apply_native_access_rules(
     user_id: Optional[uuid.UUID],
     managed_agent_id: Optional[uuid.UUID],
     runtime_session_id: Optional[uuid.UUID],
+    flow_id: Optional[uuid.UUID] = None,
 ) -> Optional[Tuple[str, str, Optional[Any], Optional[dict]]]:
     """Evaluate blocked-tool and access rules for a native call.
 
@@ -449,6 +497,7 @@ async def apply_native_access_rules(
         user_id=user_id,
         subject_context={
             "managed_agent_id": str(managed_agent_id) if managed_agent_id else None,
+            "flow_id": str(flow_id) if flow_id else None,
             "runtime_session_id": str(runtime_session_id)
             if runtime_session_id
             else None,
@@ -489,6 +538,7 @@ async def request_agent_permission(
     agent_reasoning: Optional[str],
     client_decision: Optional[str],
     evaluation_phase: str = "permission_request",
+    flow_id: Optional[uuid.UUID] = None,
 ) -> Tuple[str, str, Optional[str], bool]:
     """Decide whether an agent's native tool call may proceed.
 
@@ -516,6 +566,8 @@ async def request_agent_permission(
         account_id: Owning account id.
         user_id: User associated with the managed agent credential.
         managed_agent_id: Managed agent raising the request, if known.
+        flow_id: Flow whose execution raised the request, if any. Its
+            per-flow governance override wins over the agent and account.
         runtime_session_id: Active runtime session id, if known.
         managed_agent_name: Display name shown to approvers.
         api_key_id: Credential the agent authenticated with, recorded on the
@@ -571,6 +623,7 @@ async def request_agent_permission(
             user_id=user_id,
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
+            flow_id=flow_id,
         )
         matched_require: Optional[Tuple[str, Optional[Any], Optional[dict]]] = None
         if rule_outcome is not None:
@@ -595,21 +648,28 @@ async def request_agent_permission(
         ):
             return ("allow", "", None, False)
 
-        approvals_off = managed_agent_id is not None and (
-            await native_tool_approvals_disabled(db, account_id, managed_agent_id)
+        approvals_off = (managed_agent_id is not None or flow_id is not None) and (
+            await native_tool_approvals_disabled(
+                db, account_id, managed_agent_id, flow_id=flow_id
+            )
         )
         if approvals_off:
             logger.info(
-                "Native tool approvals are disabled for managed agent %s "
+                "Native tool approvals are disabled for managed agent %s / flow %s "
                 "(account %s); recording an auto-approved request for tool %s",
                 managed_agent_id,
+                flow_id,
                 account_id,
                 tool_name,
             )
 
         try:
             workflow = await resolve_workflow(
-                db, account_id, user_id, managed_agent_id=managed_agent_id
+                db,
+                account_id,
+                user_id,
+                managed_agent_id=managed_agent_id,
+                flow_id=flow_id,
             )
             if matched_require and matched_require[1] is not None:
                 rule_wf_result = await db.execute(
