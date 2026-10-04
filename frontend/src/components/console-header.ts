@@ -911,14 +911,13 @@ export class ConsoleHeader extends LitElement {
       return;
     }
 
+    // This runs from a websocket message, not a user gesture. Browsers
+    // ignore a permission prompt raised from one (and may hold it against
+    // the site), so permission is only ever asked for from the bell click.
     if (Notification.permission !== 'granted') {
       debugLog(
-        `[Notification] Permission not granted (current: ${Notification.permission}), requesting...`
+        `[Notification] Permission not granted (current: ${Notification.permission}); not showing`
       );
-      // Proactively request if still default
-      if (Notification.permission === 'default') {
-        Notification.requestPermission();
-      }
       return;
     }
 

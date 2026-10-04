@@ -836,6 +836,72 @@ describe('console-header desktop notification permission', () => {
     expect(request).to.have.been.calledOnce;
   });
 
+  /**
+   * A websocket message is not a user gesture: browsers ignore (or count
+   * against the site) a permission prompt raised from one. An execution
+   * start only shows a notification the person already allowed.
+   */
+  describe('on a websocket execution start', () => {
+    let receiveFlowUpdate: Parameters<
+      typeof unifiedWebSocketManager.subscribe
+    >[1];
+    let FakeNotification: sinon.SinonStub & {
+      permission: NotificationPermission;
+      requestPermission: sinon.SinonStub;
+    };
+
+    beforeEach(() => {
+      sinon
+        .stub(unifiedWebSocketManager, 'subscribe')
+        .callsFake((topic, cb) => {
+          if (topic === 'flow_executions') receiveFlowUpdate = cb;
+          return () => {};
+        });
+      FakeNotification = Object.assign(sinon.stub(), {
+        permission: 'default' as NotificationPermission,
+        requestPermission: sinon.stub().resolves('default'),
+      });
+      FakeNotification.prototype.close = () => {};
+      sinon.replace(
+        window,
+        'Notification',
+        FakeNotification as unknown as typeof Notification
+      );
+    });
+
+    async function startExecution(id: string): Promise<void> {
+      const el = await fixture<ConsoleHeader>(
+        html`<console-header></console-header>`
+      );
+      await el.updateComplete;
+      receiveFlowUpdate({
+        type: 'execution_started',
+        execution_id: id,
+        flow_id: 'flow-1',
+        timestamp: '2030-01-01T12:00:00Z',
+        payload: { status: 'RUNNING', flow_name: 'Nightly sweep' },
+      } as never);
+    }
+
+    it('does not ask for permission while it is still undecided', async () => {
+      await startExecution('exec-1');
+      // Plain counts: a failing sinon-chai assertion on these stubs hangs
+      // the runner while it serialises the stub.
+      expect(FakeNotification.requestPermission.callCount).to.equal(0);
+      expect(FakeNotification.callCount, 'no notification shown').to.equal(0);
+    });
+
+    it('shows the notification once permission was granted', async () => {
+      FakeNotification.permission = 'granted';
+      await startExecution('exec-2');
+      expect(FakeNotification.requestPermission.callCount).to.equal(0);
+      expect(FakeNotification.callCount).to.equal(1);
+      expect(FakeNotification.firstCall.args[0]).to.equal(
+        'Flow Execution Started'
+      );
+    });
+  });
+
   it('fits the dropdown on a phone', () => {
     const cssText = (
       customElements.get('console-header') as unknown as {
