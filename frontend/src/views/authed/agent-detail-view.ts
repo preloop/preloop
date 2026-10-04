@@ -1612,7 +1612,7 @@ export class AgentDetailView extends LitElement {
     if (!this.agentId) return nothing;
     return html`
       <sl-card
-        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: #ffffff; width: 100%; margin-top: var(--sl-spacing-medium);"
+        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: var(--console-surface); width: 100%; margin-top: var(--sl-spacing-medium);"
       >
         <div style="padding: var(--sl-spacing-large);">
           <div
@@ -2294,7 +2294,7 @@ export class AgentDetailView extends LitElement {
       >
         <sl-card
           style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
-            this.isFullscreen ? '#1e293b' : '#ffffff'
+            this.isFullscreen ? '#1e293b' : 'var(--console-surface)'
           }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
@@ -2490,7 +2490,7 @@ export class AgentDetailView extends LitElement {
       >
         <sl-card
           style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
-            this.isFullscreen ? '#1e293b' : '#ffffff'
+            this.isFullscreen ? '#1e293b' : 'var(--console-surface)'
           }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
@@ -2725,7 +2725,7 @@ export class AgentDetailView extends LitElement {
       >
         <sl-card
           style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
-            this.isFullscreen ? '#1e293b' : '#ffffff'
+            this.isFullscreen ? '#1e293b' : 'var(--console-surface)'
           }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
@@ -2888,7 +2888,7 @@ export class AgentDetailView extends LitElement {
     }
     return html`
       <sl-card
-        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: #ffffff; width: 100%;"
+        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: var(--console-surface); width: 100%;"
       >
         <div style="padding: var(--sl-spacing-large);">
           <div
@@ -2961,8 +2961,8 @@ export class AgentDetailView extends LitElement {
                       (flow) => html`
                         <div
                           style="
-                        background: #ffffff;
-                        border: 1px solid var(--sl-color-neutral-200);
+                        background: var(--console-surface);
+                        border: 1px solid var(--console-hairline);
                         border-radius: var(--sl-border-radius-medium);
                         padding: var(--sl-spacing-large);
                         display: flex;

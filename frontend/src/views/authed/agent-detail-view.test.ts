@@ -654,6 +654,29 @@ describe('AgentDetailView', () => {
     expect(flowCalls()).to.have.length(1);
   });
 
+  it('paints its cards from the theme surface, never a fixed white', async () => {
+    // Inline white backgrounds under theme-coloured text read at 1.5:1 in
+    // the dark theme: two whole cards became bright slabs with pale text.
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => !(el as any).loading);
+    el.shadowRoot!.querySelector('sl-tab-group')!.dispatchEvent(
+      new CustomEvent('sl-tab-show', {
+        detail: { name: 'associated-flows' },
+        bubbles: true,
+      })
+    );
+    await waitUntil(() => (el as any).associatedFlowsLoaded);
+    await el.updateComplete;
+    const whiteCards = Array.from(
+      el.shadowRoot!.querySelectorAll<HTMLElement>('[style]')
+    ).filter((node) =>
+      /background:\s*#fff(?:fff)?\b/i.test(node.getAttribute('style') ?? '')
+    );
+    expect(whiteCards).to.have.length(0);
+  });
+
   it('allows the new agent associated-flows request while an old failure is pending', async () => {
     let releaseOld!: () => void;
     let releaseNew!: () => void;
