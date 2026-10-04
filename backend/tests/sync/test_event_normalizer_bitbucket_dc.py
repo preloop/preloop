@@ -212,3 +212,14 @@ def test_delivery_identity_is_tracker_scoped() -> None:
     b = delivery_identity("t-2", "req", "pr:opened", result.payload, b"{}")
     assert a != b
     assert a == "bitbucket_dc:t-1:req"
+
+
+def test_over_long_request_id_falls_back_to_a_bounded_identity() -> None:
+    result = normalize("pr:opened")
+    tracker = "11111111-2222-3333-4444-555555555555"
+    kept = delivery_identity(tracker, "r" * 140, "pr:opened", result.payload, b"{}")
+    assert kept.endswith("r" * 140)
+    assert len("delivery:" + kept) <= 200
+    long = delivery_identity(tracker, "r" * 141, "pr:opened", result.payload, b"{}")
+    assert ":derived:" in long
+    assert len("delivery:" + long) <= 200

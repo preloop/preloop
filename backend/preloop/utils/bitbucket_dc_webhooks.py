@@ -77,6 +77,11 @@ BITBUCKET_DC_WEBHOOK_EVENTS: tuple[str, ...] = tuple(BITBUCKET_DC_EVENT_MAP)
 # that point at Preloop's callback URL.
 BITBUCKET_DC_WEBHOOK_NAME = "Preloop"
 
+# ``flow_execution.webhook_delivery_key`` is VARCHAR(200) and stores
+# ``delivery:bitbucket_dc:<tracker uuid>:<request id>``: 59 characters of
+# prefix. Longer request ids fall back to the derived identity.
+MAX_REQUEST_ID_LENGTH = 140
+
 _SIGNATURE_RE = re.compile(r"^sha256=([0-9a-fA-F]{64})$")
 _COMMENT_EVENTS = frozenset(
     {"pr:comment:added", "pr:comment:edited", "pr:comment:deleted"}
@@ -458,7 +463,7 @@ def delivery_identity(
     """
     scope = f"bitbucket_dc:{tracker_id}"
     request = (request_id or "").strip()
-    if request and len(request) <= 200 and request.isprintable():
+    if request and len(request) <= MAX_REQUEST_ID_LENGTH and request.isprintable():
         return f"{scope}:{request}"
     dc = payload.get("bitbucket_dc") if isinstance(payload, Mapping) else None
     dc = dc if isinstance(dc, Mapping) else {}
