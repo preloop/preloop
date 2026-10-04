@@ -1182,6 +1182,38 @@ describe('AccountView', () => {
     expect(cells['Used']).to.contain('1 MiB');
   });
 
+  it('links the storage card to the Artifacts page, per kind too', async () => {
+    fetchStub = createFetchStub({
+      billing: false,
+      sessionArtifactUsage: {
+        used_bytes: 3072,
+        budget_bytes: 1048576,
+        by_kind: { screenshot: 1024, recording: 0, transcript: 2048 },
+        evicted_count_30d: 0,
+      },
+    });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+
+    const card = element.shadowRoot!.querySelector(
+      '[data-testid="session-artifact-usage"]'
+    )!;
+    const browse = card.querySelector('[data-testid="browse-artifacts-link"]');
+    expect(browse?.getAttribute('href')).to.equal('/console/artifacts');
+    expect(browse?.textContent).to.contain('Browse artifacts');
+    const kinds = Array.from(
+      card.querySelectorAll('[data-testid="artifact-kind-link"]')
+    ).map((a) => [a.textContent?.trim(), a.getAttribute('href')]);
+    expect(kinds).to.deep.equal([
+      ['Screenshots', '/console/artifacts?kind=screenshot'],
+      ['Recordings', '/console/artifacts?kind=recording'],
+      ['Transcript', '/console/artifacts?kind=transcript'],
+    ]);
+  });
+
   it('renders newer artifact kinds by name and hides empty ones', async () => {
     fetchStub = createFetchStub({
       billing: false,

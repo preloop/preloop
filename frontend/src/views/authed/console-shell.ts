@@ -50,6 +50,7 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/trackers': ['view_trackers'],
   '/console/ai-models': ['view_ai_models'],
   '/console/runtime-sessions': ['view_runtime_sessions'],
+  '/console/artifacts': ['view_runtime_sessions'],
   '/console/cost': ['view_cost'],
   '/console/approvals': ['view_approvals'],
   '/console/audit': ['view_audit_logs'],
@@ -654,6 +655,7 @@ export class ConsoleShell extends LitElement {
     return (
       this._isNavActive('/console/audit') ||
       this._isNavActive('/console/runtime-sessions') ||
+      this._isNavActive('/console/artifacts') ||
       this._isNavActive('/console/approvals')
     );
   }
@@ -899,6 +901,10 @@ export class ConsoleShell extends LitElement {
                                 ${this._renderNavLink(
                                   '/console/runtime-sessions',
                                   html`<sl-menu-item>Sessions</sl-menu-item>`
+                                )}
+                                ${this._renderNavLink(
+                                  '/console/artifacts',
+                                  html`<sl-menu-item>Artifacts</sl-menu-item>`
                                 )}
                                 ${this._renderNavLink(
                                   '/console/approvals',
