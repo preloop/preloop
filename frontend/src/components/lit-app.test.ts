@@ -338,6 +338,28 @@ describe('LitApp routing', () => {
     expect(window.location.pathname).to.equal('/console/does-not-exist');
   });
 
+  it('names the console 404 in the tab, not the previous page', async () => {
+    const original = document.title;
+    try {
+      const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+      // The page the reader came from titled the tab (view-header does this).
+      document.title = 'Agents · Preloop';
+
+      Router.go('/console/does-not-exist');
+      await waitUntil(
+        () =>
+          Boolean(
+            el.shadowRoot?.querySelector('console-shell > not-found-view')
+          ),
+        'Expected the console 404 to render inside the shell',
+        { timeout: 5000 }
+      );
+      expect(document.title).to.equal('Page not found · Preloop');
+    } finally {
+      document.title = original;
+    }
+  });
+
   it('keeps real console routes ahead of the console 404', async () => {
     const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
 

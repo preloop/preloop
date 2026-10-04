@@ -1,18 +1,9 @@
 import { LitElement, html, css, unsafeCSS, type PropertyValues } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-import { getBrandConfig } from '../brand-config';
 import consoleStyles from '../styles/console-styles.css?inline';
+import { pageTitle } from '../utils/page-title';
 
-/** `<page> · <brand>`, or just the page where no brand config is loaded. */
-export function pageTitle(headerText: string): string {
-  let brand = '';
-  try {
-    brand = getBrandConfig().name;
-  } catch {
-    // Unit tests and other hosts without the Vite brand plugin.
-  }
-  return brand ? `${headerText} · ${brand}` : headerText;
-}
+export { pageTitle };
 
 @customElement('view-header')
 export class ViewHeader extends LitElement {

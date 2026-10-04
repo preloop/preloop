@@ -4,6 +4,8 @@ import { customElement } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 
+import { pageTitle } from '../../utils/page-title';
+
 /** Read storage without throwing where it is blocked (private windows). */
 function safeGetItem(key: string): string | null {
   try {
@@ -11,6 +13,14 @@ function safeGetItem(key: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * `/console` itself or a path under `/console/`; `/consoles` is public. The
+ * same boundary lit-app uses to decide when to restore the served title.
+ */
+function isConsolePath(pathname: string): boolean {
+  return pathname === '/console' || pathname.startsWith('/console/');
 }
 
 /**
@@ -23,7 +33,7 @@ export function notFoundAction(
   pathname: string,
   signedIn: boolean
 ): { href: string; label: string } {
-  if (pathname === '/console' || pathname.startsWith('/console/')) {
+  if (isConsolePath(pathname)) {
     return { href: '/console', label: 'Back to Overview' };
   }
   if (signedIn) return { href: '/console', label: 'Go to the console' };
@@ -67,6 +77,17 @@ export class NotFoundView extends LitElement {
       margin: 0;
     }
   `;
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    // Inside the console every page titles the tab through its view-header,
+    // which this page does not render; without this the tab kept the name
+    // of the page the reader came from. A public 404 keeps the served title,
+    // which lit-app restores on public paths.
+    if (isConsolePath(window.location.pathname)) {
+      document.title = pageTitle('Page not found');
+    }
+  }
 
   render() {
     const cta = notFoundAction(
