@@ -724,17 +724,16 @@ def _account_search_conditions(
         conditions.append(_session_visible_after(session_cutoff))
     normalized = " ".join(query.split()) if query else ""
     if normalized:
-        chunk_match = (
-            select(SessionSearchDocument.id)
-            .where(
+        # One pass over the account's matching chunks (GIN on search_vector),
+        # hashed into a semi-join, instead of a correlated probe per artifact.
+        chunk_match = func.cast(table.id, String).in_(
+            select(SessionSearchDocument.source_id).where(
                 SessionSearchDocument.account_id == account_id,
                 SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT,
-                SessionSearchDocument.source_id == func.cast(table.id, String),
                 SessionSearchDocument.search_vector.op("@@")(
                     func.websearch_to_tsquery("simple", normalized)
                 ),
             )
-            .exists()
         )
         escaped = (
             normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

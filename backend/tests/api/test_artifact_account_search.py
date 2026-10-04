@@ -422,3 +422,73 @@ def test_split_highlights_turns_markers_into_offsets():
 
     assert excerpt.text == "a damaged pallet x"
     assert excerpt.highlights == [(2, 9), (10, 16)]
+
+
+def test_excerpt_keeps_body_lines_that_look_like_header_keys(
+    client, db_session, test_user
+):
+    session = _session(db_session, test_user.account_id, "wh-lookalike")
+    created = _deposit(
+        client,
+        _headers(db_session, test_user, session.id),
+        session.id,
+        name="handover.md",
+        kind="document",
+        labels={"site": "nord"},
+        content=_text(
+            "handover.md",
+            "text/markdown",
+            "name: John Doe\nlabels: pallet crate\nThe pallet is in lane Q2.\n",
+        ),
+    )
+
+    item = _get(client, q="pallet")["items"][0]
+
+    assert item["id"] == created["id"]
+    assert item["excerpt"]["text"].startswith("name: John Doe")
+    assert "artifact_kind" not in item["excerpt"]["text"]
+
+
+def test_withheld_chunk_returns_the_row_without_an_excerpt(
+    client, db_session, warehouse
+):
+    from preloop.models.crud import crud_session_search_document
+
+    summary_id = warehouse["summary"]["id"]
+    crud_session_search_document.withhold_source_text(
+        db_session, source_kind="artifact", source_id=summary_id
+    )
+    db_session.commit()
+
+    by_id = {i["id"]: i for i in _get(client, q="nord")["items"]}
+
+    assert summary_id in by_id
+    assert by_id[summary_id]["excerpt"] is None
+    transcript = by_id[warehouse["artifacts"][("nord", "late")]["id"]]
+    assert transcript["excerpt"] is not None
+
+
+def test_plan_history_window_hides_old_sessions_in_items_and_facets(
+    client, db_session, test_user, warehouse, monkeypatch
+):
+    from preloop.api.endpoints import artifact_search as endpoint
+
+    old = db_session.get(
+        models.RuntimeSession, uuid.UUID(warehouse["sessions"]["sued"])
+    )
+    long_ago = datetime(2026, 1, 1, tzinfo=UTC).replace(tzinfo=None)
+    old.started_at = old.last_activity_at = old.ended_at = long_ago
+    db_session.commit()
+    monkeypatch.setattr(
+        endpoint,
+        "history_cutoff",
+        lambda db, account: datetime(2026, 6, 1, tzinfo=UTC),
+    )
+
+    body = _get(client)
+
+    assert {i["runtime_session_id"] for i in body["items"]} == {
+        warehouse["sessions"]["nord"]
+    }
+    assert body["facets"]["site"] == {"nord": 4}
+    assert "screenshot" not in body["facets"]["kind"]
