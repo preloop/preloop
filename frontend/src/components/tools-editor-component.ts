@@ -6,6 +6,7 @@ import type { AccessRuleSummary } from './governance-rule-set-editor';
 import type { RuleFormData } from './tool-rule-editor';
 import type { GatewayUsageByTool } from '../types';
 import './tool-list-item';
+import { confirmDialog } from './confirm-dialog';
 
 export type ToolWithRules = Omit<Tool, 'access_rules'> & {
   access_rules?: AccessRuleSummary[];
@@ -371,6 +372,39 @@ export class ToolsEditorComponent extends LitElement {
     } catch {}
   }
 
+  /**
+   * Deleting a server takes its tools and their access rules with it, and
+   * agents calling those tools start failing, so the confirm says how much
+   * goes before anything is sent.
+   */
+  private async _confirmDeleteServer(group: ToolGroup) {
+    const toolCount = group.tools.length;
+    const ruleCount = group.tools.reduce(
+      (sum, tool) => sum + (tool.access_rules?.length ?? 0),
+      0
+    );
+    const plural = (n: number, one: string, many: string) =>
+      `${n} ${n === 1 ? one : many}`;
+    const confirmed = await confirmDialog({
+      title: 'Delete this MCP server?',
+      message: `"${group.name}" will be removed with ${plural(
+        toolCount,
+        'tool',
+        'tools'
+      )} and ${plural(ruleCount, 'access rule', 'access rules')}. This cannot be undone.`,
+      detail:
+        'Agents that call these tools through Preloop will get an error until the server is added again.',
+      confirmLabel: 'Delete server',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    this.dispatchEvent(
+      new CustomEvent('delete-server', {
+        detail: group.server.id,
+      })
+    );
+  }
+
   private _renderToolGroup(group: ToolGroup) {
     const isEnabled = (t: ToolWithRules) =>
       this.mode === 'scoped' && t.name in this.toolEnabledOverrides
@@ -463,19 +497,7 @@ export class ToolsEditorComponent extends LitElement {
                       <sl-icon-button
                         name="trash"
                         label=${`Delete server ${group.name}`}
-                        @click=${() => {
-                          if (
-                            confirm(
-                              `Delete MCP server "${group.name}" and all its tools?`
-                            )
-                          ) {
-                            this.dispatchEvent(
-                              new CustomEvent('delete-server', {
-                                detail: group.server.id,
-                              })
-                            );
-                          }
-                        }}
+                        @click=${() => void this._confirmDeleteServer(group)}
                       ></sl-icon-button>
                     </sl-tooltip>
                   </div>

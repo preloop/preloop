@@ -2290,6 +2290,92 @@ describe('ToolsView – starter policy suggestions', () => {
       expect(toast?.getAttribute('variant')).to.equal('success');
     });
 
+    const deleteCalls = (fragment: string) =>
+      fetchStub
+        .getCalls()
+        .filter(
+          (call) =>
+            String(call.args[0]).includes(fragment) &&
+            String(
+              (call.args[1] as RequestInit | undefined)?.method || 'GET'
+            ).toUpperCase() === 'DELETE'
+        );
+
+    it('confirms a rule delete in the console dialog, naming the rule', async () => {
+      const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+      await waitUntil(
+        () => !(el as any).loading,
+        'Initial load did not finish'
+      );
+      const nativeConfirm = sinon.stub(window, 'confirm').returns(true);
+      try {
+        const done = (el as any)._handleDeleteRule(
+          new CustomEvent('delete-rule', {
+            detail: {
+              tool: { name: 'list_issues' },
+              rule: { id: 'rule-1', action: 'require_approval' },
+            },
+          })
+        ) as Promise<void>;
+        await waitUntil(
+          () => !!confirmButton('confirm-dialog-confirm'),
+          'no confirm dialog'
+        );
+        expect(nativeConfirm.called).to.equal(false);
+        const text =
+          document.querySelector('confirm-dialog')?.shadowRoot?.textContent ??
+          '';
+        expect(text).to.contain('require approval rule on list_issues');
+        expect(deleteCalls('/api/v1/access-rules/rule-1')).to.have.length(0);
+
+        confirmButton('confirm-dialog-confirm')!.click();
+        await done;
+        expect(deleteCalls('/api/v1/access-rules/rule-1')).to.have.length(1);
+      } finally {
+        nativeConfirm.restore();
+      }
+    });
+
+    it('confirms a workflow delete and says how many tools use it', async () => {
+      tools = [{ ...makeTool('srv-1'), approval_workflow_id: 'wf-1' }];
+      const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+      await waitUntil(
+        () => !(el as any).loading,
+        'Initial load did not finish'
+      );
+      const nativeConfirm = sinon.stub(window, 'confirm').returns(true);
+      try {
+        const done = (el as any)._handleDeletePolicy({
+          id: 'wf-1',
+          name: 'Example workflow',
+        }) as Promise<void>;
+        await waitUntil(
+          () => !!confirmButton('confirm-dialog-confirm'),
+          'no confirm dialog'
+        );
+        expect(nativeConfirm.called).to.equal(false);
+        const text =
+          document.querySelector('confirm-dialog')?.shadowRoot?.textContent ??
+          '';
+        expect(text).to.contain('Example workflow');
+        expect(text).to.contain('1 tool uses it');
+
+        (
+          document
+            .querySelector('confirm-dialog')
+            ?.shadowRoot?.querySelector(
+              'sl-button:not([data-testid])'
+            ) as HTMLElement
+        ).click();
+        await done;
+        expect(deleteCalls('/api/v1/approval-workflows/wf-1')).to.have.length(
+          0
+        );
+      } finally {
+        nativeConfirm.restore();
+      }
+    });
+
     it('uploads nothing when cancelled and offers the Policies preview', async () => {
       const { done } = await startImport();
 

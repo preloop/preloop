@@ -296,6 +296,48 @@ describe('ToolListItem – justification settings', () => {
     expect(ruleSummaryText(el)).to.equal('No rules · blocked');
   });
 
+  it('passes a rule delete or reorder up once, with the tool attached', async () => {
+    stubApi();
+    const el = await createItem();
+    el.expanded = true;
+    await el.updateComplete;
+    const editor = el.shadowRoot?.querySelector(
+      'governance-rule-set-editor'
+    ) as HTMLElement;
+    expect(editor).to.exist;
+
+    const seen: Array<{ type: string; detail: any }> = [];
+    const record = (event: Event) =>
+      seen.push({ type: event.type, detail: (event as CustomEvent).detail });
+    document.addEventListener('delete-rule', record);
+    document.addEventListener('reorder-rules', record);
+    try {
+      for (const type of ['delete-rule', 'reorder-rules']) {
+        editor.dispatchEvent(
+          new CustomEvent(type, {
+            detail: {
+              toolName: 'bash',
+              rule: { id: 'r1' },
+              reorderedRules: [],
+            },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      }
+    } finally {
+      document.removeEventListener('delete-rule', record);
+      document.removeEventListener('reorder-rules', record);
+    }
+    expect(seen.map((event) => event.type)).to.deep.equal([
+      'delete-rule',
+      'reorder-rules',
+    ]);
+    expect(seen.every((event) => event.detail.tool?.name === 'bash')).to.equal(
+      true
+    );
+  });
+
   it('counts rules with the shared action words and colours', async () => {
     stubApi();
     const rule = (id: string, action: string) => ({

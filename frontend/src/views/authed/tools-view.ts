@@ -70,6 +70,7 @@ import {
 import type { GatewayUsageByTool } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
+import { ruleActionLabel } from '../../utils/rule-actions';
 import { Router } from '../../router';
 
 type ToolsTab = 'mcp' | 'native';
@@ -1359,8 +1360,22 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleDeleteRule(e: CustomEvent) {
-    const { rule } = e.detail;
-    if (!confirm('Delete this access rule? This cannot be undone.')) {
+    const { rule, tool } = e.detail as {
+      rule: AccessRuleSummary;
+      tool?: { name?: string };
+    };
+    const toolName = tool?.name;
+    const confirmed = await confirmDialog({
+      title: 'Delete this access rule?',
+      message: `The ${ruleActionLabel(rule.action).toLowerCase()} rule${
+        toolName ? ` on ${toolName}` : ''
+      } stops applying as soon as it is deleted. This cannot be undone.`,
+      detail:
+        'Calls it matched fall through to the next rule, or to the default when no other rule matches.',
+      confirmLabel: 'Delete rule',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -1556,11 +1571,20 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleDeletePolicy(policy: ApprovalWorkflow) {
-    if (
-      !confirm(
-        `Delete approval workflow "${policy.name}"? This cannot be undone.`
-      )
-    ) {
+    const usedBy = this.tools.filter((tool) =>
+      this._toolUsesWorkflow(tool, policy.id)
+    ).length;
+    const confirmed = await confirmDialog({
+      title: 'Delete this approval workflow?',
+      message: `"${policy.name}" will be deleted. This cannot be undone.`,
+      detail:
+        usedBy > 0
+          ? `${usedBy} ${usedBy === 1 ? 'tool uses' : 'tools use'} it for approvals. Their rules are unlinked from it, so check that each still routes approvals where you expect.`
+          : 'No tool on this page uses it.',
+      confirmLabel: 'Delete workflow',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     try {

@@ -546,9 +546,14 @@ export class ToolListItem extends LitElement {
           .features=${this.features}
           .emptyMessage=${this._emptyRulesMessage()}
           @save-rule=${this._handleSaveRule}
-          @delete-rule=${(event: CustomEvent) =>
-            this._handleDeleteRule(event.detail.rule)}
-          @reorder-rules=${(event: CustomEvent) =>
+          @delete-rule=${(event: CustomEvent) => {
+            // Re-dispatched with the tool attached; letting the editor's own
+            // composed event through as well asked to delete the rule twice.
+            event.stopPropagation();
+            this._handleDeleteRule(event.detail.rule);
+          }}
+          @reorder-rules=${(event: CustomEvent) => {
+            event.stopPropagation();
             this.dispatchEvent(
               new CustomEvent('reorder-rules', {
                 detail: {
@@ -558,7 +563,8 @@ export class ToolListItem extends LitElement {
                 bubbles: true,
                 composed: true,
               })
-            )}
+            );
+          }}
           @workflow-created=${this._handleWorkflowCreated}
         ></governance-rule-set-editor>
       </div>
