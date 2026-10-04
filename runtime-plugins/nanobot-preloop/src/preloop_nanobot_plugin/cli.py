@@ -15,6 +15,10 @@ import aiohttp
 
 from .runtime import ConcurrentControlClient, build_runtime, validate_document
 
+# verify() refuses any other nanobot-ai release. The README keeps this pin
+# because newer upstream versions changed the loop API.
+PINNED_NANOBOT_SDK = "0.1.4.post3"
+
 
 def discover(explicit: Path | None = None) -> Path:
     """Find isolated Preloop configuration without altering native channels."""
@@ -106,7 +110,7 @@ def main() -> None:
     if args.command == "verify":
         from importlib.metadata import version
 
-        if version("nanobot-ai") != "0.1.4.post3":
+        if version("nanobot-ai") != PINNED_NANOBOT_SDK:
             raise ValueError("unsupported Nanobot SDK version")
         print("Nanobot configuration and pinned SDK verified (connectivity not tested)")
         return
