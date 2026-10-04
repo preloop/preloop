@@ -65,6 +65,34 @@ class TestNodeSelector:
         monkeypatch.setenv(kubernetes_placement.NODE_SELECTOR_ENV, raw)
         assert kubernetes_placement.node_selector() == {}
 
+    def test_prefix_qualified_key_is_kept(self, monkeypatch):
+        monkeypatch.setenv(
+            kubernetes_placement.NODE_SELECTOR_ENV,
+            json.dumps({"example.com/runtime": "kata"}),
+        )
+        assert kubernetes_placement.node_selector() == {"example.com/runtime": "kata"}
+
+    def test_invalid_label_key_or_value_is_dropped(self, monkeypatch):
+        monkeypatch.setenv(
+            kubernetes_placement.NODE_SELECTOR_ENV,
+            json.dumps(
+                {
+                    "disktype": "ssd",
+                    "bad key": "kata",
+                    "runtime": "not a label!",
+                }
+            ),
+        )
+        # Only the valid pair survives; the invalid ones cannot fail the Job.
+        assert kubernetes_placement.node_selector() == {"disktype": "ssd"}
+
+    def test_oversized_label_value_is_dropped(self, monkeypatch):
+        monkeypatch.setenv(
+            kubernetes_placement.NODE_SELECTOR_ENV,
+            json.dumps({"runtime": "a" * 64}),
+        )
+        assert kubernetes_placement.node_selector() == {}
+
 
 class TestTolerations:
     def test_unset_is_empty(self):
@@ -95,3 +123,84 @@ class TestTolerations:
             json.dumps([{"key": "dedicated"}, "oops", 3, None]),
         )
         assert kubernetes_placement.tolerations() == [{"key": "dedicated"}]
+
+    def test_invalid_effect_is_dropped_not_passed_to_api(self, monkeypatch):
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps([{"key": "dedicated", "effect": "NoShedule"}]),
+        )
+        # A typo in one entry must never make Job creation fail.
+        assert kubernetes_placement.tolerations() == []
+
+    def test_invalid_operator_is_dropped(self, monkeypatch):
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps([{"key": "dedicated", "operator": "Tolerate"}]),
+        )
+        assert kubernetes_placement.tolerations() == []
+
+    def test_string_toleration_seconds_is_coerced(self, monkeypatch):
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps(
+                [
+                    {
+                        "key": "dedicated",
+                        "operator": "Equal",
+                        "effect": "NoExecute",
+                        "tolerationSeconds": "120",
+                    }
+                ]
+            ),
+        )
+        assert kubernetes_placement.tolerations() == [
+            {
+                "key": "dedicated",
+                "operator": "Equal",
+                "effect": "NoExecute",
+                "tolerationSeconds": 120,
+            }
+        ]
+
+    @pytest.mark.parametrize("seconds", ["soon", -5, 12.5, True])
+    def test_typed_toleration_seconds_is_dropped(self, monkeypatch, seconds):
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps([{"key": "dedicated", "tolerationSeconds": seconds}]),
+        )
+        assert kubernetes_placement.tolerations() == []
+
+    def test_exists_operator_drops_a_disallowed_value(self, monkeypatch):
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps([{"key": "dedicated", "operator": "Exists", "value": "agents"}]),
+        )
+        assert kubernetes_placement.tolerations() == [
+            {"key": "dedicated", "operator": "Exists"}
+        ]
+
+    def test_client_tolerations_builds_api_objects(self, monkeypatch):
+        from kubernetes_asyncio import client
+
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps(
+                [
+                    {
+                        "key": "dedicated",
+                        "operator": "Equal",
+                        "value": "agents",
+                        "effect": "NoSchedule",
+                        "tolerationSeconds": 60,
+                    }
+                ]
+            ),
+        )
+        built = kubernetes_placement.client_tolerations(client)
+        assert len(built) == 1
+        assert isinstance(built[0], client.V1Toleration)
+        assert built[0].key == "dedicated"
+        assert built[0].operator == "Equal"
+        assert built[0].value == "agents"
+        assert built[0].effect == "NoSchedule"
+        assert built[0].toleration_seconds == 60

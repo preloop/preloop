@@ -27,10 +27,10 @@ cluster already offers (for example `kata-containers`, `gvisor`, or
 kernel, so a container escape reaches a guest kernel instead of the node.
 Pair it with `agentExecution.nodeSelector` and
 `agentExecution.tolerations` when only one tainted node pool runs that
-runtime, since those settings apply to agent pods only and leave Preloop's
-own deployments where they are. The settings are empty by default and
-render no change to the pod spec, so an existing install keeps the node's
-default runtime.
+runtime. The same placement is applied to the hosted publication verifier
+Job, which also executes repository code, while Preloop's own deployments
+stay where they are. The settings are empty by default and render no change
+to the pod spec, so an existing install keeps the node's default runtime.
 
 Nothing in the cluster dials into an agent pod. Output leaves it two ways:
 

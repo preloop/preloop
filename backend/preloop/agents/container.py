@@ -36,9 +36,9 @@ from .failure_analysis import (
     runtime_log_text,
 )
 from .kubernetes_placement import (
+    client_tolerations as agent_client_tolerations,
     node_selector as agent_node_selector,
     runtime_class_name as agent_runtime_class_name,
-    tolerations as agent_tolerations,
 )
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.agents.verification import build_verification_gate_shell
@@ -1685,16 +1685,7 @@ class ContainerAgentExecutor(AgentExecutor):
         # same pod spec as before.
         runtime_class_name = agent_runtime_class_name()
         pod_node_selector = agent_node_selector()
-        pod_tolerations = [
-            client.V1Toleration(
-                key=item.get("key"),
-                operator=item.get("operator"),
-                value=item.get("value"),
-                effect=item.get("effect"),
-                toleration_seconds=item.get("tolerationSeconds"),
-            )
-            for item in agent_tolerations()
-        ]
+        pod_tolerations = agent_client_tolerations(client)
 
         # Keep the process cwd on the emptyDir mount root. The CRI creates
         # workingDir as root after fsGroup chown, so a clone subdirectory
