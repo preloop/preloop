@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Transcript evaluation preset.** A scheduled flow (hourly, disabled by
+  default) reads the transcripts deposited since its last run with
+  `search_artifacts` / `get_artifact`, batches suggestions into one
+  `ask_user` question, gates every action behind `request_approval` with
+  the transcript excerpt and artifact link, and deposits one labelled
+  report artifact. Same-agent mode reads the flow's own runs; cross-agent
+  mode needs the `artifact_search.account_scope` grant. The preset picker
+  now lists schedule-triggered presets under **Scheduled** with a
+  Scheduled chip, and shows a scope note on presets that read artifacts
+  (#1106).
 - **Scheduled runs know their time window.** A schedule-triggered run's
   `trigger_event.payload` now carries `previous_scheduled_at` (the previous
   fire time, computed from the schedule definition in its timezone),

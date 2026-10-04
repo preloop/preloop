@@ -225,7 +225,8 @@ class TestTheShippedCatalog:
             assert created.is_enabled is False
 
     def test_the_cra_presets_keep_their_three_day_window(self, sync):
-        """006, 014, 015 and 017 declare a three-day window; keep every one."""
+        """006, 014, 015 and 017 declare a three-day window and 021 a one-day
+        window (a person answers its hourly question); keep every one."""
         from preloop.flow_presets import FLOW_PRESETS
 
         by_name = {p["name"]: p for p in FLOW_PRESETS}
@@ -238,6 +239,7 @@ class TestTheShippedCatalog:
             "Portfolio Review": 259200,
             "Release Security Audit": 259200,
             "Security Maintenance Implementation": 259200,
+            "Transcript evaluation": 86400,
             "Weekly model price review": 259200,
         }
 
