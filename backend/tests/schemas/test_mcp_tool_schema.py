@@ -43,3 +43,25 @@ def test_mcp_tool_response_serializes_uuid_identifiers_as_strings():
         assert isinstance(dumped["mcp_server_id"], str)
         assert dumped["id"] == str(tool.id)
         assert dumped["mcp_server_id"] == str(tool.mcp_server_id)
+
+
+def test_mcp_tool_response_accepts_already_string_identifiers():
+    """Pre-serialized string ids must round-trip as strings.
+
+    Tool rows can reach the schema with identifiers that are already strings
+    (for example cache payloads decoded from JSON). Pydantic must coerce them
+    to ``UUID`` and the response must still emit strings, so the wire format
+    does not depend on how the row was materialized.
+    """
+    tool = _tool_row()
+    tool.id = str(tool.id)
+    tool.mcp_server_id = str(tool.mcp_server_id)
+
+    response = MCPToolResponse.model_validate(tool)
+
+    assert str(response.id) == tool.id
+    assert str(response.mcp_server_id) == tool.mcp_server_id
+
+    dumped = response.model_dump(mode="json")
+    assert dumped["id"] == tool.id
+    assert dumped["mcp_server_id"] == tool.mcp_server_id
