@@ -169,14 +169,14 @@ describe('Execution tree', () => {
     expect(reads).to.eql(['/api/v1/flows/executions/parent-1/tree']);
   });
 
-  it('renders the empty state and no tree for a run with no children', async () => {
+  it('renders nothing for a run with no children', async () => {
     answer = leafTree();
     const element = await mount('lonely-1');
 
-    expect(find(element, 'execution-tree-empty')).to.exist;
-    expect(find(element, 'execution-tree-empty')!.textContent?.trim()).to.equal(
-      'No delegated executions.'
-    );
+    // Most runs delegate nothing; a line saying so only pushed the error
+    // and the tabs further down the execution page.
+    expect(find(element, 'execution-tree-empty')).to.not.exist;
+    expect(element.shadowRoot!.textContent?.trim()).to.equal('');
     expect(find(element, 'execution-tree')).to.not.exist;
     expect(rows(element)).to.have.length(0);
   });
