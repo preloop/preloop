@@ -4,28 +4,110 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Accept Invitation - Preloop</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.0/cdn/themes/light.css" />
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.0/cdn/shoelace.js"></script>
+    <meta name="color-scheme" content="light dark">
+    <title>Accept invitation - Preloop</title>
+    <!--
+        This page is self-contained on purpose: invitation links are opened on
+        installs that may have no internet egress, and the page is served by
+        the backend directly. No external scripts, stylesheets, fonts or
+        images; icons are inline SVG.
+    -->
     <style>
+        :root {
+            --page-bg: #f3f4f6;
+            --card-bg: #ffffff;
+            --card-border: #e5e7eb;
+            --text: #1f2937;
+            --heading: #111827;
+            --muted: #4b5563;
+            --border: #d1d5db;
+            --divider: #e5e7eb;
+            --input-bg: #ffffff;
+            --icon: #6b7280;
+            --primary: #0284c7;
+            --primary-strong: #0369a1;
+            --primary-strong-hover: #075985;
+            --focus-ring: rgba(2, 132, 199, 0.45);
+            --info-bg: #f0f9ff;
+            --info-border: #bae6fd;
+            --info-label: #0c4a6e;
+            --info-value: #075985;
+            --alert-danger-bg: #fef2f2;
+            --alert-danger-border: #fecaca;
+            --alert-danger-text: #991b1b;
+            --alert-warning-bg: #fffbeb;
+            --alert-warning-border: #fde68a;
+            --alert-warning-text: #92400e;
+            --alert-success-bg: #f0fdf4;
+            --alert-success-border: #bbf7d0;
+            --alert-success-text: #166534;
+            --radius: 6px;
+            --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.06);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --page-bg: #0f172a;
+                --card-bg: #1e293b;
+                --card-border: #334155;
+                --text: #e2e8f0;
+                --heading: #f8fafc;
+                --muted: #a3b1c6;
+                --border: #475569;
+                --divider: #334155;
+                --input-bg: #0f172a;
+                --icon: #94a3b8;
+                --primary: #38bdf8;
+                --primary-strong: #0369a1;
+                --primary-strong-hover: #075985;
+                --focus-ring: rgba(56, 189, 248, 0.55);
+                --info-bg: #0c2536;
+                --info-border: #075985;
+                --info-label: #bae6fd;
+                --info-value: #e0f2fe;
+                --alert-danger-bg: #3b0d0d;
+                --alert-danger-border: #7f1d1d;
+                --alert-danger-text: #fecaca;
+                --alert-warning-bg: #3a1d05;
+                --alert-warning-border: #78350f;
+                --alert-warning-text: #fde68a;
+                --alert-success-bg: #062a15;
+                --alert-success-border: #14532d;
+                --alert-success-text: #bbf7d0;
+                --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
+            }
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
             margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 24px 16px;
+            background: var(--page-bg);
+            color: var(--text);
+            line-height: 1.5;
             min-height: 100vh;
             display: flex;
-            align-items: center;
             justify-content: center;
         }
 
         .container {
             max-width: 500px;
             width: 100%;
+            margin: auto 0;
         }
 
-        sl-card {
-            --padding: 2rem;
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 2rem;
         }
 
         .header {
@@ -35,37 +117,245 @@
 
         .header h1 {
             margin: 0 0 0.5rem 0;
-            font-size: 1.8rem;
-            color: #333;
+            font-size: 1.6rem;
+            line-height: 1.25;
+            color: var(--heading);
+        }
+
+        .header p {
+            color: var(--muted);
+            margin: 0;
+        }
+
+        .icon {
+            width: 1em;
+            height: 1em;
+            flex: none;
+            display: inline-block;
+            vertical-align: -0.125em;
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 1em;
+            height: 1em;
+            border: 0.14em solid var(--divider);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: -0.125em;
+        }
+
+        .spinner-lg {
+            font-size: 3rem;
+            border-width: 4px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .spinner {
+                animation: none;
+                border-color: var(--primary);
+                border-right-color: transparent;
+                border-left-color: transparent;
+            }
+        }
+
+        .loading {
+            text-align: center;
+            color: var(--muted);
+        }
+
+        /* Alerts */
+        .alert {
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+            padding: 0.875rem 1rem;
+            border-radius: var(--radius);
+            border: 1px solid var(--alert-danger-border);
+            border-left-width: 4px;
+            background: var(--alert-danger-bg);
+            color: var(--alert-danger-text);
+        }
+
+        .alert > .icon {
+            font-size: 1.25rem;
+            margin-top: 0.05rem;
+        }
+
+        .alert-body {
+            flex: 1;
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+
+        .alert[data-variant="warning"] {
+            border-color: var(--alert-warning-border);
+            background: var(--alert-warning-bg);
+            color: var(--alert-warning-text);
+        }
+
+        .alert[data-variant="success"] {
+            border-color: var(--alert-success-border);
+            background: var(--alert-success-bg);
+            color: var(--alert-success-text);
+        }
+
+        /* Transient notices shown above the card (password mismatch,
+           a refused submit). */
+        .toast {
+            margin-bottom: 1rem;
+            box-shadow: var(--shadow);
+        }
+
+        .alert-close {
+            flex: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.75rem;
+            height: 1.75rem;
+            margin: -0.25rem -0.4rem -0.25rem 0;
+            padding: 0;
+            border: none;
+            border-radius: var(--radius);
+            background: transparent;
+            color: inherit;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+
+        .alert-close:hover {
+            background: rgba(127, 127, 127, 0.18);
         }
 
         .info-box {
             padding: 1rem;
-            background: #f0f9ff;
-            border: 1px solid #bae6fd;
-            border-radius: 0.5rem;
+            background: var(--info-bg);
+            border: 1px solid var(--info-border);
+            border-radius: var(--radius);
             margin-bottom: 1.5rem;
         }
 
         .info-label {
             font-size: 0.875rem;
             font-weight: 600;
-            color: #0c4a6e;
+            color: var(--info-label);
             margin-bottom: 0.25rem;
         }
 
         .info-value {
-            color: #075985;
+            color: var(--info-value);
             font-size: 1rem;
+            overflow-wrap: anywhere;
         }
 
         .form-group {
             margin-bottom: 1.5rem;
         }
 
-        .form-group sl-input,
-        .form-group sl-textarea {
+        .field-label {
+            display: block;
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.35rem;
+            color: var(--text);
+        }
+
+        .input-wrap {
+            position: relative;
+        }
+
+        .input-wrap > .icon {
+            position: absolute;
+            left: 0.75rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--icon);
+            font-size: 1.1rem;
+            pointer-events: none;
+        }
+
+        .control {
+            display: block;
             width: 100%;
+            min-height: 2.75rem;
+            padding: 0.55rem 0.75rem 0.55rem 2.5rem;
+            font: inherit;
+            font-size: 1rem;
+            color: var(--text);
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .control::placeholder {
+            color: var(--muted);
+            opacity: 0.85;
+        }
+
+        .control.has-toggle {
+            padding-right: 3rem;
+        }
+
+        .control:hover {
+            border-color: var(--muted);
+        }
+
+        .control:focus,
+        .control:focus-visible {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--focus-ring);
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 0.35rem;
+            top: 50%;
+            transform: translateY(-50%);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.25rem;
+            height: 2.25rem;
+            padding: 0;
+            border: none;
+            border-radius: var(--radius);
+            background: transparent;
+            color: var(--icon);
+            font-size: 1.1rem;
+            cursor: pointer;
+        }
+
+        .password-toggle:hover {
+            color: var(--text);
+        }
+
+        .password-toggle .icon-hide {
+            display: none;
+        }
+
+        .password-toggle[aria-pressed="true"] .icon-show {
+            display: none;
+        }
+
+        .password-toggle[aria-pressed="true"] .icon-hide {
+            display: inline-block;
+        }
+
+        .helper-text {
+            font-size: 0.875rem;
+            color: var(--muted);
+            margin-top: 0.5rem;
         }
 
         .actions {
@@ -74,37 +364,114 @@
             margin-top: 2rem;
         }
 
-        .actions sl-button {
+        .actions .btn {
             flex: 1;
         }
 
-        .helper-text {
-            font-size: 0.875rem;
-            color: #6b7280;
-            margin-top: 0.5rem;
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            min-height: 2.75rem;
+            padding: 0.625rem 1.25rem;
+            font: inherit;
+            font-size: 1rem;
+            font-weight: 600;
+            line-height: 1.2;
+            color: #ffffff;
+            background: var(--primary-strong);
+            border: 1px solid transparent;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+        }
+
+        .btn:hover {
+            background: var(--primary-strong-hover);
+        }
+
+        .btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        .btn .icon {
+            font-size: 1.15rem;
+        }
+
+        .btn .spinner {
+            display: none;
+            border-color: rgba(255, 255, 255, 0.35);
+            border-top-color: #ffffff;
+        }
+
+        .btn[aria-busy="true"] .spinner {
+            display: inline-block;
+        }
+
+        .btn[aria-busy="true"] .icon {
+            display: none;
+        }
+
+        :focus-visible {
+            outline: 3px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+            .btn,
+            .control {
+                transition: none;
+            }
+        }
+
+        @media (max-width: 520px) {
+            body {
+                padding: 16px;
+            }
+
+            .card {
+                padding: 1.25rem;
+            }
+
+            .header {
+                margin-bottom: 1.5rem;
+            }
+
+            .header h1 {
+                font-size: 1.35rem;
+            }
         }
     </style>
 </head>
 
 <body>
-    <div class="container">
-        <sl-card>
+    <main class="container">
+        <section class="card" aria-labelledby="page-title">
             <div class="header">
-                <h1>✉️ You're Invited!</h1>
-                <p style="color: #6b7280; margin: 0;">Create your account to join the organization</p>
+                <h1 id="page-title"><span aria-hidden="true">✉️</span> You're invited!</h1>
+                <p>Create your account to join the organization</p>
             </div>
 
-            <div id="loading" style="text-align: center;">
-                <sl-spinner style="font-size: 3rem;"></sl-spinner>
+            <div id="loading" class="loading" role="status" aria-live="polite">
+                <span class="spinner spinner-lg" aria-hidden="true"></span>
                 <p>Loading invitation...</p>
             </div>
 
             <div id="error" style="display: none;">
-                <sl-alert variant="danger" open>
-                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                    <strong id="error-title">Error</strong>
-                    <div id="error-message"></div>
-                </sl-alert>
+                <div class="alert" data-variant="danger" role="alert">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                        <path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z" />
+                        <path d="M12 7.5v5.5M12 16.5v.01" />
+                    </svg>
+                    <div class="alert-body">
+                        <strong id="error-title">Error</strong>
+                        <div id="error-message"></div>
+                    </div>
+                </div>
             </div>
 
             <div id="content" style="display: none;">
@@ -114,68 +481,207 @@
                 </div>
 
                 <div class="info-box">
-                    <div class="info-label">Your Email</div>
+                    <div class="info-label">Your email</div>
                     <div class="info-value" id="email"></div>
                 </div>
 
                 <form id="accept-form">
                     <div class="form-group">
-                        <sl-input name="username" label="Username" placeholder="Choose a username" required
-                            minlength="3" maxlength="50">
-                            <sl-icon name="person" slot="prefix"></sl-icon>
-                        </sl-input>
-                        <div class="helper-text">3-50 characters, alphanumeric and underscores allowed</div>
+                        <label class="field-label" for="username">Username</label>
+                        <div class="input-wrap">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                                <circle cx="12" cy="8" r="4" />
+                                <path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" />
+                            </svg>
+                            <input class="control" id="username" name="username" type="text"
+                                placeholder="Choose a username" required minlength="3" maxlength="50"
+                                autocomplete="username" autocapitalize="none" spellcheck="false"
+                                aria-describedby="username-help">
+                        </div>
+                        <div class="helper-text" id="username-help">3-50 characters, alphanumeric and underscores allowed</div>
                     </div>
 
                     <div class="form-group">
-                        <sl-input name="full_name" label="Full Name (Optional)" placeholder="Your full name"
-                            maxlength="255">
-                            <sl-icon name="person-badge" slot="prefix"></sl-icon>
-                        </sl-input>
+                        <label class="field-label" for="full_name">Full name (optional)</label>
+                        <div class="input-wrap">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                                <rect x="5" y="3" width="14" height="18" rx="2" />
+                                <circle cx="12" cy="10" r="2.5" />
+                                <path d="M8.5 17c.5-1.8 1.9-3 3.5-3s3 1.2 3.5 3" />
+                            </svg>
+                            <input class="control" id="full_name" name="full_name" type="text"
+                                placeholder="Your full name" maxlength="255" autocomplete="name">
+                        </div>
                     </div>
 
                     <div class="form-group">
-                        <sl-input name="password" type="password" label="Password"
-                            placeholder="Choose a secure password" required minlength="8" password-toggle>
-                            <sl-icon name="lock" slot="prefix"></sl-icon>
-                        </sl-input>
-                        <div class="helper-text">Minimum 8 characters</div>
+                        <label class="field-label" for="password">Password</label>
+                        <div class="input-wrap">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                                <rect x="5" y="11" width="14" height="10" rx="2" />
+                                <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                            </svg>
+                            <input class="control has-toggle" id="password" name="password" type="password"
+                                placeholder="Choose a secure password" required minlength="8"
+                                autocomplete="new-password" aria-describedby="password-help">
+                            <button type="button" class="password-toggle" data-toggle-for="password"
+                                aria-label="Show password" aria-pressed="false">
+                                <svg class="icon icon-show" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                                    focusable="false">
+                                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+                                    <circle cx="12" cy="12" r="3" />
+                                </svg>
+                                <svg class="icon icon-hide" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                                    focusable="false">
+                                    <path d="M3 3l18 18" />
+                                    <path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.9 8.3 2 12 2 12s3.5 7 10 7c1.9 0 3.6-.6 5-1.5" />
+                                    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="helper-text" id="password-help">Minimum 8 characters</div>
                     </div>
 
                     <div class="form-group">
-                        <sl-input name="password_confirm" type="password" label="Confirm Password"
-                            placeholder="Re-enter your password" required minlength="8" password-toggle>
-                            <sl-icon name="lock-fill" slot="prefix"></sl-icon>
-                        </sl-input>
+                        <label class="field-label" for="password_confirm">Confirm password</label>
+                        <div class="input-wrap">
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                                <rect x="5" y="11" width="14" height="10" rx="2" fill="currentColor" />
+                                <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+                            </svg>
+                            <input class="control has-toggle" id="password_confirm" name="password_confirm"
+                                type="password" placeholder="Re-enter your password" required minlength="8"
+                                autocomplete="new-password">
+                            <button type="button" class="password-toggle" data-toggle-for="password_confirm"
+                                aria-label="Show password" aria-pressed="false">
+                                <svg class="icon icon-show" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                                    focusable="false">
+                                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+                                    <circle cx="12" cy="12" r="3" />
+                                </svg>
+                                <svg class="icon icon-hide" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                                    focusable="false">
+                                    <path d="M3 3l18 18" />
+                                    <path d="M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.9 8.3 2 12 2 12s3.5 7 10 7c1.9 0 3.6-.6 5-1.5" />
+                                    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
 
                     <div class="actions">
-                        <sl-button type="submit" variant="primary" id="accept-button">
-                            <sl-icon slot="prefix" name="check-circle"></sl-icon>
-                            Accept & Create Account
-                        </sl-button>
+                        <button type="submit" class="btn" id="accept-button">
+                            <span class="spinner" aria-hidden="true"></span>
+                            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                                <circle cx="12" cy="12" r="9" />
+                                <path d="M8 12.5l2.5 2.5L16 9.5" />
+                            </svg>
+                            Accept &amp; create account
+                        </button>
                     </div>
                 </form>
             </div>
 
             <div id="success" style="display: none;">
-                <sl-alert variant="success" open>
-                    <sl-icon slot="icon" name="check-circle"></sl-icon>
-                    <strong>Account Created Successfully!</strong>
-                    <div>Your account has been created. Redirecting to login...</div>
-                </sl-alert>
+                <div class="alert" data-variant="success" role="status" aria-live="polite">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                        <circle cx="12" cy="12" r="9" />
+                        <path d="M8 12.5l2.5 2.5L16 9.5" />
+                    </svg>
+                    <div class="alert-body">
+                        <strong>Account created successfully!</strong>
+                        <div>Your account has been created. Redirecting to login...</div>
+                    </div>
+                </div>
             </div>
-        </sl-card>
-    </div>
+        </section>
+    </main>
 
     <script>
         let invitationData = null;
         const urlParams = new URLSearchParams(window.location.search);
         const token = urlParams.get('token');
 
+        // Inline icons for the notices built in script (constant markup only).
+        const ICON_PATHS = {
+            'exclamation-octagon': '<path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
+            'exclamation-triangle': '<path d="M12 3.5L2.5 20h19z"/><path d="M12 10v4.5M12 17.5v.01"/>',
+            'x': '<path d="M6 6l12 12M18 6L6 18"/>'
+        };
+
+        function iconNode(name) {
+            // Parsed through a <template> so the <svg> lands in the SVG
+            // namespace. Constant markup from ICON_PATHS only; never user data.
+            const tpl = document.createElement('template');
+            tpl.innerHTML =
+                '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+                'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+                ICON_PATHS[name] + '</svg>';
+            return tpl.content.firstElementChild;
+        }
+
+        // Native stand-in for a Shoelace alert toast: a dismissible notice
+        // with role="alert", prepended to the container, that removes itself
+        // after `duration` milliseconds.
+        function showToast(variant, iconName, contentNodes, duration) {
+            const alert = document.createElement('div');
+            alert.className = 'alert toast';
+            alert.dataset.variant = variant;
+            alert.setAttribute('role', 'alert');
+            alert.appendChild(iconNode(iconName));
+
+            const body = document.createElement('div');
+            body.className = 'alert-body';
+            for (const node of contentNodes) body.appendChild(node);
+            alert.appendChild(body);
+
+            const close = document.createElement('button');
+            close.type = 'button';
+            close.className = 'alert-close';
+            close.setAttribute('aria-label', 'Dismiss');
+            close.appendChild(iconNode('x'));
+            close.addEventListener('click', () => alert.remove());
+            alert.appendChild(close);
+
+            document.querySelector('.container').prepend(alert);
+            setTimeout(() => alert.remove(), duration);
+            return alert;
+        }
+
+        // Native stand-in for a Shoelace button's `loading` property.
+        function setButtonLoading(button, loading) {
+            button.disabled = loading;
+            if (loading) {
+                button.setAttribute('aria-busy', 'true');
+            } else {
+                button.removeAttribute('aria-busy');
+            }
+        }
+
+        // Show/hide password, as Shoelace's password-toggle did.
+        for (const toggle of document.querySelectorAll('.password-toggle')) {
+            toggle.addEventListener('click', () => {
+                const input = document.getElementById(toggle.dataset.toggleFor);
+                const show = input.type === 'password';
+                input.type = show ? 'text' : 'password';
+                toggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+                toggle.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+            });
+        }
+
         async function loadInvitation() {
             if (!token) {
-                showError('Invalid Link', 'No invitation token provided in the URL.');
+                showError('Invalid link', 'No invitation token provided in the URL.');
                 return;
             }
 
@@ -189,7 +695,7 @@
                 invitationData = await response.json();
 
                 if (!invitationData.is_valid) {
-                    showError('Invalid Invitation', invitationData.error_message || 'This invitation is no longer valid.');
+                    showError('Invalid invitation', invitationData.error_message || 'This invitation is no longer valid.');
                     return;
                 }
 
@@ -203,7 +709,7 @@
             document.getElementById('loading').style.display = 'none';
             document.getElementById('content').style.display = 'block';
 
-            document.getElementById('organization-name').textContent = invitationData.organization_name || 'Unknown Organization';
+            document.getElementById('organization-name').textContent = invitationData.organization_name || 'Unknown organization';
             document.getElementById('email').textContent = invitationData.email || 'Unknown';
         }
 
@@ -215,6 +721,8 @@
         }
 
         function showSuccess() {
+            // An earlier refusal no longer applies.
+            for (const toast of document.querySelectorAll('.toast')) toast.remove();
             document.getElementById('content').style.display = 'none';
             document.getElementById('success').style.display = 'block';
 
@@ -235,21 +743,17 @@
 
             // Validate passwords match
             if (password !== password_confirm) {
-                const alert = document.createElement('sl-alert');
-                alert.variant = 'warning';
-                alert.closable = true;
-                alert.duration = 3000;
-                alert.innerHTML = `
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    Passwords do not match. Please try again.
-                `;
-                document.querySelector('.container').prepend(alert);
-                alert.toast();
+                showToast(
+                    'warning',
+                    'exclamation-triangle',
+                    [document.createTextNode('Passwords do not match. Please try again.')],
+                    3000
+                );
                 return;
             }
 
             const button = document.getElementById('accept-button');
-            button.loading = true;
+            setButtonLoading(button, true);
 
             try {
                 const response = await fetch('/api/v1/invitations/accept', {
@@ -272,28 +776,14 @@
 
                 showSuccess();
             } catch (error) {
-                const alert = document.createElement('sl-alert');
-                alert.variant = 'danger';
-                alert.closable = true;
-                alert.duration = 5000;
-
-                // Create structured content to prevent XSS
-                const icon = document.createElement('sl-icon');
-                icon.setAttribute('slot', 'icon');
-                icon.setAttribute('name', 'exclamation-octagon');
-
+                // Structured content (textContent only) to prevent XSS.
                 const strong = document.createElement('strong');
                 strong.textContent = 'Error: ';
 
                 const messageText = document.createTextNode(error.message);
 
-                alert.appendChild(icon);
-                alert.appendChild(strong);
-                alert.appendChild(messageText);
-
-                document.querySelector('.container').prepend(alert);
-                alert.toast();
-                button.loading = false;
+                showToast('danger', 'exclamation-octagon', [strong, messageText], 5000);
+                setButtonLoading(button, false);
             }
         });
 

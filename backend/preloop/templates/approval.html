@@ -4,28 +4,138 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tool Approval - Preloop</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.0/cdn/themes/light.css" />
-    <script type="module" src="https://cdn.jsdelivr.net/npm/@shoelace-style/shoelace@2.15.0/cdn/shoelace.js"></script>
+    <meta name="color-scheme" content="light dark">
+    <title>Tool approval - Preloop</title>
+    <!--
+        This page is self-contained on purpose: it is opened from email, Slack
+        and mobile links on installs that may have no internet egress, and it is
+        served by the backend directly. No external scripts, stylesheets, fonts
+        or images; icons are inline SVG.
+    -->
     <style>
+        :root {
+            --page-bg: #f3f4f6;
+            --card-bg: #ffffff;
+            --card-border: #e5e7eb;
+            --text: #1f2937;
+            --heading: #111827;
+            --muted: #4b5563;
+            --subtle-bg: #f9fafb;
+            --subtle-bg-2: #f3f4f6;
+            --border: #d1d5db;
+            --divider: #e5e7eb;
+            --input-bg: #ffffff;
+            --primary: #0284c7;
+            --primary-strong: #0369a1;
+            --primary-strong-hover: #075985;
+            --focus-ring: rgba(2, 132, 199, 0.45);
+            --success: #15803d;
+            --success-hover: #166534;
+            --danger: #b91c1c;
+            --danger-hover: #991b1b;
+            --error-text: #b91c1c;
+            --code-bg: #1f2937;
+            --code-text: #f3f4f6;
+            --alert-danger-bg: #fef2f2;
+            --alert-danger-border: #fecaca;
+            --alert-danger-text: #991b1b;
+            --alert-warning-bg: #fffbeb;
+            --alert-warning-border: #fde68a;
+            --alert-warning-text: #92400e;
+            --alert-success-bg: #f0fdf4;
+            --alert-success-border: #bbf7d0;
+            --alert-success-text: #166534;
+            --badge-pending-bg: #fef3c7;
+            --badge-pending-text: #92400e;
+            --badge-approved-bg: #d1fae5;
+            --badge-approved-text: #065f46;
+            --badge-declined-bg: #fee2e2;
+            --badge-declined-text: #991b1b;
+            --badge-neutral-bg: #e5e7eb;
+            --badge-neutral-text: #374151;
+            --radius: 6px;
+            --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.06);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --page-bg: #0f172a;
+                --card-bg: #1e293b;
+                --card-border: #334155;
+                --text: #e2e8f0;
+                --heading: #f8fafc;
+                --muted: #a3b1c6;
+                --subtle-bg: #172033;
+                --subtle-bg-2: #263449;
+                --border: #475569;
+                --divider: #334155;
+                --input-bg: #0f172a;
+                --primary: #38bdf8;
+                --primary-strong: #0369a1;
+                --primary-strong-hover: #075985;
+                --focus-ring: rgba(56, 189, 248, 0.55);
+                --success: #15803d;
+                --success-hover: #166534;
+                --danger: #b91c1c;
+                --danger-hover: #dc2626;
+                --error-text: #fca5a5;
+                --code-bg: #0b1220;
+                --code-text: #e2e8f0;
+                --alert-danger-bg: #3b0d0d;
+                --alert-danger-border: #7f1d1d;
+                --alert-danger-text: #fecaca;
+                --alert-warning-bg: #3a1d05;
+                --alert-warning-border: #78350f;
+                --alert-warning-text: #fde68a;
+                --alert-success-bg: #062a15;
+                --alert-success-border: #14532d;
+                --alert-success-text: #bbf7d0;
+                --badge-pending-bg: #4a2c06;
+                --badge-pending-text: #fde68a;
+                --badge-approved-bg: #073b2a;
+                --badge-approved-text: #a7f3d0;
+                --badge-declined-bg: #4c1010;
+                --badge-declined-text: #fecaca;
+                --badge-neutral-bg: #334155;
+                --badge-neutral-text: #e2e8f0;
+                --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
+            }
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
             margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 24px 16px;
+            background: var(--page-bg);
+            color: var(--text);
+            line-height: 1.5;
             min-height: 100vh;
             display: flex;
-            align-items: center;
             justify-content: center;
         }
 
         .container {
             max-width: 700px;
             width: 100%;
+            margin: auto 0;
         }
 
-        sl-card {
-            --padding: 2rem;
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 2rem;
         }
 
         .header {
@@ -35,8 +145,110 @@
 
         .header h1 {
             margin: 0 0 0.5rem 0;
-            font-size: 1.8rem;
-            color: #333;
+            font-size: 1.6rem;
+            line-height: 1.25;
+            color: var(--heading);
+        }
+
+        .header p {
+            color: var(--muted);
+            margin: 0;
+        }
+
+        .icon {
+            width: 1em;
+            height: 1em;
+            flex: none;
+            display: inline-block;
+            vertical-align: -0.125em;
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 1em;
+            height: 1em;
+            border: 0.14em solid var(--divider);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            vertical-align: -0.125em;
+        }
+
+        .spinner-lg {
+            font-size: 3rem;
+            border-width: 4px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .spinner {
+                animation: none;
+                border-color: var(--primary);
+                border-right-color: transparent;
+                border-left-color: transparent;
+            }
+        }
+
+        .loading {
+            text-align: center;
+            color: var(--muted);
+        }
+
+        /* Alerts */
+        .alert {
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+            padding: 0.875rem 1rem;
+            border-radius: var(--radius);
+            border: 1px solid var(--alert-danger-border);
+            border-left-width: 4px;
+            background: var(--alert-danger-bg);
+            color: var(--alert-danger-text);
+        }
+
+        .alert > .icon {
+            font-size: 1.25rem;
+            margin-top: 0.05rem;
+        }
+
+        .alert-body {
+            flex: 1;
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+
+        .alert[data-variant="warning"] {
+            border-color: var(--alert-warning-border);
+            background: var(--alert-warning-bg);
+            color: var(--alert-warning-text);
+        }
+
+        .alert[data-variant="success"] {
+            border-color: var(--alert-success-border);
+            background: var(--alert-success-bg);
+            color: var(--alert-success-text);
+        }
+
+        .alert .alert-icon-success,
+        .alert .alert-icon-warning {
+            display: none;
+        }
+
+        .alert[data-variant="success"] .alert-icon-success,
+        .alert[data-variant="warning"] .alert-icon-warning {
+            display: inline-block;
+        }
+
+        .alert[data-variant="success"] .alert-icon-danger,
+        .alert[data-variant="warning"] .alert-icon-danger {
+            display: none;
         }
 
         .status-badge {
@@ -46,21 +258,29 @@
             font-size: 0.875rem;
             font-weight: 600;
             text-transform: uppercase;
+            background: var(--badge-neutral-bg);
+            color: var(--badge-neutral-text);
         }
 
         .status-pending {
-            background: #fef3c7;
-            color: #92400e;
+            background: var(--badge-pending-bg);
+            color: var(--badge-pending-text);
         }
 
         .status-approved {
-            background: #d1fae5;
-            color: #065f46;
+            background: var(--badge-approved-bg);
+            color: var(--badge-approved-text);
         }
 
         .status-declined {
-            background: #fee2e2;
-            color: #991b1b;
+            background: var(--badge-declined-bg);
+            color: var(--badge-declined-text);
+        }
+
+        .status-expired,
+        .status-cancelled {
+            background: var(--badge-neutral-bg);
+            color: var(--badge-neutral-text);
         }
 
         .info-grid {
@@ -71,54 +291,256 @@
 
         .info-item {
             padding: 1rem;
-            background: #f9fafb;
-            border-radius: 0.5rem;
+            background: var(--subtle-bg);
+            border: 1px solid var(--divider);
+            border-radius: var(--radius);
+            min-width: 0;
         }
 
         .info-label {
             font-size: 0.875rem;
             font-weight: 600;
-            color: #6b7280;
+            color: var(--muted);
             margin-bottom: 0.5rem;
         }
 
         .info-value {
-            font-family: monospace;
-            color: #1f2937;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+            color: var(--text);
             white-space: pre-wrap;
-            word-wrap: break-word;
+            overflow-wrap: anywhere;
         }
 
-        .actions {
-            display: flex;
-            gap: 1rem;
-            margin-top: 2rem;
-        }
-
-        .actions sl-button {
-            flex: 1;
+        .summary-value {
+            font-size: 1.1rem;
+            line-height: 1.5;
         }
 
         pre {
-            background: #1f2937;
-            color: #f3f4f6;
+            background: var(--code-bg);
+            color: var(--code-text);
             padding: 1rem;
-            border-radius: 0.5rem;
+            margin: 0;
+            border-radius: var(--radius);
             overflow-x: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
             font-size: 0.875rem;
             text-wrap: auto;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
         }
 
-        .status-expired {
-            background: #e5e7eb;
-            color: #374151;
+        .section-gap {
+            margin-bottom: 1.5rem;
         }
 
-        .status-cancelled {
-            background: #e5e7eb;
-            color: #374151;
+        .section-gap-lg {
+            margin-bottom: 2rem;
         }
 
+        /* Buttons */
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin: 2rem 0;
+        }
+
+        .actions .btn {
+            flex: 1 1 140px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            min-height: 3rem;
+            padding: 0.625rem 1.25rem;
+            font: inherit;
+            font-size: 1rem;
+            font-weight: 600;
+            line-height: 1.2;
+            color: #ffffff;
+            background: var(--primary-strong);
+            border: 1px solid transparent;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: background-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .btn:hover {
+            background: var(--primary-strong-hover);
+        }
+
+        .btn-success {
+            background: var(--success);
+        }
+
+        .btn-success:hover {
+            background: var(--success-hover);
+        }
+
+        .btn-danger {
+            background: var(--danger);
+        }
+
+        .btn-danger:hover {
+            background: var(--danger-hover);
+        }
+
+        .btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        .btn .icon {
+            font-size: 1.15rem;
+        }
+
+        .btn .spinner {
+            display: none;
+            border-color: rgba(255, 255, 255, 0.35);
+            border-top-color: #ffffff;
+        }
+
+        .btn[aria-busy="true"] .spinner {
+            display: inline-block;
+        }
+
+        .btn[aria-busy="true"] .icon {
+            display: none;
+        }
+
+        :focus-visible {
+            outline: 3px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        .btn:focus-visible {
+            outline: 3px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        /* Form controls */
+        .field-label {
+            display: block;
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-bottom: 0.35rem;
+            color: var(--text);
+        }
+
+        .help-text {
+            font-size: 0.8rem;
+            color: var(--muted);
+            margin-top: 0.35rem;
+        }
+
+        .control {
+            display: block;
+            width: 100%;
+            padding: 0.55rem 0.75rem;
+            font: inherit;
+            font-size: 0.95rem;
+            color: var(--text);
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        textarea.control {
+            resize: vertical;
+            min-height: 2.75rem;
+        }
+
+        select.control {
+            cursor: pointer;
+        }
+
+        .control:hover {
+            border-color: var(--muted);
+        }
+
+        .control:focus,
+        .control:focus-visible {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--focus-ring);
+        }
+
+        input[type="checkbox"] {
+            width: 1.15rem;
+            height: 1.15rem;
+            margin: 0;
+            accent-color: var(--primary-strong);
+            cursor: pointer;
+            flex: none;
+        }
+
+        input[type="checkbox"]:focus-visible {
+            outline: 3px solid var(--focus-ring);
+            outline-offset: 2px;
+        }
+
+        .check {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            padding: 0.3rem 0;
+            cursor: pointer;
+        }
+
+        .check input {
+            margin-top: 0.2rem;
+        }
+
+        /* A checkbox drawn as a switch for boolean fields. */
+        input.switch {
+            appearance: none;
+            -webkit-appearance: none;
+            position: relative;
+            width: 2.5rem;
+            height: 1.4rem;
+            border-radius: 1rem;
+            background: var(--border);
+            border: 1px solid var(--border);
+            transition: background-color 0.15s ease;
+        }
+
+        input.switch::after {
+            content: "";
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: calc(1.4rem - 6px);
+            height: calc(1.4rem - 6px);
+            border-radius: 50%;
+            background: #ffffff;
+            transition: transform 0.15s ease;
+        }
+
+        input.switch:checked {
+            background: var(--primary-strong);
+            border-color: var(--primary-strong);
+        }
+
+        input.switch:checked::after {
+            transform: translateX(1.1rem);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+            .btn,
+            .control,
+            input.switch,
+            input.switch::after {
+                transition: none;
+            }
+        }
+
+        /* Timeline */
         .timeline {
             list-style: none;
             margin: 0 0 1rem 0;
@@ -129,7 +551,7 @@
             display: flex;
             gap: 0.75rem;
             padding: 0.5rem 0;
-            border-bottom: 1px solid #e5e7eb;
+            border-bottom: 1px solid var(--divider);
         }
 
         .timeline li:last-child {
@@ -138,23 +560,34 @@
 
         .timeline-icon {
             flex: none;
-            color: #6b7280;
+            color: var(--muted);
             font-size: 1rem;
-            margin-top: 0.1rem;
+            margin-top: 0.2rem;
         }
 
         .timeline-detail {
             margin: 0;
-            color: #1f2937;
+            color: var(--text);
             line-height: 1.4;
         }
 
         .timeline-meta {
             margin: 0.15rem 0 0 0;
             font-size: 0.8rem;
-            color: #6b7280;
+            color: var(--muted);
         }
 
+        .timeline-comment {
+            margin: 0.35rem 0 0 0;
+            padding: 0.5rem;
+            background: var(--subtle-bg-2);
+            border-radius: var(--radius);
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Question and answer form */
         .question-text {
             font-size: 1.05rem;
             line-height: 1.5;
@@ -170,14 +603,16 @@
         }
 
         .answer-field-label {
+            display: block;
             font-weight: 600;
             font-size: 0.9rem;
             margin-bottom: 0.35rem;
         }
 
         .answer-field-help {
+            display: block;
             font-size: 0.8rem;
-            color: #6b7280;
+            color: var(--muted);
             margin-bottom: 0.5rem;
         }
 
@@ -191,7 +626,7 @@
         .item-table td {
             text-align: left;
             padding: 0.5rem;
-            border-bottom: 1px solid #e5e7eb;
+            border-bottom: 1px solid var(--divider);
             vertical-align: top;
         }
 
@@ -201,7 +636,7 @@
 
         .item-meta {
             font-size: 0.8rem;
-            color: #6b7280;
+            color: var(--muted);
         }
 
         .item-badge {
@@ -211,27 +646,42 @@
             letter-spacing: 0.04em;
             padding: 0.05rem 0.35rem;
             border-radius: 0.25rem;
-            background: #f3f4f6;
+            background: var(--subtle-bg-2);
             margin-right: 0.25rem;
         }
 
         .field-error {
-            color: #b91c1c;
+            color: var(--error-text);
             font-size: 0.8rem;
             margin-top: 0.25rem;
         }
 
         .row-hint {
             font-size: 0.8rem;
-            color: #6b7280;
+            color: var(--muted);
         }
 
         .autofilled {
             font-size: 0.85rem;
-            color: #6b7280;
+            color: var(--muted);
         }
 
         @media (max-width: 520px) {
+            body {
+                padding: 16px;
+            }
+
+            .card {
+                padding: 1.25rem;
+            }
+
+            .header {
+                margin-bottom: 1.5rem;
+            }
+
+            .header h1 {
+                font-size: 1.35rem;
+            }
 
             .item-table,
             .item-table tbody,
@@ -246,7 +696,7 @@
             }
 
             .item-table tr {
-                border-bottom: 1px solid #e5e7eb;
+                border-bottom: 1px solid var(--divider);
                 padding: 0.5rem 0;
             }
 
@@ -255,44 +705,40 @@
                 padding: 0.25rem 0;
             }
         }
-
-        .timeline-comment {
-            margin: 0.35rem 0 0 0;
-            padding: 0.5rem;
-            background: #f3f4f6;
-            border-radius: 0.25rem;
-            font-size: 0.85rem;
-            white-space: pre-wrap;
-            word-break: break-word;
-        }
     </style>
 </head>
 
 <body>
-    <div class="container">
-        <sl-card>
+    <main class="container">
+        <section class="card" aria-labelledby="page-title">
             <div class="header">
-                <h1>⚠️ Tool Approval Required</h1>
-                <p style="color: #6b7280; margin: 0;">Review and approve or decline this tool execution</p>
+                <h1 id="page-title"><span aria-hidden="true">⚠️</span> Tool approval required</h1>
+                <p>Review and approve or decline this tool execution</p>
             </div>
 
-            <div id="loading" style="text-align: center;">
-                <sl-spinner style="font-size: 3rem;"></sl-spinner>
+            <div id="loading" class="loading" role="status" aria-live="polite">
+                <span class="spinner spinner-lg" aria-hidden="true"></span>
                 <p>Loading approval request...</p>
             </div>
 
             <div id="error" style="display: none;">
-                <sl-alert variant="danger" open>
-                    <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-                    <strong>Error</strong><br>
-                    <span id="error-message"></span>
-                </sl-alert>
+                <div class="alert" data-variant="danger" role="alert">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                        <path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z" />
+                        <path d="M12 7.5v5.5M12 16.5v.01" />
+                    </svg>
+                    <div class="alert-body">
+                        <strong>Error</strong><br>
+                        <span id="error-message"></span>
+                    </div>
+                </div>
             </div>
 
             <div id="content" style="display: none;">
-                <div class="info-item" id="summary-section" style="display: none; margin-bottom: 1.5rem;">
+                <div class="info-item section-gap" id="summary-section" style="display: none;">
                     <div class="info-label">Request</div>
-                    <div class="info-value" id="summary" style="font-size: 1.1rem; line-height: 1.5;"></div>
+                    <div class="info-value summary-value" id="summary"></div>
                 </div>
 
                 <div class="info-grid">
@@ -303,33 +749,39 @@
                         </div>
                     </div>
                     <div class="info-item">
-                        <div class="info-label">Tool Name</div>
+                        <div class="info-label">Tool name</div>
                         <div class="info-value" id="tool-name"></div>
                     </div>
                     <div class="info-item">
-                        <div class="info-label">Requested At</div>
+                        <div class="info-label">Requested at</div>
                         <div class="info-value" id="requested-at"></div>
                     </div>
                 </div>
 
                 <div class="info-item" id="reasoning-section" style="display: none; margin-bottom: 1rem;">
-                    <div class="info-label">Agent Reasoning</div>
+                    <div class="info-label">Agent reasoning</div>
                     <div class="info-value" id="agent-reasoning"></div>
                 </div>
 
-                <div class="info-item" style="margin-bottom: 2rem;">
-                    <div class="info-label">Tool Arguments</div>
-                    <pre id="tool-args"></pre>
+                <div class="info-item section-gap-lg">
+                    <div class="info-label" id="tool-args-label">Tool arguments</div>
+                    <pre id="tool-args" aria-labelledby="tool-args-label" tabindex="0"></pre>
                 </div>
 
-                <div id="expired-banner" style="display: none; margin-bottom: 1.5rem;">
-                    <sl-alert variant="warning" open>
-                        <sl-icon slot="icon" name="clock-history"></sl-icon>
-                        <strong>Expired:</strong> no response within the window
-                    </sl-alert>
+                <div id="expired-banner" class="section-gap" style="display: none;">
+                    <div class="alert" data-variant="warning">
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M12 7v5l3 2" />
+                        </svg>
+                        <div class="alert-body">
+                            <strong>Expired:</strong> no response within the window
+                        </div>
+                    </div>
                 </div>
 
-                <div class="info-item" id="question-section" style="display: none; margin-bottom: 1.5rem;">
+                <div class="info-item section-gap" id="question-section" style="display: none;">
                     <div class="info-label">Agent question</div>
                     <p class="question-text" id="question-text"></p>
                 </div>
@@ -337,43 +789,79 @@
                 <div class="answer-form" id="answer-form" style="display: none;"></div>
 
                 <div id="form-error" style="display: none; margin-bottom: 1rem;">
-                    <sl-alert variant="danger" open>
-                        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                        <span id="form-error-message"></span>
-                    </sl-alert>
+                    <div class="alert" data-variant="danger" role="alert">
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                            <path d="M12 3.5L2.5 20h19z" />
+                            <path d="M12 10v4.5M12 17.5v.01" />
+                        </svg>
+                        <div class="alert-body">
+                            <span id="form-error-message"></span>
+                        </div>
+                    </div>
                 </div>
 
                 <div id="comment-section">
-                    <sl-textarea id="comment" label="Comment (optional)"
-                        help-text="Add a comment explaining your decision" rows="3"></sl-textarea>
+                    <label class="field-label" for="comment">Comment (optional)</label>
+                    <textarea id="comment" class="control" rows="3" aria-describedby="comment-help"></textarea>
+                    <div class="help-text" id="comment-help">Add a comment explaining your decision</div>
                 </div>
 
                 <div class="actions" id="actions">
-                    <sl-button variant="success" size="large" id="approve-btn">
-                        <sl-icon slot="prefix" name="check-circle"></sl-icon>
+                    <button type="button" class="btn btn-success" id="approve-btn">
+                        <span class="spinner" aria-hidden="true"></span>
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M8 12.5l2.5 2.5L16 9.5" />
+                        </svg>
                         Approve
-                    </sl-button>
-                    <sl-button variant="danger" size="large" id="decline-btn">
-                        <sl-icon slot="prefix" name="x-circle"></sl-icon>
+                    </button>
+                    <button type="button" class="btn btn-danger" id="decline-btn">
+                        <span class="spinner" aria-hidden="true"></span>
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M9 9l6 6M15 9l-6 6" />
+                        </svg>
                         Decline
-                    </sl-button>
+                    </button>
                 </div>
 
-                <div class="info-item" id="history-section" style="display: none; margin-bottom: 2rem;">
-                    <div class="info-label">Workflow History</div>
-                    <ul class="timeline" id="history"></ul>
+                <div class="info-item section-gap-lg" id="history-section" style="display: none;">
+                    <div class="info-label" id="history-label">Workflow history</div>
+                    <ul class="timeline" id="history" aria-labelledby="history-label"></ul>
                 </div>
 
                 <div id="result" style="display: none; margin-top: 2rem;">
-                    <sl-alert id="result-alert" variant="success" open>
-                        <sl-icon slot="icon" name="check-circle"></sl-icon>
-                        <strong id="result-title"></strong><br>
-                        <span id="result-message"></span>
-                    </sl-alert>
+                    <div class="alert" id="result-alert" data-variant="success" role="status" aria-live="polite">
+                        <svg class="icon alert-icon-success" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                            focusable="false">
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M8 12.5l2.5 2.5L16 9.5" />
+                        </svg>
+                        <svg class="icon alert-icon-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                            focusable="false">
+                            <path d="M12 3.5L2.5 20h19z" />
+                            <path d="M12 10v4.5M12 17.5v.01" />
+                        </svg>
+                        <svg class="icon alert-icon-danger" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+                            focusable="false">
+                            <path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z" />
+                            <path d="M12 7.5v5.5M12 16.5v.01" />
+                        </svg>
+                        <div class="alert-body">
+                            <strong id="result-title"></strong><br>
+                            <span id="result-message"></span>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </sl-card>
-    </div>
+        </section>
+    </main>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
@@ -381,6 +869,45 @@
         const token = urlParams.get('token');
 
         let approvalData = null;
+
+        // Inline icon set (24x24, stroked). The page loads nothing from the
+        // network beyond its own API calls, so icons live here.
+        const ICON_PATHS = {
+            'shield-check': '<path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/>',
+            'send': '<path d="M21 3L10 14"/><path d="M21 3l-7 18-4-7-7-4z"/>',
+            'eye': '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+            'hand-thumbs-up': '<path d="M7 10v11H4V10z"/><path d="M7 10l4-7c1.7 0 2.5 1 2.5 2.5V9h5.2a2 2 0 0 1 2 2.3l-1.3 8A2 2 0 0 1 17.4 21H7"/>',
+            'check-circle': '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/>',
+            'arrow-up-circle': '<circle cx="12" cy="12" r="9"/><path d="M12 16V8M8.5 11.5L12 8l3.5 3.5"/>',
+            'clock-history': '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+            'slash-circle': '<circle cx="12" cy="12" r="9"/><path d="M6 18L18 6"/>',
+            'dot': '<circle cx="12" cy="12" r="3" fill="currentColor"/>'
+        };
+
+        function iconNode(name, className) {
+            // Parsed through a <template> so the HTML parser puts the <svg>
+            // in the SVG namespace. Constant markup from ICON_PATHS only;
+            // never user data.
+            const tpl = document.createElement('template');
+            tpl.innerHTML =
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+                'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+                (ICON_PATHS[name] || ICON_PATHS.dot) + '</svg>';
+            const svg = tpl.content.firstElementChild;
+            svg.setAttribute('class', 'icon' + (className ? ' ' + className : ''));
+            return svg;
+        }
+
+        // Native stand-in for a Shoelace button's `loading` property: the
+        // button is disabled, marked busy and shows its spinner.
+        function setButtonLoading(button, loading) {
+            button.disabled = loading;
+            if (loading) {
+                button.setAttribute('aria-busy', 'true');
+            } else {
+                button.removeAttribute('aria-busy');
+            }
+        }
 
         function formatToolArgs(args) {
             // Convert args to JSON string with proper formatting
@@ -488,10 +1015,7 @@
             for (const event of events) {
                 const li = document.createElement('li');
 
-                const icon = document.createElement('sl-icon');
-                icon.className = 'timeline-icon';
-                icon.name = TIMELINE_ICONS[event.event_type] || 'dot';
-                li.appendChild(icon);
+                li.appendChild(iconNode(TIMELINE_ICONS[event.event_type] || 'dot', 'timeline-icon'));
 
                 const body = document.createElement('div');
 
@@ -525,6 +1049,12 @@
         let answerSchema = null;
         let answerItems = [];
         let answerValue = {};
+        let controlSeq = 0;
+
+        function nextControlId() {
+            controlSeq += 1;
+            return 'answer-control-' + controlSeq;
+        }
 
         function hasAnswerForm() {
             return Boolean(answerSchema && Object.keys(answerSchema.properties || {}).length);
@@ -547,14 +1077,38 @@
             return node;
         }
 
-        function fieldShell(name, spec) {
+        // A field's frame. With a single control, its title is that
+        // control's <label for>; otherwise the title names the group, so
+        // every control inside is announced with it.
+        function fieldShell(name, spec, control) {
             const wrap = el('div', 'answer-field');
             wrap.dataset.field = name;
-            wrap.appendChild(el('div', 'answer-field-label', labelFor(name, spec)));
+            const describedBy = control || wrap;
+            if (control) {
+                const title = el('label', 'answer-field-label', labelFor(name, spec));
+                title.htmlFor = control.id;
+                wrap.appendChild(title);
+            } else {
+                wrap.setAttribute('role', 'group');
+                const title = el('div', 'answer-field-label', labelFor(name, spec));
+                title.id = nextControlId() + '-label';
+                wrap.setAttribute('aria-labelledby', title.id);
+                wrap.appendChild(title);
+            }
             if (spec.description) {
-                wrap.appendChild(el('div', 'answer-field-help', spec.description));
+                const help = el('div', 'answer-field-help', spec.description);
+                help.id = nextControlId() + '-help';
+                describedBy.setAttribute('aria-describedby', help.id);
+                wrap.appendChild(help);
             }
             return wrap;
+        }
+
+        // A visible <label for> for one control inside a group or a row.
+        function controlLabel(text, control) {
+            const label = el('label', 'answer-field-help', text);
+            label.htmlFor = control.id;
+            return label;
         }
 
         function errorSlot(path) {
@@ -584,37 +1138,55 @@
 
         function scalarControl(spec, value, onChange) {
             if (spec.type === 'boolean') {
-                const sw = document.createElement('sl-switch');
+                const sw = document.createElement('input');
+                sw.type = 'checkbox';
+                sw.className = 'switch';
+                sw.setAttribute('role', 'switch');
+                sw.id = nextControlId();
                 sw.checked = value === true;
-                sw.addEventListener('sl-change', (e) => onChange(e.target.checked));
+                sw.addEventListener('change', (e) => onChange(e.target.checked));
                 return sw;
             }
             if (Array.isArray(spec.enum) && spec.enum.length) {
-                const select = document.createElement('sl-select');
-                select.value = value === undefined || value === null ? '' : String(value);
+                const select = document.createElement('select');
+                select.className = 'control';
+                select.id = nextControlId();
+                // An empty first choice so nothing is picked until the
+                // person picks it (a native select would default to the
+                // first option).
+                const blank = document.createElement('option');
+                blank.value = '';
+                blank.textContent = '';
+                select.appendChild(blank);
                 for (const choice of spec.enum) {
-                    const option = document.createElement('sl-option');
+                    const option = document.createElement('option');
                     option.value = String(choice);
                     option.textContent = String(choice);
                     select.appendChild(option);
                 }
-                select.addEventListener('sl-change', (e) => onChange(e.target.value));
+                select.value = value === undefined || value === null ? '' : String(value);
+                select.addEventListener('change', (e) => onChange(e.target.value));
                 return select;
             }
             if (spec.format === 'textarea') {
-                const area = document.createElement('sl-textarea');
+                const area = document.createElement('textarea');
+                area.className = 'control';
+                area.id = nextControlId();
                 area.rows = 2;
                 area.value = value === undefined || value === null ? '' : String(value);
-                area.addEventListener('sl-input', (e) => onChange(e.target.value));
+                area.addEventListener('input', (e) => onChange(e.target.value));
                 return area;
             }
-            const input = document.createElement('sl-input');
+            const input = document.createElement('input');
+            input.className = 'control';
+            input.id = nextControlId();
+            input.type = 'text';
             if (spec.type === 'number' || spec.type === 'integer') input.type = 'number';
             else if (spec.format === 'date') input.type = 'date';
             else if (spec.format === 'date-time') input.type = 'datetime-local';
             else if (spec.format === 'email') input.type = 'email';
             input.value = value === undefined || value === null ? '' : String(value);
-            input.addEventListener('sl-input', (e) => {
+            input.addEventListener('input', (e) => {
                 const raw = e.target.value;
                 if (spec.type === 'number' || spec.type === 'integer') {
                     onChange(raw === '' ? undefined : Number(raw));
@@ -628,6 +1200,19 @@
         function rowsOf(name) {
             const rows = answerValue[name];
             return Array.isArray(rows) ? rows : [];
+        }
+
+        // The table is redrawn when a row is picked; put keyboard focus back
+        // on the checkbox the person just used.
+        function refocusRowCheckbox(name, id) {
+            for (const tr of document.querySelectorAll('#answer-form tr[data-item-id]')) {
+                const field = tr.closest('[data-field]');
+                if (tr.dataset.itemId === id && field && field.dataset.field === name) {
+                    const box = tr.querySelector('input[type="checkbox"]');
+                    if (box) box.focus();
+                    return;
+                }
+            }
         }
 
         // An array of {id, ...} over the question's items: one checkbox per
@@ -649,6 +1234,7 @@
             headRow.appendChild(el('th', null, 'Pick'));
             headRow.appendChild(el('th', null, 'Item'));
             if (extraKeys.length) headRow.appendChild(el('th', null, extraKeys.length === 1 ? labelFor(extraKeys[0], properties[extraKeys[0]]) : 'Details'));
+            for (const th of headRow.children) th.scope = 'col';
             head.appendChild(headRow);
             table.appendChild(head);
 
@@ -660,9 +1246,11 @@
                 tr.dataset.itemId = id;
 
                 const pick = el('td');
-                const box = document.createElement('sl-checkbox');
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.setAttribute('aria-label', 'Pick ' + (item.title || id));
                 box.checked = rowsOf(name).some((row) => String(row.id) === id);
-                box.addEventListener('sl-change', (e) => {
+                box.addEventListener('change', (e) => {
                     const current = rowsOf(name);
                     if (e.target.checked) {
                         if (!current.some((row) => String(row.id) === id)) {
@@ -672,6 +1260,7 @@
                         answerValue[name] = current.filter((row) => String(row.id) !== id);
                     }
                     renderAnswerForm();
+                    refocusRowCheckbox(name, id);
                 });
                 pick.appendChild(box);
                 tr.appendChild(pick);
@@ -686,12 +1275,13 @@
                         for (const key of extraKeys) {
                             const path = name + '[' + index + '].' + key;
                             const holder = el('div');
-                            holder.appendChild(el('div', 'answer-field-help', labelFor(key, properties[key])));
-                            holder.appendChild(scalarControl(properties[key], rowsOf(name)[index][key], (next) => {
+                            const control = scalarControl(properties[key], rowsOf(name)[index][key], (next) => {
                                 answerValue[name] = rowsOf(name).map((row) =>
                                     String(row.id) === id ? Object.assign({}, row, { [key]: next }) : row
                                 );
-                            }));
+                            });
+                            holder.appendChild(controlLabel(labelFor(key, properties[key]), control));
+                            holder.appendChild(control);
                             holder.appendChild(errorSlot(path));
                             cell.appendChild(holder);
                         }
@@ -713,17 +1303,19 @@
             for (const rawId of choices) {
                 const id = String(rawId);
                 const item = itemById(id);
-                const box = document.createElement('sl-checkbox');
-                box.style.display = 'block';
-                box.textContent = item && item.title ? item.title + ' (' + id + ')' : id;
+                const row = el('label', 'check');
+                const box = document.createElement('input');
+                box.type = 'checkbox';
                 box.checked = (answerValue[name] || []).map(String).includes(id);
-                box.addEventListener('sl-change', (e) => {
+                box.addEventListener('change', (e) => {
                     const current = (answerValue[name] || []).map(String);
                     answerValue[name] = e.target.checked
                         ? current.concat([id])
                         : current.filter((value) => value !== id);
                 });
-                wrap.appendChild(box);
+                row.appendChild(box);
+                row.appendChild(el('span', null, item && item.title ? item.title + ' (' + id + ')' : id));
+                wrap.appendChild(row);
             }
             wrap.appendChild(errorSlot(name));
             return wrap;
@@ -736,13 +1328,15 @@
                 const child = properties[key];
                 const path = name + '.' + key;
                 const holder = el('div', 'answer-field');
-                holder.appendChild(el('div', 'answer-field-help', labelFor(key, child)));
                 if (child['x-autofill']) {
+                    holder.appendChild(el('div', 'answer-field-help', labelFor(key, child)));
                     holder.appendChild(el('div', 'autofilled', 'Filled in by Preloop'));
                 } else {
-                    holder.appendChild(scalarControl(child, (answerValue[name] || {})[key], (next) => {
+                    const control = scalarControl(child, (answerValue[name] || {})[key], (next) => {
                         answerValue[name] = Object.assign({}, answerValue[name] || {}, { [key]: next });
-                    }));
+                    });
+                    holder.appendChild(controlLabel(labelFor(key, child), control));
+                    holder.appendChild(control);
                     holder.appendChild(errorSlot(path));
                 }
                 wrap.appendChild(holder);
@@ -772,10 +1366,11 @@
                 } else if (spec.type === 'object') {
                     host.appendChild(renderGroup(name, spec));
                 } else {
-                    const wrap = fieldShell(name, spec);
-                    wrap.appendChild(scalarControl(spec, answerValue[name], (next) => {
+                    const control = scalarControl(spec, answerValue[name], (next) => {
                         answerValue[name] = next;
-                    }));
+                    });
+                    const wrap = fieldShell(name, spec, control);
+                    wrap.appendChild(control);
                     wrap.appendChild(errorSlot(name));
                     host.appendChild(wrap);
                 }
@@ -877,7 +1472,7 @@
                 body.answer = answerPayload();
             }
 
-            btn.loading = true;
+            setButtonLoading(btn, true);
 
             try {
                 const response = await fetch(
@@ -920,13 +1515,13 @@
             } catch (error) {
                 showError(error.message);
             } finally {
-                btn.loading = false;
+                setButtonLoading(btn, false);
             }
         }
 
         function showResult(variant, title, message) {
             const alertEl = document.getElementById('result-alert');
-            alertEl.variant = variant;
+            alertEl.dataset.variant = variant;
             document.getElementById('result-title').textContent = title;
             document.getElementById('result-message').textContent = message;
             document.getElementById('result').style.display = 'block';
