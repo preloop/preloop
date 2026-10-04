@@ -175,21 +175,30 @@ switch and budgets require configuration. Edition: OSS. Code:
 
 ## OWASP Top 10 for LLM Applications, 2026
 
-<!-- MAINTAINERS: confirm the LLM##:2026 identifiers against the OWASP 2026 PDF before
-publishing. Eight of ten entries were renumbered between 2025 and 2026; a wrong number
-here is a confidently wrong mapping. Names below are used until IDs are confirmed. -->
+<!-- MAINTAINERS: the LLM##:2026 identifiers below were confirmed on 2026-10-04 against
+"OWASP Top 10 for LLM Applications 2026, v1.0" (the official PDF). The 2025 list used
+different numbers for eight of ten entries, so never cite a bare `LLM##`: always write
+`LLM##:2026`. -->
 
-### Prompt Injection
+### LLM01:2026 Prompt Injection
 
 Same position as ASI01:2026. Preloop limits what an injected instruction can do
 through tool policy, approvals and redaction; it does not detect injection
 semantically. Content-safety firewalls such as Lakera or Llama Guard can run in front
 of the gateway.
 
-### Sensitive Information Disclosure
+<a id="sensitive-information-disclosure" name="sensitive-information-disclosure"></a>
+
+### LLM02:2026 Sensitive Information Disclosure
 
 **Polarity: Preloop is part of the disclosure surface described by this entry, and
 this section describes what it does about it.**
+
+The 2026 entry names observability tooling as a disclosure surface: "Observability platforms
+(Langfuse, LangSmith, Datadog LLM Observability) log full prompts, completions, chunks, and
+traces by default." (OWASP Top 10 for LLM Applications 2026, v1.0, LLM02:2026, page 20.)
+Preloop's gateway event storage is that kind of store, which is why this entry is graded
+against Preloop's own behaviour.
 
 **Mechanism.** The model gateway records a normalized event per model call. When
 `MODEL_GATEWAY_CAPTURE_CONTENT` is `true` (the default), the event includes a
@@ -208,25 +217,22 @@ conversations are stored in full after redaction. Edition: OSS. Code:
 `backend/preloop/config.py` (`model_gateway_capture_content`). Docs:
 [Security & Privacy](security-privacy.md), [Redaction](redaction.md), [AI Model Gateway](../guide/concepts/model-gateway.md).
 
-### Supply Chain
-
-See ASI04:2026. Product-SBOM presets; catalogue allowlist for reachable MCP servers;
-signed provenance on Preloop's own releases.
-
-### Improper Output Handling
-
-**Mechanism.** Model I/O rules evaluate `model.response` after the provider returns
-and before bytes reach the client, with the same `allow`/`deny`/`require_approval`
-actions as tools. Default posture: no rules → allow. Edition: OSS. Code:
-`backend/preloop/services/model_content_policy.py`.
-
-### Excessive Agency
+### LLM03:2026 Excessive Agency
 
 **Mechanism.** The MCP firewall (ASI02:2026), subject-scoped tool and model lists
 (ASI03:2026) and human approvals (ASI09:2026) together bound what an agent may do.
 Default posture: no rules → allow.
 
-### Unbounded Consumption
+### LLM04:2026 Supply Chain
+
+See ASI04:2026. Product-SBOM presets; catalogue allowlist for reachable MCP servers;
+signed provenance on Preloop's own releases.
+
+### LLM05:2026 Data and Model Poisoning
+
+**Not covered.** Preloop has no control aimed at this entry.
+
+### LLM06:2026 Unbounded Consumption
 
 **Mechanism.** Gateway budgets at account, flow and subject level have soft and hard
 limits; hard limits deny the call before it reaches the provider. Allowed-model lists
@@ -236,10 +242,25 @@ configured. Edition: OSS; per-user and per-team budgets Cloud/Enterprise. Code:
 `backend/preloop/services/model_gateway_budget_enforcer.py`. Docs:
 [Cost Analytics & Budgets](../guide/concepts/cost-analytics.md).
 
-### Not covered
+### LLM07:2026 Misinformation
 
-System Prompt Leakage, Misinformation, Data and Model Poisoning, Vector and Embedding
-Weaknesses. Preloop has no control aimed at these entries.
+**Not covered.** Preloop has no control aimed at this entry.
+
+### LLM08:2026 Hidden Context Exposure
+
+**Not covered.** The 2025 entry "System Prompt Leakage" is folded into this entry in
+2026, and Preloop has no control aimed at it.
+
+### LLM09:2026 Vector and Embedding Weaknesses
+
+**Not covered.** Preloop has no control aimed at this entry.
+
+### LLM10:2026 Improper Output Handling
+
+**Mechanism.** Model I/O rules evaluate `model.response` after the provider returns
+and before bytes reach the client, with the same `allow`/`deny`/`require_approval`
+actions as tools. Default posture: no rules → allow. Edition: OSS. Code:
+`backend/preloop/services/model_content_policy.py`.
 
 ## Changes to this page
 
