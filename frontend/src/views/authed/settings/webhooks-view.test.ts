@@ -181,6 +181,90 @@ describe('WebhooksView', () => {
     expect(secretDialog?.textContent).to.contain('shown once');
   });
 
+  it('keeps the secret dialog open on Esc or an overlay click', async () => {
+    stubFetch();
+    const element = await mount();
+    (element as unknown as { createUrl: string }).createUrl =
+      'https://new.example.com/hook';
+    await (
+      element as unknown as { handleCreate: () => Promise<void> }
+    ).handleCreate();
+    await element.updateComplete;
+
+    const dialog = element.shadowRoot!.querySelector(
+      'sl-dialog.secret-dialog'
+    ) as HTMLElement;
+    for (const source of ['keyboard', 'overlay']) {
+      const request = new CustomEvent('sl-request-close', {
+        cancelable: true,
+        detail: { source },
+      });
+      dialog.dispatchEvent(request);
+      expect(request.defaultPrevented, `${source} is refused`).to.equal(true);
+    }
+    const closeButton = new CustomEvent('sl-request-close', {
+      cancelable: true,
+      detail: { source: 'close-button' },
+    });
+    dialog.dispatchEvent(closeButton);
+    expect(closeButton.defaultPrevented).to.equal(false);
+
+    // A nested part hiding (the copy button's tooltip) does not close it.
+    const inner = dialog.querySelector('sl-copy-button')!;
+    inner.dispatchEvent(new CustomEvent('sl-after-hide', { bubbles: true }));
+    await element.updateComplete;
+    expect(
+      (element as unknown as { createdSecret: unknown }).createdSecret
+    ).to.not.equal(null);
+  });
+
+  it('shows a create failure as a danger alert in the dialog', async () => {
+    stubFetch();
+    const element = await mount();
+    (element as unknown as { createError: string }).createError =
+      'URL must use https';
+    (element as unknown as { createOpen: boolean }).createOpen = true;
+    await element.updateComplete;
+
+    const alert = element.shadowRoot!.querySelector('sl-alert.create-error');
+    expect(alert?.getAttribute('variant')).to.equal('danger');
+    expect(alert?.getAttribute('role')).to.equal('alert');
+    expect(alert?.textContent).to.contain('URL must use https');
+  });
+
+  it('shows a load failure as a danger alert with Try again', async () => {
+    let fail = true;
+    sinon.stub(window, 'fetch').callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const json = (data: unknown, status = 200) =>
+        new Response(JSON.stringify(data), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      if (fail) return json({ detail: 'Service unavailable' }, 503);
+      if (url.includes('/event-webhooks/catalogue')) return json(CATALOGUE);
+      if (url.includes('/event-webhooks/endpoints')) {
+        return json([ACCOUNT_ENDPOINT]);
+      }
+      return json([]);
+    });
+    const element = await mount();
+
+    const alert = element.shadowRoot!.querySelector('sl-alert.load-error');
+    expect(alert?.getAttribute('variant')).to.equal('danger');
+    expect(alert?.textContent).to.contain('Could not load webhooks');
+
+    fail = false;
+    (alert!.querySelector('sl-button') as HTMLElement).click();
+    await waitUntil(
+      () =>
+        element.shadowRoot?.textContent?.includes(
+          'https://siem.example.com/hook'
+        ),
+      'Endpoints did not load after Try again'
+    );
+  });
+
   it('renders the event catalogue from the server, not a hard-coded list', async () => {
     stubFetch();
     const element = await mount();

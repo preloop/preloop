@@ -5,6 +5,8 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/alert/alert.js';
+import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
 import '../../components/view-header.ts';
 import {
@@ -18,6 +20,7 @@ import {
   type RunnerRecord,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import { confirmDialog } from '../../components/confirm-dialog';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 import { AUTO_RUNNER_POOL } from '../../utils/runner-pool';
 import '../../components/preloop-runner-pool-select';
@@ -186,6 +189,16 @@ export class RunnersView extends LitElement {
       .action-notice sl-button {
         margin-left: var(--sl-spacing-x-small);
       }
+      .table-scroll {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .table-scroll table {
+        min-width: 720px;
+      }
+      .load-error-actions {
+        margin-top: var(--sl-spacing-small);
+      }
     `,
   ];
 
@@ -242,10 +255,26 @@ export class RunnersView extends LitElement {
   }
 
   private async handleDelete(row: RunnerRecord, force = false) {
-    const question = force
-      ? `Halt the executions ${row.name} is running and delete it?`
-      : `Delete runner ${row.name}? Its token stops working and it disconnects.`;
-    if (!window.confirm(question)) {
+    const confirmed = await confirmDialog(
+      force
+        ? {
+            title: 'Halt executions and delete runner',
+            message: `Halt the executions ${row.name} is running and delete it?`,
+            detail:
+              'The running executions stop where they are. The runner token stops working. This cannot be undone.',
+            confirmLabel: 'Halt and delete',
+            variant: 'danger',
+          }
+        : {
+            title: 'Delete runner',
+            message: `Delete runner ${row.name}?`,
+            detail:
+              'Its token stops working and it disconnects. This cannot be undone.',
+            confirmLabel: 'Delete runner',
+            variant: 'danger',
+          }
+    );
+    if (!confirmed) {
       return;
     }
     this.actionPendingFor = row.id;
@@ -265,11 +294,15 @@ export class RunnersView extends LitElement {
   }
 
   private async handleRotate(row: RunnerRecord) {
-    if (
-      !window.confirm(
-        `Rotate the token for ${row.name}? The current token stops working and the runner disconnects.`
-      )
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Rotate runner token',
+      message: `Rotate the token for ${row.name}?`,
+      detail:
+        'The current token stops working and the runner disconnects. Run "preloop runner restart" on that machine to reconnect.',
+      confirmLabel: 'Rotate token',
+      variant: 'primary',
+    });
+    if (!confirmed) {
       return;
     }
     this.actionPendingFor = row.id;
@@ -561,7 +594,21 @@ export class RunnersView extends LitElement {
         this.loading
           ? html`<sl-spinner></sl-spinner>`
           : this.error
-            ? html`<p class="muted">${this.error}</p>`
+            ? html`<sl-alert
+                variant="danger"
+                open
+                role="alert"
+                class="load-error"
+              >
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                <strong>Could not load runners</strong><br />
+                ${this.error}
+                <div class="load-error-actions">
+                  <sl-button size="small" @click=${() => void this.load()}
+                    >Try again</sl-button
+                  >
+                </div>
+              </sl-alert>`
             : this.runners.length === 0
               ? html`
                   <p class="empty-state">
@@ -582,107 +629,111 @@ export class RunnersView extends LitElement {
                   </p>
                 `
               : html`
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Labels</th>
-                        <th>Registered by</th>
-                        <th>Host</th>
-                        <th>Status</th>
-                        <th>Last heartbeat</th>
-                        <th>Running / slots</th>
-                        <th>Executions</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${this.runners.map(
-                        (row) => html`
-                          <tr>
-                            <td>${row.name}</td>
-                            <td>
-                              <div class="labels">
-                                ${(row.labels || []).map(
-                                  (label) =>
-                                    html`<sl-badge class="chip" pill
-                                      >${label}</sl-badge
-                                    >`
-                                )}
-                              </div>
-                            </td>
-                            <td class="muted">
-                              ${row.registered_by_email || '-'}
-                            </td>
-                            <td>
-                              ${row.hostname || '-'}
-                              <div class="muted">
-                                ${[row.os, row.arch].filter(Boolean).join('/')}
-                              </div>
-                            </td>
-                            <td>
-                              <sl-badge
-                                class="chip"
-                                pill
-                                variant=${this.statusVariant(row.status)}
-                              >
-                                ${this.statusLabel(row.status)}
-                              </sl-badge>
-                              ${
-                                /*
-                                 * An ephemeral runner is only worth pointing
-                                 * out while it is here: the row vanishes with
-                                 * the CI job, so a reader seeing this badge
-                                 * knows not to expect it back.
-                                 */
-                                row.ephemeral && this.isPresent(row.status)
-                                  ? html`<sl-badge
-                                      class="chip"
-                                      pill
-                                      variant="neutral"
-                                      title="One-shot CI runner. It unregisters when its job ends."
-                                      >ephemeral</sl-badge
-                                    >`
-                                  : nothing
-                              }
-                            </td>
-                            <td class="muted">
-                              ${
-                                row.last_heartbeat
-                                  ? html`<span
-                                      title=${formatLocalDateTime(
-                                        row.last_heartbeat
-                                      )}
-                                      >${formatRelativeTime(
-                                        row.last_heartbeat
-                                      )}</span
-                                    >`
-                                  : '-'
-                              }
-                            </td>
-                            <td>${this.renderSlots(row)}</td>
-                            <td>
-                              ${
-                                this.runningIdsOf(row).length === 0
-                                  ? html`<span class="muted">Idle</span>`
-                                  : html`<div class="executions">
-                                      ${this.runningIdsOf(row).map(
-                                        (executionId) =>
-                                          html`<a
-                                            href="/console/flows/executions/${executionId}"
-                                            >${executionId.slice(0, 8)}…</a
-                                          >`
-                                      )}
-                                    </div>`
-                              }
-                            </td>
-                            <td>${this.renderActions(row)}</td>
-                          </tr>
-                          ${this.renderActionNotice(row)}
-                        `
-                      )}
-                    </tbody>
-                  </table>
+                  <!-- Nine columns do not fit a phone: the table scrolls
+                       sideways inside this box instead of the whole page. -->
+                  <div class="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Labels</th>
+                          <th>Registered by</th>
+                          <th>Host</th>
+                          <th>Status</th>
+                          <th>Last heartbeat</th>
+                          <th>Running / slots</th>
+                          <th>Executions</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${this.runners.map(
+                          (row) => html`
+                            <tr>
+                              <td>${row.name}</td>
+                              <td>
+                                <div class="labels">
+                                  ${(row.labels || []).map(
+                                    (label) =>
+                                      html`<sl-badge class="chip" pill
+                                        >${label}</sl-badge
+                                      >`
+                                  )}
+                                </div>
+                              </td>
+                              <td class="muted">
+                                ${row.registered_by_email || '-'}
+                              </td>
+                              <td>
+                                ${row.hostname || '-'}
+                                <div class="muted">
+                                  ${[row.os, row.arch].filter(Boolean).join('/')}
+                                </div>
+                              </td>
+                              <td>
+                                <sl-badge
+                                  class="chip"
+                                  pill
+                                  variant=${this.statusVariant(row.status)}
+                                >
+                                  ${this.statusLabel(row.status)}
+                                </sl-badge>
+                                ${
+                                  /*
+                                   * An ephemeral runner is only worth pointing
+                                   * out while it is here: the row vanishes with
+                                   * the CI job, so a reader seeing this badge
+                                   * knows not to expect it back.
+                                   */
+                                  row.ephemeral && this.isPresent(row.status)
+                                    ? html`<sl-badge
+                                        class="chip"
+                                        pill
+                                        variant="neutral"
+                                        title="One-shot CI runner. It unregisters when its job ends."
+                                        >ephemeral</sl-badge
+                                      >`
+                                    : nothing
+                                }
+                              </td>
+                              <td class="muted">
+                                ${
+                                  row.last_heartbeat
+                                    ? html`<span
+                                        title=${formatLocalDateTime(
+                                          row.last_heartbeat
+                                        )}
+                                        >${formatRelativeTime(
+                                          row.last_heartbeat
+                                        )}</span
+                                      >`
+                                    : '-'
+                                }
+                              </td>
+                              <td>${this.renderSlots(row)}</td>
+                              <td>
+                                ${
+                                  this.runningIdsOf(row).length === 0
+                                    ? html`<span class="muted">Idle</span>`
+                                    : html`<div class="executions">
+                                        ${this.runningIdsOf(row).map(
+                                          (executionId) =>
+                                            html`<a
+                                              href="/console/flows/executions/${executionId}"
+                                              >${executionId.slice(0, 8)}…</a
+                                            >`
+                                        )}
+                                      </div>`
+                                }
+                              </td>
+                              <td>${this.renderActions(row)}</td>
+                            </tr>
+                            ${this.renderActionNotice(row)}
+                          `
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 `
       }
       <capability-extension

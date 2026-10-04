@@ -6,6 +6,7 @@ import '../../components/view-header.ts';
 import './runners-view';
 import type { RunnersView } from './runners-view';
 import { invalidateApiCaches } from '../../api';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
 describe('RunnersView', () => {
@@ -111,7 +112,27 @@ describe('RunnersView', () => {
     sinon.restore();
     localStorage.clear();
     invalidateApiCaches();
+    resetConfirmDialogForTests();
   });
+
+  /**
+   * Answers the console confirm dialog: clicks the button labelled `label`
+   * (the confirm label, or "Cancel"). Returns the dialog's message text.
+   */
+  async function answerConfirm(label: string): Promise<string> {
+    let button: HTMLElement | undefined;
+    let dialog: HTMLElement | null = null;
+    await waitUntil(() => {
+      dialog = document.body.querySelector('confirm-dialog');
+      button = [...(dialog?.shadowRoot?.querySelectorAll('sl-button') || [])]
+        .map((candidate) => candidate as HTMLElement)
+        .find((candidate) => candidate.textContent?.trim() === label);
+      return Boolean(button);
+    }, `confirm dialog with "${label}" did not open`);
+    const text = (dialog as HTMLElement | null)?.shadowRoot?.textContent || '';
+    button!.click();
+    return text;
+  }
 
   it('renders the runners list', async () => {
     fetchStub = createFetchStub([
@@ -598,12 +619,15 @@ describe('RunnersView', () => {
 
   it('deletes a runner after confirmation and drops its row', async () => {
     fetchStub = createFetchStub([actionRunner]);
-    sinon.stub(window, 'confirm').returns(true);
+    const nativeConfirm = sinon.stub(window, 'confirm').returns(true);
     const element = await loadedView();
 
     (
       element.shadowRoot?.querySelector('.delete-runner') as HTMLElement
     ).click();
+    const asked = await answerConfirm('Delete runner');
+    expect(asked).to.contain('Delete runner office-mac?');
+    expect(nativeConfirm.called, 'no native confirm').to.equal(false);
     await waitUntil(
       () => !element.shadowRoot?.textContent?.includes('office-mac'),
       'Deleted runner row did not disappear'
@@ -618,12 +642,13 @@ describe('RunnersView', () => {
 
   it('does nothing when the delete is not confirmed', async () => {
     fetchStub = createFetchStub([actionRunner]);
-    sinon.stub(window, 'confirm').returns(false);
     const element = await loadedView();
 
     (
       element.shadowRoot?.querySelector('.delete-runner') as HTMLElement
     ).click();
+    await answerConfirm('Cancel');
+    await new Promise((resolve) => setTimeout(resolve, 20));
     await element.updateComplete;
     expect(
       requestsMatching((_url, method) => method === 'DELETE')
@@ -633,12 +658,12 @@ describe('RunnersView', () => {
 
   it('surfaces the active lease refusal and offers a force delete', async () => {
     fetchStub = createFetchStub([actionRunner], {}, { deleteConflict: true });
-    sinon.stub(window, 'confirm').returns(true);
     const element = await loadedView();
 
     (
       element.shadowRoot?.querySelector('.delete-runner') as HTMLElement
     ).click();
+    await answerConfirm('Delete runner');
     await waitUntil(
       () => Boolean(element.shadowRoot?.querySelector('.force-delete')),
       'Force delete was not offered'
@@ -649,6 +674,8 @@ describe('RunnersView', () => {
     expect(element.shadowRoot?.textContent).to.contain('office-mac');
 
     (element.shadowRoot?.querySelector('.force-delete') as HTMLElement).click();
+    const forceQuestion = await answerConfirm('Halt and delete');
+    expect(forceQuestion).to.contain('Halt the executions office-mac');
     await waitUntil(
       () => !element.shadowRoot?.textContent?.includes('office-mac'),
       'Force deleted runner row did not disappear'
@@ -661,10 +688,10 @@ describe('RunnersView', () => {
 
   it('rotates the token without showing it', async () => {
     fetchStub = createFetchStub([actionRunner]);
-    sinon.stub(window, 'confirm').returns(true);
     const element = await loadedView();
 
     (element.shadowRoot?.querySelector('.rotate-token') as HTMLElement).click();
+    await answerConfirm('Rotate token');
     await waitUntil(
       () => Boolean(element.shadowRoot?.querySelector('.action-notice-text')),
       'Rotation notice did not appear'
@@ -693,5 +720,56 @@ describe('RunnersView', () => {
     });
     await element.updateComplete;
     expect(element.shadowRoot?.textContent).not.to.contain('office-mac');
+  });
+
+  it('wraps the runners table in a horizontal scroll box', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    const element = await loadedView();
+    const table = element.shadowRoot?.querySelector('table');
+    expect(table?.parentElement?.classList.contains('table-scroll')).to.equal(
+      true
+    );
+    expect(getComputedStyle(table!.parentElement!).overflowX).to.equal('auto');
+  });
+
+  it('shows a load failure as a danger alert with Try again', async () => {
+    let fail = true;
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const json = (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        if (url.includes('/api/v1/runners')) {
+          return fail
+            ? json({ detail: 'Service unavailable' }, 503)
+            : json([actionRunner]);
+        }
+        return json({ id: 'acct-1', default_runner_pool: null });
+      });
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading,
+      'Runners view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const alert = element.shadowRoot?.querySelector('sl-alert.load-error');
+    expect(alert?.getAttribute('variant')).to.equal('danger');
+    expect(alert?.textContent).to.contain('Could not load runners');
+
+    fail = false;
+    const retry = alert!.querySelector('sl-button') as HTMLElement;
+    expect(retry.textContent?.trim()).to.equal('Try again');
+    retry.click();
+    await waitUntil(
+      () => element.shadowRoot?.textContent?.includes('office-mac'),
+      'Runners did not load after Try again'
+    );
   });
 });

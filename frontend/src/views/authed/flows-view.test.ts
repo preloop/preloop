@@ -1676,6 +1676,80 @@ describe('FlowsView', () => {
     });
   });
 
+  it('asks before removing a saved preset and reports a failure', async () => {
+    resetConfirmDialogForTests();
+    const deletes: string[] = [];
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method || 'GET').toUpperCase();
+        const json = (data: unknown, status = 200) =>
+          new Response(JSON.stringify(data), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        if (method === 'DELETE') {
+          deletes.push(url);
+          return json({ detail: 'Preset is in use' }, 500);
+        }
+        if (url.includes('/api/v1/flows/presets')) {
+          return json([
+            { id: 'preset-1', name: 'Team triage', account_id: 'acct-1' },
+          ]);
+        }
+        return json([]);
+      });
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(() => (element as any).presets?.length === 1);
+    await element.updateComplete;
+
+    const remove = () =>
+      [...element.shadowRoot!.querySelectorAll('.flow-card sl-button')]
+        .map((button) => button as HTMLElement)
+        .find((button) => button.textContent?.trim() === 'Remove')!;
+    const answer = async (label: string) => {
+      let target: HTMLElement | undefined;
+      let dialog: Element | null = null;
+      await waitUntil(() => {
+        dialog = document.body.querySelector('confirm-dialog');
+        target = [
+          ...((dialog as Element | null)?.shadowRoot?.querySelectorAll(
+            'sl-button'
+          ) || []),
+        ]
+          .map((button) => button as HTMLElement)
+          .find((button) => button.textContent?.trim() === label);
+        return Boolean(target);
+      });
+      const text = (dialog as Element | null)?.shadowRoot?.textContent || '';
+      target!.click();
+      return text;
+    };
+
+    try {
+      remove().click();
+      const asked = await answer('Cancel');
+      expect(asked).to.contain('Remove "Team triage"?');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(deletes, 'nothing is deleted on Cancel').to.have.length(0);
+
+      remove().click();
+      await answer('Remove preset');
+      await waitUntil(() =>
+        [...document.body.querySelectorAll('sl-alert')].some((alert) =>
+          alert.textContent?.includes('Could not remove the preset')
+        )
+      );
+      expect(deletes).to.have.length(1);
+    } finally {
+      resetConfirmDialogForTests();
+      document.body.querySelectorAll('sl-alert').forEach((a) => a.remove());
+    }
+  });
+
   it('labels the preset card action Use preset', async () => {
     fetchStub = createFetchStub(
       [],

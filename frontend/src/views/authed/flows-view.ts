@@ -2305,7 +2305,7 @@ export class FlowsView extends LitElement {
                       size="small"
                       variant="danger"
                       outline
-                      @click=${() => this.removePreset(preset.id)}
+                      @click=${() => this.removePreset(preset.id, preset.name)}
                     >
                       Remove
                     </sl-button>
@@ -2449,8 +2449,31 @@ export class FlowsView extends LitElement {
     Router.go(`/console/flows/new?preset_id=${presetId}`);
   }
 
-  async removePreset(presetId: string) {
-    await deleteFlow(presetId);
+  /**
+   * Remove an account preset, after asking: one misclick used to delete a
+   * preset the team saved, and a failure was an unhandled rejection.
+   */
+  async removePreset(presetId: string, presetName = 'this preset') {
+    const confirmed = await confirmDialog({
+      title: 'Remove preset',
+      message: `Remove "${presetName}"?`,
+      detail: 'Flows created from it keep working. This cannot be undone.',
+      confirmLabel: 'Remove preset',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await deleteFlow(presetId);
+    } catch (error) {
+      showToast(
+        error instanceof Error && error.message
+          ? `Could not remove the preset: ${error.message}`
+          : 'Could not remove the preset. Try again.',
+        'danger'
+      );
+      return;
+    }
+    showToast(`Removed "${presetName}".`, 'success');
     this.presetsLoaded = false;
     await this.ensurePresetsLoaded();
   }

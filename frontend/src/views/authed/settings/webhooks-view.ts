@@ -1,5 +1,6 @@
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
@@ -349,7 +350,10 @@ export class WebhooksView extends LitElement {
       <sl-dialog
         label="Add webhook endpoint"
         ?open=${this.createOpen}
-        @sl-after-hide=${() => (this.createOpen = false)}
+        @sl-after-hide=${(e: Event) => {
+          // Nested Shoelace parts emit their own sl-after-hide.
+          if (e.target === e.currentTarget) this.createOpen = false;
+        }}
       >
         <div class="form">
           <sl-input
@@ -387,7 +391,19 @@ export class WebhooksView extends LitElement {
               )}
             </div>
           </div>
-          ${this.createError ? html`<p class="muted">${this.createError}</p>` : nothing}
+          ${
+            this.createError
+              ? html`<sl-alert
+                  variant="danger"
+                  open
+                  role="alert"
+                  class="create-error"
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  ${this.createError}
+                </sl-alert>`
+              : nothing
+          }
         </div>
         <sl-button slot="footer" @click=${() => (this.createOpen = false)}
           >Cancel</sl-button
@@ -404,6 +420,18 @@ export class WebhooksView extends LitElement {
     `;
   }
 
+  /**
+   * The secret is shown once and cannot be read back, so a stray Esc or a
+   * click on the overlay must not dismiss it: only Done (or the explicit
+   * close button) does.
+   */
+  private guardSecretClose = (event: CustomEvent<{ source?: string }>) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.detail?.source !== 'close-button') {
+      event.preventDefault();
+    }
+  };
+
   private renderSecretDialog() {
     const created = this.createdSecret;
     if (!created) {
@@ -413,7 +441,13 @@ export class WebhooksView extends LitElement {
       <sl-dialog
         label="Signing secret"
         open
-        @sl-after-hide=${() => (this.createdSecret = null)}
+        class="secret-dialog"
+        @sl-request-close=${this.guardSecretClose}
+        @sl-after-hide=${(e: Event) => {
+          // The copy button's tooltip emits its own sl-after-hide, which
+          // must not close the only view of the secret.
+          if (e.target === e.currentTarget) this.createdSecret = null;
+        }}
       >
         <p>
           Store this now. It is shown once and cannot be read back; losing it
@@ -527,7 +561,21 @@ export class WebhooksView extends LitElement {
         this.loading
           ? html`<sl-spinner></sl-spinner>`
           : this.error
-            ? html`<p class="muted">${this.error}</p>`
+            ? html`<sl-alert
+                variant="danger"
+                open
+                role="alert"
+                class="load-error"
+              >
+                <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                <strong>Could not load webhooks</strong><br />
+                ${this.error}
+                <div class="load-error-actions">
+                  <sl-button size="small" @click=${() => void this.load()}
+                    >Try again</sl-button
+                  >
+                </div>
+              </sl-alert>`
             : html`
                 ${
                   this.endpoints.length === 0
@@ -636,6 +684,9 @@ export class WebhooksView extends LitElement {
       }
       .event-name {
         font-weight: 500;
+      }
+      .load-error-actions {
+        margin-top: var(--sl-spacing-small);
       }
       .secret {
         display: flex;
