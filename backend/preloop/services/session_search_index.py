@@ -607,7 +607,12 @@ def redact_artifact_text(text: str) -> tuple[str, bool]:
     return masked, bool(changed or emails)
 
 
-def _artifact_header(artifact: Any) -> str:
+def artifact_header(artifact: Any) -> str:
+    """Metadata header that starts an artifact's first search chunk.
+
+    Kind, name, tool and labels, redacted. Account artifact search strips
+    exactly this text from excerpts (#1086).
+    """
     labels = getattr(artifact, "labels", None) or {}
     label_text = " ".join(
         f"{key}={' '.join(map(str, value)) if isinstance(value, list) else value}"
@@ -694,7 +699,7 @@ def index_artifact_text(
         db.rollback()
         return []
 
-    header = _artifact_header(artifact)
+    header = artifact_header(artifact)
     content_captured = bool(settings.model_gateway_capture_content)
     has_text = extracted is not None and not extracted.empty
     cue_offsets: List[Tuple[int, Optional[float]]] = []

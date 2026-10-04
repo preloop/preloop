@@ -55,6 +55,14 @@ class RuntimeSessionArtifact(Base):
             "kind",
             "created_at",
         ),
+        # Account-wide search order (#1086); created by migration
+        # 20261004_artifact_created_idx.
+        Index(
+            "ix_runtime_session_artifact_account_created",
+            "account_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
     )
 
     account_id: Mapped[uuid.UUID] = mapped_column(

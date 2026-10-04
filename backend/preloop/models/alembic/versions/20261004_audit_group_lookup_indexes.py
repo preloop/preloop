@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261004_audit_lookup_idx"
-down_revision: Union[str, None] = "20261003_issue_extid_unique"
+down_revision: Union[str, None] = "20261004_artifact_created_idx"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
