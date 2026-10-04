@@ -2170,3 +2170,33 @@ def test_reconciliation_is_scoped_to_its_account(
     db_session.commit()
     assert _rec_row(world)[1][0].approved_at == rec.APPROVED
 
+
+def test_cycle_time_fields_state_what_they_measure() -> None:
+    from preloop.schemas.issue_cost import IssueCostReport, IssueCostRow
+
+    fields = IssueCostRow.model_fields
+    first = fields["first_event_at"].description or ""
+    assert "earliest attributed execution start" in first
+    assert "not the ticket creation time" in first
+    approved = fields["approved_at"].description or ""
+    assert "recorded approval event" in approved
+    assert "not verified mergeability" in approved
+    assert "forge" in (fields["pr_opened_at"].description or "")
+    assert "merge event" in (fields["merged_at"].description or "")
+    for name in (
+        "first_event_to_pr_opened_hours",
+        "pr_opened_to_approved_hours",
+        "approved_to_merged_hours",
+    ):
+        assert "Blank" in (fields[name].description or "")
+        assert "hours" in (fields[name].description or "")
+    assert "not a ticket-to-mergeable" in (
+        fields["approved_to_merged_hours"].description or ""
+    ) or "not a ticket-to-mergeable" in (
+        fields["pr_opened_to_approved_hours"].description or ""
+    )
+    report = IssueCostReport.model_fields
+    assert "inclusive" in (report["start"].description or "").lower()
+    assert "exclusive" in (report["end"].description or "").lower()
+    assert "first_event_at" in (report["start"].description or "")
+    assert "lifetime" in (report["flow_id"].description or "")
