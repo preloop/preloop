@@ -5,6 +5,7 @@ import sinon from 'sinon';
 import './tools-view';
 import type { ToolsView } from './tools-view';
 import { invalidateApiCaches } from '../../api';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 
 describe('ToolsView (approvals + conditions)', () => {
   let fetchStub: sinon.SinonStub;
@@ -2222,5 +2223,89 @@ describe('ToolsView – starter policy suggestions', () => {
         String(call.args[0]).endsWith('/api/v1/policies/generate')
       );
     expect(generateCall).to.equal(undefined);
+  });
+
+  describe('import', () => {
+    const uploadCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter(
+          (call) =>
+            String(call.args[0]).endsWith('/api/v1/policies/upload') &&
+            String(
+              (call.args[1] as RequestInit | undefined)?.method || 'GET'
+            ).toUpperCase() === 'POST'
+        );
+
+    function confirmButton(testId: string) {
+      return document
+        .querySelector('confirm-dialog')
+        ?.shadowRoot?.querySelector(`[data-testid="${testId}"]`) as
+        HTMLElement | undefined;
+    }
+
+    async function startImport() {
+      const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+      await waitUntil(
+        () => !(el as any).loading,
+        'Initial load did not finish'
+      );
+      const file = new File(['version: 1\n'], 'example-policy.yaml', {
+        type: 'application/x-yaml',
+      });
+      const done = (el as any)._importFile(file) as Promise<void>;
+      await waitUntil(
+        () => !!confirmButton('confirm-dialog-confirm'),
+        'no confirm dialog before import'
+      );
+      return { el, done };
+    }
+
+    afterEach(() => {
+      resetConfirmDialogForTests();
+      document
+        .querySelectorAll('sl-alert[variant]')
+        .forEach((alert) => alert.remove());
+    });
+
+    it('explains the replacement and uploads nothing until confirmed', async () => {
+      const { done } = await startImport();
+
+      const dialog = document.querySelector('confirm-dialog')!;
+      const text = dialog.shadowRoot?.textContent ?? '';
+      expect(text).to.contain('example-policy.yaml');
+      expect(text).to.contain('replaces');
+      expect(text).to.contain('Policies');
+      expect(uploadCalls()).to.have.length(0);
+
+      confirmButton('confirm-dialog-confirm')!.click();
+      await done;
+      expect(uploadCalls()).to.have.length(1);
+      const toast = Array.from(document.querySelectorAll('sl-alert')).find(
+        (alert) => alert.textContent?.includes('Imported example-policy.yaml')
+      );
+      expect(toast, 'expected a success toast').to.exist;
+      expect(toast?.getAttribute('variant')).to.equal('success');
+    });
+
+    it('uploads nothing when cancelled and offers the Policies preview', async () => {
+      const { done } = await startImport();
+
+      (
+        document
+          .querySelector('confirm-dialog')
+          ?.shadowRoot?.querySelector(
+            'sl-button:not([data-testid])'
+          ) as HTMLElement
+      ).click();
+      await done;
+      expect(uploadCalls()).to.have.length(0);
+      const toast = Array.from(document.querySelectorAll('sl-alert')).find(
+        (alert) => alert.querySelector('[data-toast-action]')
+      );
+      expect(
+        toast?.querySelector('[data-toast-action]')?.textContent
+      ).to.contain('Preview on Policies');
+    });
   });
 });

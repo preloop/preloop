@@ -69,6 +69,8 @@ import {
 } from '../../components/tools-editor-component';
 import type { GatewayUsageByTool } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
+import { Router } from '../../router';
 
 type ToolsTab = 'mcp' | 'native';
 
@@ -1491,7 +1493,28 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     input.click();
   }
 
+  /**
+   * Apply a policy YAML file, after saying what it replaces.
+   *
+   * Tools has no diff of its own, so the confirm points at the Policies page,
+   * whose Import shows one before anything changes.
+   */
   private async _importFile(file: File) {
+    const confirmed = await confirmDialog({
+      title: 'Apply this configuration?',
+      message: `Importing ${file.name} replaces the matching MCP servers, approval workflows and access rules with the ones in the file. This page applies it without a preview.`,
+      detail:
+        'To see a diff before anything changes, cancel and use Import YAML on the Policies page.',
+      confirmLabel: 'Apply file',
+      variant: 'danger',
+    });
+    if (!confirmed) {
+      showToast('Nothing was imported.', 'neutral', {
+        label: 'Preview on Policies',
+        onClick: () => Router.go('/console/policies'),
+      });
+      return;
+    }
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -1508,6 +1531,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         );
       }
 
+      showToast(`Imported ${file.name}.`, 'success');
       await this.loadData();
     } catch (err: any) {
       this.error = err.message || 'Failed to import configuration';
@@ -2304,7 +2328,9 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             Connect an agent
           </sl-button>
 
-          <sl-tooltip content="Import configuration from YAML">
+          <sl-tooltip
+            content="Apply a configuration YAML file (no preview; Policies shows a diff first)"
+          >
             <sl-button size="small" @click=${this._triggerImport}>
               <sl-icon slot="prefix" name="upload"></sl-icon>
               Import
