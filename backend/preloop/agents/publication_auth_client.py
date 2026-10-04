@@ -36,6 +36,17 @@ def refresh() -> str:
     token = data["token"]
     if not isinstance(token, str) or not token or any(c in token for c in "\r\n"):
         raise ValueError("invalid credential")
+    # GitHub App tokens pair with x-access-token; a managed Bitbucket Cloud
+    # access token pairs with the literal x-token-auth. The controller names
+    # the username so the runner never guesses from the host.
+    username = data.get("username") or "x-access-token"
+    if (
+        not isinstance(username, str)
+        or not username
+        or any(c.isspace() for c in username)
+        or any(c in username for c in ":@/\\")
+    ):
+        raise ValueError("invalid credential username")
     repository = urlsplit(os.environ["PRELOOP_PUBLICATION_REPOSITORY"])
     # A fresh private store plus a local helper reset prevents an expired
     # global clone store from winning. Other repositories retain their helper.
@@ -57,7 +68,7 @@ def refresh() -> str:
             subprocess.run(
                 args, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
-        scope = f"protocol=https\nhost={repository.netloc}\npath={repository.path.lstrip('/')}\nusername=x-access-token\n"
+        scope = f"protocol=https\nhost={repository.netloc}\npath={repository.path.lstrip('/')}\nusername={username}\n"
         subprocess.run(
             ["git", "credential", "approve"],
             input=scope + "password=" + token + "\n\n",
