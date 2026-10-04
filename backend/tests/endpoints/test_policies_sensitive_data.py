@@ -106,6 +106,24 @@ def test_test_endpoint_uses_submitted_config_and_types(account, user, mocker) ->
     loader.assert_not_called()
 
 
+def test_test_endpoint_turns_a_pattern_timeout_into_422(account, user, mocker) -> None:
+    mocker.patch.object(
+        policies, "load_sensitive_data_config", return_value=SensitiveDataConfig()
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        policies.test_sensitive_data_detectors(
+            policies.SensitiveDataTestRequest(
+                text="a" * 40 + "!",
+                config={"custom_patterns": [{"name": "evil", "regex": "(a|aa)+$"}]},
+            ),
+            account=account,
+            current_user=user,
+            db=MagicMock(),
+        )
+    assert exc_info.value.status_code == 422
+    assert "match budget" in exc_info.value.detail
+
+
 def test_test_endpoint_rejects_malformed_type_names(account, user, mocker) -> None:
     mocker.patch.object(
         policies, "load_sensitive_data_config", return_value=SensitiveDataConfig()

@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
+import regex as timeout_regex
+
 #: Longest regex an account may register. Long patterns are hard to review
 #: and are the usual vehicle for pathological backtracking.
 MAX_CUSTOM_PATTERN_LENGTH = 512
@@ -38,6 +40,17 @@ _REGEX_FLAG_MAP = {
 
 class UnsafePatternError(ValueError):
     """A custom regex was rejected before compilation."""
+
+
+class DetectorTimeoutError(TimeoutError):
+    """An account pattern exceeded its match budget on one text."""
+
+
+#: Match budget for one account pattern over one text. Enforced by the
+#: ``regex`` engine itself, so a pathological pattern is interrupted even
+#: though CPython holds the GIL while matching; a thread-pool timeout cannot
+#: do that.
+CUSTOM_PATTERN_TIMEOUT_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -92,8 +105,8 @@ class CustomPattern:
     regex: str
     flags: tuple[str, ...] = ()
 
-    def compiled(self) -> re.Pattern[str]:
-        """Compile through the safety gate (cached per instance by callers)."""
+    def compiled(self) -> Any:
+        """Compile through the safety gate with the timeout-capable engine."""
         return compile_safe_regex(self.regex, self.flags)
 
 
@@ -313,12 +326,24 @@ def _read_quantifier(pattern: str, index: int) -> tuple[bool, int]:
     return True, index
 
 
-def compile_safe_regex(pattern: str, flags: Sequence[str] = ()) -> re.Pattern[str]:
-    """Compile an account-supplied regex after static safety checks.
+_BACKREFERENCE_RE = re.compile(r"\\[1-9]|\(\?P=|\\g<")
+
+
+def compile_safe_regex(pattern: str, flags: Sequence[str] = ()) -> Any:
+    """Compile an account-supplied regex for use with a match timeout.
+
+    The static checks (length cap, no nested quantifier, no backreference)
+    are a coarse filter that rejects the common catastrophic shapes with a
+    clear message. They are not a proof: alternation overlap such as
+    ``(a|aa)+$`` passes them. The guarantee is the engine: patterns compile
+    with the ``regex`` module and every scan passes
+    ``timeout=CUSTOM_PATTERN_TIMEOUT_SECONDS``, which interrupts matching
+    from inside the C loop. A thread-pool timeout cannot, because CPython
+    holds the GIL while matching.
 
     Raises:
-        UnsafePatternError: Empty, too long, invalid flag, nested quantifier
-            or a pattern the ``re`` module rejects.
+        UnsafePatternError: Empty, too long, invalid flag, nested quantifier,
+            backreference, or a pattern the engine rejects.
     """
     if not isinstance(pattern, str) or not pattern.strip():
         raise UnsafePatternError("Custom pattern regex must not be empty")
@@ -339,10 +364,27 @@ def compile_safe_regex(pattern: str, flags: Sequence[str] = ()) -> re.Pattern[st
             "which can backtrack catastrophically. Rewrite it without a "
             "quantifier inside a quantified group."
         )
+    if _BACKREFERENCE_RE.search(pattern):
+        raise UnsafePatternError(
+            "Custom pattern uses a backreference, which is not supported."
+        )
     try:
-        return re.compile(pattern, re_flags)
-    except re.error as exc:
+        # VERSION0 keeps ``re`` semantics; only the timeout is new.
+        return timeout_regex.compile(pattern, re_flags | timeout_regex.VERSION0)
+    except (timeout_regex.error, ValueError, OverflowError) as exc:
         raise UnsafePatternError(f"Invalid regex: {exc}") from exc
+
+
+def finditer_with_timeout(
+    compiled: Any, text: str, timeout: float = CUSTOM_PATTERN_TIMEOUT_SECONDS
+) -> List[Any]:
+    """All matches of an account pattern, or :class:`DetectorTimeoutError`."""
+    try:
+        return list(compiled.finditer(text, timeout=timeout))
+    except TimeoutError as exc:
+        raise DetectorTimeoutError(
+            f"custom pattern exceeded {timeout:.2f}s on {len(text)} characters"
+        ) from exc
 
 
 def compile_keyword_pattern(
@@ -647,26 +689,32 @@ def _detect_national_id(text: str, config: DetectorConfig) -> Iterable[Match]:
             if _fr_nir_ok(found.group(0).replace(" ", "")):
                 yield Match("national_id", found.start(), found.end(), 1.0)
     if "nl" in locales:
+        # About one in ten random 9-digit numbers passes the 11-proef, so an
+        # unanchored BSN match would be noise. The keyword is required.
         keyword_positions = [k.end() for k in _NL_BSN_KEYWORD_RE.finditer(text)]
-        for found in _NL_BSN_RE.finditer(text):
-            if not _nl_bsn_ok(found.group(0)):
-                continue
-            anchored = any(0 <= found.start() - pos <= 24 for pos in keyword_positions)
-            yield Match(
-                "national_id", found.start(), found.end(), 0.9 if anchored else 0.6
-            )
-
-
-def _mrn_pattern(config: DetectorConfig) -> re.Pattern[str]:
-    custom = config.medical_record_number_pattern
-    if not custom:
-        return _MRN_RE
-    inner = compile_safe_regex(custom).pattern
-    return re.compile(rf"{_MRN_KEYWORD}({inner})(?![A-Za-z0-9])", re.IGNORECASE)
+        if keyword_positions:
+            for found in _NL_BSN_RE.finditer(text):
+                if not _nl_bsn_ok(found.group(0)):
+                    continue
+                if any(0 <= found.start() - pos <= 24 for pos in keyword_positions):
+                    yield Match("national_id", found.start(), found.end(), 0.9)
 
 
 def _detect_medical_record_number(text: str, config: DetectorConfig) -> Iterable[Match]:
-    for found in _mrn_pattern(config).finditer(text):
+    custom = config.medical_record_number_pattern
+    if not custom:
+        for found in _MRN_RE.finditer(text):
+            yield Match("medical_record_number", found.start(1), found.end(1), 0.85)
+        return
+    # The account part went through the gate; the keyword prefix is a fixed,
+    # reviewed pattern (it has an optional group with a quantifier inside,
+    # which the coarse gate would flag). The timeout covers the whole scan.
+    inner = compile_safe_regex(custom).pattern
+    compiled = timeout_regex.compile(
+        rf"{_MRN_KEYWORD}({inner})(?![A-Za-z0-9])",
+        timeout_regex.IGNORECASE | timeout_regex.VERSION0,
+    )
+    for found in finditer_with_timeout(compiled, text):
         yield Match("medical_record_number", found.start(1), found.end(1), 0.85)
 
 
@@ -863,6 +911,10 @@ def detect(text: str, config: Optional[DetectorConfig] = None) -> List[Match]:
     Returns:
         Matches sorted by position. Unknown type names in ``config.types``
         are ignored here; the policy schema rejects them earlier.
+
+    Raises:
+        DetectorTimeoutError: An account pattern exceeded its match budget.
+            Built-in patterns are fixed and never raise.
     """
     if not text:
         return []
@@ -887,7 +939,7 @@ def detect(text: str, config: Optional[DetectorConfig] = None) -> List[Match]:
             compiled = custom.compiled()
             found.extend(
                 Match(type_id, m.start(), m.end(), 0.8)
-                for m in compiled.finditer(text)
+                for m in finditer_with_timeout(compiled, text)
                 if m.end() > m.start()
             )
             continue

@@ -12294,7 +12294,13 @@ paths:
       tags:
       - Policies
       summary: Test sensitive-data detectors on sample text
-      description: Return match spans for ``text``. The input is never logged or stored.
+      description: 'Return match spans for ``text``. The input is never logged or
+        stored.
+
+
+        Account patterns run through the timeout-capable engine, so a
+
+        pathological regex ends with a 422 instead of a blocked worker.'
       operationId: test_sensitive_data_detectors_api_v1_policies_sensitive_data_test_post
       requestBody:
         content:
@@ -31479,7 +31485,7 @@ components:
       properties:
         text:
           type: string
-          maxLength: 200000
+          maxLength: 20000
           title: Text
           description: Sample text to scan
         types:
