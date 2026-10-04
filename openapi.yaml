@@ -19189,8 +19189,10 @@ components:
         check_server_references:
           type: boolean
           title: Check Server References
-          description: If true, validate that MCP server references exist in your
-            account. Set to false for standalone schema validation.
+          description: If true, validate that MCP server references resolve to a server
+            defined in the file or configured in your account. If false, MCP server
+            references are not checked. Approval workflow references are always resolved
+            against the file and your account.
           default: true
       type: object
       required:
