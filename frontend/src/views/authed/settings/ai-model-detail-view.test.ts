@@ -1582,7 +1582,15 @@ describe('AIModelDetailView', () => {
     search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
 
     await waitUntil(
-      () => apiCalls().length > callsAfterLoad,
+      // A late price read can happen before the debounce fires. Wait for
+      // the searched interactions request itself, not just any API call.
+      () =>
+        apiCalls()
+          .slice(callsAfterLoad)
+          .some(
+            (url) =>
+              url.includes('/interactions') && url.includes('query=timeout')
+          ),
       'the debounced search never reached the server',
       { timeout: 3000 }
     );
