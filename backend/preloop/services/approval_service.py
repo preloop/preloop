@@ -724,6 +724,17 @@ class ApprovalService:
             provided_name=managed_agent_name,
         )
 
+        # Stored arguments follow the account's redact rules (#1123). The
+        # in-process approval wait keeps the original in memory; the async
+        # replay path re-executes from this stored copy, so a redact rule on
+        # a tool also redacts what an asynchronously approved replay sends.
+        stored_tool_args = await self._storage_redacted_tool_args(
+            account_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            managed_agent_id=managed_agent_id,
+        )
+
         # Create approval request
         approval_request = ApprovalRequest(
             id=uuid.uuid4(),
@@ -732,7 +743,7 @@ class ApprovalService:
             approval_workflow_id=approval_workflow_id,
             execution_id=execution_id,
             tool_name=tool_name,
-            tool_args=tool_args,
+            tool_args=stored_tool_args,
             agent_reasoning=agent_reasoning,
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
@@ -2015,6 +2026,34 @@ class ApprovalService:
                 ApprovalRequestUpdate(webhook_error=error_msg),
             )
             return False
+
+    async def _storage_redacted_tool_args(
+        self,
+        account_id: Any,
+        *,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        managed_agent_id: Optional[uuid.UUID],
+    ) -> Dict[str, Any]:
+        """Apply the account's redact rules to the stored argument copy."""
+        from preloop.api.loop_safety import run_db_off_loop
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+        )
+
+        scope = StorageScope(
+            target="tool.args",
+            tool_name=tool_name,
+            managed_agent_id=str(managed_agent_id) if managed_agent_id else None,
+        )
+        try:
+            return await run_db_off_loop(
+                lambda: apply_storage_redaction(account_id, tool_args, scope=scope)
+            )
+        except Exception:  # noqa: BLE001 - never block an approval on this
+            logger.warning("Approval storage redaction failed", exc_info=True)
+            return tool_args
 
     async def create_and_notify(
         self,

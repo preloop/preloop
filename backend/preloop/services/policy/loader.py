@@ -1704,7 +1704,9 @@ def export_current_policy(
     sensitive_data = parse_sensitive_data_config(
         account_meta.get(SENSITIVE_DATA_META_KEY)
     )
-    has_sensitive_data = bool(sensitive_data.model_dump(exclude_none=True))
+    has_sensitive_data = bool(
+        sensitive_data.model_dump(exclude_none=True, exclude_defaults=True)
+    )
 
     return PolicyDocument(
         version=PolicyVersion.V1_0,

@@ -36,8 +36,12 @@ def parse_sensitive_data_config(raw: Any) -> SensitiveDataConfig:
 
 
 def serialize_sensitive_data_config(config: SensitiveDataConfig) -> Dict[str, Any]:
-    """JSON form stored on the account and exported to YAML."""
-    return config.model_dump(exclude_none=True, mode="json")
+    """JSON form stored on the account and exported to YAML.
+
+    Defaults are left out so an empty block serialises to ``{}`` and a
+    stored rule carries only what the operator wrote.
+    """
+    return config.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
 
 
 def load_sensitive_data_config(db: Session, account_id: Any) -> SensitiveDataConfig:
@@ -70,6 +74,9 @@ def replace_sensitive_data_config(
     flag_modified(account, "meta_data")
     db.add(account)
     db.flush()
+    from preloop.services.sensitive_data.storage import invalidate_cache
+
+    invalidate_cache(account_id)
     return config or SensitiveDataConfig()
 
 

@@ -82,7 +82,7 @@ def test_test_endpoint_returns_spans_and_never_logs_the_input(
         )
     assert response.types_found == ["email", "iban"]
     assert response.count == 2
-    assert response.redacted_preview is None
+    assert response.redacted_preview == ("mail [REDACTED:email], IBAN [REDACTED:iban]")
     first = response.matches[0]
     assert secret_text[first.start : first.end] == "alice@example.com"
     assert "alice@example.com" not in caplog.text

@@ -367,6 +367,20 @@ def _log_policy_decision_async(
         if not db_factory:
             return
 
+        # Stored copy of the arguments: the account's redact rules apply
+        # before the row is written and sealed into the chain (#1123).
+        if tool_args:
+            from preloop.services.sensitive_data.storage import (
+                StorageScope,
+                apply_storage_redaction,
+            )
+
+            tool_args = apply_storage_redaction(
+                account_id,
+                tool_args,
+                scope=StorageScope(target="tool.args", tool_name=tool_name),
+            )
+
         audit_service.log_policy_decision_async(
             db_factory=db_factory,
             account_id=account_id,

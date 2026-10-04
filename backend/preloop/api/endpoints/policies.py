@@ -67,6 +67,7 @@ from preloop.services.sensitive_data.policy_store import (
     detector_config_from,
     load_sensitive_data_config,
 )
+from preloop.services.sensitive_data.redact import redact_text
 from preloop.services.policy_version_service import PolicyVersionService
 from preloop.utils.permissions import require_permission
 
@@ -213,8 +214,7 @@ class SensitiveDataTestResponse(BaseModel):
     types_found: List[str]
     count: int
     redacted_preview: Optional[str] = Field(
-        None,
-        description="Text with matches replaced; populated once redaction lands",
+        None, description="Text with each match replaced by [REDACTED:<type>]"
     )
 
 
@@ -561,6 +561,7 @@ def test_sensitive_data_detectors(
             ) from exc
         config = config.with_types(request.types)
     matches = detect(request.text, config)
+    preview, _counts = redact_text(request.text, config)
     return SensitiveDataTestResponse(
         matches=[
             SensitiveDataMatch(
@@ -570,7 +571,7 @@ def test_sensitive_data_detectors(
         ],
         types_found=types_found(matches),
         count=len(matches),
-        redacted_preview=None,
+        redacted_preview=preview if matches else request.text,
     )
 
 

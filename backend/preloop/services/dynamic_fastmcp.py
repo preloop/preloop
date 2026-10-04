@@ -35,6 +35,10 @@ from preloop.api.endpoints.tools import BUILTIN_TOOLS
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.subject_governance import is_tool_enabled_for_subject
 from preloop.services.sensitive_data import tool_policy as sensitive_tool_policy
+from preloop.services.sensitive_data.storage import (
+    StorageScope,
+    apply_storage_redaction,
+)
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
@@ -1895,6 +1899,7 @@ async def {internal_name}({params_str}):
         sensitive_detectors = None
         sensitive_bindings: Optional[dict] = None
         args_outcome = None
+        upstream_arguments: Optional[dict] = None
         try:
             sensitive_config, sensitive_detectors = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
@@ -1935,6 +1940,19 @@ async def {internal_name}({params_str}):
                 )
             if args_outcome.scan is not None:
                 sensitive_bindings = args_outcome.bindings()
+            upstream_types = args_outcome.upstream_redaction_types(sensitive_config)
+            if upstream_types:
+                # redact_upstream: the server receives redacted arguments.
+                # ``arguments`` keeps the original for the in-memory approval
+                # wait; every stored copy goes through apply_storage_redaction.
+                from preloop.services.sensitive_data.redact import redact_structure
+
+                upstream_arguments = redact_structure(
+                    arguments,
+                    (
+                        sensitive_detectors or sensitive_tool_policy.DetectorConfig()
+                    ).with_types(upstream_types),
+                )[0]
 
         # ── Evaluate access rules (ToolAccessRule) ──────────────────────
         # This is the central enforcement point for all tool calls.
@@ -2074,14 +2092,18 @@ async def {internal_name}({params_str}):
         # Client calls "calculate_fibonacci", we translate to "account_123_calculate_fibonacci"
         client_tool_name = name
         translation_token = None
-        dispatch_arguments = arguments
+        dispatch_arguments = (
+            upstream_arguments if upstream_arguments is not None else arguments
+        )
         if name in self._proxied_tool_servers:
             safe_account_id = user_context.account_id.replace("-", "_")
             internal_name = f"account_{safe_account_id}_{name}"
             logger.info(f"Translating proxied tool name: {name} -> {internal_name}")
             # Modify target name for the FastMCP router
             name = internal_name
-            dispatch_arguments = self._remap_wrapper_arguments(internal_name, arguments)
+            dispatch_arguments = self._remap_wrapper_arguments(
+                internal_name, dispatch_arguments
+            )
             translation_token = _is_proxy_translation_var.set(True)
         else:
             # Builtin tool - call with original name
@@ -2158,7 +2180,18 @@ async def {internal_name}({params_str}):
                         # the Activity feed and the policy sub-events all
                         # show the tool the agent asked for.
                         tool_name=client_tool_name,
-                        tool_args=redact_dict(arguments),
+                        # Credential scrub first, then the account's redact
+                        # rules: the chain hashes the redacted row (#1123).
+                        tool_args=apply_storage_redaction(
+                            user_context.account_id,
+                            redact_dict(arguments),
+                            scope=StorageScope(
+                                target="tool.args",
+                                tool_name=client_tool_name,
+                                server_name=scope_server_name,
+                                managed_agent_id=scope_agent_id,
+                            ),
+                        ),
                         result=audit_status,
                         duration_ms=elapsed_ms,
                         policy_decision=None,
@@ -2292,7 +2325,16 @@ async def {internal_name}({params_str}):
                 correlation_id=correlation_id,
             ),
         )
-        if outcome.action in ("allow", "notify"):
+        if outcome.action in ("allow", "notify", "redact"):
+            upstream_types = outcome.upstream_redaction_types(config)
+            if upstream_types:
+                # redact_upstream on tool.result: the agent sees redacted text.
+                return sensitive_tool_policy.redact_tool_result(
+                    result,
+                    (
+                        detector_config or sensitive_tool_policy.DetectorConfig()
+                    ).with_types(upstream_types),
+                )
             return result
         if outcome.action == "deny":
             return _wrapper_tool_error(
@@ -2382,7 +2424,19 @@ async def {internal_name}({params_str}):
         server_name = self._proxied_tool_server_names.get(
             client_tool_name, "preloop-mcp"
         )
-        bounded_summary = _bounded_summary(summary)
+        # Error and result text can carry values; apply the account's redact
+        # rules before the row is written (#1123).
+        bounded_summary = _bounded_summary(
+            apply_storage_redaction(
+                user_context.account_id,
+                summary,
+                scope=StorageScope(
+                    tool_name=client_tool_name,
+                    server_name=server_name,
+                    managed_agent_id=getattr(user_context, "managed_agent_id", None),
+                ),
+            )
+        )
         arguments_summary = _summarize_arguments(arguments)
         arguments_hash = _hash_arguments(arguments)
         from datetime import datetime, timedelta, timezone

@@ -369,9 +369,14 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if existing is not None:
             return existing, False
 
-        metadata = _browser_step_metadata(step)
+        from preloop.services.sensitive_data.storage import apply_storage_redaction
+
+        # Field names, credentials, then the account's redact rules (#1123).
+        metadata = apply_storage_redaction(account_id, _browser_step_metadata(step))
         locator = metadata.get("url") or metadata.get("target") or ""
-        summary = _redact_browser_text(f"{step.action} {locator}")[0]
+        summary = apply_storage_redaction(
+            account_id, _redact_browser_text(f"{step.action} {locator}")[0]
+        )
         activity_timestamp = step.occurred_at or datetime.now(timezone.utc)
         if activity_timestamp.tzinfo is None:
             activity_timestamp = activity_timestamp.replace(tzinfo=timezone.utc)

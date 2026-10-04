@@ -19993,6 +19993,7 @@ components:
       - deny
       - allow
       - notify
+      - redact
       title: ConditionAction
       description: Actions to take when a condition matches.
     ConditionTestRequest:
@@ -26909,6 +26910,12 @@ components:
           minItems: 1
           title: Conditions
           description: First matching condition wins, same as tools
+        redact_upstream:
+          type: boolean
+          title: Redact Upstream
+          description: With a redact condition, also rewrite the request sent to the
+            provider. Default keeps the original upstream and redacts at rest.
+          default: false
       type: object
       required:
       - id
@@ -31521,7 +31528,7 @@ components:
           - type: string
           - type: 'null'
           title: Redacted Preview
-          description: Text with matches replaced; populated once redaction lands
+          description: Text with each match replaced by [REDACTED:<type>]
       type: object
       required:
       - matches
