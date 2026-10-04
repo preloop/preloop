@@ -254,3 +254,25 @@ class TestTolerations:
             entry["effect"] = effect
         monkeypatch.setenv(kubernetes_placement.TOLERATIONS_ENV, json.dumps([entry]))
         assert kubernetes_placement.tolerations() == []
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {},
+            {"effect": "NoSchedule"},
+            {"operator": "Equal", "value": "agents"},
+        ],
+    )
+    def test_keyless_toleration_requires_exists(self, monkeypatch, entry):
+        monkeypatch.setenv(kubernetes_placement.TOLERATIONS_ENV, json.dumps([entry]))
+        assert kubernetes_placement.tolerations() == []
+
+    def test_keyless_exists_toleration_is_kept(self, monkeypatch):
+        # Matches every taint, which the API server accepts.
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps([{"operator": "Exists", "effect": "NoSchedule"}]),
+        )
+        assert kubernetes_placement.tolerations() == [
+            {"operator": "Exists", "effect": "NoSchedule"}
+        ]

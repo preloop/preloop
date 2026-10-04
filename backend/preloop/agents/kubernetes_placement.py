@@ -128,6 +128,10 @@ def _normalize_toleration(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     ):
         logger.warning("Ignoring toleration with an invalid operator")
         return None
+    if key is None and operator != "Exists":
+        # The API server requires Exists when the key is empty.
+        logger.warning("Ignoring toleration without a key that is not Exists")
+        return None
 
     effect = entry.get("effect")
     if (
