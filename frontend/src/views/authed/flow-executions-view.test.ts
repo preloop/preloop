@@ -269,6 +269,50 @@ describe('FlowExecutionsView', () => {
     ).to.be.at.most(wrapperBox.left + wrapper.clientWidth + 1);
   });
 
+  it('keeps a live duration inside the 960px table without widening it', async () => {
+    // The table's declared min-width. A wider Duration column must come out
+    // of the flexible Subject column, not push the table past its wrapper.
+    fetchStub = stub([
+      {
+        id: 'exec-running-narrow',
+        flow_id: 'flow-2',
+        flow_name: 'Triage',
+        status: 'RUNNING',
+        start_time: new Date(Date.now() - 12.5 * 60_000).toISOString(),
+        trigger_subject:
+          'example/example #138 · Pull request opened · 949d625b',
+        model_alias: 'deepseek-v4.1-flash',
+      },
+    ]);
+    const host = (await fixture(
+      html`<div style="width: 960px;">
+        <flow-executions-view></flow-executions-view>
+      </div>`
+    )) as HTMLElement;
+    const el = host.querySelector('flow-executions-view') as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const wrapper = el.shadowRoot!.querySelector(
+      '.table-wrapper'
+    ) as HTMLElement;
+    const table = wrapper.querySelector('table') as HTMLElement;
+    expect(table.scrollWidth).to.be.at.most(wrapper.clientWidth);
+
+    const subject = table.querySelector('td.subject-cell') as HTMLElement;
+    expect(subject, 'subject cell').to.exist;
+    expect(subject.clientWidth).to.be.greaterThan(0);
+    expect(subject.scrollWidth).to.be.greaterThan(subject.clientWidth);
+
+    const durationText = table.querySelector(
+      'td.duration-cell .duration-text'
+    ) as HTMLElement;
+    const modelCell = table.querySelector('td.model-cell') as HTMLElement;
+    expect(durationText.getBoundingClientRect().right).to.be.at.most(
+      modelCell.getBoundingClientRect().left + 1
+    );
+  });
+
   it('prints the tool calls and cost the execution page states', async () => {
     // The row is the same fixture the execution page test opens. On staging
     // the two said 0 vs 16 tool calls and $0.03 vs $0.08 for one run, because
@@ -798,6 +842,65 @@ describe('FlowExecutionsView', () => {
 
       const text = cellText(el, 0);
       expect(text).to.match(/^Running · \d+m \d+s$/);
+    });
+
+    /** The Model cell and rendered duration label of one row. */
+    const durationGeometry = (el: FlowExecutionsView, rowIndex: number) => {
+      const cells = el.shadowRoot
+        ?.querySelectorAll('tbody tr')
+        [rowIndex]?.querySelectorAll('td');
+      const durationCell = cells?.[4] as HTMLElement;
+      const modelCell = cells?.[5] as HTMLElement;
+      const durationText = durationCell?.querySelector(
+        '.duration-text'
+      ) as HTMLElement;
+      return { modelCell, durationText };
+    };
+
+    it('keeps a live duration clear of the model cell', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-running-long',
+          flow_id: 'flow-2',
+          flow_name: 'Triage',
+          status: 'RUNNING',
+          // 12m 30s elapsed, the case from the report.
+          start_time: new Date(Date.now() - 12.5 * 60_000).toISOString(),
+          model_alias: 'deepseek-v4.1-flash',
+        },
+      ]);
+
+      expect(cellText(el, 0)).to.match(/^Running · 12m 3[01]s$/);
+
+      const { modelCell, durationText } = durationGeometry(el, 0);
+      // The label must end before the Model cell starts; when the Duration
+      // column is too narrow the nowrap text paints over it (issue #1250).
+      expect(durationText.getBoundingClientRect().right).to.be.at.most(
+        modelCell.getBoundingClientRect().left + 1
+      );
+    });
+
+    it('fits the widest live duration label without clipping', async () => {
+      const el = await renderRows([
+        {
+          id: 'exec-running-max',
+          flow_id: 'flow-2',
+          flow_name: 'Triage',
+          status: 'RUNNING',
+          // Ten days in: `formatDurationBetween` emits `999h 59m`.
+          start_time: new Date(
+            Date.now() - (999 * 60 + 59) * 60_000
+          ).toISOString(),
+          model_alias: 'deepseek-v4.1-flash',
+        },
+      ]);
+
+      expect(cellText(el, 0)).to.equal('Running · 999h 59m');
+
+      const { modelCell, durationText } = durationGeometry(el, 0);
+      expect(durationText.getBoundingClientRect().right).to.be.at.most(
+        modelCell.getBoundingClientRect().left + 1
+      );
     });
 
     it('shows an em dash for a terminal execution with no end time', async () => {

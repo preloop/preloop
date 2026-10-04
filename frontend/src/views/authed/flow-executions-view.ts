@@ -302,6 +302,14 @@ export class FlowExecutionsView extends AuthedElement {
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
       }
+      /* A live label ("Running · 12m 30s") is far wider than a finished one
+         ("4m 32s"), and the Duration column is fixed. Clip rather than paint
+         over the Model cell if a future label outgrows the declared width;
+         the title carries the full text either way. */
+      .duration-cell {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       td.numeric,
       th.numeric {
         text-align: right;
@@ -882,11 +890,25 @@ export class FlowExecutionsView extends AuthedElement {
       {
         id: 'duration',
         header: 'Duration',
-        width: 72,
+        // Fits the widest live label `executionDurationText` emits today,
+        // "Running · 999h 59m" (~142px at the console's 14px tabular-nums,
+        // plus the cell's 8px left padding). The finished labels ("4m 32s")
+        // are far narrower, so this only takes width the flexible Subject
+        // column can spare. Longer elapsed times clip with an ellipsis.
+        width: 152,
         sort: 'number',
         cellClass: 'duration-cell',
         value: (row) => durationOf(row),
-        cell: (row) => executionDurationText(row, this.durationNow) || '\u2014',
+        cell: (row) => {
+          const label =
+            executionDurationText(row, this.durationNow) || '\u2014';
+          // The span gives the layout test the text box to measure; the
+          // cell's ellipsis already clips the row when an operator drags the
+          // column narrower.
+          return html`<span class="duration-text">${label}</span>`;
+        },
+        cellTitle: (row) =>
+          executionDurationText(row, this.durationNow) || '\u2014',
       },
       {
         id: 'model',
