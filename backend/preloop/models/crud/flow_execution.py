@@ -197,6 +197,12 @@ def tracker_object_payload_match(object_key: str) -> Optional[ColumnElement[bool
             payload["repository"]["full_name"].astext == repo,
             payload["pullrequest"]["id"].astext == ident,
         )
+    if source == "bitbucket_dc" and kind == "pr":
+        return and_(
+            source_col == "bitbucket_dc",
+            payload["repository"]["id"].astext == repo,
+            payload["pull_request"]["number"].astext == ident,
+        )
     return None
 
 
@@ -245,7 +251,7 @@ def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]
                 payload["merge_request"]["iid"].astext == ident,
             ),
         )
-    if source == "bitbucket" and kind == "pr":
+    if source in ("bitbucket", "bitbucket_dc") and kind == "pr":
         return tracker_object_payload_match(object_key)
     return None
 
