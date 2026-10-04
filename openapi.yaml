@@ -13431,7 +13431,9 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/FlowExecutionListResponse'
+                  anyOf:
+                  - $ref: '#/components/schemas/CiExecutionResponse'
+                  - $ref: '#/components/schemas/FlowExecutionListResponse'
                 title: Response Read Flow Executions Api V1 Flows Executions Get
         '422':
           description: Validation Error
@@ -13445,7 +13447,7 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: execution:read
   /api/v1/flows/batches/{batch_id}/executions:
     get:
       tags:
@@ -13568,7 +13570,11 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FlowExecutionResponse'
+                anyOf:
+                - $ref: '#/components/schemas/CiExecutionResponse'
+                - $ref: '#/components/schemas/FlowExecutionResponse'
+                title: Response Read Flow Execution Api V1 Flows Executions  Execution
+                  Id  Get
         '422':
           description: Validation Error
           content:
@@ -13581,7 +13587,7 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: execution:read
   /api/v1/flows/executions/{execution_id}/continuation:
     get:
       tags:
@@ -13731,7 +13737,7 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: execution:result:read
   /api/v1/flows/executions/{execution_id}/evidence-status:
     get:
       tags:
@@ -14359,7 +14365,23 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: execution:stop
+      x-restricted-ci-request-schema:
+        additionalProperties: false
+        description: Stop only, without arbitrary controller command payloads.
+        properties:
+          command:
+            const: stop
+            title: Command
+            type: string
+          payload:
+            default: null
+            title: Payload
+            type: 'null'
+        required:
+        - command
+        title: CiStopRequest
+        type: object
   /api/v1/flows/{flow_id}/trigger:
     post:
       tags:
@@ -14413,7 +14435,25 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: flow:trigger
+      x-restricted-ci-request-schema:
+        additionalProperties: false
+        description: Caller-controlled review inputs; no runtime or configuration
+          authority.
+        properties:
+          pr_number:
+            exclusiveMinimum: 0
+            title: Pr Number
+            type: integer
+          head_sha:
+            pattern: ^[0-9a-f]{40}([0-9a-f]{24})?$
+            title: Head Sha
+            type: string
+        required:
+        - pr_number
+        - head_sha
+        title: CiReviewRequest
+        type: object
   /api/v1/flows/executions/{execution_id}/retry:
     post:
       tags:
@@ -23328,6 +23368,68 @@ components:
       - checkpoints_verified
       title: ChainVerifyRead
       description: Verdict of a server side walk over a range of the chain.
+    CiExecutionResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        project_id:
+          type: string
+          format: uuid
+          title: Project Id
+        repository_identifier:
+          type: string
+          title: Repository Identifier
+        pr_number:
+          type: integer
+          title: Pr Number
+        provider_pr_id:
+          type: string
+          title: Provider Pr Id
+        head_sha:
+          type: string
+          title: Head Sha
+        status:
+          type: string
+          title: Status
+        start_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Time
+        end_time:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Time
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - flow_id
+      - project_id
+      - repository_identifier
+      - pr_number
+      - provider_pr_id
+      - head_sha
+      - status
+      - start_time
+      - end_time
+      - failure_category
+      title: CiExecutionResponse
+      description: Owned execution correlation and readiness without runtime internals.
     CliSessionResponse:
       properties:
         id:

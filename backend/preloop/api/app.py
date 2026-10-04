@@ -9,36 +9,36 @@ import logging
 import os
 import sys
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Optional
 from urllib.parse import quote
 from uuid import UUID
-from fastapi import Depends, FastAPI, Request, HTTPException, WebSocket
+
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketState
 
 from preloop import __version__
-from fastapi.encoders import jsonable_encoder
 from preloop.config import settings
-from preloop.services.litellm_cost_map import pin_local_litellm_cost_map
-from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.models.sentry import init_sentry
 from preloop.models.db.session import get_db_session
 from preloop.models.db.setup import setup_database
+from preloop.models.sentry import init_sentry
 from preloop.services.api_usage_recorder import (
     ApiUsageRecord,
     record_api_usage,
     shutdown_api_usage_recorder,
 )
-from preloop.sync.services.event_bus import connect_nats, close_nats  # NATS integration
+from preloop.services.litellm_cost_map import pin_local_litellm_cost_map
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.sync.services.event_bus import close_nats, connect_nats  # NATS integration
 
 # Pin before create_app's role-gated imports can pull litellm.
 pin_local_litellm_cost_map()
@@ -205,8 +205,9 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
         user_id = None
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
-            from preloop.api.auth.jwt import decode_token
             from uuid import UUID
+
+            from preloop.api.auth.jwt import decode_token
 
             try:
                 token = auth_header.replace("Bearer ", "")
@@ -478,10 +479,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Recover orphaned flow executions (skip in testing mode)
     recovery_service = None
     if not is_testing and is_api_role:
+        from preloop.services.execution_recovery import get_recovery_service
         from preloop.services.flow_execution_dispatcher import (
             flow_execution_worker_enabled,
         )
-        from preloop.services.execution_recovery import get_recovery_service
 
         # When flow orchestration runs on sync workers, API must not start
         # in-process orchestrators (unsafe with multiple API replicas).
@@ -644,12 +645,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
 
     # All roles, including a dedicated gateway, need the same current prices.
+    from preloop.services.model_content_policy import set_model_io_approval_loop
+    from preloop.services.model_price_catalog import start_price_map_refresh
     from preloop.services.reviewed_model_price_refresh import (
         start_reviewed_price_refresh,
     )
-
-    from preloop.services.model_content_policy import set_model_io_approval_loop
-    from preloop.services.model_price_catalog import start_price_map_refresh
 
     price_refresher = start_reviewed_price_refresh()
     # Merge the upstream price map on startup and every TTL so a model the
@@ -874,26 +874,33 @@ def _register_control_plane_routes(
     from preloop.api.auth import auth_router, get_current_active_user
     from preloop.api.endpoints import (
         account,
-        issue_lifecycle,
         agent_control,
+        agent_deployments,
         agent_discovery,
         agent_permission,
-        audio,
+        ai_models,
         approval_bypass,
-        audit_chain,
-        budget,
         approval_requests,
+        artifact_search,
+        audio,
+        audit_chain,
+        bitbucket_dc_webhooks,
+        budget,
         comments,
         copilot_usage,
         cost,
-        event_webhooks,
+    )
+    from preloop.api.endpoints import embedding as embedding_router
+    from preloop.api.endpoints import (
         employee_events,
-        issue_costs,
+        event_webhooks,
         exports,
         features,
+        flows,
+        issue_costs,
+        issue_lifecycle,
         issues,
         kill_switch,
-        agent_deployments,
         mcp_servers,
         notification_preferences,
         operator_notes,
@@ -904,10 +911,12 @@ def _register_control_plane_routes(
         pull_requests,
         retention,
         roles,
-        artifact_search,
+        runners,
         runtime_session_artifacts,
         runtime_session_browser_steps,
-        search as search_router,
+    )
+    from preloop.api.endpoints import search as search_router
+    from preloop.api.endpoints import (
         security_maintenance,
         security_screen,
         session_embedding_settings,
@@ -917,19 +926,14 @@ def _register_control_plane_routes(
         spend_outliers,
         tools,
         trackers,
-        bitbucket_dc_webhooks,
         usage_import,
-        embedding as embedding_router,
         webhooks,
-        flows,
-        runners,
-        ai_models,
         websockets,
     )
-    from preloop.services.mcp_http import setup_mcp_routes
 
     # OAuth consent page (login form for CLI and MCP OAuth flows)
     from preloop.api.endpoints.oauth_consent import router as oauth_consent_router
+    from preloop.services.mcp_http import setup_mcp_routes
 
     app.include_router(oauth_consent_router)
     logger.info("OAuth consent routes registered")
@@ -1605,6 +1609,7 @@ def create_app() -> FastAPI:
                         ]
 
         from preloop.api.middleware.ci_auth import CI_ROUTE_POLICIES
+        from preloop.schemas.ci_execution import CiReviewRequest, CiStopRequest
 
         for path, operations in openapi_schema["paths"].items():
             for method, operation in operations.items():
@@ -1620,6 +1625,20 @@ def create_app() -> FastAPI:
                     continue
                 action = CI_ROUTE_POLICIES.get((method.upper(), path))
                 operation["x-restricted-ci"] = action.value if action else "deny"
+                if (
+                    method.upper() == "POST"
+                    and path == "/api/v1/flows/{flow_id}/trigger"
+                ):
+                    operation["x-restricted-ci-request-schema"] = (
+                        CiReviewRequest.model_json_schema()
+                    )
+                elif (
+                    method.upper() == "POST"
+                    and path == "/api/v1/flows/executions/{execution_id}/command"
+                ):
+                    operation["x-restricted-ci-request-schema"] = (
+                        CiStopRequest.model_json_schema()
+                    )
                 responses = operation.setdefault("responses", {})
                 responses.setdefault(
                     "401", {"description": "Invalid or expired credential"}
