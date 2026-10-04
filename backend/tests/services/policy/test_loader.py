@@ -1,9 +1,13 @@
 """Tests for policy loader functionality."""
 
 import json
+from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
+from pytest_mock import MockerFixture
+from sqlalchemy.orm import Session
 
 from preloop.services.policy.loader import (
     PolicyApplier,
@@ -17,6 +21,7 @@ from preloop.services.policy.schema import (
     ApprovalWorkflowDefinition,
     DefaultsDefinition,
     MCPServerDefinition,
+    ModelIORule,
     PolicyDocument,
     PolicyMetadata,
     PolicyVersion,
@@ -413,3 +418,71 @@ class TestPolicyApplierDefaults:
         assert "restrictive default settings" in applier._result.errors[0]
         assert "unknown_tools='require_approval'" in applier._result.errors[0]
         assert "BaseModel.__init__" not in applier._result.errors[0]
+
+
+class TestModelIOConditionUpgrade:
+    """YAML model_io CEL expressions left as 'simple' are upgraded on apply."""
+
+    @staticmethod
+    def _applier() -> PolicyApplier:
+        """Build an applier whose DB is unused by ``_apply_model_io``."""
+        return PolicyApplier(
+            cast(Session, MagicMock()),
+            account_id="00000000-0000-4000-8000-000000000001",
+        )
+
+    def _rule(self, expression: str, condition_type: str = "simple") -> ModelIORule:
+        return ModelIORule.model_validate(
+            {
+                "id": "deny-pii",
+                "target": "model.request",
+                "conditions": [
+                    {
+                        "expression": expression,
+                        "action": "deny",
+                        "condition_type": condition_type,
+                    }
+                ],
+            }
+        )
+
+    def test_apply_model_io_upgrades_cel_shaped_conditions(
+        self, mocker: MockerFixture
+    ) -> None:
+        """CEL syntax, including forms only the parser rejects, becomes CEL."""
+        applier = self._applier()
+        rules = [
+            self._rule("'credit_card' in pii.types_found"),
+            self._rule("(pii.found == true)"),
+            self._rule("pii.found"),
+            self._rule("pii.found == true"),
+        ]
+        replace = mocker.patch(
+            "preloop.services.model_content_policy.replace_model_io_rules",
+            return_value=rules,
+        )
+
+        applier._apply_model_io(rules, dry_run=False)
+
+        applied = replace.call_args.args[2]
+        assert [rule.conditions[0].condition_type for rule in applied] == [
+            "cel",
+            "cel",
+            "cel",
+            "simple",
+        ]
+
+    def test_apply_model_io_keeps_an_explicit_cel_type(
+        self, mocker: MockerFixture
+    ) -> None:
+        applier = self._applier()
+        rules = [self._rule("pii.found == true", condition_type="cel")]
+        replace = mocker.patch(
+            "preloop.services.model_content_policy.replace_model_io_rules",
+            return_value=rules,
+        )
+
+        applier._apply_model_io(rules, dry_run=False)
+
+        applied = replace.call_args.args[2]
+        assert applied[0].conditions[0].condition_type == "cel"

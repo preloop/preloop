@@ -53,6 +53,7 @@ from preloop.services.model_content_policy import (
     serialize_model_io_rules,
     upsert_model_io_rule,
 )
+from preloop.services.policy_evaluator import is_simple_expression
 from preloop.services.policy_version_service import PolicyVersionService
 from preloop.utils.permissions import require_permission
 
@@ -453,6 +454,38 @@ def list_model_io_rules(
     return ModelIORuleListResponse(rules=serialize_model_io_rules(rules))
 
 
+def _reject_cel_syntax_declared_simple(rule: ModelIORule) -> None:
+    """Refuse a model I/O condition marked ``simple`` but written in CEL.
+
+    The simple evaluator raises on CEL syntax, so a mis-typed deny rule fails
+    closed and a ``notify`` rule silently never fires. Rejecting the write
+    with 422 lets the author pick ``cel``; already-stored rules are left
+    untouched because this runs only on create and update.
+
+    Args:
+        rule: Rule about to be written.
+
+    Raises:
+        HTTPException: 422 when a condition declares ``simple`` but the
+            simple parser cannot read its expression.
+    """
+    for condition in rule.conditions:
+        condition_type = getattr(condition, "condition_type", "simple")
+        if hasattr(condition_type, "value"):
+            condition_type = condition_type.value
+        if str(condition_type or "simple") == "simple" and not is_simple_expression(
+            condition.expression
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "condition_type 'simple' cannot parse expression "
+                    f"{condition.expression!r}. Set condition_type to 'cel' "
+                    "for CEL functions, `in`, `&&`, `||`, or indexing."
+                ),
+            )
+
+
 @router.post(
     "/policies/model-io-rules",
     summary="Create or replace a model I/O content policy rule",
@@ -465,6 +498,7 @@ def create_model_io_rule(
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Save one model I/O rule from the Policies console form."""
+    _reject_cel_syntax_declared_simple(rule)
     saved = upsert_model_io_rule(db, account.id, rule)
     db.commit()
     return saved.model_dump(exclude_none=True, mode="json")
@@ -485,6 +519,7 @@ def update_model_io_rule(
     """Replace an existing model I/O rule. The path id wins."""
     if rule.id != rule_id:
         rule = rule.model_copy(update={"id": rule_id})
+    _reject_cel_syntax_declared_simple(rule)
     existing = {item.id: item for item in load_model_io_rules(db, account.id)}
     if rule_id not in existing:
         raise HTTPException(

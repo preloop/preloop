@@ -106,6 +106,40 @@ def test_request_allow_when_pii_absent():
     assert decision.action == "allow"
 
 
+def test_form_shaped_simple_rule_denies_a_card_number_and_allows_hello():
+    """Regression: the form-shaped simple rule still catches PII.
+
+    The console sends ``pii.found == true`` with the default PII types. A
+    Luhn-valid card is denied; plain text is allowed.
+    """
+    rule = _rule(
+        id="deny-pii",
+        target="model.request",
+        detectors={"pii": {"types": ["email", "phone", "credit_card"]}},
+        conditions=[
+            ToolCondition(
+                expression="pii.found == true",
+                action="deny",
+                condition_type="simple",
+            ),
+        ],
+    )
+    blocked = evaluate_model_io(
+        rules=[rule],
+        target="model.request",
+        text="card 4111 1111 1111 1111",
+    )
+    assert blocked.action == "deny"
+    assert "credit_card" in blocked.detector_summary["pii.types_found"]
+
+    allowed = evaluate_model_io(
+        rules=[rule],
+        target="model.request",
+        text="hello",
+    )
+    assert allowed.action == "allow"
+
+
 def test_deny_when_injection_score_exceeds_threshold():
     rule = _rule(
         id="deny-inject",
