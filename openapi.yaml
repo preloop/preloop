@@ -307,6 +307,31 @@ paths:
                   Post
       security:
       - OAuth2PasswordBearer: []
+  /api/v1/auth/logout:
+    post:
+      tags:
+      - Auth
+      summary: Logout
+      description: 'Sign the current console session out on the server.
+
+
+        The client clears its own tokens whatever this returns. Extensions may
+
+        end server-side state tied to the token and name a same-origin path for
+
+        the client to go to next; without one the client uses its default. Other
+
+        sessions of the user are unaffected (see ``/sessions/revoke-all``).'
+      operationId: logout_api_v1_auth_logout_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+      security:
+      - OAuth2PasswordBearer: []
   /api/v1/auth/sessions/cli:
     get:
       tags:
@@ -26379,6 +26404,16 @@ components:
       - password
       title: LoginRequest
       description: Model for login requests.
+    LogoutResponse:
+      properties:
+        redirect_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Redirect Url
+      type: object
+      title: LogoutResponse
+      description: Result of ``POST /auth/logout``.
     MCPServerCreate:
       properties:
         name:
