@@ -24,6 +24,9 @@ const HOLD = {
 describe('LegalHoldControl', () => {
   let fetchStub: sinon.SinonStub;
   const calls: { url: string; method: string }[] = [];
+  // The shared test runner may run this file after many others; a loaded
+  // browser can push a Lit render past waitUntil's 1s default.
+  const WAIT = { timeout: 5000 };
 
   function install(holds: unknown[]) {
     calls.length = 0;
@@ -76,7 +79,8 @@ describe('LegalHoldControl', () => {
     `);
     await waitUntil(
       () => el.shadowRoot?.querySelector('[data-testid="place-hold"]'),
-      'place was not offered'
+      'place was not offered',
+      WAIT
     );
     (
       el.shadowRoot!.querySelector('[data-testid="place-hold"]') as HTMLElement
@@ -94,7 +98,8 @@ describe('LegalHoldControl', () => {
     ).click();
     await waitUntil(
       () => el.shadowRoot?.querySelector('[data-testid="hold-badge"]'),
-      'badge did not appear'
+      'badge did not appear',
+      WAIT
     );
     expect(calls.some((call) => call.method === 'POST')).to.equal(true);
   });
@@ -109,7 +114,8 @@ describe('LegalHoldControl', () => {
     `);
     await waitUntil(
       () => el.shadowRoot?.querySelector('[data-testid="release-hold"]'),
-      'release was not offered'
+      'release was not offered',
+      WAIT
     );
     expect(el.shadowRoot!.textContent).to.contain('Legal hold');
     (
@@ -130,7 +136,8 @@ describe('LegalHoldControl', () => {
     ).click();
     await waitUntil(
       () => calls.some((call) => call.url.includes('/release')),
-      'hold was not released'
+      'hold was not released',
+      WAIT
     );
   });
 });

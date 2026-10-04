@@ -1241,6 +1241,232 @@ describe('PoliciesView', () => {
       expect(form.detectModeration).to.be.false;
     });
 
+    it('sends condition_type for a model rule with a CEL expression', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._patchModelIOForm({
+        id: 'deny-cel',
+        conditionMode: 'custom',
+        action: 'deny',
+        expression: "'credit_card' in pii.types_found",
+      });
+      await element.updateComplete;
+      const rule = (element as any).buildModelIORuleFromForm();
+      expect(rule.conditions[0].condition_type).to.equal('cel');
+
+      (element as any)._patchModelIOForm({ expression: 'pii.found == true' });
+      await element.updateComplete;
+      expect(
+        (element as any).buildModelIORuleFromForm().conditions[0].condition_type
+      ).to.equal('simple');
+    });
+
+    it('posts the model rule condition_type on save', async () => {
+      const element = await mountWithDialog();
+
+      (element as any)._patchModelIOForm({
+        id: 'deny-cel',
+        conditionMode: 'custom',
+        action: 'deny',
+        expression: "'credit_card' in pii.types_found",
+      });
+      await element.updateComplete;
+      await (element as any).saveModelIORule();
+
+      const post = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).endsWith('/api/v1/policies/model-io-rules') &&
+            (c.args[1] as RequestInit | undefined)?.method === 'POST'
+        );
+      expect(post, 'model rule POST').to.exist;
+      const body = JSON.parse(
+        String((post!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.conditions[0].condition_type).to.equal('cel');
+    });
+
+    it('keeps PII types, descriptions, timeout and extra conditions when editing', async () => {
+      const stored = {
+        id: 'pii-strict',
+        target: 'model.request',
+        enabled: true,
+        description: 'Narrow PII scan',
+        detector_timeout_ms: 30000,
+        detectors: { pii: { types: ['email'] } },
+        conditions: [
+          {
+            expression: 'pii.found == true',
+            action: 'deny',
+            condition_type: 'simple',
+            description: 'Any PII at all',
+          },
+          {
+            expression: 'pii.types_found.contains("ssn")',
+            action: 'require_approval',
+          },
+        ],
+      };
+      fetchStub = createFetchStub({
+        tools: [sampleTool],
+        modelIORules: [stored],
+      });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any).openModelIODialog(stored);
+      await element.updateComplete;
+      await (element as any).saveModelIORule();
+
+      const put = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).includes(
+              '/api/v1/policies/model-io-rules/pii-strict'
+            ) && (c.args[1] as RequestInit | undefined)?.method === 'PUT'
+        );
+      expect(put, 'model rule PUT').to.exist;
+      const body = JSON.parse(
+        String((put!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.detectors.pii.types).to.deep.equal(['email']);
+      expect(body.description).to.equal('Narrow PII scan');
+      expect(body.detector_timeout_ms).to.equal(30000);
+      expect(body.conditions).to.have.length(2);
+      expect(body.conditions[0].condition_type).to.equal('simple');
+      expect(body.conditions[0].description).to.equal('Any PII at all');
+      expect(body.conditions[1].expression).to.equal(
+        'pii.types_found.contains("ssn")'
+      );
+      expect(body.conditions[1].condition_type).to.equal('cel');
+    });
+
+    it('heals a legacy simple rule whose expression needs CEL on save', async () => {
+      // Before the backend guard existed, a CEL expression could be stored
+      // with condition_type 'simple'. Opening and saving the rule untouched
+      // must not 422: the selector defaults to auto and the save sends cel.
+      const stored = {
+        id: 'legacy-cel',
+        target: 'model.request',
+        enabled: true,
+        detectors: { pii: { types: ['email'] } },
+        conditions: [
+          {
+            expression: "'credit_card' in pii.types_found",
+            action: 'deny',
+            condition_type: 'simple',
+          },
+        ],
+      };
+      fetchStub = createFetchStub({
+        tools: [sampleTool],
+        modelIORules: [stored],
+      });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any).openModelIODialog(stored);
+      await element.updateComplete;
+
+      expect((element as any)._modelIOForm.conditionType).to.equal('auto');
+      await (element as any).saveModelIORule();
+
+      const put = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).includes(
+              '/api/v1/policies/model-io-rules/legacy-cel'
+            ) && (c.args[1] as RequestInit | undefined)?.method === 'PUT'
+        );
+      expect(put, 'model rule PUT').to.exist;
+      const body = JSON.parse(
+        String((put!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.conditions[0].condition_type).to.equal('cel');
+      expect(body.detectors.pii.types).to.deep.equal(['email']);
+    });
+
+    it('heals a legacy simple extra condition whose expression needs CEL', async () => {
+      // The form edits only the first condition, so a CEL-shaped second
+      // condition stored as `simple` has no selector to correct it. Saving
+      // the untouched rule must still send `cel` for it, or the backend
+      // rejects the whole-rule PUT with 422.
+      const stored = {
+        id: 'legacy-multi',
+        target: 'model.request',
+        enabled: true,
+        detectors: { pii: true },
+        conditions: [
+          {
+            expression: 'pii.found == true',
+            action: 'deny',
+            condition_type: 'simple',
+          },
+          {
+            expression: "'ssn' in pii.types_found",
+            action: 'require_approval',
+            condition_type: 'simple',
+          },
+        ],
+      };
+      fetchStub = createFetchStub({
+        tools: [sampleTool],
+        modelIORules: [stored],
+      });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any).openModelIODialog(stored);
+      await element.updateComplete;
+      await (element as any).saveModelIORule();
+
+      const put = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).includes(
+              '/api/v1/policies/model-io-rules/legacy-multi'
+            ) && (c.args[1] as RequestInit | undefined)?.method === 'PUT'
+        );
+      expect(put, 'model rule PUT').to.exist;
+      const body = JSON.parse(
+        String((put!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.conditions[1].condition_type).to.equal('cel');
+    });
+
+    it('lets the author force CEL when automatic detection would pick simple', async () => {
+      const element = await mountWithDialog();
+
+      // The backend simple parser rejects parentheses, while the frontend
+      // heuristic would call this simple; the override must send CEL.
+      (element as any)._patchModelIOForm({
+        id: 'deny-paren',
+        conditionMode: 'custom',
+        action: 'deny',
+        expression: '(pii.found == true)',
+        conditionType: 'cel',
+      });
+      await element.updateComplete;
+
+      const select = element.shadowRoot?.querySelector(
+        '[data-testid="condition-type"]'
+      );
+      expect(select, 'condition language override').to.exist;
+      expect(
+        (element as any).buildModelIORuleFromForm().conditions[0].condition_type
+      ).to.equal('cel');
+    });
+
     it('refuses to save a deny rule with no condition', async () => {
       const element = await mountWithDialog();
 
