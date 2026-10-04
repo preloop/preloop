@@ -59,6 +59,7 @@ from preloop.services.policy.schema import (
 )
 from preloop.services.sensitive_data.detectors import (
     DetectorConfig,
+    DetectorTimeoutError,
     detect,
     list_types,
     types_found,
@@ -185,7 +186,7 @@ class SensitiveDataTypesResponse(BaseModel):
 class SensitiveDataTestRequest(BaseModel):
     """Run the detectors on sample text. The text is never logged or stored."""
 
-    text: str = Field(..., max_length=200_000, description="Sample text to scan")
+    text: str = Field(..., max_length=20_000, description="Sample text to scan")
     types: Optional[List[str]] = Field(
         None, description="Types to scan; default every type in the config"
     )
@@ -545,7 +546,11 @@ def test_sensitive_data_detectors(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> SensitiveDataTestResponse:
-    """Return match spans for ``text``. The input is never logged or stored."""
+    """Return match spans for ``text``. The input is never logged or stored.
+
+    Account patterns run through the timeout-capable engine, so a
+    pathological regex ends with a 422 instead of a blocked worker.
+    """
     if request.config is not None:
         config = DetectorConfig.from_mapping(
             request.config.model_dump(exclude_none=True, mode="json")
@@ -560,7 +565,13 @@ def test_sensitive_data_detectors(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
             ) from exc
         config = config.with_types(request.types)
-    matches = detect(request.text, config)
+    try:
+        matches = detect(request.text, config)
+    except DetectorTimeoutError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"A custom pattern exceeded its match budget: {exc}",
+        ) from exc
     return SensitiveDataTestResponse(
         matches=[
             SensitiveDataMatch(

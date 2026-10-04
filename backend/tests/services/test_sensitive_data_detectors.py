@@ -15,8 +15,10 @@ import pytest
 
 from preloop.services.sensitive_data.detectors import (
     BUILTIN_TYPE_IDS,
+    CUSTOM_PATTERN_TIMEOUT_SECONDS,
     CustomPattern,
     DetectorConfig,
+    DetectorTimeoutError,
     KeywordList,
     Match,
     UnsafePatternError,
@@ -85,6 +87,7 @@ NEGATIVE_CASES = [
     ("national_id", "NINO BG 12 34 56 C"),  # forbidden prefix
     ("national_id", "NINO QQ 12 34 56 C"),  # Q is not a valid first letter
     ("national_id", "BSN 123456789"),  # 11-proef fails
+    ("national_id", "ref 123456782"),  # valid 11-proef but no BSN keyword
     ("medical_record_number", "record of 00123456 visits"),
     ("person_name", "the patient was discharged"),
 ]
@@ -159,6 +162,21 @@ class TestCustomPatterns:
     )
     def test_safe_patterns_compile(self, pattern: str) -> None:
         assert compile_safe_regex(pattern).pattern == pattern
+
+    @pytest.mark.parametrize("pattern", [r"^(\d+)\1$", r"(?P<x>a)(?P=x)", r"(a)\g<1>"])
+    def test_backreferences_are_rejected(self, pattern: str) -> None:
+        with pytest.raises(UnsafePatternError, match="backreference"):
+            compile_safe_regex(pattern)
+
+    def test_alternation_overlap_is_interrupted_by_the_engine_timeout(self) -> None:
+        """The static gate is a coarse filter; the match timeout is the guarantee."""
+        cfg = DetectorConfig(
+            types=("evil",), custom_patterns=(CustomPattern("evil", r"(a|aa)+$"),)
+        )
+        started = time.perf_counter()
+        with pytest.raises(DetectorTimeoutError):
+            detect("a" * 40 + "!", cfg)
+        assert time.perf_counter() - started < CUSTOM_PATTERN_TIMEOUT_SECONDS + 1.0
 
     def test_length_cap(self) -> None:
         with pytest.raises(UnsafePatternError, match="exceeds"):
@@ -247,6 +265,30 @@ class TestRegistry:
         assert [m.type for m in matches] == ["fake"]
         assert "fake" in [info.id for info in list_types()]
         assert "fake" in _types("ZZZ")  # part of the default selection
+
+    def test_registered_detector_is_a_known_type_for_rules(self) -> None:
+        from preloop.services.policy.schema import PolicyDocument, SensitiveDataConfig
+
+        register_detector("vendor_ner", lambda text, cfg: [])
+        assert "vendor_ner" in SensitiveDataConfig().known_types()
+        doc = PolicyDocument.model_validate(
+            {
+                "version": "1.0",
+                "metadata": {"name": "t"},
+                "model_io": [
+                    {
+                        "id": "r",
+                        "target": "model.request",
+                        "detectors": {"pii": {"types": ["vendor_ner"]}},
+                        "conditions": [
+                            {"expression": "pii.found == true", "action": "deny"}
+                        ],
+                    }
+                ],
+                "sensitive_data": {"detectors": {"types": ["vendor_ner", "email"]}},
+            }
+        )
+        assert doc.sensitive_data.detectors.types == ["vendor_ner", "email"]
 
     def test_builtin_names_cannot_be_shadowed(self) -> None:
         with pytest.raises(ValueError, match="built-in"):
