@@ -22,6 +22,7 @@ from tests.api.test_ci_principal import provision
 async def test_dispatch_denial_persists_failed_without_orchestrator_side_effects(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     resources = create_ci_resources.__wrapped__(db_session)
     _, _, token = provision(db_session, resources)
@@ -30,7 +31,12 @@ async def test_dispatch_denial_persists_failed_without_orchestrator_side_effects
         db_session, context=context, binding=review_binding(context), event={}
     )
     execution_id = execution.id
-    admission = AsyncMock(side_effect=PermissionError("synthetic-private-error"))
+
+    async def deny_admission(*args: object, **kwargs: object) -> None:
+        db_session.expire_all()
+        raise PermissionError("synthetic-private-error")
+
+    admission = AsyncMock(side_effect=deny_admission)
     monkeypatch.setattr(ci_execution, "ensure_ci_dispatch_admission", admission)
     run = AsyncMock()
     await flow_execution_runner.run_existing_execution(
@@ -41,6 +47,18 @@ async def test_dispatch_denial_persists_failed_without_orchestrator_side_effects
     assert failed.status == "FAILED"
     assert failed.failure_category == "verification_blocked"
     assert failed.error_message == "Restricted CI execution admission denied"
+    assert "synthetic-private-error" not in caplog.text
+    assert "synthetic-private-error" not in str(caplog.records)
+    safe = [
+        row
+        for row in caplog.records
+        if row.message == "Restricted CI execution admission blocked"
+    ]
+    assert len(safe) == 1
+    assert safe[0].execution_id == str(execution_id)
+    assert safe[0].ci_principal_id == str(context.principal_id)
+    assert safe[0].ci_error_type == "PermissionError"
+    assert safe[0].exc_info is None
 
 
 def test_ci_delegation_denies_even_after_flow_configuration_changes() -> None:
