@@ -3372,7 +3372,7 @@ export class AgentsView extends LitElement {
     ).length;
     const agents = items.length - flows;
     const total = this.agents?.total ?? 0;
-    const loaded = this.agents?.items.length ?? 0;
+    const loaded = this.agents?.items?.length ?? 0;
     // The list is fetched a page at a time: "50 of 120 agents" says the rest
     // exists instead of passing the first page off as all of them.
     const parts = [
