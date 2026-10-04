@@ -1461,6 +1461,67 @@ describe('PreloopSessionObserver session approvals', () => {
     return el;
   }
 
+  function activityCalls(): string[] {
+    return fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/activity'));
+  }
+
+  function runtimeSessionsHandler(): (message: {
+    payload?: Record<string, unknown>;
+  }) => void {
+    return subscriptions.find((entry) => entry.topic === 'runtime_sessions')!
+      .handler;
+  }
+
+  it('re-reads the open session timeline at once when an operator message lands', async () => {
+    await mount();
+    await waitUntil(() => activityCalls().length > 0, '', { timeout: 3000 });
+    const before = activityCalls().length;
+
+    runtimeSessionsHandler()({
+      payload: {
+        runtime_session_id: 'runtime-session-1',
+        activity_type: 'agent_control_message',
+        status: 'delivered',
+        summary: 'recount zone B',
+        metadata: { kind: 'operator_command', command_id: 'cmd-1' },
+      },
+    });
+
+    // Immediately, not after the 500 ms scope refresh.
+    await waitUntil(() => activityCalls().length > before, '', {
+      timeout: 200,
+    });
+    expect(activityCalls()[activityCalls().length - 1]).to.contain(
+      'runtime-session-1'
+    );
+  });
+
+  it('does not re-read the timeline for another session or other activity', async () => {
+    await mount();
+    await waitUntil(() => activityCalls().length > 0, '', { timeout: 3000 });
+    const before = activityCalls().length;
+
+    runtimeSessionsHandler()({
+      payload: {
+        runtime_session_id: 'another-session',
+        activity_type: 'agent_control_message',
+      },
+    });
+    runtimeSessionsHandler()({
+      payload: {
+        runtime_session_id: 'runtime-session-1',
+        tool_name: 'Read',
+        status: 'allowed',
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(activityCalls().length).to.equal(before);
+  });
+
   it('subscribes to the approvals topic, which is where "wait for me" arrives', async () => {
     await mount();
 

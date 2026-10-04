@@ -25,6 +25,8 @@ const (
 	attachKindTool     attachKind = "tool"
 	attachKindApproval attachKind = "approval"
 	attachKindNote     attachKind = "note"
+	attachKindCommand  attachKind = "command"
+	attachKindReply    attachKind = "reply"
 	attachKindEnd      attachKind = "end"
 	attachKindOther    attachKind = "event"
 )
@@ -46,7 +48,7 @@ func (k attachKind) colour() string {
 		return attachColourTool
 	case attachKindApproval:
 		return attachColourApproval
-	case attachKindNote:
+	case attachKindNote, attachKindCommand, attachKindReply:
 		return attachColourNote
 	case attachKindEnd:
 		return attachColourEnd
@@ -113,11 +115,7 @@ func attachEventFromActivity(raw json.RawMessage) (attachEvent, bool) {
 		}
 		event.text = describeModelCall(item.Title, item.Status, nil, nil, item.TotalTokens, item.EstimatedCost, nil)
 	case "agent_control_message":
-		event.kind = attachKindNote
-		if noteID := stringField(item.Metadata, "note_id"); noteID != "" {
-			event.key = "note|" + noteID
-		}
-		event.text = describeNote(item.Metadata, firstNonEmpty(item.Summary, item.Title), item.Status)
+		describeControlMessage(&event, item.Metadata, firstNonEmpty(item.Summary, item.Title), item.Status)
 	case "session_ended":
 		event.kind = attachKindEnd
 		event.key = "end"
@@ -256,11 +254,7 @@ func attachEventFromLive(message map[string]interface{}, raw json.RawMessage) (a
 	case eventType == "runtime_session_updated":
 		metadata, _ := payload["metadata"].(map[string]interface{})
 		if stringField(payload, "activity_type") == "agent_control_message" {
-			event.kind = attachKindNote
-			if noteID := stringField(metadata, "note_id"); noteID != "" {
-				event.key = "note|" + noteID
-			}
-			event.text = describeNote(metadata, stringField(payload, "summary"), stringField(payload, "status"))
+			describeControlMessage(&event, metadata, stringField(payload, "summary"), stringField(payload, "status"))
 			return event, true
 		}
 		tool := stringField(payload, "tool_name")
@@ -337,6 +331,45 @@ func describeModelCall(model, status string, in, out, total *int64, cost *float6
 		parts = append(parts, fmt.Sprintf("%.1fs", float64(*durationMs)/1000))
 	}
 	return strings.Join(parts, "  ")
+}
+
+// describeControlMessage fills an agent_control_message timeline row: an
+// operator note, an operator command (a new turn, #1150) or the agent's
+// reply to a command. Commands and replies are keyed by command id, so the
+// live event and the replayed row print once.
+func describeControlMessage(event *attachEvent, metadata map[string]interface{}, text, status string) {
+	commandID := stringField(metadata, "command_id")
+	switch {
+	case stringField(metadata, "direction") == "agent_to_operator":
+		event.kind = attachKindReply
+		if commandID != "" {
+			event.key = "reply|" + commandID
+		}
+		line := "from " + firstNonEmpty(stringField(metadata, "agent_name"), "the agent")
+		if status != "" {
+			line += " " + status
+		}
+		if text != "" {
+			line += ": " + truncateAttach(text, 160)
+		}
+		event.text = line
+	case stringField(metadata, "kind") == "operator_command" || (commandID != "" && stringField(metadata, "note_id") == ""):
+		event.kind = attachKindCommand
+		if commandID != "" {
+			event.key = "command|" + commandID
+		}
+		line := "from " + firstNonEmpty(stringField(metadata, "sent_by"), stringField(metadata, "author_display"), "an operator")
+		if text != "" {
+			line += ": " + truncateAttach(text, 160)
+		}
+		event.text = line
+	default:
+		event.kind = attachKindNote
+		if noteID := stringField(metadata, "note_id"); noteID != "" {
+			event.key = "note|" + noteID
+		}
+		event.text = describeNote(metadata, text, status)
+	}
 }
 
 func describeNote(metadata map[string]interface{}, text, status string) string {

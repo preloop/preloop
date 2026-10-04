@@ -174,6 +174,7 @@ preloop approvals deny <request-id> [-r "reason"]
 preloop sessions list [--active] [--agent <id|name>] [--kind <kind>] [--since 2h] \
   [--parent <session-id>] [--execution <id>] [--limit 50] [--json | -o id] [--wide]
 preloop sessions attach <session-id|short-id> [--execution <id>] [--read-only] [--since 10m] [--json]
+preloop agents attach <agent-id|name> [--no-wait] [--read-only] [--since 10m] [--json]
 preloop sessions search "<query>" [--from 2026-09-01] [--to 2026-09-15] [--limit 20] [--json]
 ```
 
@@ -203,7 +204,11 @@ session you found, see [Finding the session to steer](operator-notes.md#finding-
 
 `sessions attach` follows one session live (model requests, tool calls,
 approvals, notes, the end), sends a typed line as an operator note and decides
-a pending approval with `a` or `d`. See
+a pending approval with `a` or `d`. On a managed agent with a live Agent
+Control connection the input is in command mode instead: a typed line starts
+a new turn and its delivery (queued, delivered, started, finished) is shown
+inline; `/note <text>` still sends a note. `agents attach` does the same by
+agent, attaching its current session or waiting for the next. See
 [Attaching to a session from the terminal](sessions-attach.md).
 
 `sessions search` ranks session content by relevance with the same server
