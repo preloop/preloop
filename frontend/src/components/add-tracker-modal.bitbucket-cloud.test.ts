@@ -137,6 +137,7 @@ const managedTracker = {
   },
   scope_rules: [
     { rule_type: 'INCLUDE', scope_type: 'ORGANIZATION', identifier: 'ws' },
+    { rule_type: 'EXCLUDE', scope_type: 'PROJECT', identifier: 'r-excluded' },
   ],
 };
 
@@ -575,7 +576,14 @@ describe('AddTrackerModal managed Bitbucket Cloud', () => {
       expect(stubs.validateTrackerToken).to.not.have.been.called;
       expect((element as any).errorMessage).to.equal('');
       expect((element as any).step).to.equal(2);
-      expect((element as any).orgs).to.deep.equal([{ id: 'ws', name: 'ws' }]);
+      await element.updateComplete;
+      // The stored rules are displayed read-only, including the exclusion.
+      const offline = root.querySelector('.managed-offline-scope');
+      expect(offline).to.exist;
+      expect(
+        root.querySelector('.managed-offline-rules')?.textContent
+      ).to.contain('EXCLUDE PROJECT');
+      expect(root.querySelector('sl-tree')).to.not.exist;
       await element.handleSave();
       expect(stubs.updateTracker).to.have.been.calledOnce;
       const [savedId, payload] = stubs.updateTracker.firstCall.args;
@@ -586,9 +594,9 @@ describe('AddTrackerModal managed Bitbucket Cloud', () => {
         workspace: 'ws',
         repository: 'repo',
       });
-      expect(payload.scope_rules).to.deep.equal([
-        { rule_type: 'INCLUDE', scope_type: 'ORGANIZATION', identifier: 'ws' },
-      ]);
+      // Stored EXCLUDE/PROJECT rules survive: scope_rules is not sent at all,
+      // so the server does not replace them with a widened INCLUDE-only set.
+      expect(payload).to.not.have.property('scope_rules');
     });
 
     it('edits a pasted OAuth token without converting it', async () => {

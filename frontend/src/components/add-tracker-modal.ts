@@ -250,6 +250,14 @@ export class AddTrackerModal extends LitElement {
   @state()
   private managedTrackerId: string | null = null;
 
+  /**
+   * Managed tracker edited while its provider is unavailable: the stored
+   * scope rules are shown read-only and left untouched on save, because the
+   * project list needed to rebuild them cannot be read.
+   */
+  @state()
+  private managedOfflineEdit = false;
+
   /** Bitbucket Data Center: instance URL as typed (canonicalised on submit). */
   @state()
   private bitbucketDcInstanceUrl = '';
@@ -648,10 +656,10 @@ export class AddTrackerModal extends LitElement {
 
   /**
    * Scope step from the tracker's stored INCLUDE organization rules, for a
-   * managed tracker whose provider is not configured here. The workspace is
-   * the only organization a Bitbucket tracker has, so the tree is complete
-   * without a provider call; project exclusions are kept by handleSave only
-   * when their projects are loaded, which they are not in this mode.
+   * managed tracker whose provider is not configured here. The tree is shown
+   * for orientation only: without the provider the repositories cannot be
+   * listed, so the stored scope rules (including project exclusions) are not
+   * rebuilt and handleSave leaves them untouched.
    */
   private seedScopeFromExistingRules() {
     const rules = this.tracker?.scope_rules ?? [];
@@ -676,6 +684,7 @@ export class AddTrackerModal extends LitElement {
       this.selectedOrgs[id] = true;
     }
     this.includeFutureProjects = true;
+    this.managedOfflineEdit = true;
     this.step = 2;
   }
 
@@ -1729,6 +1738,29 @@ export class AddTrackerModal extends LitElement {
   }
 
   renderStep2() {
+    if (this.managedOfflineEdit) {
+      const rules = this.tracker?.scope_rules ?? [];
+      return html`
+        <h2>Configure Project Scope</h2>
+        <sl-alert variant="neutral" open class="managed-offline-scope">
+          <sl-icon slot="icon" name="lock"></sl-icon>
+          <strong>Scope is kept as stored.</strong> The managed provider is not
+          configured on this deployment, so repositories cannot be listed and
+          the ${rules.length} stored scope rule${rules.length === 1 ? '' : 's'}
+          below are left unchanged by Save. Enable the provider to change them.
+        </sl-alert>
+        <ul class="managed-offline-rules">
+          ${rules.map(
+            (rule: any) => html`
+              <li>
+                ${rule.rule_type} ${rule.scope_type}
+                <code>${rule.identifier}</code>
+              </li>
+            `
+          )}
+        </ul>
+      `;
+    }
     return html`
       <h2>Configure Project Scope</h2>
       <div>
@@ -2168,6 +2200,13 @@ export class AddTrackerModal extends LitElement {
       config: connectionDetails,
       connection_details: connectionDetails,
     };
+    if (this.managedOfflineEdit) {
+      // The project list behind the stored EXCLUDE/PROJECT rules could not
+      // be read, so the rules cannot be rebuilt. Omitting the key keeps the
+      // server from replacing them (update_tracker only touches scope_rules
+      // when present).
+      delete trackerData.scope_rules;
+    }
 
     // Add auth-specific fields
     if (this.authMethod === 'github_app') {
