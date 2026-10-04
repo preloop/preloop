@@ -365,3 +365,33 @@ def test_user_hook_still_runs_after_the_reporter():
     reporter = PreloopBrowserUseReporter(TARGET, client=_client(Recorder()))
     asyncio.run(reporter.run(FakeAgent(_history()["history"][:3]), on_step_end=mine))
     assert seen == [1, 2, 3]
+
+
+def test_rows_refused_again_on_retry_keep_their_original_index():
+    rec = Recorder(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "accepted": 4,
+                    "duplicates": 0,
+                    "rejected": [
+                        {"index": 2, "error": "screenshot_invalid"},
+                        {"index": 5, "error": "screenshot_too_large"},
+                    ],
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "accepted": 1,
+                    "duplicates": 0,
+                    "rejected": [{"index": 1, "error": "extra_too_large"}],
+                },
+            ),
+        ]
+    )
+    steps = [{"source_step_id": str(i), "screenshot": {"x": 1}} for i in range(6)]
+    [result] = StepPoster(TARGET, client=_client(rec)).post(steps)
+    assert result.accepted == 5
+    assert result.rejected == [{"index": 5, "error": "extra_too_large"}]

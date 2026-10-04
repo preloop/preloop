@@ -124,7 +124,8 @@ class StepPoster:
             duplicates=int(body.get("duplicates", 0)),
             rejected=[],
         )
-        retry = []
+        retry: list[dict[str, Any]] = []
+        origin: list[int] = []  # batch index of each retried step
         for row in body.get("rejected") or []:
             index, error = row.get("index"), row.get("error")
             if (
@@ -137,6 +138,7 @@ class StepPoster:
                 step = {k: v for k, v in steps[index].items() if k != "screenshot"}
                 step["extra"] = {**step.get("extra", {}), "screenshot_omitted": error}
                 retry.append(step)
+                origin.append(index)
                 continue
             logger.warning("Preloop refused browser step %s", row)
             result.rejected.append(row)
@@ -149,7 +151,10 @@ class StepPoster:
             result.ok = result.ok and again.ok
             result.accepted += again.accepted
             result.duplicates += again.duplicates
-            result.rejected.extend(again.rejected or [])
+            for row in again.rejected or []:
+                sub = row.get("index")
+                ok = isinstance(sub, int) and 0 <= sub < len(origin)
+                result.rejected.append({**row, "index": origin[sub] if ok else 0})
         return result
 
     def _post_one(
