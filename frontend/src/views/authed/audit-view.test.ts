@@ -954,6 +954,26 @@ describe('AuditView', () => {
     });
   });
 
+  it('labels policy configuration changes with the policy name', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    const label = (element as any)._getPrimaryLabel({
+      action: 'configuration_change',
+      resource_id: 'policy',
+      details: {
+        config_type: 'policy',
+        action: 'version_deleted',
+        old_value: { name: 'v2' },
+      },
+    });
+    expect(label).to.equal('Policy version deleted: v2');
+    element.remove();
+  });
+
   describe('tool-name search and policy rows (#1136)', () => {
     const groupedCalls = () =>
       fetchStub
