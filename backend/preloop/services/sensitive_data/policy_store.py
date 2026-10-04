@@ -2,9 +2,10 @@
 
 The block lives on ``account.meta_data['sensitive_data']`` next to
 ``model_io_rules`` so the YAML editor, the console and the evaluators share
-one store. Readers never raise: a missing or malformed block resolves to the
-empty configuration so a bad write can never take detection or the gateway
-down.
+one store. Lenient readers never raise: a missing or malformed block
+resolves to the empty configuration so a bad write can never take the
+console or an export down. Enforcement readers pass ``strict=True`` and
+fail closed on a malformed block so a tool is not run unscanned.
 """
 
 from __future__ import annotations
@@ -36,9 +37,23 @@ def parse_sensitive_data_config(
     Lenient (default): anything invalid becomes the empty config, for
     readers that must never fail (exports, the console). Strict: a
     malformed block raises :class:`SensitiveDataPolicyError`, for enforcement
-    paths that must fail closed rather than run unscanned.
+    paths that must fail closed rather than run unscanned. A missing block
+    and an empty object are "no rules" in both modes. A stored value that is
+    not an object is malformed: under ``strict=True`` it must not read as
+    an empty config, or the tool runs unscanned.
     """
-    if not isinstance(raw, dict) or not raw:
+    if raw is None or raw == {}:
+        return SensitiveDataConfig()
+    if not isinstance(raw, dict):
+        if strict:
+            raise SensitiveDataPolicyError(
+                "stored sensitive_data block is invalid: expected an object, "
+                f"got {type(raw).__name__}"
+            )
+        logger.warning(
+            "Ignoring invalid sensitive_data policy block: expected an object, got %s",
+            type(raw).__name__,
+        )
         return SensitiveDataConfig()
     try:
         return SensitiveDataConfig.model_validate(raw)

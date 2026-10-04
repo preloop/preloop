@@ -821,6 +821,22 @@ async def test_policy_load_failure_fails_closed(proxied, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_non_dict_stored_block_fails_closed(proxied, monkeypatch, mocker) -> None:
+    """A stored list is not an empty policy: the tool must not run unscanned."""
+    from preloop.services import dynamic_fastmcp
+
+    account = MagicMock()
+    account.meta_data = {"sensitive_data": ["not-a-block"]}
+    mocker.patch("preloop.models.crud.crud_account.get", return_value=account)
+    monkeypatch.setattr(dynamic_fastmcp, "get_db", lambda: iter([MagicMock()]))
+    mcp, client, _evaluate, _approval = proxied
+    result = await mcp.call_tool("save_note", {"note": "x"})
+    assert result.is_error
+    assert "could not be loaded" in result.content[0].text
+    client.call_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_malformed_stored_block_fails_closed(
     proxied, monkeypatch, mocker
 ) -> None:

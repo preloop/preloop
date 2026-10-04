@@ -66,8 +66,9 @@ from preloop.services.sensitive_data.detectors import (
     DetectorTimeoutError,
 )
 from preloop.services.sensitive_data.policy_store import (
+    SENSITIVE_DATA_META_KEY,
     detector_config_from,
-    load_sensitive_data_config,
+    parse_sensitive_data_config,
 )
 from preloop.services.sensitive_data.tool_policy import (
     compile_model_io_rules,
@@ -1038,9 +1039,21 @@ def _load_gateway_policy_rules(
     try:
         try:
             account_id = gateway.auth_context.account_id
-            rules = load_model_io_rules(gateway.db, account_id)
+            # One account read. ``load_model_io_rules`` and
+            # ``load_sensitive_data_config`` each SELECT the same row, and
+            # this function runs on both the request and response sides of
+            # the gateway chat hot path. The query budget counts those
+            # statements; a second round trip is not required because both
+            # blocks live on ``account.meta_data``.
+            account = crud_account.get(gateway.db, id=account_id)
+            meta = getattr(account, "meta_data", None) if account is not None else None
+            if not isinstance(meta, dict):
+                meta = {}
+            rules = parse_model_io_rules(meta.get(MODEL_IO_META_KEY))
             try:
-                sensitive = load_sensitive_data_config(gateway.db, account_id)
+                sensitive = parse_sensitive_data_config(
+                    meta.get(SENSITIVE_DATA_META_KEY)
+                )
             except Exception:  # noqa: BLE001 - built-ins only is a safe default
                 sensitive = None
             if sensitive is not None and sensitive.rules:
