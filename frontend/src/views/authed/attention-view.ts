@@ -99,6 +99,8 @@ const DISMISS_REASON_LABELS: Record<string, string> = {
 export class AttentionView extends AuthedElement {
   @state() private loading = true;
   @state() private approvals: AttentionApproval[] = [];
+  @state() private approvalsReady = false;
+  private resolvedApprovalIds = new Set<string>();
   @state() private agents: ManagedAgentSummary[] = [];
   @state() private sessions: RuntimeSessionSummary[] = [];
   @state() private executions: AttentionFlowExecution[] = [];
@@ -119,6 +121,11 @@ export class AttentionView extends AuthedElement {
    * an allow-list otherwise. Writing a dismissal needs `manage_agents`.
    */
   @state() private permissions: UserPermissions = null;
+  @state() private permissionsReady = false;
+  @state() private permissionsLoading = false;
+  @state() private permissionsError: string | null = null;
+  private permissionsRequest: Promise<void> | null = null;
+  private permissionsGeneration = 0;
   @state() private lastUpdatedAt: string | null = null;
   @state() private billingEnabled = false;
   @state() private showLimitsDialog = false;
@@ -607,12 +614,22 @@ export class AttentionView extends AuthedElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    // Permissions recover independently when an older analytics wave is held.
+    void this.loadPermissions();
     void this.fetchAll();
     this.connectRealtime();
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.refreshGeneration;
+    ++this.permissionsGeneration;
+    this.permissionsRequest = null;
+    this.permissionsLoading = false;
+    this.permissionsReady = false;
+    this.permissions = null;
+    this.permissionsError = null;
+    this.refreshQueued = false;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -641,8 +658,16 @@ export class AttentionView extends AuthedElement {
     void unifiedWebSocketManager.connect();
   }
 
-  /** Bursts of websocket events collapse into one refetch. */
+  private refreshInFlight: Promise<void> | null = null;
+  private refreshQueued = false;
+  private refreshGeneration = 0;
+
+  /** Bursts collapse into one refresh after the current wave completes. */
   private scheduleRefresh(): void {
+    if (this.refreshInFlight) {
+      this.refreshQueued = true;
+      return;
+    }
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
     }
@@ -653,15 +678,79 @@ export class AttentionView extends AuthedElement {
   }
 
   private async fetchAll(): Promise<void> {
+    if (this.refreshInFlight) {
+      this.refreshQueued = true;
+      return this.refreshInFlight;
+    }
+    if (this.refreshTimer !== null) {
+      window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    this.refreshQueued = false;
+    const pending = this.performFetchAll(++this.refreshGeneration);
+    this.refreshInFlight = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.refreshInFlight === pending) this.refreshInFlight = null;
+      if (this.refreshQueued && this.isConnected) {
+        this.refreshQueued = false;
+        this.scheduleRefresh();
+      }
+    }
+  }
+
+  /** Retry permissions separately so a slow analytics wave cannot block recovery. */
+  private loadPermissions(): Promise<void> {
+    if (this.permissionsRequest) return this.permissionsRequest;
+    const generation = ++this.permissionsGeneration;
+    this.permissionsLoading = true;
+    this.permissionsError = null;
+    const request = getUserProfile()
+      .then((profile) => {
+        if (generation !== this.permissionsGeneration || !this.isConnected)
+          return;
+        this.permissions = profile?.permissions ?? null;
+        this.permissionsReady = true;
+      })
+      .catch(() => {
+        if (generation !== this.permissionsGeneration || !this.isConnected)
+          return;
+        this.permissionsReady = false;
+        this.permissionsError =
+          'Could not load your permissions. Retry to enable approval decisions.';
+      })
+      .finally(() => {
+        if (this.permissionsRequest === request) this.permissionsRequest = null;
+        if (generation === this.permissionsGeneration)
+          this.permissionsLoading = false;
+      });
+    this.permissionsRequest = request;
+    return request;
+  }
+
+  private async performFetchAll(generation: number): Promise<void> {
     // Exactly the same loader the Overview uses, so the hero count and this
     // page can never be computed from differently shaped data.
-    const [inputs, features, profile] = await Promise.all([
-      loadAttentionInputs(),
+    const [inputs, features] = await Promise.all([
+      loadAttentionInputs({
+        onApprovalsLoaded: (approvals) => {
+          if (generation !== this.refreshGeneration || !this.isConnected)
+            return;
+          this.approvals = approvals.filter(
+            (approval) => !this.resolvedApprovalIds.has(approval.id)
+          );
+          this.approvalsReady = true;
+        },
+      }),
       getFeatures().catch(() => null),
-      getUserProfile().catch(() => null),
+      this.loadPermissions(),
     ]);
 
-    this.approvals = (inputs.approvals || []) as AttentionApproval[];
+    if (generation !== this.refreshGeneration || !this.isConnected) return;
+    this.approvals = ((inputs.approvals || []) as AttentionApproval[]).filter(
+      (approval) => !this.resolvedApprovalIds.has(approval.id)
+    );
     this.agents = inputs.agents || [];
     this.sessions = inputs.sessions || [];
     this.executions = (inputs.executions || []) as AttentionFlowExecution[];
@@ -673,7 +762,6 @@ export class AttentionView extends AuthedElement {
     this.spendOutliers = inputs.spendOutliers || [];
     this.dismissals = (inputs.dismissals || []) as AttentionDismissal[];
     this.dismissalsSupported = inputs.dismissalsSupported;
-    this.permissions = profile?.permissions ?? null;
     this.billingEnabled = features?.features?.billing === true;
 
     this.lastUpdatedAt = new Date().toISOString();
@@ -838,7 +926,7 @@ export class AttentionView extends AuthedElement {
           size="small"
           variant="success"
           ?loading=${this.busyItemId === item.id}
-          ?disabled=${this.busyItemId === item.id}
+          ?disabled=${this.busyItemId === item.id || !this.permissionsReady}
           @click=${() => this.approveFromRow(item)}
         >
           Approve
@@ -848,7 +936,7 @@ export class AttentionView extends AuthedElement {
           size="small"
           variant="danger"
           outline
-          ?disabled=${this.busyItemId === item.id}
+          ?disabled=${this.busyItemId === item.id || !this.permissionsReady}
           @click=${() => this.denyFromRow(item)}
         >
           Deny
@@ -939,12 +1027,16 @@ export class AttentionView extends AuthedElement {
    */
   private async approveFromRow(item: AttentionItem): Promise<void> {
     const approval = item.approval;
-    if (!approval) return;
+    if (!approval || !this.permissionsReady) return;
     this.busyItemId = item.id;
     try {
       await approveRequest(approval.id);
+      this.resolvedApprovalIds.add(approval.id);
+      this.approvals = this.approvals.filter(
+        (request) => request.id !== approval.id
+      );
       showToast(`Approved ${approval.toolName}.`, 'success');
-      await this.fetchAll();
+      void this.fetchAll();
     } catch (error: any) {
       showToast(error?.message || 'Failed to approve the request', 'danger');
     } finally {
@@ -955,7 +1047,7 @@ export class AttentionView extends AuthedElement {
   /** Denying stops the agent, so it confirms first (DESIGN.md destructive). */
   private async denyFromRow(item: AttentionItem): Promise<void> {
     const approval = item.approval;
-    if (!approval) return;
+    if (!approval || !this.permissionsReady) return;
     const confirmed = await confirmDialog({
       title: 'Deny this request?',
       message: `${approval.toolName} will not run.`,
@@ -969,8 +1061,12 @@ export class AttentionView extends AuthedElement {
     this.busyItemId = item.id;
     try {
       await declineRequest(approval.id);
+      this.resolvedApprovalIds.add(approval.id);
+      this.approvals = this.approvals.filter(
+        (request) => request.id !== approval.id
+      );
       showToast(`Denied ${approval.toolName}.`, 'neutral');
-      await this.fetchAll();
+      void this.fetchAll();
     } catch (error: any) {
       showToast(error?.message || 'Failed to deny the request', 'danger');
     } finally {
@@ -1801,10 +1897,26 @@ export class AttentionView extends AuthedElement {
       <div class="column-layout wide">
         <div class="main-column">
           ${
-            this.loading
-              ? html`<div class="loading-container">
-                  <sl-spinner style="font-size: 2rem;"></sl-spinner>
+            this.permissionsError
+              ? html`<div role="alert" class="row-detail">
+                  ${this.permissionsError}
+                  <sl-button
+                    class="retry-permissions"
+                    size="small"
+                    ?loading=${this.permissionsLoading}
+                    @click=${() => void this.loadPermissions()}
+                    >Retry permissions</sl-button
+                  >
                 </div>`
+              : nothing
+          }
+          ${
+            this.loading
+              ? html`${this.approvalsReady ? this.renderSection('approval', grouped.get('approval') || []) : nothing}
+                  <div class="loading-container" role="status">
+                    <sl-spinner style="font-size: 2rem;"></sl-spinner>
+                    <span>Loading other attention items…</span>
+                  </div>`
               : html`
                   ${this.renderChipStrip(grouped)}
                   ${

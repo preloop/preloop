@@ -61,7 +61,11 @@ describe('ToolsView (approvals + conditions)', () => {
         const method = (init?.method || 'GET').toUpperCase();
 
         // Initial ToolsView.loadData() requests
-        if (url.endsWith('/api/v1/tools') && method === 'GET') {
+        if (
+          (url.endsWith('/api/v1/tools') ||
+            url.endsWith('/api/v1/tools/summary')) &&
+          method === 'GET'
+        ) {
           return new Response(JSON.stringify([tool]), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -197,6 +201,188 @@ describe('ToolsView (approvals + conditions)', () => {
     invalidateApiCaches();
   });
 
+  it('renders summary rows while catalogs are pending and loads schemas only on expansion', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === '/api/v1/mcp-servers') await pending;
+      let data: unknown = [];
+      if (url.includes('/tools'))
+        data = [
+          {
+            name: 'example_tool',
+            description: 'Example',
+            source: 'builtin',
+            source_id: null,
+            source_name: 'Built-in',
+            is_enabled: true,
+            is_supported: true,
+            access_rules: [],
+            schema: { properties: { name: { type: 'string' } } },
+          },
+        ];
+      else if (url === '/api/v1/features') data = { features: {} };
+      else if (url === '/api/v1/auth/users/me') data = { id: 'user-1' };
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    try {
+      await waitUntil(
+        () => !(el as any).loading && (el as any).tools.length === 1
+      );
+      await el.updateComplete;
+      const editor = el.shadowRoot!.querySelector('tools-editor-component')!;
+      expect(editor).to.exist;
+      expect(editor.hasAttribute('inert')).to.equal(true);
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) => call.args[0].toString() === '/api/v1/tools')
+      ).to.have.length(0);
+    } finally {
+      release();
+    }
+    await waitUntil(() => !(el as any).toolsContextLoading);
+    const editor = el.shadowRoot!.querySelector('tools-editor-component')!;
+    editor.dispatchEvent(
+      new CustomEvent('toggle-expand', { bubbles: true, composed: true })
+    );
+    await waitUntil(() => (el as any).toolsSchemasReady);
+    expect((el as any).tools[0].schema.properties.name.type).to.equal('string');
+    editor.dispatchEvent(
+      new CustomEvent('toggle-expand', { bubbles: true, composed: true })
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => call.args[0].toString() === '/api/v1/tools')
+    ).to.have.length(1);
+  });
+
+  it('hydrates same-name native and builtin tools from their own source', async () => {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(el as any).toolsContextLoading);
+    const base = (el as any).tools[0];
+    (el as any).tools = [
+      { ...base, name: 'same_tool', source: 'builtin', source_id: null },
+      { ...base, name: 'same_tool', source: 'native', source_id: null },
+    ];
+    fetchStub.withArgs('/api/v1/tools').resolves(
+      new Response(
+        JSON.stringify([
+          {
+            ...base,
+            name: 'same_tool',
+            source: 'native',
+            source_id: null,
+            schema: { properties: { native_arg: { type: 'number' } } },
+          },
+          {
+            ...base,
+            name: 'same_tool',
+            source: 'builtin',
+            source_id: null,
+            schema: { properties: { builtin_arg: { type: 'string' } } },
+          },
+        ]),
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    await (el as any).loadToolSchemas();
+    expect((el as any).tools[0].schema.properties).to.deep.equal({
+      builtin_arg: { type: 'string' },
+    });
+    expect((el as any).tools[1].schema.properties).to.deep.equal({
+      native_arg: { type: 'number' },
+    });
+  });
+
+  it('keeps a new schema request active when a prior refresh response finishes', async () => {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(el as any).toolsContextLoading);
+    const base = (el as any).tools[0];
+    let releaseOld!: (response: Response) => void;
+    let releaseNew!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      releaseOld = resolve;
+    });
+    const newResponse = new Promise<Response>((resolve) => {
+      releaseNew = resolve;
+    });
+    const schemas = fetchStub.withArgs('/api/v1/tools');
+    schemas.onFirstCall().returns(oldResponse);
+    schemas.onSecondCall().returns(newResponse);
+    const response = (field: string) =>
+      new Response(
+        JSON.stringify([
+          { ...base, schema: { properties: { [field]: { type: 'string' } } } },
+        ]),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    const oldLoad = (el as any).loadToolSchemas();
+    await (el as any).loadData();
+    expect((el as any).toolsSchemasLoading).to.equal(false);
+    // Give the new generation its own transport wave rather than the API
+    // client's shared GET promise, so stale view cleanup runs while it waits.
+    invalidateApiCaches();
+    const newLoad = (el as any).loadToolSchemas();
+    const activeRequest = (el as any).toolsSchemaRequest;
+    try {
+      releaseOld(response('stale'));
+      await oldLoad;
+      expect((el as any).toolsSchemasLoading).to.equal(true);
+      expect((el as any).toolsSchemaRequest).to.equal(activeRequest);
+      expect((el as any).tools[0].schema).to.deep.equal({});
+    } finally {
+      releaseOld(response('stale'));
+      releaseNew(response('current'));
+      await newLoad;
+    }
+    expect((el as any).toolsSchemasLoading).to.equal(false);
+    expect((el as any).toolsSchemasReady).to.equal(true);
+    expect((el as any).tools[0].schema.properties).to.deep.equal({
+      current: { type: 'string' },
+    });
+    expect(schemas.callCount).to.equal(2);
+  });
+
+  it('does not save a rule if full tool schemas cannot be loaded', async () => {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(el as any).toolsContextLoading);
+    const previous = (el as any).tools;
+    fetchStub
+      .withArgs('/api/v1/tools')
+      .resolves(new Response('{}', { status: 500 }));
+    fetchStub.resetHistory();
+    await (el as any)._handleSaveRule(
+      new CustomEvent('save-rule', {
+        detail: {
+          tool: previous[0],
+          existingRule: null,
+          formData: {
+            action: 'allow',
+            condition_expression: '',
+            description: '',
+            is_enabled: true,
+          },
+        },
+      })
+    );
+    expect((el as any).tools).to.equal(previous);
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => (call.args[1]?.method || 'GET') !== 'GET')
+    ).to.have.length(0);
+    expect((el as any).error).to.include('Could not load tool schemas');
+  });
+
   it('renders the summary strip counts and the unavailable count', async () => {
     const availableTool = {
       name: 'example_tool',
@@ -247,7 +433,10 @@ describe('ToolsView (approvals + conditions)', () => {
 
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/api/v1/tools')) {
+      if (
+        url.endsWith('/api/v1/tools') ||
+        url.endsWith('/api/v1/tools/summary')
+      ) {
         return new Response(
           JSON.stringify([availableTool, unavailableTool, agentTool]),
           {
@@ -690,7 +879,11 @@ describe('ToolsView – tabs and toolbar', () => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
 
-        if (url.endsWith('/api/v1/tools') && method === 'GET') {
+        if (
+          (url.endsWith('/api/v1/tools') ||
+            url.endsWith('/api/v1/tools/summary')) &&
+          method === 'GET'
+        ) {
           return new Response(JSON.stringify(tools), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -1692,7 +1885,11 @@ describe('ToolsView – starter policy suggestions', () => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
 
-        if (url.endsWith('/api/v1/tools') && method === 'GET') {
+        if (
+          (url.endsWith('/api/v1/tools') ||
+            url.endsWith('/api/v1/tools/summary')) &&
+          method === 'GET'
+        ) {
           return new Response(JSON.stringify(tools), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },

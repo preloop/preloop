@@ -118,8 +118,38 @@ page is unchanged.
     `meta_data.estimate_fields`), the synced row winning. A reading that
     states nothing never clears a stored estimate. Empty when the tracker has
     no estimate.
+*   **Cycle-time definitions:** the report measures from the first agent run
+    to the merge, never from ticket creation.
+    *   `first_event_at` is the earliest start of any execution attributed to
+        the issue, across all flows. It is not the ticket's creation time:
+        time a ticket waited before its first run is not measured.
+    *   `pr_opened_at` is when the linked pull request was opened, with the
+        provenance in `pr_opened_at_source` (`forge`, else `bind`, else
+        `run_end`; see below).
+    *   `approved_at` is the earliest recorded approval event (GitHub review
+        with state approved, GitLab `merge_request_approved`, Bitbucket Cloud
+        `pullrequest:approved`) at the time the forge reported for it. It is
+        not verified mergeability: required checks, approval counts and
+        branch restrictions are not evaluated, so a pull request can be
+        approved and still not mergeable.
+    *   `merged_at` is the earliest recorded merge event (Bitbucket Cloud
+        `pullrequest:fulfilled` uses the pull request's `updated_on`).
+    *   `first_event_to_pr_opened_hours`, `pr_opened_to_approved_hours` and
+        `approved_to_merged_hours` are elapsed UTC hours between those
+        milestones, rounded to two decimals, blank when a milestone is missing
+        or the two are out of order. No interval runs from ticket creation,
+        and approval-to-merge is not a time-to-mergeable figure. Ticket
+        creation to an observed ready-for-merge state is a separate,
+        explicitly scoped metric.
+    *   Redelivered or out-of-order webhooks never move a milestone: the
+        earliest approval and merge times win, and approval and merge events
+        are never counted as executions.
 *   **Report:** `GET /api/v1/cost/by-issue` filters issues by first event
-    time and shows their lifetime totals. The per-project and per-flow
+    time (`start_date` inclusive, `end_date` exclusive) and shows their
+    lifetime totals. An issue whose first run started before the period is
+    excluded even when its merge falls inside it. A flow filter restricts
+    cost, tokens, runs and execution ids to that flow's executions; the
+    milestones and intervals stay those of the whole issue. The per-project and per-flow
     summaries are sums of the rows. `/unassigned/executions` lists the runs
     in the unassigned bucket for the same filter. `/export` returns CSV
     (issue grain plus one unassigned row) or JSON (with execution ids).
@@ -178,6 +208,39 @@ page is unchanged.
     the row reports no attributable total. A consumer that wants a total
     only where one exists sums `attributed_cost_usd` and treats the blanks as
     unknown.
+*   **Worked example (synthetic):** a Jira ticket `REC-7` created at 08:00
+    UTC, a Bitbucket Cloud pull request and five runs, as recorded by the
+    reconciliation fixture `backend/tests/issue_cost_reconciliation.py`:
+
+    | Time (UTC) | Event | Cost |
+    | --- | --- | --- |
+    | 08:00 | Ticket created (not measured) | |
+    | 09:00 | Implementation run starts and fails | 1.00 |
+    | 09:20 | Distinct retry publishes the pull request | 0.25 |
+    | 10:00 | Bitbucket `created_on` (Preloop bound it at 10:05) | |
+    | 10:30 | Review run, triggered by `pullrequest:created` | 0.50 |
+    | 11:00 | Repair turn resuming the review | 0.10 |
+    | 11:30 | Seat-backed review run, no per-run price | null |
+    | 12:00 | `pullrequest:approved` (delivered twice, after the merge) | |
+    | 13:00 | `pullrequest:fulfilled` (delivered twice) | |
+
+    The issue row reports `first_event_at` 09:00, `pr_opened_at` 10:00 with
+    source `forge`, intervals 1, 2 and 1 hours, `estimated_cost` 1.85 from
+    four priced runs, `run_count` 5, `failed_run_count` 1, `cost_coverage`
+    `partial` and a null `attributed_cost_usd`. A missing Jira original
+    estimate stays blank, and a story points field set to 0 reports 0. The
+    08:00 to 12:00 span is never reported: it would claim a mergeable time
+    the report does not observe.
+*   **Reconciliation procedure:** for one issue, export JSON and CSV with the
+    same filter. Check that the JSON `execution_ids` are exactly the runs you
+    expect (one per unique execution; a retry is its own run), that
+    `estimated_cost` equals the sum of their known costs and the run counts
+    match, that the per-flow and per-project summaries add up to the rows,
+    and that the unassigned bucket holds the runs that could not be tied to
+    one issue. Compare the four timestamps (UTC offsets included), the three
+    intervals and the blank or null cells between the two exports. A run
+    whose `estimated_cost` is null is counted in `unknown_cost_run_count`,
+    not as zero.
 
 ## Spend outlier alerts
 

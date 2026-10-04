@@ -1,7 +1,7 @@
 """Add Copilot login mappings and finding supersession (#1061).
 
 Revision ID: 20261004_copilot_user_mapping
-Revises: 20261004_artifact_created_idx
+Revises: 20261004_audit_lookup_idx
 Create Date: 2026-10-04
 
 ``copilot_user_mapping`` ties one canonical GitHub login of the connected
@@ -23,7 +23,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "20261004_copilot_user_mapping"
-down_revision: Union[str, None] = "20261004_artifact_created_idx"
+down_revision: Union[str, None] = "20261004_audit_lookup_idx"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

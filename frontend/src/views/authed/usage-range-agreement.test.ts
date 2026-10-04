@@ -94,7 +94,13 @@ describe('usage range agreement', () => {
         return json(usageSummary);
       }
       if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
-        recordWindow('api-usage', url);
+        // Comparison totals load independently and can arrive first. Compare
+        // the displayed current window, identified by its breakdown request.
+        if (
+          new URLSearchParams(url.split('?')[1]).get('include_breakdown') ===
+          'true'
+        )
+          recordWindow('api-usage', url);
         return json(usageSummary);
       }
       if (url.startsWith('/api/v1/ai-models/model-1/summary')) {

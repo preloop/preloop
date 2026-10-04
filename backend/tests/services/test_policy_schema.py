@@ -170,30 +170,8 @@ class TestPolicyDocumentReferenceErrors:
         with pytest.raises(ValueError, match="Duplicate approval workflow name"):
             PolicyDocument(**data)
 
-    def test_tool_references_unknown_approval_workflow(self):
-        data = _minimal_doc(
-            approval_workflows=[_approval_workflow("real-pol")],
-            tools=[_tool("bash", approval_workflow="nonexistent")],
-        )
-        with pytest.raises(ValueError, match="unknown approval workflow"):
-            PolicyDocument(**data)
-
-    def test_tool_references_unknown_mcp_server(self):
-        data = _minimal_doc(
-            mcp_servers=[_server("real-srv")],
-            tools=[_tool("bash", source="nonexistent-srv")],
-        )
-        with pytest.raises(ValueError, match="unknown MCP server"):
-            PolicyDocument(**data)
-
-    def test_default_approval_workflow_unknown(self):
-        data = _minimal_doc(
-            defaults={"default_approval_workflow": "missing"},
-        )
-        with pytest.raises(ValueError, match="Default approval workflow"):
-            PolicyDocument(**data)
-
-    def test_escalation_workflow_unknown(self):
+    def test_cross_references_are_not_resolved_at_schema_level(self):
+        """References may point at account objects; the applier resolves them (#1134)."""
         data = _minimal_doc(
             approval_workflows=[
                 _approval_workflow(
@@ -201,12 +179,21 @@ class TestPolicyDocumentReferenceErrors:
                     approval_type="ai_driven",
                     ai_model="claude-sonnet-4-20250514",
                     ai_guidelines="Review for safety",
-                    escalation_workflow="missing-policy",
+                    escalation_workflow="account-workflow",
                 ),
             ],
+            tools=[
+                _tool(
+                    "bash",
+                    source="account-server",
+                    approval_workflow="account-workflow",
+                )
+            ],
+            defaults={"default_approval_workflow": "account-workflow"},
         )
-        with pytest.raises(ValueError, match="unknown.*escalation_workflow"):
-            PolicyDocument(**data)
+        doc = PolicyDocument(**data)
+        assert doc.tools[0].source == "account-server"
+        assert doc.tools[0].approval_workflow == "account-workflow"
 
 
 # ===========================================================================
