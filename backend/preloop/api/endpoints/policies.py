@@ -215,81 +215,117 @@ async def validate_policy(
     # Validate the policy schema
     policy, result = load_policy_from_string(content_str, format=format)
 
-    # If schema is valid and we should check server references, do additional validation
-    if policy and result.is_valid and check_server_references:
-        # Build set of servers defined in the policy file
-        policy_servers = set()
-        if policy.mcp_servers:
-            policy_servers = {server.name.lower() for server in policy.mcp_servers}
+    # Cross-references are resolved against the policy file plus the account.
+    # Approval workflow references are always checked; MCP server references
+    # only when check_server_references is set.
+    if policy and result.is_valid:
+        policy_servers = {s.name.lower() for s in policy.mcp_servers or []}
+        policy_approval_workflows = {w.name for w in policy.approval_workflows or []}
 
-        # Build set of policies defined in the policy file
-        policy_approval_workflows = set()
-        if policy.approval_workflows:
-            policy_approval_workflows = {w.name for w in policy.approval_workflows}
-
-        # Get existing servers from the database
-        existing_servers = crud_mcp_server.get_active_by_account(
-            db, account_id=str(account.id)
-        )
-        existing_server_names = {s.name.lower() for s in existing_servers}
-        all_available_servers = policy_servers | existing_server_names
-
-        # Get existing policies from the database
         existing_workflows = crud_approval_workflow.get_multi_by_account(
             db, account_id=str(account.id)
         )
-        existing_workflow_names = {w.name for w in existing_workflows}
-        all_available_workflows = policy_approval_workflows | existing_workflow_names
+        all_available_workflows = policy_approval_workflows | {
+            w.name for w in existing_workflows
+        }
+        all_available_servers: set[str] = set()
+        if check_server_references:
+            existing_servers = crud_mcp_server.get_active_by_account(
+                db, account_id=str(account.id)
+            )
+            all_available_servers = policy_servers | {
+                s.name.lower() for s in existing_servers
+            }
 
-        # Check tool references
-        if policy.tools:
-            for idx, tool in enumerate(policy.tools):
-                # Check MCP server references
-                source_lower = tool.source.lower()
-                if not is_known_tool_source(source_lower):
-                    if source_lower not in all_available_servers:
-                        available_list = ", ".join(sorted(all_available_servers))
-                        result.errors.append(
-                            PolicyValidationError(
-                                path=f"$.tools[{idx}].source",
-                                message=(
-                                    f"Tool '{tool.name}' references MCP server "
-                                    f"'{tool.source}' which is not configured. "
-                                    f"Either add the server to your policy file "
-                                    f"under 'mcp_servers', or configure it in the "
-                                    f"console first."
-                                ),
-                                value=tool.source,
-                            )
-                        )
-                        if all_available_servers:
-                            result.warnings.append(
-                                f"Available MCP servers: [{available_list}]"
-                            )
+        missing_server_seen = False
+        missing_workflow_seen = False
 
-                # Check approval workflow references
-                if tool.approval_workflow:
-                    if tool.approval_workflow not in all_available_workflows:
-                        available_list = ", ".join(sorted(all_available_workflows))
-                        result.errors.append(
-                            PolicyValidationError(
-                                path=f"$.tools[{idx}].approval_workflow",
-                                message=(
-                                    f"Tool '{tool.name}' references approval workflow "
-                                    f"'{tool.approval_workflow}' which is not defined. "
-                                    f"Either add the workflow to your policy file "
-                                    f"under 'approval_workflows', or configure it in "
-                                    f"the console first."
-                                ),
-                                value=tool.approval_workflow,
-                            )
-                        )
-                        if all_available_workflows:
-                            result.warnings.append(
-                                f"Available approval workflows: [{available_list}]"
-                            )
+        def _workflow_error(path: str, owner: str, name: str) -> None:
+            nonlocal missing_workflow_seen
+            missing_workflow_seen = True
+            result.errors.append(
+                PolicyValidationError(
+                    path=path,
+                    message=(
+                        f"{owner} references approval workflow '{name}' which "
+                        f"is not defined. Either add the workflow to your "
+                        f"policy file under 'approval_workflows', or configure "
+                        f"it in the console first."
+                    ),
+                    value=name,
+                )
+            )
 
-        # Update validity based on new errors
+        for idx, tool in enumerate(policy.tools or []):
+            source_lower = tool.source.lower()
+            if (
+                check_server_references
+                and not is_known_tool_source(source_lower)
+                and source_lower not in all_available_servers
+            ):
+                missing_server_seen = True
+                result.errors.append(
+                    PolicyValidationError(
+                        path=f"$.tools[{idx}].source",
+                        message=(
+                            f"Tool '{tool.name}' references MCP server "
+                            f"'{tool.source}' which is not configured. "
+                            f"Either add the server to your policy file "
+                            f"under 'mcp_servers', or configure it in the "
+                            f"console first."
+                        ),
+                        value=tool.source,
+                    )
+                )
+            if (
+                tool.approval_workflow
+                and tool.approval_workflow not in all_available_workflows
+            ):
+                _workflow_error(
+                    f"$.tools[{idx}].approval_workflow",
+                    f"Tool '{tool.name}'",
+                    tool.approval_workflow,
+                )
+
+        for idx, rule in enumerate(policy.model_io or []):
+            if (
+                rule.approval_workflow
+                and rule.approval_workflow not in all_available_workflows
+            ):
+                _workflow_error(
+                    f"$.model_io[{idx}].approval_workflow",
+                    f"model_io rule '{rule.id}'",
+                    rule.approval_workflow,
+                )
+
+        if policy.defaults and policy.defaults.default_approval_workflow:
+            name = policy.defaults.default_approval_workflow
+            if name not in all_available_workflows:
+                _workflow_error(
+                    "$.defaults.default_approval_workflow", "Defaults", name
+                )
+
+        for idx, wf in enumerate(policy.approval_workflows or []):
+            if (
+                wf.escalation_workflow
+                and wf.escalation_workflow not in all_available_workflows
+            ):
+                _workflow_error(
+                    f"$.approval_workflows[{idx}].escalation_workflow",
+                    f"Approval workflow '{wf.name}'",
+                    wf.escalation_workflow,
+                )
+
+        if missing_server_seen and all_available_servers:
+            result.warnings.append(
+                f"Available MCP servers: [{', '.join(sorted(all_available_servers))}]"
+            )
+        if missing_workflow_seen and all_available_workflows:
+            result.warnings.append(
+                "Available approval workflows: "
+                f"[{', '.join(sorted(all_available_workflows))}]"
+            )
+
         if result.errors:
             result.is_valid = False
 

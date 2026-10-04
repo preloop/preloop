@@ -931,6 +931,21 @@ class PolicyApplier:
                     f"is not defined. {suggestion}"
                 )
 
+        # Validate escalation_workflow references on approval workflows
+        for workflow in policy.approval_workflows or []:
+            if (
+                workflow.escalation_workflow
+                and workflow.escalation_workflow not in all_available_workflows
+            ):
+                suggestion = self._get_workflow_suggestion(
+                    workflow.escalation_workflow, all_available_workflows
+                )
+                errors.append(
+                    f"Approval workflow '{workflow.name}' references escalation "
+                    f"workflow '{workflow.escalation_workflow}' which is not "
+                    f"defined. {suggestion}"
+                )
+
         return errors
 
     def _get_server_suggestion(self, server_name: str, available_servers: set) -> str:

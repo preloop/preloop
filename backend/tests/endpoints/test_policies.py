@@ -618,6 +618,92 @@ tools:
         assert any("nonexistent-policy" in e.message for e in result.errors)
 
 
+class TestValidatePolicyAccountReferences:
+    """validate resolves references against the account (#1134)."""
+
+    @pytest.fixture
+    def account_objects(self, db_session, test_user):
+        from preloop.models import models
+
+        db_session.add_all(
+            [
+                models.MCPServer(
+                    name="my-server",
+                    url="http://localhost:8080/mcp",
+                    transport="http-streaming",
+                    auth_type="none",
+                    account_id=test_user.account_id,
+                    status="active",
+                ),
+                models.ApprovalWorkflow(
+                    account_id=test_user.account_id, name="my-workflow"
+                ),
+            ]
+        )
+        db_session.flush()
+        return test_user
+
+    async def _validate(self, db_session, user, upload, content):
+        return await policies.validate_policy(
+            file=await upload(content, "p.yaml"),
+            check_server_references=True,
+            account=user.account,
+            current_user=user,
+            db=db_session,
+        )
+
+    async def test_existing_server_and_workflow_are_valid(
+        self, db_session, account_objects, mock_upload_file
+    ):
+        result = await self._validate(
+            db_session,
+            account_objects,
+            mock_upload_file,
+            """
+version: "1.0"
+metadata:
+  name: "refs"
+tools:
+  - name: "do_thing"
+    source: "my-server"
+    approval_workflow: "my-workflow"
+model_io:
+  - id: "r1"
+    target: "model.response"
+    approval_workflow: "my-workflow"
+    conditions:
+      - expression: "true"
+        action: "require_approval"
+""",
+        )
+        assert result.is_valid is True, result.errors
+
+    async def test_missing_references_list_available_names(
+        self, db_session, account_objects, mock_upload_file
+    ):
+        result = await self._validate(
+            db_session,
+            account_objects,
+            mock_upload_file,
+            """
+version: "1.0"
+metadata:
+  name: "refs"
+tools:
+  - name: "do_thing"
+    source: "other-server"
+    approval_workflow: "other-workflow"
+""",
+        )
+        assert result.is_valid is False
+        assert {e.path for e in result.errors} == {
+            "$.tools[0].source",
+            "$.tools[0].approval_workflow",
+        }
+        assert "Available MCP servers: [my-server]" in result.warnings
+        assert "Available approval workflows: [my-workflow]" in result.warnings
+
+
 # ============================================================================
 # Policy Version Management Endpoint Tests
 # ============================================================================

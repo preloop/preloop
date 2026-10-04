@@ -413,3 +413,107 @@ class TestPolicyApplierDefaults:
         assert "restrictive default settings" in applier._result.errors[0]
         assert "unknown_tools='require_approval'" in applier._result.errors[0]
         assert "BaseModel.__init__" not in applier._result.errors[0]
+
+
+class TestPolicyApplierAccountReferences:
+    """Cross-references resolve against objects already in the account (#1134)."""
+
+    @pytest.fixture
+    def existing_objects(self, db_session, test_user):
+        from preloop.models import models
+
+        server = models.MCPServer(
+            name="my-server",
+            url="http://localhost:8080/mcp",
+            transport="http-streaming",
+            auth_type="none",
+            account_id=test_user.account_id,
+            status="active",
+        )
+        workflow = models.ApprovalWorkflow(
+            account_id=test_user.account_id, name="my-workflow"
+        )
+        db_session.add_all([server, workflow])
+        db_session.flush()
+        return server, workflow
+
+    @staticmethod
+    def _yaml(source: str, workflow: str) -> str:
+        return f"""
+version: "1.0"
+metadata:
+  name: "refs"
+tools:
+  - name: "do_thing"
+    source: "{source}"
+    approval_workflow: "{workflow}"
+"""
+
+    def test_existing_server_and_workflow_validate_and_apply(
+        self, db_session, test_user, existing_objects
+    ):
+        policy, result = load_policy_from_string(self._yaml("my-server", "my-workflow"))
+        assert result.is_valid, result.errors
+        applier = PolicyApplier(db_session, account_id=str(test_user.account_id))
+        applied = applier.apply(policy, dry_run=True)
+        assert applied.errors == []
+        assert applied.success is True
+
+    def test_existing_workflow_only(self, db_session, test_user, existing_objects):
+        policy, result = load_policy_from_string(self._yaml("builtin", "my-workflow"))
+        assert result.is_valid, result.errors
+        applier = PolicyApplier(db_session, account_id=str(test_user.account_id))
+        assert applier.apply(policy, dry_run=True).success is True
+
+    def test_missing_server_fails_with_available_names(
+        self, db_session, test_user, existing_objects
+    ):
+        policy, result = load_policy_from_string(
+            self._yaml("missing-server", "my-workflow")
+        )
+        assert result.is_valid, result.errors
+        applier = PolicyApplier(db_session, account_id=str(test_user.account_id))
+        applied = applier.apply(policy, dry_run=True)
+        assert applied.success is False
+        assert any(
+            "missing-server" in e and "my-server" in e for e in applied.errors
+        ), applied.errors
+
+    def test_missing_server_skipped_when_requested(
+        self, db_session, test_user, existing_objects
+    ):
+        policy, _ = load_policy_from_string(self._yaml("missing-server", "my-workflow"))
+        applier = PolicyApplier(db_session, account_id=str(test_user.account_id))
+        applied = applier.apply(policy, dry_run=True, skip_missing_servers=True)
+        assert applied.success is True
+        assert applied.tools_skipped == 1
+        assert any("missing-server" in w for w in applied.warnings)
+
+    def test_missing_workflow_fails_with_available_names(
+        self, db_session, test_user, existing_objects
+    ):
+        policy, _ = load_policy_from_string(self._yaml("my-server", "nope"))
+        applier = PolicyApplier(db_session, account_id=str(test_user.account_id))
+        applied = applier.apply(policy, dry_run=True, skip_missing_servers=True)
+        assert applied.success is False
+        assert any("nope" in e and "my-workflow" in e for e in applied.errors)
+
+    def test_missing_escalation_workflow_fails(self, db_session, test_user):
+        policy, result = load_policy_from_string(
+            """
+version: "1.0"
+metadata:
+  name: "esc"
+approval_workflows:
+  - name: "ai"
+    approval_type: "ai_driven"
+    ai_model: "claude-sonnet-4-20250514"
+    ai_guidelines: "Review"
+    escalation_workflow: "absent"
+"""
+        )
+        assert result.is_valid, result.errors
+        applier = PolicyApplier(db_session, account_id=str(test_user.account_id))
+        applied = applier.apply(policy, dry_run=True)
+        assert applied.success is False
+        assert any("absent" in e for e in applied.errors)
