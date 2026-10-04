@@ -1,10 +1,10 @@
 """Inventory and exact handler matching for restricted HTTP policies."""
 
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Iterator, Mapping
 from types import SimpleNamespace
+from typing import Any
 
-from starlette.routing import Match
+from starlette.routing import Match, Mount
 from starlette.types import Scope
 
 from preloop.schemas.ci_principal import CiAction
@@ -83,3 +83,36 @@ def matched_machine_handler(scope: Scope, action: CiAction) -> bool:
             _, _, endpoint = route_description(route)
             return getattr(endpoint, "_ci_action", None) == action
     return False
+
+
+def validate_machine_policies(
+    app: Any, policies: Mapping[tuple[str, str], CiAction]
+) -> None:
+    """Reject mounted allow rules until nested dispatch is explicitly supported."""
+    if not policies:
+        return
+    seen: set[int] = set()
+    while app is not None and id(app) not in seen:
+        seen.add(id(app))
+        if hasattr(app, "routes"):
+            break
+        app = getattr(app, "app", None)
+    if app is None or not hasattr(app, "routes"):
+        raise ValueError("Restricted CI policies require an inspectable router")
+    for method, path in policies:
+        scope: Scope = {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "root_path": "",
+        }
+        for route in effective_routes(app):
+            original = getattr(route, "original_route", route)
+            concrete = getattr(route, "starlette_route", None) or original
+            if isinstance(concrete, Mount):
+                match, _ = concrete.matches(scope)
+                if match == Match.FULL:
+                    raise ValueError(
+                        f"Mounted restricted CI operations are unsupported: "
+                        f"{method} {path}"
+                    )

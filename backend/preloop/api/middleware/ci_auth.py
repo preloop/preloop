@@ -11,7 +11,10 @@ from starlette.responses import JSONResponse
 from starlette.routing import compile_path
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from preloop.api.auth.ci_policy import matched_machine_handler
+from preloop.api.auth.ci_policy import (
+    matched_machine_handler,
+    validate_machine_policies,
+)
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import crud
 from preloop.models.crud.ci_principal import CiTokenInspection
@@ -85,6 +88,7 @@ class RestrictedCiAuthMiddleware:
         policies: Mapping[tuple[str, str], CiAction] = CI_ROUTE_POLICIES,
     ) -> None:
         self.app = app
+        validate_machine_policies(app, policies)
         self.policies = tuple(
             (method, compile_path(path)[0], action)
             for (method, path), action in dict(policies).items()
@@ -109,6 +113,9 @@ class RestrictedCiAuthMiddleware:
                     action = candidate
                     break
         try:
+            # Token syntax cannot prove a credential is human: legacy key rows
+            # may carry machine markers even when their values contain periods.
+            # Retain fresh indexed classification before any human fallback.
             inspection, permitted = await run_db_off_loop(
                 lambda: _inspect(tokens, action)
             )

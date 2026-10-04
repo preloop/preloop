@@ -3,11 +3,14 @@
 from dataclasses import replace
 from typing import Any
 from uuid import uuid4
+
 import pytest
 from sqlalchemy.orm import Session
+
 from preloop.models import crud
 from preloop.schemas.ci_principal import CiAction
-from tests.api.test_ci_principal import ci_resources as create_ci_resources, provision
+from tests.api.test_ci_principal import ci_resources as create_ci_resources
+from tests.api.test_ci_principal import provision
 
 
 @pytest.fixture
@@ -69,6 +72,7 @@ def test_valid_forbidden_write_denies_before_handler(
 ) -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
 
     _, _, token = provision(db_session, ci_resources)
@@ -110,6 +114,7 @@ def test_machine_websocket_is_denied_before_accept(
     from fastapi import FastAPI, WebSocket
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
+
     from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
 
     _, _, token = provision(db_session, ci_resources)
@@ -134,6 +139,7 @@ def test_unknown_routes_deny_machine_but_preserve_public_behavior(
 ) -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
 
     _, _, token = provision(db_session, ci_resources)
@@ -161,6 +167,7 @@ def reset_machine_policy() -> Any:
 def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
     import json
     from pathlib import Path
+
     from preloop.api.auth.ci_policy import restricted_route_inventory
     from preloop.api.middleware.ci_auth import CI_ROUTE_POLICIES
 
@@ -197,12 +204,14 @@ def test_real_routes_deny_valid_requests_without_side_effects(
     mode: str,
     rbac_disabled: bool,
 ) -> None:
-    from fastapi.testclient import TestClient
     from unittest.mock import AsyncMock
+
+    from fastapi.testclient import TestClient
+
     from preloop.api.auth import get_current_active_user
     from preloop.config import settings
-    from preloop.models.crud.base import CRUDBase
     from preloop.models import models
+    from preloop.models.crud.base import CRUDBase
     from preloop.plugins.ci_authorization import register_ci_machine_authorizer
     from preloop.services.flow_trigger_service import FlowTriggerService
 
@@ -253,6 +262,7 @@ def test_explicit_machine_handler_uses_context_and_fresh_grant(
 ) -> None:
     from fastapi import Depends, FastAPI
     from fastapi.testclient import TestClient
+
     from preloop.api.auth.ci import get_current_actor
     from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
     from preloop.models import models
@@ -303,6 +313,7 @@ def test_unmarked_permission_decorator_denies_positional_machine_context(
     db_session: Session, ci_resources: tuple[Any, ...]
 ) -> None:
     from fastapi import HTTPException
+
     from preloop.utils.permissions import require_permission
 
     _, _, token = provision(db_session, ci_resources)
@@ -327,11 +338,13 @@ def test_unmarked_permission_decorator_denies_positional_machine_context(
 
 def test_new_mounted_authenticated_route_changes_inventory() -> None:
     from fastapi import Depends, FastAPI
+
     from preloop.api.auth import get_current_active_user
     from preloop.api.auth.ci_policy import restricted_route_inventory
 
     app, child = (FastAPI(), FastAPI())
     from starlette.middleware.authentication import AuthenticationMiddleware
+
     from preloop.services.mcp_http import PreloopBearerAuthBackend
 
     app.mount(
@@ -348,11 +361,69 @@ def test_new_mounted_authenticated_route_changes_inventory() -> None:
     assert after["GET /mounted/protected"] == "deny"
 
 
+def test_mounted_allow_policy_fails_at_startup() -> None:
+    from fastapi import FastAPI
+    from starlette.middleware.authentication import AuthenticationMiddleware
+
+    from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
+    from preloop.services.mcp_http import PreloopBearerAuthBackend
+    from preloop.utils.permissions import require_permission
+
+    app, child = FastAPI(), FastAPI()
+
+    @child.get("/probe/{resource}")
+    @require_permission("view_flows", ci_action=CiAction.READ_EXECUTION)
+    def machine_probe(resource: str) -> Any:
+        return {"resource": resource}
+
+    app.mount(
+        "/mounted", AuthenticationMiddleware(child, backend=PreloopBearerAuthBackend())
+    )
+    app.add_middleware(
+        RestrictedCiAuthMiddleware,
+        policies={("GET", "/mounted/probe/{resource}"): CiAction.READ_EXECUTION},
+    )
+    with pytest.raises(ValueError, match="Mounted restricted CI operations"):
+        app.build_middleware_stack()
+
+
+def test_dotted_machine_marked_legacy_key_cannot_fall_back(
+    db_session: Session, ci_resources: tuple[Any, ...], ci_http: None
+) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
+
+    owner = ci_resources[0]
+    token = "synthetic.dotted.credential"
+    key = crud.crud_api_key.create_with_owner(
+        db_session,
+        obj_in={"name": "Malformed machine fixture"},
+        owner_username=owner.username,
+        key_value=token,
+    )
+    key.credential_type = "ci"
+    db_session.commit()
+    app = FastAPI()
+
+    @app.get("/human")
+    def human() -> Any:
+        raise AssertionError("Machine credential reached human fallback")
+
+    app.add_middleware(RestrictedCiAuthMiddleware)
+    response = TestClient(app).get(
+        "/human", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 401
+
+
 def test_overlapping_allow_pattern_cannot_enable_public_handler(
     db_session: Session, ci_resources: tuple[Any, ...], ci_http: None
 ) -> None:
     from fastapi import Depends, FastAPI
     from fastapi.testclient import TestClient
+
     from preloop.api.auth.ci import get_current_actor
     from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
     from preloop.models.crud.ci_principal import CiAuthorizationContext
@@ -415,6 +486,7 @@ def test_lookup_database_error_never_logs_token_parameters(
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from sqlalchemy.exc import ProgrammingError
+
     from preloop.api.middleware import ci_auth
 
     synthetic_token = "synthetic-sensitive-bearer-for-error-test"
@@ -446,8 +518,10 @@ def test_revoked_key_denial_retains_safe_attribution(
     caplog: Any,
 ) -> None:
     import logging
+
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
 
     principal, key, token = provision(db_session, ci_resources)

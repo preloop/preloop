@@ -14,9 +14,9 @@ import inspect
 import threading
 from typing import TYPE_CHECKING, Any, Callable
 
-from preloop.schemas.ci_principal import CiAction
-
 from fastapi import HTTPException, status
+
+from preloop.schemas.ci_principal import CiAction
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -191,6 +191,7 @@ def require_permission(
     everything. A marked handler still needs fresh core and EE machine checks.
     """
     from sqlalchemy.orm import Session
+
     from preloop.models import crud
     from preloop.models.crud.ci_principal import CiAuthorizationContext
 
