@@ -336,6 +336,239 @@ describe('browser steps in the session timeline', () => {
     );
   });
 
+  it('caps the header strip at the 200 most recent steps and shows the remainder as +N', async () => {
+    const many = Array.from({ length: 205 }, (_, index) =>
+      step(
+        index,
+        `2026-10-01T10:00:${String(index % 60).padStart(2, '0')}Z`,
+        'navigate'
+      )
+    );
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${many}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    const stepButtons = () =>
+      Array.from(
+        strip.shadowRoot!.querySelectorAll<HTMLButtonElement>(
+          'button[data-step-key]'
+        )
+      );
+    expect(stepButtons()).to.have.length(200);
+    // The window follows the newest steps; the oldest fold behind the marker.
+    expect(stepButtons()[0].querySelector('.index')!.textContent).to.equal(
+      '#5'
+    );
+    expect(stepButtons()[199].querySelector('.index')!.textContent).to.equal(
+      '#204'
+    );
+    const overflow = strip.shadowRoot!.querySelector(
+      '[data-testid="browser-step-overflow"]'
+    );
+    expect(overflow?.textContent?.trim()).to.equal('+5');
+  });
+
+  it('omits the overflow marker when the strip is exactly at the cap', async () => {
+    const many = Array.from({ length: 200 }, (_, index) =>
+      step(
+        index,
+        `2026-10-01T10:00:${String(index % 60).padStart(2, '0')}Z`,
+        'navigate'
+      )
+    );
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${many}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    expect(
+      strip.shadowRoot!.querySelectorAll('button[data-step-key]')
+    ).to.have.length(200);
+    expect(
+      strip.shadowRoot!.querySelector('[data-testid="browser-step-overflow"]')
+    ).to.equal(null);
+  });
+
+  it('shows a singular +1 marker at 201 steps and reveals earlier steps on click', async () => {
+    const many = Array.from({ length: 201 }, (_, index) =>
+      step(
+        index,
+        `2026-10-01T10:00:${String(index % 60).padStart(2, '0')}Z`,
+        'navigate'
+      )
+    );
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${many}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    const stepButtons = () =>
+      strip.shadowRoot!.querySelectorAll('button[data-step-key]');
+    expect(stepButtons()).to.have.length(200);
+    const overflow = strip.shadowRoot!.querySelector(
+      '[data-testid="browser-step-overflow"]'
+    ) as HTMLButtonElement;
+    expect(overflow.textContent?.trim()).to.equal('+1');
+    overflow.click();
+    await strip.updateComplete;
+    expect(stepButtons()).to.have.length(201);
+    expect(
+      strip.shadowRoot!.querySelector('[data-testid="browser-step-overflow"]')
+    ).to.equal(null);
+  });
+
+  it('resets the reveal window when the strip switches sessions', async () => {
+    const first = Array.from({ length: 205 }, (_, index) =>
+      step(
+        index,
+        `2026-10-01T10:00:${String(index % 60).padStart(2, '0')}Z`,
+        'navigate'
+      )
+    );
+    const second = Array.from({ length: 205 }, (_, index) =>
+      step(
+        1000 + index,
+        `2026-10-02T11:00:${String(index % 60).padStart(2, '0')}Z`,
+        'click'
+      )
+    );
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${first}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    // Expand the first session's window until every step is mounted.
+    const overflow = strip.shadowRoot!.querySelector(
+      '[data-testid="browser-step-overflow"]'
+    ) as HTMLButtonElement;
+    overflow.click();
+    await strip.updateComplete;
+    expect(
+      strip.shadowRoot!.querySelectorAll('button[data-step-key]')
+    ).to.have.length(205);
+
+    // Point the reused element at another session: the window must snap back
+    // to the cap instead of carrying the expanded window over.
+    strip.steps = second;
+    strip.sessionId = '22222222-2222-4222-8222-222222222222';
+    await strip.updateComplete;
+    expect(
+      strip.shadowRoot!.querySelectorAll('button[data-step-key]')
+    ).to.have.length(200);
+    expect(
+      strip.shadowRoot!.querySelector('[data-testid="browser-step-overflow"]')
+    ).to.not.equal(null);
+  });
+
+  it('keeps a revealed window when new steps arrive in the same session', async () => {
+    const many = Array.from({ length: 205 }, (_, index) =>
+      step(
+        index,
+        new Date(Date.UTC(2026, 9, 1, 10, 0, index)).toISOString(),
+        'navigate'
+      )
+    );
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${many}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    const overflow = strip.shadowRoot!.querySelector(
+      '[data-testid="browser-step-overflow"]'
+    ) as HTMLButtonElement;
+    overflow.click();
+    await strip.updateComplete;
+    expect(
+      strip.shadowRoot!.querySelectorAll('button[data-step-key]')
+    ).to.have.length(205);
+
+    // A live session appends a step: the operator's revealed window must stay
+    // open rather than snapping back to the cap on every `steps` update.
+    strip.steps = [
+      ...many,
+      step(
+        205,
+        new Date(Date.UTC(2026, 9, 1, 10, 0, 205)).toISOString(),
+        'navigate'
+      ),
+    ];
+    await strip.updateComplete;
+    expect(
+      strip.shadowRoot!.querySelectorAll('button[data-step-key]')
+    ).to.have.length(205);
+    expect(
+      strip.shadowRoot!.querySelector('[data-testid="browser-step-overflow"]')
+    ).to.not.equal(null);
+  });
+
+  it('numbers a windowed slice by the true session position without step_index', async () => {
+    const many = Array.from({ length: 201 }, (_, index) =>
+      step(
+        index,
+        new Date(Date.UTC(2026, 9, 1, 10, 0, index)).toISOString(),
+        'navigate',
+        { step_index: undefined }
+      )
+    );
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${many}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    const stepButtons = Array.from(
+      strip.shadowRoot!.querySelectorAll<HTMLButtonElement>(
+        'button[data-step-key]'
+      )
+    );
+    // The slice starts at the second step, so the first shown entry is #1.
+    expect(stepButtons[0].querySelector('.index')!.textContent).to.equal('#1');
+    expect(stepButtons[199].querySelector('.index')!.textContent).to.equal(
+      '#200'
+    );
+  });
+
+  it('renders neither a thumbnail nor a dropped marker without a screenshot', async () => {
+    const bare = step(9, '2026-10-01T10:00:20Z', 'scroll');
+    const row = await fixture(html`
+      <browser-step-row
+        .item=${bare}
+        .sessionId=${SESSION_ID}
+      ></browser-step-row>
+    `);
+    await row.updateComplete;
+    expect(row.shadowRoot!.querySelector('browser-step-thumbnail')).to.equal(
+      null
+    );
+    expect(row.shadowRoot!.querySelector('img')).to.equal(null);
+    expect(row.shadowRoot!.textContent).to.not.contain('Screenshot');
+  });
+
+  it('renders the dropped marker and no image for an evicted screenshot', async () => {
+    const row = await fixture(html`
+      <browser-step-row
+        .item=${STEPS[1]}
+        .sessionId=${SESSION_ID}
+      ></browser-step-row>
+    `);
+    const thumb = row.shadowRoot!.querySelector(
+      'browser-step-thumbnail'
+    ) as BrowserStepThumbnail;
+    await thumb.updateComplete;
+    const marker = thumb.shadowRoot!.querySelector(
+      '[data-testid="screenshot-unavailable"]'
+    )!;
+    expect(marker).to.exist;
+    expect(marker.textContent).to.contain('evicted');
+    expect(thumb.shadowRoot!.querySelector('img')).to.equal(null);
+  });
+
   it('renders steps as turns in the transcript panel, not as tool calls', async () => {
     const panel = await fixture<SessionReplayPanel>(html`
       <session-replay-panel
