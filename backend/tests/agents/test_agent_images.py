@@ -62,7 +62,6 @@ def _launch_context() -> dict[str, object]:
 
 async def _hosted_docker_image(monkeypatch: pytest.MonkeyPatch) -> str:
     """Launch a hosted Codex container on a mocked daemon; return its Image."""
-    from preloop.agents.container import ContainerAgentExecutor
 
     monkeypatch.setenv("USE_KUBERNETES", "false")
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
@@ -70,11 +69,11 @@ async def _hosted_docker_image(monkeypatch: pytest.MonkeyPatch) -> str:
     assert agent.use_kubernetes is False
     container = AsyncMock()
     type(container).id = PropertyMock(return_value="container-1058")
-    with patch("preloop.agents.container.aiodocker.Docker") as docker_cls:
-        docker = AsyncMock()
-        docker_cls.return_value = docker
-        docker.containers.create = AsyncMock(return_value=container)
-        await ContainerAgentExecutor._start_docker_container(agent, _launch_context())
+    docker = AsyncMock()
+    docker.containers.create = AsyncMock(return_value=container)
+    # CodexAgent overrides the base launch; drive the override it really runs.
+    with patch.object(agent, "_get_docker_client", AsyncMock(return_value=docker)):
+        await agent._start_docker_container(_launch_context())
     return docker.containers.create.call_args.kwargs["config"]["Image"]
 
 
@@ -89,7 +88,7 @@ async def _hosted_kubernetes_image(monkeypatch: pytest.MonkeyPatch) -> str:
     agent._k8s_batch_api = AsyncMock()
     agent._k8s_core_api = AsyncMock()
     with patch.object(ContainerAgentExecutor, "_init_kubernetes_clients", AsyncMock()):
-        await ContainerAgentExecutor._start_kubernetes_pod(agent, _launch_context())
+        await agent._start_kubernetes_pod(_launch_context())
     job = agent._k8s_batch_api.create_namespaced_job.call_args.kwargs["body"]
     (container,) = job.spec.template.spec.containers
     return container.image
@@ -99,6 +98,20 @@ async def _hosted_kubernetes_image(monkeypatch: pytest.MonkeyPatch) -> str:
 async def test_codex_image_reaches_hosted_docker_container(monkeypatch) -> None:
     monkeypatch.setenv("CODEX_IMAGE", PERL_IMAGE)
     assert await _hosted_docker_image(monkeypatch) == PERL_IMAGE
+
+
+@pytest.mark.asyncio
+async def test_hosted_codex_docker_runs_as_the_image_default_user(monkeypatch) -> None:
+    """No User is passed, so an image's USER decides who runs Codex."""
+    monkeypatch.setenv("USE_KUBERNETES", "false")
+    agent = CodexAgent({})
+    container = AsyncMock()
+    type(container).id = PropertyMock(return_value="container-1058")
+    docker = AsyncMock()
+    docker.containers.create = AsyncMock(return_value=container)
+    with patch.object(agent, "_get_docker_client", AsyncMock(return_value=docker)):
+        await agent._start_docker_container(_launch_context())
+    assert "User" not in docker.containers.create.call_args.kwargs["config"]
 
 
 @pytest.mark.asyncio
@@ -173,16 +186,14 @@ def test_host_profile_carries_no_image(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_hosted_codex_ignores_private_runner_image_key(monkeypatch) -> None:
     """agent_config.image is a private-runner override; hosted uses CODEX_IMAGE."""
-    from preloop.agents.container import ContainerAgentExecutor
 
     monkeypatch.setenv("CODEX_IMAGE", PERL_IMAGE)
     monkeypatch.setenv("USE_KUBERNETES", "false")
     agent = CodexAgent({"image": RUNNER_IMAGE, "docker_image": RUNNER_IMAGE})
     container = AsyncMock()
     type(container).id = PropertyMock(return_value="container-1058")
-    with patch("preloop.agents.container.aiodocker.Docker") as docker_cls:
-        docker = AsyncMock()
-        docker_cls.return_value = docker
-        docker.containers.create = AsyncMock(return_value=container)
-        await ContainerAgentExecutor._start_docker_container(agent, _launch_context())
+    docker = AsyncMock()
+    docker.containers.create = AsyncMock(return_value=container)
+    with patch.object(agent, "_get_docker_client", AsyncMock(return_value=docker)):
+        await agent._start_docker_container(_launch_context())
     assert docker.containers.create.call_args.kwargs["config"]["Image"] == PERL_IMAGE
