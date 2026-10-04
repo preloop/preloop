@@ -673,6 +673,96 @@ describe('FlowView all-of labels filter', () => {
   });
 });
 
+describe('FlowView load failure', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('shows an error with Back to Flows and Try again instead of spinning', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    let flowFails = true;
+    const fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.startsWith('/api/v1/flows/flow-1')) {
+          return flowFails
+            ? new Response(JSON.stringify({ detail: 'Flow not found' }), {
+                status: 404,
+                headers: { 'Content-Type': 'application/json' },
+              })
+            : new Response(
+                JSON.stringify({
+                  id: 'flow-1',
+                  name: 'Nightly sweep',
+                  agent_type: 'codex',
+                  trigger_event_source: 'webhook',
+                  allowed_mcp_servers: [],
+                  allowed_mcp_tools: [],
+                }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } }
+              );
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    try {
+      const el = await fixture<FlowView>(
+        html`<flow-view flowId="flow-1"></flow-view>`
+      );
+      await waitUntil(() => (el as any).flowReady);
+      await el.updateComplete;
+      const root = el.shadowRoot!;
+      expect(root.querySelector('sl-spinner')).to.equal(null);
+      const alert = root.querySelector('[data-flow-load-error]');
+      expect(alert?.getAttribute('role')).to.equal('alert');
+      expect(alert?.textContent).to.include('Could not load this flow');
+      const back = root.querySelector('sl-button[href="/console/flows"]');
+      expect(back?.textContent).to.include('Back to Flows');
+
+      flowFails = false;
+      const retry = [...alert!.querySelectorAll('sl-button')].find((b) =>
+        b.textContent?.includes('Try again')
+      ) as HTMLElement;
+      retry.click();
+      await waitUntil(() => (el as any).flowReady && !(el as any).loadError);
+      await el.updateComplete;
+      expect(root.textContent).to.include('Nightly sweep');
+    } finally {
+      fetchStub.restore();
+    }
+  });
+
+  it('warns inline when trackers and models could not be loaded', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.referenceDataError = true;
+    element.flow = {
+      id: 'flow-1',
+      name: 'PR Reviewer',
+      agent_type: 'codex',
+      trigger_event_source: 'webhook',
+    };
+    document.body.appendChild(element);
+    try {
+      await element.updateComplete;
+      const warning = element.shadowRoot.querySelector(
+        '[data-reference-data-warning]'
+      );
+      expect(warning?.textContent).to.include(
+        'Trackers and models could not be loaded'
+      );
+    } finally {
+      element.remove();
+    }
+  });
+});
+
 describe('FlowView saving from the form', () => {
   afterEach(() => {
     localStorage.clear();

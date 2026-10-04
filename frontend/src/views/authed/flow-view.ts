@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -260,6 +260,17 @@ export class FlowView extends LitElement {
   @state()
   private flowReady = false;
 
+  /**
+   * Why the flow itself could not be loaded (deleted, no access, server
+   * error). Set instead of leaving the page on an endless spinner.
+   */
+  @state()
+  private loadError: string | null = null;
+
+  /** True when trackers or models failed to load for the detail page. */
+  @state()
+  private referenceDataError = false;
+
   @state() private governanceOpened = false;
 
   @state()
@@ -357,6 +368,8 @@ export class FlowView extends LitElement {
   private async loadFlowData(urlParams: URLSearchParams) {
     const generation = ++this.flowLoadGeneration;
     this.flowReady = false;
+    this.loadError = null;
+    this.referenceDataError = false;
     this.governanceOpened = false;
     this._formInstanceId += 1;
 
@@ -364,7 +377,20 @@ export class FlowView extends LitElement {
 
     if (this.flowId) {
       this.isNew = false;
-      const flow = await getFlow(this.flowId);
+      let flow: Flow;
+      try {
+        flow = await getFlow(this.flowId);
+      } catch (error) {
+        if (generation !== this.flowLoadGeneration) return;
+        // A deleted flow, a stale link, no access or a server error: say so
+        // and offer a way back instead of spinning forever.
+        this.loadError =
+          error instanceof Error && error.message
+            ? error.message
+            : 'The flow could not be loaded.';
+        this.flowReady = true;
+        return;
+      }
       if (generation !== this.flowLoadGeneration) return;
       this.flow = flow;
       if (!this.isEditing) this.flowReady = true;
@@ -419,6 +445,9 @@ export class FlowView extends LitElement {
         this.projects = allProjects;
       } catch (error) {
         console.error('Failed to load reference data:', error);
+        if (generation === this.flowLoadGeneration) {
+          this.referenceDataError = true;
+        }
       } finally {
         this._loadingReferenceData = false;
       }
@@ -636,6 +665,10 @@ export class FlowView extends LitElement {
       `;
     }
 
+    if (this.loadError) {
+      return this.renderLoadError(this.loadError);
+    }
+
     if (!this.isNew && !this.isEditing) {
       // View mode - show flow details
       return this.renderFlowDetails();
@@ -644,7 +677,7 @@ export class FlowView extends LitElement {
     // Edit/Create mode - show form
     return html`
       <view-header
-        headerText="${this.isNew ? 'Create Flow' : 'Edit Flow'}"
+        headerText="${this.isNew ? 'Create flow' : 'Edit flow'}"
         width="wide"
       >
         <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
@@ -663,6 +696,63 @@ export class FlowView extends LitElement {
           ${this.renderForm()} ${this.isNew ? '' : this.renderGovernanceCard()}
         </div>
       </div>
+    `;
+  }
+
+  /** Reloads the flow and its reference data after a failed load. */
+  private retryLoad = () => {
+    void this.loadFlowData(new URLSearchParams(window.location.search));
+  };
+
+  /** The page shown when the flow itself could not be loaded. */
+  private renderLoadError(message: string) {
+    return html`
+      <view-header headerText="Flow" width="wide">
+        <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
+          <sl-button
+            variant="text"
+            size="small"
+            href="/console/flows"
+            style="margin-left: -12px;"
+          >
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Flows
+          </sl-button>
+        </div>
+      </view-header>
+      <div class="column-layout wide">
+        <div class="main-column">
+          <sl-alert variant="danger" open role="alert" data-flow-load-error>
+            <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+            <strong>Could not load this flow</strong><br />
+            ${message}
+            <div style="margin-top: var(--sl-spacing-small);">
+              <sl-button size="small" @click=${this.retryLoad}>
+                <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+                Try again
+              </sl-button>
+            </div>
+          </sl-alert>
+        </div>
+      </div>
+    `;
+  }
+
+  /** Inline warning when trackers or models could not be loaded. */
+  private renderReferenceDataWarning() {
+    if (!this.referenceDataError) return nothing;
+    return html`
+      <sl-alert variant="warning" open data-reference-data-warning>
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        Trackers and models could not be loaded, so some trigger and model names
+        may be missing.
+        <sl-button
+          variant="text"
+          size="small"
+          @click=${this.retryLoad}
+          style="margin-left: var(--sl-spacing-2x-small);"
+          >Try again</sl-button
+        >
+      </sl-alert>
     `;
   }
 
@@ -762,6 +852,7 @@ export class FlowView extends LitElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
+          ${this.renderReferenceDataWarning()}
           <!-- Flow Info Card -->
           <sl-card>
             <div slot="header">

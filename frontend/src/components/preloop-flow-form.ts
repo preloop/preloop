@@ -468,6 +468,13 @@ export class PreloopFlowForm extends LitElement {
   @state()
   private formError: string | null = null;
 
+  /** Reference lists ("trackers", "models") that failed to load. */
+  @state()
+  private referenceListsFailed: string[] = [];
+
+  @state()
+  private retryingReferenceLists = false;
+
   @state()
   private routingRules: Array<{
     id: string;
@@ -630,6 +637,17 @@ export class PreloopFlowForm extends LitElement {
       }
     }
 
+    // Trackers and models feed the selects a flow cannot be saved without,
+    // so a failure there is shown (with a retry) instead of an empty list.
+    const failedLists: string[] = [];
+    const remember =
+      (list: string) =>
+      (error: unknown): [] => {
+        console.error(`Failed to load ${list} for the flow form:`, error);
+        failedLists.push(list);
+        return [];
+      };
+
     try {
       const [
         trackers,
@@ -642,8 +660,8 @@ export class PreloopFlowForm extends LitElement {
         account,
         flowsResult,
       ] = await Promise.all([
-        getTrackers().catch(() => []),
-        getAIModels().catch(() => []),
+        getTrackers().catch(remember('trackers')),
+        getAIModels().catch(remember('models')),
         getAllTools().catch(() => []),
         getMCPServers().catch(() => []),
         getAccountAgents({ limit: 100 }).catch(() => ({ items: [] })),
@@ -672,6 +690,7 @@ export class PreloopFlowForm extends LitElement {
       }
       this.trackers = trackers;
       this.models = models;
+      this.referenceListsFailed = failedLists;
       this.availableTools = tools;
       this.mcpServers = servers;
       this.longRunningAgents = agentsRes.items || [];
@@ -764,6 +783,56 @@ export class PreloopFlowForm extends LitElement {
       this._loadingReferenceData = false;
       this.requestUpdate();
     }
+  }
+
+  /**
+   * Fetches the trackers and models again after they failed to load. Only
+   * those two lists: re-running the whole reference load would re-apply a
+   * preset over what the user already typed.
+   */
+  private async retryReferenceLists(): Promise<void> {
+    if (this.retryingReferenceLists) return;
+    this.retryingReferenceLists = true;
+    const failed: string[] = [];
+    try {
+      const [trackers, models] = await Promise.all([
+        getTrackers().catch(() => {
+          failed.push('trackers');
+          return null;
+        }),
+        getAIModels().catch(() => {
+          failed.push('models');
+          return null;
+        }),
+      ]);
+      if (trackers) this.trackers = trackers;
+      if (models) this.models = models;
+      this.referenceListsFailed = failed;
+    } finally {
+      this.retryingReferenceLists = false;
+    }
+  }
+
+  private renderReferenceListsWarning() {
+    if (this.referenceListsFailed.length === 0) return nothing;
+    const lists = this.referenceListsFailed.includes('trackers')
+      ? this.referenceListsFailed.includes('models')
+        ? 'Trackers and models'
+        : 'Trackers'
+      : 'Models';
+    return html`
+      <sl-alert variant="warning" open data-reference-lists-warning>
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        ${lists} could not be loaded, so their lists below may be empty.
+        <sl-button
+          variant="text"
+          size="small"
+          ?loading=${this.retryingReferenceLists}
+          @click=${() => this.retryReferenceLists()}
+          >Try again</sl-button
+        >
+      </sl-alert>
+    `;
   }
 
   private async syncTriggerStateFromFlow(force = false) {
@@ -3551,6 +3620,7 @@ export class PreloopFlowForm extends LitElement {
       }
 
       <form @submit=${this.handleFormSubmit}>
+        ${this.renderReferenceListsWarning()}
         ${
           !this.flow.id
             ? html`
