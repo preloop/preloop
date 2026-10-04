@@ -9,7 +9,7 @@ This module provides API endpoints for declarative policy-as-code management:
 """
 
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 from uuid import UUID
 
 from fastapi import (
@@ -54,7 +54,63 @@ from preloop.services.model_content_policy import (
     upsert_model_io_rule,
 )
 from preloop.services.policy_version_service import PolicyVersionService
+from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
+
+
+POLICY_AUDIT_CONFIG_TYPE = "policy"
+
+
+def _policy_object_summary(policy: PolicyDocument) -> dict:
+    """Names of the objects a policy document configures, for the audit trail."""
+    return {
+        "mcp_servers": [s.name for s in policy.mcp_servers or []],
+        "approval_workflows": [w.name for w in policy.approval_workflows or []],
+        "tools": [f"{t.source}:{t.name}" for t in policy.tools or []],
+        "model_io_rules": (
+            None if policy.model_io is None else [r.id for r in policy.model_io]
+        ),
+        "defaults": (
+            policy.defaults.model_dump(mode="json", exclude_none=True)
+            if policy.defaults
+            else None
+        ),
+    }
+
+
+def _snapshot_audit_ref(snapshot) -> Optional[dict]:
+    if snapshot is None:
+        return None
+    return {
+        "name": f"v{snapshot.version_number}",
+        "version_id": str(snapshot.id),
+        "version_number": snapshot.version_number,
+        "tag": snapshot.tag,
+    }
+
+
+def _audit_policy_change(
+    db: Session,
+    user: User,
+    action: str,
+    build: Callable[[], Dict[str, Any]],
+) -> None:
+    """Write a policy configuration_change without risking the committed change.
+
+    ``build`` returns the ``log_config_change`` value kwargs. It runs inside
+    the guard because it may read snapshots after the change was committed;
+    an audit failure is logged and never turns a successful change into a 500.
+    """
+    try:
+        log_config_change(
+            db,
+            user=user,
+            config_type=POLICY_AUDIT_CONFIG_TYPE,
+            action=action,
+            **build(),
+        )
+    except Exception:
+        logger.warning("Failed to audit policy %s", action, exc_info=True)
 
 
 # Pydantic models for version management endpoints
@@ -425,6 +481,30 @@ async def upload_policy(
                 "warnings": result.warnings,
             },
         )
+
+    if not dry_run:
+
+        def _applied_payload() -> Dict[str, Any]:
+            active_snapshot = PolicyVersionService(
+                db, str(account.id)
+            ).get_active_snapshot()
+            return {
+                "new_value": {
+                    "name": policy.metadata.name,
+                    "policy_name": policy.metadata.name,
+                    "source": "upload",
+                    "filename": file.filename,
+                    "active_version": _snapshot_audit_ref(active_snapshot),
+                    "counts": result.model_dump(
+                        exclude={"success", "policy_name", "warnings", "errors"}
+                    ),
+                    "objects": _policy_object_summary(policy),
+                    "skip_missing_servers": skip_missing_servers,
+                    "warnings": result.warnings,
+                }
+            }
+
+        _audit_policy_change(db, current_user, "applied", _applied_payload)
 
     action = "validated (dry run)" if dry_run else "applied"
     logger.info(
@@ -1053,6 +1133,19 @@ async def rollback_to_version(
 
     if not request.preview_only and success:
         db.commit()
+
+        def _rollback_payload() -> Dict[str, Any]:
+            snapshot = service.get_snapshot(version_id)
+            return {
+                "new_value": {
+                    **(
+                        _snapshot_audit_ref(snapshot) or {"version_id": str(version_id)}
+                    ),
+                    "diff": diff.model_dump(mode="json") if diff else None,
+                }
+            }
+
+        _audit_policy_change(db, current_user, "rolled_back", _rollback_payload)
         logger.info(f"Rolled back to version {version_id} for account {account.id}")
 
     return RollbackResponse(success=success, diff=diff, error=error)
@@ -1084,6 +1177,11 @@ async def delete_policy_version(
         HTTPException: If version not found or is active.
     """
     service = PolicyVersionService(db, str(account.id))
+    try:
+        deleted_ref = _snapshot_audit_ref(service.get_snapshot(version_id))
+    except Exception:
+        logger.warning("Failed to read policy version for audit", exc_info=True)
+        deleted_ref = {"version_id": str(version_id)}
     success, error = service.delete_snapshot(version_id)
 
     if not success:
@@ -1099,6 +1197,9 @@ async def delete_policy_version(
             )
 
     db.commit()
+    _audit_policy_change(
+        db, current_user, "version_deleted", lambda: {"old_value": deleted_ref}
+    )
 
     logger.info(f"Deleted version {version_id} for account {account.id}")
 
@@ -1140,6 +1241,20 @@ async def prune_policy_versions(
     )
 
     db.commit()
+    if deleted_count:
+        _audit_policy_change(
+            db,
+            current_user,
+            "versions_pruned",
+            lambda: {
+                "new_value": {
+                    "deleted_count": deleted_count,
+                    "older_than_days": request.older_than_days,
+                    "keep_tagged": request.keep_tagged,
+                    "keep_count": request.keep_count,
+                }
+            },
+        )
 
     logger.info(f"Pruned {deleted_count} versions for account {account.id}")
 
