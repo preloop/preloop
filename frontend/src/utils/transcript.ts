@@ -136,6 +136,8 @@ export interface TranscriptStats {
   toolResultCount: number;
   injectedCount: number;
   toolCallCount: number;
+  /** `browser_step` activities kept as their own top-level rows. */
+  browserStepCount: number;
   /** Gateway events whose raw request body was unavailable for exact
    *  tool-result detection. When > 0 the UI must disclose that some
    *  user-role bubbles may actually be tool results. */
@@ -385,6 +387,7 @@ export function buildConversation(
     toolResultCount: 0,
     injectedCount: 0,
     toolCallCount: 0,
+    browserStepCount: 0,
     eventsWithoutRawBody: 0,
     eventsWithPartialToolResults: 0,
     toolActivityTruncated: false,
@@ -587,6 +590,7 @@ export function buildConversation(
     const activityType = (item.activity_type || '').toLowerCase();
     const key = `activity:${index}:${item.timestamp || ''}`;
     if (activityType === 'browser_step') {
+      stats.browserStepCount += 1;
       atoms.push({
         type: 'browser_step',
         order: order++,

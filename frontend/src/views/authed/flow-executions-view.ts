@@ -183,11 +183,15 @@ export class FlowExecutionsView extends AuthedElement {
          were off-screen behind a scrollbar that only appeared on hover. The
          widths are declared per column in EXECUTION_COLUMNS and set on the
          cell, so a drag can change them; Subject declares none and takes
-         whatever is left. */
+         whatever is left.
+         The 1080px min-width is the fixed columns (954px) plus a ~120px
+         floor for Subject, so the flexible column that names a run stays
+         readable at the narrowest layout. Below that the wrapper scrolls
+         horizontally rather than squeezing Subject to a sliver. */
       table {
         width: 100%;
         border-collapse: collapse;
-        min-width: 960px;
+        min-width: 1080px;
         table-layout: fixed;
         font-size: var(--console-text-body);
       }
@@ -301,6 +305,14 @@ export class FlowExecutionsView extends AuthedElement {
         color: var(--console-meta-color);
         font-variant-numeric: tabular-nums;
         white-space: nowrap;
+      }
+      /* A live label ("Running · 12m 30s") is far wider than a finished one
+         ("4m 32s"), and the Duration column is fixed. Clip rather than paint
+         over the Model cell if a future label outgrows the declared width;
+         the title carries the full text either way. */
+      .duration-cell {
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       td.numeric,
       th.numeric {
@@ -882,11 +894,26 @@ export class FlowExecutionsView extends AuthedElement {
       {
         id: 'duration',
         header: 'Duration',
-        width: 72,
+        // Tuned to the widest live label the console expects to show in
+        // practice, "Running · 999h 59m" (~131px at the 14px tabular-nums,
+        // plus the cell's 8px padding on each side). `formatDurationBetween`
+        // has no hour cap, so a longer span is deliberately clipped by the
+        // cell ellipsis rather than treated as a formatter bound. Finished
+        // labels ("4m 32s") are far narrower.
+        width: 152,
         sort: 'number',
         cellClass: 'duration-cell',
         value: (row) => durationOf(row),
-        cell: (row) => executionDurationText(row, this.durationNow) || '\u2014',
+        cell: (row) => {
+          const label =
+            executionDurationText(row, this.durationNow) || '\u2014';
+          // The span gives the layout test the text box to measure; the
+          // cell's ellipsis already clips the row when an operator drags the
+          // column narrower.
+          return html`<span class="duration-text">${label}</span>`;
+        },
+        cellTitle: (row) =>
+          executionDurationText(row, this.durationNow) || '\u2014',
       },
       {
         id: 'model',

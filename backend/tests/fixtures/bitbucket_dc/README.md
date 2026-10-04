@@ -38,3 +38,17 @@ Live validation against a running 10.2 instance remains with the release
 owner; these fixtures establish the fixture-tested status only.
 
 Verified OpenAPI SHA-256: `003639410aeb4209aad2dab67d98c44a7b70c2b8ff36d11f1bc63d603c4119ee`.
+
+## Webhook payloads (`webhooks_10.2.json`)
+
+Synthetic deliveries for the webhook intake tests in
+`tests/endpoints/test_webhooks_bitbucket_dc.py` and
+`tests/sync/test_event_normalizer_bitbucket_dc.py`, one per event family
+Preloop subscribes to, plus `diagnostics:ping` and an unsubscribed
+`repo:forked`. Shapes follow the Bitbucket Data Center 10.2 "Event payload"
+documentation (`eventKey`, `date`, `actor`, `pullRequest` with
+`fromRef`/`toRef`, `previousFromHash`, `participant`/`previousStatus`,
+`comment`/`commentParentId`, `repository`/`changes`). Deliveries carry
+`X-Event-Key`, `X-Request-Id` and, when the hook has a secret,
+`X-Hub-Signature: sha256=<hex>` over the raw body. Tests sign the exact
+bytes they send; no live instance is contacted.
