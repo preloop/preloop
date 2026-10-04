@@ -456,6 +456,9 @@ describe('FlowsView', () => {
     const emptyState = element.shadowRoot?.querySelector('.empty-state');
     expect(emptyState).to.exist;
     expect(emptyState?.textContent).to.include('No flows yet');
+    // The title says it once; the body explains what a flow is instead.
+    expect(emptyState?.textContent?.match(/No flows yet/g)).to.have.length(1);
+    expect(emptyState?.textContent).to.include('Flows start an agent');
   });
 
   it('shows flow cards when flows exist', async () => {
@@ -1566,6 +1569,10 @@ describe('FlowsView', () => {
       const text = (element.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
       expect(text).to.contain('Could not load your flows');
       expect(text).to.not.contain('No flows yet');
+      // The reason, said once, with no odd aside about the list.
+      expect(text.match(/Could not load your flows/g)).to.have.length(1);
+      expect(text).to.not.contain('not empty');
+      expect(text).to.contain('Try again in a moment.');
       // The failure no longer escapes loadData, so the rest of the page ran.
       expect((element as any).isLoading).to.be.false;
     });

@@ -2146,7 +2146,7 @@ export class PreloopFlowForm extends LitElement {
       if (model && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(model)) {
         throw new Error(
           hostType === 'cursor'
-            ? 'Cursor model must be a Cursor model id such as grok-4.7-high, or blank for Auto.'
+            ? 'Cursor model must be a Cursor model id, or blank for Auto.'
             : 'Copilot model must be a model alias from the runner profile model_map, or blank for the Copilot default.'
         );
       }
@@ -3739,7 +3739,7 @@ export class PreloopFlowForm extends LitElement {
                           style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
                         >
                           <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add
-                          New Tracker
+                          new tracker
                         </sl-button>
                       </div>
 
@@ -3837,11 +3837,11 @@ export class PreloopFlowForm extends LitElement {
                       style="display: flex; gap: var(--sl-spacing-large);"
                     >
                       <sl-radio value="ephemeral"
-                        >Ephemeral (Provision on-demand short-lived
-                        agent)</sl-radio
+                        >On-demand (new sandbox per run)</sl-radio
                       >
                       <sl-radio value="persistent"
-                        >Persistent (Govern persistent agent node)</sl-radio
+                        >Existing agent (a long-running agent you
+                        connected)</sl-radio
                       >
                     </sl-radio-group>
                   </div>
@@ -3922,9 +3922,9 @@ export class PreloopFlowForm extends LitElement {
                     Cursor runs as cursor-agent on the private runner, using
                     that machine's Cursor login. Preloop's model catalog is not
                     Cursor's catalog, so it is hidden here. Leave Cursor model
-                    blank and cursor-agent uses Auto, Cursor's own selector.
-                    Auto is not Grok 4.7. To pin Grok 4.7, enter grok-4.7-high
-                    and map that same id in the runner profile model_map.
+                    blank and cursor-agent uses Auto, Cursor's own selector. To
+                    pin a model, enter its Cursor model id and map that same id
+                    in the runner profile model_map.
                   </p>
                   <sl-input
                     label="Cursor model"
@@ -4123,9 +4123,8 @@ export class PreloopFlowForm extends LitElement {
                   >
                     <sl-input
                       label="Git author name"
-                      .value=${
-                        this.flow.git_clone_config?.git_user_name || 'Preloop'
-                      }
+                      placeholder="Preloop"
+                      .value=${this.flow.git_clone_config?.git_user_name || ''}
                       @sl-input=${(e: any) => {
                         this.flow.git_clone_config = {
                           ...this.flow.git_clone_config,
@@ -4136,10 +4135,8 @@ export class PreloopFlowForm extends LitElement {
 
                     <sl-input
                       label="Git author email"
-                      .value=${
-                        this.flow.git_clone_config?.git_user_email ||
-                        'git@preloop.ai'
-                      }
+                      placeholder="git@preloop.ai"
+                      .value=${this.flow.git_clone_config?.git_user_email || ''}
                       @sl-input=${(e: any) => {
                         this.flow.git_clone_config = {
                           ...this.flow.git_clone_config,
@@ -4150,9 +4147,8 @@ export class PreloopFlowForm extends LitElement {
 
                     <sl-input
                       label="Source branch"
-                      .value=${
-                        this.flow.git_clone_config?.source_branch || 'main'
-                      }
+                      placeholder="main"
+                      .value=${this.flow.git_clone_config?.source_branch || ''}
                       @sl-input=${(e: any) => {
                         this.flow.git_clone_config = {
                           ...this.flow.git_clone_config,

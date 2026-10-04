@@ -962,16 +962,24 @@ export class FlowsView extends LitElement {
             this.activeExecutions = executions;
         })
         .catch(() => undefined);
+      let failure = '';
       const flows = await getFlowSummaries({
         includeStats: true,
         statsSince: this.rangeStartDate(),
       }).catch((error) => {
         console.error('Failed to load flows:', error);
+        const reason =
+          error instanceof Error && error.message
+            ? error.message.trim()
+            : 'The request did not complete';
+        failure = /[.!?]$/.test(reason) ? reason : `${reason}.`;
         return null;
       });
       if (generation !== this.flowsLoadGeneration) return;
       if (flows === null) {
-        this.loadError = 'Could not load your flows.';
+        // The card's title already says the flows could not be loaded, so
+        // this holds the reason, not a second copy of the title.
+        this.loadError = failure;
         return;
       }
       this.loadError = null;
@@ -2259,7 +2267,7 @@ export class FlowsView extends LitElement {
             </div>
             <h3 class="empty-card-title">Could not load your flows</h3>
             <p class="empty-card-desc">
-              ${this.loadError} The list below is not empty — it is unknown.
+              ${this.loadError} Try again in a moment.
             </p>
             <sl-button
               class="empty-cta-btn"
@@ -2285,7 +2293,8 @@ export class FlowsView extends LitElement {
             </div>
             <h3 class="empty-card-title">No flows yet</h3>
             <p class="empty-card-desc">
-              No flows yet. Create your first custom flow or clone a starter
+              Flows start an agent when something happens: a new issue, a
+              webhook or a schedule. Create one from scratch or start from a
               preset below.
             </p>
             <sl-button
