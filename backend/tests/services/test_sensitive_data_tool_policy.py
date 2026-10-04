@@ -453,11 +453,8 @@ def test_compiled_rules_evaluate_on_the_model_path(mocker) -> None:
     from preloop.services.model_content_policy import _load_gateway_policy_rules
 
     mocker.patch(
-        "preloop.services.model_content_policy.load_model_io_rules", return_value=[]
-    )
-    mocker.patch(
-        "preloop.services.model_content_policy.load_sensitive_data_config",
-        return_value=_config(_rule(id="cards", on=["model.request"])),
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=([], _config(_rule(id="cards", on=["model.request"]))),
     )
     gateway = MagicMock()
     gateway.auth_context.account_id = "acc"

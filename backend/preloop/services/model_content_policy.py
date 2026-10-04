@@ -51,7 +51,11 @@ from preloop.services.model_content_detectors import (
     detect_pii,
 )
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.services.policy.schema import ConditionAction, ModelIORule
+from preloop.services.policy.schema import (
+    ConditionAction,
+    ModelIORule,
+    SensitiveDataConfig,
+)
 from preloop.services.policy_notices import (
     PolicyNotice,
     build_excerpt,
@@ -1203,6 +1207,26 @@ def _apply_decision(
     raise _gateway_error(provider, decision)
 
 
+def load_gateway_policy_blocks(
+    db: Session, account_id: Any
+) -> tuple[List[ModelIORule], SensitiveDataConfig]:
+    """Load model I/O rules and the sensitive-data block with one account read.
+
+    The gateway calls this on both the request and response sides of a chat
+    completion. Both blocks live on ``account.meta_data``, so each side needs
+    a single SELECT. The lenient parse never raises and never returns
+    ``None``: a missing or malformed sensitive-data block is the empty config.
+    """
+    account = crud_account.get(db, id=account_id)
+    meta = getattr(account, "meta_data", None) if account is not None else None
+    if not isinstance(meta, dict):
+        meta = {}
+    return (
+        parse_model_io_rules(meta.get(MODEL_IO_META_KEY)),
+        parse_sensitive_data_config(meta.get(SENSITIVE_DATA_META_KEY)),
+    )
+
+
 def _load_gateway_policy_rules(
     gateway: Any, *, ai_model: Any, provider: str
 ) -> List[ModelIORule]:
@@ -1217,24 +1241,8 @@ def _load_gateway_policy_rules(
     try:
         try:
             account_id = gateway.auth_context.account_id
-            # One account read. ``load_model_io_rules`` and
-            # ``load_sensitive_data_config`` each SELECT the same row, and
-            # this function runs on both the request and response sides of
-            # the gateway chat hot path. The query budget counts those
-            # statements; a second round trip is not required because both
-            # blocks live on ``account.meta_data``.
-            account = crud_account.get(gateway.db, id=account_id)
-            meta = getattr(account, "meta_data", None) if account is not None else None
-            if not isinstance(meta, dict):
-                meta = {}
-            rules = parse_model_io_rules(meta.get(MODEL_IO_META_KEY))
-            try:
-                sensitive = parse_sensitive_data_config(
-                    meta.get(SENSITIVE_DATA_META_KEY)
-                )
-            except Exception:  # noqa: BLE001 - built-ins only is a safe default
-                sensitive = None
-            if sensitive is not None and sensitive.rules:
+            rules, sensitive = load_gateway_policy_blocks(gateway.db, account_id)
+            if sensitive.rules:
                 agent_id = None
                 if any(rule.scope.agents for rule in sensitive.enabled_rules()):
                     resolver = getattr(gateway, "_resolve_managed_agent_id", None)

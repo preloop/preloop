@@ -724,12 +724,14 @@ async def test_initial_stream_policy_failure_is_accounted_and_closes_provider(
     upstream = Upstream()
     calls = 0
 
-    def load(*_args: Any) -> list[Any]:
+    def load(*_args: Any) -> tuple[list[Any], Any]:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise SQLAlchemyTimeoutError("sensitive SQL")
-        return []
+        from preloop.services.policy.schema import SensitiveDataConfig
+
+        return [], SensitiveDataConfig()
 
     async def asgi_app(scope: Any, receive: Any, send: Any) -> None:
         scope["asgi"]["spec_version"] = asgi_spec
@@ -741,7 +743,7 @@ async def test_initial_stream_policy_failure_is_accounted_and_closes_provider(
             "preloop.services.openai_gateway.litellm.completion", return_value=upstream
         ),
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
             side_effect=load,
         ),
         patch("preloop.services.openai_gateway.emit_account_event"),

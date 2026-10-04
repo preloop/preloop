@@ -132,12 +132,9 @@ def _gateway(rules):
 
 def test_gateway_loads_detector_config_before_releasing_db(mocker) -> None:
     rules = [_rule(detectors={"pii": {"types": ["employee_id"]}})]
-    mocker.patch(
-        "preloop.services.model_content_policy.load_model_io_rules", return_value=rules
-    )
     loader = mocker.patch(
-        "preloop.services.model_content_policy.load_sensitive_data_config",
-        return_value=EMPLOYEE_ID_BLOCK,
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=(rules, EMPLOYEE_ID_BLOCK),
     )
     gateway = _gateway(rules)
     loaded = _load_gateway_policy_rules(gateway, ai_model=None, provider="openai")
@@ -151,11 +148,8 @@ def test_gateway_loads_detector_config_before_releasing_db(mocker) -> None:
 
 def test_gateway_parks_no_config_when_no_rules(mocker) -> None:
     mocker.patch(
-        "preloop.services.model_content_policy.load_model_io_rules", return_value=[]
-    )
-    mocker.patch(
-        "preloop.services.model_content_policy.load_sensitive_data_config",
-        return_value=EMPLOYEE_ID_BLOCK,
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=([], EMPLOYEE_ID_BLOCK),
     )
     gateway = _gateway([])
     assert _load_gateway_policy_rules(gateway, ai_model=None, provider="openai") == []
@@ -165,11 +159,8 @@ def test_gateway_parks_no_config_when_no_rules(mocker) -> None:
 def test_enforce_request_policy_uses_custom_pattern(mocker) -> None:
     rules = [_rule(detectors={"pii": {"types": ["employee_id"]}})]
     mocker.patch(
-        "preloop.services.model_content_policy.load_model_io_rules", return_value=rules
-    )
-    mocker.patch(
-        "preloop.services.model_content_policy.load_sensitive_data_config",
-        return_value=EMPLOYEE_ID_BLOCK,
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=(rules, EMPLOYEE_ID_BLOCK),
     )
     gateway = _gateway(rules)
     import pytest

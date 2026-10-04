@@ -143,6 +143,20 @@ def test_redact_respects_type_selection() -> None:
 def test_redact_action_accepted_for_sensitive_and_model_rules_only() -> None:
     assert _config(_redact_rule()).has_redact_rules()
     assert not _config(_redact_rule(action="deny")).has_redact_rules()
+    ModelIORule(
+        id="r",
+        target="model.request",
+        conditions=[ToolCondition(expression="pii.found == true", action="redact")],
+        redact_upstream=True,
+    )
+    with pytest.raises(ValidationError, match="do not support action 'redact'"):
+        ToolDefinition(
+            name="t", conditions=[{"expression": "true", "action": "redact"}]
+        )
+    with pytest.raises(
+        ValidationError, match="redact_upstream requires action 'redact'"
+    ):
+        _config(_redact_rule(action="deny", redact_upstream=True))
 
 
 def test_storage_skips_detection_without_redact_rules(mocker) -> None:
@@ -160,20 +174,6 @@ def test_storage_skips_detection_without_redact_rules(mocker) -> None:
     assert redacted == original
     assert counts == {} and rules == []
     detect.assert_not_called()
-    ModelIORule(
-        id="r",
-        target="model.request",
-        conditions=[ToolCondition(expression="pii.found == true", action="redact")],
-        redact_upstream=True,
-    )
-    with pytest.raises(ValidationError, match="do not support action 'redact'"):
-        ToolDefinition(
-            name="t", conditions=[{"expression": "true", "action": "redact"}]
-        )
-    with pytest.raises(
-        ValidationError, match="redact_upstream requires action 'redact'"
-    ):
-        _config(_redact_rule(action="deny", redact_upstream=True))
 
 
 # ---------------------------------------------------------------------------
@@ -579,11 +579,8 @@ def test_model_redact_rule_without_explicit_types_resolves_them(mocker) -> None:
     assert decision.redactions[0].types == ["iban"]
     rules = [implicit]
     mocker.patch(
-        "preloop.services.model_content_policy.load_model_io_rules", return_value=rules
-    )
-    mocker.patch(
-        "preloop.services.model_content_policy.load_sensitive_data_config",
-        return_value=SensitiveDataConfig(),
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=(rules, SensitiveDataConfig()),
     )
     gateway = MagicMock()
     gateway.auth_context.account_id = str(uuid.uuid4())
@@ -626,11 +623,8 @@ def test_gateway_request_upstream_follows_redact_upstream(
 ) -> None:
     rules = [_model_rule(redact_upstream=upstream)]
     mocker.patch(
-        "preloop.services.model_content_policy.load_model_io_rules", return_value=rules
-    )
-    mocker.patch(
-        "preloop.services.model_content_policy.load_sensitive_data_config",
-        return_value=SensitiveDataConfig(),
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=(rules, SensitiveDataConfig()),
     )
     mocker.patch("preloop.services.model_content_policy._log_policy_decision_async")
     gateway = MagicMock()
