@@ -1,0 +1,463 @@
+{
+ "skyvern_api": "v1",
+ "task": {
+  "task_id": "tsk_400712345678901234",
+  "status": "completed",
+  "created_at": "2026-09-30T09:00:00.000000",
+  "modified_at": "2026-09-30T09:01:10.000000",
+  "request": {
+   "url": "https://warehouse-sim.example.test/receiving",
+   "navigation_goal": "Log goods receipt GR-2291 for 12 pallets at site nord.",
+   "data_extraction_goal": "Return the receipt number.",
+   "webhook_callback_url": "https://preloop-hook.example.test/skyvern",
+   "proxy_location": "NONE"
+  },
+  "extracted_information": {
+   "receipt_number": "GR-2291"
+  },
+  "failure_reason": null,
+  "recording_url": "https://files.skyvern.example.test/rec.webm",
+  "screenshot_url": "https://files.skyvern.example.test/s5a.png"
+ },
+ "steps": [
+  {
+   "step_id": "stp_400710000",
+   "task_id": "tsk_400712345678901234",
+   "order": 0,
+   "retry_index": 0,
+   "status": "completed",
+   "is_last": false,
+   "created_at": "2026-09-30T09:00:00.000000",
+   "modified_at": "2026-09-30T09:00:08.500000",
+   "output": {
+    "actions_and_results": [
+     [
+      {
+       "action_type": "click",
+       "element_id": "AAEh",
+       "reasoning": "Open the goods receipt form.",
+       "intention": "Open the form"
+      },
+      [
+       {
+        "success": true,
+        "exception_type": null,
+        "exception_message": null,
+        "data": null
+       }
+      ]
+     ]
+    ],
+    "action_results": null,
+    "errors": []
+   }
+  },
+  {
+   "step_id": "stp_400710001",
+   "task_id": "tsk_400712345678901234",
+   "order": 1,
+   "retry_index": 0,
+   "status": "completed",
+   "is_last": false,
+   "created_at": "2026-09-30T09:00:10.000000",
+   "modified_at": "2026-09-30T09:00:18.500000",
+   "output": {
+    "actions_and_results": [
+     [
+      {
+       "action_type": "input_text",
+       "element_id": "AAEk",
+       "text": "typed-receipt-GR-2291-x7",
+       "reasoning": "Enter the receipt number.",
+       "intention": "Fill receipt number"
+      },
+      [
+       {
+        "success": true,
+        "exception_type": null,
+        "exception_message": null,
+        "data": null
+       }
+      ]
+     ],
+     [
+      {
+       "action_type": "input_text",
+       "element_id": "AAEl",
+       "text": "12",
+       "reasoning": "Enter the pallet count.",
+       "intention": "Fill pallets"
+      },
+      [
+       {
+        "success": true,
+        "exception_type": null,
+        "exception_message": null,
+        "data": null
+       }
+      ]
+     ]
+    ],
+    "action_results": null,
+    "errors": []
+   }
+  },
+  {
+   "step_id": "stp_400710002",
+   "task_id": "tsk_400712345678901234",
+   "order": 2,
+   "retry_index": 0,
+   "status": "completed",
+   "is_last": false,
+   "created_at": "2026-09-30T09:00:20.000000",
+   "modified_at": "2026-09-30T09:00:28.500000",
+   "output": {
+    "actions_and_results": [
+     [
+      {
+       "action_type": "select_option",
+       "element_id": "AAEn",
+       "option": {
+        "label": "nord",
+        "value": "nord"
+       },
+       "reasoning": "Choose site nord.",
+       "intention": "Pick site"
+      },
+      [
+       {
+        "success": true,
+        "exception_type": null,
+        "exception_message": null,
+        "data": null
+       }
+      ]
+     ]
+    ],
+    "action_results": null,
+    "errors": []
+   }
+  },
+  {
+   "step_id": "stp_400710003",
+   "task_id": "tsk_400712345678901234",
+   "order": 3,
+   "retry_index": 0,
+   "status": "failed",
+   "is_last": false,
+   "created_at": "2026-09-30T09:00:30.000000",
+   "modified_at": "2026-09-30T09:00:38.500000",
+   "output": {
+    "actions_and_results": [
+     [
+      {
+       "action_type": "click",
+       "element_id": "AAEp",
+       "reasoning": "Submit the receipt.",
+       "intention": "Submit"
+      },
+      [
+       {
+        "success": false,
+        "exception_type": "ElementNotFound",
+        "exception_message": "Element AAEp was detached",
+        "data": null
+       }
+      ]
+     ]
+    ],
+    "action_results": null,
+    "errors": []
+   }
+  },
+  {
+   "step_id": "stp_400710004",
+   "task_id": "tsk_400712345678901234",
+   "order": 3,
+   "retry_index": 1,
+   "status": "completed",
+   "is_last": false,
+   "created_at": "2026-09-30T09:00:40.000000",
+   "modified_at": "2026-09-30T09:00:48.500000",
+   "output": {
+    "actions_and_results": [
+     [
+      {
+       "action_type": "click",
+       "element_id": "AAEp",
+       "reasoning": "Retry the submit after the dialog closed.",
+       "intention": "Submit"
+      },
+      [
+       {
+        "success": true,
+        "exception_type": null,
+        "exception_message": null,
+        "data": null
+       }
+      ]
+     ]
+    ],
+    "action_results": null,
+    "errors": []
+   }
+  },
+  {
+   "step_id": "stp_400710005",
+   "task_id": "tsk_400712345678901234",
+   "order": 4,
+   "retry_index": 0,
+   "status": "completed",
+   "is_last": true,
+   "created_at": "2026-09-30T09:00:50.000000",
+   "modified_at": "2026-09-30T09:00:58.500000",
+   "output": {
+    "actions_and_results": [
+     [
+      {
+       "action_type": "complete",
+       "reasoning": "The receipt GR-2291 is saved.",
+       "intention": "Done"
+      },
+      [
+       {
+        "success": true,
+        "exception_type": null,
+        "exception_message": null,
+        "data": null
+       }
+      ]
+     ]
+    ],
+    "action_results": null,
+    "errors": []
+   }
+  }
+ ],
+ "artifacts": {
+  "stp_400710000": [
+   {
+    "artifact_id": "a_0_llm",
+    "artifact_type": "screenshot_llm",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710000/a_0_llm",
+    "signed_url": "https://files.skyvern.example.test/s0l.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710000",
+    "created_at": "2026-09-30T09:00:08.500000"
+   },
+   {
+    "artifact_id": "a_0_act",
+    "artifact_type": "screenshot_action",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710000/a_0_act",
+    "signed_url": "https://files.skyvern.example.test/s0a.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710000",
+    "created_at": "2026-09-30T09:00:08.500000"
+   },
+   {
+    "artifact_id": "a_0_prm",
+    "artifact_type": "llm_prompt",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710000/a_0_prm",
+    "signed_url": "https://files.skyvern.example.test/p0.txt",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710000",
+    "created_at": "2026-09-30T09:00:08.500000"
+   },
+   {
+    "artifact_id": "a_har",
+    "artifact_type": "har",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710000/a_har",
+    "signed_url": "https://files.skyvern.example.test/net.har",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710000",
+    "created_at": "2026-09-30T09:00:08.500000"
+   },
+   {
+    "artifact_id": "a_trace",
+    "artifact_type": "trace",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710000/a_trace",
+    "signed_url": "https://files.skyvern.example.test/trace.zip",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710000",
+    "created_at": "2026-09-30T09:00:08.500000"
+   },
+   {
+    "artifact_id": "a_rec",
+    "artifact_type": "recording",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710000/a_rec",
+    "signed_url": "https://files.skyvern.example.test/rec.webm",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710000",
+    "created_at": "2026-09-30T09:00:08.500000"
+   }
+  ],
+  "stp_400710001": [
+   {
+    "artifact_id": "a_1_llm",
+    "artifact_type": "screenshot_llm",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710001/a_1_llm",
+    "signed_url": "https://files.skyvern.example.test/s1l.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710001",
+    "created_at": "2026-09-30T09:00:18.500000"
+   },
+   {
+    "artifact_id": "a_1_act",
+    "artifact_type": "screenshot_action",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710001/a_1_act",
+    "signed_url": "https://files.skyvern.example.test/s1a.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710001",
+    "created_at": "2026-09-30T09:00:18.500000"
+   },
+   {
+    "artifact_id": "a_1_prm",
+    "artifact_type": "llm_prompt",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710001/a_1_prm",
+    "signed_url": "https://files.skyvern.example.test/p1.txt",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710001",
+    "created_at": "2026-09-30T09:00:18.500000"
+   }
+  ],
+  "stp_400710002": [
+   {
+    "artifact_id": "a_2_llm",
+    "artifact_type": "screenshot_llm",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710002/a_2_llm",
+    "signed_url": "https://files.skyvern.example.test/s2l.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710002",
+    "created_at": "2026-09-30T09:00:28.500000"
+   },
+   {
+    "artifact_id": "a_2_act",
+    "artifact_type": "screenshot_action",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710002/a_2_act",
+    "signed_url": "https://files.skyvern.example.test/s2a.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710002",
+    "created_at": "2026-09-30T09:00:28.500000"
+   },
+   {
+    "artifact_id": "a_2_prm",
+    "artifact_type": "llm_prompt",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710002/a_2_prm",
+    "signed_url": "https://files.skyvern.example.test/p2.txt",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710002",
+    "created_at": "2026-09-30T09:00:28.500000"
+   }
+  ],
+  "stp_400710003": [
+   {
+    "artifact_id": "a_3_llm",
+    "artifact_type": "screenshot_llm",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710003/a_3_llm",
+    "signed_url": "https://files.skyvern.example.test/s3l.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710003",
+    "created_at": "2026-09-30T09:00:38.500000"
+   },
+   {
+    "artifact_id": "a_3_act",
+    "artifact_type": "screenshot_action",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710003/a_3_act",
+    "signed_url": "https://files.skyvern.example.test/s3a.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710003",
+    "created_at": "2026-09-30T09:00:38.500000"
+   },
+   {
+    "artifact_id": "a_3_prm",
+    "artifact_type": "llm_prompt",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710003/a_3_prm",
+    "signed_url": "https://files.skyvern.example.test/p3.txt",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710003",
+    "created_at": "2026-09-30T09:00:38.500000"
+   }
+  ],
+  "stp_400710004": [
+   {
+    "artifact_id": "a_4_llm",
+    "artifact_type": "screenshot_llm",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710004/a_4_llm",
+    "signed_url": "https://files.skyvern.example.test/s4l.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710004",
+    "created_at": "2026-09-30T09:00:48.500000"
+   },
+   {
+    "artifact_id": "a_4_act",
+    "artifact_type": "screenshot_action",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710004/a_4_act",
+    "signed_url": "https://files.skyvern.example.test/s4a.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710004",
+    "created_at": "2026-09-30T09:00:48.500000"
+   },
+   {
+    "artifact_id": "a_4_prm",
+    "artifact_type": "llm_prompt",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710004/a_4_prm",
+    "signed_url": "https://files.skyvern.example.test/p4.txt",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710004",
+    "created_at": "2026-09-30T09:00:48.500000"
+   }
+  ],
+  "stp_400710005": [
+   {
+    "artifact_id": "a_5_llm",
+    "artifact_type": "screenshot_llm",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710005/a_5_llm",
+    "signed_url": "https://files.skyvern.example.test/s5l.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710005",
+    "created_at": "2026-09-30T09:00:58.500000"
+   },
+   {
+    "artifact_id": "a_5_act",
+    "artifact_type": "screenshot_action",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710005/a_5_act",
+    "signed_url": "https://files.skyvern.example.test/s5a.png",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710005",
+    "created_at": "2026-09-30T09:00:58.500000"
+   },
+   {
+    "artifact_id": "a_5_prm",
+    "artifact_type": "llm_prompt",
+    "uri": "s3://skyvern-artifacts/tsk_400712345678901234/stp_400710005/a_5_prm",
+    "signed_url": "https://files.skyvern.example.test/p5.txt",
+    "task_id": "tsk_400712345678901234",
+    "step_id": "stp_400710005",
+    "created_at": "2026-09-30T09:00:58.500000"
+   }
+  ]
+ },
+ "downloads": {
+  "https://files.skyvern.example.test/s0l.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsU9iMNMZ1Roig0twS/XocbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC1XAX/1GvUXDAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/s0a.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsQ9mEhMbyxoig0twy1TrcbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC8dVd/xXmp8JAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/p0.txt": "cHJvbXB0IHRleHQgbm90IGltcG9ydGVk",
+  "https://files.skyvern.example.test/net.har": "eyJsb2ciOiB7InZlcnNpb24iOiAiMS4yIiwgImNyZWF0b3IiOiB7Im5hbWUiOiAic2t5dmVybiIsICJ2ZXJzaW9uIjogIjAuMiJ9LCAiZW50cmllcyI6IFt7InJlcXVlc3QiOiB7Im1ldGhvZCI6ICJHRVQiLCAidXJsIjogImh0dHBzOi8vd2FyZWhvdXNlLXNpbS5leGFtcGxlLnRlc3QvcmVjZWl2aW5nIn0sICJyZXNwb25zZSI6IHsic3RhdHVzIjogMjAwfX1dfX0=",
+  "https://files.skyvern.example.test/trace.zip": "UEsDBBQAAAAAAOoORF0GsKHdAwAAAAMAAAALAAAAdHJhY2UudHJhY2V7fQpQSwECFAMUAAAAAADqDkRdBrCh3QMAAAADAAAACwAAAAAAAAAAAAAAgAEAAAAAdHJhY2UudHJhY2VQSwUGAAAAAAEAAQA5AAAALAAAAAAA",
+  "https://files.skyvern.example.test/rec.webm": "GkXfo59ChoEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+  "https://files.skyvern.example.test/s1l.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsQ9mEtMZ1Roig0twS/XocbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC3Kts2ZZAfUwAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/s1a.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RQQ0AAAjEsDPJB8XIwgYhTaZgzVTrcbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC+8+ktZwTdhKAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/p1.txt": "cHJvbXB0IHRleHQgbm90IGltcG9ydGVk",
+  "https://files.skyvern.example.test/s2l.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsElEQVR42u3RAQ0AAAjDsOu8OqRig5AmU7CmHT0uFgAWYAEWYAEWYAEGLMACLMACLMACDFiABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEGLMACLMACLMACLMCABViABViABViAAQuwAAuwAAuwAAN2AbAAC7AAC7AACzBgARZgARZgARZgwAIswAIswAIswAIMWIAFWIAFWIAFGLAAC7AAC7AACzBgARZg3WsBj5oG3mzqntAAAAAASUVORK5CYII=",
+  "https://files.skyvern.example.test/s2a.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsc9pCHMayxoig0twy3TpcbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteCxc2rbBA9zxrAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/p2.txt": "cHJvbXB0IHRleHQgbm90IGltcG9ydGVk",
+  "https://files.skyvern.example.test/s3l.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsc9pEuMY1Roig0twS9focbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC6yHWkexKt79AAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/s3a.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsc9pIasZyxoig0twy3TpcbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteCz8fyIoJca+1AAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/p3.txt": "cHJvbXB0IHRleHQgbm90IGltcG9ydGVk",
+  "https://files.skyvern.example.test/s4l.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RQQ0AAAjEsNOJMN5IxQYhTaZgTdfocbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC8l0rbC+rDu4AAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/s4a.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsc9pOuMYyxoig0twy3TpcbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC2cI42T4iWkQAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/p4.txt": "cHJvbXB0IHRleHQgbm90IGltcG9ydGVk",
+  "https://files.skyvern.example.test/s5l.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsc9pOkMY0Boig0twy1TrcbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC+ZhAShYyFESAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/s5a.png": "iVBORw0KGgoAAAANSUhEUgAAAKAAAABkCAIAAACO1KzYAAAAsUlEQVR42u3RAQkAAAgEsc9pUxsYyxoig0twy3TpcbEAsAALsAALsAALMGABFmABFmABFmDAAizAAizAAizAAgxYgAVYgAVYgAUYsAALsAALsAALMGABFmABFmABFmABBizAAizAAizAAgxYgAVYgAVYgAUYsAuABViABViABViAAQuwAAuwAAuwAAMWYAEWYAEWYAEWYMACLMACLMACLMCABViABViABViAAQuwAOteC47x/j6Rd81IAAAAAElFTkSuQmCC",
+  "https://files.skyvern.example.test/p5.txt": "cHJvbXB0IHRleHQgbm90IGltcG9ydGVk"
+ }
+}
