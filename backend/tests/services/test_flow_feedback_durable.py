@@ -267,7 +267,13 @@ def database() -> Generator[Engine, None, None]:
     engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
     with engine.begin() as conn:
         conn.execute(text(f'CREATE SCHEMA "{schema}"'))
-        for name in ("account", "tracker", "secret_reference"):
+        for name in (
+            "account",
+            "tracker",
+            "secret_reference",
+            "ci_principal",
+            "api_key",
+        ):
             conn.execute(text(f'CREATE TABLE "{name}" (id UUID PRIMARY KEY)'))
         models.AIModel.__table__.create(conn)
         models.Flow.__table__.create(conn)
