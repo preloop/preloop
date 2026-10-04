@@ -258,8 +258,8 @@ describe('WebhooksView', () => {
     (alert!.querySelector('sl-button') as HTMLElement).click();
     await waitUntil(
       () =>
-        element.shadowRoot?.textContent?.includes(
-          'https://siem.example.com/hook'
+        Array.from(element.shadowRoot?.querySelectorAll('.url') ?? []).some(
+          (node) => node.textContent?.trim() === ACCOUNT_ENDPOINT.url
         ),
       'Endpoints did not load after Try again'
     );
