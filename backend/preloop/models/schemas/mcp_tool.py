@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from typing import Any, Dict, Optional
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 class MCPToolBase(BaseModel):
@@ -21,7 +22,7 @@ class MCPToolCreate(MCPToolBase):
 
     name: str
     input_schema: Dict[str, Any]
-    mcp_server_id: str
+    mcp_server_id: UUID
     discovered_at: str
 
 
@@ -34,12 +35,19 @@ class MCPToolUpdate(MCPToolBase):
 class MCPToolResponse(MCPToolBase):
     """Schema for MCP tool response."""
 
-    id: str
-    mcp_server_id: str
+    id: UUID
+    mcp_server_id: UUID
     name: str
     input_schema: Dict[str, Any]
+    # ``discovered_at`` is stored as a string column on ``MCPTool`` (the
+    # discovery timestamp is recorded by the scanner), not a SQL timestamp.
     discovered_at: str
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("id", "mcp_server_id")
+    def serialize_uuids(self, value: UUID) -> str:
+        """Serialize UUID fields to strings for JSON responses."""
+        return str(value)

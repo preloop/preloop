@@ -868,46 +868,24 @@ class PolicyDocument(BaseModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> "PolicyDocument":
-        """Validate that all references are resolvable within the document."""
-        # Collect defined names
-        mcp_server_names = set()
-        if self.mcp_servers:
-            for server in self.mcp_servers:
-                if server.name in mcp_server_names:
-                    raise ValueError(f"Duplicate MCP server name: '{server.name}'")
-                mcp_server_names.add(server.name)
+        """Validate intra-document consistency (duplicate names and ids).
 
-        policy_names = set()
-        if self.approval_workflows:
-            for policy in self.approval_workflows:
-                if policy.name in policy_names:
-                    raise ValueError(
-                        f"Duplicate approval workflow name: '{policy.name}'"
-                    )
-                policy_names.add(policy.name)
+        Cross-references to MCP servers and approval workflows are not checked
+        here: they may point at objects already configured in the account, so
+        they are resolved by the account-aware check in ``PolicyApplier`` and
+        the ``/policies/validate`` endpoint.
+        """
+        mcp_server_names: set[str] = set()
+        for server in self.mcp_servers or []:
+            if server.name in mcp_server_names:
+                raise ValueError(f"Duplicate MCP server name: '{server.name}'")
+            mcp_server_names.add(server.name)
 
-        # Validate tool references
-        if self.tools:
-            for tool in self.tools:
-                # Check approval workflow references
-                if (
-                    tool.approval_workflow
-                    and tool.approval_workflow not in policy_names
-                ):
-                    raise ValueError(
-                        f"Tool '{tool.name}' references unknown approval workflow "
-                        f"'{tool.approval_workflow}'. Available policies: {policy_names}"
-                    )
-
-                # Native sources (builtin, mcp, http, agent) are not server names.
-                source_lower = tool.source.lower()
-                if not is_known_tool_source(source_lower):
-                    # It's a custom MCP server name reference
-                    if source_lower not in {s.lower() for s in mcp_server_names}:
-                        raise ValueError(
-                            f"Tool '{tool.name}' references unknown MCP server "
-                            f"'{tool.source}'. Available servers: {mcp_server_names}"
-                        )
+        workflow_names: set[str] = set()
+        for workflow in self.approval_workflows or []:
+            if workflow.name in workflow_names:
+                raise ValueError(f"Duplicate approval workflow name: '{workflow.name}'")
+            workflow_names.add(workflow.name)
 
         known_sensitive_types = (
             self.sensitive_data.known_types()
@@ -915,53 +893,24 @@ class PolicyDocument(BaseModel):
             else list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
         )
 
-        if self.model_io:
-            model_io_ids: set[str] = set()
-            for rule in self.model_io:
-                if rule.id in model_io_ids:
-                    raise ValueError(f"Duplicate model_io rule id: '{rule.id}'")
-                model_io_ids.add(rule.id)
-                if (
-                    rule.approval_workflow
-                    and rule.approval_workflow not in policy_names
-                ):
-                    raise ValueError(
-                        f"model_io rule '{rule.id}' references unknown approval "
-                        f"workflow '{rule.approval_workflow}'. "
-                        f"Available policies: {policy_names}"
-                    )
-                unknown_types = [
-                    item
-                    for item in _rule_pii_types(rule)
-                    if item not in known_sensitive_types
-                ]
-                if unknown_types:
-                    raise ValueError(
-                        f"model_io rule '{rule.id}' scans unknown PII types "
-                        f"{unknown_types}. Define them under "
-                        "sensitive_data.detectors.custom_patterns or keywords."
-                    )
-
-        # Validate default approval workflow reference
-        if self.defaults and self.defaults.default_approval_workflow:
-            if self.defaults.default_approval_workflow not in policy_names:
+        model_io_ids: set[str] = set()
+        for rule in self.model_io or []:
+            if rule.id in model_io_ids:
+                raise ValueError(f"Duplicate model_io rule id: '{rule.id}'")
+            model_io_ids.add(rule.id)
+            # Intra-document: a rule may only scan types the document
+            # declares (built-ins, registered detectors, custom entries).
+            unknown_types = [
+                item
+                for item in _rule_pii_types(rule)
+                if item not in known_sensitive_types
+            ]
+            if unknown_types:
                 raise ValueError(
-                    f"Default approval workflow '{self.defaults.default_approval_workflow}' "
-                    f"not found. Available policies: {policy_names}"
+                    f"model_io rule '{rule.id}' scans unknown PII types "
+                    f"{unknown_types}. Define them under "
+                    "sensitive_data.detectors.custom_patterns or keywords."
                 )
-
-        # Validate escalation_workflow references in AI-driven policies
-        if self.approval_workflows:
-            for policy in self.approval_workflows:
-                if (
-                    policy.escalation_workflow
-                    and policy.escalation_workflow not in policy_names
-                ):
-                    raise ValueError(
-                        f"Approval workflow '{policy.name}' references unknown "
-                        f"escalation_workflow '{policy.escalation_workflow}'. "
-                        f"Available policies: {policy_names}"
-                    )
 
         return self
 

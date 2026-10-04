@@ -428,6 +428,7 @@ def evaluate_note_scope(
     named_execution_id: Any = None,
     text: str = "",
     subject_context: Optional[Dict[str, Any]] = None,
+    author_session_ids: Optional[List[Any]] = None,
 ) -> NoteScopeDecision:
     """Decide whether this agent may note this target.
 
@@ -453,6 +454,10 @@ def evaluate_note_scope(
             policy evaluation used (``api_key_id``, the caller's
             ``runtime_session_id``, and the rest of that chain). Target
             identity stays in the ``note_*`` facts.
+        author_session_ids: The runtime sessions the call was made from, as
+            the platform resolved them from the caller's credential (#1045).
+            A target session whose recorded parent chain passes through one
+            of them is a descendant, exactly like a child execution.
 
     Returns:
         A :class:`NoteScopeDecision`. Never raises for a policy failure: an
@@ -483,6 +488,27 @@ def evaluate_note_scope(
         text=text,
     )
 
+    author_sessions = [s for s in (author_session_ids or []) if s]
+    if (
+        relation != RELATION_DESCENDANT
+        and author_sessions
+        and target_session_id
+        and named_execution_id in (None, "")
+    ):
+        from preloop.services.agent_session_lineage import session_descends_from
+
+        # Session lineage: a run started from a shell by a governed session
+        # records that session as its parent (#1045). It is the same
+        # relationship as a child execution, recorded on a different row.
+        if session_descends_from(
+            db,
+            account_id=account_id,
+            target_session_id=target_session_id,
+            ancestor_session_ids=author_sessions,
+        ):
+            relation = RELATION_DESCENDANT
+            facts["note_target_relation"] = relation
+
     if relation == RELATION_DESCENDANT:
         return NoteScopeDecision(
             allowed=True,
@@ -491,7 +517,11 @@ def evaluate_note_scope(
             facts=facts,
         )
 
-    base_reason = REASON_NO_LINEAGE if author_execution is None else REASON_OUT_OF_SCOPE
+    base_reason = (
+        REASON_NO_LINEAGE
+        if author_execution is None and not author_sessions
+        else REASON_OUT_OF_SCOPE
+    )
     grant = _consult_policy(
         db,
         account_id=account_id,
@@ -542,7 +572,7 @@ def evaluate_note_scope(
         message = (
             "send_note reaches only the runs this agent started (scope "
             f"'{SCOPE_DESCENDANTS}'), and this call carries no execution "
-            "lineage, so it has no runs to reach. A wider scope "
+            "or session lineage, so it has no runs to reach. A wider scope "
             f"('{SCOPE_ACCOUNT}') has to be granted by a tool access rule on "
             "send_note."
         )

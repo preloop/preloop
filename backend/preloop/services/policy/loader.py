@@ -876,10 +876,9 @@ class PolicyApplier:
         all_available_servers = policy_servers | existing_server_names
 
         # Get existing policies from the database
-        existing_workflows = crud_approval_workflow.get_multi_by_account(
+        existing_workflow_names = crud_approval_workflow.get_names_by_account(
             self.db, account_id=self.account_id
         )
-        existing_workflow_names = {p.name for p in existing_workflows}
         all_available_workflows = policy_approval_workflows | existing_workflow_names
 
         # Validate tool references
@@ -966,6 +965,21 @@ class PolicyApplier:
                 errors.append(
                     f"Default approval workflow '{policy.defaults.default_approval_workflow}' "
                     f"is not defined. {suggestion}"
+                )
+
+        # Validate escalation_workflow references on approval workflows
+        for workflow in policy.approval_workflows or []:
+            if (
+                workflow.escalation_workflow
+                and workflow.escalation_workflow not in all_available_workflows
+            ):
+                suggestion = self._get_workflow_suggestion(
+                    workflow.escalation_workflow, all_available_workflows
+                )
+                errors.append(
+                    f"Approval workflow '{workflow.name}' references escalation "
+                    f"workflow '{workflow.escalation_workflow}' which is not "
+                    f"defined. {suggestion}"
                 )
 
         return errors

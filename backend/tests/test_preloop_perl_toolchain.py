@@ -7,7 +7,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO / "environments" / "preloop" / "Dockerfile"
-SMOKE = REPO / "environments" / "preloop" / "perl-toolchain-smoke.sh"
+SMOKE = REPO / "environments" / "perl" / "perl-toolchain-smoke.sh"
 
 # Distro package names. Exact `name=version` pins are rejected: noble-updates
 # drops superseded point releases, so a pin fails the next security update.

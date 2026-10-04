@@ -134,6 +134,9 @@ export class AIModelDetailView extends LitElement {
 
   @state()
   private sessions: AIModelRuntimeSessionListResponse | null = null;
+  @state() private sessionsLoading = false;
+  @state() private sessionsError: string | null = null;
+  @state() private summaryLoading = false;
 
   @state()
   private selectedSessionId: string | null = null;
@@ -260,6 +263,7 @@ export class AIModelDetailView extends LitElement {
   private unsubscribeRealtime?: () => void;
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
+  private loadGeneration = 0;
   /**
    * A reload asked for while another is in flight is not dropped: the latest
    * one is queued and runs when the in-flight call settles. Otherwise the
@@ -651,6 +655,7 @@ export class AIModelDetailView extends LitElement {
     this.modelId = nextModelId;
 
     if (this.initialized && changed) {
+      ++this.loadGeneration;
       void this.loadData();
     }
   }
@@ -673,6 +678,8 @@ export class AIModelDetailView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.loadGeneration;
+    ++this.interactionsRequestId;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -769,6 +776,15 @@ export class AIModelDetailView extends LitElement {
       return;
     }
     this.refreshInFlight = true;
+    const generation = ++this.loadGeneration;
+    const modelId = this.modelId;
+    const isCurrent = () =>
+      generation === this.loadGeneration && modelId === this.modelId;
+    if (this.model?.id !== modelId) {
+      this.summary = null;
+      this.sessions = null;
+      this.interactions = null;
+    }
     if (!options.preserveLoadingState) {
       this.loading = true;
     }
@@ -778,8 +794,19 @@ export class AIModelDetailView extends LitElement {
     this.error = null;
 
     try {
-      this.model = await getAIModel(this.modelId);
+      const model = await getAIModel(modelId);
+      if (!isCurrent()) {
+        this.refreshInFlight = false;
+        this.runPendingReload();
+        return;
+      }
+      this.model = model;
     } catch (error) {
+      if (!isCurrent()) {
+        this.refreshInFlight = false;
+        this.runPendingReload();
+        return;
+      }
       this.error =
         error instanceof Error ? error.message : 'Failed to fetch AI model';
       this.model = null;
@@ -793,44 +820,103 @@ export class AIModelDetailView extends LitElement {
       return;
     }
 
+    this.loading = false;
+    this.summaryLoading = true;
+    this.sessionsLoading = true;
+    this.sessionsError = null;
+    this.interactionsLoading = true;
+    const interactionsRequest = ++this.interactionsRequestId;
     void this.loadPricing();
 
     try {
       const params = this.buildSummaryParams();
-      const [summary, sessions, interactions, dismissals] = await Promise.all([
-        getAIModelGatewayUsageSummary(this.modelId, params),
+      await Promise.all([
+        getAIModelGatewayUsageSummary(this.modelId, params)
+          .then((summary) => {
+            if (isCurrent()) this.summary = summary;
+          })
+          .catch((error: unknown) => {
+            if (!isCurrent()) return;
+            this.summary = null;
+            this.error =
+              error instanceof Error
+                ? error.message
+                : 'Could not load usage summary';
+          })
+          .finally(() => {
+            if (isCurrent()) this.summaryLoading = false;
+          }),
         getAIModelRuntimeSessions(this.modelId, {
           ...params,
           limit: 10,
           status: 'all',
-        }),
+        })
+          .then((sessions) => {
+            if (isCurrent()) this.sessions = sessions;
+          })
+          .catch((error: unknown) => {
+            if (!isCurrent()) return;
+            this.sessionsError =
+              error instanceof Error
+                ? error.message
+                : 'Could not load model sessions';
+            this.sessions = null;
+          })
+          .finally(() => {
+            if (isCurrent()) this.sessionsLoading = false;
+          }),
         getAIModelGatewayUsageSearch(this.modelId, {
           ...params,
           query: this.interactionQuery.trim() || undefined,
           limit: 10,
-        }),
+        })
+          .then((interactions) => {
+            if (
+              !isCurrent() ||
+              interactionsRequest !== this.interactionsRequestId
+            )
+              return;
+            this.interactions = interactions;
+            this.interactionsError = null;
+          })
+          .catch((error: unknown) => {
+            if (
+              !isCurrent() ||
+              interactionsRequest !== this.interactionsRequestId
+            )
+              return;
+            this.interactionsError =
+              error instanceof Error
+                ? error.message
+                : 'Could not load captured interactions';
+            this.interactions = null;
+          })
+          .finally(() => {
+            if (interactionsRequest === this.interactionsRequestId)
+              this.interactionsLoading = false;
+          }),
         // A console that cannot read dismissals still has a detail page; it
         // just offers no dismiss control, as it did before.
-        getAttentionDismissals().catch(() => DISMISSALS_UNSUPPORTED),
+        getAttentionDismissals()
+          .catch(() => DISMISSALS_UNSUPPORTED)
+          .then((dismissals) => {
+            if (!isCurrent()) return;
+            this.dismissalsSupported = dismissals !== DISMISSALS_UNSUPPORTED;
+            this.dismissals =
+              dismissals === DISMISSALS_UNSUPPORTED ? [] : dismissals;
+          }),
       ]);
-      this.summary = summary;
-      this.sessions = sessions;
-      this.interactions = interactions;
-      this.interactionsError = null;
-      this.dismissalsSupported = dismissals !== DISMISSALS_UNSUPPORTED;
-      this.dismissals = dismissals === DISMISSALS_UNSUPPORTED ? [] : dismissals;
-      await this.loadFailuresSinceMarker();
+      if (isCurrent()) await this.loadFailuresSinceMarker();
     } catch (error) {
       this.error =
         error instanceof Error
           ? error.message
           : 'Failed to fetch AI model observability data';
-      this.summary = null;
-      this.sessions = null;
-      this.interactions = null;
     } finally {
-      this.loading = false;
-      this.updating = false;
+      if (isCurrent()) {
+        this.loading = false;
+        this.updating = false;
+      }
       this.refreshInFlight = false;
       this.runPendingReload();
     }
@@ -1946,6 +2032,8 @@ export class AIModelDetailView extends LitElement {
   }
 
   private renderInteractions() {
+    if (this.interactionsLoading && !this.interactions)
+      return html`<p role="status">Loading captured interactions…</p>`;
     if (this.interactionsError) {
       return html`
         <div class="empty-state" role="alert">
@@ -2219,6 +2307,8 @@ export class AIModelDetailView extends LitElement {
   }
 
   private renderSummarySection() {
+    if (this.summaryLoading && !this.summary)
+      return html`<p role="status">Loading usage summary…</p>`;
     if (!this.summary) {
       return html`
         <div class="empty-state">
@@ -2895,17 +2985,23 @@ export class AIModelDetailView extends LitElement {
                           Recent sessions, replay, cost breakdown, and
                           optimization suggestions scoped to this model.
                         </div>
-                        <preloop-session-observer
-                          scope="ai_model"
-                          .scopeId=${this.modelId}
-                          .sessions=${this.sessions?.items || []}
-                          layout="embedded"
-                          defaultReplayMode="timeline"
-                          .features=${{
-                            summaries: true,
-                            auditLinks: true,
-                          }}
-                        ></preloop-session-observer>
+                        ${
+                          this.sessionsLoading && !this.sessions
+                            ? html`<p role="status">Loading model sessions…</p>`
+                            : this.sessionsError
+                              ? html`<p role="alert">${this.sessionsError}</p>`
+                              : html` <preloop-session-observer
+                                  scope="ai_model"
+                                  .scopeId=${this.modelId}
+                                  .sessions=${this.sessions?.items || []}
+                                  layout="embedded"
+                                  defaultReplayMode="timeline"
+                                  .features=${{
+                                    summaries: true,
+                                    auditLinks: true,
+                                  }}
+                                ></preloop-session-observer>`
+                        }
                       </sl-card>
 
                       <!-- The toolbar's search field narrows this list, so

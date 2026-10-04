@@ -7,6 +7,9 @@ import {
   invalidateApiCaches,
   AuthedElement,
   getFlowExecutions,
+  getFlowSummaries,
+  getTools,
+  getToolsSummary,
   getFlows,
   getAllFlows,
   uniqueFlowsById,
@@ -62,6 +65,92 @@ describe('api', () => {
     fetchStub.restore();
     routerGoStub.restore();
     localStorage.clear();
+  });
+
+  describe('tool catalogue projections', () => {
+    it('fetches summaries without requesting full definitions', async () => {
+      const rows = [{ name: 'example_tool', schema_tokens_estimate: 42 }];
+      fetchStub.resolves(new Response(JSON.stringify(rows), { status: 200 }));
+      expect(await getToolsSummary()).to.deep.equal(rows);
+      expect(fetchStub.callCount).to.equal(1);
+      expect(fetchStub.firstCall.args[0]).to.equal('/api/v1/tools/summary');
+    });
+
+    it('preserves the full catalogue route for schema editors', async () => {
+      const rows = [{ name: 'example_tool', schema: { type: 'object' } }];
+      fetchStub.resolves(new Response(JSON.stringify(rows), { status: 200 }));
+      expect(await getTools()).to.deep.equal(rows);
+      expect(fetchStub.firstCall.args[0]).to.equal('/api/v1/tools');
+    });
+
+    it('reports a failed summary request', async () => {
+      fetchStub.resolves(new Response(null, { status: 500 }));
+      let error: unknown;
+      try {
+        await getToolsSummary();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).to.be.instanceOf(Error);
+      expect((error as Error).message).to.equal(
+        'Failed to fetch tool summaries'
+      );
+    });
+  });
+
+  describe('flow catalogue projections', () => {
+    it('requests lightweight metadata without statistics by default', async () => {
+      fetchStub.resolves(new Response('[]', { status: 200 }));
+      await getFlowSummaries();
+      expect(fetchStub.firstCall.args[0]).to.equal('/api/v1/flows/summary');
+    });
+
+    it('selects statistics window and page explicitly', async () => {
+      fetchStub.resolves(new Response('[]', { status: 200 }));
+      await getFlowSummaries({
+        includeStats: true,
+        statsSince: '2026-01-01T00:00:00Z',
+        skip: 100,
+        limit: 100,
+      });
+      const url = new URL(fetchStub.firstCall.args[0], window.location.origin);
+      expect(url.pathname).to.equal('/api/v1/flows/summary');
+      expect(url.searchParams.get('include_stats')).to.equal('true');
+      expect(url.searchParams.get('stats_since')).to.equal(
+        '2026-01-01T00:00:00Z'
+      );
+      expect(url.searchParams.get('skip')).to.equal('100');
+      expect(url.searchParams.get('limit')).to.equal('100');
+    });
+  });
+
+  describe('account gateway projections', () => {
+    it('forwards selected sections without changing the reporting period', async () => {
+      fetchStub.resolves(new Response('{}', { status: 200 }));
+      await getAccountGatewayUsageSummary({
+        startDate: '2026-01-01T00:00:00Z',
+        endDate: '2026-01-02T00:00:00Z',
+        breakdowns: ['models', 'days'],
+      });
+      const url = new URL(fetchStub.firstCall.args[0], window.location.origin);
+      expect(url.pathname).to.equal('/api/v1/account/gateway-usage/summary');
+      expect(url.searchParams.getAll('breakdown')).to.deep.equal([
+        'models',
+        'days',
+      ]);
+      expect(url.searchParams.get('start_date')).to.equal(
+        '2026-01-01T00:00:00Z'
+      );
+      expect(url.searchParams.get('end_date')).to.equal('2026-01-02T00:00:00Z');
+    });
+
+    it('requests totals without breakdowns for summary cards', async () => {
+      fetchStub.resolves(new Response('{}', { status: 200 }));
+      await getAccountGatewayUsageSummary({ includeBreakdown: false });
+      const url = new URL(fetchStub.firstCall.args[0], window.location.origin);
+      expect(url.searchParams.get('include_breakdown')).to.equal('false');
+      expect(url.searchParams.has('breakdown')).to.equal(false);
+    });
   });
 
   describe('performLocalSignOut', () => {

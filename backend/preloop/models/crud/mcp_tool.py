@@ -1,6 +1,6 @@
 """CRUD operations for MCPTool model."""
 
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -43,6 +43,30 @@ class CRUDMCPTool(CRUDBase[models.MCPTool]):
             List of MCP tool objects.
         """
         return db.query(self.model).filter(self.model.mcp_server_id == server_id).all()
+
+    def get_by_servers_for_account(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        server_ids: Sequence[UUID],
+    ) -> List[models.MCPTool]:
+        """Read an account's selected servers' tools in one query.
+
+        Ownership is checked in SQL even when callers have already fetched the
+        account's active servers. An empty selection never widens the query.
+        """
+        if not server_ids:
+            return []
+        return (
+            db.query(self.model)
+            .join(models.MCPServer, self.model.mcp_server_id == models.MCPServer.id)
+            .filter(
+                models.MCPServer.account_id == UUID(account_id),
+                self.model.mcp_server_id.in_(server_ids),
+            )
+            .all()
+        )
 
     def get_by_server_and_name(
         self,
