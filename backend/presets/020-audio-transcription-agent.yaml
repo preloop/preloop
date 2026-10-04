@@ -133,8 +133,9 @@ prompt_template: |
   - labels: the same three labels
   - parent_artifact_id: the transcript id
 
-  STEP 5. AUDIO (only if the account stores audio)
-  Call deposit_artifact with name "<site>-<shift>.<ext>", content = the
+  STEP 5. AUDIO (always attempt it; the refusal is the control flow)
+  You cannot see the account's audio setting, so always try. Call
+  deposit_artifact with name "<site>-<shift>.<ext>", content = the
   AudioContent block from STEP 1, the same three labels and
   parent_artifact_id = the transcript id. If the tool reports
   artifact_audio_storage_disabled, that is expected: the account has not
