@@ -680,11 +680,15 @@ export class ToolListItem extends LitElement {
               }
               ?disabled=${isUnsupported}
               @sl-change=${this._handleToggleEnabled}
-              ><span class="switch-label"
+              ><span
+                class="switch-label ${this._isNativeTool() ? '' : 'sr-only'}"
                 >${
                   // The two tabs keep their own polarity (native rows switch
                   // a block on, MCP rows switch the tool on), so each switch
                   // says what "on" means rather than leaving one unlabelled.
+                  // MCP rows carry it for assistive tech only: a visible
+                  // "Enabled" beside every switch, on or off, read as a
+                  // status and was wrong for every disabled tool.
                   this._isNativeTool() ? 'Block' : 'Enabled'
                 }</span
               ><span class="sr-only"> ${this.tool.name}</span></sl-switch

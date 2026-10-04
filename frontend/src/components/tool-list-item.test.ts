@@ -404,6 +404,11 @@ describe('ToolListItem – justification settings', () => {
     expect(toggle?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
       'Enabled bash'
     );
+    // Named for assistive tech, not printed beside every switch: on a
+    // disabled tool a visible "Enabled" reads as the wrong status.
+    expect(
+      toggle?.querySelector('.switch-label')?.classList.contains('sr-only')
+    ).to.be.true;
   });
 
   it('opens the rules from a keyboard-reachable button with aria-expanded', async () => {
