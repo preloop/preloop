@@ -498,3 +498,41 @@ describe('FlowView review instructions', () => {
     }
   });
 });
+
+describe('FlowView governance card', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .resolves(new Response('{}', { status: 404 }));
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+  });
+
+  it('passes the flow allowed tools to the governance card', async () => {
+    const { render } = await import('lit');
+    const element = document.createElement('flow-view') as any;
+    element.flowId = 'flow-1';
+    element.flow = {
+      name: 'Test',
+      allowed_mcp_tools: [
+        { server_name: 'preloop', tool_name: 'search_issues' },
+      ],
+    };
+    const container = document.createElement('div');
+    render(element.renderGovernanceCard(), container);
+    const card = container.querySelector('flow-governance-card') as any;
+    expect(card).to.exist;
+    expect(card.flowId).to.equal('flow-1');
+    expect(card.allowedToolNames).to.deep.equal(['search_issues']);
+  });
+
+  it('renders no governance card for an unsaved flow', () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowId = undefined;
+    expect(element.renderGovernanceCard()).to.equal('');
+  });
+});

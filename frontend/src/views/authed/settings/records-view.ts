@@ -1,10 +1,12 @@
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
@@ -119,6 +121,8 @@ export class RecordsView extends LitElement {
   @state() private exportStart = '';
   @state() private exportEnd = '';
   @state() private exporting = false;
+  /** Set when the console opened this dialog from a session (#1088). */
+  @state() private exportSession: string | null = null;
   @state() private exportError: string | null = null;
   @state() private exportResult: {
     filename: string;
@@ -201,6 +205,17 @@ export class RecordsView extends LitElement {
     this.exportStart = period.start;
     this.exportEnd = period.end;
     const params = new URLSearchParams(window.location.search);
+    const session = params.get('runtime_session_id');
+    if (session) {
+      this.exportSession = session;
+      const day = /^\d{4}-\d{2}-\d{2}$/;
+      if (day.test(params.get('start') || '')) {
+        this.exportStart = params.get('start')!;
+      }
+      if (day.test(params.get('end') || '')) {
+        this.exportEnd = params.get('end')!;
+      }
+    }
     if (params.get('start_seq')) {
       this.verifyMode = 'custom';
       this.rangeStart = params.get('start_seq') || '';
@@ -601,7 +616,11 @@ export class RecordsView extends LitElement {
     this.exportError = null;
     this.exportResult = null;
     try {
-      const file = await createPeriodExport(this.exportStart, this.exportEnd);
+      const file = await createPeriodExport(
+        this.exportStart,
+        this.exportEnd,
+        this.exportSession
+      );
       downloadBlob(file.blob, file.filename);
       this.exportResult = {
         filename: file.filename,
@@ -1290,8 +1309,33 @@ ${offlineAuditCommand(range)}</pre>
         <p class="note">
           Start is inclusive and end is exclusive, so consecutive periods do not
           overlap. The archive is signed when it is built. A long export shows a
-          spinner and is not started again.
+          spinner and is not started again. Session artifacts created in the
+          period (transcripts, screenshots, files) are included with a sha256
+          each and an A2A manifest at <code>artifacts/manifest.json</code>.
         </p>
+        ${
+          this.exportSession
+            ? html`<sl-alert
+                variant="primary"
+                open
+                data-testid="export-session-filter"
+              >
+                <sl-icon slot="icon" name="funnel"></sl-icon>
+                Artifacts limited to session
+                <code>${truncateMiddle(this.exportSession)}</code>. Audit rows,
+                approvals, receipts and holds still cover the whole period.
+                <sl-button
+                  size="small"
+                  variant="text"
+                  data-testid="export-session-clear"
+                  @click=${() => {
+                    this.exportSession = null;
+                  }}
+                  >Include every session</sl-button
+                >
+              </sl-alert>`
+            : nothing
+        }
         <div class="row-actions">
           <label
             >Start

@@ -946,6 +946,15 @@ export interface AccountGovernanceDefaults {
   approval_workflow_id?: string | null;
 }
 
+/**
+ * Per-flow governance override (subject type "flows") plus the account
+ * defaults it inherits. has_override is false when the flow stores none.
+ */
+export interface FlowGovernanceResponse extends SubjectGovernanceResponse {
+  has_override: boolean;
+  account_defaults: AccountGovernanceDefaults;
+}
+
 export interface AccountGovernanceDefaultsResponse {
   defaults: AccountGovernanceDefaults;
   /** Managed agent ids carrying an explicit per-agent override. */
@@ -1464,6 +1473,15 @@ export interface SessionArtifactUsage {
     [kind: string]: number;
   };
   evicted_count_30d: number;
+}
+
+/** Raw audio storage opt-in (#1102). Off by default; admin only to change. */
+export interface SessionArtifactSettings {
+  audio_storage_enabled: boolean;
+  audio_retention_days: number;
+  audio_retention_max_days: number;
+  updated_by_user_id?: string | null;
+  updated_at?: string | null;
 }
 
 export interface AccountGatewayUsageSummaryResponse {

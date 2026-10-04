@@ -1650,6 +1650,97 @@ describe('AddAIModelModal Azure OpenAI provider', () => {
     expect(payload.meta_data.provider_runtime).to.deep.equal({});
   });
 
+  it('submits Entra ID auth without a key', async () => {
+    (element as any)._currentModel = {
+      name: 'Chat on Azure',
+      provider_name: 'azure',
+      model_identifier: 'team-chat-prod',
+      model_kind: 'llm',
+      api_endpoint: 'https://example-resource.openai.azure.com',
+      api_key: 'typed-then-switched',
+    };
+    (element as any)._azureAuth = 'entra';
+    (element as any)._azureClientId = ' 00000000-0000-0000-0000-000000000001 ';
+    (element as any)._preloopGatewayEnabled = true;
+    (element as any)._syncFormFromDom = () => {};
+
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    expect((element as any)._formError).to.equal(null);
+    const payload = createdModelPayloads(fetchStub)[0];
+    expect(payload.api_key).to.be.undefined;
+    expect(payload.meta_data.provider_runtime).to.deep.equal({
+      azure_auth: 'entra',
+      ambient_credentials: true,
+      azure_client_id: '00000000-0000-0000-0000-000000000001',
+    });
+    expect(payload.meta_data.gateway.enabled).to.equal(true);
+  });
+
+  it('hides the key input and shows the identity field for Entra ID', async () => {
+    element.open = true;
+    await element.updateComplete;
+    await (element as any)._handleProviderChange({
+      target: { value: 'azure' },
+    } as unknown as Event);
+    await element.updateComplete;
+    const root = element.shadowRoot!;
+    expect(root.querySelector('sl-radio-group[data-testid="azure-auth"]')).to
+      .exist;
+    const keyInput = () => root.querySelector('sl-input[data-field="api_key"]');
+    expect(keyInput()?.hasAttribute('hidden')).to.equal(false);
+    expect(root.querySelector('sl-input[data-field="azure_client_id"]')).to.not
+      .exist;
+
+    (element as any)._azureAuth = 'entra';
+    await element.updateComplete;
+    expect(keyInput()?.hasAttribute('hidden')).to.equal(true);
+    expect(root.querySelector('sl-input[data-field="azure_client_id"]')).to
+      .exist;
+  });
+
+  it('loads Entra ID on edit and clears it when switched back to key', async () => {
+    element.model = {
+      id: 'azure-id',
+      name: 'Chat on Azure',
+      provider_name: 'azure',
+      model_identifier: 'team-chat-prod',
+      model_kind: 'llm',
+      api_endpoint: 'https://example-resource.openai.azure.com',
+      has_api_key: true,
+      meta_data: {
+        provider_runtime: {
+          api_version: 'v1',
+          azure_auth: 'entra',
+          ambient_credentials: true,
+          azure_client_id: 'client-1',
+        },
+      },
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+    expect((element as any)._azureAuth).to.equal('entra');
+    expect((element as any)._azureClientId).to.equal('client-1');
+
+    (element as any)._azureAuth = 'key';
+    (element as any)._currentModel.api_key = 'azure-key';
+    (element as any)._syncFormFromDom = () => {};
+    await (element as any)._handleFormSubmit(new Event('submit'));
+
+    const putCall = fetchStub
+      .getCalls()
+      .find(
+        (call) =>
+          String(call.args[0]).includes('/api/v1/ai-models/azure-id') &&
+          call.args[1]?.method === 'PUT'
+      );
+    const body = JSON.parse(String(putCall!.args[1].body));
+    expect(body.meta_data.provider_runtime).to.deep.equal({
+      api_version: 'v1',
+    });
+    expect(body.api_key).to.equal('azure-key');
+  });
+
   it('keeps the stored api-version and base model when editing', async () => {
     element.model = {
       id: 'azure-id',

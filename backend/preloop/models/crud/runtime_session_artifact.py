@@ -502,6 +502,165 @@ def sessions_with_available_artifacts(
     return query
 
 
+def own_session_ids(
+    *, account_id: UUID, runtime_principal_id: str, flow_id: UUID | None = None
+) -> Any:
+    """Select the ids of the sessions one agent identity ran, across runs.
+
+    The identity is the runtime principal; for a flow execution, whose
+    principal is the execution id, it is every execution of the same flow.
+    """
+    session = models.RuntimeSession
+    match = session.runtime_principal_id == runtime_principal_id
+    if flow_id is not None:
+        runs = (
+            select(func.cast(models.FlowExecution.id, String))
+            .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+            .where(
+                models.FlowExecution.flow_id == flow_id,
+                models.Flow.account_id == account_id,
+            )
+        )
+        match = match | (
+            (session.runtime_principal_type == "flow_execution")
+            & session.runtime_principal_id.in_(runs)
+        )
+    return select(session.id).where(session.account_id == account_id, match)
+
+
+def search_page(
+    db: Session,
+    *,
+    account_id: UUID,
+    limit: int,
+    runtime_principal_id: str | None = None,
+    flow_id: UUID | None = None,
+    kinds: list[str] | None = None,
+    labels: dict[str, Any] | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    query: str | None = None,
+    before: tuple[datetime, UUID] | None = None,
+) -> list[tuple[models.RuntimeSessionArtifact, str | None]]:
+    """One page of available artifacts across sessions, newest first.
+
+    The agent-facing read behind ``search_artifacts`` (#1104). Bound to the
+    account in SQL; ``runtime_principal_id`` narrows to the sessions one
+    agent identity ran, which is the default "own" scope.
+
+    Args:
+        db: Database session.
+        account_id: Account the caller is allowed to read.
+        limit: Maximum rows to return.
+        runtime_principal_id: When set, only artifacts of sessions whose
+            ``runtime_principal_id`` equals it (or of ``flow_id``'s runs).
+        flow_id: With ``runtime_principal_id``, also the sessions of every
+            execution of this flow: a flow execution's principal is the
+            execution id, so the flow is its identity across runs.
+        kinds: When set, only rows of these kinds.
+        labels: When set, only rows whose labels contain these (JSONB ``@>``).
+        since: Inclusive lower bound on ``created_at``.
+        until: Exclusive upper bound on ``created_at``.
+        query: Web search syntax over the artifact's extracted text chunks
+            (#1082), or a case-insensitive substring of its name.
+        before: Keyset cursor ``(created_at, id)``; strictly older rows only.
+
+    Returns:
+        ``(artifact, excerpt)`` pairs. The excerpt is a highlighted fragment
+        of the best matching chunk when ``query`` matched text, otherwise
+        the start of the first chunk, or None for an artifact without text.
+    """
+    from preloop.models.models.session_search_document import (
+        REDACTION_STATE_METADATA_ONLY,
+        SOURCE_KIND_ARTIFACT,
+        SessionSearchDocument,
+    )
+
+    table = models.RuntimeSessionArtifact
+    chunks = SessionSearchDocument
+    q = db.query(table).filter(
+        table.account_id == account_id,
+        table.availability == "available",
+    )
+    if runtime_principal_id is not None:
+        q = q.filter(
+            table.runtime_session_id.in_(
+                own_session_ids(
+                    account_id=account_id,
+                    runtime_principal_id=runtime_principal_id,
+                    flow_id=flow_id,
+                )
+            )
+        )
+    if kinds:
+        q = q.filter(table.kind.in_(kinds))
+    if labels:
+        q = q.filter(table.labels.contains(labels))
+    if since is not None:
+        q = q.filter(table.created_at >= since)
+    if until is not None:
+        q = q.filter(table.created_at < until)
+    normalized = " ".join(query.split()) if query else ""
+    tsquery = func.websearch_to_tsquery("simple", normalized) if normalized else None
+    chunk_scope = (
+        chunks.account_id == account_id,
+        chunks.source_kind == SOURCE_KIND_ARTIFACT,
+        chunks.redaction_state != REDACTION_STATE_METADATA_ONLY,
+    )
+    if tsquery is not None:
+        text_hits = select(chunks.source_id).where(
+            *chunk_scope, chunks.search_vector.op("@@")(tsquery)
+        )
+        escaped = (
+            normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        q = q.filter(
+            func.cast(table.id, String).in_(text_hits)
+            | table.name.ilike(f"%{escaped}%", escape="\\")
+        )
+    if before is not None:
+        created_at, artifact_id = before
+        q = q.filter(
+            (table.created_at < created_at)
+            | ((table.created_at == created_at) & (table.id < artifact_id))
+        )
+    rows = list(q.order_by(table.created_at.desc(), table.id.desc()).limit(limit).all())
+    if not rows:
+        return []
+
+    ids = [str(row.id) for row in rows]
+    excerpts: dict[str, str] = {}
+    if tsquery is not None:
+        headline = func.ts_headline(
+            "simple",
+            chunks.content,
+            tsquery,
+            "MaxFragments=1, MaxWords=30, MinWords=8, StartSel=**, StopSel=**",
+        )
+        for source_id, text in (
+            db.query(chunks.source_id, headline)
+            .filter(
+                *chunk_scope,
+                chunks.source_id.in_(ids),
+                chunks.search_vector.op("@@")(tsquery),
+            )
+            .order_by(chunks.source_id, chunks.chunk_index)
+            .all()
+        ):
+            excerpts.setdefault(source_id, text)
+    for source_id, text in (
+        db.query(chunks.source_id, func.left(chunks.content, EXCERPT_MAX_CHARS))
+        .filter(*chunk_scope, chunks.source_id.in_(ids), chunks.chunk_index == 0)
+        .all()
+    ):
+        excerpts.setdefault(source_id, text)
+    return [(row, excerpts.get(str(row.id))) for row in rows]
+
+
+#: Longest excerpt ``search_page`` returns for an artifact without a match.
+EXCERPT_MAX_CHARS = 280
+
+
 def decrypt(artifact: models.RuntimeSessionArtifact) -> bytes:
     """Decrypt an artifact's ciphertext.
 
@@ -708,3 +867,189 @@ def account_bytes(
         Sum of ``size_bytes`` where ``availability`` is ``available``.
     """
     return _available_bytes(db, account_id=account_id, kind=kind)
+
+
+#: Matching rows the facet counts read at most (#1086). Past this the counts
+#: describe the newest rows only and the response says so.
+FACET_ROW_CAP = 10_000
+
+
+def _session_visible_after(cutoff: datetime) -> Any:
+    """Session has activity at or after ``cutoff`` (plan history window)."""
+    session = models.RuntimeSession
+    return func.greatest(
+        session.started_at,
+        func.coalesce(session.last_activity_at, session.started_at),
+        func.coalesce(session.ended_at, session.started_at),
+    ) >= cutoff.replace(tzinfo=None)
+
+
+def _account_search_conditions(
+    *,
+    account_id: UUID,
+    query: str | None = None,
+    kinds: list[str] | None = None,
+    labels: list[dict[str, Any]] | None = None,
+    agent_id: UUID | None = None,
+    tool_name: str | None = None,
+    producer: str | None = None,
+    runtime_session_id: UUID | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    held: bool | None = None,
+    availability: str | None = None,
+    session_cutoff: datetime | None = None,
+) -> list[Any]:
+    """WHERE terms shared by the result page and the facet counts.
+
+    ``account_id`` is first and unconditional on both the artifact and its
+    joined session, so neither the page nor the facets can count a row of
+    another account.
+    """
+    from preloop.models.models.session_search_document import (
+        SOURCE_KIND_ARTIFACT,
+        SessionSearchDocument,
+    )
+
+    table = models.RuntimeSessionArtifact
+    session = models.RuntimeSession
+    conditions: list[Any] = [
+        table.account_id == account_id,
+        session.account_id == account_id,
+    ]
+    if kinds:
+        conditions.append(table.kind.in_(kinds))
+    # One containment term per filter value, ANDed: ``site:a`` and ``site:b``
+    # together match nothing rather than the last value winning.
+    for term in labels or ():
+        conditions.append(table.labels.contains(term))
+    if agent_id is not None:
+        conditions.append(table.agent_id == agent_id)
+    if tool_name is not None:
+        conditions.append(table.tool_name == tool_name)
+    if producer is not None:
+        conditions.append(table.producer == producer)
+    if runtime_session_id is not None:
+        conditions.append(table.runtime_session_id == runtime_session_id)
+    if created_from is not None:
+        conditions.append(table.created_at >= created_from)
+    if created_to is not None:
+        conditions.append(table.created_at < created_to)
+    if held is not None:
+        conditions.append(table.legal_hold.is_(held))
+    if availability is not None:
+        conditions.append(table.availability == availability)
+    if session_cutoff is not None:
+        conditions.append(_session_visible_after(session_cutoff))
+    normalized = " ".join(query.split()) if query else ""
+    if normalized:
+        # One pass over the account's matching chunks (GIN on search_vector),
+        # hashed into a semi-join, instead of a correlated probe per artifact.
+        chunk_match = func.cast(table.id, String).in_(
+            select(SessionSearchDocument.source_id).where(
+                SessionSearchDocument.account_id == account_id,
+                SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT,
+                SessionSearchDocument.search_vector.op("@@")(
+                    func.websearch_to_tsquery("simple", normalized)
+                ),
+            )
+        )
+        escaped = (
+            normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        conditions.append(chunk_match | table.name.ilike(f"%{escaped}%", escape="\\"))
+    return conditions
+
+
+def search_account(
+    db: Session,
+    *,
+    account_id: UUID,
+    limit: int,
+    before: tuple[datetime, UUID] | None = None,
+    **filters: Any,
+) -> list[tuple[models.RuntimeSessionArtifact, str | None, str | None]]:
+    """One page of an account's artifacts across sessions, newest first.
+
+    Keyset pagination on ``(created_at, id)``, also when ``query`` is set:
+    results are ordered by time rather than rank so a cursor stays valid
+    while new artifacts arrive.
+
+    Args:
+        db: Database session.
+        account_id: Account the caller is allowed to read.
+        limit: Maximum rows to return.
+        before: ``(created_at, id)`` of the last row of the previous page.
+        **filters: Keyword filters of :func:`_account_search_conditions`
+            (``query``, ``kinds``, ``labels``, ``agent_id``, ``tool_name``,
+            ``producer``, ``runtime_session_id``, ``created_from``,
+            ``created_to``, ``held``, ``availability``, ``session_cutoff``).
+
+    Returns:
+        ``(artifact, session_title, agent_name)`` tuples. ``agent_name`` is
+        the managed agent's display name, else the session's principal name.
+    """
+    table = models.RuntimeSessionArtifact
+    session = models.RuntimeSession
+    agent = models.ManagedAgent
+    stmt = (
+        select(
+            table,
+            session.title,
+            func.coalesce(agent.display_name, session.runtime_principal_name),
+        )
+        .join(session, session.id == table.runtime_session_id)
+        .outerjoin(
+            agent,
+            (agent.id == table.agent_id) & (agent.account_id == account_id),
+        )
+        .where(*_account_search_conditions(account_id=account_id, **filters))
+    )
+    if before is not None:
+        created_at, artifact_id = before
+        stmt = stmt.where(
+            (table.created_at < created_at)
+            | ((table.created_at == created_at) & (table.id < artifact_id))
+        )
+    stmt = stmt.order_by(table.created_at.desc(), table.id.desc()).limit(limit)
+    return [(row[0], row[1], row[2]) for row in db.execute(stmt).all()]
+
+
+def search_account_facets(
+    db: Session,
+    *,
+    account_id: UUID,
+    cap: int = FACET_ROW_CAP,
+    **filters: Any,
+) -> tuple[dict[str, int], dict[str, int], bool]:
+    """Counts by kind and by ``labels.site`` for the current filter.
+
+    Reads at most ``cap`` matching rows (the newest). The cursor is not a
+    filter here: facets describe the whole result, not one page.
+
+    Returns:
+        ``(by_kind, by_site, truncated)``. ``truncated`` is True when more
+        than ``cap`` rows matched and the counts cover only the newest ``cap``.
+    """
+    table = models.RuntimeSessionArtifact
+    session = models.RuntimeSession
+    matching = (
+        select(table.kind.label("kind"), table.labels["site"].astext.label("site"))
+        .join(session, session.id == table.runtime_session_id)
+        .where(*_account_search_conditions(account_id=account_id, **filters))
+        .order_by(table.created_at.desc(), table.id.desc())
+    )
+    truncated = db.execute(matching.offset(cap).limit(1)).first() is not None
+    capped = matching.limit(cap).subquery()
+    rows = db.execute(
+        select(capped.c.kind, capped.c.site, func.count()).group_by(
+            capped.c.kind, capped.c.site
+        )
+    ).all()
+    by_kind: dict[str, int] = {}
+    by_site: dict[str, int] = {}
+    for kind, site, count in rows:
+        by_kind[kind] = by_kind.get(kind, 0) + int(count)
+        if site is not None:
+            by_site[site] = by_site.get(site, 0) + int(count)
+    return by_kind, by_site, truncated

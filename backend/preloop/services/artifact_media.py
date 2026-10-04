@@ -159,6 +159,17 @@ def normalize_media_type(content_type: str) -> str:
     return content_type.split(";", 1)[0].strip().lower()
 
 
+def accepts(kind: str, content_type: str) -> bool:
+    """Return True when ``kind`` allows the media type ``content_type``.
+
+    ``generated_file`` takes any media type (its bytes are still checked for
+    executables by :func:`check_content`).
+    """
+    if kind == "generated_file":
+        return True
+    return normalize_media_type(content_type) in _ALLOWED.get(kind, {})
+
+
 def is_declared_image(content_type: str, data: bytes) -> bool:
     """Return True when ``data`` starts with the signature of ``content_type``."""
     check = _ALLOWED["screenshot"].get(normalize_media_type(content_type))

@@ -26,6 +26,13 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
 from preloop.services.aux_model_retry import call_with_aux_retry
+from preloop.services.azure_entra import AzureEntraTokenError
+from preloop.services.azure_openai import (
+    azure_api_version,
+    azure_entra_auth_error,
+    azure_request_kwargs,
+    uses_azure_entra,
+)
 from preloop.services.litellm_routing import (
     apply_preloop_client_headers,
     model_api_base,
@@ -96,8 +103,14 @@ def resolve_model_call_credentials(
 
     Returns:
         A dict of litellm/openai-compatible kwargs (e.g., {"api_key": "...", "api_base": "..."}).
-        Never raises: on resolution failure the api_key is omitted so the caller
+        On secret-resolution failure the api_key is omitted so the caller
         degrades the same way it did before, but routing (api_base) is preserved.
+        An Azure model in Entra mode also receives ``azure_ad_token_provider``
+        (and ``api_key`` forced to None).
+
+    Raises:
+        ModelGatewayAPIError: The model uses Entra ID and no token could be
+            acquired. Same 401 the gateway returns for that failure.
     """
     kwargs: dict[str, Any] = {}
 
@@ -124,6 +137,16 @@ def resolve_model_call_credentials(
             exc,
             exc_info=True,
         )
+
+    if uses_azure_entra(model):
+        # Outside the secret-resolution try: a missing token must fail the
+        # call, not be swallowed into an unauthenticated LiteLLM request.
+        # azure_request_kwargs also replaces a pasted deployment URL with the
+        # resource root and clears any stored key.
+        try:
+            kwargs.update(azure_request_kwargs(model))
+        except AzureEntraTokenError as exc:
+            raise azure_entra_auth_error(exc, provider="openai") from exc
 
     return kwargs
 
@@ -272,6 +295,13 @@ def build_aux_kwargs(
 
     Preloop client branding is applied last: User-Agent is always Preloop
     (never LiteLLM). OpenRouter also gets ``X-Title`` / ``HTTP-Referer``.
+
+    An Entra Azure model whose ``creds_kwargs`` omit
+    ``azure_ad_token_provider`` receives one here, so a caller that skipped
+    :func:`resolve_model_call_credentials` still authenticates.
+
+    Raises:
+        ModelGatewayAPIError: Entra token acquisition failed.
     """
     # Layer 4: safety defaults (capability-checked, not blanket).
     merged: dict[str, Any] = {"drop_params": True}
@@ -282,14 +312,126 @@ def build_aux_kwargs(
     if isinstance(model_params, dict):
         _merge_extra_body(merged, model_params)
 
-    # Layer 2: resolved credentials (api_key, api_base).
+    # Layer 2: resolved credentials (api_key, api_base, Entra token provider).
     _merge_extra_body(merged, creds_kwargs)
+    if uses_azure_entra(model) and "azure_ad_token_provider" not in merged:
+        # Callers that build aux kwargs without resolve_model_call_credentials
+        # still authenticate. Token failures use the gateway's 401 envelope.
+        try:
+            _merge_extra_body(merged, azure_request_kwargs(model))
+        except AzureEntraTokenError as exc:
+            raise azure_entra_auth_error(exc, provider="openai") from exc
 
     # Layer 1: call-site explicit args (always win).
     _merge_extra_body(merged, call_site_kwargs)
 
     apply_preloop_client_headers(merged, model)
     return merged
+
+
+class AuxApiKeyMissingError(Exception):
+    """A non-Entra aux call has no static API key to send."""
+
+
+def build_aux_openai_client(
+    openai_module: Any,
+    model: AIModel,
+    creds_kwargs: dict[str, Any],
+    *,
+    include_api_base: bool = False,
+    static_key_fallback: Optional[str] = None,
+    require_api_key: bool = True,
+    timeout: Optional[float] = None,
+    max_retries: Optional[int] = None,
+) -> Any:
+    """Build the OpenAI SDK client for a server-side aux call.
+
+    Entra Azure models use ``AzureOpenAI`` with ``azure_ad_token_provider``
+    and the normalized resource root as ``azure_endpoint``. They do not need
+    a static API key. Every other model keeps ``OpenAI``; ``api_base`` is
+    forwarded only when the call site already passed it.
+
+    Args:
+        openai_module: The ``openai`` module the caller imported, so tests
+            that patch ``openai.OpenAI`` on that module still see the client.
+        model: The AI model row for this call.
+        creds_kwargs: Output of :func:`resolve_model_call_credentials`.
+        include_api_base: Pass ``api_base`` as ``base_url`` on the non-Entra
+            client. Entra always receives the normalized resource root.
+        static_key_fallback: Key used when ``creds_kwargs`` has no ``api_key``
+            (``OPENAI_API_KEY``, or the legacy ``openai.api_key``).
+        require_api_key: Raise :class:`AuxApiKeyMissingError` when a non-Entra
+            call still has no key after the fallback.
+        timeout: Optional client timeout, in seconds.
+        max_retries: Optional SDK retry count.
+
+    Returns:
+        An ``openai.OpenAI`` or ``openai.AzureOpenAI`` client.
+
+    Raises:
+        AuxApiKeyMissingError: Non-Entra call with no static key.
+        ModelGatewayAPIError: Entra token acquisition failed.
+        ValueError: Entra call with no normalized ``api_base``.
+    """
+    token_provider = creds_kwargs.get("azure_ad_token_provider")
+    creds = creds_kwargs
+    if token_provider is None and uses_azure_entra(model):
+        # Same recovery as build_aux_kwargs when the resolved fragment
+        # omitted the Entra provider.
+        try:
+            extra = azure_request_kwargs(model)
+        except AzureEntraTokenError as exc:
+            raise azure_entra_auth_error(exc, provider="openai") from exc
+        token_provider = extra.get("azure_ad_token_provider")
+        creds = {**creds_kwargs, **extra}
+
+    client_kwargs: dict[str, Any]
+    if token_provider is not None:
+        api_base = creds.get("api_base")
+        if not isinstance(api_base, str) or not api_base.strip():
+            raise ValueError(
+                "Azure Entra model has no api_base; set api_endpoint on the model."
+            )
+        client_kwargs = {
+            "azure_endpoint": api_base,
+            "azure_ad_token_provider": token_provider,
+        }
+        api_version = creds.get("api_version") or azure_api_version(model)
+        if isinstance(api_version, str) and api_version.strip():
+            client_kwargs["api_version"] = api_version.strip()
+        _apply_openai_client_limits(
+            client_kwargs, timeout=timeout, max_retries=max_retries
+        )
+        return openai_module.AzureOpenAI(**client_kwargs)
+
+    api_key = creds.get("api_key") or static_key_fallback
+    if require_api_key and not creds.get("api_key") and static_key_fallback:
+        logger.warning(
+            "API key not found in credentials for model %s. "
+            "Trying OPENAI_API_KEY env var.",
+            getattr(model, "model_identifier", None),
+        )
+    if require_api_key and not api_key:
+        raise AuxApiKeyMissingError("OpenAI API key not configured.")
+
+    client_kwargs = {"api_key": api_key}
+    if include_api_base:
+        client_kwargs["base_url"] = creds.get("api_base")
+    _apply_openai_client_limits(client_kwargs, timeout=timeout, max_retries=max_retries)
+    return openai_module.OpenAI(**client_kwargs)
+
+
+def _apply_openai_client_limits(
+    client_kwargs: dict[str, Any],
+    *,
+    timeout: Optional[float],
+    max_retries: Optional[int],
+) -> None:
+    """Add timeout and retry kwargs only when the call site sets them."""
+    if timeout is not None:
+        client_kwargs["timeout"] = timeout
+    if max_retries is not None:
+        client_kwargs["max_retries"] = max_retries
 
 
 def get_aux_openai_sdk_extra_kwargs(
