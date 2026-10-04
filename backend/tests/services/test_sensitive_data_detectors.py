@@ -203,6 +203,28 @@ class TestCustomPatterns:
             calls[-1] < module.CUSTOM_PATTERN_TIMEOUT_SECONDS
         )  # shrunk to the remainder
 
+    def test_budget_clock_starts_at_the_first_account_pattern(
+        self, monkeypatch
+    ) -> None:
+        """Built-in scanning time is not charged against the account budget."""
+        import time as time_module
+
+        from preloop.services.sensitive_data import detectors as module
+
+        monkeypatch.setattr(module, "CUSTOM_PATTERNS_TOTAL_BUDGET_SECONDS", 0.3)
+
+        def slow_email(text, config):
+            time_module.sleep(0.35)
+            return []
+
+        monkeypatch.setitem(module._BUILTIN_DETECTORS, "email", slow_email)
+        cfg = DetectorConfig(
+            types=("email", "badge"),
+            custom_patterns=(CustomPattern("badge", r"B-\d{4}"),),
+        )
+        (match,) = detect("badge B-1234", cfg)
+        assert match.type == "badge"
+
     def test_mrn_identifier_pattern_is_validated_in_its_composed_form(self) -> None:
         from preloop.services.sensitive_data.detectors import compile_mrn_pattern
 
