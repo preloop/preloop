@@ -57,7 +57,9 @@ def test_recipe_preserves_base_entrypoint_workdir_and_user() -> None:
     users = [
         line for line in DOCKERFILE.read_text().splitlines() if line.startswith("USER")
     ]
-    assert users == ["USER root", "USER ${BASE_USER:-root}"], "restore the base user last"
+    assert users == ["USER root", "USER ${BASE_USER:-root}"], (
+        "restore the base user last"
+    )
     assert "ARG BASE_USER=root" in DOCKERFILE.read_text()
 
 
