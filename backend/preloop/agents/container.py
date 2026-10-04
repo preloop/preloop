@@ -35,6 +35,11 @@ from .failure_analysis import (
     analyze_agent_failure,
     runtime_log_text,
 )
+from .kubernetes_placement import (
+    node_selector as agent_node_selector,
+    runtime_class_name as agent_runtime_class_name,
+    tolerations as agent_tolerations,
+)
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.agents.verification import build_verification_gate_shell
 from preloop.services.tracker_git_token import APP_AUTH_TYPES
@@ -1675,6 +1680,22 @@ class ContainerAgentExecutor(AgentExecutor):
         memory_request = os.getenv("AGENT_MEMORY_REQUEST", "512Mi")
         cpu_request = os.getenv("AGENT_CPU_REQUEST", "250m")
 
+        # Optional sandbox runtime and node placement (issue #1076). Each
+        # setting is empty/unset by default, so a stock install renders the
+        # same pod spec as before.
+        runtime_class_name = agent_runtime_class_name()
+        pod_node_selector = agent_node_selector()
+        pod_tolerations = [
+            client.V1Toleration(
+                key=item.get("key"),
+                operator=item.get("operator"),
+                value=item.get("value"),
+                effect=item.get("effect"),
+                toleration_seconds=item.get("tolerationSeconds"),
+            )
+            for item in agent_tolerations()
+        ]
+
         # Keep the process cwd on the emptyDir mount root. The CRI creates
         # workingDir as root after fsGroup chown, so a clone subdirectory
         # that does not exist yet becomes root:root 0755. Unprivileged
@@ -1815,6 +1836,12 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
             spec=client.V1PodSpec(
                 restart_policy="Never",
+                # Sandbox runtime and node placement for the agent pod.
+                # ``None`` omits the key, which is what keeps a stock
+                # install on the node default.
+                runtime_class_name=runtime_class_name or None,
+                node_selector=pod_node_selector or None,
+                tolerations=pod_tolerations or None,
                 # Isolated agents must not retain cluster authority to create
                 # residual writers after their owned Job has been removed.
                 automount_service_account_token=False

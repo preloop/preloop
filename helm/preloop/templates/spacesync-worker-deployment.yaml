@@ -95,6 +95,18 @@ spec:
               value: {{ $.Values.agentExecution.limitRange.container.defaultRequestMemory | quote }}
             - name: AGENT_EXECUTION_NAMESPACE
               value: {{ $.Values.agentExecution.namespace.create | ternary $.Values.agentExecution.namespace.name $.Release.Namespace | quote }}
+            {{- if $.Values.agentExecution.runtimeClassName }}
+            - name: AGENT_RUNTIME_CLASS_NAME
+              value: {{ $.Values.agentExecution.runtimeClassName | quote }}
+            {{- end }}
+            {{- if $.Values.agentExecution.nodeSelector }}
+            - name: AGENT_NODE_SELECTOR
+              value: {{ $.Values.agentExecution.nodeSelector | toJson | quote }}
+            {{- end }}
+            {{- if $.Values.agentExecution.tolerations }}
+            - name: AGENT_TOLERATIONS
+              value: {{ $.Values.agentExecution.tolerations | toJson | quote }}
+            {{- end }}
             - name: USE_KUBERNETES
               value: "true"
             - name: SECRET_KEY
