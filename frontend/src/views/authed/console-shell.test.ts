@@ -1161,17 +1161,128 @@ describe('ConsoleShell', () => {
       expect(sidebar?.classList.contains('closed')).to.be.true;
     });
   });
+  describe('toasts', () => {
+    afterEach(() => {
+      document.body.querySelectorAll('sl-alert').forEach((a) => a.remove());
+    });
+
+    it('turns a show-toast request into a visible toast', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      window.dispatchEvent(
+        new CustomEvent('show-toast', {
+          detail: { message: 'Slow down a little.', variant: 'warning' },
+        })
+      );
+      const alert = Array.from(document.querySelectorAll('sl-alert')).find(
+        (a) => a.textContent?.includes('Slow down a little.')
+      ) as (HTMLElement & { variant: string }) | undefined;
+      expect(alert, 'toast rendered').to.exist;
+      expect(alert!.variant).to.equal('warning');
+    });
+
+    it('accepts a request that bubbles up from a routed view', async () => {
+      const el = (await fixture(
+        html`<console-shell><div id="child"></div></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      el.querySelector('#child')!.dispatchEvent(
+        new CustomEvent('show-toast', {
+          bubbles: true,
+          composed: true,
+          detail: { message: 'Logs copied.', variant: 'bogus' },
+        })
+      );
+      const alert = Array.from(document.querySelectorAll('sl-alert')).find(
+        (a) => a.textContent?.includes('Logs copied.')
+      ) as (HTMLElement & { variant: string }) | undefined;
+      expect(alert).to.exist;
+      // An unknown variant falls back rather than rendering unstyled.
+      expect(alert!.variant).to.equal('primary');
+    });
+
+    it('ignores a request with nothing to say', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      const before = document.querySelectorAll('sl-alert').length;
+      window.dispatchEvent(
+        new CustomEvent('show-toast', { detail: { message: '  ' } })
+      );
+      expect(document.querySelectorAll('sl-alert').length).to.equal(before);
+    });
+
+    it('stops listening once the shell is gone', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      el.remove();
+      const before = document.querySelectorAll('sl-alert').length;
+      window.dispatchEvent(
+        new CustomEvent('show-toast', { detail: { message: 'Gone.' } })
+      );
+      expect(document.querySelectorAll('sl-alert').length).to.equal(before);
+    });
+  });
+
   describe('upgrade modal', () => {
     /** Collapse Lit's template line breaks so assertions test copy, not layout. */
     function copy(el: ConsoleShell): string {
       return (el.shadowRoot?.textContent ?? '').replace(/\s+/g, ' ').trim();
     }
 
-    async function openGate(feature: string) {
+    /** Serve /features with the billing plugin on or off. */
+    function withBilling(billing: boolean) {
+      invalidateApiCaches();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/api/v1/features')) {
+          return new Response(
+            JSON.stringify({
+              plugins: billing ? ['billing'] : [],
+              features: billing ? { billing: true } : {},
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/api/v1/auth/users/me')) {
+          return new Response(
+            JSON.stringify({
+              username: 'test',
+              email: 'test@example.com',
+              email_verified: true,
+              permissions: null,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    async function mountShell(): Promise<ConsoleShell> {
       const el = (await fixture(
         html`<console-shell></console-shell>`
       )) as ConsoleShell;
+      await waitUntil(
+        () => (el as any)._featuresLoaded,
+        'features did not load'
+      );
       await el.updateComplete;
+      return el;
+    }
+
+    beforeEach(() => withBilling(true));
+
+    async function openGate(feature: string) {
+      const el = await mountShell();
       // show() would open a real dialog and animate; the copy under test is
       // rendered from _upgradeFeature either way.
       sinon.stub((el as any)._upgradeModal, 'show');
@@ -1275,10 +1386,7 @@ describe('ConsoleShell', () => {
 
     it('offers the plan page without a feature when the gate names none', async () => {
       const go = sinon.stub(Router, 'go').returns(true);
-      const el = (await fixture(
-        html`<console-shell></console-shell>`
-      )) as ConsoleShell;
-      await el.updateComplete;
+      const el = await mountShell();
       sinon.stub((el as any)._upgradeModal, 'show');
       window.dispatchEvent(
         new CustomEvent('show-upgrade-modal', { detail: {} })
@@ -1287,6 +1395,33 @@ describe('ConsoleShell', () => {
       footer(el, 'upgrade-now').click();
       await el.updateComplete;
       expect(go.lastCall.args[0]).to.equal('/console/settings/plan');
+    });
+
+    it('never opens where nothing is sold (OSS)', async () => {
+      // Without the billing plugin "Upgrade now" leads to a page that says
+      // every feature is already available, so the dialog stays shut no
+      // matter what raised it.
+      withBilling(false);
+      const el = await mountShell();
+      const show = sinon.stub((el as any)._upgradeModal, 'show');
+      window.dispatchEvent(
+        new CustomEvent('show-upgrade-modal', {
+          detail: { code: 'upgrade_required', feature: 'rbac' },
+        })
+      );
+      await el.updateComplete;
+      expect(show).to.not.have.been.called;
+    });
+
+    it('opens where the billing plugin sells plans', async () => {
+      const el = await mountShell();
+      const show = sinon.stub((el as any)._upgradeModal, 'show');
+      window.dispatchEvent(
+        new CustomEvent('show-upgrade-modal', {
+          detail: { code: 'upgrade_required', feature: 'rbac' },
+        })
+      );
+      expect(show).to.have.been.calledOnce;
     });
 
     it('falls back to a full page load where no router is mounted', async () => {

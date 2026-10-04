@@ -34,6 +34,7 @@ import {
   type UserProfile,
 } from '../../api';
 import '../../components/permission-denied';
+import { showToast } from '../../components/confirm-dialog';
 import '../../components/plan-choice-screen';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import { LOCATION_CHANGED, Router } from '../../router';
@@ -69,6 +70,14 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
 };
 
 const SIDEBAR_BREAKPOINT = 768;
+
+const TOAST_VARIANTS = [
+  'primary',
+  'success',
+  'neutral',
+  'warning',
+  'danger',
+] as const;
 
 /**
  * A view asks for popup chrome with `?window=1` in the URL.
@@ -412,10 +421,31 @@ export class ConsoleShell extends LitElement {
   ];
 
   private _handleShowUpgradeModal = (event: Event) => {
+    // Plans exist only where something is sold. Without the billing plugin
+    // the dialog would offer "Upgrade now" to a page that says there is
+    // nothing to buy, so the shell drops the request whatever raised it.
+    if (this.features['billing'] !== true) return;
     const detail = (event as CustomEvent).detail;
     this._upgradeFeature =
       detail?.code === 'upgrade_required' ? String(detail.feature || '') : '';
     (this._upgradeModal as any).show();
+  };
+
+  /**
+   * Render a `show-toast` request as the console's toast.
+   *
+   * Views and the API layer ask for a toast with this event (`detail.message`
+   * and an optional `detail.variant`) instead of each importing the toast
+   * helper. The shell is the one place that turns it into a visible alert.
+   */
+  private _handleShowToast = (event: Event) => {
+    const detail = (event as CustomEvent).detail as
+      { message?: unknown; variant?: unknown } | undefined;
+    const message =
+      typeof detail?.message === 'string' ? detail.message.trim() : '';
+    if (!message) return;
+    const variant = TOAST_VARIANTS.find((v) => v === detail?.variant);
+    showToast(message, variant ?? 'primary');
   };
 
   /**
@@ -451,6 +481,7 @@ export class ConsoleShell extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
     window.addEventListener('show-upgrade-modal', this._handleShowUpgradeModal);
+    window.addEventListener('show-toast', this._handleShowToast);
     window.addEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     this._mediaQuery = window.matchMedia(
       `(max-width: ${SIDEBAR_BREAKPOINT}px)`
@@ -714,6 +745,7 @@ export class ConsoleShell extends LitElement {
       'show-upgrade-modal',
       this._handleShowUpgradeModal
     );
+    window.removeEventListener('show-toast', this._handleShowToast);
     window.removeEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     window.removeEventListener('popstate', this._handleLocationChanged);
     this._mediaQuery?.removeEventListener('change', this._mediaQueryHandler!);

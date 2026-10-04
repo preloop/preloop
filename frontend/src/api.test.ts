@@ -36,6 +36,7 @@ import {
   getCostAnalyticsSummary,
   BILLING_SUBSCRIPTION_CHANGED,
   NO_USAGE_NUDGES,
+  RATE_LIMIT_FALLBACK_MESSAGE,
 } from './api.js';
 import {
   HISTORY_UNAVAILABLE_CODE,
@@ -646,11 +647,25 @@ describe('api', () => {
       expect(status).to.equal(402);
     });
 
-    it('says nothing about a passive rate limit either', async () => {
-      // 429 opens the same dialog, for the same reason: it is an answer about
-      // the plan. A background read that hits it stays quiet.
-      fetchStub.resolves(
-        new Response('{"detail":"slow down"}', { status: 429 })
+    /** Collect every toast request raised while `run` runs. */
+    async function toastEvents(run: () => Promise<unknown>) {
+      const seen: CustomEvent[] = [];
+      const listener = (event: Event) => seen.push(event as CustomEvent);
+      window.addEventListener('show-toast', listener);
+      try {
+        await run();
+      } finally {
+        window.removeEventListener('show-toast', listener);
+      }
+      return seen;
+    }
+
+    it('never treats a rate limit as a paywall', async () => {
+      // Core answers 429 for ordinary limits (test pushes per minute, notes
+      // per hour). That is not an answer about the plan, so no upgrade
+      // dialog, passive or not.
+      fetchStub.callsFake(
+        async () => new Response('{"detail":"slow down"}', { status: 429 })
       );
 
       const passiveSeen = await modalEvents(() =>
@@ -660,8 +675,70 @@ describe('api', () => {
         fetchWithAuth('/api/v1/agents')
       );
 
+      expect(passiveSeen).to.have.length(0);
+      expect(activeSeen).to.have.length(0);
+    });
+
+    it("toasts the server's own rate-limit sentence to the reader who asked", async () => {
+      fetchStub.callsFake(
+        async () =>
+          new Response(
+            '{"detail":"Only 3 test notifications per minute. Try again shortly."}',
+            { status: 429 }
+          )
+      );
+
+      const passiveSeen = await toastEvents(() =>
+        fetchWithAuth('/api/v1/agents', { passive: true })
+      );
+      let body: unknown;
+      const activeSeen = await toastEvents(async () => {
+        const response = await fetchWithAuth('/api/v1/agents');
+        body = await response.json();
+      });
+
       expect(passiveSeen, 'silent in the background').to.have.length(0);
-      expect(activeSeen, 'answers the reader who asked').to.have.length(1);
+      expect(activeSeen).to.have.length(1);
+      expect(activeSeen[0].detail).to.eql({
+        message: 'Only 3 test notifications per minute. Try again shortly.',
+        variant: 'warning',
+      });
+      // The body is read from a clone: the caller still gets it.
+      expect(body).to.eql({
+        detail: 'Only 3 test notifications per minute. Try again shortly.',
+      });
+    });
+
+    it('reads the sentence out of the {code, message} refusal shape', async () => {
+      fetchStub.resolves(
+        new Response(
+          JSON.stringify({
+            detail: { code: 'rate_limited', message: 'Queue is full.' },
+          }),
+          { status: 429 }
+        )
+      );
+      const seen = await toastEvents(() => fetchWithAuth('/api/v1/agents'));
+      expect(seen[0].detail.message).to.equal('Queue is full.');
+    });
+
+    it('falls back to Retry-After, then to a generic line', async () => {
+      fetchStub.resolves(
+        new Response('<html>Too Many Requests</html>', {
+          status: 429,
+          headers: { 'Retry-After': '30' },
+        })
+      );
+      const withHeader = await toastEvents(() =>
+        fetchWithAuth('/api/v1/agents')
+      );
+      expect(withHeader[0].detail.message).to.equal(
+        'Too many requests. Try again in 30 seconds.'
+      );
+
+      fetchStub.resolves(new Response('', { status: 429 }));
+      const bare = await toastEvents(() => fetchWithAuth('/api/v1/agents'));
+      expect(bare[0].detail.message).to.equal(RATE_LIMIT_FALLBACK_MESSAGE);
     });
 
     it('never sends the flag to the server', async () => {

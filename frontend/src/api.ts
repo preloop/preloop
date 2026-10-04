@@ -561,6 +561,43 @@ export async function fetchWithAuth(
   return performFetchWithAuth(url, options);
 }
 
+/** What a toast says when the server's 429 carries no sentence of its own. */
+export const RATE_LIMIT_FALLBACK_MESSAGE =
+  'Too many requests. Try again in a moment.';
+
+/**
+ * The sentence for a rate-limited request: the server's `detail` when it sent
+ * one, otherwise a generic line that names `Retry-After` when present. Reads
+ * a clone so the caller can still consume the body.
+ */
+async function rateLimitMessage(response: Response): Promise<string> {
+  let body: any = null;
+  try {
+    body = await response.clone().json();
+  } catch {
+    // Non-JSON 429 (a proxy page, an empty body): fall back below.
+  }
+  // Only a sentence is worth a toast: a bare `{code}` envelope is not.
+  const detail = body?.detail;
+  const fromServer =
+    typeof detail === 'string'
+      ? detail
+      : typeof detail?.message === 'string'
+        ? detail.message
+        : typeof body?.error?.message === 'string'
+          ? body.error.message
+          : '';
+  if (fromServer.trim()) return fromServer;
+  const retryAfter = Number(response.headers.get('Retry-After'));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) {
+    const seconds = Math.ceil(retryAfter);
+    return `Too many requests. Try again in ${seconds} second${
+      seconds === 1 ? '' : 's'
+    }.`;
+  }
+  return RATE_LIMIT_FALLBACK_MESSAGE;
+}
+
 async function performFetchWithAuth(
   url: string,
   requested: AuthFetchOptions = {}
@@ -635,13 +672,19 @@ async function performFetchWithAuth(
   }
 
   // A passive request is not a user action, so neither of the two answers
-  // below is allowed to interrupt the page with a dialog. The caller reads
-  // the status and decides what to leave out.
+  // below is allowed to interrupt the page. The caller reads the status and
+  // decides what to leave out.
   if (response.status === 429 && !passive) {
+    // A rate limit is not a paywall. Core sends 429 for ordinary limits (test
+    // pushes per minute, operator notes per hour, a full delivery queue), and
+    // on a deployment that sells nothing the upgrade dialog led to a page
+    // saying there are no plans. Say what the server said, as a toast.
     window.dispatchEvent(
-      new CustomEvent('show-upgrade-modal', {
-        bubbles: true,
-        composed: true,
+      new CustomEvent('show-toast', {
+        detail: {
+          message: await rateLimitMessage(response),
+          variant: 'warning',
+        },
       })
     );
   }
