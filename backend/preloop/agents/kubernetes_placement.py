@@ -130,8 +130,10 @@ def _normalize_toleration(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     effect = entry.get("effect")
-    if effect is not None and effect != "" and (
-        not isinstance(effect, str) or effect not in _TOLERATION_EFFECTS
+    if (
+        effect is not None
+        and effect != ""
+        and (not isinstance(effect, str) or effect not in _TOLERATION_EFFECTS)
     ):
         logger.warning("Ignoring toleration with an invalid effect")
         return None
@@ -156,7 +158,9 @@ def _normalize_toleration(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return None
         if effect != "NoExecute":
             # The API server only accepts tolerationSeconds with NoExecute.
-            logger.warning("Ignoring toleration with tolerationSeconds but no NoExecute")
+            logger.warning(
+                "Ignoring toleration with tolerationSeconds but no NoExecute"
+            )
             return None
 
     normalized: Dict[str, Any] = {}
