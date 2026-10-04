@@ -506,7 +506,7 @@ async def test_register_tracker_success(
         "get_issue",
         "create_issue",
         "update_issue",
-        "search",
+        "search_issues",
         "add_comment",
     }
     assert "estimate_compliance" not in response_json["unlocked_tool_names"]
@@ -955,7 +955,7 @@ ANY_TRACKER_UNLOCKED = {
     "get_issue",
     "create_issue",
     "update_issue",
-    "search",
+    "search_issues",
     "add_comment",
 }
 GITHUB_GITLAB_UNLOCKED = {

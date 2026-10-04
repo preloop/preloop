@@ -38,6 +38,7 @@ from preloop.services.subject_governance import (
     get_scoped_tool_rules,
     is_tool_enabled_for_subject,
 )
+from preloop.tools.builtin_defs import TOOL_NAME_ALIASES
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -824,6 +825,14 @@ def evaluate_policy(
         tool_name=tool_name,
         subject_context=subject_context or {},
     )
+    if not scoped_rules:
+        alias = TOOL_NAME_ALIASES.get(tool_name)
+        if alias:
+            scoped_rules = get_scoped_tool_rules(
+                account_meta,
+                tool_name=alias,
+                subject_context=subject_context or {},
+            )
 
     # Get tool configuration
     if tool_configuration_id:
@@ -834,6 +843,12 @@ def evaluate_policy(
         tool_config = crud_tool_configuration.get_by_tool_name(
             db, account_id=account_id, tool_name=tool_name
         )
+        if not tool_config:
+            alias = TOOL_NAME_ALIASES.get(tool_name)
+            if alias:
+                tool_config = crud_tool_configuration.get_by_tool_name(
+                    db, account_id=account_id, tool_name=alias
+                )
 
     # Resolve the account's default approval workflow (if any) up front so it
     # can serve as the implicit fallback for ``require_approval`` rules that
@@ -1391,6 +1406,14 @@ async def evaluate_policy_async(
         tool_name=tool_name,
         subject_context=subject_context or {},
     )
+    if not scoped_rules:
+        alias = TOOL_NAME_ALIASES.get(tool_name)
+        if alias:
+            scoped_rules = get_scoped_tool_rules(
+                account_meta_data,
+                tool_name=alias,
+                subject_context=subject_context or {},
+            )
 
     # Get tool configuration
     if tool_configuration_id:
@@ -1401,6 +1424,12 @@ async def evaluate_policy_async(
         tool_config = await get_tool_config_by_tool_name_async(
             db, account_id=account_id, tool_name=tool_name
         )
+        if not tool_config:
+            alias = TOOL_NAME_ALIASES.get(tool_name)
+            if alias:
+                tool_config = await get_tool_config_by_tool_name_async(
+                    db, account_id=account_id, tool_name=alias
+                )
 
     # Resolve the account's default approval workflow (if any) up front so it
     # can serve as the implicit fallback for ``require_approval`` rules that
