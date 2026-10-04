@@ -318,6 +318,7 @@ async def require_approval(
     rule_context: Optional[dict] = None,
     halt_scope: str = "tools",
     requested_timeout_seconds: Optional[int] = None,
+    server_name: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """Check if tool requires approval and wait for decision with streaming.
 
@@ -705,6 +706,7 @@ async def require_approval(
                     api_key_id=caller.api_key_id,
                     rule_context=rule_context,
                     timeout_seconds=window.seconds,
+                    server_name=server_name,
                 )
 
                 # Extract every value needed past this point into plain

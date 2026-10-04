@@ -3,7 +3,7 @@
 import logging
 import os
 import uuid
-from typing import Annotated, AsyncGenerator, Optional, Union
+from typing import Annotated, Any, AsyncGenerator, Dict, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -283,6 +283,46 @@ def get_approval_request(
     # while the request session is still open so serialization cannot hit a
     # detached instance.
     return ApprovalRequestResponse.model_validate(attributed(db, approval_request))
+
+
+@router.get("/{request_id}/original-args")
+@require_permission("decide_approvals")
+def get_approval_original_args(
+    request_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> Dict[str, Any]:
+    """Raw arguments of a pending reference-only approval (console only).
+
+    Available only while the request is pending and only when the
+    reference-only rule set ``approver_view: original_until_decided``. The
+    sealed copy is deleted at decision, so a decided request returns 404.
+    Email, webhook and push payloads never carry it.
+    """
+    from preloop.services.sensitive_data.reference import (
+        SEALED_ARGS_KEY,
+        unseal_original,
+    )
+
+    approval_request = crud_approval_request.get(
+        db, id=str(request_id), account_id=current_user.account_id
+    )
+    if not approval_request:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    tool_args = approval_request.tool_args or {}
+    sealed = tool_args.get(SEALED_ARGS_KEY) if isinstance(tool_args, dict) else None
+    if approval_request.status != "pending" or not sealed:
+        raise HTTPException(
+            status_code=404,
+            detail="No original arguments are available for this request",
+        )
+    original = unseal_original(sealed)
+    if original is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No original arguments are available for this request",
+        )
+    return {"request_id": str(approval_request.id), "tool_args": original}
 
 
 @router.get("/{request_id}/history", response_model=list[ApprovalEventResponse])

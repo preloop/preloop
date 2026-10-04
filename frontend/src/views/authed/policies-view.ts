@@ -3,6 +3,8 @@ import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
   getTools,
+  getAccountAgents,
+  getMCPServers,
   getApprovalWorkflows,
   createToolConfiguration,
   getFeatures,
@@ -33,6 +35,11 @@ import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import { hasPermission } from '../../permissions';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
+import '../../components/sensitive-data-panel';
+import type {
+  AgentOption,
+  SensitiveDataPanel,
+} from '../../components/sensitive-data-panel';
 import '../../components/view-header';
 import '../../components/permission-denied';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -204,6 +211,11 @@ export class PoliciesView extends LitElement {
     'all' | 'tools' | 'model.request' | 'model.response' = 'all';
   @state() private _showGenerateDialog = false;
   @state() private _currentExportYaml = '';
+  @state() private _pendingSensitiveSave = false;
+  @state() private _sensitiveAgents: AgentOption[] = [];
+  @state() private _sensitiveServers: string[] = [];
+  @state() private _sensitiveOptionsError = '';
+  private _sensitiveOptionsLoaded = false;
   @state() private _tools: Tool[] = [];
   @state() private _approvalPolicies: ApprovalWorkflow[] = [];
   @state() private _loading = false;
@@ -1405,12 +1417,14 @@ export class PoliciesView extends LitElement {
     } catch (err: any) {
       this._reportError(err, 'Failed to preview policy file');
       this._pendingYamlSave = false;
+      this._pendingSensitiveSave = false;
     } finally {
       this._isUploading = false;
     }
   }
 
   private _cancelDiffPreview = () => {
+    this._pendingSensitiveSave = false;
     this._showDiffDialog = false;
     this._pendingFile = null;
     this._diffResult = null;
@@ -1438,7 +1452,9 @@ export class PoliciesView extends LitElement {
 
       const fromYamlEditor = this._pendingYamlSave;
       const fromGenerate = this._showGenerateDialog;
+      const fromSensitive = this._pendingSensitiveSave;
       this._pendingYamlSave = false;
+      this._pendingSensitiveSave = false;
       this._showDiffDialog = false;
       this._pendingFile = null;
       this._diffResult = null;
@@ -1453,6 +1469,13 @@ export class PoliciesView extends LitElement {
       await this.loadData();
       if (fromYamlEditor) {
         this._yamlNotice = 'Policy saved and applied.';
+      }
+      if (fromSensitive) {
+        await this.updateComplete;
+        this.shadowRoot
+          ?.querySelector<SensitiveDataPanel>('sensitive-data-panel')
+          ?.reset();
+        showToast('Sensitive data settings saved and applied.', 'success');
       }
     } catch (err: any) {
       this._reportError(err, 'Failed to apply policy file');
@@ -2627,10 +2650,6 @@ defaults:
         <!-- Version Management Section -->
         ${this.renderVersionsSection()}
       </div>
-
-      ${this.renderDiffDialog()} ${this.renderSaveVersionDialog()}
-      ${this.renderPruneVersionsDialog()} ${this.renderTagVersionDialog()}
-      ${this.renderRollbackConfirmDialog()}
     `;
   }
 
@@ -3362,6 +3381,53 @@ defaults:
     if (name === 'files' && !this._yamlDirty) {
       void this._refreshCurrentExport();
     }
+    if (name === 'sensitive-data') {
+      void this._loadSensitiveOptions();
+    }
+  };
+
+  /** Agent and server pickers for the Sensitive data tab, loaded on first open. */
+  private async _loadSensitiveOptions() {
+    if (this._sensitiveOptionsLoaded) return;
+    this._sensitiveOptionsLoaded = true;
+    const [agents, servers] = await Promise.allSettled([
+      // The endpoint caps a page at 100.
+      getAccountAgents({ limit: 100 }),
+      getMCPServers(),
+    ]);
+    const failed = [
+      agents.status === 'rejected' ? 'agents' : '',
+      servers.status === 'rejected' ? 'MCP servers' : '',
+    ].filter(Boolean);
+    this._sensitiveOptionsError = failed.length
+      ? `Could not load the ${failed.join(' and ')} list, so those pickers are empty. Reload to try again.`
+      : '';
+    if (failed.length) this._sensitiveOptionsLoaded = false;
+    if (agents.status === 'fulfilled') {
+      this._sensitiveAgents = agents.value.items.map((agent) => ({
+        id: agent.id,
+        name: agent.display_name || agent.id,
+      }));
+    }
+    if (servers.status === 'fulfilled') {
+      this._sensitiveServers = servers.value
+        .map((server: any) => String(server.name || ''))
+        .filter(Boolean);
+    }
+  }
+
+  /** Sensitive data tab Save: same diff dialog and import path as YAML. */
+  private _handleSensitiveSave = async (
+    event: CustomEvent<{ yaml: string }>
+  ) => {
+    this._error = null;
+    this._pendingYamlSave = false;
+    this._pendingSensitiveSave = true;
+    await this.previewPolicyFile(
+      new File([event.detail.yaml], 'policies.yaml', {
+        type: 'application/x-yaml',
+      })
+    );
   };
 
   render() {
@@ -3455,6 +3521,13 @@ defaults:
                     >
                       YAML
                     </sl-tab>
+                    <sl-tab
+                      slot="nav"
+                      panel="sensitive-data"
+                      ?active=${this._activeTab === 'sensitive-data'}
+                    >
+                      Sensitive data
+                    </sl-tab>
                     ${
                       // Tag based access rules come from an extension plugin;
                       // the tab exists only where /features reports them.
@@ -3475,6 +3548,19 @@ defaults:
                     <sl-tab-panel name="files">
                       ${this.renderPolicyFilesTab()}
                     </sl-tab-panel>
+                    <sl-tab-panel name="sensitive-data">
+                      <sensitive-data-panel
+                        .policyYaml=${this._currentExportYaml}
+                        .agents=${this._sensitiveAgents}
+                        .tools=${[
+                          ...new Set(this._tools.map((tool) => tool.name)),
+                        ]}
+                        .servers=${this._sensitiveServers}
+                        .optionsError=${this._sensitiveOptionsError}
+                        .saving=${this._isUploading}
+                        @sensitive-data-save=${this._handleSensitiveSave}
+                      ></sensitive-data-panel>
+                    </sl-tab-panel>
                     ${
                       hasCapability(this._features, 'abac_rules')
                         ? html`<sl-tab-panel name="access-rules">
@@ -3490,6 +3576,16 @@ defaults:
                     }
                   </sl-tab-group>
                   ${this.renderModelIODialog()}
+                  ${
+                    // Page level, not inside the YAML tab: the Sensitive data
+                    // tab saves through the same diff dialog and a dialog in
+                    // a hidden tab panel never shows.
+                    this.renderDiffDialog()
+                  }
+                  ${this.renderSaveVersionDialog()}
+                  ${this.renderPruneVersionsDialog()}
+                  ${this.renderTagVersionDialog()}
+                  ${this.renderRollbackConfirmDialog()}
                   <policy-generate-dialog
                     .open=${this._showGenerateDialog}
                     .currentYaml=${this._currentExportYaml}

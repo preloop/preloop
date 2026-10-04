@@ -664,6 +664,147 @@ describe('PoliciesView', () => {
     expect((element as any)._showGenerateDialog).to.be.false;
   });
 
+  it('saves the Sensitive data tab through the policy diff and upload path', async () => {
+    let uploadedYaml = '';
+    let previewed = false;
+    const agentUrls: string[] = [];
+    let agentsFail = false;
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = (init?.method || 'GET').toUpperCase();
+        if (
+          url.endsWith('/api/v1/tools') ||
+          url.endsWith('/api/v1/approval-workflows')
+        ) {
+          return json([]);
+        }
+        if (url.includes('/api/v1/features')) {
+          return json({ plugins: [], features: {} });
+        }
+        if (url.includes('/api/v1/policies/model-io-rules')) {
+          return json({ rules: [] });
+        }
+        if (
+          url.includes('/api/v1/policies/versions') ||
+          url.includes('/api/v1/mcp-servers')
+        ) {
+          return json([]);
+        }
+        if (url.includes('/api/v1/agents')) {
+          agentUrls.push(url);
+          if (agentsFail) return json({ detail: 'boom' }, 500);
+          // Mirrors the endpoint: le=100 on limit.
+          const limit = Number(
+            new URL(url, location.origin).searchParams.get('limit')
+          );
+          if (limit > 100) return json({ detail: 'limit too large' }, 422);
+          return json({
+            items: [{ id: 'agent-1', display_name: 'Billing bot' }],
+          });
+        }
+        if (url.includes('/sensitive-data/types')) {
+          return json({
+            types: [
+              {
+                id: 'email',
+                label: 'Email addresses',
+                description: 'Mailbox addresses.',
+                example: 'a@example.com',
+                locales: [],
+                checksum: false,
+                builtin: true,
+              },
+            ],
+            default_types: ['email'],
+          });
+        }
+        if (url.includes('/api/v1/policies/export')) {
+          return new Response('version: "1.0"\nmetadata:\n  name: live\n', {
+            status: 200,
+          });
+        }
+        if (url.endsWith('/api/v1/policies/diff') && method === 'POST') {
+          previewed = true;
+          return json({
+            summary: '1 modified',
+            has_changes: true,
+            changes: { added: [], removed: [], modified: [] },
+          });
+        }
+        if (url.endsWith('/api/v1/policies/upload') && method === 'POST') {
+          uploadedYaml = await (
+            (init!.body as FormData).get('file') as File
+          ).text();
+          return json({ success: true, policy_name: 'live' });
+        }
+        return json({ detail: `Unhandled: ${method} ${url}` }, 500);
+      });
+
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+    await waitUntil(() => !(element as any)._loading, 'still loading');
+    // The agent picker loads within the endpoint's page cap, and a failed
+    // load is shown rather than leaving the picker silently empty.
+    agentsFail = true;
+    await (element as any)._loadSensitiveOptions();
+    await element.updateComplete;
+    const failedPanel = element.shadowRoot!.querySelector(
+      'sensitive-data-panel'
+    )!;
+    await failedPanel.updateComplete;
+    expect(
+      failedPanel.shadowRoot!.querySelector(
+        '[data-testid="sensitive-options-error"]'
+      )?.textContent
+    ).to.contain('Could not load the agents list');
+    agentsFail = false;
+    await (element as any)._loadSensitiveOptions();
+    await element.updateComplete;
+    expect(agentUrls.every((url) => url.includes('limit=100'))).to.be.true;
+    expect((element as any)._sensitiveAgents).to.deep.equal([
+      { id: 'agent-1', name: 'Billing bot' },
+    ]);
+    expect((element as any)._sensitiveOptionsError).to.equal('');
+    const tab = element.shadowRoot!.querySelector(
+      'sl-tab[panel="sensitive-data"]'
+    );
+    expect(tab?.textContent?.trim()).to.equal('Sensitive data');
+    const panel = element.shadowRoot!.querySelector('sensitive-data-panel')!;
+    await waitUntil(() => panel.shadowRoot!.querySelector('#type-email'));
+    panel.shadowRoot!.querySelector<HTMLInputElement>('#type-email')!.click();
+    await panel.updateComplete;
+    panel
+      .shadowRoot!.querySelector<HTMLInputElement>(
+        'input[name="action-email"][value="redact"]'
+      )!
+      .click();
+    await panel.updateComplete;
+    panel
+      .shadowRoot!.querySelector<HTMLButtonElement>(
+        '[data-testid="sensitive-save"]'
+      )!
+      .click();
+    await waitUntil(
+      () => (element as any)._showDiffDialog === true,
+      'Save did not open the diff dialog'
+    );
+    expect(previewed).to.be.true;
+    expect(uploadedYaml).to.equal('');
+    await element.updateComplete;
+    // The diff dialog must not live inside the (hidden) YAML tab panel.
+    const openDialog = element.shadowRoot!.querySelector('sl-dialog[open]');
+    expect(openDialog).to.exist;
+    expect(openDialog!.closest('sl-tab-panel')).to.equal(null);
+    await (element as any).applyPolicyFile();
+    expect(uploadedYaml).to.contain('name: live');
+    expect(uploadedYaml).to.contain('id: console-redact');
+    expect(uploadedYaml).to.contain('"on":');
+    expect(uploadedYaml).to.contain('action: redact');
+  });
+
   describe('YAML tab', () => {
     /**
      * Minimal stub focused on the YAML editor: the export is the seed, and
