@@ -2121,25 +2121,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         # decision) is used when still present; otherwise the
                         # replay cannot reconstruct the call and fails below.
                         from preloop.services.sensitive_data.reference import (
-                            SEALED_ARGS_KEY,
-                            is_reference_record,
-                            unseal_original,
+                            tool_args_for_replay,
                         )
 
-                        sealed = (
-                            tool_args.get(SEALED_ARGS_KEY)
-                            if isinstance(tool_args, dict)
-                            else None
-                        )
-                        if sealed:
-                            tool_args = unseal_original(sealed) or {}
-                        elif is_reference_record(tool_args):
-                            raise RuntimeError(
-                                "This approval is reference-only: the original "
-                                "arguments were never stored, so the call "
-                                "cannot be replayed asynchronously. Re-issue "
-                                "the tool call while the approval is pending."
-                            )
+                        tool_args = tool_args_for_replay(tool_args)
                         req_id = approval_request.id
                         # ask_user replay: the approver's comment IS the
                         # human's answer — capture it before releasing the

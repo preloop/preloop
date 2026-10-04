@@ -653,6 +653,7 @@ class ApprovalService:
         managed_agent_name: Optional[str] = None,
         api_key_id: Optional[uuid.UUID] = None,
         rule_context: Optional[Dict[str, Any]] = None,
+        server_name: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -733,6 +734,7 @@ class ApprovalService:
             tool_name=tool_name,
             tool_args=tool_args,
             managed_agent_id=managed_agent_id,
+            server_name=server_name,
         )
 
         # Create approval request
@@ -2051,6 +2053,7 @@ class ApprovalService:
         tool_name: str,
         tool_args: Dict[str, Any],
         managed_agent_id: Optional[uuid.UUID],
+        server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Apply the account's redact rules to the stored argument copy."""
         from preloop.api.loop_safety import run_db_off_loop
@@ -2065,6 +2068,7 @@ class ApprovalService:
         scope = StorageScope(
             target="tool.args",
             tool_name=tool_name,
+            server_name=server_name,
             managed_agent_id=str(managed_agent_id) if managed_agent_id else None,
         )
 
@@ -2076,6 +2080,7 @@ class ApprovalService:
             rule = reference_module.reference_rule_for(
                 config,
                 tool_name=tool_name,
+                server_name=server_name,
                 managed_agent_id=scope.managed_agent_id,
             )
             if reference_module.wants_original_until_decided(rule) and isinstance(
@@ -2116,6 +2121,7 @@ class ApprovalService:
         standing_bypass_reason: Optional[str] = None,
         rule_context: Optional[Dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
+        server_name: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -2165,6 +2171,7 @@ class ApprovalService:
             managed_agent_name=managed_agent_name,
             api_key_id=api_key_id,
             rule_context=rule_context,
+            server_name=server_name,
         )
 
         # Generate user-facing summary before any notifications fire.

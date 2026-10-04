@@ -20229,6 +20229,13 @@ components:
         has_more:
           type: boolean
           title: Has More
+        reference_salt_ids:
+          items:
+            type: string
+          type: array
+          title: Reference Salt Ids
+          description: Ids of the salts that key reference-only argument HMACs for
+            this account. The salts themselves are not included.
         note:
           type: string
           title: Note
