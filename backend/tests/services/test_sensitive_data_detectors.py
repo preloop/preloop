@@ -178,6 +178,46 @@ class TestCustomPatterns:
             detect("a" * 40 + "!", cfg)
         assert time.perf_counter() - started < CUSTOM_PATTERN_TIMEOUT_SECONDS + 1.0
 
+    def test_total_budget_caps_many_slow_patterns(self, monkeypatch) -> None:
+        """Per-pattern timeouts cannot add up past the per-call budget."""
+        import time as time_module
+
+        from preloop.services.sensitive_data import detectors as module
+
+        calls: list[float] = []
+
+        def slow(compiled, text, timeout=module.CUSTOM_PATTERN_TIMEOUT_SECONDS):
+            calls.append(timeout)
+            time_module.sleep(0.12)
+            return []
+
+        monkeypatch.setattr(module, "finditer_with_timeout", slow)
+        monkeypatch.setattr(module, "CUSTOM_PATTERNS_TOTAL_BUDGET_SECONDS", 0.3)
+        cfg = DetectorConfig(
+            custom_patterns=tuple(CustomPattern(f"p{i}", "x") for i in range(10))
+        )
+        with pytest.raises(DetectorTimeoutError, match="total budget"):
+            detect("text", cfg)
+        assert 2 <= len(calls) <= 4
+        assert (
+            calls[-1] < module.CUSTOM_PATTERN_TIMEOUT_SECONDS
+        )  # shrunk to the remainder
+
+    def test_mrn_identifier_pattern_is_validated_in_its_composed_form(self) -> None:
+        from preloop.services.sensitive_data.detectors import compile_mrn_pattern
+
+        # A leading inline flag is fine with the timeout engine and matches.
+        matches = detect(
+            "MRN: ABC and mrn: abc",
+            DetectorConfig(
+                types=("medical_record_number",),
+                medical_record_number_pattern="(?i)abc",
+            ),
+        )
+        assert [m.type for m in matches] == ["medical_record_number"] * 2
+        with pytest.raises(UnsafePatternError):
+            compile_mrn_pattern("abc(")
+
     def test_length_cap(self) -> None:
         with pytest.raises(UnsafePatternError, match="exceeds"):
             compile_safe_regex("a" * 513)
