@@ -104,10 +104,12 @@ prompt_template: |
 
   5. Hand findings to people:
      a. Suggestions: one ask_user call per run, never one per suggestion.
-        Pass every suggestion as an item (id, title = the suggestion, detail
-        = the quoted line and the artifact uri) and an input_schema that
-        lets the person accept or dismiss each item. Skip the call when
-        there are no suggestions.
+        Ask one question, for example "Review the suggestions from the
+        transcripts of <window from> to <window to>", and pass every
+        suggestion as an item (id, title = the suggestion, description =
+        the quoted line and the artifact uri, href = the artifact uri) with
+        an input_schema that lets the person accept or dismiss each item.
+        Skip the call when there are no suggestions.
      b. Actions: before every mutating tool call, call request_approval with
         operation = the exact tool name and arguments you will send,
         context = the quoted transcript excerpt and the artifact uri,
