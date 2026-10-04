@@ -222,8 +222,11 @@ Everything else stays on the Cost page and never reaches a rule:
 (`unmapped`, `unknown_amount`, `unsupported_currency`, `nonfinite_amount`,
 `aggregate_only`, `unattributed`, `not_daily`) together with the mapped and
 unmapped logins, so an operator can see which mappings are missing. It
-returns no tokens and no stored payloads. `mapped_net_amount` is `null`
-when nothing was mapped, never `$0`.
+returns no tokens and no stored payloads. `mapped_net_amount` is the sum of
+the positive per user, day and model nets, which is exactly what the rules
+evaluate; it is `null` when nothing was mapped, never `$0`. A user, day and
+model whose credits exceed its charges nets at or below zero, reaches no
+rule, and is reported apart as `credited_net_amount`.
 
 ### Replay horizon and delayed days
 

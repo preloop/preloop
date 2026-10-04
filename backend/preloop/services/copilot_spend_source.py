@@ -418,10 +418,13 @@ def spend_coverage(
     Returns:
         ``organization`` (None without a connection), ``connection_active``,
         ``period_start``/``period_end`` (UTC days), ``mapped_rows``,
-        ``mapped_net_amount`` (None when no row was mapped: unknown is not
-        zero), ``known_zero_rows``, ``excluded`` (one count per reason in
-        :data:`EXCLUSION_REASONS`), ``unmapped_logins`` (sorted, canonical)
-        and ``mapped_logins``.
+        ``mapped_net_amount`` (the sum of the positive user/day/model nets,
+        which is exactly what :func:`copilot_imported_spend` emits; None when
+        no row was mapped, because unknown is not zero), ``credited_net_amount``
+        (the user/day/model nets that came out at or below zero and therefore
+        reach no rule; None when there were none), ``known_zero_rows``,
+        ``excluded`` (one count per reason in :data:`EXCLUSION_REASONS`),
+        ``unmapped_logins`` (sorted, canonical) and ``mapped_logins``.
     """
     excluded = {reason: 0 for reason in EXCLUSION_REASONS}
     connection = crud_copilot_import_connection.get_for_account(
@@ -434,6 +437,7 @@ def spend_coverage(
         "period_end": end_day,
         "mapped_rows": 0,
         "mapped_net_amount": None,
+        "credited_net_amount": None,
         "known_zero_rows": 0,
         "excluded": excluded,
         "unmapped_logins": [],
@@ -444,14 +448,15 @@ def spend_coverage(
     mapping = crud_copilot_user_mapping.resolve_user_ids(db, connection=connection)
     classified = _classify(_premium_rows(db, connection, start_day, end_day), mapping)
     excluded.update(classified.reasons)
+    positive = [net for net in classified.net.values() if net > 0]
+    credited = [net for net in classified.net.values() if net <= 0]
     base.update(
         {
             "mapped_rows": classified.mapped_rows,
             "mapped_net_amount": (
-                round(sum(classified.net.values()), 4)
-                if classified.mapped_rows
-                else None
+                round(sum(positive), 4) if classified.mapped_rows else None
             ),
+            "credited_net_amount": round(sum(credited), 4) if credited else None,
             "known_zero_rows": classified.known_zero_rows,
             "unmapped_logins": sorted(classified.unmapped_logins),
             "mapped_logins": sorted(mapping),

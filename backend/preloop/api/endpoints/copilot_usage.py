@@ -49,6 +49,7 @@ from preloop.services.copilot_usage_import import (
     connection_payload,
 )
 from preloop.services.secret_service import get_secret_service
+from preloop.services.spend_outliers import REPLAY_WINDOW_DAYS
 from preloop.sync.services.event_bus import event_bus_service
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
@@ -58,8 +59,6 @@ router = APIRouter(prefix="/cost/copilot", tags=["Cost Analytics"])
 
 #: Default window when the caller does not pass one.
 DEFAULT_WINDOW_DAYS = 30
-#: Default coverage window: the replay horizon of the spend outlier pass.
-COVERAGE_WINDOW_DAYS = 28
 
 
 @router.get("", response_model=CopilotUsageSummaryResponse)
@@ -330,13 +329,13 @@ def get_copilot_spend_coverage(
 ) -> CopilotSpendCoverageResponse:
     """Row counts per outcome for the spend outlier rules, UTC days inclusive.
 
-    Defaults to the 28 completed days ending yesterday, which is the window
-    the daily pass replays.
+    Defaults to the completed days ending yesterday that the daily pass
+    replays (:data:`preloop.services.spend_outliers.REPLAY_WINDOW_DAYS`).
     """
     ensure_permission_in_oss(db, current_user, "view_cost")
     account = get_account_or_404(db, current_user)
     end = end_day or (datetime.now(UTC).date() - timedelta(days=1))
-    start = start_day or (end - timedelta(days=COVERAGE_WINDOW_DAYS - 1))
+    start = start_day or (end - timedelta(days=REPLAY_WINDOW_DAYS - 1))
     if start > end:
         raise HTTPException(
             status_code=422, detail="start_day must not be after end_day"

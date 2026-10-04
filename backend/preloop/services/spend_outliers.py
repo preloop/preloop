@@ -54,6 +54,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import logging
 import math
+import traceback
 from statistics import median
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 from uuid import UUID
@@ -230,7 +231,10 @@ def _imported_rows(
     One broken import must not stop gateway alerts, so a failing source is
     skipped and the rest are kept. The caller learns that the result is
     incomplete and must not treat the missing rows as "nothing was spent".
-    The diagnostic names the source and the exception type only.
+    The diagnostics name the source and the exception type, and at debug
+    level the stack frame locations; neither the exception message nor any
+    source line is logged, since an HTTP client error can carry a request
+    header.
     """
     rows: List[ImportedSpendRow] = []
     complete = True
@@ -246,7 +250,14 @@ def _imported_rows(
                 type(exc).__name__,
                 account_id,
             )
-            logger.debug("Imported spend source failure", exc_info=True)
+            logger.debug(
+                "Imported spend source %s traceback (frame locations only): %s",
+                _source_name(entry.source),
+                " <- ".join(
+                    f"{frame.filename}:{frame.lineno} in {frame.name}"
+                    for frame in reversed(traceback.extract_tb(exc.__traceback__))
+                ),
+            )
     return rows, complete
 
 

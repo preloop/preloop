@@ -9413,7 +9413,17 @@ paths:
 
         Writing takes ``manage_budgets``, the same permission as budget limits.
 
-        Changing a threshold does not rewrite findings already recorded.'
+        Saving here changes nothing by itself. Findings already recorded stand
+
+        until the daily pass next judges their day: for accounts without an
+
+        imported-spend replay that never happens, while an account with an
+
+        active Copilot import has its 28 most recent days re-judged with the new
+
+        thresholds on the next pass, which can update or supersede a recent
+
+        finding (see :mod:`preloop.services.spend_outliers`).'
       operationId: update_spend_outlier_settings_api_v1_attention_spend_outliers_settings_put
       requestBody:
         content:
@@ -10151,9 +10161,9 @@ paths:
       description: 'Row counts per outcome for the spend outlier rules, UTC days inclusive.
 
 
-        Defaults to the 28 completed days ending yesterday, which is the window
+        Defaults to the completed days ending yesterday that the daily pass
 
-        the daily pass replays.'
+        replays (:data:`preloop.services.spend_outliers.REPLAY_WINDOW_DAYS`).'
       operationId: get_copilot_spend_coverage_api_v1_cost_copilot_spend_coverage_get
       security:
       - bearerAuth: []
@@ -20681,6 +20691,15 @@ components:
           - type: number
           - type: 'null'
           title: Mapped Net Amount
+          description: Sum of the positive per user, day and model nets, which is
+            exactly what the rules evaluate. Null when no row was mapped.
+        credited_net_amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Credited Net Amount
+          description: Per user, day and model nets at or below zero (credits exceeding
+            charges); these reach no rule. Null when there were none.
         known_zero_rows:
           type: integer
           title: Known Zero Rows

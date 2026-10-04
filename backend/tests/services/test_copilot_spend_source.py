@@ -287,6 +287,7 @@ def test_adapter_emits_only_mapped_per_user_daily_usd_rows(
     assert coverage["connection_active"] is True
     assert coverage["mapped_rows"] == 1
     assert coverage["mapped_net_amount"] == 8.0
+    assert coverage["credited_net_amount"] is None
     assert coverage["excluded"] == {
         "unmapped": 0,
         "unknown_amount": 1,
@@ -368,6 +369,7 @@ def test_known_zero_is_known_and_emits_nothing(db_session, test_user, connection
     assert coverage["mapped_rows"] == 1
     assert coverage["known_zero_rows"] == 1
     assert coverage["mapped_net_amount"] == 0.0
+    assert coverage["credited_net_amount"] == 0.0
 
 
 def test_credits_net_within_user_day_model_and_bad_rows_are_counted(
@@ -393,9 +395,8 @@ def test_credits_net_within_user_day_model_and_bad_rows_are_counted(
         premium_row(DAY, login="alice", model="model-refund", amount=-3.0),
     )
 
-    rows = by_key(
-        src.copilot_imported_spend(db_session, test_user.account_id, DAY, DAY)
-    )
+    emitted = src.copilot_imported_spend(db_session, test_user.account_id, DAY, DAY)
+    rows = by_key(emitted)
 
     assert set(rows) == {(test_user.id, DAY, "model-a")}
     assert rows[(test_user.id, DAY, "model-a")].cost_usd == pytest.approx(8.0)
@@ -405,8 +406,13 @@ def test_credits_net_within_user_day_model_and_bad_rows_are_counted(
     assert coverage["excluded"]["nonfinite_amount"] == 2
     assert coverage["excluded"]["unsupported_currency"] == 1
     assert coverage["excluded"]["unknown_amount"] == 1
-    # The pure refund model nets negative and is not a spend sample.
+    # The pure refund model nets negative and is not a spend sample. The
+    # coverage figure is what the rules see; the credit is reported apart.
     assert coverage["mapped_rows"] == 3
+    assert coverage["mapped_net_amount"] == pytest.approx(
+        sum(row.cost_usd for row in emitted)
+    )
+    assert coverage["credited_net_amount"] == pytest.approx(-3.0)
 
 
 def test_two_logins_for_one_user_are_summed(db_session, test_user, connection):

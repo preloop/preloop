@@ -146,7 +146,20 @@ class CopilotSpendCoverageResponse(BaseModel):
     period_start: date
     period_end: date
     mapped_rows: int = 0
-    mapped_net_amount: Optional[float] = None
+    mapped_net_amount: Optional[float] = Field(
+        None,
+        description=(
+            "Sum of the positive per user, day and model nets, which is exactly "
+            "what the rules evaluate. Null when no row was mapped."
+        ),
+    )
+    credited_net_amount: Optional[float] = Field(
+        None,
+        description=(
+            "Per user, day and model nets at or below zero (credits exceeding "
+            "charges); these reach no rule. Null when there were none."
+        ),
+    )
     known_zero_rows: int = Field(
         0, description="Mapped rows whose billed amount is exactly zero."
     )

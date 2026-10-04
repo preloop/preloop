@@ -645,12 +645,14 @@ def test_source_failure_keeps_prior_findings_and_judges_yesterday_from_gateway(
 
 
 def test_source_failure_diagnostic_is_sanitized(db_session, test_user, caplog):
+    """Neither the warning nor the debug traceback carries the exception message."""
+
     def broken(db, account_id, start_day, end_day):
         raise RuntimeError("Authorization: Bearer ghp_secret")
 
     register_imported_spend_source(broken)
     try:
-        with caplog.at_level("WARNING", logger="preloop.services.spend_outliers"):
+        with caplog.at_level("DEBUG", logger="preloop.services.spend_outliers"):
             result = spend_outliers.evaluate_days(
                 db_session, test_user.account_id, [YESTERDAY], NOW
             )
@@ -658,11 +660,18 @@ def test_source_failure_diagnostic_is_sanitized(db_session, test_user, caplog):
         unregister_imported_spend_source(broken)
 
     assert result.imported_complete is False
-    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    records = [r for r in caplog.records if r.name == "preloop.services.spend_outliers"]
+    warnings = [r.getMessage() for r in records if r.levelname == "WARNING"]
+    debugs = [r.getMessage() for r in records if r.levelname == "DEBUG"]
     assert any(
         "broken" in message and "RuntimeError" in message for message in warnings
     )
-    assert all("ghp_secret" not in message for message in warnings)
+    assert any("broken" in message and "traceback" in message for message in debugs)
+    rendered = [r.getMessage() for r in records] + [
+        str(r.exc_info) for r in records if r.exc_info
+    ]
+    assert all("ghp_secret" not in text for text in rendered)
+    assert all(r.exc_info is None for r in records)
 
 
 def test_explicit_day_evaluation_with_failed_source_judges_nothing_but_yesterday(
