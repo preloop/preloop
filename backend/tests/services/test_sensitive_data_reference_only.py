@@ -702,6 +702,76 @@ async def test_servers_only_and_agents_only_rules_store_references(
     assert EMAIL not in json.dumps(approved)
 
 
+@pytest.mark.asyncio
+async def test_evaluator_context_supplies_scope_for_reference_rules(
+    mocker, salts
+) -> None:
+    """A decision row inherits server and agent from the evaluator context.
+
+    ``evaluate_policy_async`` sets ``_policy_storage_scope`` and the logger
+    reads it. Calling ``_log_policy_decision_async`` with those fields
+    directly would still pass if that contextvar were removed, and a
+    servers-only or agents-only rule would store the raw arguments.
+    """
+    agent_id = uuid.uuid4()
+    account_id = uuid.uuid4()
+    servers_only = SensitiveDataConfig.model_validate(
+        {
+            "reference_only": [
+                {
+                    "id": "ehr-only",
+                    "scope": {"servers": ["ehr"]},
+                    "keep_fields": ["$.consent_id"],
+                }
+            ]
+        }
+    )
+    agents_only = SensitiveDataConfig.model_validate(
+        {
+            "reference_only": [
+                {
+                    "id": "agent-only",
+                    "scope": {"agents": [str(agent_id)]},
+                    "keep_fields": ["$.consent_id"],
+                }
+            ]
+        }
+    )
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_result.scalars.return_value.first.return_value = None
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=mock_result)
+    audit = MagicMock()
+    mocker.patch.object(policy_evaluator, "_get_audit_service", return_value=audit)
+    cases = (
+        (servers_only, "ehr", None, "ehr-only"),
+        (agents_only, None, str(agent_id), "agent-only"),
+    )
+    storage.invalidate_cache()
+    try:
+        for config, server_name, managed_agent_id, rule_id in cases:
+            storage.prime_cache(account_id, config)
+            audit.log_policy_decision_async.reset_mock()
+            decision = await policy_evaluator.evaluate_policy_async(
+                db=db,
+                tool_name="get_patient_record",
+                tool_args=dict(ARGS),
+                account_id=account_id,
+                subject_context={"managed_agent_id": managed_agent_id},
+                server_name=server_name,
+            )
+            assert decision.action == "allow"
+            stored = audit.log_policy_decision_async.call_args.kwargs["tool_args"]
+            assert is_reference_record(stored)
+            assert stored["rule_id"] == rule_id
+            blob = json.dumps(stored)
+            assert EMAIL not in blob and "P-77" not in blob
+            assert stored["kept"] == {"$.consent_id": "consent-9"}
+    finally:
+        storage.invalidate_cache()
+
+
 # ---------------------------------------------------------------------------
 # Audit chain and export
 # ---------------------------------------------------------------------------
