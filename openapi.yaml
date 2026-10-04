@@ -12832,7 +12832,9 @@ paths:
 
         The same permission as sending: whoever may send a command may watch
 
-        it land. Another agent''s command id is a 404, not a leak.'
+        it land. Another agent''s command id is a 404, not a leak. A sync
+
+        handler: FastAPI runs it in the threadpool, off the event loop.'
       operationId: get_managed_agent_command_status_api_v1_agents__agent_id__control_commands__command_id__get
       security:
       - bearerAuth: []
@@ -12875,7 +12877,9 @@ paths:
 
         command is refused. Sending still goes through the command endpoint and
 
-        its ``control_managed_agent`` check; this only picks the input mode.'
+        its ``control_managed_agent`` check; this only picks the input mode. A
+
+        sync handler: FastAPI runs it in the threadpool, off the event loop.'
       operationId: get_runtime_session_control_mode_api_v1_runtime_sessions__runtime_session_id__control_get
       security:
       - bearerAuth: []

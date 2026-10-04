@@ -1537,7 +1537,9 @@ async def _route_managed_agent_prompt(
 
     history_session = _command_history_session(db, agent=agent, request=request)
     author_display = (
-        current_user.full_name or current_user.username or current_user.email
+        getattr(current_user, "full_name", None)
+        or getattr(current_user, "username", None)
+        or getattr(current_user, "email", None)
     )
     if history_session is not None:
         crud_runtime_session_activity.log_agent_control_message(
@@ -1665,7 +1667,7 @@ async def send_managed_agent_prompt(
     response_model=AgentControlCommandStatusResponse,
 )
 @require_permission("control_managed_agent")
-async def get_managed_agent_command_status(
+def get_managed_agent_command_status(
     agent_id: str,
     command_id: str,
     current_user: models.User = Depends(get_current_active_user),
@@ -1674,42 +1676,39 @@ async def get_managed_agent_command_status(
     """Delivery state of one operator command, for clients that follow it.
 
     The same permission as sending: whoever may send a command may watch
-    it land. Another agent's command id is a 404, not a leak.
+    it land. Another agent's command id is a 404, not a leak. A sync
+    handler: FastAPI runs it in the threadpool, off the event loop.
     """
-
-    def load() -> AgentControlCommandStatusResponse:
-        try:
-            agent_uuid = uuid.UUID(agent_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
-            ) from None
-        record = crud_agent_control_command.get_by_command_id(
-            db,
-            account_id=current_user.account_id,
-            managed_agent_id=agent_uuid,
-            command_id=command_id.strip(),
+    try:
+        agent_uuid = uuid.UUID(agent_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
+        ) from None
+    record = crud_agent_control_command.get_by_command_id(
+        db,
+        account_id=current_user.account_id,
+        managed_agent_id=agent_uuid,
+        command_id=command_id.strip(),
+    )
+    if record is None or record.kind != "command":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
         )
-        if record is None or record.kind != "command":
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
-            )
-        delivery_state, result_status = command_delivery_state(record)
-        return AgentControlCommandStatusResponse(
-            command_id=record.command_id,
-            managed_agent_id=record.managed_agent_id,
-            status=record.status,
-            delivery_state=delivery_state,
-            terminal=delivery_state in TERMINAL_COMMAND_DELIVERY_STATES,
-            result_status=result_status,
-            last_error=record.last_error,
-            created_at=getattr(record, "created_at", None),
-            delivered_at=record.delivered_at,
-            acked_at=record.acked_at,
-            expires_at=record.expires_at,
-        )
-
-    return await run_db_off_loop(load)
+    delivery_state, result_status = command_delivery_state(record)
+    return AgentControlCommandStatusResponse(
+        command_id=record.command_id,
+        managed_agent_id=record.managed_agent_id,
+        status=record.status,
+        delivery_state=delivery_state,
+        terminal=delivery_state in TERMINAL_COMMAND_DELIVERY_STATES,
+        result_status=result_status,
+        last_error=record.last_error,
+        created_at=getattr(record, "created_at", None),
+        delivered_at=record.delivered_at,
+        acked_at=record.acked_at,
+        expires_at=record.expires_at,
+    )
 
 
 @router.get(
@@ -1717,7 +1716,7 @@ async def get_managed_agent_command_status(
     response_model=RuntimeSessionControlResponse,
 )
 @require_permission("view_runtime_sessions")
-async def get_runtime_session_control_mode(
+def get_runtime_session_control_mode(
     runtime_session_id: str,
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -1726,44 +1725,41 @@ async def get_runtime_session_control_mode(
 
     ``preloop sessions attach`` reads this once on attach and again when a
     command is refused. Sending still goes through the command endpoint and
-    its ``control_managed_agent`` check; this only picks the input mode.
+    its ``control_managed_agent`` check; this only picks the input mode. A
+    sync handler: FastAPI runs it in the threadpool, off the event loop.
     """
-
-    def load() -> RuntimeSessionControlResponse:
-        try:
-            uuid.UUID(runtime_session_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Runtime session not found",
-            ) from None
-        session = crud_runtime_session.get_account_session(
-            db,
-            account_id=str(current_user.account_id),
-            runtime_session_id=runtime_session_id,
+    try:
+        uuid.UUID(runtime_session_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runtime session not found",
+        ) from None
+    session = crud_runtime_session.get_account_session(
+        db,
+        account_id=str(current_user.account_id),
+        runtime_session_id=runtime_session_id,
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runtime session not found",
         )
-        if session is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Runtime session not found",
-            )
-        decision = resolve_session_control_mode(
-            db, account_id=str(current_user.account_id), session=session
-        )
-        agent = decision.agent
-        return RuntimeSessionControlResponse(
-            runtime_session_id=session.id,
-            mode=decision.mode,
-            reason_code=decision.reason_code,
-            reason=decision.reason,
-            managed_agent_id=agent.id if agent is not None else None,
-            agent_name=agent.display_name if agent is not None else None,
-            agent_kind=(agent.agent_kind or agent.session_source_type)
-            if agent is not None
-            else None,
-        )
-
-    return await run_db_off_loop(load)
+    decision = resolve_session_control_mode(
+        db, account_id=str(current_user.account_id), session=session
+    )
+    agent = decision.agent
+    return RuntimeSessionControlResponse(
+        runtime_session_id=session.id,
+        mode=decision.mode,
+        reason_code=decision.reason_code,
+        reason=decision.reason,
+        managed_agent_id=agent.id if agent is not None else None,
+        agent_name=agent.display_name if agent is not None else None,
+        agent_kind=(agent.agent_kind or agent.session_source_type)
+        if agent is not None
+        else None,
+    )
 
 
 @router.post(
