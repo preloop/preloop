@@ -35,6 +35,7 @@ actor and ``source="mcp"``, like ``search_sessions`` reads.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -104,6 +105,22 @@ class ReadOutcome:
     text: str
     blocks: List[Dict[str, Any]] = field(default_factory=list)
     structured: Optional[Dict[str, Any]] = None
+
+    def content(self) -> List[Dict[str, Any]]:
+        """The ``CallToolResult.content`` list, as block dicts.
+
+        A successful call leads with ``structuredContent`` serialized as a
+        ``TextContent`` block, as the MCP spec recommends for tools that
+        return structured output: several clients (OpenCode among them)
+        show the model only text blocks, and a search answer made only of
+        ``resource_link`` blocks reached the model as an empty string.
+        """
+        if self.is_error or self.structured is None:
+            return [{"type": "text", "text": self.text}]
+        return [
+            {"type": "text", "text": json.dumps(self.structured, default=str)},
+            *self.blocks,
+        ]
 
 
 def _error(code: str, detail: Optional[str] = None) -> ReadOutcome:

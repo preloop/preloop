@@ -1478,11 +1478,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 db.close()
 
         outcome = await to_thread.run_sync(_run)
-        blocks = [_artifact_block(block) for block in outcome.blocks] or [
-            TextContent(type="text", text=outcome.text)
-        ]
         return ToolResult(
-            content=blocks,
+            content=[_artifact_block(block) for block in outcome.content()],
             structured_content=outcome.structured,
             is_error=outcome.is_error,
         )
