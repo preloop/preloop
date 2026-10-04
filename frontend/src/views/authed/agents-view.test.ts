@@ -199,6 +199,46 @@ describe('AgentsView', () => {
     }
   });
 
+  it('treats an agents page without items as empty instead of crashing', async () => {
+    // A partial response (an older server, a generic stub) used to throw
+    // "reading 'length'" from the count label on every render.
+    const errors: unknown[] = [];
+    const onError = (event: PromiseRejectionEvent | ErrorEvent) =>
+      errors.push('reason' in event ? event.reason : event.error);
+    window.addEventListener('unhandledrejection', onError);
+    window.addEventListener('error', onError);
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      // The discovery panel has its own data shape; keep it out of this test.
+      if (url.startsWith('/api/v1/agents/discovery-')) {
+        return new Response(JSON.stringify({ items: [], total: 0 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // Only the list itself: the other /agents endpoints keep their data.
+      if (/^\/api\/v1\/agents(?:\?|$)/.test(url)) {
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return defaultFetch(input);
+    });
+    try {
+      const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+      await waitUntil(() => !(el as any).loading, 'Agents did not load');
+      await el.updateComplete;
+      await nextFrame();
+      expect((el as any).agents.items).to.deep.equal([]);
+      expect((el as any).resultsLabel).to.equal('0 agents');
+      expect(errors).to.deep.equal([]);
+    } finally {
+      window.removeEventListener('unhandledrejection', onError);
+      window.removeEventListener('error', onError);
+    }
+  });
+
   it('does not request flows when flow kinds are filtered out', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);

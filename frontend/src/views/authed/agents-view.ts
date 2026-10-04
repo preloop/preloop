@@ -1553,7 +1553,14 @@ export class AgentsView extends LitElement {
         (skipAgentsFetch
           ? Promise.resolve(emptyAgentsData)
           : getAccountAgents(params)
-        ).then((data) => {
+        ).then((page) => {
+          // A page without items (an older server, a partial stub) is an
+          // empty page. Every count below reads items.length, and one
+          // missing array used to crash the whole render.
+          const data = {
+            ...page,
+            items: Array.isArray(page?.items) ? page.items : [],
+          };
           if (generation === this.agentsLoadGeneration) {
             this.agents = data;
             this.loading = false;
