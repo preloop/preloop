@@ -1332,6 +1332,29 @@ agent.invoke(
     `;
   }
 
+  /**
+   * Create the flow the flow form submitted. A failure is shown on the form,
+   * which is still busy until this settles.
+   */
+  private async createFlowFromForm(e: CustomEvent): Promise<void> {
+    const form = e.target as HTMLElement & { formError?: string | null };
+    try {
+      const newFlow = await createFlow(e.detail.flow);
+      this.dispatchEvent(
+        new CustomEvent('deploy-flow-success', {
+          bubbles: true,
+          composed: true,
+          detail: { flow: newFlow },
+        })
+      );
+    } catch (error: unknown) {
+      form.formError =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to create flow.';
+    }
+  }
+
   private renderDeployPathState() {
     if (this.deploySubStep !== 'type' && this.deploySubStep !== 'flow-config') {
       return html`
@@ -1357,23 +1380,11 @@ agent.invoke(
           )}
           <div class="wizard-section">
             <preloop-flow-form
-              @flow-submit=${async (e: CustomEvent) => {
-                const payload = e.detail.flow;
-                try {
-                  const newFlow = await createFlow(payload);
-                  this.dispatchEvent(
-                    new CustomEvent('deploy-flow-success', {
-                      bubbles: true,
-                      composed: true,
-                      detail: { flow: newFlow },
-                    })
-                  );
-                } catch (error: any) {
-                  const form = e.target as HTMLElement & {
-                    formError?: string;
-                  };
-                  form.formError = error?.message || 'Failed to create flow.';
-                }
+              @flow-submit=${(e: CustomEvent) => {
+                // Hand the create back so the form's button stays busy until
+                // the request settles; a double click must not create two
+                // flows.
+                e.detail.waitUntil?.(this.createFlowFromForm(e));
               }}
               @flow-cancel=${() => {
                 this.deploySubStep = 'type';
