@@ -1,7 +1,7 @@
 """Index available artifacts for the session-list has_artifacts filter.
 
 Revision ID: 20261004_artifact_avail_idx
-Revises: 20261004_ci_copilot_merge
+Revises: 20261003_discovery_candidates
 
 ``has_artifacts=any`` selects ``runtime_session_id`` for one account where
 ``availability = 'available'``. A kind filter adds ``kind =``. Neither
