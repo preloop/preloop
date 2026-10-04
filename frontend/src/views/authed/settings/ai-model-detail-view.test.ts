@@ -1588,19 +1588,14 @@ describe('AIModelDetailView', () => {
 
     // Release a concurrent observer timeline read after the request baseline.
     // It must not be mistaken for a reload of the model's sessions list.
-    let releaseObserverRead!: () => void;
-    const observerRead = new Promise<void>((resolve) => {
-      releaseObserverRead = resolve;
-    }).then(() =>
-      getAccountRuntimeSessionActivityTimeline('runtime-session-1').catch(
-        () => undefined
-      )
+    const callsBeforeObserverRead = fetchStub.getCalls().length;
+    await getAccountRuntimeSessionActivityTimeline('runtime-session-1').catch(
+      () => undefined
     );
-    releaseObserverRead();
-    await observerRead;
     expect(
       fetchStub
         .getCalls()
+        .slice(callsBeforeObserverRead)
         .some((call) =>
           String(call.args[0]).startsWith(
             '/api/v1/runtime-sessions/runtime-session-1/activity'
