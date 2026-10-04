@@ -78,7 +78,7 @@ async def test_configured_placement_reaches_the_pod_spec(executor, monkeypatch):
                     "key": "dedicated",
                     "operator": "Equal",
                     "value": "agents",
-                    "effect": "NoSchedule",
+                    "effect": "NoExecute",
                     "tolerationSeconds": 120,
                 }
             ]
@@ -94,7 +94,7 @@ async def test_configured_placement_reaches_the_pod_spec(executor, monkeypatch):
     assert toleration.key == "dedicated"
     assert toleration.operator == "Equal"
     assert toleration.value == "agents"
-    assert toleration.effect == "NoSchedule"
+    assert toleration.effect == "NoExecute"
     assert toleration.toleration_seconds == 120
 
 

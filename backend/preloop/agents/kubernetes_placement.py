@@ -17,7 +17,8 @@ Unset or malformed values are ignored so a typo in one setting never
 prevents an agent from starting: the pod falls back to the cluster
 defaults, exactly as it did before this setting existed. Values that parse
 as JSON but violate a Kubernetes constraint (an unknown toleration effect,
-a non-integer ``tolerationSeconds``, an invalid label key) are likewise
+a non-integer ``tolerationSeconds`` or one without ``NoExecute``, an
+invalid label key or value) are likewise
 dropped or normalized, because the API server would otherwise reject the
 whole Job and no agent would start.
 """
@@ -120,12 +121,18 @@ def _normalize_toleration(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
     operator = entry.get("operator")
-    if operator is not None and operator not in _TOLERATION_OPERATORS:
+    # Check the type first: a JSON list or object is unhashable and would
+    # raise TypeError from the frozenset membership test.
+    if operator is not None and (
+        not isinstance(operator, str) or operator not in _TOLERATION_OPERATORS
+    ):
         logger.warning("Ignoring toleration with an invalid operator")
         return None
 
     effect = entry.get("effect")
-    if effect not in (None, "") and effect not in _TOLERATION_EFFECTS:
+    if effect is not None and effect != "" and (
+        not isinstance(effect, str) or effect not in _TOLERATION_EFFECTS
+    ):
         logger.warning("Ignoring toleration with an invalid effect")
         return None
 
@@ -136,12 +143,20 @@ def _normalize_toleration(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if operator == "Exists":
         # The API server rejects a value on an ``Exists`` toleration.
         value = None
+    elif value is not None and not _is_label_value(value):
+        # ``Equal`` (or no operator) values must be valid label values.
+        logger.warning("Ignoring toleration with an invalid value")
+        return None
 
     toleration_seconds = entry.get("tolerationSeconds")
     if toleration_seconds is not None:
         toleration_seconds = _coerce_toleration_seconds(toleration_seconds)
         if toleration_seconds is None:
             logger.warning("Ignoring toleration with an invalid tolerationSeconds")
+            return None
+        if effect != "NoExecute":
+            # The API server only accepts tolerationSeconds with NoExecute.
+            logger.warning("Ignoring toleration with tolerationSeconds but no NoExecute")
             return None
 
     normalized: Dict[str, Any] = {}

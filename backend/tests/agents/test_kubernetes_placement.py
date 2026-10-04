@@ -166,7 +166,15 @@ class TestTolerations:
     def test_typed_toleration_seconds_is_dropped(self, monkeypatch, seconds):
         monkeypatch.setenv(
             kubernetes_placement.TOLERATIONS_ENV,
-            json.dumps([{"key": "dedicated", "tolerationSeconds": seconds}]),
+            json.dumps(
+                [
+                    {
+                        "key": "dedicated",
+                        "effect": "NoExecute",
+                        "tolerationSeconds": seconds,
+                    }
+                ]
+            ),
         )
         assert kubernetes_placement.tolerations() == []
 
@@ -190,7 +198,7 @@ class TestTolerations:
                         "key": "dedicated",
                         "operator": "Equal",
                         "value": "agents",
-                        "effect": "NoSchedule",
+                        "effect": "NoExecute",
                         "tolerationSeconds": 60,
                     }
                 ]
@@ -202,5 +210,47 @@ class TestTolerations:
         assert built[0].key == "dedicated"
         assert built[0].operator == "Equal"
         assert built[0].value == "agents"
-        assert built[0].effect == "NoSchedule"
+        assert built[0].effect == "NoExecute"
         assert built[0].toleration_seconds == 60
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"key": "dedicated", "effect": []},
+            {"key": "dedicated", "effect": {}},
+            {"key": "dedicated", "operator": []},
+            {"key": "dedicated", "operator": {"x": 1}},
+        ],
+    )
+    def test_unhashable_enum_fields_are_dropped(self, monkeypatch, entry):
+        # A list or object must not raise TypeError out of the enum check.
+        monkeypatch.setenv(kubernetes_placement.TOLERATIONS_ENV, json.dumps([entry]))
+        assert kubernetes_placement.tolerations() == []
+
+    @pytest.mark.parametrize("operator", [None, "Equal"])
+    def test_value_must_be_a_label_value(self, monkeypatch, operator):
+        entry = {"key": "dedicated", "value": "not a label!", "effect": "NoSchedule"}
+        if operator:
+            entry["operator"] = operator
+        monkeypatch.setenv(kubernetes_placement.TOLERATIONS_ENV, json.dumps([entry]))
+        assert kubernetes_placement.tolerations() == []
+
+    def test_exists_ignores_an_invalid_value(self, monkeypatch):
+        # The value is discarded for Exists, so its syntax does not matter.
+        monkeypatch.setenv(
+            kubernetes_placement.TOLERATIONS_ENV,
+            json.dumps(
+                [{"key": "dedicated", "operator": "Exists", "value": "not a label!"}]
+            ),
+        )
+        assert kubernetes_placement.tolerations() == [
+            {"key": "dedicated", "operator": "Exists"}
+        ]
+
+    @pytest.mark.parametrize("effect", [None, "NoSchedule", "PreferNoSchedule"])
+    def test_toleration_seconds_requires_no_execute(self, monkeypatch, effect):
+        entry = {"key": "dedicated", "tolerationSeconds": 60}
+        if effect:
+            entry["effect"] = effect
+        monkeypatch.setenv(kubernetes_placement.TOLERATIONS_ENV, json.dumps([entry]))
+        assert kubernetes_placement.tolerations() == []
