@@ -468,6 +468,20 @@ def test_day_bounds_are_inclusive_and_utc(db_session, test_user, connection):
     )
 
 
+def test_blank_stored_login_is_unmapped_not_an_error(db_session, test_user, connection):
+    crud_copilot_user_mapping.upsert(
+        db_session, connection=connection, github_login="alice", user_id=test_user.id, commit=False
+    )
+    store(db_session, test_user.account_id, premium_row(DAY, login="   ", amount=5.0))
+
+    assert src.copilot_imported_spend(db_session, test_user.account_id, DAY, DAY) == []
+    coverage = src.spend_coverage(
+        db_session, account_id=test_user.account_id, start_day=DAY, end_day=DAY
+    )
+    assert coverage["excluded"]["unmapped"] == 1
+    assert coverage["unmapped_logins"] == []
+
+
 def test_non_daily_rows_are_excluded(db_session, test_user, connection):
     crud_copilot_user_mapping.upsert(
         db_session,

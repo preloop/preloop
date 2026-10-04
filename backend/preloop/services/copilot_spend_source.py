@@ -274,7 +274,13 @@ def _classify(
             else:
                 out.reasons[REASON_AGGREGATE_ONLY] += 1
             continue
-        login = canonical_github_login(row.user_login)
+        try:
+            login = canonical_github_login(row.user_login)
+        except ValueError:
+            # A blank login is nobody's; the import never writes one, but a
+            # row that carries one is unmapped rather than an exception.
+            out.reasons[REASON_UNMAPPED] += 1
+            continue
         user_id = mapping.get(login)
         if user_id is None:
             out.reasons[REASON_UNMAPPED] += 1
