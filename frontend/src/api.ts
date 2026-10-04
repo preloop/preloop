@@ -5587,6 +5587,63 @@ export interface ModelIORule {
   conditions: ModelIOCondition[];
 }
 
+export interface SensitiveDataTypeInfo {
+  id: string;
+  label: string;
+  description: string;
+  example: string;
+  locales: string[];
+  checksum: boolean;
+  builtin: boolean;
+}
+
+export interface SensitiveDataTypesResponse {
+  types: SensitiveDataTypeInfo[];
+  default_types: string[];
+}
+
+export interface SensitiveDataTestMatch {
+  type: string;
+  start: number;
+  end: number;
+  confidence: number;
+}
+
+export interface SensitiveDataTestResponse {
+  matches: SensitiveDataTestMatch[];
+  types_found: string[];
+  count: number;
+  redacted_preview?: string | null;
+}
+
+export async function getSensitiveDataTypes(): Promise<SensitiveDataTypesResponse> {
+  const response = await fetchWithAuth('/api/v1/policies/sensitive-data/types');
+  if (!response.ok) {
+    throw new Error('Failed to load sensitive data types');
+  }
+  return response.json();
+}
+
+/** Run the detectors on sample text. The server neither logs nor stores it. */
+export async function testSensitiveData(body: {
+  text: string;
+  types?: string[];
+  config?: Record<string, unknown>;
+}): Promise<SensitiveDataTestResponse> {
+  const response = await fetchWithAuth('/api/v1/policies/sensitive-data/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to test sensitive data detectors')
+    );
+  }
+  return response.json();
+}
+
 export async function listModelIORules(): Promise<ModelIORule[]> {
   const response = await fetchWithAuth('/api/v1/policies/model-io-rules');
   if (!response.ok) {

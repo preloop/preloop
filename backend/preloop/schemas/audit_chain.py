@@ -107,6 +107,13 @@ class ChainSegmentRead(BaseModel):
     genesis_hash: str
     entries: List[ChainSegmentEntry]
     has_more: bool
+    reference_salt_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ids of the salts that key reference-only argument HMACs for "
+            "this account. The salts themselves are not included."
+        ),
+    )
     note: str
 
 

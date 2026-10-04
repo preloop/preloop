@@ -653,6 +653,7 @@ class ApprovalService:
         managed_agent_name: Optional[str] = None,
         api_key_id: Optional[uuid.UUID] = None,
         rule_context: Optional[Dict[str, Any]] = None,
+        server_name: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create a new approval request.
 
@@ -733,6 +734,7 @@ class ApprovalService:
             tool_name=tool_name,
             tool_args=tool_args,
             managed_agent_id=managed_agent_id,
+            server_name=server_name,
         )
 
         # Create approval request
@@ -863,6 +865,21 @@ class ApprovalService:
         # Update fields
         for field, value in update.model_dump(exclude_unset=True).items():
             setattr(approval_request, field, value)
+
+        if str(getattr(approval_request, "status", "")) in self._TERMINAL_STATUSES:
+            # A sealed original (reference-only, original_until_decided) is
+            # deleted in the same transaction as the decision; the reference
+            # record is what remains on the row.
+            from sqlalchemy.orm.attributes import flag_modified
+
+            from preloop.services.sensitive_data.reference import (
+                strip_sealed_original,
+            )
+
+            cleaned, removed = strip_sealed_original(approval_request.tool_args)
+            if removed:
+                approval_request.tool_args = cleaned
+                flag_modified(approval_request, "tool_args")
 
         await self.db.commit()
         await self.db.refresh(approval_request)
@@ -2036,6 +2053,7 @@ class ApprovalService:
         tool_name: str,
         tool_args: Dict[str, Any],
         managed_agent_id: Optional[uuid.UUID],
+        server_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Apply the account's redact rules to the stored argument copy."""
         from preloop.api.loop_safety import run_db_off_loop
@@ -2044,15 +2062,44 @@ class ApprovalService:
             apply_storage_redaction,
         )
 
+        from preloop.services.sensitive_data import reference as reference_module
+        from preloop.services.sensitive_data.storage import resolve_config
+
         scope = StorageScope(
             target="tool.args",
             tool_name=tool_name,
+            server_name=server_name,
             managed_agent_id=str(managed_agent_id) if managed_agent_id else None,
         )
-        try:
-            return await run_db_off_loop(
-                lambda: apply_storage_redaction(account_id, tool_args, scope=scope)
+
+        def _stored() -> Dict[str, Any]:
+            config = resolve_config(account_id)
+            stored = apply_storage_redaction(
+                account_id, tool_args, scope=scope, config=config
             )
+            rule = reference_module.reference_rule_for(
+                config,
+                tool_name=tool_name,
+                server_name=server_name,
+                managed_agent_id=scope.managed_agent_id,
+            )
+            if reference_module.wants_original_until_decided(rule) and isinstance(
+                stored, dict
+            ):
+                # original_until_decided: the raw arguments ride encrypted on
+                # the pending row, console only, and are removed at decision
+                # (see update_approval_request). Email, webhook and push
+                # payloads mask this key (redact_dict treats it as secret).
+                stored = {
+                    **stored,
+                    reference_module.SEALED_ARGS_KEY: reference_module.seal_original(
+                        tool_args
+                    ),
+                }
+            return stored
+
+        try:
+            return await run_db_off_loop(_stored)
         except Exception:  # noqa: BLE001 - never block an approval on this
             logger.warning("Approval storage redaction failed", exc_info=True)
             return tool_args
@@ -2074,6 +2121,7 @@ class ApprovalService:
         standing_bypass_reason: Optional[str] = None,
         rule_context: Optional[Dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
+        server_name: Optional[str] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -2123,6 +2171,7 @@ class ApprovalService:
             managed_agent_name=managed_agent_name,
             api_key_id=api_key_id,
             rule_context=rule_context,
+            server_name=server_name,
         )
 
         # Generate user-facing summary before any notifications fire.

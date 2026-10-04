@@ -164,6 +164,7 @@ def test_the_segment_endpoint_hands_back_material_a_client_can_check(
     body = client.get(f"{BASE}/segment", params={"limit": 10}).json()
 
     assert body["genesis_hash"] == "0" * 64
+    assert isinstance(body["reference_salt_ids"], list)
     assert body["entries"]
     previous = body["genesis_hash"]
     for entry in body["entries"]:
@@ -191,6 +192,16 @@ def test_the_segment_endpoint_pages(client, db_session, account):
     ).json()
 
     assert second["entries"][0]["seq"] == last_seq + 1
+
+
+def test_the_segment_endpoint_lists_reference_salt_ids(client, db_session, account):
+    """Clients read the salt ids from the HTTP response, not the service dict."""
+    from preloop.services.sensitive_data.reference import rotate_salt
+
+    salt_id = rotate_salt(db_session, account.id)
+    db_session.flush()
+    body = client.get(f"{BASE}/segment", params={"limit": 10}).json()
+    assert salt_id in body["reference_salt_ids"]
 
 
 # --- checkpoints -----------------------------------------------------------
