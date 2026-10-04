@@ -582,3 +582,48 @@ async def test_duplicate_worker_delivery_cannot_reenter_same_triage_execution(
         assert runs == 2
         for session in sessions:
             session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dispatch,risk,expected",
+    [
+        ({"enabled": True}, "risk:low", "agent-ready"),
+        ({"enabled": True}, "risk:high", None),
+        (None, "risk:low", None),
+    ],
+)
+async def test_controller_applies_dispatch_label_only_from_flow_policy(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    dispatch: Any,
+    risk: str,
+    expected: str | None,
+) -> None:
+    """The saved flow's policy, not the model, decides the hand-off label."""
+    rig = _rig(db_session, monkeypatch)
+    config = dict(rig.flow.agent_config or {})
+    if dispatch is not None:
+        config["dispatch"] = dispatch
+    CRUDBase(models.Flow).update(
+        db_session, db_obj=rig.flow, obj_in={"agent_config": config}
+    )
+    rig.provider.rows += [
+        {"name": name, "description": ""}
+        for name in ("risk:low", "risk:high", "readiness:ready")
+    ]
+    execution, request = await _claim(rig)
+    request.risk_label = risk
+    request.readiness_label = "readiness:ready"
+    result = await _apply(rig, execution, request)
+    assert result.status == "updated"
+    labels = set(rig.provider.issue.labels)
+    assert {"complexity:low", risk, "readiness:ready"} <= labels
+    assert ("agent-ready" in labels) is (expected is not None)
+    row = crud_issue_lifecycle.triage_for_execution(
+        db_session, account_id=rig.account_id, execution_id=execution.id
+    )
+    packet = row.data["packet"]
+    assert packet["dispatch_label"] == expected
+    assert packet["risk_label"] == risk
+    assert packet["readiness_label"] == "readiness:ready"

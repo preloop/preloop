@@ -10,6 +10,7 @@ overlap (skip-if-previous-running) and pause-suppression policies.
 """
 
 import json
+import uuid
 from typing import Dict, Tuple
 
 from apscheduler.jobstores.base import JobLookupError
@@ -23,6 +24,14 @@ from ..config import logger
 from .event_bus import event_bus_service
 
 FLOW_SCHEDULE_JOB_PREFIX = "flow_schedule_"
+
+
+def _is_flow_id(value: str) -> bool:
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
 
 
 def schedule_config_key(config: dict) -> str:
@@ -81,10 +90,14 @@ def sync_flow_schedule_jobs(scheduler: AsyncIOScheduler) -> None:
                 trigger,
             )
 
+        # Only per-flow jobs: the suffix must be a flow id. The reconcile
+        # job itself ("flow_schedule_sync_job") shares the prefix and must
+        # never be treated as a stale flow job.
         current = {
             job.id[len(FLOW_SCHEDULE_JOB_PREFIX) :]: job
             for job in scheduler.get_jobs()
             if job.id.startswith(FLOW_SCHEDULE_JOB_PREFIX)
+            and _is_flow_id(job.id[len(FLOW_SCHEDULE_JOB_PREFIX) :])
         }
 
         # Remove jobs for flows that are gone, disabled or misconfigured

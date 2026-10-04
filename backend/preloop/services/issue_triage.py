@@ -1,4 +1,4 @@
-"""Apply bounded issue assessment to fresh provider content and complexity labels."""
+"""Apply bounded issue assessment to fresh provider content and triage labels."""
 
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -23,6 +23,55 @@ from preloop.sync.exceptions import TrackerError
 START = "<!-- preloop-issue-triage:start -->"
 END = "<!-- preloop-issue-triage:end -->"
 STANDARD = ["complexity:low", "complexity:medium", "complexity:high"]
+STANDARD_RISK = ["risk:low", "risk:medium", "risk:high"]
+STANDARD_READINESS = [
+    "readiness:ready",
+    "readiness:needs-spec",
+    "readiness:blocked",
+    "readiness:in-progress",
+    "readiness:needs-verification",
+]
+SECTION_HEADING = "## Ready for development"
+
+
+def family_scheme(
+    catalogue: list[dict[str, str]], family: str, standard: list[str]
+) -> ComplexityScheme:
+    """Reuse a project's ``<family>:*`` labels, or offer the standard family.
+
+    Risk and readiness have one obvious prefix each, so unlike complexity
+    there is no competing vocabulary to disambiguate. A family the tool
+    created earlier (every name standard, managed descriptions) stays
+    creatable, so a partly created standard family can be completed.
+    """
+    names = [
+        row["name"]
+        for row in catalogue
+        if re.match(rf"^{family}(?::+|[-_/ ]+).+", row["name"], re.I)
+    ]
+    if not names:
+        return ComplexityScheme(name="standard", labels=standard, create_missing=True)
+    managed = set(names) <= set(standard) and all(
+        row.get("description")
+        == f"Preloop issue {family}: " + row["name"].split(":", 1)[-1]
+        for row in catalogue
+        if row["name"] in names
+    )
+    return ComplexityScheme(
+        name=family,
+        labels=standard if managed else sorted(names),
+        create_missing=managed,
+    )
+
+
+def risk_scheme(catalogue: list[dict[str, str]]) -> ComplexityScheme:
+    """The project's risk family, or the standard ``risk:*`` family."""
+    return family_scheme(catalogue, "risk", STANDARD_RISK)
+
+
+def readiness_scheme(catalogue: list[dict[str, str]]) -> ComplexityScheme:
+    """The project's readiness family, or the standard ``readiness:*`` family."""
+    return family_scheme(catalogue, "readiness", STANDARD_READINESS)
 
 
 def complexity_scheme(catalogue: list[dict[str, str]]) -> ComplexityScheme:
@@ -83,21 +132,33 @@ def complexity_scheme(catalogue: list[dict[str, str]]) -> ComplexityScheme:
     return ComplexityScheme(name="standard", labels=STANDARD, create_missing=True)
 
 
-def scope_revision(issue: TriageIssue, scheme: ComplexityScheme | None) -> str:
-    """Bind scope and managed labels while allowing unrelated label edits."""
+def scope_revision(
+    issue: TriageIssue,
+    scheme: ComplexityScheme | None,
+    *tag_schemes: ComplexityScheme | None,
+) -> str:
+    """Bind scope and managed labels while allowing unrelated label edits.
+
+    ``scheme`` is the complexity family, hashed as before. ``tag_schemes``
+    (risk, readiness) contribute only the labels of theirs that are on the
+    issue, and nothing when there are none, so an issue without risk or
+    readiness labels keeps the revision it had before those families existed.
+    """
     family = sorted(scheme.labels) if scheme else []
-    return sha256(
-        json.dumps(
-            [
-                issue.title,
-                issue.body,
-                issue.state,
-                family,
-                sorted(set(issue.labels) & set(family)),
-            ],
-            ensure_ascii=False,
-        ).encode()
-    ).hexdigest()
+    scope: list[Any] = [
+        issue.title,
+        issue.body,
+        issue.state,
+        family,
+        sorted(set(issue.labels) & set(family)),
+    ]
+    tags = sorted(
+        set(issue.labels)
+        & {name for extra in tag_schemes if extra for name in extra.labels}
+    )
+    if tags:
+        scope.append(tags)
+    return sha256(json.dumps(scope, ensure_ascii=False).encode()).hexdigest()
 
 
 def merge_assessment(body: str, assessment: str) -> str:
@@ -105,7 +166,7 @@ def merge_assessment(body: str, assessment: str) -> str:
     assessment = assessment.strip()
     if not assessment or START in assessment or END in assessment:
         raise ValueError("invalid_assessment")
-    section = START + "\n## Implementation readiness\n\n" + assessment + "\n" + END
+    section = START + "\n" + SECTION_HEADING + "\n\n" + assessment + "\n" + END
     if START not in body and END not in body:
         return body + ("\n\n" if body else "") + section
     if body.count(START) != 1 or body.count(END) != 1:
@@ -126,13 +187,39 @@ async def get_context(provider: IssueTriageProvider) -> IssueTriageContext:
     except ValueError as exc:
         scheme = None
         limitations.append(str(exc))
+    risk, readiness = risk_scheme(catalogue), readiness_scheme(catalogue)
     return IssueTriageContext(
         issue=issue,
-        expected_revision=scope_revision(issue, scheme),
+        expected_revision=scope_revision(issue, scheme, risk, readiness),
         catalogue=catalogue,
         complexity_scheme=scheme,
+        risk_scheme=risk,
+        readiness_scheme=readiness,
         limitations=limitations,
     )
+
+
+SCHEME_READERS: dict[str, Callable[[list[dict[str, str]]], ComplexityScheme]] = {
+    "complexity": complexity_scheme,
+    "risk": risk_scheme,
+    "readiness": readiness_scheme,
+}
+
+
+def _changed_families(
+    catalogue: list[dict[str, str]], expected: list[tuple[str, ComplexityScheme]]
+) -> str | None:
+    """Name the first family whose fresh scheme no longer matches, if any."""
+    for name, scheme in expected:
+        try:
+            current = SCHEME_READERS[name](catalogue)
+        except ValueError:
+            return name
+        if set(current.labels) != set(scheme.labels) or (
+            current.create_missing != scheme.create_missing
+        ):
+            return name
+    return None
 
 
 def _intent(
@@ -171,8 +258,14 @@ async def apply_triage(
     provider: IssueTriageProvider,
     request: IssueTriageApply,
     record_intent: Callable[[dict[str, Any]], None],
+    *,
+    dispatch_label: str | None = None,
 ) -> IssueTriageResult:
     """Apply with explicit stale checks, deltas and honest partial receipts.
+
+    ``dispatch_label`` comes from the controller's operator policy, never from
+    the model. It is added in the same label delta as the assessed labels and
+    only when complexity is estimated; triage never removes it.
 
     The provider has no issue-body CAS contract. Preflight rejects already stale
     input; final verification detects observable races, not every intervening edit.
@@ -197,6 +290,7 @@ async def apply_triage(
     try:
         context = await get_context(provider)
         latest, scheme = context.issue, context.complexity_scheme
+        schemes = (scheme, context.risk_scheme, context.readiness_scheme)
         if latest.state != "open":
             return IssueTriageResult(
                 status="conflict", reason="issue_not_open", issue=latest
@@ -209,19 +303,35 @@ async def apply_triage(
                 next_action="Refresh triage context and re-evaluate; no mutation was made.",
             )
         label = request.complexity_label
-        if label is not None and (scheme is None or label not in scheme.labels):
-            raise ValueError("complexity_label_not_in_current_scheme")
+        selected: dict[str, tuple[str, ComplexityScheme]] = {}
+        for name, chosen, family_of in (
+            ("complexity", label, scheme),
+            ("risk", request.risk_label, context.risk_scheme),
+            ("readiness", request.readiness_label, context.readiness_scheme),
+        ):
+            if chosen is None:
+                continue
+            if family_of is None or chosen not in family_of.labels:
+                raise ValueError(f"{name}_label_not_in_current_scheme")
+            selected[name] = (chosen, family_of)
         title = request.title.strip() if request.title is not None else latest.title
         if not title:
             raise ValueError("empty_title")
         body = merge_assessment(latest.body, request.assessment)
         if len(body.encode()) > 60000:
             raise ValueError("issue_body_too_large")
-        family = set(scheme.labels) if scheme and label is not None else set()
-        remove = sorted((set(latest.labels) & family) - {label})
-        add = [label] if label is not None and label not in latest.labels else []
+        family = {name for _, sch in selected.values() for name in sch.labels}
+        chosen_labels = {chosen for chosen, _ in selected.values()}
+        remove = sorted((set(latest.labels) & family) - chosen_labels)
+        add = [chosen for chosen, _ in selected.values() if chosen not in latest.labels]
+        if label is None or dispatch_label in family:
+            dispatch_label = None
+        if dispatch_label is not None and dispatch_label not in latest.labels:
+            add.append(dispatch_label)
+        # Each GitHub removal is its own intent revision; with the content
+        # write and the add, six keeps the receipt within its eight revisions.
         if len(remove) > 6:
-            raise ValueError("too_many_conflicting_complexity_labels")
+            raise ValueError("too_many_conflicting_triage_labels")
         content_changed = title != latest.title or body != latest.body
         if not content_changed and not add and not remove:
             retain_intent(
@@ -237,24 +347,28 @@ async def apply_triage(
             )
         # Recheck after catalogue I/O, before even creating project labels.
         fresh = await provider.read_issue()
-        if scope_revision(fresh, scheme) != request.expected_revision:
+        if scope_revision(fresh, *schemes) != request.expected_revision:
             return IssueTriageResult(
                 status="conflict", reason="stale_issue", issue=fresh
             )
         latest = fresh
-        if label is not None and scheme is not None and scheme.create_missing:
+        creatable = [
+            (name, sch) for name, (_, sch) in selected.items() if sch.create_missing
+        ]
+        if creatable:
             catalogue = await provider.catalogue()
-            if complexity_scheme(catalogue) != scheme:
-                raise ValueError("complexity_catalogue_changed")
+            changed = _changed_families(catalogue, creatable)
+            if changed:
+                raise ValueError(f"{changed}_catalogue_changed")
             # Check scope once more after the catalogue refresh.
             fresh = await provider.read_issue()
-            if scope_revision(fresh, scheme) != request.expected_revision:
+            if scope_revision(fresh, *schemes) != request.expected_revision:
                 return IssueTriageResult(
                     status="conflict", reason="stale_issue", issue=fresh
                 )
             latest = fresh
             present = {row["name"] for row in catalogue}
-            for name in STANDARD:
+            for name in [n for _, sch in creatable for n in sch.labels]:
                 if name in present:
                     continue
                 operation = {
@@ -270,11 +384,12 @@ async def apply_triage(
                     if name not in {row["name"] for row in await provider.catalogue()}:
                         raise
                 operation["state"] = "confirmed"
-            current_scheme = complexity_scheme(await provider.catalogue())
-            if set(current_scheme.labels) != set(STANDARD):
-                raise ValueError("complexity_catalogue_changed")
+            refreshed = await provider.catalogue()
+            changed = _changed_families(refreshed, creatable)
+            if changed:
+                raise ValueError(f"{changed}_catalogue_changed")
         fresh = await provider.read_issue()
-        if scope_revision(fresh, scheme) != request.expected_revision:
+        if scope_revision(fresh, *schemes) != request.expected_revision:
             raise ValueError("stale_issue")
         latest = fresh
         if content_changed:
@@ -304,11 +419,26 @@ async def apply_triage(
             )
             operation = {"operation": "update_complexity_labels", "state": "requested"}
             operations.append(operation)
+            dispatch_op: dict[str, str] | None = None
+            if dispatch_label is not None and dispatch_label in add:
+                dispatch_op = {
+                    "operation": "apply_dispatch_label",
+                    "label": dispatch_label,
+                    "state": "requested",
+                }
+                operations.append(dispatch_op)
             await provider.update_labels(add, remove)
             operation["state"] = "confirmed"
+            if dispatch_op is not None:
+                dispatch_op["state"] = "confirmed"
         latest = await provider.read_issue()
-        if (latest.title, latest.body, latest.state) != (title, body, "open") or (
-            label is not None and set(latest.labels) & family != {label}
+        if (
+            (latest.title, latest.body, latest.state) != (title, body, "open")
+            or any(
+                set(latest.labels) & set(sch.labels) != {chosen}
+                for chosen, sch in selected.values()
+            )
+            or (dispatch_label is not None and dispatch_label not in latest.labels)
         ):
             raise ValueError("final_verification_failed")
         retain_intent(

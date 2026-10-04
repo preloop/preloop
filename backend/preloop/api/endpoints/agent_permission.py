@@ -50,6 +50,17 @@ class PermissionIdentity:
     managed_agent_name: str
     runtime_principal_type: Optional[str] = None
     runtime_principal_id: Optional[str] = None
+    flow_id: Optional[UUID] = None
+
+
+def _flow_id_from_context(context: dict) -> Optional[UUID]:
+    """Return the flow id of an execution-scoped flow token, if valid."""
+    if not context.get("flow_execution_id") or not context.get("flow_id"):
+        return None
+    try:
+        return UUID(str(context.get("flow_id")))
+    except ValueError:
+        return None
 
 
 def _resolve_permission_identity(token: str) -> PermissionIdentity:
@@ -94,6 +105,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
             runtime_session_id=runtime_session.id
             if runtime_session
             else runtime_session_id,
+            flow_id=_flow_id_from_context(context),
             runtime_principal_type=principal.get("type")
             or getattr(managed_agent, "session_source_type", None),
             runtime_principal_id=principal.get("id")
@@ -619,6 +631,7 @@ async def agent_permission_check(
         agent_reasoning=payload.agent_reasoning,
         client_decision=payload.client_decision,
         evaluation_phase=payload.evaluation_phase,
+        flow_id=identity.flow_id,
     )
     activity_session_id = origin_id or identity.runtime_session_id
     if activity_session_id is not None and _records_native_tool_call(payload):

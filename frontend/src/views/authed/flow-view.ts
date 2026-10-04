@@ -42,6 +42,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/radio/radio.js';
+import '../../components/flow-governance-card';
 import '../../components/preloop-flow-form';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
@@ -259,6 +260,8 @@ export class FlowView extends LitElement {
   @state()
   private flowReady = false;
 
+  @state() private governanceOpened = false;
+
   @state()
   private trackers: any[] = [];
 
@@ -354,6 +357,7 @@ export class FlowView extends LitElement {
   private async loadFlowData(urlParams: URLSearchParams) {
     const generation = ++this.flowLoadGeneration;
     this.flowReady = false;
+    this.governanceOpened = false;
     this._formInstanceId += 1;
 
     const presetId = urlParams.get('preset_id');
@@ -655,9 +659,47 @@ export class FlowView extends LitElement {
         </div>
       </view-header>
       <div class="column-layout wide">
-        <div class="main-column">${this.renderForm()}</div>
+        <div class="main-column">
+          ${this.renderForm()} ${this.isNew ? '' : this.renderGovernanceCard()}
+        </div>
       </div>
     `;
+  }
+
+  /** Readonly details do not need governance editor catalogs until opened. */
+  private renderGovernanceDisclosure() {
+    return html`<details
+      class="flow-governance-disclosure"
+      @toggle=${(event: Event) => {
+        if ((event.target as HTMLDetailsElement).open)
+          this.governanceOpened = true;
+      }}
+    >
+      <summary>Governance</summary>
+      ${this.governanceOpened ? this.renderGovernanceCard() : ''}
+    </details>`;
+  }
+
+  /**
+   * Per-flow governance override. Allowed MCP Tools scope what the agent
+   * sees; this card governs how those calls (and model calls) are decided.
+   */
+  renderGovernanceCard() {
+    if (!this.flowId) return '';
+    return html`<flow-governance-card
+      .flowId=${this.flowId}
+      .allowedToolNames=${(this.flow.allowed_mcp_tools || []).map(
+        (tool) => tool.tool_name
+      )}
+      ?inheritsFromAgent=${this.flowRunsAsAgent()}
+    ></flow-governance-card>`;
+  }
+
+  /** Employee flows run as a managed agent, whose settings fill gaps. */
+  private flowRunsAsAgent(): boolean {
+    const trigger = (this.flow as any).trigger_config;
+    const agentConfig = (this.flow as any).agent_config;
+    return Boolean(trigger?.employee_events && agentConfig?.target_agent_id);
   }
 
   renderFlowDetails() {
@@ -894,7 +936,7 @@ ${this.flow.review_instructions}</pre>
                 `
               : ''
           }
-          ${this.renderPublicationPolicy()}
+          ${this.renderPublicationPolicy()} ${this.renderGovernanceDisclosure()}
           ${
             this.flow.git_clone_config?.enabled &&
             (this.flow.git_clone_config.repositories?.length || 0) > 0

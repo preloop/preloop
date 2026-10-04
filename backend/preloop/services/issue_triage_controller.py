@@ -1,7 +1,10 @@
 """Durable triage claims and authenticated assessment packets.
 
-The existing issue lifecycle ledger owns identity and issue serialization. Triage
-never authorizes implementation; readiness may consume its applicable evidence.
+The existing issue lifecycle ledger owns identity and issue serialization.
+Triage never starts implementation itself. A flow may opt in to a dispatch
+label (``agent_config.dispatch``) that the controller applies from the verified
+receipt when the assessed labels meet the operator's policy; an implementation
+flow that triggers on that label is the hand-off.
 """
 
 import asyncio
@@ -14,6 +17,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -25,7 +29,11 @@ from preloop.models.crud import (
     crud_issue,
     crud_issue_lifecycle,
 )
-from preloop.schemas.issue_triage import IssueTriageApply, IssueTriageResult
+from preloop.schemas.issue_triage import (
+    IssueTriageApply,
+    IssueTriageResult,
+    TriageDispatch,
+)
 from preloop.services.issue_triage import apply_triage, get_context, scope_revision
 from preloop.services.issue_intake import IssuePayloadError, issue_values_from_payload
 from preloop.services.issue_triage_provider import IssueTriageProvider
@@ -34,6 +42,14 @@ from preloop.sync.exceptions import TrackerError
 logger = logging.getLogger(__name__)
 
 VERSION = 1
+#: Request fields a replay or recovery must repeat exactly.
+REQUEST_KEYS = (
+    "assessment",
+    "title",
+    "complexity_label",
+    "risk_label",
+    "readiness_label",
+)
 MAX_PACKET_BYTES = 131072
 TRIAGE_NAME = "Issue Triage Assistant"
 ACTIVE_STATUSES = {
@@ -89,6 +105,28 @@ def require_scoped_triage_executor(flow: models.Flow) -> None:
                 "triage_persistent_executor_unsupported: use an ephemeral flow "
                 "with an execution-bound credential"
             )
+
+
+def dispatch_policy(flow: Any) -> TriageDispatch:
+    """Read the opt-in dispatch block from the saved flow's ``agent_config``.
+
+    The block is operator configuration and part of ``context_identity``. An
+    invalid block disables dispatch rather than guessing what was meant.
+    """
+    from preloop.services.runner_service import unwrap_agent_config
+
+    config = unwrap_agent_config(getattr(flow, "agent_config", None))
+    raw = config.get("dispatch") if isinstance(config, dict) else None
+    if raw is None:
+        return TriageDispatch()
+    try:
+        return TriageDispatch.model_validate(raw)
+    except ValidationError:
+        logger.warning(
+            "Flow %s has an invalid triage dispatch block; dispatch is disabled",
+            getattr(flow, "id", None),
+        )
+        return TriageDispatch()
 
 
 def fingerprint(value: Any) -> str:
@@ -481,6 +519,7 @@ async def apply_controlled_triage(
         if project is None:
             raise TriageControllerError("triage_project_not_found")
         row = None
+        dispatch_label: str | None = None
         if execution_id:
             row = crud_issue_lifecycle.triage_for_execution(
                 db, account_id=account_id, execution_id=UUID(execution_id)
@@ -496,6 +535,9 @@ async def apply_controlled_triage(
                 or context_identity(flow, project) != row.data.get("context_identity")
             ):
                 raise TriageControllerError("triage_context_changed")
+            # Only a flow execution can dispatch: the policy is the saved
+            # flow's, and the model's request carries no dispatch field.
+            dispatch_label = dispatch_policy(flow).label_for(request)
         provider = await authorized_provider(
             db, issue=issue, account_id=account_id, current_user=current_user
         )
@@ -508,8 +550,7 @@ async def apply_controlled_triage(
                     row.data["source_revision"],
                     context.expected_revision,
                 } or any(
-                    getattr(request, key) != prior.get(key)
-                    for key in ("assessment", "title", "complexity_label")
+                    getattr(request, key) != prior.get(key) for key in REQUEST_KEYS
                 ):
                     raise TriageControllerError("triage_replay_request_mismatch")
                 if (row.data.get("packet") or {}).get(
@@ -527,8 +568,7 @@ async def apply_controlled_triage(
                 # A recorded partial provider effect can be completed, but the
                 # caller cannot swap in different prose or classification.
                 same = all(
-                    getattr(request, key) == prior.get(key)
-                    for key in ("assessment", "title", "complexity_label")
+                    getattr(request, key) == prior.get(key) for key in REQUEST_KEYS
                 )
                 if not same or request.expected_revision not in {
                     row.data["source_revision"],
@@ -570,7 +610,9 @@ async def apply_controlled_triage(
             # is durable before a provider response or process can be lost.
             crud_issue_lifecycle.commit(db)
 
-        result = await apply_triage(provider, effective_request, record)
+        result = await apply_triage(
+            provider, effective_request, record, dispatch_label=dispatch_label
+        )
         if result.issue is not None:
             try:
                 values: dict[str, Any] = {
@@ -612,7 +654,10 @@ async def apply_controlled_triage(
                 "source_provider_revision": row.data["source_provider_revision"],
                 "resulting_provider_revision": result.issue.revision,
                 "resulting_revision": scope_revision(
-                    result.issue, context.complexity_scheme
+                    result.issue,
+                    context.complexity_scheme,
+                    context.risk_scheme,
+                    context.readiness_scheme,
                 ),
                 "resulting_lifecycle_revision": lifecycle_revision(
                     result.issue.title, result.issue.body
@@ -621,6 +666,11 @@ async def apply_controlled_triage(
                 "context_identity": row.data["context_identity"],
                 "assessment": request.assessment,
                 "complexity_label": request.complexity_label,
+                "risk_label": request.risk_label,
+                "readiness_label": request.readiness_label,
+                "dispatch_label": dispatch_label
+                if dispatch_label in result.issue.labels
+                else None,
                 "complexity_family": context.complexity_scheme.labels
                 if context.complexity_scheme
                 else [],

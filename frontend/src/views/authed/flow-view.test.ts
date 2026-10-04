@@ -511,18 +511,20 @@ describe('FlowView progressive detail', () => {
       .callsFake(async (input: RequestInfo | URL) => {
         const url = input.toString();
         if (url.includes('/flows/executions')) await pending;
-        const data = url.startsWith('/api/v1/flows/flow-1')
-          ? {
-              id: 'flow-1',
-              name: 'Nightly sweep',
-              agent_type: 'codex',
-              trigger_event_source: 'webhook',
-              allowed_mcp_servers: [],
-              allowed_mcp_tools: [],
-            }
-          : url.endsWith('/auth/users/me')
-            ? { id: 'user-1' }
-            : [];
+        const data = url.startsWith('/api/v1/account/governance/flows/flow-1')
+          ? { config: {}, has_override: false, account_defaults: {} }
+          : url.startsWith('/api/v1/flows/flow-1')
+            ? {
+                id: 'flow-1',
+                name: 'Nightly sweep',
+                agent_type: 'codex',
+                trigger_event_source: 'webhook',
+                allowed_mcp_servers: [],
+                allowed_mcp_tools: [],
+              }
+            : url.endsWith('/auth/users/me')
+              ? { id: 'user-1' }
+              : [];
         return new Response(JSON.stringify(data), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -547,10 +549,79 @@ describe('FlowView progressive detail', () => {
           .getCalls()
           .filter((call) => (call.args[1]?.method || 'GET') !== 'GET')
       ).to.have.length(0);
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) =>
+            call.args[0].toString().includes('/account/governance/flows/')
+          )
+      ).to.equal(false);
+      const disclosure = el.shadowRoot!.querySelector(
+        '.flow-governance-disclosure'
+      ) as HTMLDetailsElement;
+      disclosure.open = true;
+      await waitUntil(() =>
+        fetchStub
+          .getCalls()
+          .some((call) => call.args[0].toString() === '/api/v1/tools')
+      );
+      expect(el.shadowRoot!.querySelector('flow-governance-card')).to.exist;
+      const card = el.shadowRoot!.querySelector('flow-governance-card') as any;
+      await waitUntil(() => !card.loading);
+      const catalogCalls = fetchStub
+        .getCalls()
+        .filter((call) => call.args[0].toString() === '/api/v1/tools').length;
+      disclosure.open = false;
+      await el.updateComplete;
+      disclosure.open = true;
+      await el.updateComplete;
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) => call.args[0].toString() === '/api/v1/tools')
+      ).to.have.length(catalogCalls);
     } finally {
       release();
       fetchStub.restore();
       localStorage.clear();
     }
+  });
+});
+
+describe('FlowView governance card', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .resolves(new Response('{}', { status: 404 }));
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+  });
+
+  it('passes the flow allowed tools to the governance card', async () => {
+    const { render } = await import('lit');
+    const element = document.createElement('flow-view') as any;
+    element.flowId = 'flow-1';
+    element.flow = {
+      name: 'Test',
+      allowed_mcp_tools: [
+        { server_name: 'preloop', tool_name: 'search_issues' },
+      ],
+    };
+    const container = document.createElement('div');
+    render(element.renderGovernanceCard(), container);
+    const card = container.querySelector('flow-governance-card') as any;
+    expect(card).to.exist;
+    expect(card.flowId).to.equal('flow-1');
+    expect(card.allowedToolNames).to.deep.equal(['search_issues']);
+  });
+
+  it('renders no governance card for an unsaved flow', () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowId = undefined;
+    expect(element.renderGovernanceCard()).to.equal('');
   });
 });

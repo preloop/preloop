@@ -162,6 +162,43 @@ A schedule can carry a static `payload` that is merged into every run. Each
 run's `trigger_event.payload` also has `schedule` (the schedule in words),
 `timezone` and `scheduled_at` (UTC, ISO 8601).
 
+### The run's time window
+
+A scheduled run also knows the window since the schedule last fired, so a
+periodic job (for example an evaluator reading new artifacts) neither re-reads
+nor misses anything:
+
+| Template variable | Meaning |
+|-------------------|---------|
+| `{{trigger_event.payload.previous_scheduled_at}}` | Previous fire time of this schedule, computed from the schedule definition (cron, interval, daily, weekly) in its timezone, DST included. |
+| `{{trigger_event.payload.window.from}}` | Same as `previous_scheduled_at`. Treat it as inclusive. |
+| `{{trigger_event.payload.window.to}}` | Same as `scheduled_at`. Treat it as exclusive. |
+| `{{trigger_event.payload.last_successful_scheduled_at}}` | `scheduled_at` of this flow's newest run that SUCCEEDED. JSON `null` when none has; a null value does not resolve, so the placeholder then stays in the prompt as written. A prompt that uses it should say what to do in that case (for example "if this still reads as a placeholder, use window.from"). |
+
+All values are UTC, ISO 8601. Notes:
+
+- The window comes from the definition, not from history: when a tick is
+  skipped because the previous run is still going, or a run fails, the next
+  window still starts at the previous fire time. A run that wants catch-up
+  semantics reads from `last_successful_scheduled_at` instead of
+  `window.from`.
+- The first run after a flow is created gets the same window as any other:
+  one period back.
+- Interval schedules fire relative to when the job was registered, so their
+  window is `scheduled_at` minus the interval.
+- `window.to` is the tick time, a moment after the nominal fire time, while
+  the next window starts at the nominal fire time. Consecutive windows can
+  overlap by that latency (seconds) but never leave a gap.
+- `previous_scheduled_at`, `last_successful_scheduled_at` and `window` are
+  reserved: a schedule's static `payload` may not declare them.
+
+Example prompt:
+
+```text
+Evaluate transcripts deposited since {{trigger_event.payload.window.from}}
+and before {{trigger_event.payload.window.to}}.
+```
+
 ---
 
 ## GitHub Events
