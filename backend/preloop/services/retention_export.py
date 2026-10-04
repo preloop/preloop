@@ -582,6 +582,13 @@ def build_period_export(
         # covers both and #558 has one thing to sign.
         "members_digest": hashlib.sha256(canonical_manifest_json(members)).hexdigest(),
         "counts": counts,
+        # Which artifacts the bundle carries. A session-limited export says
+        # so under the signature, so it cannot pass for the whole period.
+        "artifact_scope": {
+            "runtime_session_id": (
+                str(runtime_session_id) if runtime_session_id is not None else None
+            ),
+        },
         "retention": {
             record_class: resolve_retention(
                 account.meta_data, record_class=record_class
@@ -701,6 +708,7 @@ def audit_period_export(
                 "period_start": period.get("start"),
                 "period_end": period.get("end"),
                 "counts": export.counts,
+                "artifact_scope": export.manifest.get("artifact_scope"),
                 "archive_sha256": export.sha256,
                 "members_digest": export.manifest.get("members_digest"),
                 "manifest_sha256": export.manifest_sha256,

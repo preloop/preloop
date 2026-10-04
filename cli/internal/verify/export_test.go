@@ -277,3 +277,59 @@ func TestSomethingThatIsNotAnArchiveIsAnError(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 }
+
+func TestAnArtifactMemberIsDigestedWithoutBeingHeld(t *testing.T) {
+	previous := maxHeldMemberBytes
+	maxHeldMemberBytes = 1024
+	t.Cleanup(func() { maxHeldMemberBytes = previous })
+	private, _ := testKeyPair(t)
+	screenshot := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 4096)
+	archive := buildExport(t, map[string][]byte{
+		"artifacts/manifest.json":    []byte("[]"),
+		"artifacts/s-1/a-1-shot.png": screenshot,
+	}, private)
+
+	result, err := ReadExportFrom(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ContentOK() {
+		t.Fatalf("problems: %v", result.Problems)
+	}
+	if result.ArchiveSha256 != DigestOfBytes(archive) {
+		t.Fatal("streamed archive digest differs from the digest of the bytes")
+	}
+	found := false
+	for _, member := range result.Members {
+		if member.Name == "artifacts/s-1/a-1-shot.png" {
+			found = member.OK && member.Size == len(screenshot)
+		}
+	}
+	if !found {
+		t.Fatalf("artifact member not verified: %+v", result.Members)
+	}
+}
+
+func TestAStreamPastTheReadBudgetIsRefused(t *testing.T) {
+	previous := maxStreamedBytes
+	maxStreamedBytes = 1024
+	t.Cleanup(func() { maxStreamedBytes = previous })
+	private, _ := testKeyPair(t)
+	archive := buildExport(t, map[string][]byte{
+		"artifacts/s-1/a-1-big.bin": bytes.Repeat([]byte("x"), 4096),
+	}, private)
+
+	if _, err := ReadExportFrom(bytes.NewReader(archive)); err == nil {
+		t.Fatal("an archive past the budget was read")
+	}
+}
+
+// The server refuses exports whose artifacts exceed
+// RETENTION_EXPORT_MAX_ARTIFACT_BYTES (default 2 GiB). The verifier has to
+// read at least that much, or the documented check fails on a valid bundle.
+func TestTheReadBudgetCoversTheServerArtifactCap(t *testing.T) {
+	const serverDefaultArtifactCap int64 = 2 << 30
+	if maxStreamedBytes <= serverDefaultArtifactCap {
+		t.Fatalf("verifier budget %d does not cover the server cap %d", maxStreamedBytes, serverDefaultArtifactCap)
+	}
+}

@@ -416,6 +416,11 @@ Artifact bytes are streamed into the archive one at a time. Above
 `RETENTION_EXPORT_MAX_ARTIFACT_BYTES` (2 GiB) the export is refused with 413
 `export_too_large`, naming the artifact count and bytes; narrow the dates or
 export one session.
+`preloop evidence verify` streams a period export from disk and digests each
+member as it passes, so it checks a bundle up to that cap without holding it
+in memory. `manifest.json` records `artifact_scope.runtime_session_id` (null
+for the whole period) under the signature, and the export's audit row repeats
+it, so a session-limited bundle cannot pass for a complete one.
 
 `manifest.json` carries `members` with a `sha256` and `size_bytes` per member
 and a `members_digest` over that list, the same shape and the same computation

@@ -15,10 +15,12 @@ holds, and ``view_audit_logs`` for the export, which is a bulk read of the
 audit trail. A new permission would need seeding in the EE role matrix, which
 is not part of this change; the same choice was made for outbound webhooks.
 
-The export streams a tar built in memory. That is deliberate and bounded:
-``RETENTION_EXPORT_MAX_ROWS`` per record class, and going over is a 413
-telling the caller to narrow the period rather than a truncated archive
-somebody later mistakes for the whole period.
+The export is built into a spooled temporary file (in memory up to 64 MiB,
+on disk past that) and streamed from there, since session artifacts (#1088)
+can make it large. It is bounded: ``RETENTION_EXPORT_MAX_ROWS`` per record
+class and ``RETENTION_EXPORT_MAX_ARTIFACT_BYTES`` for artifact bytes, and
+going over either is a 413 telling the caller to narrow the period rather
+than a truncated archive somebody later mistakes for the whole period.
 """
 
 from __future__ import annotations

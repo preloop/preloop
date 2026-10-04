@@ -93,11 +93,7 @@ import {
   type ArtifactKindGroup,
 } from '../utils/session-artifacts';
 import { consoleDialogStyles } from '../styles/console-dialog';
-import { sessionExportHref } from '../utils/records-format';
-
-/** Synthetic observer rows (gateway-only traffic) have no session to export. */
-const RUNTIME_SESSION_ID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { isUuid, sessionExportHref } from '../utils/records-format';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
 type EventPageState = {
@@ -2464,7 +2460,8 @@ export class PreloopSessionObserver extends LitElement {
    * transcripts, screenshots and files leave with a sha256 each.
    */
   private renderEvidenceExportButton(session: ObservedSession | null) {
-    if (!session || !RUNTIME_SESSION_ID.test(session.id)) return nothing;
+    // Synthetic observer rows (gateway-only traffic) have no session to export.
+    if (!session || !isUuid(session.id)) return nothing;
     return html`<sl-button
       size="small"
       data-testid="add-to-evidence-export"

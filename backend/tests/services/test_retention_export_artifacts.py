@@ -293,3 +293,61 @@ def test_archive_digest_and_size_describe_the_streamed_bytes(db_session, account
     body = b"".join(export.iter_chunks())
     assert hashlib.sha256(body).hexdigest() == export.sha256
     assert len(body) == export.size_bytes
+
+
+def test_session_scope_is_in_the_signed_manifest_and_the_audit_row(
+    db_session, account, two, test_user
+):
+    from preloop.models.models.audit_log import AuditLog
+    from preloop.services.retention_export import audit_period_export
+
+    session, _, _ = two
+    scoped = _export(db_session, account, runtime_session_id=session.id)
+    whole = _export(db_session, account)
+    assert scoped.manifest["artifact_scope"] == {"runtime_session_id": str(session.id)}
+    assert whole.manifest["artifact_scope"] == {"runtime_session_id": None}
+    packed = json.loads(_members(scoped.archive)["manifest.json"])
+    assert packed["artifact_scope"]["runtime_session_id"] == str(session.id)
+
+    audit_period_export(
+        db_session, account_id=account.id, user_id=test_user.id, export=scoped
+    )
+    row = (
+        db_session.query(AuditLog)
+        .filter(
+            AuditLog.account_id == account.id,
+            AuditLog.action == "retention_period_export",
+        )
+        .order_by(AuditLog.timestamp.desc())
+        .first()
+    )
+    assert row.details["artifact_scope"] == {"runtime_session_id": str(session.id)}
+
+
+def test_bytes_that_do_not_match_the_stored_digest_abort_the_export(
+    db_session, account, two
+):
+    _, transcript, _ = two
+    db_session.execute(
+        update(models.RuntimeSessionArtifact)
+        .where(models.RuntimeSessionArtifact.id == transcript.id)
+        .values(sha256="0" * 64)
+    )
+    db_session.flush()
+    with pytest.raises(PeriodExportError) as caught:
+        _export(db_session, account)
+    assert caught.value.code == "artifact_integrity"
+    assert str(transcript.id) in str(caught.value)
+
+
+def test_undecryptable_bytes_abort_the_export(db_session, account, two):
+    _, _, screenshot = two
+    db_session.execute(
+        update(models.RuntimeSessionArtifact)
+        .where(models.RuntimeSessionArtifact.id == screenshot.id)
+        .values(ciphertext=b"not a fernet token")
+    )
+    db_session.flush()
+    with pytest.raises(PeriodExportError) as caught:
+        _export(db_session, account)
+    assert caught.value.code == "artifact_unreadable"

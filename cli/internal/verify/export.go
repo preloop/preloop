@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,23 @@ const (
 // verifier that can be made to allocate without limit by the file it is
 // checking is not much of a verifier.
 const maxArchiveBytes = 512 << 20
+
+// maxStreamedBytes bounds what ReadExportFrom will read through from an
+// archive. Members are digested as they stream past and never held, so the
+// bound is about time, not memory. It sits above the server's default
+// artifact cap (RETENTION_EXPORT_MAX_ARTIFACT_BYTES, 2 GiB, #1088) with
+// room for the record members.
+var maxStreamedBytes int64 = 4 << 30
+
+// maxHeldMemberBytes bounds the members ReadExportFrom keeps in memory:
+// manifest.json and signature.json, which it has to parse.
+var maxHeldMemberBytes int64 = 64 << 20
+
+// streamedMember is what a streaming read keeps of one member.
+type streamedMember struct {
+	digest string
+	size   int
+}
 
 // MemberResult is one member of an export and whether its bytes still match
 // the digest the manifest claims.
@@ -61,12 +80,26 @@ func (r ExportResult) ContentOK() bool {
 
 // ReadExport unpacks a period export and checks it against its own manifest.
 func ReadExport(archive []byte) (ExportResult, error) {
-	result := ExportResult{ArchiveSha256: DigestOfBytes(archive)}
-	members, err := untar(archive)
+	return ReadExportFrom(bytes.NewReader(archive))
+}
+
+// ReadExportFrom is ReadExport over a stream. Member bytes are hashed as
+// they pass and dropped, so an export carrying session artifacts (#1088)
+// is checked without holding it in memory. ArchiveSha256 covers the bytes
+// read from r.
+func ReadExportFrom(r io.Reader) (ExportResult, error) {
+	result := ExportResult{}
+	archiveHash := sha256.New()
+	members, held, err := streamTar(io.TeeReader(r, archiveHash))
 	if err != nil {
 		return result, err
 	}
-	manifestBody, ok := members[ManifestMember]
+	// Drain anything after the tar end so the archive digest covers the file.
+	if _, err := io.Copy(archiveHash, r); err != nil {
+		return result, fmt.Errorf("cannot read archive: %w", err)
+	}
+	result.ArchiveSha256 = hex.EncodeToString(archiveHash.Sum(nil))
+	manifestBody, ok := held[ManifestMember]
 	if !ok {
 		return result, fmt.Errorf("the archive has no %s", ManifestMember)
 	}
@@ -101,12 +134,12 @@ func ReadExport(archive []byte) (ExportResult, error) {
 			result.Problems = append(result.Problems, "missing member "+name)
 			continue
 		}
-		computed := DigestOfBytes(body)
+		computed := body.digest
 		member := MemberResult{
 			Name:     name,
 			Declared: wanted,
 			Computed: computed,
-			Size:     len(body),
+			Size:     body.size,
 			OK:       computed == wanted,
 		}
 		if !member.OK {
@@ -141,7 +174,7 @@ func ReadExport(archive []byte) (ExportResult, error) {
 		result.Problems = append(result.Problems, "members_digest does not cover this member list")
 	}
 
-	if body, present := members[SignatureMember]; present {
+	if body, present := held[SignatureMember]; present {
 		var document SignatureDocument
 		if err := json.Unmarshal(body, &document); err != nil {
 			return result, fmt.Errorf("%s is not JSON: %w", SignatureMember, err)
@@ -149,6 +182,59 @@ func ReadExport(archive []byte) (ExportResult, error) {
 		result.Signature = &document
 	}
 	return result, nil
+}
+
+// streamTar digests every regular member of a gzipped tar and keeps only the
+// manifest and signature bodies.
+func streamTar(r io.Reader) (map[string]streamedMember, map[string][]byte, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("not a gzip archive: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	reader := tar.NewReader(gz)
+	members := map[string]streamedMember{}
+	held := map[string][]byte{}
+	budget := maxStreamedBytes
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("not a tar archive: %w", err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		hash := sha256.New()
+		var sink io.Writer = hash
+		var keep *bytes.Buffer
+		if header.Name == ManifestMember || header.Name == SignatureMember {
+			keep = &bytes.Buffer{}
+			sink = io.MultiWriter(hash, keep)
+		}
+		limit := budget
+		if keep != nil && limit > maxHeldMemberBytes {
+			limit = maxHeldMemberBytes
+		}
+		n, err := io.Copy(sink, io.LimitReader(reader, limit+1))
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot read member %q: %w", header.Name, err)
+		}
+		if n > limit {
+			return nil, nil, errors.New("archive expands past the size a verifier will read")
+		}
+		budget -= n
+		members[header.Name] = streamedMember{
+			digest: hex.EncodeToString(hash.Sum(nil)),
+			size:   int(n),
+		}
+		if keep != nil {
+			held[header.Name] = keep.Bytes()
+		}
+	}
+	return members, held, nil
 }
 
 // untar expands a gzipped tar into memory, refusing paths that try to escape.

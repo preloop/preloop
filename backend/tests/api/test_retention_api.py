@@ -527,3 +527,19 @@ def test_the_export_refuses_too_many_artifact_bytes_with_413(
     with tarfile.open(fileobj=io.BytesIO(ok.content), mode="r:gz") as tar:
         names = tar.getnames()
     assert f"artifacts/{session.id}/{row.id}-big.txt" in names
+
+
+def test_an_unreadable_artifact_is_a_500_naming_the_code(client, mocker):
+    from preloop.services.retention_export import PeriodExportError
+
+    mocker.patch(
+        "preloop.api.endpoints.retention.build_period_export",
+        side_effect=PeriodExportError(
+            "artifact_integrity", "artifact x does not match its stored digest"
+        ),
+    )
+    response = client.post(
+        f"{BASE}/exports", params={"start": "2026-04-01", "end": "2026-05-01"}
+    )
+    assert response.status_code == 500
+    assert "stored digest" in response.json()["detail"]
