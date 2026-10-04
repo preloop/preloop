@@ -42,7 +42,10 @@ docker buildx imagetools inspect <registry>/preloop-codex-perl:<tag> \
   --format '{{.Name}}@{{.Manifest.Digest}}'
 ```
 
-The build refuses a base without `@sha256:`. The smoke runs during the
+The `CODEX_BASE_IMAGE` default is `ghcr.io/openai/codex-universal` pinned by
+the index digest recorded in the Dockerfile, so a build with no build-arg is
+still digest-pinned. Pass `--build-arg` to select another digest. The build
+refuses a base without `@sha256:`. The smoke runs during the
 build, so a missing tool fails the build. The image sets no `WORKDIR`,
 `ENTRYPOINT` or `CMD`, so the base entrypoint stays. It installs as root
 and then switches back to `BASE_USER` (default `root`, which is what

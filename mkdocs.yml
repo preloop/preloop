@@ -279,7 +279,8 @@ nav:
       - Code signing policy: code-signing-policy.md
       - Windows code signing: windows-code-signing.md
       - Continuous fuzzing: fuzzing.md
-      - OpenSSF best practices: OPENSSF_BEST_PRACTICES.md
+      - OpenSSF Best Practices badge: security/openssf-best-practices.md
+      - OpenSSF badge readiness (2026-09-10): OPENSSF_BEST_PRACTICES.md
       - Release verification: release-verification.md
       - Compatibility policy: compatibility.md
 

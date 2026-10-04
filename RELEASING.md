@@ -66,6 +66,11 @@ It can also optionally:
 - [ ] Release is marked as a pre-release when the version contains a suffix like `-beta.1`.
 - [ ] Release body includes accurate changelog notes and working install instructions.
 - [ ] Uploaded assets match the release notes.
+- [ ] `preloop-v<version>.intoto.jsonl` is attached. Scorecard's Signed-Releases
+      check counts that filename on the release, not the Attestations API and
+      not `SHA256SUMS`. See [release verification](docs/release-verification.md).
+      If `Create Release` fails before the attest step, do not publish the
+      assets without the bundle.
 - [ ] PyPI prereleases are expected to use PEP 440 normalization, so `0.8.0-beta.1` is published as `0.8.0b1`.
 
 ### SBOM

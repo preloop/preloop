@@ -81,10 +81,22 @@ this verification before executing a downloaded installer or binary.
 ## OpenSSF Scorecard
 
 The [Signed-Releases check](https://github.com/ossf/scorecard/blob/main/docs/checks.md#signed-releases)
-looks for recognized signatures or provenance on recent releases. It assesses a
-window of releases, so adding signing does not immediately erase earlier unsigned
-entries, and published Scorecard results can lag behind repository changes.
-Inspect its current per-release details rather than assuming a particular score.
+does not read this workflow file or the GitHub Attestations API. Scorecard
+v5.5.0 scores up to the last five GitHub releases that have assets. A release
+scores 10 when one asset name ends in `.intoto.jsonl`, and 8 for
+`.asc`, `.minisig`, `.sig`, `.sign`, or `.sigstore`. `SHA256SUMS` and
+Windows Authenticode do not count. The aggregate is the floor of the average.
+
+Signing has been configured since v0.15.0, and v0.15.0 attaches
+`preloop-v0.15.0.intoto.jsonl`. The check still scores 2 because four of the
+five releases in the window have no such asset: v0.13.0, v0.13.1, and v0.14.0
+predate the pipeline, and v0.16.0 was published without the bundle after
+`Create Release` failed before the attest step. The workflow on `main` writes
+release notes to a file before creating the release, which is what avoids that
+failure on the next tag. Each new tag still has to finish attest, verify, and
+upload `preloop-v<version>.intoto.jsonl`. Backfilling v0.16.0 is a separate
+maintainer action against the bytes already on that release, not something a
+source change can mint. Do not treat a workflow file as a signature.
 
 Continue attaching provenance to each real release. Do not manufacture releases
 just to move the scoring window. Re-signing a historical binary today can prove

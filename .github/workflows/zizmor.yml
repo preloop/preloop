@@ -6,9 +6,10 @@
 # .github/zizmor.yml with a reason each; fixes are preferred over entries
 # there.
 #
-# zizmor is installed from PyPI at a pinned version rather than through an
-# action, matching how secret-scan.yml installs gitleaks: the toolchain's
-# package verification gives the same guarantee the SHA-pinned actions give.
+# zizmor is installed from a hash-pinned requirements file rather than
+# through an action, matching how secret-scan.yml installs gitleaks: the
+# toolchain's package verification gives the same guarantee the SHA-pinned
+# actions give. Scorecard counts `pip install --require-hashes` as pinned.
 
 name: Workflow Audit
 
@@ -45,7 +46,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install zizmor
-        run: pip install zizmor==1.30.1
+        run: pip install --require-hashes -r .github/requirements/zizmor.txt
 
       # Exits non-zero on any finding not accepted in .github/zizmor.yml.
       # GH_TOKEN enables the online audits (stale-action-refs,
