@@ -1082,19 +1082,19 @@ export class SensitiveDataPanel extends LitElement {
       </p>
       <pre aria-label="Matches">
 ${segments(this._testedText, result.matches).map((part) =>
-  part.type
-    ? html`<mark data-type=${part.type}
-        >${part.text}<span class="tag">${part.type}</span></mark
-      >`
-    : part.text
-)}</pre>
+          part.type
+            ? html`<mark data-type=${part.type}
+                >${part.text}<span class="tag">${part.type}</span></mark
+              >`
+            : part.text
+        )}</pre>
       <p><strong>Stored as</strong></p>
       <pre data-testid="sensitive-stored">
 ${
-  stored.blocked
-    ? 'The call is blocked, nothing is forwarded or stored.'
-    : stored.text
-}</pre>
+          stored.blocked
+            ? 'The call is blocked, nothing is forwarded or stored.'
+            : stored.text
+        }</pre>
     </div>`;
   }
 
