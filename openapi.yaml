@@ -1028,7 +1028,9 @@ paths:
 
         the account keeps. Every change writes an ``artifact_settings_updated``
 
-        audit row with the before and after values.'
+        audit row with the before and after value of each changed field; a
+
+        request that changes nothing writes no row.'
       operationId: update_session_artifact_settings_api_v1_account_session_artifacts_settings_put
       requestBody:
         content:

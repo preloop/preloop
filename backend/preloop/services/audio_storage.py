@@ -101,6 +101,9 @@ def apply_update(
     """
     updated = dict(meta_data or {})
     store = dict(_store(meta_data))
+    if audio_storage_enabled is None and audio_retention_days is None:
+        # Nothing asked to change: leave who/when as they were.
+        return updated
     if audio_storage_enabled is not None:
         store["audio_storage_enabled"] = bool(audio_storage_enabled)
     if audio_retention_days is not None:

@@ -602,6 +602,7 @@ export class AccountView extends LitElement {
     }
   }
 
+  /** Saves the change; resolves true when the server accepted it. */
   private async _saveArtifactSettings(
     change: Partial<
       Pick<
@@ -609,7 +610,7 @@ export class AccountView extends LitElement {
         'audio_storage_enabled' | 'audio_retention_days'
       >
     >
-  ): Promise<void> {
+  ): Promise<boolean> {
     this._artifactSettingsSaving = true;
     this._artifactSettingsError = '';
     try {
@@ -624,7 +625,11 @@ export class AccountView extends LitElement {
       if (res.ok) {
         const body = await res.json();
         this._artifactSettings = body;
-        this._audioRetentionDraft = String(body.audio_retention_days);
+        // A toggle must not clobber a retention the user is still typing.
+        if (change.audio_retention_days !== undefined) {
+          this._audioRetentionDraft = String(body.audio_retention_days);
+        }
+        return true;
       } else if (res.status === 403) {
         this._artifactSettingsError =
           'Only an account admin can change audio storage.';
@@ -641,11 +646,19 @@ export class AccountView extends LitElement {
     } finally {
       this._artifactSettingsSaving = false;
     }
+    return false;
   }
 
-  private _onAudioToggle(event: Event): void {
-    const checked = (event.target as HTMLInputElement).checked;
-    void this._saveArtifactSettings({ audio_storage_enabled: checked });
+  private async _onAudioToggle(event: Event): Promise<void> {
+    const toggle = event.target as HTMLInputElement;
+    const saved = await this._saveArtifactSettings({
+      audio_storage_enabled: toggle.checked,
+    });
+    if (!saved) {
+      // Lit skips an unchanged ?checked binding, so put the control back to
+      // what the server still has; it must never claim a state not saved.
+      toggle.checked = this._artifactSettings?.audio_storage_enabled ?? false;
+    }
   }
 
   private _onAudioRetentionSave(): void {

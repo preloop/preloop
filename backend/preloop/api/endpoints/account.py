@@ -1238,7 +1238,8 @@ def update_session_artifact_settings(
 
     Uses ``manage_policies`` like the retention settings: it governs what
     the account keeps. Every change writes an ``artifact_settings_updated``
-    audit row with the before and after values.
+    audit row with the before and after value of each changed field; a
+    request that changes nothing writes no row.
     """
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -1256,6 +1257,14 @@ def update_session_artifact_settings(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     after = audio_storage.resolve(updated)
+    changed = {
+        field: {"from": getattr(before, field), "to": getattr(after, field)}
+        for field in ("audio_storage_enabled", "audio_retention_days")
+        if getattr(before, field) != getattr(after, field)
+    }
+    if not changed:
+        # A no-op request neither logs nor restamps who changed it.
+        return _artifact_settings_response(account)
     account.meta_data = updated
     flag_modified(account, "meta_data")
     db.add(account)
@@ -1267,10 +1276,7 @@ def update_session_artifact_settings(
         resource_type="account_settings",
         resource_id="artifacts",
         status="success",
-        details={
-            field: {"from": getattr(before, field), "to": getattr(after, field)}
-            for field in ("audio_storage_enabled", "audio_retention_days")
-        },
+        details={"changed": changed},
         commit=False,
     )
     db.commit()

@@ -82,8 +82,10 @@ def test_admin_enables_and_audio_is_stored_and_audited(client, db_session, test_
     ).one()
     assert row.user_id == test_user.id
     assert row.timestamp is not None
-    assert row.details["audio_storage_enabled"] == {"from": False, "to": True}
-    assert row.details["audio_retention_days"] == {"from": 30, "to": 7}
+    assert row.details["changed"] == {
+        "audio_storage_enabled": {"from": False, "to": True},
+        "audio_retention_days": {"from": 30, "to": 7},
+    }
 
 
 def test_non_admin_cannot_change_the_setting(client, db_session, test_user):
@@ -184,3 +186,94 @@ def test_gate_reads_the_account_setting():
     _Account.meta_data = {"artifacts": {"audio_storage_enabled": "yes"}}
     assert artifact_deposit.audio_storage_enabled(_Account()) is False
     assert artifact_deposit.audio_storage_enabled(None) is False
+
+
+def _audit_rows(db_session, account_id):
+    db_session.expire_all()
+    return db_session.scalars(
+        select(AuditLog).where(
+            AuditLog.account_id == account_id,
+            AuditLog.action == audio_storage.AUDIT_ACTION,
+        )
+    ).all()
+
+
+def test_audit_records_only_changed_fields_and_no_op_writes_nothing(
+    client, db_session, test_user
+):
+    client.put(SETTINGS, json={"audio_storage_enabled": True})
+    stamped = client.get(SETTINGS).json()["updated_at"]
+
+    same = client.put(SETTINGS, json={"audio_storage_enabled": True})
+    empty = client.put(SETTINGS, json={})
+    days = client.put(
+        SETTINGS, json={"audio_storage_enabled": True, "audio_retention_days": 9}
+    )
+
+    assert same.status_code == empty.status_code == days.status_code == 200
+    assert same.json()["updated_at"] == empty.json()["updated_at"] == stamped
+    rows = _audit_rows(db_session, test_user.account_id)
+    assert [r.details["changed"] for r in rows] == [
+        {"audio_storage_enabled": {"from": False, "to": True}},
+        {"audio_retention_days": {"from": 30, "to": 9}},
+    ]
+
+
+def test_audio_relabelled_as_another_kind_is_refused_while_off(
+    client, db_session, test_user
+):
+    session = _session(db_session, test_user.account_id, f"audio-{uuid.uuid4().hex}")
+    token = _token(db_session, test_user, runtime_session_id=session.id)
+    body = {
+        "name": "shift-2.ogg",
+        "kind": "generated_file",
+        "content": {
+            "type": "resource",
+            "resource": {
+                "uri": "file:///shift-2.ogg",
+                "mimeType": "audio/ogg",
+                "blob": base64.b64encode(OGG).decode(),
+            },
+        },
+    }
+    url = f"/api/v1/runtime-sessions/{session.id}/artifacts"
+
+    refused = client.post(url, headers=_auth(token), json=body)
+    client.put(SETTINGS, json={"audio_storage_enabled": True})
+    stored = client.post(url, headers=_auth(token), json=body)
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "artifact_audio_storage_disabled"
+    assert stored.status_code == 201, stored.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hold", ["artifact", "session"])
+async def test_janitor_keeps_held_audio(client, db_session, test_user, hold):
+    client.put(
+        SETTINGS, json={"audio_storage_enabled": True, "audio_retention_days": 3}
+    )
+    session, old = _deposit(client, db_session, test_user)
+    artifact_id = uuid.UUID(old.json()["id"])
+    values = {"created_at": datetime.now(UTC) - timedelta(days=4)}
+    if hold == "artifact":
+        values["legal_hold"] = True
+    db_session.execute(
+        update(models.RuntimeSessionArtifact)
+        .where(models.RuntimeSessionArtifact.id == artifact_id)
+        .values(**values)
+    )
+    if hold == "session":
+        db_session.execute(
+            update(models.RuntimeSession)
+            .where(models.RuntimeSession.id == session.id)
+            .values(legal_hold=True)
+        )
+    db_session.commit()
+
+    assert audio_storage.expire_audio(db_session, now=datetime.now(UTC)) == 0
+
+    db_session.expire_all()
+    kept = db_session.get(models.RuntimeSessionArtifact, artifact_id)
+    assert kept.availability == "available"
+    assert kept.ciphertext is not None

@@ -261,7 +261,13 @@ def deposit(
     ):
         raise ArtifactDepositError(422, ERROR_IDEMPOTENCY_KEY_INVALID)
     kind = payload.kind
-    if kind == shapes.KIND_AUDIO:
+    # Gate on the bytes' modality as well as the declared kind: audio
+    # relabelled as another kind (e.g. generated_file, audio/ogg) is still
+    # raw audio and needs the same opt-in.
+    is_audio = kind == shapes.KIND_AUDIO or (
+        (payload.content_type or "").strip().lower().startswith("audio/")
+    )
+    if is_audio:
         account = db.get(models.Account, auth.account_id)
         if not audio_storage_enabled(account):
             raise ArtifactDepositError(409, ERROR_AUDIO_DISABLED)

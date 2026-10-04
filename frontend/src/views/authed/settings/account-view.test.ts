@@ -1311,6 +1311,60 @@ describe('AccountView', () => {
       expect(puts[0]).to.deep.equal({ audio_retention_days: 7 });
     });
 
+    it('puts the switch back to the saved state when the save fails', async () => {
+      fetchStub = createFetchStub({
+        sessionArtifactUsage: usage,
+        artifactSettings: { ...off, audio_storage_enabled: true },
+        artifactSettingsPut: () => json({ detail: 'boom' }, 500),
+      });
+      const element = await mount();
+      const toggle = q<HTMLInputElement>(element, 'audio-storage-toggle');
+      expect(toggle.checked).to.equal(true);
+
+      toggle.click();
+      await waitUntil(() => q(element, 'audio-storage-error'), 'error shown');
+      await element.updateComplete;
+
+      expect(toggle.checked, 'server still stores audio').to.equal(true);
+    });
+
+    it('names the allowed range when the retention is refused', async () => {
+      fetchStub = createFetchStub({
+        sessionArtifactUsage: usage,
+        artifactSettings: off,
+        artifactSettingsPut: () =>
+          json({ detail: 'audio_retention_days_invalid' }, 422),
+      });
+      const element = await mount();
+
+      (element as any)._audioRetentionDraft = '999';
+      await element.updateComplete;
+      q<HTMLElement>(element, 'audio-retention-save').click();
+      await waitUntil(() => q(element, 'audio-storage-error'), 'error shown');
+
+      expect(q(element, 'audio-storage-error').textContent).to.contain(
+        'Retention must be between 1 and 180 days.'
+      );
+    });
+
+    it('keeps a retention being typed when the switch is saved', async () => {
+      fetchStub = createFetchStub({
+        sessionArtifactUsage: usage,
+        artifactSettings: off,
+        artifactSettingsPut: (body) => json({ ...off, ...body }),
+      });
+      const element = await mount();
+
+      (element as any)._audioRetentionDraft = '12';
+      q<HTMLElement>(element, 'audio-storage-toggle').click();
+      await waitUntil(
+        () => (element as any)._artifactSettings.audio_storage_enabled,
+        'saved'
+      );
+
+      expect((element as any)._audioRetentionDraft).to.equal('12');
+    });
+
     it('tells a non-admin why the change was refused', async () => {
       fetchStub = createFetchStub({
         sessionArtifactUsage: usage,

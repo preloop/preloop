@@ -281,8 +281,9 @@ Browser step screenshots are artifacts of kind `screenshot` too; see
 
 ## Audio is off by default
 
-Audio of people is personal data in most jurisdictions. Every `audio` deposit
-is refused with `409 artifact_audio_storage_disabled` unless an account admin
+Audio of people is personal data in most jurisdictions. Every `audio` deposit,
+and any deposit whose media type is `audio/*` whatever its declared kind, is
+refused with `409 artifact_audio_storage_disabled` unless an account admin
 opts in. Transcripts are stored either way: store the transcript with a
 `consent_basis` label.
 
@@ -291,7 +292,8 @@ To opt in, open **Settings > Account > Session artifact storage** and turn on
 `PUT /api/v1/account/session-artifacts/settings` with
 `{"audio_storage_enabled": true}`. The change needs the `manage_policies`
 permission and writes an `artifact_settings_updated` audit row with who
-changed what, and when.
+changed which field from what to what, and when. A request that changes
+nothing writes no row.
 
 `audio_retention_days` (default 30, at most the runtime-session retention)
 bounds how long raw audio is kept. The artifact janitor expires older audio:
