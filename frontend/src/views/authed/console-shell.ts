@@ -14,10 +14,11 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '../../components/logo-component';
 import '../../components/global-notice';
-import '../../components/console-header';
+import { PENDING_APPROVALS_EVENT } from '../../components/console-header';
 import '../../components/approval-bypass-banner';
 import '../../components/kill-switch-banner';
 import '../../components/usage-nudge-banner';
@@ -45,6 +46,11 @@ import '../../components/plan-choice-screen';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import { LOCATION_CHANGED, Router } from '../../router';
 import { planPageUrl, premiumFeatureLabel } from '../../utils/premium-features';
+import {
+  ATTENTION_SUMMARY_EVENT,
+  readAttentionSummary,
+  type AttentionSummary,
+} from '../../utils/attention-summary';
 
 /** Nav items that require at least one of the listed permissions when RBAC is on. */
 const NAV_PERMISSIONS: Record<string, string[]> = {
@@ -80,8 +86,9 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
 
 /**
  * Pages with no nav entry of their own, and the nav item that owns them.
- * Without this, a reader who opened a single approval from a notification
- * saw no item highlighted and the Audit group closed: no wayfinding at all.
+ * `/console/approval/:id` is a single approval opened from a notification
+ * or email. `/console/api-usage` is the older cost URL. Both highlight the
+ * item that owns them.
  */
 const NAV_ALIASES: Record<string, string[]> = {
   '/console/approvals': ['/console/approval'],
@@ -186,6 +193,17 @@ export class ConsoleShell extends LitElement {
 
   /** Set by a back/forward popstate until the router announces it. */
   private _historyTraversal = false;
+
+  /** Unexpired pending approvals, published by the header for the badge. */
+  @state()
+  private _pendingApprovalsCount = 0;
+
+  /**
+   * Attention counts published by the Overview strip or the Attention page.
+   * Null until one of them has run, mirroring the header's behaviour.
+   */
+  @state()
+  private _attentionSummary: AttentionSummary | null = null;
 
   private _mediaQuery?: MediaQueryList;
   private _mediaQueryHandler?: (e: MediaQueryListEvent) => void;
@@ -593,6 +611,15 @@ export class ConsoleShell extends LitElement {
     window.addEventListener('show-toast', this._handleShowToast);
     this.addEventListener('keydown', this._handleKeydown);
     window.addEventListener(LOCATION_CHANGED, this._handleLocationChanged);
+    this._attentionSummary = readAttentionSummary();
+    window.addEventListener(
+      PENDING_APPROVALS_EVENT,
+      this._handlePendingApprovals
+    );
+    window.addEventListener(
+      ATTENTION_SUMMARY_EVENT,
+      this._handleAttentionSummary
+    );
     this._mediaQuery = window.matchMedia(
       `(max-width: ${SIDEBAR_BREAKPOINT}px)`
     );
@@ -824,6 +851,14 @@ export class ConsoleShell extends LitElement {
     this._closeSidebar();
   };
 
+  private _handlePendingApprovals = (event: Event) => {
+    this._pendingApprovalsCount = (event as CustomEvent<number>).detail ?? 0;
+  };
+
+  private _handleAttentionSummary = (event: Event) => {
+    this._attentionSummary = (event as CustomEvent<AttentionSummary>).detail;
+  };
+
   private _normalizePath(path: string): string {
     if (path.length > 1 && path.endsWith('/')) {
       return path.slice(0, -1);
@@ -845,7 +880,8 @@ export class ConsoleShell extends LitElement {
   private _isSettingsActive(): boolean {
     return (
       this._isNavActive('/console/settings') &&
-      !this._isNavActive('/console/settings/emergency')
+      !this._isNavActive('/console/settings/emergency') &&
+      !this._isNavActive('/console/settings/records')
     );
   }
 
@@ -868,8 +904,8 @@ export class ConsoleShell extends LitElement {
   private _hasAuditSection(): boolean {
     return (
       this._canShowAuditEvents() ||
-      this._canAccess('/console/runtime-sessions') ||
-      this._canAccess('/console/approvals')
+      this._canAccess('/console/artifacts') ||
+      this._canAccess('/console/settings/records')
     );
   }
 
@@ -884,9 +920,8 @@ export class ConsoleShell extends LitElement {
   private _isAuditActive(): boolean {
     return (
       this._isNavActive('/console/audit') ||
-      this._isNavActive('/console/runtime-sessions') ||
       this._isNavActive('/console/artifacts') ||
-      this._isNavActive('/console/approvals')
+      this._isNavActive('/console/settings/records')
     );
   }
 
@@ -948,6 +983,14 @@ export class ConsoleShell extends LitElement {
     this.removeEventListener('keydown', this._handleKeydown);
     window.removeEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     window.removeEventListener('popstate', this._handleLocationChanged);
+    window.removeEventListener(
+      PENDING_APPROVALS_EVENT,
+      this._handlePendingApprovals
+    );
+    window.removeEventListener(
+      ATTENTION_SUMMARY_EVENT,
+      this._handleAttentionSummary
+    );
     this._mediaQuery?.removeEventListener('change', this._mediaQueryHandler!);
     super.disconnectedCallback();
   }
@@ -1045,6 +1088,57 @@ export class ConsoleShell extends LitElement {
                         </sl-menu-item>
                       `,
                       true
+                    )}
+                    ${this._renderNavLink(
+                      '/console/attention',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon
+                            name="exclamation-triangle"
+                            slot="prefix"
+                          ></sl-icon>
+                          <span class="sidebar-label">Needs attention</span>
+                          ${
+                            this._attentionSummary &&
+                            this._attentionSummary.total > 0
+                              ? html`<sl-badge
+                                  slot="suffix"
+                                  variant="primary"
+                                  pill
+                                  >${this._attentionSummary.total}</sl-badge
+                                >`
+                              : nothing
+                          }
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${this._renderNavLink(
+                      '/console/approvals',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="shield-check" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Approvals</span>
+                          ${
+                            this._pendingApprovalsCount > 0
+                              ? html`<sl-badge
+                                  slot="suffix"
+                                  variant="primary"
+                                  pill
+                                  >${this._pendingApprovalsCount}</sl-badge
+                                >`
+                              : nothing
+                          }
+                        </sl-menu-item>
+                      `
+                    )}
+                    ${this._renderNavLink(
+                      '/console/runtime-sessions',
+                      html`
+                        <sl-menu-item>
+                          <sl-icon name="clock-history" slot="prefix"></sl-icon>
+                          <span class="sidebar-label">Sessions</span>
+                        </sl-menu-item>
+                      `
                     )}
                     ${this._renderNavLink(
                       '/console/agents',
@@ -1148,17 +1242,19 @@ export class ConsoleShell extends LitElement {
                                     : nothing
                                 }
                                 ${this._renderNavLink(
-                                  '/console/runtime-sessions',
-                                  html`<sl-menu-item>Sessions</sl-menu-item>`
-                                )}
-                                ${this._renderNavLink(
                                   '/console/artifacts',
                                   html`<sl-menu-item>Artifacts</sl-menu-item>`
                                 )}
-                                ${this._renderNavLink(
-                                  '/console/approvals',
-                                  html`<sl-menu-item>Approvals</sl-menu-item>`
-                                )}
+                                ${
+                                  this._permissionsLoaded
+                                    ? this._renderNavLink(
+                                        '/console/settings/records',
+                                        html`<sl-menu-item
+                                          >Records</sl-menu-item
+                                        >`
+                                      )
+                                    : ''
+                                }
                               </sl-menu>
                             </sl-details>
                           `
@@ -1195,12 +1291,6 @@ export class ConsoleShell extends LitElement {
                             ? this._renderNavLink(
                                 '/console/settings/plan',
                                 html`<sl-menu-item>Plan</sl-menu-item>`
-                              )
-                            : nothing,
-                          this._permissionsLoaded
-                            ? this._renderNavLink(
-                                '/console/settings/records',
-                                html`<sl-menu-item>Records</sl-menu-item>`
                               )
                             : nothing,
                         ])}
