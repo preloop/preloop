@@ -1,7 +1,7 @@
 """Index session artifacts by account and creation time.
 
 Revision ID: 20261004_artifact_created_idx
-Revises: 20261002_chat_connections
+Revises: 20261003_issue_extid_unique
 
 The account-wide artifact search (#1086) pages by ``(created_at, id)``
 newest first, and its facet counts read the newest 10000 matching rows.
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20261004_artifact_created_idx"
-down_revision: Union[str, None] = "20261002_chat_connections"
+down_revision: Union[str, None] = "20261003_issue_extid_unique"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

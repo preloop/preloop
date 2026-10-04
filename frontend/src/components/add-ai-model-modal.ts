@@ -22,6 +22,8 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
+import '@shoelace-style/shoelace/dist/components/radio/radio.js';
 import { consoleDialogStyles } from '../styles/console-dialog';
 
 type ServiceKind = 'llm' | 'stt' | 'tts';
@@ -267,6 +269,12 @@ export class AddAIModelModal extends LitElement {
   /** Azure OpenAI api-version and pricing base model (provider_runtime). */
   @state() private _azureApiVersion = '';
   @state() private _azureBaseModel = '';
+  /**
+   * Azure auth: a resource key, or Microsoft Entra ID tokens from the
+   * server's workload or managed identity (provider_runtime.azure_auth).
+   */
+  @state() private _azureAuth: 'key' | 'entra' = 'key';
+  @state() private _azureClientId = '';
 
   private get _isEditing(): boolean {
     return !!this.model;
@@ -289,7 +297,15 @@ export class AddAIModelModal extends LitElement {
     );
   }
 
+  /** Azure with Entra ID: the server's identity replaces the key. */
+  private get _isAzureEntra(): boolean {
+    return this._isAzure && this._azureAuth === 'entra';
+  }
+
   private get _canEnablePreloopGateway(): boolean {
+    if (this._currentModel.model_kind === 'llm' && this._isAzureEntra) {
+      return true;
+    }
     const apiKey = (this._currentModel.api_key || '').trim();
     const hasStoredKey = Boolean(this._isEditing && this.model?.has_api_key);
     return (
@@ -388,6 +404,17 @@ export class AddAIModelModal extends LitElement {
         this.model.meta_data,
         'base_model'
       );
+      this._azureAuth =
+        providerRuntimeString(
+          this.model.meta_data,
+          'azure_auth'
+        ).toLowerCase() === 'entra'
+          ? 'entra'
+          : 'key';
+      this._azureClientId = providerRuntimeString(
+        this.model.meta_data,
+        'azure_client_id'
+      );
     }
   }
 
@@ -399,6 +426,8 @@ export class AddAIModelModal extends LitElement {
     this._bedrockRegion = BEDROCK_DEFAULT_REGION;
     this._azureApiVersion = '';
     this._azureBaseModel = '';
+    this._azureAuth = 'key';
+    this._azureClientId = '';
   }
 
   /**
@@ -461,6 +490,19 @@ export class AddAIModelModal extends LitElement {
       else delete runtime.api_version;
       if (baseModel) runtime.base_model = baseModel;
       else delete runtime.base_model;
+      // Key mode is the default and leaves no auth keys behind; Entra ID
+      // marks the model as using ambient (server identity) credentials.
+      const clientId = this._azureClientId.trim();
+      if (this._azureAuth === 'entra') {
+        runtime.azure_auth = 'entra';
+        runtime.ambient_credentials = true;
+        if (clientId) runtime.azure_client_id = clientId;
+        else delete runtime.azure_client_id;
+      } else {
+        delete runtime.azure_auth;
+        delete runtime.ambient_credentials;
+        delete runtime.azure_client_id;
+      }
       baseMeta.provider_runtime = runtime;
     } else if (
       String(this.model?.provider_name || '').toLowerCase() === 'azure' &&
@@ -475,6 +517,9 @@ export class AddAIModelModal extends LitElement {
       const {
         api_version: _apiVersion,
         base_model: _baseModel,
+        azure_auth: _azureAuth,
+        azure_client_id: _azureClientId,
+        ambient_credentials: _ambient,
         ...rest
       } = baseMeta.provider_runtime as Record<string, unknown>;
       baseMeta.provider_runtime = rest;
@@ -532,6 +577,8 @@ export class AddAIModelModal extends LitElement {
         this._azureApiVersion = val || '';
       } else if (field === 'azure_base_model') {
         this._azureBaseModel = val || '';
+      } else if (field === 'azure_client_id') {
+        this._azureClientId = val || '';
       } else if (field === 'model_identifier')
         this._currentModel.model_identifier = val || undefined;
     }
@@ -889,7 +936,9 @@ export class AddAIModelModal extends LitElement {
       // update schema, whose validator rejects inline + external credential
       // fields together, breaking every edit. A key is sent only when the
       // user typed a new one; blank means "keep the existing key".
-      const typedApiKey = (this._currentModel.api_key || '').trim();
+      const typedApiKey = this._isAzureEntra
+        ? ''
+        : (this._currentModel.api_key || '').trim();
       const payload: Record<string, unknown> = {
         name: this._currentModel.name,
         description: this._currentModel.description,
@@ -1023,6 +1072,59 @@ export class AddAIModelModal extends LitElement {
           this deployment.
         </div>
       </sl-input>
+    `;
+  }
+
+  /** Key or Entra ID auth for Azure, stored in provider_runtime. */
+  private _renderAzureAuthChoice() {
+    return html`
+      <div class="full-width">
+        <sl-radio-group
+          label="Authentication"
+          name="azure_auth"
+          data-testid="azure-auth"
+          .value=${this._azureAuth}
+          @sl-change=${(e: Event) => {
+            const value = (e.target as HTMLInputElement).value;
+            this._azureAuth = value === 'entra' ? 'entra' : 'key';
+            this.requestUpdate();
+          }}
+          ?disabled=${this._isSubmitting}
+        >
+          <sl-radio value="key">API key</sl-radio>
+          <sl-radio value="entra">Microsoft Entra ID</sl-radio>
+        </sl-radio-group>
+        ${
+          this._isAzureEntra
+            ? html`
+                <div
+                  style="font-size: 0.875rem; color: var(--sl-color-neutral-600); margin-top: 0.35rem;"
+                >
+                  No key needed. The Preloop server authenticates with its
+                  workload identity, managed identity or AZURE_CLIENT_* client
+                  credentials. That identity needs the Cognitive Services OpenAI
+                  User role on the resource.
+                </div>
+                <sl-input
+                  label="Identity client id (optional)"
+                  data-field="azure_client_id"
+                  .value=${this._azureClientId}
+                  @sl-input=${(e: Event) => {
+                    this._azureClientId = (e.target as HTMLInputElement).value;
+                    this.requestUpdate();
+                  }}
+                  placeholder="Client id of a user-assigned identity"
+                  ?disabled=${this._isSubmitting}
+                  style="margin-top: 0.5rem;"
+                >
+                  <div slot="help-text">
+                    Blank uses the default identity of the server.
+                  </div>
+                </sl-input>
+              `
+            : ''
+        }
+      </div>
     `;
   }
 
@@ -1236,10 +1338,12 @@ export class AddAIModelModal extends LitElement {
                           : ''
                     }
                   </sl-input>
+                  ${this._isAzure ? this._renderAzureAuthChoice() : ''}
                   <sl-input
                     class="full-width"
                     type="password"
                     label="API key"
+                    ?hidden=${this._isAzureEntra}
                     data-field="api_key"
                     .value=${this._currentModel.api_key || ''}
                     @sl-input=${(e: Event) => {
