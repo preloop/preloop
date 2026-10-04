@@ -126,6 +126,24 @@ const SPEND_RANGE_OPTIONS: Array<{ value: string; label: string }> = [
 const UUID_IN_IDENTIFIER =
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
+/**
+ * True when going back in history stays in this app: there is an entry
+ * behind this one and the document was reached from this origin. A shared
+ * link or a new tab has neither, so Back falls back to the Agents list.
+ */
+export function cameFromInsideConsole(
+  historyLength: number = window.history.length,
+  referrer: string = document.referrer,
+  origin: string = window.location.origin
+): boolean {
+  if (historyLength <= 1 || !referrer) return false;
+  try {
+    return new URL(referrer).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
   @property({ type: String })
@@ -3008,6 +3026,49 @@ export class AgentDetailView extends LitElement {
     `;
   }
 
+  /**
+   * Back returns to the page the reader came from when that page is inside
+   * the console. Opened from a shared link or a new tab there is nothing
+   * in-app behind it, so the button's own link to the Agents list is used
+   * instead of leaving the console.
+   */
+  private handleBack = (event: Event): void => {
+    if (!cameFromInsideConsole()) return;
+    event.preventDefault();
+    window.history.back();
+  };
+
+  /** Writes the open tab to `?tab=` so a reload or a shared link keeps it. */
+  private rememberTab(tab: string): void {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('tab') === tab) return;
+    url.searchParams.set('tab', tab);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${url.pathname}${url.search}${url.hash}`
+    );
+  }
+
+  /** An error or a missing agent, with a way back to the list. */
+  private renderLoadProblem(body: unknown) {
+    return html`
+      <view-header headerText="Agent">
+        <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
+          <sl-button
+            variant="text"
+            size="small"
+            href="/console/agents"
+            style="margin-left: -12px;"
+          >
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Agents
+          </sl-button>
+        </div>
+      </view-header>
+      <div class="page" style="padding-top: 0;">${body}</div>
+    `;
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -3019,11 +3080,28 @@ export class AgentDetailView extends LitElement {
     }
 
     if (this.error) {
-      return html`<sl-alert open variant="danger">${this.error}</sl-alert>`;
+      return this.renderLoadProblem(
+        html`<sl-alert open variant="danger" role="alert" data-agent-error>
+          <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+          <strong>Could not load this agent</strong><br />
+          ${this.error}
+          <div style="margin-top: var(--sl-spacing-small);">
+            <sl-button size="small" @click=${() => void this.loadData()}>
+              <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+              Try again
+            </sl-button>
+          </div>
+        </sl-alert>`
+      );
     }
 
     if (!this.agent) {
-      return html`<div class="empty-state">Managed agent not found.</div>`;
+      return this.renderLoadProblem(
+        html`<div class="empty-state" data-agent-not-found>
+          Agent not found. It may have been removed, or you may not have access
+          to it.
+        </div>`
+      );
     }
 
     const aggregate = this.aggregate;
@@ -3036,7 +3114,9 @@ export class AgentDetailView extends LitElement {
           <sl-button
             variant="text"
             size="small"
-            @click=${() => window.history.back()}
+            href="/console/agents"
+            class="back-button"
+            @click=${this.handleBack}
             style="margin-left: -12px;"
           >
             <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back
@@ -3082,6 +3162,7 @@ export class AgentDetailView extends LitElement {
               <sl-tab-group
                 @sl-tab-show=${(e: any) => {
                   this.activeTab = e.detail.name as typeof this.activeTab;
+                  this.rememberTab(this.activeTab);
                   if (this.activeTab === 'tools' || this.activeTab === 'models')
                     void this.ensureEditorContext();
                   if (this.activeTab === 'associated-flows')

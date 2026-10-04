@@ -1731,4 +1731,110 @@ describe('AgentDetailView', () => {
       'other/beta-flash',
     ]);
   });
+
+  describe('navigation and failure states', () => {
+    afterEach(() => {
+      window.history.replaceState({}, '', '/');
+    });
+
+    it('writes the open tab to ?tab= so a reload keeps it', async () => {
+      window.history.replaceState({}, '', '/console/agents/agent-1');
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+
+      const group = element.shadowRoot!.querySelector('sl-tab-group')!;
+      group.dispatchEvent(
+        new CustomEvent('sl-tab-show', { detail: { name: 'tools' } })
+      );
+      expect(new URL(window.location.href).searchParams.get('tab')).to.equal(
+        'tools'
+      );
+      expect(window.location.pathname).to.equal('/console/agents/agent-1');
+    });
+
+    it('goes back in history only when the previous page is in the console', async () => {
+      const { cameFromInsideConsole } = await import('./agent-detail-view');
+      const origin = 'https://console.example.com';
+      expect(cameFromInsideConsole(1, `${origin}/console`, origin)).to.equal(
+        false
+      );
+      expect(cameFromInsideConsole(3, '', origin)).to.equal(false);
+      expect(
+        cameFromInsideConsole(3, 'https://elsewhere.example.org/', origin)
+      ).to.equal(false);
+      expect(
+        cameFromInsideConsole(3, `${origin}/console/agents`, origin)
+      ).to.equal(true);
+    });
+
+    it('links Back to the Agents list for a reader with no history here', async () => {
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const back = element.shadowRoot!.querySelector('sl-button.back-button');
+      expect(back?.getAttribute('href')).to.equal('/console/agents');
+    });
+
+    it('offers Back to Agents and Try again when the agent fails to load', async () => {
+      let fail = true;
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          if (fail && url.startsWith('/api/v1/agents/agent-1')) {
+            return new Response(JSON.stringify({ detail: 'Unavailable' }), {
+              status: 500,
+            });
+          }
+          return defaultFetch(input, init);
+        }
+      );
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+
+      const root = element.shadowRoot!;
+      const alert = root.querySelector('[data-agent-error]');
+      expect(alert?.textContent).to.contain('Could not load this agent');
+      const back = root.querySelector('view-header sl-button');
+      expect(back?.getAttribute('href')).to.equal('/console/agents');
+      expect(back?.textContent).to.contain('Back to Agents');
+
+      fail = false;
+      const retry = [...alert!.querySelectorAll('sl-button')].find((button) =>
+        button.textContent?.includes('Try again')
+      ) as HTMLElement;
+      retry.click();
+      await waitUntil(() =>
+        getDeepText(element).includes('Claude Code Workspace')
+      );
+    });
+
+    it('says "Agent not found" without internal jargon', async () => {
+      const element = document.createElement(
+        'agent-detail-view'
+      ) as AgentDetailView & Record<string, any>;
+      element.initialized = true;
+      element.loading = false;
+      element.error = null;
+      element.agent = null;
+      element.loadData = async () => undefined;
+      document.body.appendChild(element);
+      try {
+        element.loading = false;
+        await element.updateComplete;
+        const text = element.shadowRoot!.textContent || '';
+        expect(text).to.contain('Agent not found');
+        expect(text).to.not.contain('Managed agent');
+      } finally {
+        element.remove();
+      }
+    });
+  });
 });
