@@ -204,6 +204,37 @@ def _label_names_from_payload(payload: Dict[str, Any]) -> List[str]:
     return names
 
 
+def _object_label_names(payload: Dict[str, Any]) -> List[str]:
+    """Label names currently on the issue or merge request.
+
+    Unlike ``_label_names_from_payload`` this ignores the event's single
+    ``label`` subject, so an ``unlabeled`` delivery does not count the label
+    that just left. GitHub ``issue.labels`` / ``pull_request.labels`` and
+    GitLab top-level ``labels`` already reflect the state after the change.
+    """
+    names: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        if not isinstance(value, list):
+            return
+        for item in value:
+            name = _label_name(item)
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+
+    _add(payload.get("labels"))
+    for key in ("issue", "pull_request", "object_attributes"):
+        obj = payload.get(key)
+        if isinstance(obj, dict):
+            _add(obj.get("labels"))
+            fields = obj.get("fields")  # Jira issue.fields.labels
+            if isinstance(fields, dict):
+                _add(fields.get("labels"))
+    return names
+
+
 def _is_label_change_event(event_data: Dict[str, Any]) -> bool:
     """True when this delivery is about one label being added or removed.
 
@@ -1751,6 +1782,20 @@ class FlowTriggerService:
         """
         Check if the event matches the flow's trigger_config (if specified).
 
+        Two label conditions combine with AND:
+
+        * ``labels`` (any-of): "this event added one of". On a label-change
+          delivery it reads the label the event carries; otherwise the
+          object's label list.
+        * ``labels_all`` (all-of): "and the issue carries all of". Always read
+          from the object's current label list (after the change), so
+          ``{"labels": ["agent-ready"], "labels_all": ["complexity:low"]}``
+          routes one ``agent-ready`` delivery to the complexity:low flow only.
+          An event with no label list never satisfies ``labels_all``.
+
+        A bound implementation comment (its PR need not repeat intake
+        labels) skips both label conditions.
+
         Args:
             flow: The flow definition
             event_data: The event data containing payload and metadata
@@ -1803,13 +1848,44 @@ class FlowTriggerService:
             f"Payload keys: {list(payload.keys())}"
         )
 
-        for key, expected_value in flattened_config.items():
-            if key == "labels":
+        bound_cache: List[bool] = []
+
+        def _bound_comment() -> bool:
+            # Shared by both label conditions so the bound-execution lookup
+            # runs at most once per event.
+            if not bound_cache:
                 from preloop.services.flow_pr_binding import (
                     is_bound_implementation_comment,
                 )
 
-                if is_bound_implementation_comment(self.db, flow, event_data):
+                bound_cache.append(
+                    bool(is_bound_implementation_comment(self.db, flow, event_data))
+                )
+            return bound_cache[0]
+
+        for key, expected_value in flattened_config.items():
+            if key == "labels_all":
+                required = (
+                    expected_value
+                    if isinstance(expected_value, list)
+                    else [expected_value]
+                )
+                required = [r for r in required if isinstance(r, str) and r]
+                if not required:
+                    continue
+                if _bound_comment():
+                    continue
+                present = _object_label_names(payload)
+                missing = [r for r in required if r not in present]
+                if missing:
+                    logger.debug(
+                        f"Flow {flow.id} trigger_config mismatch: "
+                        f"labels_all missing {missing} (issue has {present})"
+                    )
+                    return False
+                continue
+            if key == "labels":
+                if _bound_comment():
                     # The issue qualified at intake; its PR need not duplicate
                     # that label. Every other configured condition still applies.
                     continue

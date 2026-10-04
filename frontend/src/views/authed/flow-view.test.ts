@@ -536,3 +536,50 @@ describe('FlowView governance card', () => {
     expect(element.renderGovernanceCard()).to.equal('');
   });
 });
+
+describe('FlowView all-of labels filter', () => {
+  it('round-trips labels_all through trigger_config', async () => {
+    const { render } = await import('lit');
+    const element = document.createElement('flow-view') as any;
+    element.trackers = [
+      { id: 'tracker-1', name: 'GitHub', tracker_type: 'github' },
+    ];
+    element.flow = {
+      trigger_event_source: 'tracker-1',
+      trigger_event_types: ['issue_labeled'],
+      trigger_config: {
+        labels: ['agent-ready'],
+        labels_all: ['complexity:low'],
+      },
+    };
+    element.requestUpdate = () => {};
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    try {
+      render(element.renderEventFilters(), host);
+      const input = [...host.querySelectorAll('sl-input')].find(
+        (el: any) =>
+          el.getAttribute('label') ===
+          'Issue must also carry all of these labels'
+      ) as any;
+      expect(input).to.exist;
+      await input.updateComplete;
+      expect(input.value).to.equal('complexity:low');
+
+      input.value = ' complexity:medium, risk:low ';
+      input.dispatchEvent(new CustomEvent('sl-input'));
+      expect(element.flow.trigger_config).to.deep.equal({
+        labels: ['agent-ready'],
+        labels_all: ['complexity:medium', 'risk:low'],
+      });
+
+      input.value = '';
+      input.dispatchEvent(new CustomEvent('sl-input'));
+      expect(element.flow.trigger_config).to.deep.equal({
+        labels: ['agent-ready'],
+      });
+    } finally {
+      host.remove();
+    }
+  });
+});
