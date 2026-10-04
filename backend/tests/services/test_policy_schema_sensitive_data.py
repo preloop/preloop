@@ -230,6 +230,18 @@ class TestPolicyStore:
             SensitiveDataConfig()
         )
 
+    def test_strict_parse_fails_closed_on_a_non_dict_block(self) -> None:
+        """A stored list or string is not "no rules" when enforcement is strict."""
+        from preloop.services.sensitive_data.policy_store import (
+            SensitiveDataPolicyError,
+        )
+
+        assert parse_sensitive_data_config(None, strict=True) == SensitiveDataConfig()
+        assert parse_sensitive_data_config({}, strict=True) == SensitiveDataConfig()
+        for raw in ("nope", ["rules"], 1, []):
+            with pytest.raises(SensitiveDataPolicyError, match="expected an object"):
+                parse_sensitive_data_config(raw, strict=True)
+
     def test_load_returns_empty_when_meta_is_not_a_dict(self, mocker) -> None:
         db, account, crud = self._db_with_account(MagicMock())
         mocker.patch.object(crud, "get", return_value=account)

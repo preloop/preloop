@@ -193,6 +193,11 @@ def redact_for_storage(
     )
     if reference is not None:
         return reference, {}, []
+    # Cheap check before scope matching and detection. Accounts with no
+    # redact rules are the common case on every storage write. Reference-only
+    # rules are handled above, so this does not skip those records.
+    if not config.has_redact_rules():
+        return obj, {}, []
     rules = redact_rules_for(config, scope)
     if not rules:
         return obj, {}, []
