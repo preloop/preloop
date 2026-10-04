@@ -51,7 +51,9 @@ import {
   DEFAULT_FLOW_EXECUTION_FILTERS,
   FLOW_EXECUTION_QUERY_MAX,
   FLOW_EXECUTION_STATUSES,
+  FLOW_EXECUTION_STATUS_LABELS,
   clearFlowExecutionFilters,
+  flowExecutionStatusQuery,
   isDefaultFlowExecutionFilters,
   loadFlowExecutionFilters,
   saveFlowExecutionFilters,
@@ -557,8 +559,15 @@ export class FlowExecutionsView extends AuthedElement {
     status: string | null
   ): void {
     if (status) {
+      const upper = status.toUpperCase();
+      // TIMED_OUT is the other spelling of a timed-out run; one option
+      // covers both.
       const normalized =
-        status.toLowerCase() === 'all' ? 'all' : status.toUpperCase();
+        status.toLowerCase() === 'all'
+          ? 'all'
+          : upper === 'TIMED_OUT'
+            ? 'TIMEOUT'
+            : upper;
       if ((FLOW_EXECUTION_STATUSES as readonly string[]).includes(normalized)) {
         this.statusFilter = normalized;
       }
@@ -732,7 +741,7 @@ export class FlowExecutionsView extends AuthedElement {
       const page = await getFlowExecutionsPage({
         limit: this.pageSize + 1,
         skip: (this.currentPage - 1) * this.pageSize,
-        status: this.statusFilter === 'all' ? undefined : this.statusFilter,
+        status: flowExecutionStatusQuery(this.statusFilter),
         flowId: this.flowIdFilter || undefined,
         search: this.searchQuery.trim() || undefined,
         startedAfter: this.startedAfter,
@@ -1328,11 +1337,10 @@ export class FlowExecutionsView extends AuthedElement {
           }}
         >
           <sl-option value="">Any status</sl-option>
-          <sl-option value="RUNNING">Running</sl-option>
-          <sl-option value="PENDING">Pending</sl-option>
-          <sl-option value="SUCCEEDED">Succeeded</sl-option>
-          <sl-option value="FAILED">Failed</sl-option>
-          <sl-option value="CANCELLED">Cancelled</sl-option>
+          ${Object.entries(FLOW_EXECUTION_STATUS_LABELS).map(
+            ([value, label]) =>
+              html`<sl-option value=${value}>${label}</sl-option>`
+          )}
         </sl-select>
         ${
           this.filtersActive

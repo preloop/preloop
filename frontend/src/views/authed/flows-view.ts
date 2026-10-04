@@ -4,6 +4,7 @@ import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -54,6 +55,10 @@ import {
 // Re-exported below: the list and the flow detail page state the trigger the
 // same way, so the reading lives in one module.
 import { flowTriggerSummary } from '../../utils/flow-trigger';
+import {
+  executionStatusLabel,
+  executionStatusVariant,
+} from '../../utils/execution-presentation';
 import {
   executionSubjectCss,
   renderExecutionSubject,
@@ -1986,13 +1991,7 @@ export class FlowsView extends LitElement {
         style="text-decoration: none; color: inherit;"
       >
         <span class="last-run-line">
-          <sl-badge
-            class="status-chip"
-            pill
-            variant=${this.getStatusVariant(run.status)}
-            >${this.statusLabel(run.status)}</sl-badge
-          >
-          ${renderExecutionSubject(run)}
+          ${this.renderRunStatusChip(run.status)} ${renderExecutionSubject(run)}
         </span>
         <span class="meta" title=${formatLocalDateTime(run.start_time)}
           >${formatRelativeTime(run.start_time, undefined, {
@@ -2190,13 +2189,7 @@ export class FlowsView extends LitElement {
         title=${formatLocalDateTime(run.start_time)}
         @click=${(event: Event) => event.stopPropagation()}
       >
-        <sl-badge
-          class="status-chip"
-          pill
-          variant=${this.getStatusVariant(run.status)}
-          >${this.statusLabel(run.status)}</sl-badge
-        >
-        ${renderExecutionSubject(run)}
+        ${this.renderRunStatusChip(run.status)} ${renderExecutionSubject(run)}
         <span class="meta"
           >${formatRelativeTime(run.start_time, undefined, {
             maxRelativeDays: 30,
@@ -2329,21 +2322,19 @@ export class FlowsView extends LitElement {
   renderExecutionItem(exec: FlowExecution) {
     const flow = this.flows.find((f) => f.id === exec.flow_id);
     const duration = executionDurationText(exec);
+    const href = `/console/flows/executions/${exec.id}`;
+    const name = flow?.name || exec.flow_name || 'Unknown flow';
+    // The row stays clickable as a convenience; the name is a real link
+    // (keyboard, cmd-click) and the arrow a labelled link to the same run.
     return html`
       <div
         class="execution-item"
-        @click=${() => Router.go(`/console/flows/executions/${exec.id}`)}
+        @click=${(event: MouseEvent) => this.handleExecutionItemClick(event, href)}
       >
         <div class="execution-info">
-          <sl-badge
-            class="status-chip"
-            pill
-            variant=${this.getStatusVariant(exec.status)}
-          >
-            ${this.statusLabel(exec.status)}
-          </sl-badge>
+          ${this.renderRunStatusChip(exec.status)}
           <div style="min-width: 0;">
-            <strong>${flow?.name || exec.flow_name || 'Unknown flow'}</strong>
+            <a class="row-link" href=${href}>${name}</a>
             <div class="row-subtitle">
               Started
               ${formatLocalDateTime(exec.start_time)}${
@@ -2359,12 +2350,50 @@ export class FlowsView extends LitElement {
           <resource-actions
             .actions=${this.executionActions(exec)}
           ></resource-actions>
-          <sl-button size="small">
-            <sl-icon name="arrow-right"></sl-icon>
-          </sl-button>
+          <sl-icon-button
+            name="arrow-right"
+            label=${`Open run of ${name}`}
+            href=${href}
+          ></sl-icon-button>
         </div>
       </div>
     `;
+  }
+
+  /**
+   * A click on the in-flight row opens the run, unless it was meant for a
+   * link (which navigates itself) or used a modifier to open a new tab.
+   */
+  private handleExecutionItemClick(event: MouseEvent, href: string) {
+    if (event.defaultPrevented) return;
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.button !== 0
+    ) {
+      return;
+    }
+    for (const node of event.composedPath()) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.classList.contains('execution-item')) break;
+      if (node.tagName.toLowerCase() === 'a') return;
+    }
+    Router.go(href);
+  }
+
+  /**
+   * A run's status chip, in the taxonomy the executions pages use: blue in
+   * flight, amber waiting on a person, green succeeded, solid red broken.
+   */
+  private renderRunStatusChip(status: string) {
+    const variant = executionStatusVariant(status);
+    return html`<sl-badge
+      class="status-chip ${variant === 'danger' ? 'solid' : ''}"
+      pill
+      variant=${variant}
+      >${executionStatusLabel(status)}</sl-badge
+    >`;
   }
 
   /**
@@ -2406,24 +2435,6 @@ export class FlowsView extends LitElement {
           : 'Could not stop the run. Try again.',
         'danger'
       );
-    }
-  }
-
-  /** Title case, so "SUCCEEDED" and "Active now" read as the same object. */
-  private statusLabel(status: string): string {
-    const text = String(status || '').replace(/_/g, ' ');
-    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
-  }
-
-  getStatusVariant(status: string): 'success' | 'danger' | 'neutral' {
-    switch (status) {
-      case 'SUCCEEDED':
-        return 'success';
-      case 'FAILED':
-        return 'danger';
-      default:
-        // Running and pending are neutral: a run in flight is not a problem.
-        return 'neutral';
     }
   }
 

@@ -1877,6 +1877,48 @@ describe('FlowsView', () => {
       expect(items(element).length).to.equal(0);
     });
 
+    it('opens a run in flight through a real link and a labelled arrow', async () => {
+      active = [run('exec-running', 'RUNNING')];
+      fetchStub = stubWith(() => active);
+      const element = await view();
+
+      const item = items(element)[0];
+      const link = item.querySelector('a.row-link');
+      expect(link?.getAttribute('href')).to.equal(
+        '/console/flows/executions/exec-running'
+      );
+      expect(link?.textContent?.trim()).to.equal('Automated runs');
+      const arrow = item.querySelector('sl-icon-button[name="arrow-right"]');
+      expect(arrow?.getAttribute('href')).to.equal(
+        '/console/flows/executions/exec-running'
+      );
+      expect(arrow?.getAttribute('label')).to.equal(
+        'Open run of Automated runs'
+      );
+      expect(item.querySelector('sl-button')).to.equal(null);
+    });
+
+    it('colours run status the way the executions pages do', async () => {
+      active = [run('exec-running', 'RUNNING'), run('exec-pending', 'PENDING')];
+      fetchStub = stubWith(() => active);
+      const element = await view();
+
+      const chips = items(element).map((item) =>
+        item.querySelector('sl-badge.status-chip')
+      );
+      // Blue in flight, as on the executions pages; grey only while queued.
+      expect(chips[0]?.getAttribute('variant')).to.equal('primary');
+      expect(chips[0]?.textContent?.trim()).to.equal('Running');
+      expect(chips[1]?.getAttribute('variant')).to.equal('neutral');
+      expect(chips[1]?.textContent?.trim()).to.equal('Pending');
+      const chip = (
+        element as unknown as {
+          renderRunStatusChip: (status: string) => unknown;
+        }
+      ).renderRunStatusChip('TIMEOUT') as { values: unknown[] };
+      expect(chip.values).to.include('danger');
+    });
+
     it('recounts the runs in flight when the tab becomes visible again', async () => {
       active = [run('exec-pending', 'PENDING')];
       fetchStub = stubWith(() => active);

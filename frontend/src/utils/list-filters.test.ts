@@ -10,6 +10,8 @@ import {
   loadFlowExecutionFilters,
   saveFlowExecutionFilters,
   sanitizeFlowExecutionFilters,
+  FLOW_EXECUTION_STATUS_LABELS,
+  flowExecutionStatusQuery,
 } from './list-filters';
 
 const stored = {
@@ -23,6 +25,26 @@ describe('list-filters', () => {
   afterEach(() => {
     localStorage.removeItem(FLOW_EXECUTION_FILTERS_KEY);
     sinon.restore();
+  });
+
+  it('keeps the operator queues: waiting for approval, stopped, timed out', () => {
+    for (const status of ['WAITING_FOR_HUMAN', 'STOPPED', 'TIMEOUT']) {
+      expect(sanitizeFlowExecutionFilters({ status })?.status).to.equal(status);
+    }
+    expect(FLOW_EXECUTION_STATUS_LABELS.WAITING_FOR_HUMAN).to.equal(
+      'Waiting for approval'
+    );
+    expect(FLOW_EXECUTION_STATUS_LABELS.TIMEOUT).to.equal('Timed out');
+    expect(FLOW_EXECUTION_STATUS_LABELS.STOPPED).to.equal('Stopped');
+  });
+
+  it('asks for both spellings of a timed-out run', () => {
+    expect(flowExecutionStatusQuery('all')).to.equal(undefined);
+    expect(flowExecutionStatusQuery('FAILED')).to.deep.equal(['FAILED']);
+    expect(flowExecutionStatusQuery('TIMEOUT')).to.deep.equal([
+      'TIMEOUT',
+      'TIMED_OUT',
+    ]);
   });
 
   it('returns null when nothing is stored', () => {

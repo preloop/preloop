@@ -24,7 +24,10 @@ import {
   formatRelativeTime,
 } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
-import { executionStatusLabel } from '../../utils/execution-presentation';
+import {
+  executionStatusLabel,
+  executionStatusVariant,
+} from '../../utils/execution-presentation';
 import { flowTriggerSummary } from '../../utils/flow-trigger';
 import { getAgentKindPresentation } from '../../utils/agent-kinds';
 import {
@@ -1369,8 +1372,12 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               ? html`
                   <strong>Last run:</strong>
                   <span>
-                    <sl-badge variant=${this.getStatusVariant(lastRun.status)}>
-                      ${lastRun.status}
+                    <sl-badge
+                      class="chip"
+                      pill
+                      variant=${this.getStatusVariant(lastRun.status)}
+                    >
+                      ${executionStatusLabel(lastRun.status)}
                     </sl-badge>
                     <span
                       style="color: var(--sl-color-neutral-600); margin-left: var(--sl-spacing-x-small);"
@@ -1386,17 +1393,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     `;
   }
 
+  /** The executions pages' taxonomy, so a run reads the same everywhere. */
   getStatusVariant(status: string) {
-    switch (status) {
-      case 'SUCCEEDED':
-        return 'success';
-      case 'FAILED':
-        return 'danger';
-      case 'RUNNING':
-        return 'primary';
-      default:
-        return 'neutral';
-    }
+    return executionStatusVariant(status);
   }
 
   private extractTriggerEventPlaceholders(): string[] {
