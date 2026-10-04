@@ -6,6 +6,11 @@ import { CapabilityRouteGate } from '../lazy-routes';
 import type { LitApp } from './lit-app';
 import './lit-app';
 
+// Tag names rather than the element classes: a failing assertion on a class
+// stalls the test runner's error reporting until the file times out.
+const definedElements = (tags: string[]): string[] =>
+  tags.filter((tag) => customElements.get(tag) !== undefined);
+
 describe('LitApp routing', () => {
   let fetchStub: sinon.SinonStub;
 
@@ -77,9 +82,36 @@ describe('LitApp routing', () => {
   });
 
   it('keeps console pages out of the initial public page registration', () => {
-    expect(customElements.get('profile-view')).to.equal(undefined);
-    expect(customElements.get('agent-detail-view')).to.equal(undefined);
-    expect(customElements.get('flow-execution-view')).to.equal(undefined);
+    expect(
+      definedElements([
+        'profile-view',
+        'agent-detail-view',
+        'flow-execution-view',
+      ])
+    ).to.deep.equal([]);
+  });
+
+  // Runs before any test that mounts the console: those leave lazy console
+  // chunks loading after they finish, which would define these elements
+  // behind this test's back.
+  it('renders the landing page and /login without touching a console chunk', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('landing-view')),
+      'Expected the landing page to render'
+    );
+
+    Router.go('/login');
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('login-view')),
+      'Expected /login to render'
+    );
+
+    // The two doors an anonymous visitor uses. Neither may drag the console
+    // in behind it; that is the whole point of the split.
+    expect(
+      definedElements(['console-shell', 'dashboard-view', 'agents-view'])
+    ).to.deep.equal([]);
   });
 
   it('removes capability listeners on disconnect and restores one on reconnect', async () => {
@@ -214,26 +246,6 @@ describe('LitApp routing', () => {
       sync.restore();
       install.restore();
     }
-  });
-
-  it('renders the landing page and /login without touching a console chunk', async () => {
-    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
-    await waitUntil(
-      () => Boolean(el.shadowRoot?.querySelector('landing-view')),
-      'Expected the landing page to render'
-    );
-
-    Router.go('/login');
-    await waitUntil(
-      () => Boolean(el.shadowRoot?.querySelector('login-view')),
-      'Expected /login to render'
-    );
-
-    // The two doors an anonymous visitor uses. Neither may drag the console
-    // in behind it; that is the whole point of the split.
-    expect(customElements.get('console-shell')).to.equal(undefined);
-    expect(customElements.get('dashboard-view')).to.equal(undefined);
-    expect(customElements.get('agents-view')).to.equal(undefined);
   });
 
   it('puts the served title back when the reader leaves the console', async () => {
