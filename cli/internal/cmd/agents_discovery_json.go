@@ -64,3 +64,20 @@ func isSafeDiscoveryJSONCommand(cmd *cobra.Command) bool {
 	asJSON, _ := cmd.Flags().GetBool("json")
 	return asJSON
 }
+
+// isPromptFreeJSONCommand reports agent commands whose stdout is a JSON
+// document. The daily update check writes its prompt to stdout and can block
+// on stdin, which corrupts that document and hangs a redirected run.
+func isPromptFreeJSONCommand(cmd *cobra.Command) bool {
+	if isSafeDiscoveryJSONCommand(cmd) {
+		return true
+	}
+	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "agents" {
+		return false
+	}
+	if cmd.Name() != "status" && cmd.Name() != "list" {
+		return false
+	}
+	asJSON, err := cmd.Flags().GetBool("json")
+	return err == nil && asJSON
+}

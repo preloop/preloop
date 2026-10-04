@@ -517,3 +517,34 @@ func TestInventorySnapshotDetectsFileMutationAndNewEntries(t *testing.T) {
 		t.Fatal("snapshot missed an executed process creating a new file")
 	}
 }
+
+func TestPromptFreeJSONCommandsSkipTheUpdatePrompt(t *testing.T) {
+	cases := []struct {
+		cmd  *cobra.Command
+		name string
+	}{
+		{agentsDiscoverCmd, "discover"},
+		{agentsStatusCmd, "status"},
+		{agentsListCmd, "list"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cmd.Flags().Set("json", "true"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tc.cmd.Flags().Set("json", "false") })
+			if !isPromptFreeJSONCommand(tc.cmd) {
+				t.Fatalf("%s --json should skip the update prompt", tc.name)
+			}
+			if err := tc.cmd.Flags().Set("json", "false"); err != nil {
+				t.Fatal(err)
+			}
+			if isPromptFreeJSONCommand(tc.cmd) {
+				t.Fatalf("%s without --json should still allow the update prompt", tc.name)
+			}
+		})
+	}
+	if isPromptFreeJSONCommand(nil) {
+		t.Fatal("nil command is not prompt-free")
+	}
+}
