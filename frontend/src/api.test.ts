@@ -247,6 +247,28 @@ describe('api', () => {
       expect(logoutCalls()).to.have.length(0);
     });
 
+    it('clears local state before the server answers', async () => {
+      let answer: (r: Response) => void = () => {};
+      fetchStub.callsFake((url: string) =>
+        url === '/api/v1/auth/logout'
+          ? new Promise<Response>((resolve) => {
+              answer = resolve;
+            })
+          : Promise.resolve(new Response(null, { status: 204 }))
+      );
+      const navigate = sinon.stub();
+      const done = signOut({ navigate });
+      await Promise.resolve();
+      expect(localStorage.getItem('accessToken')).to.equal(null);
+      expect(localStorage.getItem('refreshToken')).to.equal(null);
+      expect(navigate).not.to.have.been.called;
+      answer(
+        new Response(JSON.stringify({ redirect_url: null }), { status: 200 })
+      );
+      await done;
+      expect(navigate).to.have.been.calledWith('/');
+    });
+
     it('dispatches auth-change', async () => {
       fetchStub.resolves(new Response(null, { status: 204 }));
       const listener = sinon.stub();

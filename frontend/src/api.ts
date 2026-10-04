@@ -482,9 +482,13 @@ export async function signOut(options: SignOutOptions = {}): Promise<string> {
     },
   } = options;
 
+  // The request carries the captured token, so local state is cleared at
+  // once and the server answer is awaited only for its next-page hint.
   const token = localStorage.getItem('accessToken');
-  const serverRedirect =
-    serverSignOut && token ? await requestServerSignOut(token) : null;
+  const serverAnswer: Promise<string | null> =
+    serverSignOut && token
+      ? requestServerSignOut(token)
+      : Promise.resolve(null);
 
   localStorage.removeItem('accessToken');
   localStorage.removeItem('refreshToken');
@@ -508,6 +512,7 @@ export async function signOut(options: SignOutOptions = {}): Promise<string> {
     // Best effort: local credentials are already gone.
   });
 
+  const serverRedirect = await serverAnswer;
   if (serverRedirect) {
     assign(serverRedirect);
     return serverRedirect;
