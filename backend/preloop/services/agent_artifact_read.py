@@ -339,6 +339,8 @@ def search(db: Session, *, caller: Caller, arguments: Mapping[str, Any]) -> Read
             raise ValueError("until must be after since")
         limit = _limit(arguments.get("limit"))
         cursor = arguments.get("cursor")
+        if cursor is not None and not isinstance(cursor, str):
+            raise ValueError("cursor must be a string")
         before = artifact_deposit.decode_cursor(cursor) if cursor else None
     except ValueError as exc:
         return refuse(ERROR_INVALID_REQUEST, str(exc))
