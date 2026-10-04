@@ -723,10 +723,11 @@ def compile_mrn_pattern(identifier_pattern: str) -> Any:
 
     The account part goes through the gate; the keyword prefix is a fixed,
     reviewed pattern (it has an optional group with a quantifier inside,
-    which the coarse gate would flag). Composition is checked too: a
-    leading global inline flag such as ``(?i)`` is valid alone but not
-    once embedded, so that fails here with a clear message instead of at
-    scan time.
+    which the coarse gate would flag). The composed form is compiled here
+    as well, so a shape the engine cannot embed after the keyword prefix
+    fails at validation with a clear message instead of inside ``detect``.
+    Inline flags such as ``(?i)`` are accepted: the ``regex`` engine scopes
+    an embedded flag to the rest of the group.
 
     Raises:
         UnsafePatternError: The identifier pattern fails the gate or cannot
@@ -740,9 +741,10 @@ def compile_mrn_pattern(identifier_pattern: str) -> Any:
         )
     except (timeout_regex.error, ValueError, OverflowError) as exc:
         raise UnsafePatternError(
-            "medical_record_number_pattern cannot follow the MRN keyword: "
-            f"{exc}. Write the identifier shape without global inline flags "
-            "such as (?i); matching is already case-insensitive."
+            "medical_record_number_pattern cannot be embedded after the MRN "
+            f"keyword prefix: {exc}. Give only the identifier shape (for "
+            "example [A-Z]{2}-\\d{6}); the keyword and case-insensitive "
+            "matching are added around it."
         ) from exc
 
 
@@ -951,8 +953,10 @@ def detect(text: str, config: Optional[DetectorConfig] = None) -> List[Match]:
     keywords_by_name = {item.name: item for item in config.keywords}
     found: List[Match] = []
     # One budget for every account pattern in this call, on top of the
-    # per-pattern timeout: hundreds of slow patterns cannot add up.
-    deadline = time.monotonic() + CUSTOM_PATTERNS_TOTAL_BUDGET_SECONDS
+    # per-pattern timeout: hundreds of slow patterns cannot add up. The
+    # clock starts at the first account pattern, so built-in and registered
+    # detectors are not charged against it.
+    deadline: Optional[float] = None
     for type_id in _selected_types(config):
         detector = _BUILTIN_DETECTORS.get(type_id)
         if detector is not None:
@@ -967,6 +971,8 @@ def detect(text: str, config: Optional[DetectorConfig] = None) -> List[Match]:
             continue
         custom = custom_by_name.get(type_id)
         if custom is not None:
+            if deadline is None:
+                deadline = time.monotonic() + CUSTOM_PATTERNS_TOTAL_BUDGET_SECONDS
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise DetectorTimeoutError(

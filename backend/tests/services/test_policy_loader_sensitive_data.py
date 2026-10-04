@@ -85,8 +85,8 @@ def test_apply_rejects_a_block_that_drops_a_type_a_stored_rule_uses(mocker) -> N
         "preloop.models.crud.crud_mcp_server.get_active_by_account", return_value=[]
     )
     mocker.patch(
-        "preloop.models.crud.crud_approval_workflow.get_multi_by_account",
-        return_value=[],
+        "preloop.models.crud.crud_approval_workflow.get_names_by_account",
+        return_value=set(),
     )
     mocker.patch(
         "preloop.services.model_content_policy.load_model_io_rules",
