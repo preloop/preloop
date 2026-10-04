@@ -119,6 +119,8 @@ def test_prompt_states_every_rule_the_issue_requires(preset):
     assert 'kind: "document"' in prompt
     assert "parent_artifact_id: the transcript id" in prompt
     assert artifact_deposit.ERROR_AUDIO_DISABLED in prompt
+    assert "STEP 5. AUDIO (always attempt it" in prompt
+    assert "FLATTENED RESULTS" in prompt and "#1151" in prompt
     assert "do not treat it as a failure" in " ".join(prompt.split())
     consent = prompt.index("STEP 0. CONSENT FIRST")
     assert consent < prompt.index("STEP 1. FETCH")
@@ -343,3 +345,128 @@ async def test_missing_consent_asks_the_user_and_deposits_nothing(
     assert asked[0]["arguments"]["is_question"] is True
     assert "No consent_basis was given" in asked[0]["arguments"]["question"]
     assert _artifacts(db, session.id) == {}
+
+
+# --- through the proxy (#1151) ------------------------------------------------
+
+_STR = r"""(?P<q>['"])(?P<body>(?:\\.|(?!(?P=q)).)*)(?P=q)"""
+
+
+def _field(blob: str, name: str) -> str | None:
+    import ast
+
+    match = re.search(name + "=" + _STR, blob, re.S)
+    if not match:
+        return None
+    return ast.literal_eval(match.group("q") + match.group("body") + match.group("q"))
+
+
+def rebuild_audio(text: str) -> dict[str, Any]:
+    """The prompt's FLATTENED RESULTS step for an AudioContent block."""
+    return {
+        "type": "audio",
+        "data": _field(text, "data"),
+        "mimeType": _field(text, "mimeType"),
+    }
+
+
+def rebuild_resource(text: str) -> dict[str, Any]:
+    """The prompt's FLATTENED RESULTS step for an EmbeddedResource block."""
+    inner = text[text.index("resource=TextResourceContents(") :]
+    uri = re.search(r"uri=AnyUrl\('([^']+)'\)", inner).group(1)
+    return {
+        "type": "resource",
+        "resource": {
+            "uri": uri,
+            "mimeType": _field(inner, "mimeType"),
+            "text": _field(inner, "text"),
+        },
+    }
+
+
+async def _through_proxy(user_context, upstream) -> str:
+    """What the agent receives when the result passes the MCP proxy."""
+    from tests.services.test_proxied_tool_error_audit import _setup
+
+    with pytest.MonkeyPatch.context() as mp:
+        mcp, _, _, _ = _setup(mp, user_context, upstream=upstream)
+        result = await mcp.call_tool("safe_tool", {"ok": "yes"})
+    assert [block.type for block in result.content] == ["text"]
+    return result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_flattened_proxy_results_rebuild_to_the_original_blocks(
+    client, db_session, test_user
+):
+    """Pins the shape #1151 tracks and proves the prompt's rebuild step works.
+
+    When #1151 returns blocks intact this test fails on the shape asserts;
+    the FLATTENED RESULTS step and this test then go away together.
+    """
+    from uuid import uuid4
+
+    from preloop.services.dynamic_mcp_server import UserContext
+
+    ctx = UserContext(
+        user_id=str(uuid4()),
+        account_id=str(uuid4()),
+        username="audio-agent",
+        has_tracker=False,
+        enabled_default_tools=[],
+        enabled_proxied_tools=[],
+    )
+    audio_blocks = sim.get_audio("nord", "late")
+    transcript_blocks = sim.transcribe_audio("nord/late")
+    audio_text = await _through_proxy(ctx, audio_blocks)
+    transcript_text = await _through_proxy(ctx, transcript_blocks)
+
+    # The flattened shape the prompt describes.
+    assert "type='audio'" in audio_text and "mimeType='audio/wav'" in audio_text
+    assert "resource=TextResourceContents(" in transcript_text
+    assert "mimeType='text/vtt'" in transcript_text
+
+    audio = rebuild_audio(audio_text)
+    vtt = rebuild_resource(transcript_text)
+    original_audio = _sim_blocks(audio_blocks)[0]
+    original_vtt = next(
+        b for b in _sim_blocks(transcript_blocks) if b["type"] == "resource"
+    )
+    assert audio == {k: original_audio[k] for k in ("type", "data", "mimeType")}
+    assert vtt["resource"] == {
+        k: original_vtt["resource"][k] for k in ("uri", "mimeType", "text")
+    }
+
+    _set_audio(db_session, test_user.account_id, True)
+    db_session.commit()
+    session = _session(db_session, test_user.account_id, "audio-preset-proxy")
+    headers = {
+        "Authorization": "Bearer "
+        + _token(db_session, test_user, runtime_session_id=session.id)
+    }
+    url = f"/api/v1/runtime-sessions/{session.id}/artifacts"
+    stored_vtt = client.post(
+        url,
+        headers=headers,
+        json={
+            "name": "nord-late.vtt",
+            "kind": "transcript",
+            "content": vtt,
+            "labels": LABELS,
+        },
+    )
+    stored_audio = client.post(
+        url,
+        headers=headers,
+        json={
+            "name": "nord-late.wav",
+            "content": audio,
+            "labels": LABELS,
+            "parent_artifact_id": stored_vtt.json()["id"],
+        },
+    )
+    assert stored_vtt.status_code == 201, stored_vtt.text
+    assert stored_vtt.json()["content_type"] == "text/vtt"
+    assert stored_audio.status_code == 201, stored_audio.text
+    assert stored_audio.json()["content_type"] == "audio/wav"
+    assert stored_audio.json()["kind"] == "audio"
