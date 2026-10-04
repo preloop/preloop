@@ -1558,8 +1558,11 @@ describe('AIModelDetailView', () => {
     )) as AIModelDetailView;
 
     await waitUntil(
-      () => !(element as any).loading,
-      'AI model detail view did not finish loading',
+      // Progressive rendering releases loading before the initial summary,
+      // sessions and failure-window reads finish. Settle those before taking
+      // the baseline, so the search assertions only count search work.
+      () => !(element as any).loading && !(element as any).refreshInFlight,
+      'AI model detail view did not finish its initial data load',
       { timeout: 5000 }
     );
     await element.updateComplete;
