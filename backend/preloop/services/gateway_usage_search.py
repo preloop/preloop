@@ -179,10 +179,13 @@ class GatewayUsageSearchService:
         if self.db is None:
             raise ValueError("GatewayUsageSearchService requires a database session")
 
-        searchable_text = self.build_searchable_text(
-            usage=usage,
-            request_payload=request_payload,
-            response_payload=response_payload,
+        searchable_text = self._storage_redacted(
+            usage,
+            self.build_searchable_text(
+                usage=usage,
+                request_payload=request_payload,
+                response_payload=response_payload,
+            ),
         )
         meta_data = self.build_document_metadata(
             usage=usage,
@@ -194,6 +197,22 @@ class GatewayUsageSearchService:
             api_usage=usage,
             searchable_text=searchable_text,
             meta_data=meta_data,
+        )
+
+    @staticmethod
+    def _storage_redacted(usage: ApiUsage, text: str) -> str:
+        """Apply the account's redact rules to the searchable text (#1123)."""
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+        )
+
+        return apply_storage_redaction(
+            getattr(usage, "account_id", None),
+            text,
+            scope=StorageScope(
+                managed_agent_id=getattr(usage, "managed_agent_id", None)
+            ),
         )
 
     def build_index_document(
@@ -222,10 +241,13 @@ class GatewayUsageSearchService:
         indexable_response = self._payload_for_indexing(response_payload)
         return GatewayUsageIndexDocument(
             api_usage_id=str(usage.id),
-            searchable_text=self.build_searchable_text(
-                usage=usage,
-                request_payload=indexable_request,
-                response_payload=indexable_response,
+            searchable_text=self._storage_redacted(
+                usage,
+                self.build_searchable_text(
+                    usage=usage,
+                    request_payload=indexable_request,
+                    response_payload=indexable_response,
+                ),
             ),
             meta_data=self.build_document_metadata(
                 usage=usage,

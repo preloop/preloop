@@ -12,7 +12,7 @@ from preloop.services.model_content_policy import (
     evaluate_model_io,
     wrap_stream_for_response_policy,
 )
-from preloop.services.policy.schema import ModelIORule
+from preloop.services.policy.schema import ModelIORule, SensitiveDataConfig
 
 EMAIL = "alice@example.com"
 
@@ -188,8 +188,8 @@ def test_streamed_reasoning_cannot_escape_policy(
     events.append('data: {"choices":[{"delta":{"content":"VALID"}}]}\n\n')
     with (
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
-            return_value=[rule],
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
+            return_value=([rule], SensitiveDataConfig()),
         ),
         patch(
             "preloop.services.model_content_policy.hold_for_model_io_approval",

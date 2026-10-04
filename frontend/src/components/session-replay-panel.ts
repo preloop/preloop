@@ -323,6 +323,9 @@ export class SessionReplayPanel extends LitElement {
   @property({ type: Array })
   availableModels: AIModel[] = [];
 
+  @property({ type: Boolean })
+  availableModelsLoading = false;
+
   @property({ type: Object })
   optimizationResult: RuntimeSessionOptimizationResponse | null = null;
 
@@ -3888,8 +3891,9 @@ export class SessionReplayPanel extends LitElement {
               : nothing
           }
         </div>
+        ${showControls && this.availableModelsLoading ? html`<div role="status">Loading optimization models…</div>` : nothing}
         ${
-          showControls
+          showControls && !this.availableModelsLoading
             ? html`
                 <div class="optimize-controls">
                   <div class="optimize-control-row">

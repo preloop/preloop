@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -67,6 +67,18 @@ ERROR_TARGET_NOT_FOUND = "target_not_found"
 ERROR_EMPTY_BODY = "empty_body"
 ERROR_BODY_TOO_LONG = "body_too_long"
 ERROR_RATE_LIMITED = "rate_limited"
+ERROR_TARGET_AMBIGUOUS = "target_ambiguous"
+ERROR_NO_CHILDREN = "no_live_children"
+
+#: Values ``children`` accepts: the newest live run this caller started, or
+#: every live run it started.
+CHILDREN_LATEST = "latest"
+CHILDREN_ALL = "all"
+CHILDREN_VALUES = (CHILDREN_LATEST, CHILDREN_ALL)
+
+#: Most notes one ``children="all"`` call writes. Each one still passes the
+#: scope check and the per-target rate limit on its own.
+MAX_CHILDREN_FANOUT = 20
 
 
 def _refusal(code: str, message: str, **extra: Any) -> Dict[str, Any]:
@@ -107,6 +119,10 @@ def send_note_from_agent(
     execution_id: Optional[Any] = None,
     author_execution_id: Optional[Any] = None,
     subject_context: Optional[Dict[str, Any]] = None,
+    external_session_id: Optional[str] = None,
+    children: Optional[str] = None,
+    author_session_ids: Optional[List[Any]] = None,
+    author_principal: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
     """Write one note authored by a managed agent, or refuse and write none.
 
@@ -128,6 +144,15 @@ def send_note_from_agent(
             policy evaluation used, so a grant consults API-key-scoped
             rules under the same subject chain. Target identity is not
             copied here.
+        external_session_id: Target named by the harness's own session id
+            (the Claude Code ``session_id``), resolved inside the account.
+        children: ``"latest"`` or ``"all"``: the live runs the calling
+            session started, newest first.
+        author_session_ids: The runtime sessions the call was made from, as
+            the platform resolved them. Never read from an argument.
+        author_principal: The caller's ``(type, id)`` runtime principal, so
+            an external id the caller's own credential created resolves to
+            that session even when another principal reused the id.
 
     Returns:
         ``{"ok": True, "note": {...}}`` on success, or a structured refusal.
@@ -146,13 +171,40 @@ def send_note_from_agent(
         "runtime_session_id": runtime_session_id,
         "execution_id": execution_id,
     }
-    named = [key for key, value in targets.items() if value not in (None, "")]
+    aliases = {
+        "external_session_id": external_session_id,
+        "children": children,
+    }
+    named = [
+        key for key, value in {**targets, **aliases}.items() if value not in (None, "")
+    ]
     if len(named) != 1:
         named_text = ", ".join(named) if named else "none"
         return _refusal(
             ERROR_TARGET_COUNT,
-            "Name exactly one target: agent_id, runtime_session_id or "
-            f"execution_id. This call named {len(named)} ({named_text}).",
+            "Name exactly one target: runtime_session_id, external_session_id, "
+            "children, agent_id or execution_id. This call named "
+            f"{len(named)} ({named_text}).",
+        )
+
+    # The body is checked before an alias fans out, so ``children="all"``
+    # with an empty note gets one actionable refusal, not one per child.
+    body_refusal = _body_refusal(text)
+    if body_refusal is not None:
+        return body_refusal
+
+    if named[0] in aliases:
+        return _send_to_alias(
+            db,
+            account_id=account_id,
+            author_agent_id=author_agent_id,
+            text=text,
+            author_execution_id=author_execution_id,
+            subject_context=subject_context,
+            external_session_id=external_session_id,
+            children=children,
+            author_session_ids=author_session_ids,
+            author_principal=author_principal,
         )
 
     # Parsed before any query: every target column is a UUID, and a malformed
@@ -171,14 +223,6 @@ def send_note_from_agent(
     execution_id = parsed["execution_id"]
 
     body = (text or "").strip()
-    if not body:
-        return _refusal(ERROR_EMPTY_BODY, "The note body is empty.")
-    if len(body) > operator_notes.MAX_NOTE_BODY_CHARS:
-        return _refusal(
-            ERROR_BODY_TOO_LONG,
-            f"The note body is {len(body)} characters; the limit is "
-            f"{operator_notes.MAX_NOTE_BODY_CHARS}.",
-        )
 
     try:
         author_uuid = (
@@ -226,6 +270,7 @@ def send_note_from_agent(
         named_execution_id=execution_id,
         text=body,
         subject_context=subject_context,
+        author_session_ids=author_session_ids,
     )
     if not scope.allowed:
         agent_note_scope.audit_refusal(
@@ -345,6 +390,124 @@ def send_note_from_agent(
         target_session_id,
     )
     return {"ok": True, "note": note_result(note)}
+
+
+def _body_refusal(text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The refusal for an empty or over-long note body, or None."""
+    body = (text or "").strip()
+    if not body:
+        return _refusal(ERROR_EMPTY_BODY, "The note body is empty.")
+    if len(body) > operator_notes.MAX_NOTE_BODY_CHARS:
+        return _refusal(
+            ERROR_BODY_TOO_LONG,
+            f"The note body is {len(body)} characters; the limit is "
+            f"{operator_notes.MAX_NOTE_BODY_CHARS}.",
+        )
+    return None
+
+
+def _send_to_alias(
+    db: Session,
+    *,
+    account_id: str,
+    author_agent_id: Any,
+    text: str,
+    author_execution_id: Any,
+    subject_context: Optional[Dict[str, Any]],
+    external_session_id: Optional[str],
+    children: Optional[str],
+    author_session_ids: Optional[List[Any]],
+    author_principal: Optional[Tuple[str, str]],
+) -> Dict[str, Any]:
+    """Resolve ``external_session_id`` or ``children`` and send as usual.
+
+    Both are names for one or more runtime sessions. Each resolved session
+    goes through :func:`send_note_from_agent` as a ``runtime_session_id``
+    target, so scope, rate limit, audit and delivery are not reimplemented.
+    """
+    from preloop.services import agent_session_lineage
+
+    def _send(session_id: Any) -> Dict[str, Any]:
+        return send_note_from_agent(
+            db,
+            account_id=account_id,
+            author_agent_id=author_agent_id,
+            text=text,
+            runtime_session_id=session_id,
+            author_execution_id=author_execution_id,
+            subject_context=subject_context,
+            author_session_ids=author_session_ids,
+        )
+
+    if external_session_id not in (None, ""):
+        principal_type, principal_id = author_principal or (None, None)
+        matches = agent_session_lineage.resolve_external_session(
+            db,
+            account_id=account_id,
+            external_session_id=str(external_session_id),
+            principal_type=principal_type,
+            principal_id=principal_id,
+        )
+        if not matches:
+            return _refusal(
+                ERROR_TARGET_NOT_FOUND,
+                "No runtime session in this account carries external session "
+                f"id {external_session_id!r}. It appears once the run's first "
+                "hook or model call reaches Preloop.",
+            )
+        if len(matches) > 1:
+            return _refusal(
+                ERROR_TARGET_AMBIGUOUS,
+                f"External session id {external_session_id!r} matches "
+                f"{len(matches)} runtime sessions; name one by "
+                "runtime_session_id (list_sessions shows them).",
+                candidates=[str(match.id) for match in matches],
+            )
+        return _send(matches[0].id)
+
+    if children not in CHILDREN_VALUES:
+        return _refusal(
+            ERROR_TARGET_COUNT,
+            f"children must be 'latest' or 'all', not {children!r}.",
+        )
+    if not author_session_ids:
+        return _refusal(
+            agent_note_scope.REASON_NO_LINEAGE,
+            "children needs the calling session, and this call carries none: "
+            "name the run by runtime_session_id instead.",
+        )
+    live = agent_session_lineage.live_children(
+        db,
+        account_id=account_id,
+        parent_session_ids=author_session_ids,
+        limit=MAX_CHILDREN_FANOUT,
+    )
+    if not live:
+        return _refusal(
+            ERROR_NO_CHILDREN,
+            "This session has no live runs it started. A run started from a "
+            "shell is recorded as a child when its SessionStart hook sees "
+            "PRELOOP_PARENT_SESSION_ID.",
+        )
+    if children == CHILDREN_LATEST:
+        return _send(live[0].id)
+    notes: List[Dict[str, Any]] = []
+    refused: List[Dict[str, Any]] = []
+    for child in live:
+        result = _send(child.id)
+        if result.get("ok"):
+            notes.append(result["note"])
+        else:
+            refused.append({"runtime_session_id": str(child.id), **result["error"]})
+    if not notes:
+        failure = _refusal(
+            refused[0].get("code", ERROR_TARGET_NOT_FOUND),
+            f"None of the {len(live)} live runs this session started took the "
+            "note; see refused for each one.",
+        )
+        failure["refused"] = refused
+        return failure
+    return {"ok": True, "notes": notes, "refused": refused}
 
 
 def note_result(note: Any) -> Dict[str, Any]:

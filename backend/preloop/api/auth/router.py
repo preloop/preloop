@@ -38,7 +38,9 @@ from preloop.api.auth.jwt import (
     verify_password,
 )
 from preloop.config import settings
+from preloop.plugins import account_hooks
 from preloop.schemas.auth import (
+    LogoutResponse,
     ApiKeyCreate,
     ApiKeyResponse,
     ApiKeySummary,
@@ -91,11 +93,11 @@ from preloop.models.crud import (
     crud_mcp_server,
     crud_role,
     crud_runtime_session,
+    crud_runtime_session_activity,
     crud_user_role,
 )
 from preloop.models.db.session import get_db_session
-from preloop.models.models.user import User as UserModel
-from preloop.models.models.api_key import ApiKey
+from preloop.models import models
 from pydantic import BaseModel
 from preloop.plugins.account_hooks import (
     get_login_row_selector,
@@ -120,6 +122,9 @@ from preloop.services.subject_governance import (
     set_subject_governance,
 )
 
+
+UserModel = models.User
+ApiKey = models.ApiKey
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -299,29 +304,47 @@ def _api_key_activity_status(
     return "idle"
 
 
-def _build_api_key_summary(session: Session, key: ApiKey) -> ApiKeySummary:
+def _build_api_key_summary(
+    session: Session,
+    key: models.ApiKey,
+    *,
+    activity: Optional[tuple[Optional[datetime], int, Optional[datetime], int]] = None,
+) -> ApiKeySummary:
+    """Render a summary from batched statistics, or query a single-key detail.
+
+    Args:
+        session: Database session for the single-key fallback.
+        key: Authorized API key whose public summary is requested.
+        activity: Last model time/count and last tool time/count. Supplying an
+            all-empty tuple still avoids querying keys with no activity.
+
+    Returns:
+        The existing public API-key summary, without credential material.
+    """
     context_data = key.context_data if isinstance(key.context_data, dict) else {}
     runtime_principal = (
         context_data.get("runtime_principal")
         if isinstance(context_data.get("runtime_principal"), dict)
         else {}
     )
-    recent_start = datetime.now(UTC) - API_KEY_RECENT_WINDOW
-    last_model_call = crud_api_usage.get_last_model_call_timestamp(
-        session, api_key_id=key.id
-    )
-    recent_model_calls = crud_api_usage.get_recent_model_calls_count(
-        session, api_key_id=key.id, recent_start=recent_start
-    )
-
-    from preloop.models.crud import crud_runtime_session_activity
-
-    last_tool_call = crud_runtime_session_activity.get_last_tool_call_timestamp(
-        session, api_key_id=key.id
-    )
-    recent_tool_calls = crud_runtime_session_activity.get_recent_tool_calls_count(
-        session, api_key_id=key.id, recent_start=recent_start
-    )
+    if activity is None:
+        recent_start = datetime.now(UTC) - API_KEY_RECENT_WINDOW
+        last_model_call = crud_api_usage.get_last_model_call_timestamp(
+            session, api_key_id=key.id
+        )
+        recent_model_calls = crud_api_usage.get_recent_model_calls_count(
+            session, api_key_id=key.id, recent_start=recent_start
+        )
+        last_tool_call = crud_runtime_session_activity.get_last_tool_call_timestamp(
+            session, api_key_id=key.id
+        )
+        recent_tool_calls = crud_runtime_session_activity.get_recent_tool_calls_count(
+            session, api_key_id=key.id, recent_start=recent_start
+        )
+    else:
+        last_model_call, recent_model_calls, last_tool_call, recent_tool_calls = (
+            activity
+        )
     candidate_times = []
     for value in (key.last_used_at, last_model_call, last_tool_call):
         if value:
@@ -1243,6 +1266,37 @@ def revoke_all_sessions(
     return {"auth_generation": new_generation}
 
 
+@router.post("/logout", response_model=LogoutResponse)
+def logout(
+    request: Request,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> LogoutResponse:
+    """Sign the current console session out on the server.
+
+    The client clears its own tokens whatever this returns. Extensions may
+    end server-side state tied to the token and name a same-origin path for
+    the client to go to next; without one the client uses its default. Other
+    sessions of the user are unaffected (see ``/sessions/revoke-all``).
+    """
+    claims = _request_jwt_claims(request)
+    outcome = account_hooks.run_logout_hook(db, current_user, claims)
+    db.commit()
+    return LogoutResponse(redirect_url=outcome.redirect_url)
+
+
+def _request_jwt_claims(request: Request) -> Dict[str, Any]:
+    """Return the claims of the request's bearer JWT; empty for API keys."""
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or "." not in token:
+        return {}
+    try:
+        return decode_token(token.strip()).claims
+    except HTTPException:
+        return {}
+
+
 def _request_cli_session_id(request: Request) -> Optional[str]:
     """Return the ``sid`` of the request's bearer JWT, if it has one."""
     auth_header = request.headers.get("authorization", "")
@@ -1695,8 +1749,33 @@ def list_api_keys(
 
     # Get API keys using CRUD layer
     keys = crud_api_key.get_by_user(session, username=current_user.username)
-
-    return [_build_api_key_summary(session, key) for key in keys]
+    if not keys:
+        return []
+    key_ids = [key.id for key in keys]
+    recent_start = datetime.now(UTC) - API_KEY_RECENT_WINDOW
+    model_calls = crud_api_usage.get_model_call_stats_for_api_keys(
+        session,
+        account_id=current_user.account_id,
+        api_key_ids=key_ids,
+        recent_start=recent_start,
+    )
+    tool_calls = crud_runtime_session_activity.get_tool_call_stats_for_api_keys(
+        session,
+        account_id=current_user.account_id,
+        api_key_ids=key_ids,
+        recent_start=recent_start,
+    )
+    return [
+        _build_api_key_summary(
+            session,
+            key,
+            activity=(
+                *model_calls.get(key.id, (None, 0)),
+                *tool_calls.get(key.id, (None, 0)),
+            ),
+        )
+        for key in keys
+    ]
 
 
 @router.get("/api-keys/{key_id}", response_model=ApiKeySummary)

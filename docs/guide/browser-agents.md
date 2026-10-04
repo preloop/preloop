@@ -207,8 +207,11 @@ the step index and the agent's reasoning (collapsed). A step with a
 screenshot shows a thumbnail; click it for the full-size viewer, where the
 arrow keys page through the session's steps and Escape closes it.
 
-When a session has browser steps, a strip above the timeline lists one
-entry per step. Click an entry to scroll the timeline to that step.
+When a session has browser steps, a strip above the timeline lists the most
+recent 200 entries; a `+N` button folds the older ones behind it. Clicking
+that button reveals the previous 200 at a time, so a long session stays
+responsive while every step remains reachable. Click an entry to scroll the
+timeline to that step.
 
 The console shows exactly what was stored: steps with `screenshot: null`
 (for example from `--image-responses omit`, or a refused image) have no

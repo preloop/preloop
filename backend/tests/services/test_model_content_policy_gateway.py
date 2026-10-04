@@ -9,7 +9,7 @@ from anyio import to_thread
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
-from preloop.services.policy.schema import ModelIORule
+from preloop.services.policy.schema import ModelIORule, SensitiveDataConfig
 
 
 def _service(account_id="account-1"):
@@ -65,8 +65,8 @@ def test_request_deny_short_circuits_before_provider():
         patch.object(service, "_emit_gateway_request_started"),
         patch.object(service, "_call_litellm", mock_call),
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
-            return_value=[_deny_pii_rule()],
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
+            return_value=([_deny_pii_rule()], SensitiveDataConfig()),
         ),
     ):
         with pytest.raises(ModelGatewayAPIError) as exc_info:
@@ -115,8 +115,8 @@ def test_response_deny_after_provider_returns(text_field: str) -> None:
         patch.object(service, "_is_openai_codex_model", return_value=False),
         patch.object(service, "_response_to_dict", return_value=upstream),
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
-            return_value=[_deny_response_rule()],
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
+            return_value=([_deny_response_rule()], SensitiveDataConfig()),
         ),
     ):
         with pytest.raises(ModelGatewayAPIError) as exc_info:
@@ -153,8 +153,8 @@ async def test_require_approval_rejected_does_not_call_provider() -> None:
         patch.object(service, "_emit_gateway_request_started"),
         patch.object(service, "_call_litellm", mock_call),
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
-            return_value=[rule],
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
+            return_value=([rule], SensitiveDataConfig()),
         ),
         patch(
             "preloop.services.model_content_policy.hold_for_model_io_approval",
@@ -207,8 +207,8 @@ async def test_require_approval_approved_continues_to_provider() -> None:
         patch.object(service, "_is_openai_codex_model", return_value=False),
         patch.object(service, "_response_to_dict", return_value=upstream),
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
-            return_value=[rule],
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
+            return_value=([rule], SensitiveDataConfig()),
         ),
         patch(
             "preloop.services.model_content_policy.hold_for_model_io_approval",
@@ -235,8 +235,8 @@ def test_streaming_request_deny_does_not_open_upstream():
         patch.object(service, "_emit_gateway_request_started"),
         patch.object(service, "_open_upstream_stream", mock_open),
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
-            return_value=[_deny_pii_rule()],
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
+            return_value=([_deny_pii_rule()], SensitiveDataConfig()),
         ),
     ):
         with pytest.raises(ModelGatewayAPIError):
@@ -261,7 +261,7 @@ def test_streaming_policy_load_failure_stops_before_provider() -> None:
         patch.object(service, "_emit_gateway_request_started"),
         patch.object(service, "_open_upstream_stream") as upstream,
         patch(
-            "preloop.services.model_content_policy.load_model_io_rules",
+            "preloop.services.model_content_policy.load_gateway_policy_blocks",
             side_effect=SQLAlchemyTimeoutError("synthetic unavailable database"),
         ),
         pytest.raises(ModelGatewayAPIError) as error,

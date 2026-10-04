@@ -14,6 +14,10 @@ trigger_event_source: null
 # trigger_config to decide which issues qualify, for example
 # {"labels": ["agent-ready"]}. The Issue Triage Assistant can apply that label
 # itself when its agent_config.dispatch policy is met (see issue-triage.md).
+# To route by tag, add labels_all (the issue must carry every listed label):
+# {"labels": ["agent-ready"], "labels_all": ["complexity:low"]} on a flow with
+# a fast model, and a second copy with ["complexity:medium"] and a stronger
+# model. One agent-ready event then starts only the matching flow.
 trigger_event_types:
   - issue_labeled
   - comment_created

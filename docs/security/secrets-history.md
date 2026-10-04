@@ -121,6 +121,15 @@ the audit's 11 classified findings) and involve no credential at all:
 Nothing was live, nothing rotates. They stay baselined because the history
 scan walks every fetched commit and would otherwise fail every PR.
 
+## CI identity source-code false positive
+
+Commit `2895962e34089bf789a87fdf4870525cb4f59e8b` contains a CI principal
+lookup with adjacent Python call arguments. The scanner interpreted the
+attribute references as a generic API key. The finding is code syntax, not a
+string literal or credential, and no token value exists there. The call was
+reformatted; its single historical fingerprint is recorded in `.gitleaksignore`
+without weakening the scanner policy. Nothing was live and nothing rotates.
+
 ## Keeping this page true
 
 - A new history finding gets a `.gitleaksignore` entry (what it is) and a row

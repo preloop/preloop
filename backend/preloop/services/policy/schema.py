@@ -41,10 +41,20 @@ Example YAML:
         target: model.request
         detectors:
           pii:
-            types: [email, phone, credit_card]
+            types: [email, phone, credit_card, iban, employee_id]
         conditions:
           - expression: "pii.found == true"
             action: deny
+
+    sensitive_data:
+      detectors:
+        locales: [de, nl]
+        custom_patterns:
+          - name: employee_id
+            regex: 'EMP-\\d{6}'
+        keywords:
+          - name: codenames
+            terms: ["Project Phoenix"]
 
     defaults:
       unknown_tools: "deny"
@@ -56,6 +66,18 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from preloop.services.sensitive_data.detectors import (
+    BUILTIN_TYPE_IDS,
+    MAX_CUSTOM_PATTERNS,
+    MAX_KEYWORD_LISTS,
+    TYPE_NAME_RE,
+    UnsafePatternError,
+    compile_keyword_pattern,
+    compile_mrn_pattern,
+    compile_safe_regex,
+    registered_type_ids,
+)
 
 
 class PolicyVersion(str, Enum):
@@ -257,10 +279,16 @@ class ConditionAction(str, Enum):
     # Model I/O rules only: the call proceeds as with allow, and the match is
     # recorded and sent to the policy owners (#959). Tool conditions reject it.
     NOTIFY = "notify"
+    # Model I/O and sensitive_data rules only: the call proceeds, stored
+    # copies are redacted, and an audit row records counts by type (#1123).
+    # Tool conditions reject it.
+    REDACT = "redact"
 
 
 #: Actions a model I/O rule may use but a tool condition may not.
-MODEL_IO_ONLY_ACTIONS = frozenset({ConditionAction.NOTIFY.value})
+MODEL_IO_ONLY_ACTIONS = frozenset(
+    {ConditionAction.NOTIFY.value, ConditionAction.REDACT.value}
+)
 
 
 class ConditionType(str, Enum):
@@ -451,34 +479,496 @@ class DetectorTimeoutFailMode(str, Enum):
     DENY = "deny"
 
 
+#: Types the ``pii`` detector scans when a rule does not list any. New
+#: built-in types are opt-in so rules written before they existed keep
+#: their behaviour.
 SUPPORTED_PII_TYPES = ("email", "phone", "credit_card")
+
+#: Every built-in sensitive-data type a rule may select.
+BUILTIN_SENSITIVE_TYPES = BUILTIN_TYPE_IDS
+
+#: Locales ``national_id`` understands.
+SUPPORTED_NATIONAL_ID_LOCALES = ("us", "de", "uk", "fr", "nl")
+
+
+def _validate_type_names(value: List[str], *, label: str) -> List[str]:
+    """Accept built-in type ids and well-formed custom names.
+
+    Custom names (patterns, keyword lists, registered detectors) are checked
+    against the document's ``sensitive_data.detectors`` block by
+    :class:`PolicyDocument`; here only the shape is enforced so a typo such
+    as ``Email`` or ``credit-card`` is rejected with the full list.
+    """
+    if not value:
+        raise ValueError(f"{label} must not be empty")
+    unknown = [
+        item
+        for item in value
+        if item not in BUILTIN_SENSITIVE_TYPES and not TYPE_NAME_RE.match(str(item))
+    ]
+    if unknown:
+        raise ValueError(
+            f"Unknown PII types: {unknown}. Supported: {list(BUILTIN_SENSITIVE_TYPES)} "
+            "or the name of a custom pattern or keyword list"
+        )
+    return list(dict.fromkeys(value))
 
 
 class PIIDetectorConfig(BaseModel):
     """Deterministic PII detector configuration.
 
-    ``types`` selects which entity recognizers run. Unknown types are
-    rejected at schema validation. Third-party recognizers are out of
-    scope and must stay off by default.
+    ``types`` selects which entity recognizers run: any built-in sensitive
+    data type or the name of a custom pattern or keyword list declared under
+    ``sensitive_data.detectors``. Unknown names are rejected at schema
+    validation. Third-party recognizers must be registered explicitly and
+    stay off by default.
     """
 
     types: List[str] = Field(
         default_factory=lambda: list(SUPPORTED_PII_TYPES),
-        description="PII entity types to scan (email, phone, credit_card)",
+        description=(
+            "Sensitive data types to scan (built-in ids or custom entry names); "
+            "default email, phone, credit_card"
+        ),
     )
 
     @field_validator("types")
     @classmethod
     def validate_pii_types(cls, value: List[str]) -> List[str]:
         """Reject unknown PII types so YAML cannot silently skip a scan."""
-        if not value:
-            raise ValueError("pii.types must not be empty")
-        unknown = [item for item in value if item not in SUPPORTED_PII_TYPES]
+        return _validate_type_names(value, label="pii.types")
+
+
+class CustomPatternDefinition(BaseModel):
+    """Account-defined regex sensitive-data type.
+
+    The regex is compiled through a safety gate: a length cap and a static
+    check that rejects nested quantifiers such as ``(a+)+``. It also runs
+    under the rule's detector timeout.
+    """
+
+    name: str = Field(..., description="Type name used in rules (snake_case)")
+    regex: str = Field(..., description="Python regular expression")
+    flags: List[Literal["i", "m", "s", "x"]] = Field(
+        default_factory=list, description="Regex flags: i, m, s, x"
+    )
+    description: Optional[str] = Field(None, description="Human-readable note")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        """Names are identifiers and cannot shadow a built-in type."""
+        if not TYPE_NAME_RE.match(value or ""):
+            raise ValueError(
+                f"Custom pattern name {value!r} must match {TYPE_NAME_RE.pattern}"
+            )
+        if value in BUILTIN_SENSITIVE_TYPES:
+            raise ValueError(f"Custom pattern name {value!r} is a built-in type")
+        return value
+
+    @model_validator(mode="after")
+    def validate_regex(self) -> "CustomPatternDefinition":
+        """Compile once so an unsafe pattern fails at validation time."""
+        try:
+            compile_safe_regex(self.regex, self.flags)
+        except UnsafePatternError as exc:
+            raise ValueError(f"custom_patterns[{self.name}]: {exc}") from exc
+        return self
+
+
+class KeywordListDefinition(BaseModel):
+    """Account-defined keyword list matched on whole words only."""
+
+    name: str = Field(..., description="Type name used in rules (snake_case)")
+    terms: List[str] = Field(..., min_length=1, description="Terms to match")
+    case_sensitive: bool = Field(False, description="Match case exactly")
+    description: Optional[str] = Field(None, description="Human-readable note")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        """Names are identifiers and cannot shadow a built-in type."""
+        if not TYPE_NAME_RE.match(value or ""):
+            raise ValueError(
+                f"Keyword list name {value!r} must match {TYPE_NAME_RE.pattern}"
+            )
+        if value in BUILTIN_SENSITIVE_TYPES:
+            raise ValueError(f"Keyword list name {value!r} is a built-in type")
+        return value
+
+    @model_validator(mode="after")
+    def validate_terms(self) -> "KeywordListDefinition":
+        """Compile once so an empty or oversized list fails at validation."""
+        try:
+            compile_keyword_pattern(self.terms, self.case_sensitive)
+        except ValueError as exc:
+            raise ValueError(f"keywords[{self.name}]: {exc}") from exc
+        return self
+
+
+class SensitiveDataDetectorsConfig(BaseModel):
+    """Account-wide detector configuration shared by every rule.
+
+    ``types`` is the default scan set for rules that do not list their own.
+    ``locales`` narrows ``national_id``. Custom patterns and keyword lists
+    become selectable type names.
+    """
+
+    types: Optional[List[str]] = Field(
+        None,
+        description="Default types to scan; omit for every built-in and custom type",
+    )
+    locales: List[str] = Field(
+        default_factory=list,
+        description="national_id locales (us, de, uk, fr, nl); empty means all",
+    )
+    custom_patterns: List[CustomPatternDefinition] = Field(
+        default_factory=list, max_length=MAX_CUSTOM_PATTERNS
+    )
+    keywords: List[KeywordListDefinition] = Field(
+        default_factory=list, max_length=MAX_KEYWORD_LISTS
+    )
+    medical_record_number_pattern: Optional[str] = Field(
+        None,
+        description="Identifier regex that follows an MRN keyword (default digits)",
+    )
+
+    @field_validator("types")
+    @classmethod
+    def validate_types(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Shape check; names are cross-checked in ``validate_names``."""
+        if value is None:
+            return None
+        return _validate_type_names(value, label="sensitive_data.detectors.types")
+
+    @field_validator("locales")
+    @classmethod
+    def validate_locales(cls, value: List[str]) -> List[str]:
+        """Only locales with a detector are accepted."""
+        lowered = [str(item).lower() for item in value]
+        unknown = [
+            item for item in lowered if item not in SUPPORTED_NATIONAL_ID_LOCALES
+        ]
         if unknown:
             raise ValueError(
-                f"Unknown PII types: {unknown}. Supported: {list(SUPPORTED_PII_TYPES)}"
+                f"Unknown national_id locales: {unknown}. "
+                f"Supported: {list(SUPPORTED_NATIONAL_ID_LOCALES)}"
             )
+        return list(dict.fromkeys(lowered))
+
+    @field_validator("medical_record_number_pattern")
+    @classmethod
+    def validate_mrn_pattern(cls, value: Optional[str]) -> Optional[str]:
+        """Same safety gate as custom patterns, plus the composed form."""
+        if value is None:
+            return None
+        try:
+            compile_mrn_pattern(value)
+        except UnsafePatternError as exc:
+            raise ValueError(f"medical_record_number_pattern: {exc}") from exc
+        return value
+
+    @model_validator(mode="after")
+    def validate_names(self) -> "SensitiveDataDetectorsConfig":
+        """Custom names are unique and ``types`` only names known entries."""
+        seen: set[str] = set()
+        for name in self.custom_names():
+            if name in seen:
+                raise ValueError(f"Duplicate sensitive_data detector name: '{name}'")
+            seen.add(name)
+        if self.types:
+            registered = set(registered_type_ids())
+            unknown = [
+                item
+                for item in self.types
+                if item not in BUILTIN_SENSITIVE_TYPES
+                and item not in seen
+                and item not in registered
+            ]
+            if unknown:
+                raise ValueError(
+                    f"sensitive_data.detectors.types references unknown types "
+                    f"{unknown}. Define them under custom_patterns or keywords."
+                )
+        return self
+
+    def custom_names(self) -> List[str]:
+        """Names of custom patterns and keyword lists."""
+        return [item.name for item in self.custom_patterns] + [
+            item.name for item in self.keywords
+        ]
+
+    def known_types(self) -> List[str]:
+        """Built-in ids, registered detector names and this block's custom names."""
+        return (
+            list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids() + self.custom_names()
+        )
+
+
+class SensitiveDataTarget(str, Enum):
+    """Payloads a sensitive-data rule can watch."""
+
+    TOOL_ARGS = "tool.args"
+    TOOL_RESULT = "tool.result"
+    MODEL_REQUEST = "model.request"
+    MODEL_RESPONSE = "model.response"
+
+
+#: Targets evaluated on the MCP tool path.
+TOOL_TARGETS = frozenset(
+    {SensitiveDataTarget.TOOL_ARGS.value, SensitiveDataTarget.TOOL_RESULT.value}
+)
+#: Targets compiled into model I/O rules.
+MODEL_TARGETS = frozenset(
+    {SensitiveDataTarget.MODEL_REQUEST.value, SensitiveDataTarget.MODEL_RESPONSE.value}
+)
+#: Targets whose upstream copy can be rewritten by ``redact_upstream``.
+UPSTREAM_REDACTABLE_TARGETS = frozenset(
+    {
+        SensitiveDataTarget.TOOL_ARGS.value,
+        SensitiveDataTarget.TOOL_RESULT.value,
+        SensitiveDataTarget.MODEL_REQUEST.value,
+    }
+)
+
+#: Actions a sensitive-data rule may take. ``allow`` is not one of them: a
+#: rule exists to react to a match.
+SENSITIVE_DATA_RULE_ACTIONS = frozenset(
+    {
+        ConditionAction.NOTIFY.value,
+        ConditionAction.DENY.value,
+        ConditionAction.REQUIRE_APPROVAL.value,
+        ConditionAction.REDACT.value,
+    }
+)
+
+
+class SensitiveDataScope(BaseModel):
+    """Where a rule applies. Empty lists mean every agent, tool or server.
+
+    ``agents`` holds managed agent ids. ``tools`` holds client-visible tool
+    names. ``servers`` holds MCP server names; builtin tools belong to the
+    ``preloop-mcp`` pseudo server. Scopes only narrow tool targets; model
+    targets honour ``agents`` and ignore the other two.
+    """
+
+    agents: List[str] = Field(default_factory=list, description="Managed agent ids")
+    tools: List[str] = Field(default_factory=list, description="Tool names")
+    servers: List[str] = Field(default_factory=list, description="MCP server names")
+
+    def is_empty(self) -> bool:
+        """True when the rule applies everywhere."""
+        return not (self.agents or self.tools or self.servers)
+
+    def matches(
+        self,
+        *,
+        tool_name: Optional[str] = None,
+        server_name: Optional[str] = None,
+        managed_agent_id: Optional[str] = None,
+    ) -> bool:
+        """Scope check for one call. Each non-empty list must match."""
+        if self.agents and (
+            managed_agent_id is None or str(managed_agent_id) not in self.agents
+        ):
+            return False
+        if self.tools and (tool_name is None or tool_name not in self.tools):
+            return False
+        if self.servers and (
+            server_name is None
+            or server_name.lower() not in {item.lower() for item in self.servers}
+        ):
+            return False
+        return True
+
+
+class SensitiveDataRule(BaseModel):
+    """One rule: which payloads to scan, for which types, and what to do.
+
+    Model targets compile to ordinary model I/O rules so there is one
+    evaluator per path. Tool targets run on MCP tool arguments before the
+    call and on the result after it.
+    """
+
+    id: str = Field(..., min_length=1, description="Stable rule identifier")
+    enabled: bool = Field(True, description="Whether this rule is evaluated")
+    description: Optional[str] = Field(None, description="Human-readable description")
+    on: List[SensitiveDataTarget] = Field(
+        ..., min_length=1, description="Targets: tool.args, tool.result, model.*"
+    )
+    scope: SensitiveDataScope = Field(
+        default_factory=SensitiveDataScope, description="Agents, tools, servers"
+    )
+    types: Optional[List[str]] = Field(
+        None,
+        description="Types to scan; default the detectors block types or every type",
+    )
+    action: ConditionAction = Field(
+        ..., description="notify, deny, require_approval or redact"
+    )
+    approval_workflow: Optional[str] = Field(
+        None, description="Approval workflow name for require_approval"
+    )
+    redact_upstream: bool = Field(
+        False,
+        description=(
+            "With action redact, also rewrite what goes upstream: the tool "
+            "arguments sent to the server, the tool result returned to the "
+            "agent, the model request sent to the provider. Default keeps the "
+            "original upstream and redacts stored copies only. Tools that need "
+            "the value break when this is on."
+        ),
+    )
+    detector_timeout_ms: int = Field(
+        500, ge=50, le=30000, description="Hard timeout for detectors on this rule"
+    )
+    on_detector_timeout: DetectorTimeoutFailMode = Field(
+        DetectorTimeoutFailMode.DENY,
+        description="Fail mode when detectors time out (default deny)",
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        """Rule ids appear in audit rows and approval tickets."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("sensitive_data rule id cannot be empty")
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_redact_upstream(self) -> "SensitiveDataRule":
+        """``redact_upstream`` needs the redact action and a rewritable target.
+
+        Upstream rewriting exists for tool arguments, tool results and
+        model requests. A model response reaches the client through the
+        provider adapters and is not rewritten; stored copies still are.
+        """
+        if not self.redact_upstream:
+            return self
+        if self.action_value() != ConditionAction.REDACT.value:
+            raise ValueError(
+                f"sensitive_data rule '{self.id}': redact_upstream requires "
+                "action 'redact'"
+            )
+        if not any(
+            item in UPSTREAM_REDACTABLE_TARGETS for item in self.target_values()
+        ):
+            raise ValueError(
+                f"sensitive_data rule '{self.id}': redact_upstream applies to "
+                f"{sorted(UPSTREAM_REDACTABLE_TARGETS)}; model.response is "
+                "redacted at rest only"
+            )
+        return self
+
+    @field_validator("on")
+    @classmethod
+    def validate_targets(cls, value: List[Any]) -> List[Any]:
+        """Deduplicate targets, keeping order."""
         return list(dict.fromkeys(value))
+
+    @field_validator("types")
+    @classmethod
+    def validate_types(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Shape check; names are cross-checked by ``SensitiveDataConfig``."""
+        if value is None:
+            return None
+        return _validate_type_names(value, label="sensitive_data.rules[].types")
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, value: Any) -> Any:
+        """Only reactions to a match are meaningful here."""
+        action = getattr(value, "value", value)
+        if action not in SENSITIVE_DATA_RULE_ACTIONS:
+            raise ValueError(
+                f"sensitive_data rules do not support action '{action}'. "
+                f"Supported: {sorted(SENSITIVE_DATA_RULE_ACTIONS)}"
+            )
+        return value
+
+    def target_values(self) -> List[str]:
+        """Targets as plain strings."""
+        return [getattr(item, "value", item) for item in self.on]
+
+    def has_tool_target(self) -> bool:
+        """True when the rule watches tool arguments or results."""
+        return any(item in TOOL_TARGETS for item in self.target_values())
+
+    def has_model_target(self) -> bool:
+        """True when the rule watches model requests or responses."""
+        return any(item in MODEL_TARGETS for item in self.target_values())
+
+    def action_value(self) -> str:
+        """Action as a plain string."""
+        return str(getattr(self.action, "value", self.action))
+
+
+class SensitiveDataConfig(BaseModel):
+    """Top-level ``sensitive_data`` block.
+
+    ``detectors`` is shared configuration; ``rules`` react to matches on
+    tool and model payloads. The redact action (#1123) and reference-only
+    logging (#1124) extend this block.
+    """
+
+    detectors: Optional[SensitiveDataDetectorsConfig] = Field(
+        None, description="Types, locales, custom patterns and keyword lists"
+    )
+    rules: List[SensitiveDataRule] = Field(
+        default_factory=list, description="Rules over tool and model payloads"
+    )
+
+    @model_validator(mode="after")
+    def validate_rules(self) -> "SensitiveDataConfig":
+        """Rule ids are unique and rule types are declared."""
+        known = self.known_types()
+        seen: set[str] = set()
+        for rule in self.rules:
+            if rule.id in seen:
+                raise ValueError(f"Duplicate sensitive_data rule id: '{rule.id}'")
+            seen.add(rule.id)
+            unknown = [item for item in (rule.types or []) if item not in known]
+            if unknown:
+                raise ValueError(
+                    f"sensitive_data rule '{rule.id}' scans unknown types {unknown}. "
+                    "Define them under sensitive_data.detectors.custom_patterns "
+                    "or keywords."
+                )
+        return self
+
+    def known_types(self) -> List[str]:
+        """Built-in ids, registered detector names and configured custom names."""
+        if self.detectors is None:
+            return list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
+        return self.detectors.known_types()
+
+    def default_types(self) -> List[str]:
+        """Types a rule without its own list scans."""
+        if self.detectors is not None and self.detectors.types:
+            return list(self.detectors.types)
+        return self.known_types()
+
+    def types_for_rule(self, rule: SensitiveDataRule) -> List[str]:
+        """Resolved type list for ``rule``."""
+        return list(rule.types) if rule.types else self.default_types()
+
+    def enabled_rules(self) -> List[SensitiveDataRule]:
+        """Rules that are switched on, in document order."""
+        return [rule for rule in self.rules if rule.enabled]
+
+    def has_tool_rules(self) -> bool:
+        """True when any enabled rule watches a tool target."""
+        return any(rule.has_tool_target() for rule in self.enabled_rules())
+
+    def has_redact_rules(self) -> bool:
+        """True when any enabled rule redacts."""
+        return any(
+            rule.action_value() == ConditionAction.REDACT.value
+            for rule in self.enabled_rules()
+        )
 
 
 class ModerationDetectorConfig(BaseModel):
@@ -548,6 +1038,14 @@ class ModelIORule(BaseModel):
         min_length=1,
         description="First matching condition wins, same as tools",
     )
+    redact_upstream: bool = Field(
+        False,
+        description=(
+            "With a redact condition on model.request, also rewrite the request "
+            "sent to the provider. Default keeps the original upstream and "
+            "redacts at rest. Not available for model.response."
+        ),
+    )
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -559,6 +1057,25 @@ class ModelIORule(BaseModel):
         if not stripped:
             raise ValueError("model_io rule id cannot be empty")
         return stripped
+
+    @model_validator(mode="after")
+    def validate_redact_upstream_target(self) -> "ModelIORule":
+        """Response bodies are not rewritten upstream; reject a silent no-op."""
+        target = str(getattr(self.target, "value", self.target))
+        if self.redact_upstream and target == ModelIOTarget.RESPONSE.value:
+            raise ValueError(
+                f"model_io rule '{self.id}': redact_upstream is not available for "
+                "model.response; responses are redacted at rest only"
+            )
+        return self
+
+
+def _rule_pii_types(rule: ModelIORule) -> List[str]:
+    """Types a model_io rule's ``pii`` detector lists (empty when implicit)."""
+    detectors = rule.detectors
+    if detectors is None or not isinstance(detectors.pii, PIIDetectorConfig):
+        return []
+    return list(detectors.pii.types)
 
 
 class DefaultsDefinition(BaseModel):
@@ -600,6 +1117,7 @@ class PolicyDocument(BaseModel):
         approval_workflows: List of approval workflow definitions.
         tools: List of tool configuration definitions.
         model_io: List of model request/response content policy rules.
+        sensitive_data: Detector configuration shared by model and tool rules.
         defaults: Default behavior settings.
     """
 
@@ -619,6 +1137,9 @@ class PolicyDocument(BaseModel):
     model_io: Optional[List[ModelIORule]] = Field(
         None, description="Model request and response content policy rules"
     )
+    sensitive_data: Optional[SensitiveDataConfig] = Field(
+        None, description="Sensitive data detectors shared by model and tool rules"
+    )
     defaults: Optional[DefaultsDefinition] = Field(
         None, description="Default behavior settings"
     )
@@ -627,83 +1148,49 @@ class PolicyDocument(BaseModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> "PolicyDocument":
-        """Validate that all references are resolvable within the document."""
-        # Collect defined names
-        mcp_server_names = set()
-        if self.mcp_servers:
-            for server in self.mcp_servers:
-                if server.name in mcp_server_names:
-                    raise ValueError(f"Duplicate MCP server name: '{server.name}'")
-                mcp_server_names.add(server.name)
+        """Validate intra-document consistency (duplicate names and ids).
 
-        policy_names = set()
-        if self.approval_workflows:
-            for policy in self.approval_workflows:
-                if policy.name in policy_names:
-                    raise ValueError(
-                        f"Duplicate approval workflow name: '{policy.name}'"
-                    )
-                policy_names.add(policy.name)
+        Cross-references to MCP servers and approval workflows are not checked
+        here: they may point at objects already configured in the account, so
+        they are resolved by the account-aware check in ``PolicyApplier`` and
+        the ``/policies/validate`` endpoint.
+        """
+        mcp_server_names: set[str] = set()
+        for server in self.mcp_servers or []:
+            if server.name in mcp_server_names:
+                raise ValueError(f"Duplicate MCP server name: '{server.name}'")
+            mcp_server_names.add(server.name)
 
-        # Validate tool references
-        if self.tools:
-            for tool in self.tools:
-                # Check approval workflow references
-                if (
-                    tool.approval_workflow
-                    and tool.approval_workflow not in policy_names
-                ):
-                    raise ValueError(
-                        f"Tool '{tool.name}' references unknown approval workflow "
-                        f"'{tool.approval_workflow}'. Available policies: {policy_names}"
-                    )
+        workflow_names: set[str] = set()
+        for workflow in self.approval_workflows or []:
+            if workflow.name in workflow_names:
+                raise ValueError(f"Duplicate approval workflow name: '{workflow.name}'")
+            workflow_names.add(workflow.name)
 
-                # Native sources (builtin, mcp, http, agent) are not server names.
-                source_lower = tool.source.lower()
-                if not is_known_tool_source(source_lower):
-                    # It's a custom MCP server name reference
-                    if source_lower not in {s.lower() for s in mcp_server_names}:
-                        raise ValueError(
-                            f"Tool '{tool.name}' references unknown MCP server "
-                            f"'{tool.source}'. Available servers: {mcp_server_names}"
-                        )
+        known_sensitive_types = (
+            self.sensitive_data.known_types()
+            if self.sensitive_data is not None
+            else list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
+        )
 
-        if self.model_io:
-            model_io_ids: set[str] = set()
-            for rule in self.model_io:
-                if rule.id in model_io_ids:
-                    raise ValueError(f"Duplicate model_io rule id: '{rule.id}'")
-                model_io_ids.add(rule.id)
-                if (
-                    rule.approval_workflow
-                    and rule.approval_workflow not in policy_names
-                ):
-                    raise ValueError(
-                        f"model_io rule '{rule.id}' references unknown approval "
-                        f"workflow '{rule.approval_workflow}'. "
-                        f"Available policies: {policy_names}"
-                    )
-
-        # Validate default approval workflow reference
-        if self.defaults and self.defaults.default_approval_workflow:
-            if self.defaults.default_approval_workflow not in policy_names:
+        model_io_ids: set[str] = set()
+        for rule in self.model_io or []:
+            if rule.id in model_io_ids:
+                raise ValueError(f"Duplicate model_io rule id: '{rule.id}'")
+            model_io_ids.add(rule.id)
+            # Intra-document: a rule may only scan types the document
+            # declares (built-ins, registered detectors, custom entries).
+            unknown_types = [
+                item
+                for item in _rule_pii_types(rule)
+                if item not in known_sensitive_types
+            ]
+            if unknown_types:
                 raise ValueError(
-                    f"Default approval workflow '{self.defaults.default_approval_workflow}' "
-                    f"not found. Available policies: {policy_names}"
+                    f"model_io rule '{rule.id}' scans unknown PII types "
+                    f"{unknown_types}. Define them under "
+                    "sensitive_data.detectors.custom_patterns or keywords."
                 )
-
-        # Validate escalation_workflow references in AI-driven policies
-        if self.approval_workflows:
-            for policy in self.approval_workflows:
-                if (
-                    policy.escalation_workflow
-                    and policy.escalation_workflow not in policy_names
-                ):
-                    raise ValueError(
-                        f"Approval workflow '{policy.name}' references unknown "
-                        f"escalation_workflow '{policy.escalation_workflow}'. "
-                        f"Available policies: {policy_names}"
-                    )
 
         return self
 
@@ -770,6 +1257,9 @@ class PolicyImportResult(BaseModel):
     )
     model_io_rules_applied: int = Field(
         0, description="Number of model I/O content rules applied"
+    )
+    sensitive_data_applied: bool = Field(
+        False, description="Whether the sensitive_data block was applied"
     )
     warnings: List[str] = Field(default_factory=list, description="Non-fatal warnings")
     errors: List[str] = Field(default_factory=list, description="Errors that occurred")

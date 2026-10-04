@@ -15,6 +15,7 @@ from preloop.utils.agent_kind import (
 )
 
 UsageBreakdown = Literal["models", "flows", "sessions", "tools", "days", "imported"]
+GatewayUsageBreakdown = Literal["models", "flows", "sessions", "tools", "days"]
 
 
 def _agree_direction_pair(

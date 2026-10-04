@@ -292,34 +292,19 @@ class TestPolicyDocument:
             )
         assert "Duplicate approval workflow name" in str(exc_info.value)
 
-    def test_invalid_policy_reference_fails(self):
-        """Test that invalid policy references raise validation error."""
-        with pytest.raises(ValidationError) as exc_info:
-            PolicyDocument(
-                metadata=PolicyMetadata(name="Test"),
-                tools=[
-                    ToolDefinition(
-                        name="test_tool",
-                        approval_workflow="nonexistent-policy",
-                    ),
-                ],
-            )
-        assert "unknown approval workflow" in str(exc_info.value).lower()
-
-    def test_invalid_server_reference_fails(self):
-        """Test that invalid server references raise validation error."""
-        with pytest.raises(ValidationError) as exc_info:
-            PolicyDocument(
-                metadata=PolicyMetadata(name="Test"),
-                tools=[
-                    ToolDefinition(
-                        name="test_tool",
-                        source="nonexistent-server",
-                    ),
-                ],
-            )
-        error_msg = str(exc_info.value).lower()
-        assert "unknown" in error_msg and "server" in error_msg
+    def test_unresolved_references_are_left_to_account_check(self):
+        """Schema accepts references to objects that may exist in the account (#1134)."""
+        doc = PolicyDocument(
+            metadata=PolicyMetadata(name="Test"),
+            tools=[
+                ToolDefinition(
+                    name="test_tool",
+                    source="existing-server",
+                    approval_workflow="existing-workflow",
+                ),
+            ],
+        )
+        assert doc.tools[0].source == "existing-server"
 
     def test_valid_references(self):
         """Test that valid references pass validation."""
@@ -396,13 +381,26 @@ class TestModelIORule:
             )
 
     def test_unknown_pii_type_rejected(self):
-        with pytest.raises(ValidationError):
+        # A malformed name fails on the rule itself.
+        with pytest.raises(ValidationError, match="Unknown PII types"):
             ModelIORule(
                 id="bad-pii",
                 target="model.request",
-                detectors={"pii": {"types": ["ssn"]}},
+                detectors={"pii": {"types": ["Not A Type"]}},
                 conditions=[ToolCondition(expression="pii.found == true")],
             )
+        # A well-formed name that is neither a built-in type nor a custom
+        # entry declared under sensitive_data.detectors fails on the document
+        # (a standalone rule cannot see the declarations; the API checks the
+        # account's block instead).
+        rule = ModelIORule(
+            id="bad-pii",
+            target="model.request",
+            detectors={"pii": {"types": ["ssn"]}},
+            conditions=[ToolCondition(expression="pii.found == true")],
+        )
+        with pytest.raises(ValidationError, match="unknown PII types"):
+            PolicyDocument(metadata=PolicyMetadata(name="Content"), model_io=[rule])
 
     def test_document_round_trips_model_io(self):
         policy = PolicyDocument(
@@ -442,18 +440,18 @@ class TestModelIORule:
                 ],
             )
 
-    def test_unknown_approval_workflow_rejected(self):
-        with pytest.raises(ValidationError):
-            PolicyDocument(
-                metadata=PolicyMetadata(name="Missing wf"),
-                model_io=[
-                    ModelIORule(
-                        id="needs-wf",
-                        target="model.response",
-                        approval_workflow="missing",
-                        conditions=[
-                            ToolCondition(expression="true", action="require_approval")
-                        ],
-                    )
-                ],
-            )
+    def test_account_approval_workflow_reference_accepted(self):
+        """The applier resolves model_io workflow references against the account."""
+        PolicyDocument(
+            metadata=PolicyMetadata(name="Missing wf"),
+            model_io=[
+                ModelIORule(
+                    id="needs-wf",
+                    target="model.response",
+                    approval_workflow="missing",
+                    conditions=[
+                        ToolCondition(expression="true", action="require_approval")
+                    ],
+                )
+            ],
+        )

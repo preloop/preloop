@@ -1132,6 +1132,38 @@ def parse_schedule_config(
     )
 
 
+def flow_schedule_state(
+    trigger_event_source: Optional[str],
+    schedule_config: Optional[Union[ScheduleBase, Dict[str, Any]]],
+    is_enabled: bool,
+) -> Optional[Dict[str, Any]]:
+    """Project the common schedule presentation for full and summary flows.
+
+    Args:
+        trigger_event_source: The stored flow trigger source.
+        schedule_config: A validated config or its stored JSON representation.
+        is_enabled: Whether this flow's schedule is active.
+
+    Returns:
+        Schedule metadata, including the next run only for active schedules;
+        None for non-schedule triggers or absent configuration.
+    """
+    if trigger_event_source != "schedule" or not schedule_config:
+        return None
+    config = parse_schedule_config(schedule_config)
+    next_run = config.next_fire_time() if is_enabled else None
+    state = {
+        "active": is_enabled,
+        "type": config.type,
+        "description": config.describe(),
+        "timezone": config.timezone,
+        "next_run_at": next_run.isoformat() if next_run else None,
+    }
+    if isinstance(config, CronSchedule):
+        state["cron"] = config.expr
+    return state
+
+
 class SchedulePreviewRequest(BaseModel):
     """Request body for previewing a schedule trigger configuration."""
 
@@ -1689,19 +1721,11 @@ class FlowResponse(FlowBase):
     @model_validator(mode="after")
     def compute_schedule_state(self) -> "FlowResponse":
         """Expose schedule state (next run etc.) for schedule triggers."""
-        if self.trigger_event_source == "schedule" and self.schedule_config:
-            config = self.schedule_config
-            active = bool(self.is_enabled)
-            next_run = config.next_fire_time() if active else None
-            self.schedule_state = {
-                "active": active,
-                "type": config.type,
-                "description": config.describe(),
-                "timezone": config.timezone,
-                "next_run_at": next_run.isoformat() if next_run else None,
-            }
-            if isinstance(config, CronSchedule):
-                self.schedule_state["cron"] = config.expr
+        state = flow_schedule_state(
+            self.trigger_event_source, self.schedule_config, bool(self.is_enabled)
+        )
+        if state is not None:
+            self.schedule_state = state
         return self
 
     @field_serializer(

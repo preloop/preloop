@@ -2,6 +2,7 @@ import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
   getTools,
+  getToolsSummary,
   getMCPServers,
   deleteMCPServer,
   scanMCPServer,
@@ -503,6 +504,13 @@ export class ToolsView extends LitElement {
     this.loadData();
   }
 
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    ++this.toolsLoadGeneration;
+    this.toolsSchemaRequest = null;
+    this.toolsSchemasLoading = false;
+  }
+
   private _resolveInitialTab(): ToolsTab {
     const fromUrl = new URLSearchParams(window.location.search).get('tab');
     if (isToolsTab(fromUrl)) {
@@ -541,7 +549,55 @@ export class ToolsView extends LitElement {
     this._rememberTab(name);
   }
 
+  private toolsLoadGeneration = 0;
+  private toolsSchemasReady = false;
+  @state() private toolsSchemasLoading = false;
+  private toolsSchemaRequest: Promise<void> | null = null;
+  @state() private toolsContextLoading = true;
+
+  private async loadToolSchemas(): Promise<void> {
+    if (this.toolsSchemasReady) return;
+    if (this.toolsSchemaRequest) return this.toolsSchemaRequest;
+    const generation = this.toolsLoadGeneration;
+    this.toolsSchemasLoading = true;
+    const request: Promise<void> = getTools()
+      .then((tools) => {
+        if (generation !== this.toolsLoadGeneration) return;
+        // Only hydrate schemas: a late catalogue must not overwrite a rule
+        // the user changed while this request was in flight.
+        this.tools = this.tools.map((tool) => {
+          const full = tools.find(
+            (item) =>
+              item.name === tool.name &&
+              item.source_id === tool.source_id &&
+              item.source === tool.source
+          );
+          return full
+            ? { ...tool, schema: full.schema, parameters: full.parameters }
+            : tool;
+        });
+        this.toolsSchemasReady = true;
+      })
+      .catch((error) => {
+        if (generation !== this.toolsLoadGeneration) return;
+        console.error('Failed to load tool schemas:', error);
+        this.error = 'Could not load tool schemas. Expand a tool to retry.';
+      })
+      .finally(() => {
+        if (this.toolsSchemaRequest === request) this.toolsSchemaRequest = null;
+        if (generation === this.toolsLoadGeneration)
+          this.toolsSchemasLoading = false;
+      });
+    this.toolsSchemaRequest = request;
+    return request;
+  }
+
   private async loadData() {
+    const generation = ++this.toolsLoadGeneration;
+    this.toolsSchemaRequest = null;
+    this.toolsSchemasLoading = false;
+    this.toolsSchemasReady = false;
+    this.toolsContextLoading = true;
     this.loading = true;
     this.error = null;
     let starterPolicyRequest: {
@@ -558,20 +614,66 @@ export class ToolsView extends LitElement {
         currentUser,
         aiModels,
       ] = await Promise.all([
-        getTools(),
-        getMCPServers(),
-        getApprovalWorkflows(),
-        getFeatures(),
-        getUserProfile(),
-        getAIModels(),
+        getToolsSummary().then((tools) => {
+          if (generation === this.toolsLoadGeneration) {
+            this.tools = tools.map((tool) => ({
+              ...tool,
+              schema: {},
+            })) as ToolWithRules[];
+            const servers = new Map(
+              this.mcpServers.map((server) => [server.id, server])
+            );
+            for (const tool of tools) {
+              if (
+                tool.source === 'mcp' &&
+                tool.source_id &&
+                !servers.has(tool.source_id)
+              ) {
+                servers.set(tool.source_id, {
+                  id: tool.source_id,
+                  name: tool.source_name,
+                  url: '',
+                  transport: '',
+                  auth_type: '',
+                  status: '',
+                  created_at: '',
+                  updated_at: '',
+                });
+              }
+            }
+            this.mcpServers = [...servers.values()];
+            this.loading = false;
+          }
+          return tools;
+        }),
+        getMCPServers().catch(() => this.mcpServers),
+        getApprovalWorkflows().catch(() => this.approvalPolicies),
+        getFeatures().catch(() => ({ features: this.features })),
+        getUserProfile().catch(() => this.currentUser),
+        getAIModels().catch(() => []),
       ]);
 
+      if (generation !== this.toolsLoadGeneration) return;
       this.currentUser = currentUser;
+      this.toolsContextLoading = false;
       this.features = featuresResponse.features || {};
-      this.tools = tools as ToolWithRules[];
+      this.tools = tools.map((tool) => ({
+        ...tool,
+        schema: {},
+      })) as ToolWithRules[];
       this.mcpServers = servers;
       this.approvalPolicies = policies;
       this.hasDefaultAIModel = aiModels.some((model) => model.is_default);
+      try {
+        if (
+          JSON.parse(sessionStorage.getItem('preloopExpandedTools') || '[]')
+            .length
+        ) {
+          void this.loadToolSchemas();
+        }
+      } catch {
+        /* Invalid remembered expansion is ignored. */
+      }
       // Tool usage stats are intentionally async and must not block the tools
       // list — kick off after list data is assigned so first paint stays fast.
       void this._loadToolUsageStats();
@@ -596,10 +698,14 @@ export class ToolsView extends LitElement {
         this._handledOauthStarterPolicy = true;
       }
     } catch (err: any) {
+      if (generation !== this.toolsLoadGeneration) return;
       this.error = err.message || 'Failed to load data';
       console.error('Error loading tools data:', err);
     } finally {
-      this.loading = false;
+      if (generation === this.toolsLoadGeneration) {
+        this.loading = false;
+        this.toolsContextLoading = false;
+      }
       if (starterPolicyRequest) {
         void this._openStarterPolicySuggestion(starterPolicyRequest.serverId, {
           fallbackToLatest: starterPolicyRequest.fallbackToLatest,
@@ -1189,6 +1295,10 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleSaveRule(e: CustomEvent) {
+    if (!this.toolsSchemasReady) {
+      await this.loadToolSchemas();
+      if (!this.toolsSchemasReady) return;
+    }
     const { tool, existingRule, formData } = e.detail as {
       tool: ToolWithRules;
       existingRule: AccessRuleSummary | null;
@@ -1954,6 +2064,8 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   private _renderMcpEditor() {
     return html`
       <tools-editor-component
+        ?inert=${this.toolsContextLoading || this.toolsSchemasLoading}
+        @toggle-expand=${() => this.loadToolSchemas()}
         family="mcp"
         .tools=${this._getFilteredTools()}
         .toolStats=${Object.fromEntries(this._getToolStatsMap())}
@@ -2106,6 +2218,8 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   private _renderNativeEditor() {
     return html`
       <tools-editor-component
+        ?inert=${this.toolsContextLoading || this.toolsSchemasLoading}
+        @toggle-expand=${() => this.loadToolSchemas()}
         family="native"
         .tools=${this._getFilteredNativeTools()}
         .accountAsksByDefault=${this._nativeAsksByDefault()}

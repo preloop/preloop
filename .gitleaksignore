@@ -58,3 +58,7 @@ e71706cd13436b34ea22a3d4d71ac3da715d1114:lib/preloop-sync/test_api.py:generic-ap
 # The previous note on this ignore file used the same field name and
 # tripped the same rule. Working tree no longer has that wording.
 b8970d2a6f8d0354a26b271e65a052876861da2f:.gitleaksignore:generic-api-key:52
+
+# CI principal lookup call arguments, not token material. Reformatted in the
+# working tree; the immutable historical commit retains the scanner match.
+2895962e34089bf789a87fdf4870525cb4f59e8b:backend/preloop/models/crud/ci_principal.py:generic-api-key:472

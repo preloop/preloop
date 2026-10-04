@@ -561,9 +561,18 @@ def evaluate_spend_outliers() -> dict[str, int] | None:
     Runs once a day after the UTC day closes, ahead of the Monday digest, and
     also re-checks sessions active in the last day. Findings are recorded once
     per fingerprint, so a repeated run on the same day adds nothing.
+
+    The mapped Copilot premium-request source (#1061) is registered here,
+    before the pass, so a fresh worker evaluates imported spend without any
+    HTTP router being imported or a manual sync having run. Registration is
+    idempotent, so repeating it on every run is harmless. With it registered
+    the pass also replays the recent days of accounts with an active Copilot
+    import, which is how a day imported three days late still gets judged.
     """
+    from preloop.services.copilot_spend_source import register_copilot_spend_source
     from preloop.services.spend_outliers import run_daily_pass
 
+    register_copilot_spend_source()
     db = next(get_db_session())
     try:
         return run_daily_pass(db)
