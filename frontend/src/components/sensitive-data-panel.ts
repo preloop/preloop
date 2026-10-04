@@ -865,7 +865,7 @@ export class SensitiveDataPanel extends LitElement {
     return html`<div class="entry stack" data-ref=${index}>
       <div class="inline">
         <label
-          >Name
+          >Scope name
           <input
             type="text"
             .value=${entry.id}
@@ -969,6 +969,11 @@ export class SensitiveDataPanel extends LitElement {
             }
           </div>`;
         })}
+        ${
+          errors[`ref-${index}-fields`]
+            ? html`<span class="error">${errors[`ref-${index}-fields`]}</span>`
+            : nothing
+        }
         <div>
           <button
             type="button"

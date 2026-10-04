@@ -131,6 +131,28 @@ describe('sensitive-data-policy', () => {
     expect(formToBlock(form, stored)).to.deep.equal(stored);
   });
 
+  it('leaves the default approver view out unless it was written', () => {
+    const form = emptyForm();
+    form.referenceOnly = [
+      {
+        id: 'refs',
+        scope: { agents: [], tools: ['t'], servers: [] },
+        keepFields: [],
+        approverView: 'redacted',
+      },
+    ];
+    expect(formToBlock(form, undefined)).to.deep.equal({
+      reference_only: [{ id: 'refs', scope: { tools: ['t'] } }],
+    });
+    form.referenceOnly[0].keepFields = Array.from(
+      { length: 33 },
+      (_, i) => `$.f${i}`
+    );
+    expect(formErrors(form)['ref-0-fields']).to.equal(
+      'Keep at most 32 fields per entry.'
+    );
+  });
+
   it('drops the console rule when its last type is unchecked', () => {
     const stored = {
       rules: [
@@ -185,7 +207,14 @@ describe('sensitive-data-policy', () => {
     ]) {
       expect(isValidJsonPath(path), path).to.equal(true);
     }
-    for (const path of ['consent_id', '$', '$..id', '$.a b', '$.[0]']) {
+    for (const path of [
+      'consent_id',
+      '$',
+      '$..id',
+      '$.a b',
+      '$.[0]',
+      "$['a']",
+    ]) {
       expect(isValidJsonPath(path), path).to.equal(false);
     }
     const form = emptyForm();

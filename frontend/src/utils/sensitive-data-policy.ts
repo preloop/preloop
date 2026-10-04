@@ -302,7 +302,13 @@ export function formToBlock(
       const fields = entry.keepFields.map((f) => f.trim()).filter(Boolean);
       if (fields.length) base.keep_fields = fields;
       else delete base.keep_fields;
-      base.approver_view = entry.approverView;
+      // `redacted` is the server default and the export leaves it out;
+      // write it only when it was written before, so a save is a no-op.
+      if (entry.approverView === 'redacted' && !('approver_view' in base)) {
+        delete base.approver_view;
+      } else {
+        base.approver_view = entry.approverView;
+      }
       return base;
     });
   if (refs.length) block.reference_only = refs;
@@ -386,9 +392,14 @@ function quoteYaml11Booleans(doc: Document) {
   });
 }
 
-/** JSONPath subset accepted by reference-only logging. */
-const JSON_PATH_RE =
-  /^\$(?:\.[A-Za-z_][A-Za-z0-9_-]*|\[\d+\]|\[\*\]|\['[^']+'\])+$/;
+/**
+ * JSONPath subset accepted by reference-only logging. Same pattern as
+ * KEEP_FIELD_RE in the server's policy schema: dotted keys, [n] and [*].
+ */
+const JSON_PATH_RE = /^\$(?:\.[A-Za-z_][A-Za-z0-9_-]*|\[\d+\]|\[\*\])+$/;
+
+/** Server cap on keep_fields per reference-only entry. */
+export const MAX_KEEP_FIELDS = 32;
 
 export function isValidJsonPath(path: string): boolean {
   return JSON_PATH_RE.test(path.trim());
@@ -408,6 +419,10 @@ export function formErrors(form: SensitiveDataForm): Record<string, string> {
     ) {
       errors[`ref-${index}-scope`] =
         'Pick at least one tool, server or agent, otherwise every call is reference only.';
+    }
+    if (entry.keepFields.filter((f) => f.trim()).length > MAX_KEEP_FIELDS) {
+      errors[`ref-${index}-fields`] =
+        `Keep at most ${MAX_KEEP_FIELDS} fields per entry.`;
     }
     entry.keepFields.forEach((field, fieldIndex) => {
       if (field.trim() && !isValidJsonPath(field)) {
