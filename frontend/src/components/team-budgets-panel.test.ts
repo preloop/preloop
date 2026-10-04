@@ -3,6 +3,8 @@ import sinon from 'sinon';
 import './team-budgets-panel.ts';
 import type { TeamBudgetsPanel } from './team-budgets-panel';
 import { invalidateApiCaches } from '../api';
+import { resetConfirmDialogForTests } from './confirm-dialog';
+import { answerConfirmDialog } from '../utils/test-confirm-dialog';
 
 describe('TeamBudgetsPanel', () => {
   let fetchStub: sinon.SinonStub;
@@ -79,6 +81,7 @@ describe('TeamBudgetsPanel', () => {
     fetchStub.restore();
     localStorage.clear();
     invalidateApiCaches();
+    resetConfirmDialogForTests();
   });
 
   it('lists spend per team and the team budgets', async () => {
@@ -129,9 +132,11 @@ describe('TeamBudgetsPanel', () => {
       period: 'monthly',
       hard_limit_usd: 25,
     });
-    await (
+    const removing = (
       el as unknown as { removeBudget: (b: unknown) => Promise<void> }
     ).removeBudget(budgets[0]);
+    await answerConfirmDialog(true);
+    await removing;
     expect(writes[1].method).to.equal('DELETE');
     expect(writes[1].url).to.contain('/team-budgets/b1');
     expect(changed.callCount).to.equal(2);
@@ -162,5 +167,40 @@ describe('TeamBudgetsPanel', () => {
     }
     expect(writes).to.deep.equal([]);
     expect(el.shadowRoot!.textContent).to.contain('limit of 0 or more');
+  });
+
+  it('asks before removing a team budget and keeps it on cancel', async () => {
+    const el = (await fixture(
+      html`<team-budgets-panel></team-budgets-panel>`
+    )) as TeamBudgetsPanel;
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('table[aria-label="Team budgets"]')
+    );
+    const remove = [...el.shadowRoot!.querySelectorAll('sl-button')].find(
+      (button) => button.textContent?.trim() === 'Remove'
+    ) as HTMLElement;
+    remove.click();
+    const prompt = await answerConfirmDialog(false);
+    expect(prompt).to.contain('monthly budget for Platform');
+    expect(prompt).to.contain('$50');
+    await el.updateComplete;
+    expect(writes).to.deep.equal([]);
+  });
+
+  it('labels periods in words', async () => {
+    const el = (await fixture(
+      html`<team-budgets-panel></team-budgets-panel>`
+    )) as TeamBudgetsPanel;
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('table[aria-label="Team budgets"]')
+    );
+    const cells = el.shadowRoot!.querySelectorAll(
+      'table[aria-label="Team budgets"] tbody td'
+    );
+    expect(cells[1].textContent?.trim()).to.equal('Monthly');
+    const options = [
+      ...el.shadowRoot!.querySelectorAll('sl-select[label="Period"] sl-option'),
+    ].map((option) => option.textContent?.trim());
+    expect(options).to.deep.equal(['Daily', 'Weekly', 'Monthly']);
   });
 });

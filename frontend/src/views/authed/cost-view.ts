@@ -70,6 +70,11 @@ import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import { hasCapability } from '../../capabilities';
+
+/** Where an operator learns why a model can have no price. */
+const MODEL_PRICING_DOCS_URL =
+  'https://docs.preloop.ai/guide/model-price-refresh';
 
 type DateRangePreset =
   | 'today'
@@ -174,6 +179,13 @@ export class CostView extends AuthedElement {
   @state() private digestNotice: string | null = null;
   @state() private digestBlocked = false;
   @state() private activeAccountLabel = '';
+  /**
+   * The account a mismatched digest belongs to, when this person is a member
+   * of it and the deployment can switch accounts (multi_account).
+   */
+  @state() private digestSwitchTarget: { id: string; name: string } | null =
+    null;
+  @state() private digestSwitching = false;
   private digestAccountId: string | null = null;
   private readonly restoreUrlPeriod = () => {
     this.readUrlPeriod();
@@ -332,6 +344,23 @@ export class CostView extends AuthedElement {
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
         font-variant-numeric: tabular-nums;
+      }
+
+      .active-account {
+        margin: 0 0 var(--sl-spacing-small);
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+        font-size: var(--sl-font-size-small);
+      }
+
+      .digest-actions {
+        margin-top: var(--sl-spacing-small);
+      }
+
+      .unpriced-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-medium);
+        margin-top: var(--sl-spacing-x-small);
       }
 
       /* It opens a dialog, so it is a button. As an anchor it pointed at a
@@ -672,6 +701,7 @@ export class CostView extends AuthedElement {
     this.digestAccountId = link.accountId;
     this.digestNotice = link.error;
     this.digestBlocked = link.blocked;
+    this.digestSwitchTarget = null;
     if (!link.period && !link.accountId) this.activeAccountLabel = '';
     this.selectedRange = this.loadStoredDateRange();
     this.summary = null;
@@ -832,6 +862,7 @@ export class CostView extends AuthedElement {
     this.digestAccountId = null;
     this.digestNotice = null;
     this.digestBlocked = false;
+    this.digestSwitchTarget = null;
     this.activeAccountLabel = '';
     // Only leaving digest mode changes the URL; ordinary preset changes must
     // not stack no-op history entries.
@@ -881,9 +912,10 @@ export class CostView extends AuthedElement {
           account.id.toLowerCase() !== this.digestAccountId
         ) {
           this.digestNotice =
-            'This digest belongs to a different account. Switch accounts to view it';
+            'This digest belongs to a different account. Switch accounts to view it.';
           this.digestBlocked = true;
           this.loading = false;
+          void this.resolveDigestSwitch(this.digestAccountId, generation);
           return;
         }
       }
@@ -1707,6 +1739,90 @@ export class CostView extends AuthedElement {
     `;
   }
 
+  /**
+   * Say what the person can do about a digest from another account. With
+   * multi_account on and a membership in that account, offer to switch and
+   * reopen the same link; without the capability, say to sign in to it.
+   * The hierarchy client is loaded only on this path, so the open-source
+   * bundle never fetches it.
+   */
+  private async resolveDigestSwitch(accountId: string, generation: number) {
+    const prefix = 'This digest belongs to a different account';
+    try {
+      const features = await getFeatures();
+      if (generation !== this.loadGeneration) return;
+      if (!hasCapability(features.features, 'multi_account')) {
+        this.digestNotice = `${prefix}. Sign in to that account to view it.`;
+        return;
+      }
+      const { getMemberships } = await import('../../hierarchy-api');
+      const memberships = await getMemberships();
+      if (generation !== this.loadGeneration) return;
+      const membership = memberships.find(
+        (entry) => entry.account_id.toLowerCase() === accountId
+      );
+      if (!membership) {
+        this.digestNotice = `${prefix}, and you are not a member of it.`;
+        return;
+      }
+      const name = membership.account_name || 'that account';
+      this.digestSwitchTarget = { id: membership.account_id, name };
+      this.digestNotice = `${prefix}: ${name}.`;
+    } catch (error) {
+      console.warn('Could not look up the digest account:', error);
+    }
+  }
+
+  /** Test seam: a real switch reloads the page at the digest link. */
+  private navigateAfterSwitch(url: string) {
+    window.location.assign(url);
+  }
+
+  private async handleDigestSwitch() {
+    const target = this.digestSwitchTarget;
+    if (!target) return;
+    this.digestSwitching = true;
+    try {
+      const { switchAccount } = await import('../../hierarchy-api');
+      // Reloads this same URL in the other account, so the digest opens.
+      await switchAccount(target.id, (url) => this.navigateAfterSwitch(url));
+    } catch (error) {
+      this.digestNotice = `Could not switch to ${target.name}. ${
+        error instanceof Error ? error.message : ''
+      }`.trim();
+      this.digestSwitchTarget = null;
+    } finally {
+      this.digestSwitching = false;
+    }
+  }
+
+  private renderDigestNotice() {
+    if (!this.digestNotice) return nothing;
+    const target = this.digestSwitchTarget;
+    return html`<sl-alert
+      class="digest-notice"
+      open
+      variant="warning"
+      role="alert"
+    >
+      <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+      ${this.digestNotice}
+      ${
+        target
+          ? html`<div class="digest-actions">
+              <sl-button
+                size="small"
+                variant="primary"
+                ?loading=${this.digestSwitching}
+                @click=${() => void this.handleDigestSwitch()}
+                >Switch to ${target.name} and open</sl-button
+              >
+            </div>`
+          : nothing
+      }
+    </sl-alert>`;
+  }
+
   // Warning banner when usage rows carry tokens but no cost (model missing
   // from the price catalog at request time). Repricing re-derives their cost
   // from stored tokens against current prices/overrides (billing flag), and
@@ -1727,6 +1843,17 @@ export class CostView extends AuthedElement {
         : nothing;
     }
     const unpricedModels = this.summary?.unpriced_models ?? [];
+    // Without billing or price overrides (the open-source server) nothing on
+    // this page can price these models, so the banner explains instead of
+    // raising an alarm with no action. It waits for the feature flags, so a
+    // deployment that can fix it never sees this copy first.
+    const explainOnly =
+      this.pricingContextReady &&
+      !this.billingEnabled &&
+      !this.modelPriceOverridesEnabled;
+    if (explainOnly) {
+      return this.renderUnpricedExplanation(unpricedRequests, unpricedModels);
+    }
     return html`
       <sl-alert id="panel-pricing-catalog" variant="warning" open role="alert">
         <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
@@ -1779,6 +1906,50 @@ export class CostView extends AuthedElement {
             : nothing
         }
         ${this.renderRepriceStatus()}
+      </sl-alert>
+    `;
+  }
+
+  private renderUnpricedExplanation(
+    unpricedRequests: number,
+    unpricedModels: NonNullable<CostAnalyticsSummaryResponse['unpriced_models']>
+  ) {
+    return html`
+      <sl-alert
+        id="panel-pricing-catalog"
+        class="unpriced-explanation"
+        variant="neutral"
+        open
+        role="status"
+      >
+        <sl-icon slot="icon" name="info-circle"></sl-icon>
+        ${this.formatNumber(unpricedRequests)}
+        request${unpricedRequests === 1 ? '' : 's'}
+        (${this.formatNumber(this.summary?.unpriced_tokens)} tokens) in this
+        window used models with no catalog price. Their tokens are counted, but
+        they add nothing to estimated spend or to budgets.
+        ${
+          unpricedModels.length
+            ? html`<div class="unpriced-models">
+                Models without a price:
+                ${unpricedModels.map(
+                  (entry, index) =>
+                    html`${index > 0 ? ', ' : ''}<code>${entry.model}</code>
+                      (${this.formatNumber(entry.tokens)} tokens)`
+                )}.
+              </div>`
+            : nothing
+        }
+        <div>
+          Models outside the public price catalog, such as self-hosted or
+          OpenAI-compatible endpoints, can't be priced on this deployment.
+        </div>
+        <div class="unpriced-links">
+          <a href="/console/ai-models">Review models</a>
+          <a href=${MODEL_PRICING_DOCS_URL} target="_blank" rel="noopener"
+            >How model prices work</a
+          >
+        </div>
       </sl-alert>
     `;
   }
@@ -3660,8 +3831,8 @@ export class CostView extends AuthedElement {
           description="Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend."
         ></view-header>
 
-        ${this.activeAccountLabel ? html`<p>Active account: ${this.activeAccountLabel}</p>` : nothing}
-        ${this.digestNotice ? html`<sl-alert open variant="warning">${this.digestNotice}</sl-alert>` : nothing}
+        ${this.activeAccountLabel ? html`<p class="active-account">Active account: ${this.activeAccountLabel}</p>` : nothing}
+        ${this.renderDigestNotice()}
         <div class="toolbar">
           <time-range-select
             ariaLabel="Cost date range"

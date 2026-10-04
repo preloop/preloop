@@ -12,6 +12,7 @@ describe('CostView', () => {
   let accountPayload: Record<string, unknown>;
   let originalUrl: string;
   let accountStatus = 200;
+  let membershipsPayload: unknown[] = [];
   // Per-test copy of the payload so a test can add fields (e.g. the imported
   // usage block) without leaking into the others.
   let summaryPayload: Record<string, unknown>;
@@ -146,6 +147,7 @@ describe('CostView', () => {
 
   beforeEach(() => {
     accountStatus = 200;
+    membershipsPayload = [];
     originalUrl = window.location.pathname + window.location.search;
     accountPayload = {
       id: '00000000-0000-4000-8000-000000000001',
@@ -262,6 +264,21 @@ describe('CostView', () => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
+        }
+        if (url.includes('/api/v1/me/memberships')) {
+          return new Response(JSON.stringify(membershipsPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.includes('/api/v1/auth/switch-account')) {
+          return new Response(
+            JSON.stringify({
+              access_token: 'switched-access-token',
+              refresh_token: 'switched-refresh-token',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
         }
         if (url.includes('/api/v1/features')) {
           return new Response(JSON.stringify({ features: featuresPayload }), {
@@ -1402,6 +1419,50 @@ describe('CostView', () => {
     });
   });
 
+  describe('unpriced banner without billing or price overrides', () => {
+    beforeEach(() => {
+      featuresPayload = {};
+      summaryPayload = {
+        ...summary,
+        unpriced_requests: 2,
+        unpriced_tokens: 6000,
+        unpriced_models: [
+          { model: 'local/example-model', requests: 2, tokens: 6000 },
+        ],
+      };
+    });
+
+    it('explains the gap and links somewhere useful instead of alarming', async () => {
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () =>
+          element.shadowRoot
+            ?.querySelector('#panel-pricing-catalog')
+            ?.classList.contains('unpriced-explanation'),
+        'the explanation did not replace the warning'
+      );
+      const banner = element.shadowRoot!.querySelector(
+        '#panel-pricing-catalog'
+      )!;
+      expect(banner.getAttribute('variant')).to.equal('neutral');
+      expect(banner.getAttribute('role')).to.equal('status');
+      const text = banner.textContent!.replace(/\s+/g, ' ');
+      expect(text).to.contain('local/example-model');
+      expect(text).to.contain("can't be priced on this deployment");
+      expect(text).to.not.contain('understated');
+      expect(banner.querySelector('sl-button')).to.not.exist;
+      const links = [...banner.querySelectorAll('a')].map((link) =>
+        link.getAttribute('href')
+      );
+      expect(links).to.include('/console/ai-models');
+      expect(links.some((href) => href?.startsWith('https://docs.'))).to.equal(
+        true
+      );
+    });
+  });
+
   describe('pricing overrides table', () => {
     beforeEach(() => {
       featuresPayload = { billing: true, model_price_overrides: true };
@@ -1992,5 +2053,77 @@ describe('CostView', () => {
     expect(element.shadowRoot?.textContent).to.contain(
       'Failed to fetch account details'
     );
+  });
+
+  describe('digest from another account', () => {
+    const otherAccount = '00000000-0000-4000-8000-000000000002';
+
+    function notice(element: CostView): Element | null {
+      return element.shadowRoot!.querySelector('.digest-notice');
+    }
+
+    it('tells an open-source user to sign in to the other account', async () => {
+      accountPayload.id = otherAccount;
+      featuresPayload = {};
+      window.history.replaceState({}, '', digestUrl);
+      const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+      await settled(element);
+      await waitUntil(() =>
+        notice(element)?.textContent?.includes('Sign in to that account')
+      );
+      expect(notice(element)?.querySelector('sl-button')).to.not.exist;
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/me/memberships'))
+      ).to.equal(false);
+    });
+
+    it('offers to switch when the person is a member of that account', async () => {
+      accountPayload.id = otherAccount;
+      featuresPayload = { multi_account: true };
+      membershipsPayload = [
+        { account_id: otherAccount, account_name: 'Current account' },
+        { account_id: digestAccount, account_name: 'Example subsidiary' },
+      ];
+      window.history.replaceState({}, '', digestUrl);
+      const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+      await settled(element);
+      await waitUntil(() => notice(element)?.querySelector('sl-button'));
+      await element.updateComplete;
+      const button = notice(element)!.querySelector('sl-button')!;
+      expect(button.textContent?.trim()).to.equal(
+        'Switch to Example subsidiary and open'
+      );
+
+      const navigate = sinon.stub(element as any, 'navigateAfterSwitch');
+      (button as HTMLElement).click();
+      await waitUntil(() => navigate.called, 'did not navigate after switch');
+      const switchCall = fetchStub
+        .getCalls()
+        .find((call) => String(call.args[0]).includes('/auth/switch-account'));
+      expect(JSON.parse(String(switchCall!.args[1].body))).to.deep.equal({
+        account_id: digestAccount,
+      });
+      // The same digest link reopens in the switched account.
+      expect(navigate.firstCall.args[0]).to.contain(
+        `account_id=${digestAccount}`
+      );
+    });
+
+    it('says so when the person is not a member of that account', async () => {
+      accountPayload.id = otherAccount;
+      featuresPayload = { multi_account: true };
+      membershipsPayload = [
+        { account_id: otherAccount, account_name: 'Current account' },
+      ];
+      window.history.replaceState({}, '', digestUrl);
+      const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+      await settled(element);
+      await waitUntil(() =>
+        notice(element)?.textContent?.includes('not a member')
+      );
+      expect(notice(element)?.querySelector('sl-button')).to.not.exist;
+    });
   });
 });

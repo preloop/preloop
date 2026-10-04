@@ -16,8 +16,19 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
+import { confirmDialog } from './confirm-dialog';
 
 const PERIODS: TeamBudgetPeriod[] = ['daily', 'weekly', 'monthly'];
+
+const PERIOD_LABELS: Record<string, string> = {
+  daily: 'Daily',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+};
+
+function periodLabel(period: string): string {
+  return PERIOD_LABELS[period] || period;
+}
 
 /**
  * Cost page Teams tab: member-attributed spend per team for the page's date
@@ -161,6 +172,14 @@ export class TeamBudgetsPanel extends AuthedElement {
 
   private async removeBudget(budget: TeamBudget): Promise<void> {
     this.actionError = null;
+    const confirmed = await confirmDialog({
+      title: 'Remove team budget?',
+      message: `Remove the ${periodLabel(budget.period).toLowerCase()} budget for ${budget.team_name}?`,
+      detail: `Spending by the team's members will no longer be capped at ${this.money(budget.hard_limit_usd)}.`,
+      confirmLabel: 'Remove budget',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await deleteTeamBudget(budget.id);
       await this.load();
@@ -220,7 +239,7 @@ export class TeamBudgetsPanel extends AuthedElement {
                   (budget) =>
                     html`<tr>
                       <td>${budget.team_name}</td>
-                      <td>${budget.period}</td>
+                      <td>${periodLabel(budget.period)}</td>
                       <td class="num">
                         ${this.money(budget.current_spend_usd)}
                       </td>
@@ -269,7 +288,9 @@ export class TeamBudgetsPanel extends AuthedElement {
               >
                 ${PERIODS.map(
                   (period) =>
-                    html`<sl-option value=${period}>${period}</sl-option>`
+                    html`<sl-option value=${period}
+                      >${periodLabel(period)}</sl-option
+                    >`
                 )}
               </sl-select>
               <sl-input
@@ -298,7 +319,9 @@ export class TeamBudgetsPanel extends AuthedElement {
       return html`<sl-spinner aria-label="Loading team spend"></sl-spinner>`;
     }
     if (this.error) {
-      return html`<sl-alert variant="danger" open>${this.error}</sl-alert>`;
+      return html`<sl-alert variant="danger" open role="alert"
+        >${this.error}</sl-alert
+      >`;
     }
     return html`<div class="panel">
       <p class="muted">
@@ -308,7 +331,9 @@ export class TeamBudgetsPanel extends AuthedElement {
       ${this.renderUsage()}
       ${
         this.actionError
-          ? html`<sl-alert variant="danger" open>${this.actionError}</sl-alert>`
+          ? html`<sl-alert variant="danger" open role="alert"
+              >${this.actionError}</sl-alert
+            >`
           : nothing
       }
       ${this.renderBudgets()}
