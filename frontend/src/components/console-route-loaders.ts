@@ -46,6 +46,7 @@ export const consoleRouteLoaders = {
   'flow-execution-view': () => import('../views/authed/flow-execution-view'),
   'runtime-sessions-view': () =>
     import('../views/authed/runtime-sessions-view'),
+  'artifacts-view': () => import('../views/authed/artifacts-view'),
   'approval-view': () => import('../views/authed/approval-view'),
   'approvals-view': () => import('../views/authed/approvals-view'),
   'policies-view': () => import('../views/authed/policies-view'),

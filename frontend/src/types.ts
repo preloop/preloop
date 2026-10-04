@@ -1085,6 +1085,23 @@ export interface RuntimeSessionArtifactDescriptor {
   content_block: McpResourceLink;
 }
 
+/** One item of `GET /api/v1/artifacts` (account-wide search, #1086). */
+export interface ArtifactSearchItem extends RuntimeSessionArtifactDescriptor {
+  session_title?: string | null;
+  agent_name?: string | null;
+  /** Redacted text of the best matching chunk; set only with `q`. */
+  excerpt?: { text: string; highlights: Array<[number, number]> } | null;
+  /** Transcript only: start in seconds of the cue the excerpt is in. */
+  cue_start?: number | null;
+}
+
+export interface ArtifactSearchResponse {
+  items: ArtifactSearchItem[];
+  next_cursor?: string | null;
+  facets: { kind: Record<string, number>; site: Record<string, number> };
+  facets_truncated: boolean;
+}
+
 export interface RuntimeSessionArtifactListResponse {
   items: RuntimeSessionArtifactDescriptor[];
   next_cursor?: string | null;

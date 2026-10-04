@@ -645,6 +645,28 @@ describe('ConsoleShell', () => {
     expect(el.shadowRoot?.querySelector('a[href="/console/cost"]')).to.exist;
   });
 
+  it('lists Artifacts right after Sessions in the Audit group', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/artifacts"]') !== null,
+      'Artifacts link did not render'
+    );
+
+    const link = el.shadowRoot!.querySelector('a[href="/console/artifacts"]')!;
+    expect(link.textContent).to.contain('Artifacts');
+    const audit = link.closest('sl-details.nav-section');
+    expect(audit?.textContent).to.contain('Audit');
+    const hrefs = Array.from(audit!.querySelectorAll('a.sidebar-link')).map(
+      (a) => a.getAttribute('href')
+    );
+    expect(hrefs.indexOf('/console/artifacts')).to.equal(
+      hrefs.indexOf('/console/runtime-sessions') + 1
+    );
+  });
+
   it('nests Runners under Settings instead of the top-level nav', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
@@ -839,6 +861,18 @@ describe('ConsoleShell', () => {
     );
     expect(
       hidden.shadowRoot?.querySelector('a[href="/console/settings/records"]')
+    ).to.not.exist;
+    // Artifacts is gated like Sessions (view_runtime_sessions); wait for the
+    // permissions to load, the nav is unrestricted until they do.
+    await waitUntil(
+      () =>
+        hidden.shadowRoot?.querySelector('a[href="/console/agents"]') === null,
+      'permissions did not apply'
+    );
+    expect(hidden.shadowRoot?.querySelector('a[href="/console/artifacts"]')).to
+      .not.exist;
+    expect(
+      hidden.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]')
     ).to.not.exist;
 
     hidden.remove();

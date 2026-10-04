@@ -308,8 +308,14 @@ is written to the audit log with the agent as the actor.
   full descriptor (`sha256`, `availability`, `legal_hold`,
   `parent_artifact_id` and so on) comes from
   `GET /api/v1/runtime-sessions/{id}/artifacts`.
+- **Artifacts page.** **Audit > Artifacts** (`/console/artifacts`) lists the
+  artifacts of every session with search, kind, site, label, agent, tool,
+  date and legal hold filters, and a gallery for screenshots. Filters live in
+  the URL, so a filtered view can be shared. A row opens its session on the
+  artifact's timeline row.
 - **Storage card.** **Settings > Account** shows the session artifact storage
-  used per kind against the account budget.
+  used per kind against the account budget. **Browse artifacts** and each
+  kind's name open the Artifacts page, filtered to that kind.
 - **Account search.** `GET /api/v1/artifacts` searches every session of the
   account; see [Searching across sessions](#searching-across-sessions).
 
