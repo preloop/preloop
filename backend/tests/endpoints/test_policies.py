@@ -618,6 +618,152 @@ tools:
         assert any("nonexistent-policy" in e.message for e in result.errors)
 
 
+class _RecordingAuditService:
+    """Stand-in for the EE audit service that writes real audit_log rows."""
+
+    def log_configuration_change(
+        self,
+        db,
+        *,
+        account_id,
+        user,
+        config_type,
+        action,
+        old_value,
+        new_value,
+        request,
+    ):
+        from preloop.models.crud import crud_audit_log
+
+        details = {"config_type": config_type, "action": action}
+        if old_value is not None:
+            details["old_value"] = old_value
+        if new_value is not None:
+            details["new_value"] = new_value
+        crud_audit_log.log_action(
+            db=db,
+            account_id=account_id,
+            user_id=user.id,
+            action="configuration_change",
+            resource_type="configuration",
+            resource_id=config_type,
+            status="success",
+            details=details,
+        )
+
+
+class TestPolicyChangeAudit:
+    """Policy apply, rollback and version delete write configuration_change (#1139)."""
+
+    POLICY = """
+version: "1.0"
+metadata:
+  name: "Audited Policy"
+approval_workflows:
+  - name: "audited-approval"
+    approval_type: "standard"
+tools:
+  - name: "bash"
+    source: "builtin"
+    approval_workflow: "audited-approval"
+"""
+
+    @pytest.fixture
+    def audit_rows(self, db_session, test_user, mocker):
+        from preloop.models.models.audit_log import AuditLog
+
+        mocker.patch(
+            "preloop.utils.audit._get_audit_service",
+            return_value=_RecordingAuditService(),
+        )
+
+        def _rows():
+            return (
+                db_session.query(AuditLog)
+                .filter(
+                    AuditLog.account_id == test_user.account_id,
+                    AuditLog.action == "configuration_change",
+                    AuditLog.resource_id == "policy",
+                )
+                .all()
+            )
+
+        return _rows
+
+    async def _upload(self, db_session, test_user, upload, dry_run=False):
+        return await policies.upload_policy(
+            file=await upload(self.POLICY, "audited.yaml"),
+            dry_run=dry_run,
+            resolve_env=False,
+            skip_missing_servers=False,
+            account=test_user.account,
+            current_user=test_user,
+            db=db_session,
+        )
+
+    async def test_upload_writes_configuration_change(
+        self, db_session, test_user, mock_upload_file, audit_rows
+    ):
+        result = await self._upload(db_session, test_user, mock_upload_file)
+        assert result.success is True
+
+        rows = audit_rows()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.user_id == test_user.id
+        assert row.details["action"] == "applied"
+        value = row.details["new_value"]
+        assert value["policy_name"] == "Audited Policy"
+        assert value["filename"] == "audited.yaml"
+        assert value["counts"]["policies_created"] == 1
+        assert value["counts"]["tools_created"] == 1
+        assert value["objects"]["approval_workflows"] == ["audited-approval"]
+        assert value["objects"]["tools"] == ["builtin:bash"]
+        assert "active_version" in value
+
+    async def test_dry_run_upload_is_not_audited(
+        self, db_session, test_user, mock_upload_file, audit_rows
+    ):
+        await self._upload(db_session, test_user, mock_upload_file, dry_run=True)
+        assert audit_rows() == []
+
+    async def test_rollback_and_version_delete_are_audited(
+        self, db_session, test_user, mock_upload_file, audit_rows
+    ):
+        service = policies.PolicyVersionService(db_session, str(test_user.account_id))
+        first = service.create_snapshot(description="before", user_id=test_user.id)
+        db_session.flush()
+        await self._upload(db_session, test_user, mock_upload_file)
+        second = service.create_snapshot(description="after", user_id=test_user.id)
+        db_session.flush()
+
+        rollback = await policies.rollback_to_version(
+            version_id=first.id,
+            request=policies.RollbackRequest(preview_only=False),
+            account=test_user.account,
+            current_user=test_user,
+            db=db_session,
+        )
+        assert rollback.success is True, rollback.error
+
+        await policies.delete_policy_version(
+            version_id=second.id,
+            account=test_user.account,
+            current_user=test_user,
+            db=db_session,
+        )
+
+        by_action = {r.details["action"]: r.details for r in audit_rows()}
+        assert set(by_action) == {"applied", "rolled_back", "version_deleted"}
+        rolled = by_action["rolled_back"]["new_value"]
+        assert rolled["version"]["version_id"] == str(first.id)
+        assert rolled["version"]["version_number"] == first.version_number
+        assert rolled["diff"] is not None
+        deleted = by_action["version_deleted"]["old_value"]
+        assert deleted["version_id"] == str(second.id)
+        assert deleted["version_number"] == second.version_number
+
+
 # ============================================================================
 # Policy Version Management Endpoint Tests
 # ============================================================================
