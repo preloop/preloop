@@ -130,6 +130,41 @@ with a label, description, example and locales. `POST
 /api/v1/policies/sensitive-data/test` runs the detectors on sample text
 and returns the match spans; the text is never logged or stored.
 
+### Sensitive data rules on tool calls
+
+`sensitive_data.rules` run the same detectors on MCP tool calls and, for
+model targets, compile into ordinary model I/O rules so each path keeps one
+evaluator.
+
+```yaml
+sensitive_data:
+  rules:
+    - id: block-cards-in-tools
+      on: [tool.args, tool.result, model.request, model.response]
+      scope: {agents: [], tools: [], servers: []}   # empty means all
+      types: [credit_card, iban]                    # default: the detectors block types
+      action: deny                                  # notify | deny | require_approval
+    - id: ask-before-sharing-records
+      on: [tool.result]
+      scope: {tools: [get_patient_record], servers: [ehr]}
+      action: require_approval
+      approval_workflow: humans
+```
+
+- `scope.agents` holds managed agent ids, `scope.tools` client-visible tool
+  names, `scope.servers` MCP server names (case-insensitive; builtin tools
+  belong to `preloop-mcp`). Model targets honour `agents` only.
+- `tool.args` runs before the call. `deny` refuses with the types found
+  (never the values); `require_approval` creates an approval through the
+  rule's workflow or the account default and fails closed without one;
+  `notify` records a notice and lets the call through. Tool access-rule
+  conditions can read `pii.found`, `pii.types_found`, `pii.count` and
+  `pii.paths` from the scan next to `args`.
+- `tool.result` runs after the call. `deny` replaces the result with a
+  refusal; `require_approval` holds the result until a human decides.
+- Audit rows carry the rule id, target, types found, argument paths and a
+  SHA-256 of the scanned text. With no rule in scope no detector runs.
+
 Each rule has `detector_timeout_ms` (default 500) and
 `on_detector_timeout` (default `deny`, fail closed). Set
 `on_detector_timeout: allow` to skip that rule on timeout. A rule whose conditions are all `notify` never blocks on
