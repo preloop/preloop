@@ -31,7 +31,10 @@ with the format signature, so a file that is not the declared type is refused.
 When a deposit names no kind, Preloop infers one from the content: an image is
 a `screenshot`, audio is `audio`, video is a `recording`, `text/vtt` and
 `application/x-subrip` are a `transcript`, other text is a `document`, and
-anything else is a `generated_file`.
+anything else is a `generated_file`. If the inferred kind does not accept the
+media type (for example `image/gif` or `text/csv`), the deposit is stored as a
+`generated_file` instead of being refused. Audio is the exception: it stays
+`audio`, so the account's audio setting still applies.
 
 A request body may be at most the largest kind cap plus 1 MiB. Larger bodies
 are refused before they are parsed.
@@ -233,8 +236,16 @@ The full request and response schemas are in the API reference
 
 ### 3. CLI
 
-`preloop artifacts put <file> --session <id> --kind <kind> --label site=...`
-is planned in #1089. Until it ships, use the multipart call above.
+```bash
+preloop artifacts put standup.vtt --session <id> --label site=nord
+some-tool | preloop artifacts put - --session <id> --content-type text/plain --name notes.txt
+preloop artifacts ls --session <id> --kind transcript --since 7d
+preloop artifacts get <artifact-id> --session <id> -o standup.vtt
+```
+
+`put` streams the multipart call above and prints the artifact id and a
+console link. `--json` prints the descriptor unchanged. See
+[CLI: Artifacts](cli.md#artifacts) for every flag.
 
 ## Reading artifacts from an agent
 

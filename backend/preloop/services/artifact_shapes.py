@@ -196,20 +196,31 @@ def infer_kind(content_type: str, block_type: str | None = None) -> str:
     """Infer an artifact kind from an MCP block type and media type.
 
     image -> screenshot, audio -> audio, video -> recording, text/vtt or application/x-subrip ->
-    transcript, other text -> document, anything else -> generated_file.
+    transcript, other text -> document, anything else (PDF included) -> generated_file.
+
+    A media type the inferred kind does not accept (``image/gif``,
+    ``text/csv``, ...) falls back to generated_file, so a deposit without an
+    explicit kind is stored instead of refused. Audio is the exception: it
+    stays audio so the per-account audio opt-in still applies to it.
     """
+    from preloop.services import artifact_media
+
     ct = (content_type or "").split(";", 1)[0].strip().lower()
-    if block_type == MCP_TYPE_IMAGE or ct.startswith("image/"):
-        return KIND_SCREENSHOT
     if block_type == MCP_TYPE_AUDIO or ct.startswith("audio/"):
         return KIND_AUDIO
-    if ct.startswith("video/"):
-        return KIND_RECORDING
-    if ct in TRANSCRIPT_CONTENT_TYPES:
-        return KIND_TRANSCRIPT
-    if block_type == MCP_TYPE_TEXT or _is_textual(ct):
-        return KIND_DOCUMENT
-    return KIND_GENERATED_FILE
+    if block_type == MCP_TYPE_IMAGE or ct.startswith("image/"):
+        kind = KIND_SCREENSHOT
+    elif ct.startswith("video/"):
+        kind = KIND_RECORDING
+    elif ct in TRANSCRIPT_CONTENT_TYPES:
+        kind = KIND_TRANSCRIPT
+    elif block_type == MCP_TYPE_TEXT or _is_textual(ct):
+        kind = KIND_DOCUMENT
+    else:
+        return KIND_GENERATED_FILE
+    if ct and not artifact_media.accepts(kind, ct):
+        return KIND_GENERATED_FILE
+    return kind
 
 
 def modality_for(kind: str, content_type: str | None = None) -> str:

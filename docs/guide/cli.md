@@ -209,6 +209,46 @@ a pending approval with `a` or `d`. See
 `sessions search` ranks session content by relevance with the same server
 query the console uses; `preloop sessions search --help` lists its flags.
 
+## Artifacts
+
+```bash
+preloop artifacts put <file|-> --session <id> [--kind <kind>] [--name <name>] \
+  [--label key=value ...] [--parent <artifact-id>] [--content-type <type>] [--json]
+preloop artifacts ls --session <id> [--kind <kind>] [--label key=value ...] [--since 7d] [--limit 100] [--json]
+preloop artifacts get <artifact-id> --session <id> [-o <file>]
+```
+
+These commands use the same deposit API as the console and the
+`deposit_artifact` MCP tool (`/api/v1/runtime-sessions/{id}/artifacts`, see
+[Artifacts](artifacts.md)).
+
+`artifacts put` streams one file (or stdin with `-`) to the session and prints
+the artifact id and a console link that opens the session at that artifact.
+The media type comes from `--content-type`, then the file extension, then the
+first bytes of the file. Stdin has no name to go by, so it needs
+`--content-type`. Leave out `--kind` and the server picks one from the media
+type: PNG, JPEG and WebP images become `screenshot`, audio becomes `audio`,
+video becomes `recording`, `text/vtt` becomes `transcript`, plain text,
+markdown and JSON become `document`, and any other file type (PDF, CSV, GIF,
+...) becomes `generated_file`. Pass `--kind document` for
+a PDF. Labels are `key=value`. Repeat `--label tags=...` to
+build the `tags` list. A refusal prints the server's error code as sent, for
+example `artifact_too_large (HTTP 413)`.
+
+`artifacts ls` lists one session's artifacts, newest first. The server applies
+`--kind` and `--label`. `--since` keeps artifacts created within that window
+and stops paging at the first older one. `--session` is required for now,
+because listing across every session needs the account-wide artifact search.
+
+`artifacts get` streams the bytes to stdout, or with `-o` to a file. The file
+is renamed into place only after the download completes. If the bytes were
+evicted or expired, the command prints why (for example
+`artifact <id> is no longer available: evicted (HTTP 410)`) and exits non-zero.
+
+`--json` on `put` prints the API descriptor unchanged, including its MCP
+`content_block` (a `resource_link`). On `ls` it prints `{"items": [...]}` with
+each descriptor unchanged.
+
 ## Usage import
 
 ```bash
