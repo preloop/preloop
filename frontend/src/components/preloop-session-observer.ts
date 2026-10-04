@@ -93,6 +93,7 @@ import {
   type ArtifactKindGroup,
 } from '../utils/session-artifacts';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import { isUuid, sessionExportHref } from '../utils/records-format';
 
 type SessionInput = RuntimeSessionSummary | Record<string, unknown>;
 type EventPageState = {
@@ -2427,7 +2428,7 @@ export class PreloopSessionObserver extends LitElement {
             <sl-icon slot="prefix" name="list-columns-reverse"></sl-icon>
             Requests
           </sl-button>
-          ${this.renderTalkButton()}
+          ${this.renderEvidenceExportButton(session)} ${this.renderTalkButton()}
           <sl-button size="small" @click=${() => this.reloadActiveSession()}>
             Refresh
           </sl-button>
@@ -2452,6 +2453,29 @@ export class PreloopSessionObserver extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Open the period export pre-filtered to this session (#1088), so its
+   * transcripts, screenshots and files leave with a sha256 each.
+   */
+  private renderEvidenceExportButton(session: ObservedSession | null) {
+    // Synthetic observer rows (gateway-only traffic) have no session to export.
+    if (!session || !isUuid(session.id)) return nothing;
+    return html`<sl-button
+      size="small"
+      data-testid="add-to-evidence-export"
+      href=${sessionExportHref({
+        id: session.id,
+        started_at: session.startedAt,
+        last_activity_at: session.lastActivityAt,
+        ended_at: session.endedAt,
+      })}
+      title="Open the signed period export limited to this session's artifacts"
+    >
+      <sl-icon slot="prefix" name="box-arrow-up"></sl-icon>
+      Add to evidence export
+    </sl-button>`;
   }
 
   /**
