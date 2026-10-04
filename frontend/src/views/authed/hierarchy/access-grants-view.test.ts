@@ -7,6 +7,8 @@ import {
   toastCount,
   type MockApi,
 } from '../../../test-helpers/capability-api';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 
 const GRANTS = '/api/v1/accounts/acc-root/access-grants';
 const SUBS = '/api/v1/accounts/acc-root/subaccounts';
@@ -46,6 +48,7 @@ describe('access-grants-view', () => {
   afterEach(() => {
     api?.restore();
     localStorage.clear();
+    resetConfirmDialogForTests();
   });
 
   it('lists grants with names for subjects and subaccounts', async () => {
@@ -80,14 +83,18 @@ describe('access-grants-view', () => {
     expect(text).to.contain('All subaccounts');
   });
 
-  it('renders nothing and raises no toast when the endpoint is missing', async () => {
+  it('explains, without a toast, when the endpoint is missing', async () => {
     api = mockApi();
     const before = toastCount();
     const el = await fixture<AccessGrantsView>(
       html`<access-grants-view></access-grants-view>`
     );
     await waitUntil(() => api.callsTo(GRANTS).length === 1);
-    await waitUntil(() => el.shadowRoot!.childElementCount === 0);
+    await waitUntil(() => el.shadowRoot!.querySelector('.off-state'));
+    expect(
+      (el.shadowRoot!.querySelector('view-header') as any).headerText
+    ).to.equal('Access grants');
+    expect(el.shadowRoot!.querySelector('form')).to.not.exist;
     expect(toastCount()).to.equal(before);
     expect(api.callsTo('/api/v1/users')).to.have.length(0);
   });
@@ -134,11 +141,66 @@ describe('access-grants-view', () => {
       (b) => b.textContent?.trim() === 'Revoke'
     ) as HTMLElement;
     revoke.click();
+    await answerConfirmDialog(true);
     await waitUntil(() => el.shadowRoot!.querySelector('.error'));
     expect(el.shadowRoot!.querySelector('.error')!.textContent).to.equal(
       'That grant is not in this account.'
     );
     expect(el.shadowRoot!.querySelector('view-header')).to.exist;
     expect(toastCount()).to.equal(before);
+  });
+
+  it('asks before revoking and keeps the grant on cancel', async () => {
+    api = mockApi({
+      capabilities: ['account_hierarchy'],
+      routes: [
+        ...baseRoutes([
+          {
+            id: 'g1',
+            subject_type: 'team',
+            subject_id: 'team-1',
+            level: 'read',
+            target: 'all',
+          },
+        ]),
+        { method: 'DELETE', path: `${GRANTS}/g1`, status: 204 },
+      ],
+    });
+    const el = await fixture<AccessGrantsView>(
+      html`<access-grants-view></access-grants-view>`
+    );
+    await ready(el);
+    const revoke = [...el.shadowRoot!.querySelectorAll('sl-button')].find(
+      (b) => b.textContent?.trim() === 'Revoke'
+    ) as HTMLElement;
+    revoke.click();
+    const prompt = await answerConfirmDialog(false);
+    expect(prompt).to.contain('Team: Ops');
+    expect(prompt).to.contain('All subaccounts');
+    await el.updateComplete;
+    expect(api.callsTo(`${GRANTS}/g1`, 'DELETE')).to.have.length(0);
+
+    revoke.click();
+    await answerConfirmDialog(true);
+    await waitUntil(() => api.callsTo(`${GRANTS}/g1`, 'DELETE').length === 1);
+  });
+
+  it('points to creating a subaccount when there are none to select', async () => {
+    api = mockApi({
+      capabilities: ['account_hierarchy'],
+      routes: baseRoutes([]),
+    });
+    const el = await fixture<AccessGrantsView>(
+      html`<access-grants-view></access-grants-view>`
+    );
+    await ready(el);
+    (el as unknown as { subaccounts: unknown[] }).subaccounts = [];
+    (el as unknown as { target: string }).target = 'selected';
+    await el.updateComplete;
+    const hint = el.shadowRoot!.querySelector('[data-testid="no-subaccounts"]');
+    expect(hint?.textContent).to.contain('Create a subaccount first');
+    expect(hint?.querySelector('a')?.getAttribute('href')).to.equal(
+      '/console/settings/subaccounts'
+    );
   });
 });

@@ -70,7 +70,7 @@ export class AccountLoginChooser extends LitElement {
             )}`
         )}
       </ul>
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}`;
+      ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}`;
   }
 }
 

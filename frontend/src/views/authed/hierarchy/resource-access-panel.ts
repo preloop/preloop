@@ -29,6 +29,7 @@ import {
   type Tags,
 } from '../../../hierarchy-api';
 import { parseTags } from './tags';
+import { confirmDialog } from '../../../components/confirm-dialog';
 
 const SHAREABLE: readonly ShareableKind[] = [
   'ai_model',
@@ -269,13 +270,29 @@ export class ResourceAccessPanel extends LitElement {
     });
   };
 
-  private removeShare(share: Share) {
+  private async removeShare(share: Share) {
+    const ok = await confirmDialog({
+      title: 'Stop sharing?',
+      message: `Stop sharing this resource with ${this.targetLabel(share.target)}?`,
+      detail: 'Those subaccounts lose access to it right away.',
+      confirmLabel: 'Stop sharing',
+      variant: 'danger',
+    });
+    if (!ok) return;
     return this.changeShares(() => deleteShare(this.accountId, share.id));
   }
 
   /** Stops every share listed, and only those. */
   private stopSharing = async () => {
     const listed = [...this.shares];
+    const ok = await confirmDialog({
+      title: 'Stop sharing?',
+      message: `Stop all ${listed.length} share${listed.length === 1 ? '' : 's'} of this resource?`,
+      detail: listed.map((share) => this.targetLabel(share.target)).join('\n'),
+      confirmLabel: 'Stop sharing',
+      variant: 'danger',
+    });
+    if (!ok) return;
     await this.changeShares(async () => {
       for (const share of listed) await deleteShare(this.accountId, share.id);
     });
@@ -491,7 +508,11 @@ export class ResourceAccessPanel extends LitElement {
     return html`<sl-card>
       ${share ? this.renderShare() : nothing}
       ${tags ? this.renderTags() : nothing}
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${
+        this.error
+          ? html`<p class="error" role="alert">${this.error}</p>`
+          : nothing
+      }
     </sl-card>`;
   }
 }

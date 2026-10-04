@@ -20,6 +20,9 @@ import {
 } from '../../../hierarchy-api';
 import { formatTags, parseTags } from './tags';
 
+const HIERARCHY_DOCS_URL =
+  'https://docs.preloop.ai/guide/accounts-and-profiles';
+
 /**
  * Settings > Subaccounts (capability `account_hierarchy`): create, rename,
  * tag, detach and delete the subaccounts of the current account.
@@ -55,13 +58,20 @@ export class SubaccountsView extends LitElement {
       .error {
         color: var(--sl-color-danger-700);
       }
+      .off-state,
+      .hint {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+      }
+      .table-scroll {
+        overflow-x: auto;
+      }
     `,
   ];
 
   @state() private accountId = '';
   @state() private subaccounts: Subaccount[] = [];
   @state() private loading = true;
-  /** The endpoint is missing: the capability is off, so the page is empty. */
+  /** The endpoint is missing: the capability is off on this server. */
   @state() private off = false;
   @state() private error = '';
   @state() private editingId: string | null = null;
@@ -238,7 +248,20 @@ export class SubaccountsView extends LitElement {
   }
 
   render() {
-    if (this.off) return nothing;
+    if (this.off) {
+      // A bookmarked link on a server without the extension: say so rather
+      // than leave a blank page, and raise no error toast.
+      return html`
+        <view-header headerText="Subaccounts"></view-header>
+        <p class="off-state">
+          Subaccounts aren't available on this deployment: the server does not
+          have the account hierarchy extension enabled.
+          <a href=${HIERARCHY_DOCS_URL} target="_blank" rel="noopener"
+            >Learn about subaccounts</a
+          >
+        </p>
+      `;
+    }
     return html`
       <view-header
         headerText="Subaccounts"
@@ -264,22 +287,28 @@ export class SubaccountsView extends LitElement {
                   >Create subaccount</sl-button
                 >
               </div>
-              ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+              ${
+                this.error
+                  ? html`<p class="error" role="alert">${this.error}</p>`
+                  : nothing
+              }
               ${
                 this.subaccounts.length === 0
                   ? html`<p class="empty-state">No subaccounts yet.</p>`
-                  : html`<table>
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Tags</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${this.subaccounts.map((sub) => this.renderRow(sub))}
-                      </tbody>
-                    </table>`
+                  : html`<div class="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>Tags</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${this.subaccounts.map((sub) => this.renderRow(sub))}
+                        </tbody>
+                      </table>
+                    </div>`
               }
             `
       }
