@@ -48,6 +48,17 @@ Preloop implements authentication and multi-tenancy:
   so one bump also invalidates them. API keys and runner tokens are
   unchanged. `preloop auth logout --all` and the console Sign out everywhere
   control call that endpoint.
+- `POST /auth/logout` is the console's server-side sign out. It runs the
+  registered H9 `SessionHook.on_logout` (from `preloop.plugins.account_hooks`)
+  with the current token's claims and returns `redirect_url`: a same-origin
+  path the console navigates to next, or null for the default.
+  `run_logout_hook` drops any redirect that is not a same-origin path, and
+  the console checks it again. With no hook registered it changes nothing
+  server-side; the console clears its own tokens either way. Sign out
+  everywhere skips this call because revoke-all already ended the session.
+- `SessionHook.is_token_revoked` runs after the generation and CLI session
+  checks in `reject_revoked_token`, so an extension can revoke a single JWT it
+  issued. With no hook registered it is not called.
 - Console refresh tokens (`POST /auth/refresh`) carry `sat` and are capped
   at `MAX_SESSION_DAYS` (default 30). CLI login refresh tokens stay
   long-lived (`CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS`, default 365); revocation
@@ -69,6 +80,49 @@ Preloop implements authentication and multi-tenancy:
   (console tokens, CLI tokens from before `cli_session`) gets 400
   `unsupported_token_type` pointing at `POST /auth/sessions/revoke-all`
   instead of a false success.
+
+### Restricted CI identity foundation
+
+`CiPrincipal` is an OSS machine principal with a versioned, typed grant for one
+account-local project and its explicitly bound hosted flow. Separate `ApiKey`
+rows have an explicit `restricted_ci` mode, version, principal reference and
+optional narrower action ceiling. Tokens use the existing high-entropy hashed
+key lifecycle and are disclosed once. Authentication reads current account,
+principal, key and binding state, intersects action ceilings, and returns a
+machine context with no human permissions. Scope enforcement audit/off settings
+never relax this mode. The binding snapshots provider identity, clone path,
+tracker host/type and organization lineage; changing any of these invalidates
+access rather than redirecting an existing grant.
+
+This is a staged foundation. There are no public CI provisioning routes or
+usable CI setup controls yet. Generic REST, MCP, model gateway, WebSocket and
+session exchange authentication cannot treat a restricted key as its issuing
+human. The legacy key management surface excludes these keys; human CI
+administration must use the dedicated lifecycle seam. Operation enforcement,
+execution ownership and completion dispatch filtering must be implemented
+before usable provisioning is exposed.
+
+The account owner can administer through core CRUD. An optional edition hook
+checks human operation/resource authority and may delegate or deny human
+administration, while the core account, project, flow and action checks always
+apply. Grant changes, disablement and key lifecycle changes are audited with
+human, principal, key and resource/action identifiers, never token material.
+Disabling an unusable binding or revoking its key remains possible for an
+authorized administrator. Permission changes to the provisioning human do not
+implicitly change the machine's persisted grant.
+
+Execution and subscription ownership is nullable for historical rows and is
+never guessed or backfilled. Rotation atomically replaces a key, preserving
+principal ownership and narrowing to the previous key/current grant intersection.
+Revoking one key does not stop existing work or transfer/delete owned resources.
+Disable a principal to suspend all its machine access; stopping existing runs is
+a separate administrator action. Principals and bound resources use restrictive
+foreign keys to preserve attribution: retire identities by disabling them,
+retain historical owned rows, and explicitly remove retained dependent records
+before resource deletion. Deleting a human retains the principal's nullable
+administration attribution; existing key/user deletion semantics still revoke
+that human's keys. Schema rollback refuses restricted keys or retained principals
+rather than erase machine markers and turn a CI key into an owner key.
 
 **Multi-User Architecture:**
 - **Account Model:** Represents an organization/company

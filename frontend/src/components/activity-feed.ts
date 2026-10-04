@@ -292,6 +292,7 @@ const CONFIG_LABELS: Record<string, string> = {
   flow: 'Flow',
   api_key: 'API key',
   budget_policy: 'Budget',
+  policy: 'Policy',
 };
 
 function toneFromOutcome(outcome: string | undefined): FeedTone {
@@ -669,7 +670,7 @@ export function feedEventFromAuditGroup(
     case 'configuration_change': {
       const kind = String(details.config_type || event.resource_id || '');
       const label = CONFIG_LABELS[kind] || humaniseAction(kind) || 'Setting';
-      const action = String(details.action || 'changed');
+      const action = String(details.action || 'changed').replace(/_/g, ' ');
       const name =
         (details.new_value && typeof details.new_value === 'object'
           ? details.new_value.name

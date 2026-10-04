@@ -5,6 +5,7 @@ from .account import Account
 from .account_halt import AccountHalt, HALT_SCOPES
 from .agent_control_command import AgentControlCommand
 from .api_key import ApiKey
+from .ci_principal import CiPrincipal
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
 from .base import Base
@@ -64,7 +65,7 @@ from .managed_agent_credential import ManagedAgentCredential
 from .managed_agent_enrollment import ManagedAgentEnrollment
 from .model_price_override import ModelPriceOverride
 from .provider_billing import ProviderBillingConnection, ProviderBillingSnapshot
-from .copilot_import import CopilotImportConnection
+from .copilot_import import CopilotImportConnection, CopilotUserMapping
 from .tool_configuration import ToolConfiguration, ApprovalWorkflow
 from .mcp_server import MCPServer
 from .mcp_tool import MCPTool
@@ -177,6 +178,7 @@ __all__ = [
     "IssueEmbedding",
     "IssueDuplicate",
     "ApiKey",
+    "CiPrincipal",
     "ApiUsage",
     "AuditLog",
     "ClientVersionLog",
@@ -223,6 +225,7 @@ __all__ = [
     "ProviderBillingConnection",
     "ProviderBillingSnapshot",
     "CopilotImportConnection",
+    "CopilotUserMapping",
     "ToolConfiguration",
     "ApprovalWorkflow",
     "MCPServer",

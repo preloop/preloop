@@ -120,10 +120,12 @@ sensitive_data:
         case_sensitive: false
 ```
 
+An account may configure at most 50 custom patterns and 50 keyword lists.
 Custom regexes are capped at 512 characters, must not nest quantifiers
-(`(a+)+`) or use backreferences, and run with a hard per-text match
-timeout; a pattern that exceeds it counts as a detector timeout for the
-rule. Keyword lists match whole words only.
+(`(a+)+`) or use backreferences, and each pattern has a 0.25 second match
+timeout. All account patterns on one text share a one-second budget;
+exceeding either limit counts as a detector timeout for the rule. Keyword
+lists match whole words only.
 
 `GET /api/v1/policies/sensitive-data/types` lists every selectable type
 with a label, description, example and locales. `POST
