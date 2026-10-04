@@ -3179,6 +3179,7 @@ export class AgentDetailView extends LitElement {
                                 Session History
                                 <sl-icon-button
                                   name="arrow-clockwise"
+                                  label="Refresh sessions"
                                   style="font-size: 1.1rem; color: var(--console-meta-color);"
                                   @click=${() => this.loadData(true)}
                                 ></sl-icon-button>

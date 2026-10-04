@@ -673,6 +673,32 @@ describe('FlowView all-of labels filter', () => {
   });
 });
 
+describe('FlowView webhook URL', () => {
+  it('names the read-only webhook URL field', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flowId = 'flow-1';
+    element.flow = {
+      id: 'flow-1',
+      name: 'Inbound hook',
+      agent_type: 'codex',
+      trigger_event_source: 'webhook',
+      webhook_config: { webhook_secret: 'example-secret' },
+    };
+    document.body.appendChild(element);
+    try {
+      await element.updateComplete;
+      const input = element.shadowRoot.querySelector('sl-input[readonly]');
+      expect(input?.getAttribute('label')).to.equal('Webhook URL');
+    } finally {
+      element.remove();
+    }
+  });
+});
+
 describe('FlowView load failure', () => {
   afterEach(() => {
     localStorage.clear();

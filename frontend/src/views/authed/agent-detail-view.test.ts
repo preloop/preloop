@@ -1197,6 +1197,11 @@ describe('AgentDetailView', () => {
     const text = getDeepText(element).replace(/\s+/g, ' ');
     expect(text).to.not.contain('Sessions History');
     expect(text).to.contain('Session History');
+    await element.updateComplete;
+    const refresh = element.shadowRoot!.querySelector(
+      'sl-icon-button[name="arrow-clockwise"]'
+    );
+    expect(refresh?.getAttribute('label')).to.equal('Refresh sessions');
   });
 
   it('lets the user pick the approval workflow for native tool approvals', async () => {

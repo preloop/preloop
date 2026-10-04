@@ -124,6 +124,18 @@ export class FlowView extends LitElement {
       :host {
         display: block;
       }
+      /* Named for a screen reader where a heading already says what it is. */
+      .sr-label::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
       /* The subject column takes the slack: fixed layout plus a zero max
          width makes the cell shrink to its share and ellipsise inside it,
          instead of a long repo name widening the whole table. */
@@ -1013,6 +1025,8 @@ ${this.flow.review_instructions}</pre>
                       >
                         <sl-input
                           readonly
+                          class="sr-label"
+                          label="Webhook URL"
                           style="flex: 1;"
                           value="${
                             window.location.origin
@@ -2212,16 +2226,12 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             webhook URL below.
           </p>
           <div>
-            <label
-              style="display: block; margin-bottom: var(--sl-spacing-2x-small); font-weight: 600;"
-            >
-              Webhook URL
-            </label>
             <div
-              style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
+              style="display: flex; gap: var(--sl-spacing-small); align-items: flex-end;"
             >
               <sl-input
                 readonly
+                label="Webhook URL"
                 style="flex: 1;"
                 value="${window.location.origin}/api/v1/webhooks/flows/${
                   this.flowId

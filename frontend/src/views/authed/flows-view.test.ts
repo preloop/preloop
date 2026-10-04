@@ -1676,6 +1676,23 @@ describe('FlowsView', () => {
     });
   });
 
+  it('names the type and status filters for a screen reader', async () => {
+    fetchStub = createFetchStub(
+      [{ id: 'flow-1', name: 'Nightly sweep', is_enabled: true }],
+      []
+    );
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+
+    const type = element.shadowRoot!.querySelector('sl-select.preset-filter');
+    const status = element.shadowRoot!.querySelector('sl-select.status-filter');
+    expect(type?.getAttribute('label')).to.equal('Flow type');
+    expect(status?.getAttribute('label')).to.equal('Flow status');
+  });
+
   it('asks before removing a saved preset and reports a failure', async () => {
     resetConfirmDialogForTests();
     const deletes: string[] = [];
@@ -1746,7 +1763,13 @@ describe('FlowsView', () => {
       expect(deletes).to.have.length(1);
     } finally {
       resetConfirmDialogForTests();
-      document.body.querySelectorAll('sl-alert').forEach((a) => a.remove());
+      // Hide rather than remove: a toast removes itself from the toast stack
+      // once hidden, and pulling it out first makes that removal throw.
+      await Promise.all(
+        [...document.body.querySelectorAll('sl-alert')].map((alert) =>
+          (alert as HTMLElement & { hide: () => Promise<void> }).hide()
+        )
+      );
     }
   });
 

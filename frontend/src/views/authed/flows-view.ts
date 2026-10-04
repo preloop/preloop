@@ -496,6 +496,20 @@ export class FlowsView extends LitElement {
       .row-link:focus-visible {
         text-decoration: underline;
       }
+      /* The filter selects are named for a screen reader; the toolbar has
+         no room to print the label. */
+      .preset-filter::part(form-control-label),
+      .status-filter::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
       .row-subtitle {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
@@ -1693,6 +1707,7 @@ export class FlowsView extends LitElement {
       >
         <sl-select
           class="preset-filter"
+          label="Flow type"
           multiple
           clearable
           max-options-visible="1"
@@ -1720,6 +1735,7 @@ export class FlowsView extends LitElement {
 
         <sl-select
           class="status-filter"
+          label="Flow status"
           multiple
           clearable
           max-options-visible="1"
