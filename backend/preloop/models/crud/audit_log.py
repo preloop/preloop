@@ -4,12 +4,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import UUID
 
-from sqlalchemy import case, func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import Session, aliased
 
 from ..models.audit_log import AuditLog
 from ..models.user import User
 from .base import CRUDBase
+
+# Policy decisions that can stand alone in the grouped timeline when no
+# tool_call row was written for the same correlation_id.
+STANDALONE_POLICY_ACTIONS = ("policy_deny", "policy_require_approval")
+_GROUP_ANCHOR_ACTIONS = ("tool_call", *STANDALONE_POLICY_ACTIONS)
 
 
 def _audit_event_estimated_cost(details: Optional[Dict[str, Any]]) -> float:
@@ -383,8 +388,28 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                 # No valid filters → return nothing
                 return [], 0
         else:
+            # Policy decisions are normally sub-events of a tool_call. A
+            # deny (or a require_approval that never executed) writes no
+            # tool_call row, so such decisions anchor their own group.
+            tool_call_row = aliased(AuditLog)
+            has_tool_call = (
+                db.query(tool_call_row.id)
+                .filter(
+                    tool_call_row.account_id == account_id_str,
+                    tool_call_row.action == "tool_call",
+                    tool_call_row.details["correlation_id"].astext
+                    == AuditLog.details["correlation_id"].astext,
+                )
+                .exists()
+            )
             primary_query = primary_query.filter(
-                AuditLog.action.in_(primary_actions),
+                or_(
+                    AuditLog.action.in_(primary_actions),
+                    and_(
+                        AuditLog.action.in_(STANDALONE_POLICY_ACTIONS),
+                        ~has_tool_call,
+                    ),
+                )
             )
 
         if start_date:
@@ -426,7 +451,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         # Step 2: Collect correlation_ids from primary tool_call events
         correlation_ids = set()
         for event in primary_events:
-            if event.action == "tool_call" and event.details:
+            if event.action in _GROUP_ANCHOR_ACTIONS and event.details:
                 cid = event.details.get("correlation_id")
                 if cid:
                     correlation_ids.add(cid)
@@ -502,6 +527,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                 cid = event.details.get("correlation_id")
 
             sub_list = sub_events_map.get(cid, []) if cid else []
+            # A standalone policy decision must not list itself as a sub-event.
+            sub_list = [sub for sub in sub_list if sub.id != event.id]
 
             # Determine outcome from sub-events chain.
             # We track *all* intermediate outcomes so that filtering by
@@ -509,7 +536,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             # approved/declined/expired.
             outcome = event.status  # default (final outcome shown in UI)
             all_outcomes: set[str] = {outcome} if outcome else set()
-            if event.action == "tool_call" and sub_list:
+            if event.action in _GROUP_ANCHOR_ACTIONS and sub_list:
                 # Look for the policy decision
                 for sub in sub_list:
                     if sub.action.startswith("policy_"):
