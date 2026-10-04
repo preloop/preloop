@@ -22,6 +22,7 @@ from preloop_skyvern import (  # noqa: E402
     PreloopClient,
     PreloopTarget,
     SkyvernClient,
+    SkyvernError,
     handle_webhook,
     import_task,
     step_to_browser_step,
@@ -87,7 +88,8 @@ def test_recorded_task_produces_the_expected_steps(skyvern_handler, preloop_hand
     ]
     assert all(s["source"] == "skyvern" for s in steps)
     assert steps[0]["url"] == "https://warehouse-sim.example.test/receiving"
-    assert steps[3]["extra"]["error"] == "Element AAEp was detached"
+    assert steps[3]["extra"]["error"] == "ElementNotFound"
+    assert "was detached" not in json.dumps(steps)
     assert steps[4]["extra"]["skyvern_retry_index"] == 1
     assert steps[1]["extra"]["skyvern_actions"] == ["input_text", "input_text"]
     assert steps[0]["occurred_at"] == "2026-09-30T09:00:08.500000+00:00"
@@ -302,3 +304,114 @@ def test_preloop_outage_is_reported_not_raised(skyvern_handler, caplog):
     with caplog.at_level(logging.WARNING, logger="preloop_skyvern"):
         report = import_task(TASK, skyvern=skyvern, preloop=preloop)
     assert report.steps.failed_batches == 1 and report.artifacts == []
+
+
+def _down(request):
+    raise httpx.ConnectError("refused", request=request)
+
+
+def _skyvern(handler):
+    return SkyvernClient(
+        "sk-skyvern-test",
+        base_url=SKYVERN,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+def test_unreachable_skyvern_makes_the_webhook_answer_502(preloop_handler):
+    _, preloop = _clients(RecordedSkyvern(), preloop_handler)
+    body = json.dumps(recorded()["task"]).encode()
+    status, result = handle_webhook(
+        body,
+        _signed(body),
+        skyvern=_skyvern(_down),
+        skyvern_api_key="sk-skyvern-test",
+        preloop_for_task=lambda task: preloop,
+    )
+    assert status == 502 and result["error"] == "skyvern_unavailable"
+
+
+def test_unreachable_skyvern_makes_the_cli_print_a_message(monkeypatch, capsys):
+    real = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda *a, **k: real(transport=httpx.MockTransport(_down))
+    )
+    monkeypatch.setenv("SKYVERN_API_KEY", "sk-skyvern-test")
+    monkeypatch.setenv("PRELOOP_AGENT_KEY", "agent-key")
+    code = cli.main(
+        [
+            "--task",
+            TASK,
+            "--session",
+            "s",
+            "--skyvern-url",
+            SKYVERN,
+            "--preloop-url",
+            "http://preloop.test",
+        ]
+    )
+    assert code == 1
+    assert "skyvern: GET /tasks/" in capsys.readouterr().err
+
+
+def test_api_redirects_are_not_followed_with_the_key():
+    seen = []
+
+    def redirecting(request):
+        seen.append(str(request.url))
+        if request.url.host == "skyvern.example.test":
+            return httpx.Response(302, headers={"location": "https://elsewhere.test/x"})
+        return httpx.Response(200, json={})
+
+    client = SkyvernClient(
+        "sk-skyvern-test",
+        base_url=SKYVERN,
+        client=httpx.Client(
+            transport=httpx.MockTransport(redirecting), follow_redirects=True
+        ),
+    )
+    with pytest.raises(SkyvernError, match="HTTP 302"):
+        client.get_task(TASK)
+    assert seen == [f"{SKYVERN}/api/v1/tasks/{TASK}"]
+
+
+def test_a_changed_response_shape_fails_with_a_named_error(preloop_handler):
+    data = recorded()
+    data["steps"] = [{"id": "renamed"}]
+    skyvern, preloop = _clients(RecordedSkyvern(data), preloop_handler)
+    with pytest.raises(SkyvernError, match="may have changed"):
+        import_task(TASK, skyvern=skyvern, preloop=preloop)
+    assert preloop_handler.steps == {}
+
+
+def test_image_rejected_steps_are_resent_without_the_image(skyvern_handler, caplog):
+    class RefusesFirstImage(FakePreloop):
+        refused = False
+
+        def __call__(self, request):
+            if request.url.path.endswith("/browser-steps") and not self.refused:
+                self.refused = True
+                steps = json.loads(request.content)["steps"]
+                for step in steps[1:]:
+                    self.steps[f"{step['source']}:{step['source_step_id']}"] = step
+                return httpx.Response(
+                    200,
+                    json={
+                        "accepted": len(steps) - 1,
+                        "duplicates": 0,
+                        "rejected": [{"index": 0, "error": "screenshot_too_large"}],
+                    },
+                )
+            return super().__call__(request)
+
+    preloop_handler = RefusesFirstImage()
+    skyvern, preloop = _clients(skyvern_handler, preloop_handler)
+    with caplog.at_level(logging.WARNING, logger="preloop_skyvern"):
+        report = import_task(
+            TASK, skyvern=skyvern, preloop=preloop, include_files=False
+        )
+    first = preloop_handler.steps[f"skyvern:{TASK}:stp_400710000"]
+    assert report.steps.accepted == 6 and report.steps.rejected == []
+    assert "screenshot" not in first
+    assert first["extra"]["screenshot_omitted"] == "screenshot_too_large"
+    assert "without them" in caplog.text

@@ -47,6 +47,7 @@ FastAPI:
 import os
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from preloop_skyvern import PreloopClient, PreloopTarget, SkyvernClient, handle_webhook
 
 app = FastAPI()
@@ -64,16 +65,25 @@ def preloop_for_task(task: dict):
 
 @app.post("/skyvern/webhook")
 async def skyvern_webhook(request: Request):
-    status, body = handle_webhook(
-        await request.body(), request.headers, skyvern=skyvern,
-        skyvern_api_key=SKYVERN_KEY, preloop_for_task=preloop_for_task)
+    # handle_webhook blocks (fetches and downloads); keep it off the loop.
+    status, body = await run_in_threadpool(
+        handle_webhook, await request.body(), dict(request.headers),
+        skyvern=skyvern, skyvern_api_key=SKYVERN_KEY,
+        preloop_for_task=preloop_for_task)
     return JSONResponse(body, status_code=status)
 ```
 
 Then create Skyvern tasks with
 `"webhook_callback_url": "https://your-host/skyvern/webhook"`. Responses:
 401 bad signature, 400 bad payload, 202 ignored (still running or no
-session), 200 imported, 502 Skyvern unreachable.
+session), 200 imported, 502 Skyvern unreachable or its response changed
+shape.
+
+`handle_webhook` is synchronous and can take a while for a large
+recording; run it in a thread pool as above, or hand the task id to a job
+queue and return 202. The signature covers the body only, so a captured
+request can be replayed; that is harmless here because the handler only
+re-reads the task from Skyvern and every write is idempotent.
 
 ## What is sent
 
@@ -82,8 +92,8 @@ session), 200 imported, 502 Skyvern unreachable.
 | step (ordered by `order`, `retry_index`) | browser step, `source="skyvern"` |
 | first action type | `action` (`click`, `input_text` to `type`, `select_option` to `select`, `complete` to `done`, unknown to `other`) |
 | action `reasoning` (or `intention`) | `reasoning` |
-| step `status` and action results | `status` (`failed` when a result failed); first error in `extra.error` |
-| `screenshot_action` (else `screenshot_llm`) | step `screenshot` (skipped above 2 MiB; the step is kept) |
+| step `status` and action results | `status` (`failed` when a result failed); the first exception type (not its message) in `extra.error` |
+| `screenshot_action` (else `screenshot_llm`) | step `screenshot` (skipped above 2 MiB; if Preloop still refuses it the step is re-sent without it and `extra.screenshot_omitted` names why) |
 | `har` | `trace` artifact, HAR wrapped in a zip (`application/zip`) |
 | `trace` | `trace` artifact as is |
 | `recording` | `recording` artifact (`video/webm` or `video/mp4`) |

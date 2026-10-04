@@ -113,8 +113,9 @@ def step_to_browser_step(
     )
     action_type = str(first.get("action_type") or "")
     reasoning = first.get("reasoning") or first.get("intention")
+    # Only the exception type: the message can quote the typed input.
     errors = [
-        r.get("exception_message") or r.get("exception_type")
+        r.get("exception_type") or "action_failed"
         for _, results in pairs
         for r in results
         if isinstance(r, dict) and r.get("success") is False

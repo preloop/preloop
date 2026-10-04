@@ -15,6 +15,8 @@ logger = logging.getLogger("preloop_skyvern")
 
 MAX_BATCH = 200
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+#: Per-row errors caused by the image alone; the step is re-sent without it.
+IMAGE_ERRORS = frozenset({"screenshot_too_large", "screenshot_invalid"})
 
 
 @dataclass(frozen=True)
@@ -100,12 +102,55 @@ class PreloopClient:
                     status,
                 )
                 continue
-            body = response.json()
-            totals.accepted += int(body.get("accepted", 0))
-            totals.duplicates += int(body.get("duplicates", 0))
-            for row in body.get("rejected") or []:
-                totals.rejected.append({**row, "index": row.get("index", 0) + start})
+            self._settle(batch, response.json(), start, totals)
         return totals
+
+    def _settle(
+        self,
+        batch: list[dict[str, Any]],
+        body: dict[str, Any],
+        start: int,
+        totals: StepTotals,
+    ) -> None:
+        """Count a batch; re-send rows refused for their image without it."""
+        totals.accepted += int(body.get("accepted", 0))
+        totals.duplicates += int(body.get("duplicates", 0))
+        retry = []
+        for row in body.get("rejected") or []:
+            index = row.get("index")
+            if (
+                row.get("error") in IMAGE_ERRORS
+                and isinstance(index, int)
+                and 0 <= index < len(batch)
+                and batch[index].get("screenshot")
+            ):
+                step = {k: v for k, v in batch[index].items() if k != "screenshot"}
+                step["extra"] = {
+                    **step.get("extra", {}),
+                    "screenshot_omitted": row["error"],
+                }
+                retry.append(step)
+                continue
+            logger.warning("Preloop refused a Skyvern step: %s", row)
+            totals.rejected.append({**row, "index": (index or 0) + start})
+        if not retry:
+            return
+        logger.warning(
+            "Preloop refused %d screenshot(s); sending those steps without them",
+            len(retry),
+        )
+        response = self._send(
+            "POST", self.target.url("browser-steps"), json={"steps": retry}
+        )
+        if response is None or response.status_code != 200:
+            totals.failed_batches += 1
+            return
+        again = response.json()
+        totals.accepted += int(again.get("accepted", 0))
+        totals.duplicates += int(again.get("duplicates", 0))
+        for row in again.get("rejected") or []:
+            logger.warning("Preloop refused a Skyvern step: %s", row)
+            totals.rejected.append(row)
 
     def deposit(
         self,
