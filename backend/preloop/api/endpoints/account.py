@@ -147,6 +147,7 @@ from preloop.services.subject_governance import (
     set_subject_governance,
 )
 from preloop.utils.permissions import require_permission
+from preloop.schemas.gateway_usage import GatewayUsageBreakdown
 
 logger = logging.getLogger(__name__)
 
@@ -1342,6 +1343,13 @@ def get_account_gateway_usage_summary(
             "false. Prefer /cost/summary for full cost analytics."
         ),
     ),
+    breakdown: Optional[list[GatewayUsageBreakdown]] = Query(
+        None,
+        description=(
+            "Selected breakdowns, repeated for multiple sections. Omitted "
+            "preserves all sections; ignored when include_breakdown=false."
+        ),
+    ),
 ):
     """Get account-scoped model gateway usage summary."""
     return ModelGatewayUsageService(db).get_account_summary(
@@ -1350,6 +1358,7 @@ def get_account_gateway_usage_summary(
         end_date=end_date,
         runtime_principal_id=runtime_principal_id,
         include_breakdown=include_breakdown,
+        breakdowns=set(breakdown) if isinstance(breakdown, list) else None,
     )
 
 

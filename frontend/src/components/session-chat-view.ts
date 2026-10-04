@@ -346,6 +346,7 @@ export class SessionChatView extends LitElement {
       toolResultCount: 0,
       injectedCount: 0,
       toolCallCount: 0,
+      browserStepCount: 0,
       eventsWithoutRawBody: 0,
       eventsWithPartialToolResults: 0,
       toolActivityTruncated: false,

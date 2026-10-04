@@ -155,6 +155,13 @@ func preloopExecutableForHooks() string {
 	return exe
 }
 
+// sessionHookCommand is the SessionStart / UserPromptSubmit hook (#1045).
+// It is a subcommand of permission-hook so the same ownership marker finds
+// and removes it.
+func sessionHookCommand(source string) string {
+	return fmt.Sprintf("%s agents permission-hook session --source %s", preloopExecutableForHooks(), source)
+}
+
 func approvalHookCommand(source string) string {
 	return fmt.Sprintf("%s agents permission-hook --source %s", preloopExecutableForHooks(), source)
 }
@@ -294,6 +301,15 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	case permissionSourceClaudeCode:
 		if err := upsertNestedCommandHook(configPath, "PreToolUse", "*", command, hostTimeoutSeconds); err != nil {
 			return err
+		}
+		// Lineage and the spawn-time id handoff (#1045): SessionStart
+		// registers the run and exports its id to child processes, and the
+		// first UserPromptSubmit sends the prompt the list title is cut from.
+		sessionCommand := sessionHookCommand(source)
+		for _, event := range sessionHookEvents {
+			if err := upsertNestedCommandHook(configPath, event, "", sessionCommand, sessionHookTimeoutSeconds); err != nil {
+				return err
+			}
 		}
 	case permissionSourceCodexCLI:
 		// Independent gates: central rules before execution, then remote
@@ -446,6 +462,11 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 		// settings.json holds unrelated user settings, so never delete the file.
 		if err := removeNestedCommandHook(configPath, "PreToolUse", false); err != nil {
 			return err
+		}
+		for _, event := range sessionHookEvents {
+			if err := removeNestedCommandHook(configPath, event, false); err != nil {
+				return err
+			}
 		}
 	case permissionSourceCodexCLI:
 		if err := removeNestedCommandHook(configPath, "PreToolUse", true); err != nil {

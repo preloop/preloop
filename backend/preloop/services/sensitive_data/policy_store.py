@@ -52,8 +52,12 @@ def parse_sensitive_data_config(
 
 
 def serialize_sensitive_data_config(config: SensitiveDataConfig) -> Dict[str, Any]:
-    """JSON form stored on the account and exported to YAML."""
-    return config.model_dump(exclude_none=True, mode="json")
+    """JSON form stored on the account and exported to YAML.
+
+    Defaults are left out so an empty block serialises to ``{}`` and a
+    stored rule carries only what the operator wrote.
+    """
+    return config.model_dump(exclude_none=True, exclude_defaults=True, mode="json")
 
 
 def load_sensitive_data_config(

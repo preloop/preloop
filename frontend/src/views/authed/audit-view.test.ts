@@ -954,6 +954,132 @@ describe('AuditView', () => {
     });
   });
 
+  describe('tool-name search and policy rows (#1136)', () => {
+    const groupedCalls = () =>
+      fetchStub
+        .getCalls()
+        .map((c) => String(c.args[0]))
+        .filter((u) => u.startsWith('/api/v1/audit-logs/grouped?'));
+
+    it('filters as the user types, after a short pause', async () => {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+      const before = groupedCalls().length;
+
+      const input = element.shadowRoot?.querySelector(
+        'sl-input[placeholder="Search tool name…"]'
+      ) as HTMLInputElement;
+      expect(input).to.exist;
+      for (const value of ['d', 'de', 'deploy']) {
+        input.value = value;
+        input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+      }
+
+      await waitUntil(
+        () => groupedCalls().length > before,
+        'typing should refetch the timeline without pressing Enter',
+        { timeout: 2000 }
+      );
+      // Wait past the debounce window to make sure the burst was coalesced.
+      await new Promise((r) => setTimeout(r, 400));
+      const after = groupedCalls().slice(before);
+      expect(after).to.have.length(1);
+      expect(
+        new URL(after[0], 'http://x').searchParams.get('tool_name')
+      ).to.equal('deploy');
+
+      element.remove();
+    });
+
+    it('drops a pending search when the filters are cleared', async () => {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      (element as any)._onToolSearchInput('dep');
+      (element as any)._clearFilters();
+      (element as any)._page = 2;
+      await new Promise((r) => setTimeout(r, 400));
+      expect((element as any)._page).to.equal(2);
+      element.remove();
+    });
+
+    it('names the tool on policy deny and approval-required rows', async () => {
+      const policyEvent = (id: string, action: string, status: string) => ({
+        correlation_id: `corr-${id}`,
+        outcome: status,
+        primary_event: {
+          id,
+          account_id: 'account-1',
+          user_id: 'user-1',
+          action,
+          resource_type: 'policy',
+          resource_id: 'delete_repo',
+          status,
+          ip_address: null,
+          user_agent: null,
+          timestamp: '2026-03-10T10:00:00Z',
+          details: {
+            tool_name: 'delete_repo',
+            decision: status,
+            correlation_id: `corr-${id}`,
+          },
+        },
+        sub_events: [],
+      });
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          return new Response(
+            JSON.stringify({
+              groups: [
+                policyEvent('deny-1', 'policy_deny', 'deny'),
+                policyEvent(
+                  'approval-1',
+                  'policy_require_approval',
+                  'require_approval'
+                ),
+              ],
+              total: 2,
+              skip: 0,
+              limit: 50,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const labels = Array.from(
+        element.shadowRoot?.querySelectorAll('.primary-label') || []
+      ).map((el) => (el.textContent || '').trim());
+      expect(labels).to.deep.equal([
+        'Denied by policy: delete_repo',
+        'Approval required: delete_repo',
+      ]);
+
+      element.remove();
+    });
+  });
+
   it('subscribes to the audit websocket topic and refreshes on live events', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

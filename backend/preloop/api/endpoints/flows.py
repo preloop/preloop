@@ -23,6 +23,8 @@ from preloop.api.auth import get_current_active_user
 from preloop.models.models.user import User
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
+from preloop.schemas.flow_summary import FlowSummaryResponse
+from preloop.models.schemas.flow import flow_schedule_state
 from preloop.schemas.host_exec_usage import HostExecSessionsResponse
 from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.execution_metrics import (
@@ -308,6 +310,62 @@ def read_flows(
         ),
     )
 
+    _attach_flow_stats(db, flows, current_user=current_user, stats_since=stats_since)
+    return flows
+
+
+@router.get("/flows/summary", response_model=List[FlowSummaryResponse])
+@require_permission("view_flows")
+def read_flow_summaries(
+    db: Session = Depends(get_db),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    include_stats: bool = False,
+    stats_since: Optional[datetime] = None,
+    current_user: User = Depends(get_current_active_user),
+) -> List[FlowSummaryResponse]:
+    """List flow metadata, optionally including the stated window's statistics.
+
+    Name selectors can omit execution aggregates; lists that show run counts
+    request them explicitly. The full ``/flows`` response stays unchanged.
+    """
+    rows = filter_viewable(
+        db,
+        current_user,
+        VISIBLE_FLOW,
+        crud_flow.get_multi(
+            db,
+            account_id=current_user.account_id,
+            skip=skip,
+            limit=limit,
+            include_shared=True,
+            lightweight=True,
+        ),
+    )
+    if include_stats:
+        _attach_flow_stats(db, rows, current_user=current_user, stats_since=stats_since)
+    summaries = []
+    for row in rows:
+        summary = FlowSummaryResponse.model_validate(row)
+        summary.schedule_state = flow_schedule_state(
+            row.trigger_event_source, row.schedule_config, bool(row.is_enabled)
+        )
+        # A reused request session may already have attached statistics. A
+        # selector that did not ask for them never returns stale totals.
+        if not include_stats:
+            summary.execution_stats = None
+        summaries.append(summary)
+    return summaries
+
+
+def _attach_flow_stats(
+    db: Session,
+    flows: List[Any],
+    *,
+    current_user: User,
+    stats_since: Optional[datetime],
+) -> None:
+    """Project the same owned-flow statistics into both catalogue contracts."""
     if flows:
         # Execution stats cover own flows only: the runs of a flow another
         # account shares here (account hook H3) belong to that account.
@@ -361,8 +419,6 @@ def read_flows(
                     **_window_fields(),
                 },
             )
-
-    return flows
 
 
 @router.post("/flows/schedule/preview", response_model=schemas.SchedulePreviewResponse)

@@ -151,7 +151,7 @@ class TriggerSubject:
         pr_number: Pull request number (used to drop self references).
         repo_path: Repository path (``org/repo``), when known.
         host: Web host of the repository, when known.
-        platform: ``github``, ``gitlab`` or ``jira``.
+        platform: ``github``, ``gitlab``, ``bitbucket`` or ``jira``.
         fields: Raw issue fields, for reading the tracker estimate.
         labels: Issue label names, for reading the tracker estimate.
     """
@@ -259,6 +259,10 @@ def parse_trigger_subject(details: Any) -> Optional[TriggerSubject]:
         return None
     source = (_str(details.get("source")) or "").lower()
 
+    if _dict(payload.get("pullrequest")) or source == "bitbucket":
+        subject = _parse_bitbucket(payload)
+        if subject is not None:
+            return subject
     if _dict(payload.get("project")).get("path_with_namespace") or source == "gitlab":
         subject = _parse_gitlab(payload)
         if subject is not None:
@@ -321,6 +325,27 @@ def _parse_github(payload: dict[str, Any]) -> Optional[TriggerSubject]:
             labels=tuple(label_names(issue.get("labels"))),
         )
     return None
+
+
+def _parse_bitbucket(payload: dict[str, Any]) -> Optional[TriggerSubject]:
+    """Bitbucket Cloud ``pullrequest:*`` deliveries (and comments on them)."""
+    pull = _dict(payload.get("pullrequest"))
+    if not pull:
+        return None
+    url = _pr_key(_str(_dict(_dict(pull.get("links")).get("html")).get("href")))
+    if not url:
+        return None
+    return TriggerSubject(
+        kind="pull_request",
+        title=_str(pull.get("title")),
+        url=url,
+        pr_body=_str(pull.get("description")),
+        pr_branch=_str(_dict(_dict(pull.get("source")).get("branch")).get("name")),
+        pr_number=pull.get("id"),
+        repo_path=_str(_dict(payload.get("repository")).get("full_name")),
+        host=_host(url),
+        platform="bitbucket",
+    )
 
 
 def _gitlab_pr(
@@ -1177,8 +1202,8 @@ def record_pull_request_event(
 
     Approval is GitHub ``pull_request_review`` with review state approved
     (webhooks send lower case ``approved``; the API spelling ``APPROVE`` is
-    accepted too), GitLab ``merge_request_approved``, or a
-    ``pull_request_approved`` type if a normalizer ever emits one. Merge is
+    accepted too), GitLab ``merge_request_approved`` or Bitbucket Cloud
+    ``pullrequest:approved`` (normalized to ``pull_request_approved``). Merge is
     ``pull_request_merged`` or ``merge_request_merged``. The earliest
     timestamp wins, so a redelivered webhook never moves a milestone.
 
@@ -1212,10 +1237,12 @@ def record_pull_request_event(
         return None
     arrival = now or datetime.now(UTC)
     attributes = _dict(payload.get("object_attributes"))
+    bitbucket_pull = _dict(payload.get("pullrequest"))
     created = parse_forge_time(
         _dict(payload.get("pull_request")).get("created_at")
         or attributes.get("created_at")
-        or _dict(payload.get("merge_request")).get("created_at"),
+        or _dict(payload.get("merge_request")).get("created_at")
+        or bitbucket_pull.get("created_on"),
         now=arrival,
     )
     if not approved and not merged:
@@ -1230,13 +1257,20 @@ def record_pull_request_event(
     if created is not None:
         stamp_opened(pull, created, OPENED_FORGE)
     if approved:
-        stamp = parse_event_time(review.get("submitted_at"), now=arrival)
+        # Bitbucket Cloud states the approval time on ``approval.date``.
+        stamp = parse_event_time(
+            review.get("submitted_at") or _dict(payload.get("approval")).get("date"),
+            now=arrival,
+        )
         if pull.approved_at is None or stamp < _aware(pull.approved_at):
             pull.approved_at = stamp
     if merged:
         stamp = parse_event_time(
             _dict(payload.get("pull_request")).get("merged_at")
-            or attributes.get("merged_at"),
+            or attributes.get("merged_at")
+            # Bitbucket Cloud has no merged_at; ``pullrequest:fulfilled``
+            # is sent as the state changes, so updated_on is the merge.
+            or bitbucket_pull.get("updated_on"),
             now=arrival,
         )
         if pull.merged_at is None or stamp < _aware(pull.merged_at):
