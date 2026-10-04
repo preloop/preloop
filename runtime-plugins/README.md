@@ -38,3 +38,8 @@ Packages:
 - `nanobot-preloop`: standalone pinned Nanobot SDK process, owned bounded
   conversations, gateway model/MCP routing and enforced native approvals.
   See [setup and limits](nanobot-preloop/README.md).
+
+- `browser-use-preloop`: `preloop-browser-use` (pip install from this
+  path), a Browser Use `on_step_end` callback that reports each step and
+  its screenshot to the runtime session timeline. See
+  [the README](browser-use-preloop/README.md).

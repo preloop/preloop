@@ -1072,6 +1072,16 @@ class Settings(BaseSettings):
             "means any hour (RETENTION_PURGE_WINDOW_UTC)."
         ),
     )
+    retention_export_max_artifact_bytes: int = Field(
+        2 * 1024 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Maximum total artifact bytes one period export may carry. Above "
+            "it the export is refused with export_too_large, naming the count "
+            "and the bytes, so the caller narrows the range or the session "
+            "(RETENTION_EXPORT_MAX_ARTIFACT_BYTES)."
+        ),
+    )
     retention_export_max_rows: int = Field(
         100000,
         ge=1,

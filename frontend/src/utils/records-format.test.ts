@@ -1,5 +1,6 @@
 import { expect } from '@open-wc/testing';
 import {
+  sessionExportHref,
   clampRetentionDays,
   defaultVerifyRange,
   retentionDiff,
@@ -51,5 +52,26 @@ describe('records format', () => {
     expect(retentionDiff(rows, { audit: 400, usage: 10 })).to.deep.equal([
       { record_class: 'audit', label: 'Audit', from: 365, to: 400 },
     ]);
+  });
+});
+
+describe('sessionExportHref', () => {
+  it('covers the session from its first UTC day to the day after it ended', () => {
+    const href = sessionExportHref({
+      id: 'abc',
+      started_at: '2026-03-09T23:30:00Z',
+      last_activity_at: '2026-03-11T01:00:00Z',
+      ended_at: null,
+    });
+    const url = new URL(href, 'http://x');
+    expect(url.searchParams.get('start')).to.equal('2026-03-09');
+    expect(url.searchParams.get('end')).to.equal('2026-03-12');
+    expect(url.searchParams.get('runtime_session_id')).to.equal('abc');
+  });
+
+  it('leaves the default period when the session has no times', () => {
+    const url = new URL(sessionExportHref({ id: 'abc' }), 'http://x');
+    expect(url.searchParams.has('start')).to.equal(false);
+    expect(url.hash).to.equal('#period-exports');
   });
 });

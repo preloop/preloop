@@ -1173,6 +1173,7 @@ class DynamicFastMCP(FastMCP):
         try:
             subject_context = {
                 "api_key_id": user_context.api_key_id,
+                "flow_id": getattr(user_context, "flow_id", None),
                 "managed_agent_id": getattr(user_context, "managed_agent_id", None),
             }
 
@@ -1845,6 +1846,7 @@ async def {internal_name}({params_str}):
                     user_id=uuid.UUID(user_context.user_id),
                     subject_context={
                         "api_key_id": user_context.api_key_id,
+                        "flow_id": getattr(user_context, "flow_id", None),
                         "managed_agent_id": getattr(
                             user_context, "managed_agent_id", None
                         ),
@@ -2583,10 +2585,13 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
         runtime_principal_id = None
         runtime_principal_name = None
         managed_agent_id = None
+        flow_id = None
         api_key_id = str(api_key.id) if api_key else None
         api_key_name = api_key.name if api_key else None
         if api_key and api_key.context_data:
             flow_execution_id = api_key.context_data.get("flow_execution_id")
+            if flow_execution_id and api_key.context_data.get("flow_id"):
+                flow_id = str(api_key.context_data.get("flow_id"))
             runtime_session_id = api_key.context_data.get("runtime_session_id")
             managed_agent_id = api_key.context_data.get("managed_agent_id")
             runtime_principal = api_key.context_data.get("runtime_principal") or {}
@@ -2632,6 +2637,7 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
             managed_agent_id=(
                 str(managed_agent_id) if managed_agent_id is not None else None
             ),
+            flow_id=flow_id,
         )
 
         logger.info(

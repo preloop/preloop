@@ -31,7 +31,10 @@ with the format signature, so a file that is not the declared type is refused.
 When a deposit names no kind, Preloop infers one from the content: an image is
 a `screenshot`, audio is `audio`, video is a `recording`, `text/vtt` and
 `application/x-subrip` are a `transcript`, other text is a `document`, and
-anything else is a `generated_file`.
+anything else is a `generated_file`. If the inferred kind does not accept the
+media type (for example `image/gif` or `text/csv`), the deposit is stored as a
+`generated_file` instead of being refused. Audio is the exception: it stays
+`audio`, so the account's audio setting still applies.
 
 A request body may be at most the largest kind cap plus 1 MiB. Larger bodies
 are refused before they are parsed.
@@ -233,8 +236,64 @@ The full request and response schemas are in the API reference
 
 ### 3. CLI
 
-`preloop artifacts put <file> --session <id> --kind <kind> --label site=...`
-is planned in #1089. Until it ships, use the multipart call above.
+```bash
+preloop artifacts put standup.vtt --session <id> --label site=nord
+some-tool | preloop artifacts put - --session <id> --content-type text/plain --name notes.txt
+preloop artifacts ls --session <id> --kind transcript --since 7d
+preloop artifacts get <artifact-id> --session <id> -o standup.vtt
+```
+
+`put` streams the multipart call above and prints the artifact id and a
+console link. `--json` prints the descriptor unchanged. See
+[CLI: Artifacts](cli.md#artifacts) for every flag.
+
+## Reading artifacts from an agent
+
+Two built-in MCP tools, both **off by default**, let an agent find and read
+artifacts: `search_artifacts` and `get_artifact`. Enable them on the **Tools**
+page or list them in a flow's `allowed_mcp_tools`.
+
+```json
+{
+  "name": "search_artifacts",
+  "arguments": {
+    "kind": ["transcript"],
+    "labels": {"site": "heilbronn"},
+    "since": "2026-10-04T08:00:00+00:00",
+    "until": "2026-10-04T09:00:00+00:00"
+  }
+}
+```
+
+- `q` matches the artifact's extracted text (web search syntax) or its name.
+- `kind` is a list; `labels` must all match; a label with an empty value
+  matches any.
+- `since` is inclusive and `until` exclusive, both on `created_at`, ISO 8601
+  with an offset. A scheduled flow can pass its own
+  `trigger_event.payload.window.from` / `.to`.
+- `limit` is at most 50; pass `next_cursor` back as `cursor` for the next page.
+
+The answer is `structuredContent.items` (each artifact's descriptor plus
+`excerpt`, a short fragment of its text with matches in `**bold**`), the same
+JSON as the first `text` block (MCP clients that show only text, such as
+OpenCode, read that), then one `resource_link` block per artifact.
+
+`get_artifact {artifact_id, max_bytes?}` returns the descriptor as a leading
+`text` block, then the content: an
+`EmbeddedResource` with `text` for text kinds (the first `max_bytes`, default
+64 KiB, with `_meta["preloop.dev/artifact"].truncated` set when cut), inline
+bytes for binaries up to 1 MiB, and a `resource_link` beyond that.
+
+**Scope.** By default both tools see only artifacts of sessions run by the
+calling agent identity, across all its runs. For a flow the identity is the
+flow: a run sees the artifacts of every run of the same flow, not of other
+flows. `scope: "account"` reads every
+artifact of the account and needs the `artifact_search.account_scope` grant
+for that agent (granted through the Enterprise Edition governance settings).
+Without the grant the call is refused with `account_scope_not_granted`, naming
+the grant; it is never quietly narrowed. `get_artifact` answers an id outside
+the caller's scope with `artifact_not_found`. Every call, answered or refused,
+is written to the audit log with the agent as the actor.
 
 ## Where artifacts appear
 
@@ -319,10 +378,24 @@ curl -s -H "Authorization: Bearer $PRELOOP_TOKEN" \
 
 ## Audio is off by default
 
-Audio of people is personal data in most jurisdictions. Every `audio` deposit
-is refused with `409 artifact_audio_storage_disabled` until the per-account
-opt-in setting ships (#1102). Store the transcript instead, with a
+Audio of people is personal data in most jurisdictions. Every `audio` deposit,
+and any deposit whose media type is `audio/*` whatever its declared kind, is
+refused with `409 artifact_audio_storage_disabled` unless an account admin
+opts in. Transcripts are stored either way: store the transcript with a
 `consent_basis` label.
+
+To opt in, open **Settings > Account > Session artifact storage** and turn on
+**Store raw audio**, or call
+`PUT /api/v1/account/session-artifacts/settings` with
+`{"audio_storage_enabled": true}`. The change needs the `manage_policies`
+permission and writes an `artifact_settings_updated` audit row with who
+changed which field from what to what, and when. A request that changes
+nothing writes no row.
+
+`audio_retention_days` (default 30, at most the runtime-session retention)
+bounds how long raw audio is kept. The artifact janitor expires older audio:
+its bytes are dropped, the row stays, and the byte route answers
+`410 {"availability": "expired"}`. Audio under a legal hold is kept.
 
 ## Standards mapping
 

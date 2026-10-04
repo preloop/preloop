@@ -53,6 +53,7 @@ from preloop.utils.permissions import require_permission
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
     DEPOSIT_ARTIFACT_TOOL,
+    GET_ARTIFACT_TOOL,
     GET_EXECUTION_TOOL,
     GET_ISSUE_DESCRIPTION,
     GET_ISSUE_SCHEMA,
@@ -60,6 +61,7 @@ from preloop.tools.builtin_defs import (
     REQUEST_APPROVAL_TOOL,
     RESOLVE_SBOM_UPSTREAMS_TOOL,
     RUN_FLOW_TOOL,
+    SEARCH_ARTIFACTS_TOOL,
     SEARCH_SESSIONS_TOOL,
     SEND_NOTE_TOOL,
     UPDATE_ISSUE_DESCRIPTION,
@@ -82,6 +84,8 @@ BUILTIN_TOOLS = [
     GET_EXECUTION_TOOL,
     SEARCH_SESSIONS_TOOL,
     DEPOSIT_ARTIFACT_TOOL,
+    SEARCH_ARTIFACTS_TOOL,
+    GET_ARTIFACT_TOOL,
     {
         "name": "get_issue",
         "description": GET_ISSUE_DESCRIPTION,

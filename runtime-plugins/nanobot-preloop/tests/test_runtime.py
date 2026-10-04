@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -10,13 +12,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from preloop.integrations.agent_control import OperatorCommand
+from preloop_nanobot_plugin.cli import PINNED_NANOBOT_SDK, discover, enroll
 from preloop_nanobot_plugin.runtime import (
     BoundedProvider,
     GovernedTools,
     NanobotRuntime,
     validate_document,
 )
-from preloop_nanobot_plugin.cli import discover, enroll
 
 
 def document() -> dict:
@@ -520,3 +522,17 @@ asyncio.run(runtime.handle_send_message(OperatorCommand('crashed', 'work', sessi
     assert replay.status == "failed"
     assert replay.metadata["receipt_state"] == "outcome_unknown"
     loop.process_direct.assert_not_awaited()
+
+
+def test_sdk_pin_matches_pyproject_and_manifest() -> None:
+    """The install pin, manifest, and verify guard name one SDK release."""
+    root = Path(__file__).resolve().parents[1]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+    pin = next(
+        dep
+        for dep in pyproject["project"]["dependencies"]
+        if dep.startswith("nanobot-ai==")
+    )
+    manifest = json.loads((root / "preloop-plugin.json").read_text())
+    assert pin == f"nanobot-ai=={PINNED_NANOBOT_SDK}"
+    assert manifest["sdkVersion"] == pin

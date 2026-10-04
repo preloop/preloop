@@ -44,6 +44,7 @@ import type {
   AccountGovernanceDefaultsResponse,
   SubjectGovernanceConfig,
   SubjectGovernanceResponse,
+  FlowGovernanceResponse,
   AccountGatewayUsageSearchResponse,
   AccountRuntimeSessionDetailResponse,
   AccountRuntimeSessionListResponse,
@@ -2409,6 +2410,48 @@ export async function updateAgentGovernance(
   });
   if (!response.ok) {
     throw new Error('Failed to update agent governance');
+  }
+  return response.json();
+}
+
+function flowGovernanceUrl(flowId: string): string {
+  return `/api/v1/account/governance/flows/${encodeURIComponent(flowId)}`;
+}
+
+export async function getFlowGovernance(
+  flowId: string
+): Promise<FlowGovernanceResponse> {
+  const response = await fetchWithAuth(flowGovernanceUrl(flowId));
+  if (!response.ok) {
+    throw new Error('Failed to fetch flow governance');
+  }
+  return response.json();
+}
+
+export async function updateFlowGovernance(
+  flowId: string,
+  config: SubjectGovernanceConfig
+): Promise<FlowGovernanceResponse> {
+  const response = await fetchWithAuth(flowGovernanceUrl(flowId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to update flow governance');
+  }
+  return response.json();
+}
+
+/** Drop the flow override so it inherits the account policy again. */
+export async function resetFlowGovernance(
+  flowId: string
+): Promise<FlowGovernanceResponse> {
+  const response = await fetchWithAuth(flowGovernanceUrl(flowId), {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to reset flow governance');
   }
   return response.json();
 }

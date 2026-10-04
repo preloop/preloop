@@ -611,6 +611,22 @@ class TestScheduleJobSync:
         scheduler.remove_job.assert_called_once_with(existing_job.id)
         scheduler.add_job.assert_not_called()
 
+    def test_sync_never_removes_the_reconcile_job_itself(self, db_session: Session):
+        """The reconcile job's own id starts with the per-flow prefix
+        ("flow_schedule_sync_job"). Treating it as a flow job removed it on
+        the first pass, so flows created after scheduler start never got a
+        job."""
+        sync_job = MagicMock()
+        sync_job.id = "flow_schedule_sync_job"
+        scheduler = MagicMock()
+        scheduler.get_jobs.return_value = [sync_job]
+
+        with self._patch_db(db_session), patch.object(db_session, "close"):
+            sync_flow_schedule_jobs(scheduler)
+
+        removed = [c.args[0] for c in scheduler.remove_job.call_args_list]
+        assert "flow_schedule_sync_job" not in removed
+
     def test_sync_ignores_preset_flows(
         self, db_session: Session, test_account: Account
     ):
@@ -632,3 +648,278 @@ class TestScheduleJobSync:
             sync_flow_schedule_jobs(scheduler)
 
         scheduler.add_job.assert_not_called()
+
+
+def _utc(*args) -> "datetime":
+    from datetime import datetime, timezone
+
+    return datetime(*args, tzinfo=timezone.utc)
+
+
+class TestScheduleFireWindow:
+    """The previous fire time comes from the schedule definition (#1105)."""
+
+    def test_cron_hourly(self):
+        current, previous = CronSchedule(expr="0 * * * *").fire_window(
+            _utc(2026, 10, 4, 12, 0, 3)
+        )
+        assert current == _utc(2026, 10, 4, 12, 0)
+        assert previous == _utc(2026, 10, 4, 11, 0)
+
+    def test_cron_sparse_needs_a_long_lookback(self):
+        # First of January only: the walk back has to widen past a year.
+        current, previous = CronSchedule(expr="0 6 1 1 *").fire_window(
+            _utc(2027, 1, 1, 6, 0, 1)
+        )
+        assert current == _utc(2027, 1, 1, 6, 0)
+        assert previous == _utc(2026, 1, 1, 6, 0)
+
+    def test_cron_leap_day_only_reaches_the_eight_year_bound(self):
+        # 29 February only: from 2028-02-28 the previous two fires are
+        # 2024-02-29 and 2020-02-29, 2921 days back.
+        current, previous = CronSchedule(expr="0 6 29 2 *").fire_window(
+            _utc(2028, 2, 28, 6, 0, 1)
+        )
+        assert current == _utc(2024, 2, 29, 6, 0)
+        assert previous == _utc(2020, 2, 29, 6, 0)
+
+    def test_interval_is_one_period_back(self):
+        at = _utc(2026, 10, 4, 12, 7, 30)
+        current, previous = IntervalSchedule(every=15, unit="minutes").fire_window(at)
+        assert current == at
+        assert previous == _utc(2026, 10, 4, 11, 52, 30)
+
+    def test_daily(self):
+        current, previous = DailySchedule(at="09:30", timezone="UTC").fire_window(
+            _utc(2026, 10, 4, 9, 30, 2)
+        )
+        assert current == _utc(2026, 10, 4, 9, 30)
+        assert previous == _utc(2026, 10, 3, 9, 30)
+
+    def test_weekly(self):
+        # 2026-10-05 is a Monday; the previous fire is Friday.
+        current, previous = WeeklySchedule(days=["mon", "fri"], at="08:00").fire_window(
+            _utc(2026, 10, 5, 8, 0, 1)
+        )
+        assert current == _utc(2026, 10, 5, 8, 0)
+        assert previous == _utc(2026, 10, 2, 8, 0)
+
+    def test_dst_spring_forward_in_a_non_utc_timezone(self):
+        # Europe/Berlin moves to CEST on 2026-03-29: noon local is 11:00Z on
+        # the 28th and 10:00Z on the 29th, so the window is 23 hours long.
+        current, previous = DailySchedule(
+            at="12:00", timezone="Europe/Berlin"
+        ).fire_window(_utc(2026, 3, 29, 10, 0, 5))
+        assert current == _utc(2026, 3, 29, 10, 0)
+        assert previous == _utc(2026, 3, 28, 11, 0)
+
+    def test_dst_fall_back_in_a_non_utc_timezone(self):
+        current, previous = CronSchedule(
+            expr="0 12 * * *", timezone="America/New_York"
+        ).fire_window(_utc(2026, 11, 1, 17, 0, 5))
+        assert current == _utc(2026, 11, 1, 17, 0)
+        assert previous == _utc(2026, 10, 31, 16, 0)
+
+    @pytest.mark.parametrize(
+        "key", ["previous_scheduled_at", "last_successful_scheduled_at", "window"]
+    )
+    def test_window_fields_are_not_overridable(self, key):
+        with pytest.raises(ValidationError, match=key):
+            CronSchedule(expr="0 6 * * *", payload={key: "whenever"})
+
+
+class TestScheduledTickWindow:
+    """A scheduled run can read the time window since its previous fire."""
+
+    @staticmethod
+    async def _tick(service, flow_id, now):
+        with (
+            patch(
+                "preloop.services.flow_trigger_service._schedule_now",
+                return_value=now,
+            ),
+            patch.object(
+                service, "_start_flow_execution", new_callable=AsyncMock
+            ) as mock_run,
+        ):
+            outcome = await service.run_scheduled_tick(flow_id)
+        payload = (
+            mock_run.call_args[1]["event_data"]["payload"] if mock_run.called else None
+        )
+        return outcome, payload
+
+    @pytest.mark.asyncio
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    async def test_first_run_uses_one_period_back(
+        self, mock_nats, db_session: Session, scheduled_flow: Flow
+    ):
+        mock_nats.return_value = AsyncMock()
+        service = FlowTriggerService(db_session)
+        outcome, payload = await self._tick(
+            service, scheduled_flow.id, _utc(2026, 10, 4, 12, 10, 4)
+        )
+        assert outcome == "triggered"
+        assert payload["scheduled_at"] == "2026-10-04T12:10:04+00:00"
+        assert payload["previous_scheduled_at"] == "2026-10-04T12:00:00+00:00"
+        assert payload["window"] == {
+            "from": "2026-10-04T12:00:00+00:00",
+            "to": "2026-10-04T12:10:04+00:00",
+        }
+        assert payload["last_successful_scheduled_at"] is None
+
+    @pytest.mark.asyncio
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    async def test_skipped_overlap_moves_the_window_not_the_last_success(
+        self, mock_nats, db_session: Session, scheduled_flow: Flow
+    ):
+        """After a skipped tick, previous_scheduled_at is the skipped fire;
+        last_successful_scheduled_at still points at the last good run so an
+        evaluator can choose to catch up."""
+        mock_nats.return_value = AsyncMock()
+        crud_flow_execution.create(
+            db_session,
+            obj_in=FlowExecutionCreate(
+                flow_id=scheduled_flow.id,
+                status="SUCCEEDED",
+                trigger_event_details={
+                    "source": "schedule",
+                    "payload": {"scheduled_at": "2026-10-04T12:00:02+00:00"},
+                },
+            ),
+        )
+        crud_flow_execution.create(
+            db_session,
+            obj_in=FlowExecutionCreate(
+                flow_id=scheduled_flow.id,
+                status="FAILED",
+                trigger_event_details={
+                    "source": "schedule",
+                    "payload": {"scheduled_at": "2026-10-04T12:05:00+00:00"},
+                },
+            ),
+        )
+        running = crud_flow_execution.create(
+            db_session,
+            obj_in=FlowExecutionCreate(flow_id=scheduled_flow.id, status="RUNNING"),
+        )
+        service = FlowTriggerService(db_session)
+
+        outcome, _ = await self._tick(
+            service, scheduled_flow.id, _utc(2026, 10, 4, 12, 10, 1)
+        )
+        assert outcome == "skipped_overlap"
+        skip = (
+            db_session.query(Event)
+            .filter(Event.event_type == "flow_schedule_tick_skipped")
+            .one()
+        )
+        assert skip.event_data["previous_scheduled_at"] == "2026-10-04T12:00:00+00:00"
+
+        running.status = "SUCCEEDED"
+        db_session.flush()
+        outcome, payload = await self._tick(
+            service, scheduled_flow.id, _utc(2026, 10, 4, 12, 20, 1)
+        )
+        assert outcome == "triggered"
+        assert payload["previous_scheduled_at"] == "2026-10-04T12:10:00+00:00"
+        assert payload["window"]["from"] == "2026-10-04T12:10:00+00:00"
+        assert payload["last_successful_scheduled_at"] == "2026-10-04T12:00:02+00:00"
+
+    @pytest.mark.asyncio
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    async def test_last_success_is_scoped_to_the_flow(
+        self, mock_nats, db_session: Session, scheduled_flow: Flow, test_account
+    ):
+        other = crud_flow.create(
+            db=db_session,
+            flow_in=FlowCreate(
+                name=f"Other Flow {uuid4().hex[:8]}",
+                trigger_event_source="schedule",
+                trigger_event_types=["schedule"],
+                schedule_config=CronSchedule(expr="*/10 * * * *"),
+                prompt_template="p",
+                agent_type="openhands",
+                agent_config={},
+            ),
+            account_id=test_account.id,
+        )
+        crud_flow_execution.create(
+            db_session,
+            obj_in=FlowExecutionCreate(
+                flow_id=other.id,
+                status="SUCCEEDED",
+                trigger_event_details={
+                    "payload": {"scheduled_at": "2026-10-04T12:00:02+00:00"}
+                },
+            ),
+        )
+        mock_nats.return_value = AsyncMock()
+        service = FlowTriggerService(db_session)
+        _, payload = await self._tick(
+            service, scheduled_flow.id, _utc(2026, 10, 4, 12, 10, 4)
+        )
+        assert payload["last_successful_scheduled_at"] is None
+
+
+class TestWindowTemplateVariables:
+    """The window fields render as prompt template variables."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path, expected",
+        [
+            ("payload.window.from", "2026-10-04T12:00:00+00:00"),
+            ("payload.window.to", "2026-10-04T12:10:04+00:00"),
+            ("payload.previous_scheduled_at", "2026-10-04T12:00:00+00:00"),
+            ("payload.last_successful_scheduled_at", "2026-10-04T11:50:01+00:00"),
+        ],
+    )
+    async def test_resolves(self, path, expected):
+        from preloop.services.prompt_resolvers.base import ResolverContext
+        from preloop.services.prompt_resolvers.trigger_event import (
+            TriggerEventResolver,
+        )
+
+        context = ResolverContext(
+            db=MagicMock(),
+            trigger_event_data={
+                "source": "schedule",
+                "type": "schedule",
+                "payload": {
+                    "scheduled_at": "2026-10-04T12:10:04+00:00",
+                    "previous_scheduled_at": "2026-10-04T12:00:00+00:00",
+                    "window": {
+                        "from": "2026-10-04T12:00:00+00:00",
+                        "to": "2026-10-04T12:10:04+00:00",
+                    },
+                    "last_successful_scheduled_at": "2026-10-04T11:50:01+00:00",
+                },
+            },
+            flow_id="flow-1",
+            execution_id="exec-1",
+        )
+        assert await TriggerEventResolver().resolve(path, context) == expected
+
+
+@pytest.mark.asyncio
+async def test_null_last_success_resolves_to_none():
+    """No successful run yet: the resolver answers None, so the orchestrator
+    leaves the placeholder as written (documented in flow-triggers.md)."""
+    from preloop.services.prompt_resolvers.base import ResolverContext
+    from preloop.services.prompt_resolvers.trigger_event import TriggerEventResolver
+
+    context = ResolverContext(
+        db=MagicMock(),
+        trigger_event_data={
+            "source": "schedule",
+            "payload": {"last_successful_scheduled_at": None},
+        },
+        flow_id="flow-1",
+        execution_id="exec-1",
+    )
+    assert (
+        await TriggerEventResolver().resolve(
+            "payload.last_successful_scheduled_at", context
+        )
+        is None
+    )

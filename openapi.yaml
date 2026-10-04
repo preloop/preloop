@@ -1001,6 +1001,56 @@ paths:
                 $ref: '#/components/schemas/SessionArtifactUsageResponse'
       security:
       - bearerAuth: []
+  /api/v1/account/session-artifacts/settings:
+    get:
+      tags:
+      - Account
+      summary: Get Session Artifact Settings
+      description: Return whether raw audio is stored, and for how long.
+      operationId: get_session_artifact_settings_api_v1_account_session_artifacts_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Account
+      summary: Update Session Artifact Settings
+      description: 'Opt the account in or out of raw audio storage; admin only, audited.
+
+
+        Uses ``manage_policies`` like the retention settings: it governs what
+
+        the account keeps. Every change writes an ``artifact_settings_updated``
+
+        audit row with the before and after value of each changed field; a
+
+        request that changes nothing writes no row.'
+      operationId: update_session_artifact_settings_api_v1_account_session_artifacts_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionArtifactSettingsUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+        '403':
+          description: Caller may not manage account policies
+        '422':
+          description: audio_retention_days_invalid
+      security:
+      - bearerAuth: []
   /api/v1/account/gateway-usage/summary:
     get:
       tags:
@@ -1680,6 +1730,102 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/account/governance/flows/{flow_id}:
+    get:
+      tags:
+      - Account
+      summary: Get Account Flow Governance
+      description: 'Per-flow governance override for every execution of one flow.
+
+
+        Sync on purpose: FastAPI runs it in the threadpool, so the sync DB
+
+        session never blocks the event loop.'
+      operationId: get_account_flow_governance_api_v1_account_governance_flows__flow_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Account
+      summary: Update Account Flow Governance
+      description: Store a governance override for one flow's executions.
+      operationId: update_account_flow_governance_api_v1_account_governance_flows__flow_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubjectGovernanceConfig'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Account
+      summary: Reset Account Flow Governance
+      description: Drop the flow's override so it inherits the account policy again.
+      operationId: reset_account_flow_governance_api_v1_account_governance_flows__flow_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/{agent_id}/governance:
     get:
       tags:
@@ -5469,6 +5615,17 @@ paths:
         holds.
 
 
+        Session artifacts created in the period are included as
+
+        ``artifacts/<session_id>/<artifact_id>-<name>`` members with
+
+        ``artifacts/manifest.json``, a list of A2A ``Artifact`` objects. Above
+
+        ``RETENTION_EXPORT_MAX_ARTIFACT_BYTES`` the export is refused with 413
+
+        ``export_too_large``.
+
+
         The archive carries ``manifest.json`` with a sha256 per member and a
 
         digest over the member list, in the same shape an evidence pack manifest
@@ -5498,6 +5655,19 @@ paths:
           description: Period end, exclusive (YYYY-MM-DD)
           title: End
         description: Period end, exclusive (YYYY-MM-DD)
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Limit the artifact members to one runtime session. Audit rows,
+            approvals, receipts and holds still cover the whole period.
+          title: Runtime Session Id
+        description: Limit the artifact members to one runtime session. Audit rows,
+          approvals, receipts and holds still cover the whole period.
       responses:
         '200':
           description: Successful Response
@@ -12821,6 +12991,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/control/commands/{command_id}:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Managed Agent Command Status
+      description: 'Delivery state of one operator command, for clients that follow
+        it.
+
+
+        The same permission as sending: whoever may send a command may watch
+
+        it land. Another agent''s command id is a 404, not a leak. A sync
+
+        handler: FastAPI runs it in the threadpool, off the event loop.'
+      operationId: get_managed_agent_command_status_api_v1_agents__agent_id__control_commands__command_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Command Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentControlCommandStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/{runtime_session_id}/control:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Runtime Session Control Mode
+      description: 'Say whether a line typed on this session can start a new agent
+        turn.
+
+
+        ``preloop sessions attach`` reads this once on attach and again when a
+
+        command is refused. Sending still goes through the command endpoint and
+
+        its ``control_managed_agent`` check; this only picks the input mode. A
+
+        sync handler: FastAPI runs it in the threadpool, off the event loop.'
+      operationId: get_runtime_session_control_mode_api_v1_runtime_sessions__runtime_session_id__control_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionControlResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/{agent_id}/control/voice-transcripts:
     post:
       tags:
@@ -15496,26 +15748,28 @@ components:
             - 'off'
           - type: 'null'
           title: Native Tool Approvals
-          description: Account default for native tool-call approvals. Agents without
-            an explicit per-agent setting inherit this; absent/None means "enforce".
+          description: Account default for native tool-call approvals. Agents and
+            flow executions without an explicit per-subject setting inherit this;
+            absent/None means "enforce".
         approval_workflow_id:
           anyOf:
           - type: string
           - type: 'null'
           title: Approval Workflow Id
           description: Account default approval workflow for native tool-call approvals.
-            Agents without a per-agent pin inherit this; absent falls back to the
-            account's default workflow.
+            Agents and flows without their own pin inherit this; absent falls back
+            to the account's default workflow.
       type: object
       title: AccountGovernanceDefaults
-      description: 'Account-wide governance defaults inherited by every managed agent.
+      description: 'Account-wide governance defaults inherited by managed agents and
+        flows.
 
 
-        A per-agent subject-governance config with an explicit value overrides
+        A per-agent or per-flow subject-governance config with an explicit value
 
-        these; an absent/None per-agent value inherits. The final fallback when
+        overrides these; an absent/None per-subject value inherits. The final
 
-        both are unset is "enforce" (fail safe).'
+        fallback when both are unset is "enforce" (fail safe).'
     AccountGovernanceDefaultsResponse:
       properties:
         defaults:
@@ -15756,6 +16010,84 @@ components:
       - command_envelope
       title: AgentControlCommandResponse
       description: Result of routing an operator command to a managed agent.
+    AgentControlCommandStatusResponse:
+      properties:
+        command_id:
+          type: string
+          title: Command Id
+        managed_agent_id:
+          type: string
+          format: uuid
+          title: Managed Agent Id
+        status:
+          type: string
+          title: Status
+        delivery_state:
+          type: string
+          enum:
+          - queued
+          - delivered
+          - started
+          - finished
+          - failed
+          - expired
+          - cancelled
+          title: Delivery State
+        terminal:
+          type: boolean
+          title: Terminal
+        result_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Status
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        acked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Acked At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - command_id
+      - managed_agent_id
+      - status
+      - delivery_state
+      - terminal
+      title: AgentControlCommandStatusResponse
+      description: 'Delivery state of one operator command (#1150).
+
+
+        ``delivery_state`` is what an operator sees: queued (persisted, not yet
+
+        on the agent''s connection), delivered (sent on the connection), started
+
+        (the agent acknowledged it), then finished, failed, expired or
+
+        cancelled. ``status`` is the stored row status it is derived from.'
     AgentControlEnvelope:
       properties:
         type:
@@ -21982,6 +22314,36 @@ components:
       - budget
       title: FlowGatewayUsageSummaryResponse
       description: Flow-scoped gateway usage summary.
+    FlowGovernanceResponse:
+      properties:
+        subject_type:
+          type: string
+          title: Subject Type
+        subject_id:
+          type: string
+          title: Subject Id
+        config:
+          $ref: '#/components/schemas/SubjectGovernanceConfig'
+        has_override:
+          type: boolean
+          title: Has Override
+          default: false
+        account_defaults:
+          $ref: '#/components/schemas/AccountGovernanceDefaults'
+      type: object
+      required:
+      - subject_type
+      - subject_id
+      - config
+      title: FlowGovernanceResponse
+      description: 'Per-flow governance override plus the account defaults it inherits.
+
+
+        ``has_override`` is False when the flow stores no override, in which case
+
+        ``config`` is empty and every execution of the flow is governed by the
+
+        account-wide policy (tool rules, enabled tools) and ``account_defaults``.'
     FlowNotifications:
       properties:
         on_failure:
@@ -29555,6 +29917,71 @@ components:
         lower bound covering only the priced models. When no contributing model is
 
         priced the figure is ``None`` and ``savings_omitted_reason`` says why.'
+    RuntimeSessionControlResponse:
+      properties:
+        runtime_session_id:
+          type: string
+          format: uuid
+          title: Runtime Session Id
+        mode:
+          type: string
+          enum:
+          - command
+          - note
+          title: Mode
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - session_ended
+            - not_managed
+            - unsupported_kind
+            - agent_inactive
+            - no_control_plugin
+            - control_offline
+          - type: 'null'
+          title: Reason Code
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+        agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Name
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+      type: object
+      required:
+      - runtime_session_id
+      - mode
+      title: RuntimeSessionControlResponse
+      description: 'Whether a line typed on an attached session starts a new turn
+        (#1150).
+
+
+        ``mode`` is ``command`` when the session is run by an active managed
+
+        agent with a verified Agent Control plugin and a live control
+
+        connection: send the line with POST
+
+        ``/agents/{managed_agent_id}/control/prompts`` and ``target_session_id``
+
+        set to this session. Otherwise ``mode`` is ``note`` and ``reason`` says
+
+        why, in words fit to show the operator.'
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
@@ -30855,6 +31282,54 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionArtifactSettingsResponse:
+      properties:
+        audio_storage_enabled:
+          type: boolean
+          title: Audio Storage Enabled
+          description: Store raw audio deposited by agents. Off by default.
+        audio_retention_days:
+          type: integer
+          title: Audio Retention Days
+          description: Days raw audio is kept before its bytes expire.
+        audio_retention_max_days:
+          type: integer
+          title: Audio Retention Max Days
+          description: Longest allowed audio retention (the session retention).
+        updated_by_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated By User Id
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - audio_storage_enabled
+      - audio_retention_days
+      - audio_retention_max_days
+      title: SessionArtifactSettingsResponse
+      description: Account artifact storage settings (#1102).
+    SessionArtifactSettingsUpdate:
+      properties:
+        audio_storage_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Audio Storage Enabled
+        audio_retention_days:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Audio Retention Days
+      type: object
+      title: SessionArtifactSettingsUpdate
+      description: Change artifact storage settings; omitted fields are left as they
+        are.
     SessionArtifactUsageByKind:
       properties:
         screenshot:
