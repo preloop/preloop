@@ -397,6 +397,20 @@ describe('PreloopFlowForm callable flows picker', () => {
     expect((element as any).formError).to.include('above zero');
   });
 
+  it('moves focus to the section when an entry is refused', async () => {
+    const element = await mountParent({
+      allowed_mcp_tools: [delegationTool()],
+      callable_flows: [{ flow: 'Parent flow' }],
+    });
+
+    await (element as any).handleFormSubmit(new Event('submit'));
+    await element.updateComplete;
+
+    const section = element.shadowRoot!.querySelector('[data-callable-flows]');
+    expect(section?.getAttribute('tabindex')).to.equal('-1');
+    expect(element.shadowRoot!.activeElement).to.equal(section);
+  });
+
   it('marks the row the server refused and names the entry', async () => {
     const element = await mountParent();
     await toggleFlow(element, 'Child flow', true);

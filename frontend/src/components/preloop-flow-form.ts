@@ -2938,8 +2938,14 @@ export class PreloopFlowForm extends LitElement {
     const rejected = callableFlowsErrorEntry(this.formError);
 
     return html`
-      <div class="callable-flows" data-callable-flows>
-        <h5>Flows this flow may call</h5>
+      <div
+        class="callable-flows"
+        data-callable-flows
+        role="group"
+        aria-labelledby="callable-flows-heading"
+        tabindex="-1"
+      >
+        <h5 id="callable-flows-heading">Flows this flow may call</h5>
         <p class="callable-flows-help">
           Delegation is refused unless the flow is listed here. Leave a ceiling
           blank for no limit; the server is the authority on both.
