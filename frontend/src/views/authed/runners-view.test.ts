@@ -686,6 +686,84 @@ describe('RunnersView', () => {
     expect(forced).to.have.length(1);
   });
 
+  function spyOnConfirmAsks() {
+    const ctor = customElements.get('confirm-dialog') as unknown as {
+      prototype: { ask: (...args: unknown[]) => Promise<boolean> };
+    };
+    return sinon.spy(ctor.prototype, 'ask');
+  }
+
+  function actionButton(element: RunnersView, selector: string) {
+    return element.shadowRoot?.querySelector(selector) as HTMLElement & {
+      disabled: boolean;
+    };
+  }
+
+  it('asks once and deletes once on a rapid double click', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    const element = await loadedView();
+    const asks = spyOnConfirmAsks();
+
+    const remove = actionButton(element, '.delete-runner');
+    remove.click();
+    remove.click();
+    await element.updateComplete;
+    // The row is busy while its question is open: neither action can start
+    // a second ask that would cancel the first.
+    expect(actionButton(element, '.delete-runner').disabled).to.equal(true);
+    expect(actionButton(element, '.rotate-token').disabled).to.equal(true);
+    actionButton(element, '.rotate-token').click();
+
+    await answerConfirm('Delete runner');
+    await waitUntil(
+      () => !element.shadowRoot?.textContent?.includes('office-mac'),
+      'Deleted runner row did not disappear'
+    );
+    expect(asks.callCount).to.equal(1);
+    expect(
+      requestsMatching((_url, method) => method === 'DELETE')
+    ).to.have.length(1);
+    expect(
+      requestsMatching(
+        (url, method) => method === 'POST' && url.endsWith('/token')
+      )
+    ).to.have.length(0);
+  });
+
+  it('asks once and rotates once on a rapid double click', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    const element = await loadedView();
+    const asks = spyOnConfirmAsks();
+
+    const rotate = actionButton(element, '.rotate-token');
+    rotate.click();
+    rotate.click();
+    await answerConfirm('Rotate token');
+    await waitUntil(
+      () => Boolean(element.shadowRoot?.querySelector('.action-notice-text')),
+      'Rotation notice did not appear'
+    );
+    expect(asks.callCount).to.equal(1);
+    expect(
+      requestsMatching(
+        (url, method) => method === 'POST' && url.endsWith('/token')
+      )
+    ).to.have.length(1);
+  });
+
+  it('frees the row again when the question is cancelled', async () => {
+    fetchStub = createFetchStub([actionRunner]);
+    const element = await loadedView();
+
+    actionButton(element, '.delete-runner').click();
+    await answerConfirm('Cancel');
+    await waitUntil(
+      () => !actionButton(element, '.delete-runner').disabled,
+      'the row stayed busy after Cancel'
+    );
+    expect(actionButton(element, '.rotate-token').disabled).to.equal(false);
+  });
+
   it('rotates the token without showing it', async () => {
     fetchStub = createFetchStub([actionRunner]);
     const element = await loadedView();

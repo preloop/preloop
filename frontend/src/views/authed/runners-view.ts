@@ -60,9 +60,31 @@ export class RunnersView extends LitElement {
   @state()
   private concurrencyError: string | null = null;
 
-  /** Runner a delete or rotate request is in flight for, if any. */
+  /**
+   * Runners with a delete or rotate under way: from the click that opens
+   * the confirmation until the request settles. Marked before the question
+   * is awaited, so a second click cannot open another ask (which would
+   * cancel the first) or send the request twice.
+   */
   @state()
-  private actionPendingFor: string | null = null;
+  private busyRunners: ReadonlySet<string> = new Set();
+
+  private isBusy(runnerId: string): boolean {
+    return this.busyRunners.has(runnerId);
+  }
+
+  /** Mark the row busy. False when it already was: the click is a repeat. */
+  private claimRow(runnerId: string): boolean {
+    if (this.isBusy(runnerId)) return false;
+    this.busyRunners = new Set([...this.busyRunners, runnerId]);
+    return true;
+  }
+
+  private releaseRow(runnerId: string): void {
+    const next = new Set(this.busyRunners);
+    next.delete(runnerId);
+    this.busyRunners = next;
+  }
 
   /**
    * Outcome of the last delete or rotate, shown under that runner's row.
@@ -255,6 +277,7 @@ export class RunnersView extends LitElement {
   }
 
   private async handleDelete(row: RunnerRecord, force = false) {
+    if (!this.claimRow(row.id)) return;
     const confirmed = await confirmDialog(
       force
         ? {
@@ -275,9 +298,9 @@ export class RunnersView extends LitElement {
           }
     );
     if (!confirmed) {
+      this.releaseRow(row.id);
       return;
     }
-    this.actionPendingFor = row.id;
     this.actionNotice = null;
     try {
       await deleteRunner(row.id, force);
@@ -289,11 +312,12 @@ export class RunnersView extends LitElement {
         conflict: err instanceof RunnerHasLeasesError,
       };
     } finally {
-      this.actionPendingFor = null;
+      this.releaseRow(row.id);
     }
   }
 
   private async handleRotate(row: RunnerRecord) {
+    if (!this.claimRow(row.id)) return;
     const confirmed = await confirmDialog({
       title: 'Rotate runner token',
       message: `Rotate the token for ${row.name}?`,
@@ -303,9 +327,9 @@ export class RunnersView extends LitElement {
       variant: 'primary',
     });
     if (!confirmed) {
+      this.releaseRow(row.id);
       return;
     }
-    this.actionPendingFor = row.id;
     this.actionNotice = null;
     try {
       await rotateRunnerToken(row.id);
@@ -322,12 +346,12 @@ export class RunnersView extends LitElement {
           err instanceof Error ? err.message : 'Failed to rotate runner token',
       };
     } finally {
-      this.actionPendingFor = null;
+      this.releaseRow(row.id);
     }
   }
 
   private renderActions(row: RunnerRecord) {
-    const busy = this.actionPendingFor === row.id;
+    const busy = this.isBusy(row.id);
     return html`
       <div class="actions">
         <sl-button
@@ -365,7 +389,7 @@ export class RunnersView extends LitElement {
                   class="force-delete"
                   size="small"
                   variant="danger"
-                  ?disabled=${this.actionPendingFor === row.id}
+                  ?disabled=${this.isBusy(row.id)}
                   @click=${() => void this.handleDelete(row, true)}
                   >Force delete</sl-button
                 >`
