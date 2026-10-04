@@ -40,6 +40,10 @@ graph TD
 *   **Build Tool:** [Vite](https://vitejs.dev/) - A modern frontend build tool that provides an extremely fast development experience with features like Hot Module Replacement (HMR) and optimized production builds.
 *   **Language:** [TypeScript](https://www.typescriptlang.org/) - A statically typed superset of JavaScript that enhances code quality and maintainability.
 *   **UI Components:** [Shoelace](https://shoelace.style/) - A set of high-quality, standards-based web components.
+
+Shoelace's theme stylesheets, autoloader, lazily loaded components and icon set are served from the console's own origin under `/vendor/shoelace/`, copied from the installed package by `vite-plugin-shoelace-vendor.ts` (a dev-server middleware plus a copy into `dist/` at build time). Nothing is fetched from a CDN, so air-gapped and egress-restricted installs render fully and the themed components always match the version in `package.json`.
+
+Every module that renders a console custom element imports it. `scripts/check-custom-element-imports.mjs` (run by `npm test`) fails when a Lit template renders an element from `src/components` without importing its module: otherwise the page works only when an earlier route happened to register the element, and a deep link renders it as an unknown tag.
 *   **Testing:** [Web Test Runner](https://modern-web.dev/docs/test-runner/overview/) - A tool for testing web applications in a real browser, ensuring that components behave as expected in a live environment.
 
 ## Structure
@@ -104,7 +108,7 @@ The Overview (`/console`) leads with five current-state counts (agents, flows, m
 
 ### Console surfaces (`src/styles/console-surfaces.css`, `console-styles.css`)
 
-Every console background comes from one surface ladder declared per theme at document level: `--console-page`, `--console-surface`, `--console-surface-raised`, and `--console-hairline`. Declaring them on the document matters because Shoelace's dark theme is a class on `<html>` that shadow-scoped CSS cannot select, while custom properties inherit into every shadow root. In dark mode the ladder gets lighter with elevation (cards carry no border or shadow; the lightness step is the elevation); in light mode cards keep a hairline and the smallest shadow. Two rules follow from it and are enforced across the views: a depth limit of two (page, then surface: nothing inside a card gets a filled box of its own; rows separate by hairline), and states are tints, not paint (status chips are a 16% tint of their tone with dark ink; solid fills survive only on section count badges and the danger pill of a failed run). The design rationale lives in the private `DESIGN.md` (D27).
+Every console background comes from one surface ladder declared per theme at document level: `--console-page`, `--console-surface`, `--console-surface-raised`, and `--console-hairline`. Declaring them on the document matters because Shoelace's dark theme is a class on `<html>` that shadow-scoped CSS cannot select, while custom properties inherit into every shadow root. In dark mode the ladder gets lighter with elevation (cards carry no border or shadow; the lightness step is the elevation); in light mode cards keep a hairline and the smallest shadow. Two rules follow from it and are enforced across the views: a depth limit of two (page, then surface: nothing inside a card gets a filled box of its own; rows separate by hairline), and states are tints, not paint (status chips are a 16% tint of their tone with dark ink; solid fills survive only on section count badges and the danger pill of a failed run). The design rationale lives in the private `DESIGN.md` (D27). Link text and meta text are tested for WCAG AA contrast on all three rungs in both themes (`console-surfaces.test.ts`).
 
 ### Tools Page (`src/views/authed/tools-view.ts`)
 
