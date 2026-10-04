@@ -2,6 +2,8 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../../api';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 import './team-management-view';
 import type { TeamManagementView } from './team-management-view';
 
@@ -46,6 +48,10 @@ describe('TeamManagementView', () => {
           });
         }
 
+        if (url.includes('/api/v1/teams/') && method === 'DELETE') {
+          return new Response(null, { status: 204 });
+        }
+
         if (url.includes('/api/v1/teams') && method === 'POST') {
           return json({ id: 'team-new', name: 'New Team' });
         }
@@ -78,6 +84,7 @@ describe('TeamManagementView', () => {
     fetchStub?.restore();
     localStorage.clear();
     invalidateApiCaches();
+    resetConfirmDialogForTests();
   });
 
   it('shows the not-available message when feature is disabled', async () => {
@@ -106,10 +113,10 @@ describe('TeamManagementView', () => {
     );
     await element.updateComplete;
 
-    // The page is called what the sidebar calls it.
-    expect(element.shadowRoot?.querySelector('h1')?.textContent).to.equal(
-      'Teams'
-    );
+    // The page is called what the sidebar calls it, in the shared header.
+    expect(
+      (element.shadowRoot?.querySelector('view-header') as any)?.headerText
+    ).to.equal('Teams');
     // Delete is outline and last, after the gap.
     const del = element.shadowRoot?.querySelector(
       '.team-actions sl-button[variant="danger"]'
@@ -121,7 +128,7 @@ describe('TeamManagementView', () => {
     );
   });
 
-  it('renders an empty grid when there are no teams', async () => {
+  it('explains teams and offers to create one when there are none', async () => {
     fetchStub = createFetchStub({ teams: [] });
     const element = (await fixture(
       html`<team-management-view></team-management-view>`
@@ -132,6 +139,12 @@ describe('TeamManagementView', () => {
 
     const cards = element.shadowRoot?.querySelectorAll('.teams-grid sl-card');
     expect(cards?.length).to.equal(0);
+    const empty = element.shadowRoot?.querySelector('.empty-state');
+    expect(empty?.textContent).to.contain('No teams yet');
+    const create = empty?.querySelector('sl-button') as HTMLElement;
+    create.click();
+    await element.updateComplete;
+    expect((element as any).isCreateModalOpen).to.equal(true);
   });
 
   it('shows an error when team loading fails', async () => {
@@ -170,5 +183,65 @@ describe('TeamManagementView', () => {
       );
     expect(postCall, 'expected a POST to /api/v1/teams').to.exist;
     expect((element as any).isCreateModalOpen).to.be.false;
+  });
+
+  it('names every icon-only action for assistive tech', async () => {
+    fetchStub = createFetchStub({ teams: [sampleTeam] });
+    const element = (await fixture(
+      html`<team-management-view></team-management-view>`
+    )) as TeamManagementView;
+    await waitUntil(() => (element as any).teams?.length === 1);
+    await element.updateComplete;
+    const labels = [
+      ...element.shadowRoot!.querySelectorAll('.team-actions sl-icon'),
+    ].map((icon) => icon.getAttribute('label'));
+    expect(labels).to.deep.equal([
+      'Manage roles',
+      'Members',
+      'Edit team',
+      'Delete team',
+    ]);
+  });
+
+  it('asks before deleting a team and says what members lose', async () => {
+    fetchStub = createFetchStub({ teams: [sampleTeam] });
+    const element = (await fixture(
+      html`<team-management-view></team-management-view>`
+    )) as TeamManagementView;
+    await waitUntil(() => (element as any).teams?.length === 1);
+    await element.updateComplete;
+    const deletes = () =>
+      fetchStub.getCalls().filter((call) => call.args[1]?.method === 'DELETE');
+    const del = element.shadowRoot!.querySelector(
+      '.team-actions sl-button[variant="danger"]'
+    ) as HTMLElement;
+
+    del.click();
+    const prompt = await answerConfirmDialog(false);
+    expect(prompt).to.contain('Platform');
+    expect(prompt).to.contain('lose any roles');
+    expect(deletes()).to.have.length(0);
+
+    del.click();
+    await answerConfirmDialog(true);
+    await waitUntil(() => deletes().length === 1);
+    expect(String(deletes()[0].args[0])).to.contain('/api/v1/teams/team-1');
+  });
+
+  it('asks for a team name inside the create dialog', async () => {
+    fetchStub = createFetchStub({ teams: [] });
+    const element = (await fixture(
+      html`<team-management-view></team-management-view>`
+    )) as TeamManagementView;
+    await waitUntil(() => !(element as any).isLoading, 'still loading');
+    (element as any).openCreateModal();
+    await (element as any).handleCreateTeam();
+    await element.updateComplete;
+    const dialog = element.shadowRoot!.querySelector(
+      'sl-dialog[label="Create team"]'
+    )!;
+    expect(dialog.querySelector('sl-alert')?.textContent).to.contain(
+      'Enter a team name.'
+    );
   });
 });

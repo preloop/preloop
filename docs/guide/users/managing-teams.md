@@ -23,7 +23,7 @@ Teams are intentionally lightweight: a name, a description, members, and roles. 
 ## Creating a Team
 
 1. Go to **Settings > Teams**
-2. Click **+ Create Team**
+2. Click **Create team**
 3. Enter a **Name** and optional **Description**
 4. Click **Create**
 
