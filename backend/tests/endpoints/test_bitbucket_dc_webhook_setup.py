@@ -16,8 +16,6 @@ from preloop.sync.exceptions import TrackerPermissionError
 from preloop.utils import bitbucket_dc as dc
 from preloop.utils.bitbucket_dc_webhooks import BITBUCKET_DC_WEBHOOK_EVENTS
 
-pytestmark = pytest.mark.asyncio
-
 INSTANCE = "https://bitbucket.example.com/bitbucket"
 TRACKER_ID = uuid.UUID("11111111-2222-3333-4444-555555555555")
 USER = SimpleNamespace(account_id=uuid.uuid4(), username="tester")
@@ -60,10 +58,10 @@ CALLBACK = (
 )
 
 
-async def test_status_reports_signature_and_callback_separately() -> None:
+def test_status_reports_signature_and_callback_separately() -> None:
     with patch.object(setup, "crud_tracker") as crud:
         crud.get_by_id_and_account.return_value = tracker(webhook_secret_id=None)
-        result = await status_endpoint(
+        result = status_endpoint(
             tracker_id=TRACKER_ID, check=False, current_user=USER, db=MagicMock()
         )
     assert result["callback_url"] == CALLBACK
@@ -72,7 +70,7 @@ async def test_status_reports_signature_and_callback_separately() -> None:
     assert result["registration"] is None
 
 
-async def test_status_check_surfaces_permission_denied() -> None:
+def test_status_check_surfaces_permission_denied() -> None:
     client = MagicMock(repo_full_name="PRJ/my-repo")
     client.inspect_repository_webhook = AsyncMock(
         return_value={"status": "permission_denied", "missing_events": []}
@@ -82,38 +80,38 @@ async def test_status_check_surfaces_permission_denied() -> None:
         patch.object(setup, "create_tracker_client", AsyncMock(return_value=client)),
     ):
         crud.get_by_id_and_account.return_value = tracker()
-        result = await status_endpoint(
+        result = status_endpoint(
             tracker_id=TRACKER_ID, check=True, current_user=USER, db=MagicMock()
         )
     assert result["signature"] == "configured"
     assert result["registration"]["status"] == "permission_denied"
 
 
-async def test_other_tracker_types_and_disabled_flag_are_not_found(monkeypatch) -> None:
+def test_other_tracker_types_and_disabled_flag_are_not_found(monkeypatch) -> None:
     with patch.object(setup, "crud_tracker") as crud:
         crud.get_by_id_and_account.return_value = tracker(tracker_type="bitbucket")
         with pytest.raises(HTTPException) as exc:
-            await status_endpoint(
+            status_endpoint(
                 tracker_id=TRACKER_ID, check=False, current_user=USER, db=MagicMock()
             )
         assert exc.value.status_code == 404
         monkeypatch.setenv(dc.ENV_ENABLED, "false")
         crud.get_by_id_and_account.return_value = tracker()
         with pytest.raises(HTTPException) as exc:
-            await status_endpoint(
+            status_endpoint(
                 tracker_id=TRACKER_ID, check=False, current_user=USER, db=MagicMock()
             )
         assert exc.value.status_code == 404
 
 
-async def test_rotation_stores_a_new_encrypted_secret_and_returns_it_once() -> None:
+def test_rotation_stores_a_new_encrypted_secret_and_returns_it_once() -> None:
     row = tracker()
     with patch.object(setup, "crud_tracker") as crud:
         crud.get_by_id_and_account.return_value = row
-        first = await rotate_endpoint(
+        first = rotate_endpoint(
             tracker_id=TRACKER_ID, current_user=USER, db=MagicMock()
         )
-        second = await rotate_endpoint(
+        second = rotate_endpoint(
             tracker_id=TRACKER_ID, current_user=USER, db=MagicMock()
         )
     assert first["secret"] != second["secret"]
@@ -123,7 +121,7 @@ async def test_rotation_stores_a_new_encrypted_secret_and_returns_it_once() -> N
     assert stored == [first["secret"], second["secret"]]
 
 
-async def test_registration_permission_error_gives_admin_instructions() -> None:
+def test_registration_permission_error_gives_admin_instructions() -> None:
     client = MagicMock()
     client.ensure_repository_webhook = AsyncMock(
         side_effect=TrackerPermissionError("denied", status_code=403)
@@ -134,7 +132,7 @@ async def test_registration_permission_error_gives_admin_instructions() -> None:
     ):
         crud.get_by_id_and_account.return_value = tracker()
         with pytest.raises(HTTPException) as exc:
-            await register_endpoint(
+            register_endpoint(
                 tracker_id=TRACKER_ID, body=None, current_user=USER, db=MagicMock()
             )
     assert exc.value.status_code == 403
@@ -142,7 +140,7 @@ async def test_registration_permission_error_gives_admin_instructions() -> None:
     assert "current-secret" not in exc.value.detail
 
 
-async def test_registration_is_repeatable() -> None:
+def test_registration_is_repeatable() -> None:
     client = MagicMock()
     client.ensure_repository_webhook = AsyncMock(
         side_effect=[
@@ -155,10 +153,10 @@ async def test_registration_is_repeatable() -> None:
         patch.object(setup, "create_tracker_client", AsyncMock(return_value=client)),
     ):
         crud.get_by_id_and_account.return_value = tracker()
-        first = await register_endpoint(
+        first = register_endpoint(
             tracker_id=TRACKER_ID, body=None, current_user=USER, db=MagicMock()
         )
-        second = await register_endpoint(
+        second = register_endpoint(
             tracker_id=TRACKER_ID, body=None, current_user=USER, db=MagicMock()
         )
     assert first["registration"]["id"] == second["registration"]["id"] == 100
@@ -176,7 +174,7 @@ async def test_registration_is_repeatable() -> None:
         ({}, True),
     ],
 )
-async def test_registration_preconditions(monkeypatch, overrides, env_unset) -> None:
+def test_registration_preconditions(monkeypatch, overrides, env_unset) -> None:
     if env_unset:
         monkeypatch.delenv("PRELOOP_URL")
     factory = AsyncMock()
@@ -186,7 +184,7 @@ async def test_registration_preconditions(monkeypatch, overrides, env_unset) -> 
     ):
         crud.get_by_id_and_account.return_value = tracker(**overrides)
         with pytest.raises(HTTPException) as exc:
-            await register_endpoint(
+            register_endpoint(
                 tracker_id=TRACKER_ID, body=None, current_user=USER, db=MagicMock()
             )
     assert exc.value.status_code == 409

@@ -8,8 +8,13 @@ a usable secret on the Preloop side. Each of those states is visible here.
 Registration through the API uses only the credentials already stored on
 the tracker. It never requests broader OAuth scopes; trackers that do not
 hold a personal access token get administrator instructions instead.
+
+The handlers are synchronous so FastAPI runs them, and their database work,
+on the threadpool. The few REST calls to the instance run in a private event
+loop on that worker thread.
 """
 
+import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -130,17 +135,19 @@ def _status(
     }
 
 
-async def _client(tracker: models.Tracker) -> Any:
+def _client(tracker: models.Tracker) -> Any:
     try:
-        return await create_tracker_client(
-            tracker_type=BITBUCKET_DC_TRACKER_TYPE,
-            tracker_id=str(tracker.id),
-            api_key=tracker.resolved_api_key,
-            connection_details={
-                "url": tracker.url,
-                **(tracker.connection_details or {}),
-                "auth_type": tracker.auth_type,
-            },
+        return asyncio.run(
+            create_tracker_client(
+                tracker_type=BITBUCKET_DC_TRACKER_TYPE,
+                tracker_id=str(tracker.id),
+                api_key=tracker.resolved_api_key,
+                connection_details={
+                    "url": tracker.url,
+                    **(tracker.connection_details or {}),
+                    "auth_type": tracker.auth_type,
+                },
+            )
         )
     except BitbucketDCConfigError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -151,7 +158,7 @@ async def _client(tracker: models.Tracker) -> Any:
     response_model=BitbucketDCWebhookStatus,
 )
 @require_permission("view_trackers")
-async def get_bitbucket_dc_webhook_status(
+def get_bitbucket_dc_webhook_status(
     tracker_id: UUID4,
     check: bool = False,
     current_user: AuthUserResponse = Depends(get_current_active_user),
@@ -162,12 +169,12 @@ async def get_bitbucket_dc_webhook_status(
     registration = None
     url = _callback_url(tracker)
     if check and url and tracker.auth_type == BITBUCKET_DC_AUTH_API_TOKEN:
-        client = await _client(tracker)
+        client = _client(tracker)
         if client is None or not getattr(client, "repo_full_name", None):
             registration = {"status": "unbound_repository", "missing_events": []}
         else:
             try:
-                registration = await client.inspect_repository_webhook(url)
+                registration = asyncio.run(client.inspect_repository_webhook(url))
             except TrackerResponseError as exc:
                 logger.warning(
                     "Webhook inspection failed for tracker %s: %s",
@@ -183,7 +190,7 @@ async def get_bitbucket_dc_webhook_status(
     response_model=BitbucketDCWebhookSecret,
 )
 @require_permission("edit_trackers")
-async def rotate_bitbucket_dc_webhook_secret(
+def rotate_bitbucket_dc_webhook_secret(
     tracker_id: UUID4,
     current_user: AuthUserResponse = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -206,7 +213,7 @@ async def rotate_bitbucket_dc_webhook_secret(
     response_model=BitbucketDCWebhookStatus,
 )
 @require_permission("edit_trackers")
-async def register_bitbucket_dc_webhook(
+def register_bitbucket_dc_webhook(
     tracker_id: UUID4,
     body: Optional[BitbucketDCWebhookRegisterRequest] = None,
     current_user: AuthUserResponse = Depends(get_current_active_user),
@@ -239,11 +246,11 @@ async def register_bitbucket_dc_webhook(
             status_code=409,
             detail="Generate a webhook secret before registering the webhook.",
         )
-    client = await _client(tracker)
+    client = _client(tracker)
     repository = body.repository if body else None
     try:
-        result = await client.ensure_repository_webhook(
-            url, secret, repo_full_name=repository
+        result = asyncio.run(
+            client.ensure_repository_webhook(url, secret, repo_full_name=repository)
         )
     except (TrackerPermissionError, TrackerAuthenticationError) as exc:
         logger.info(
