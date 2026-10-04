@@ -772,4 +772,16 @@ describe('ApiKeysView', () => {
       expect(select.callCount).to.be.greaterThan(1);
     });
   });
+
+  it('lets the keys table scroll sideways on a narrow screen', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+    const table = element.shadowRoot!.querySelector('table.styled-table')!;
+    const scroller = table.parentElement!;
+    expect(scroller.classList.contains('table-scroll')).to.equal(true);
+    expect(getComputedStyle(scroller).overflowX).to.equal('auto');
+  });
 });

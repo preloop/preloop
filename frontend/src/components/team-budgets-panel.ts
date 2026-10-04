@@ -17,6 +17,7 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import { confirmDialog } from './confirm-dialog';
+import { formatUsd } from '../utils/money';
 
 const PERIODS: TeamBudgetPeriod[] = ['daily', 'weekly', 'monthly'];
 
@@ -73,6 +74,11 @@ export class TeamBudgetsPanel extends AuthedElement {
       width: 100%;
       border-collapse: collapse;
     }
+    /* Six columns do not fit a phone: scroll inside the panel instead of
+       pushing the page sideways. */
+    .table-scroll {
+      overflow-x: auto;
+    }
     th,
     td {
       text-align: left;
@@ -127,11 +133,7 @@ export class TeamBudgetsPanel extends AuthedElement {
 
   private money(value: number | null | undefined): string {
     if (value === null || value === undefined) return '-';
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: 'USD',
-      maximumFractionDigits: 2,
-    }).format(value);
+    return formatUsd(value);
   }
 
   private async addBudget(): Promise<void> {
@@ -199,68 +201,76 @@ export class TeamBudgetsPanel extends AuthedElement {
     if (!this.usage.length) {
       return html`<p class="muted">No teams in this account yet.</p>`;
     }
-    return html`<table aria-label="Spend per team">
-      <thead>
-        <tr>
-          <th>Team</th>
-          <th class="num">Members</th>
-          <th class="num">Spend</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${this.usage.map(
-          (row) =>
-            html`<tr>
-              <td>${row.team_name}</td>
-              <td class="num">${row.member_count}</td>
-              <td class="num">${this.money(row.cost_usd)}</td>
-            </tr>`
-        )}
-      </tbody>
-    </table>`;
-  }
-
-  private renderBudgets() {
-    return html`<table aria-label="Team budgets">
+    return html`<div class="table-scroll">
+      <table aria-label="Spend per team">
         <thead>
           <tr>
             <th>Team</th>
-            <th>Period</th>
-            <th class="num">Spent this period</th>
-            <th class="num">Hard limit</th>
-            <th class="num">Soft limit</th>
-            <th></th>
+            <th class="num">Members</th>
+            <th class="num">Spend</th>
           </tr>
         </thead>
         <tbody>
-          ${
-            this.budgets.length
-              ? this.budgets.map(
-                  (budget) =>
-                    html`<tr>
-                      <td>${budget.team_name}</td>
-                      <td>${periodLabel(budget.period)}</td>
-                      <td class="num">
-                        ${this.money(budget.current_spend_usd)}
-                      </td>
-                      <td class="num">${this.money(budget.hard_limit_usd)}</td>
-                      <td class="num">${this.money(budget.soft_limit_usd)}</td>
-                      <td>
-                        <sl-button
-                          size="small"
-                          variant="text"
-                          @click=${() => void this.removeBudget(budget)}
-                          >Remove</sl-button
-                        >
-                      </td>
-                    </tr>`
-                )
-              : html`<tr>
-                  <td colspan="6" class="muted">No team budgets.</td>
-                </tr>`
-          }
+          ${this.usage.map(
+            (row) =>
+              html`<tr>
+                <td>${row.team_name}</td>
+                <td class="num">${row.member_count}</td>
+                <td class="num">${this.money(row.cost_usd)}</td>
+              </tr>`
+          )}
         </tbody>
       </table>
+    </div>`;
+  }
+
+  private renderBudgets() {
+    return html`<div class="table-scroll">
+        <table aria-label="Team budgets">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Period</th>
+              <th class="num">Spent this period</th>
+              <th class="num">Hard limit</th>
+              <th class="num">Soft limit</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              this.budgets.length
+                ? this.budgets.map(
+                    (budget) =>
+                      html`<tr>
+                        <td>${budget.team_name}</td>
+                        <td>${periodLabel(budget.period)}</td>
+                        <td class="num">
+                          ${this.money(budget.current_spend_usd)}
+                        </td>
+                        <td class="num">
+                          ${this.money(budget.hard_limit_usd)}
+                        </td>
+                        <td class="num">
+                          ${this.money(budget.soft_limit_usd)}
+                        </td>
+                        <td>
+                          <sl-button
+                            size="small"
+                            variant="text"
+                            @click=${() => void this.removeBudget(budget)}
+                            >Remove</sl-button
+                          >
+                        </td>
+                      </tr>`
+                  )
+                : html`<tr>
+                    <td colspan="6" class="muted">No team budgets.</td>
+                  </tr>`
+            }
+          </tbody>
+        </table>
+      </div>
       ${
         this.usage.length
           ? html`<div class="form">

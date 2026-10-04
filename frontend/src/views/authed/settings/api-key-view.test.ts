@@ -361,4 +361,12 @@ describe('ApiKeyView', () => {
       expect(governancePuts()[0].allowed_models).to.deep.equal([]);
     });
   });
+
+  it('shows spend in dollars and cents, with the exact amount on hover', async () => {
+    fetchStub = createFetchStub();
+    const element = await mount();
+    const total = element.shadowRoot!.querySelector('.spend-total')!;
+    expect(total.textContent?.trim()).to.equal('$1.23');
+    expect(total.getAttribute('title')).to.equal('$1.23');
+  });
 });

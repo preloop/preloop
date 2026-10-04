@@ -767,7 +767,8 @@ export class AddTrackerModal extends LitElement {
                     </summary>
                     <sl-input
                       type="password"
-                      label="API Key"
+                      password-toggle
+                      label="API key"
                       name="api_key"
                       .value=${this.trackerToken}
                       @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
@@ -780,7 +781,8 @@ export class AddTrackerModal extends LitElement {
                 : html`
                     <sl-input
                       type="password"
-                      label="API Key"
+                      password-toggle
+                      label="API key"
                       name="api_key"
                       .value=${this.trackerToken}
                       @sl-input=${(e: any) =>

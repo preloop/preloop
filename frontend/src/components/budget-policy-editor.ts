@@ -21,6 +21,7 @@ import type {
   ManagedAgentSummary,
 } from '../types.js';
 import { budgetTrackStyles, renderBudgetTrack } from '../styles/budget-track';
+import { formatUsd, formatUsdExact } from '../utils/money';
 import './notify-recipients-field.ts';
 import type { NotifyRecipientsValue } from './notify-recipients-field.ts';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -599,9 +600,7 @@ export class BudgetPolicyEditor extends LitElement {
   }
 
   private formatCurrency(value: number): string {
-    const amount = Number(value || 0);
-    if (amount > 0 && amount < 0.01) return `$${amount.toFixed(4)}`;
-    return `$${amount.toFixed(2)}`;
+    return formatUsd(value);
   }
 
   private recipientCount(policy: BudgetPolicy): number {
@@ -634,6 +633,14 @@ export class BudgetPolicyEditor extends LitElement {
         ? `Hard ${this.formatCurrency(hard)}`
         : null,
     ].filter(Boolean);
+    // The rounded amounts can hide a sub-cent limit; the exact ones stay on
+    // hover.
+    const exactLimits = [
+      policy.soft_limit_usd != null ? `Soft ${formatUsdExact(soft)}` : null,
+      policy.hard_limit_usd != null ? `Hard ${formatUsdExact(hard)}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ');
     const notifies = policy.notify_on_soft || policy.notify_on_hard;
     const recipients = this.recipientCount(policy);
 
@@ -644,7 +651,7 @@ export class BudgetPolicyEditor extends LitElement {
           <sl-badge class="chip" variant="neutral" pill
             >${PERIOD_LABELS[policy.period] || policy.period}</sl-badge
           >
-          <span class="row-limits"
+          <span class="row-limits" title=${exactLimits || nothing}
             >${limits.length ? limits.join(' · ') : 'No limit set'}</span
           >
         </div>

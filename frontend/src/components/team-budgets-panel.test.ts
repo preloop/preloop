@@ -203,4 +203,40 @@ describe('TeamBudgetsPanel', () => {
     ].map((option) => option.textContent?.trim());
     expect(options).to.deep.equal(['Daily', 'Weekly', 'Monthly']);
   });
+
+  it('formats amounts with thousands separators', async () => {
+    budgets = [
+      {
+        ...(budgets[0] as Record<string, unknown>),
+        hard_limit_usd: 12000,
+        current_spend_usd: 1234.5,
+      },
+    ];
+    const el = (await fixture(
+      html`<team-budgets-panel></team-budgets-panel>`
+    )) as TeamBudgetsPanel;
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('table[aria-label="Team budgets"]')
+    );
+    const cells = el.shadowRoot!.querySelectorAll(
+      'table[aria-label="Team budgets"] tbody td'
+    );
+    expect(cells[2].textContent?.trim()).to.equal('$1,234.50');
+    expect(cells[3].textContent?.trim()).to.equal('$12,000.00');
+    expect(cells[4].textContent?.trim()).to.equal('-');
+  });
+
+  it('lets both tables scroll sideways on a narrow screen', async () => {
+    const el = (await fixture(
+      html`<team-budgets-panel></team-budgets-panel>`
+    )) as TeamBudgetsPanel;
+    await waitUntil(() =>
+      el.shadowRoot?.querySelector('table[aria-label="Team budgets"]')
+    );
+    for (const table of el.shadowRoot!.querySelectorAll('table')) {
+      const scroller = table.parentElement!;
+      expect(scroller.classList.contains('table-scroll')).to.equal(true);
+      expect(getComputedStyle(scroller).overflowX).to.equal('auto');
+    }
+  });
 });

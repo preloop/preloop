@@ -315,4 +315,40 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(text).to.contain('Team');
     expect(text).to.not.contain('Team Platform');
   });
+
+  it('reads a budget meter as dollars, with thousands separators', async () => {
+    const bigPolicies = [
+      {
+        id: 'big-policy',
+        subject_type: 'global',
+        subject_id: 'global',
+        model_alias: null,
+        period: 'monthly',
+        hard_limit_usd: 25000,
+        soft_limit_usd: null,
+        notify_on_soft: false,
+        notify_on_hard: false,
+        notification_emails: null,
+        current_spend_usd: 12345.678,
+      },
+    ] as unknown as BudgetPolicy[];
+    const element = (await fixture(html`
+      <budget-health-card
+        .summary=${{
+          ...summary,
+          budget: { ...summary.budget!, current_spend_usd: 12345.678 },
+        }}
+        .policies=${bigPolicies}
+      ></budget-health-card>
+    `)) as BudgetHealthCard;
+    await element.updateComplete;
+
+    const meter = element.shadowRoot!.querySelector('[role="progressbar"]')!;
+    expect(meter.getAttribute('aria-valuetext')).to.equal(
+      '$12,345.68 of $25,000.00'
+    );
+    const value = element.shadowRoot!.querySelector('.row-value')!;
+    expect(value.textContent).to.contain('$12,345.68');
+    expect(value.getAttribute('title')).to.equal('$12,345.678');
+  });
 });

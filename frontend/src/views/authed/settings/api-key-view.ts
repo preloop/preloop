@@ -39,6 +39,7 @@ import type {
 
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { parseUTCDate } from '../../../utils/date';
+import { formatUsd, formatUsdExact } from '../../../utils/money';
 
 type SpendRange = 'day' | 'week' | 'month' | 'year' | 'total';
 
@@ -599,7 +600,8 @@ export class ApiKeyView extends LitElement {
                       >
                         <span
                           style="color: var(--sl-color-primary-600); font-weight: 500;"
-                          >$${(modelUsage.estimated_cost || 0).toFixed(4)}</span
+                          title=${formatUsdExact(modelUsage.estimated_cost)}
+                          >${formatUsd(modelUsage.estimated_cost)}</span
                         >
                       </div>
                     `
@@ -799,9 +801,11 @@ export class ApiKeyView extends LitElement {
                 </div>
                 <div class="value">
                   <span
+                    class="spend-total"
                     style="font-size: 1.1em; font-weight: 600; color: var(--sl-color-primary-600);"
+                    title=${formatUsdExact(this.usageSummary?.estimated_cost)}
                   >
-                    $${(this.usageSummary?.estimated_cost || 0).toFixed(6)}
+                    ${formatUsd(this.usageSummary?.estimated_cost)}
                   </span>
                   <span
                     style="color: var(--sl-color-neutral-500); font-size: 0.9em; margin-left: 8px;"

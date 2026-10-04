@@ -1841,3 +1841,56 @@ describe('AddAIModelModal Azure OpenAI provider', () => {
     });
   });
 });
+
+describe('AddAIModelModal secret fields', () => {
+  let sandbox: SinonSandbox;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    sandbox = sinon.createSandbox();
+    sandbox.stub(window, 'fetch').resolves(new Response(JSON.stringify([])));
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  const secretInputs = (element: AddAIModelModal) =>
+    [
+      ...element.shadowRoot!.querySelectorAll('sl-input[type="password"]'),
+    ] as HTMLElement[];
+
+  it('lets every secret be revealed to check a pasted value', async () => {
+    const element = await fixture<AddAIModelModal>(
+      html`<add-ai-model-modal></add-ai-model-modal>`
+    );
+    element.open = true;
+    await element.updateComplete;
+    const apiKey = secretInputs(element).find(
+      (input) => input.getAttribute('label') === 'API key'
+    );
+    expect(apiKey, 'API key field').to.exist;
+    expect(apiKey!.hasAttribute('password-toggle')).to.equal(true);
+
+    (element as any)._currentModel = {
+      ...(element as any)._currentModel,
+      provider_name: 'bedrock',
+    };
+    element.requestUpdate();
+    await element.updateComplete;
+    const labels = secretInputs(element).map((input) =>
+      input.getAttribute('label')
+    );
+    expect(labels).to.include.members([
+      'AWS secret access key',
+      'AWS session token',
+    ]);
+    for (const input of secretInputs(element)) {
+      expect(
+        input.hasAttribute('password-toggle'),
+        `${input.getAttribute('label')} has a show/hide toggle`
+      ).to.equal(true);
+    }
+  });
+});

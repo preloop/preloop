@@ -764,138 +764,145 @@ export class ApiKeysView extends LitElement {
         <sl-card class="table-card">
           <div class="table-shell">
             ${this.renderBulkBar()}
-            <table
-              class="styled-table"
-              role="grid"
-              aria-multiselectable="true"
-              aria-label="API keys"
-            >
-              <thead class=${this.selection.count > 0 ? 'selecting' : ''}>
-                <tr>
-                  <th class="select-cell">${this.renderSelectAll()}</th>
-                  <th>Name</th>
-                  <th>Status</th>
-                  <th>Created</th>
-                  <th>Last activity</th>
-                  <th>Recent usage</th>
-                  <th>Expires</th>
-                  <th class="actions-cell">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${
-                  visibleKeys.length === 0
-                    ? html`<tr>
-                        <td colspan="8" class="empty-row">No active keys.</td>
-                      </tr>`
-                    : ''
-                }
-                ${repeat(
-                  visibleKeys,
-                  (key) => key.id,
-                  (key) => html`
-                    <tr
-                      data-selection-id=${key.id}
-                      aria-selected=${
-                        this.selection.isSelected(key.id) ? 'true' : 'false'
-                      }
-                    >
-                      <td class="select-cell">
-                        ${
-                          this.isRetired(key)
-                            ? nothing
-                            : html`<list-select-checkbox
-                                item-id=${key.id}
-                                label=${`Select ${key.name}`}
-                                ?checked=${this.selection.isSelected(key.id)}
-                                ?disabled=${this.selection.busy}
-                                @selection-toggle=${
-                                  this.selection.handleToggleEvent
-                                }
-                              ></list-select-checkbox>`
+            <div class="table-scroll">
+              <table
+                class="styled-table"
+                role="grid"
+                aria-multiselectable="true"
+                aria-label="API keys"
+              >
+                <thead class=${this.selection.count > 0 ? 'selecting' : ''}>
+                  <tr>
+                    <th class="select-cell">${this.renderSelectAll()}</th>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Last activity</th>
+                    <th>Recent usage</th>
+                    <th>Expires</th>
+                    <th class="actions-cell">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${
+                    visibleKeys.length === 0
+                      ? html`<tr>
+                          <td colspan="8" class="empty-row">No active keys.</td>
+                        </tr>`
+                      : ''
+                  }
+                  ${repeat(
+                    visibleKeys,
+                    (key) => key.id,
+                    (key) => html`
+                      <tr
+                        data-selection-id=${key.id}
+                        aria-selected=${
+                          this.selection.isSelected(key.id) ? 'true' : 'false'
                         }
-                      </td>
-                      <td>
-                        <div
-                          style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); flex-wrap: wrap;"
-                        >
-                          <a
-                            href="/console/settings/api-keys/${key.id}"
-                            style="font-weight: 600; text-decoration: none; color: var(--sl-color-primary-600);"
-                          >
-                            ${key.name}
-                          </a>
+                      >
+                        <td class="select-cell">
                           ${
-                            key.managed_agent_id
-                              ? html`<sl-badge variant="neutral" size="small"
-                                  >Agent</sl-badge
-                                >`
-                              : ''
-                          }
-                        </div>
-                      </td>
-                      <td>
-                        <sl-badge
-                          class="chip"
-                          pill
-                          variant=${this.getActivityVariant(key)}
-                        >
-                          ${this.getActivityLabel(key)}
-                        </sl-badge>
-                      </td>
-                      <td>
-                        ${parseUTCDate(key.created_at).toLocaleDateString()}
-                      </td>
-                      <td>
-                        ${
-                          key.last_activity_at || key.last_used_at
-                            ? parseUTCDate(
-                                key.last_activity_at || key.last_used_at || ''
-                              ).toLocaleDateString()
-                            : 'Never'
-                        }
-                      </td>
-                      <td>
-                        ${
-                          (key.recent_model_calls ?? 0) +
-                          (key.recent_tool_calls ?? 0)
-                        }
-                        (${key.recent_model_calls ?? 0} model /
-                        ${key.recent_tool_calls ?? 0} tool)
-                      </td>
-                      <td>
-                        ${
-                          key.expires_at
-                            ? parseUTCDate(key.expires_at).toLocaleDateString()
-                            : 'Never'
-                        }
-                      </td>
-                      <td class="actions-cell">
-                        <!-- A revoked or expired key cannot be revoked again, so
-                           it carries no actions at all. -->
-                        <resource-actions
-                          menu-only
-                          .actions=${
                             this.isRetired(key)
-                              ? []
-                              : [
-                                  {
-                                    id: 'revoke',
-                                    label: 'Revoke key',
-                                    icon: 'trash',
-                                    variant: 'danger' as const,
-                                    onClick: () =>
-                                      this.handleDeleteApiKey(key.id, key.name),
-                                  },
-                                ]
+                              ? nothing
+                              : html`<list-select-checkbox
+                                  item-id=${key.id}
+                                  label=${`Select ${key.name}`}
+                                  ?checked=${this.selection.isSelected(key.id)}
+                                  ?disabled=${this.selection.busy}
+                                  @selection-toggle=${
+                                    this.selection.handleToggleEvent
+                                  }
+                                ></list-select-checkbox>`
                           }
-                        ></resource-actions>
-                      </td>
-                    </tr>
-                  `
-                )}
-              </tbody>
-            </table>
+                        </td>
+                        <td>
+                          <div
+                            style="display: flex; align-items: center; gap: var(--sl-spacing-2x-small); flex-wrap: wrap;"
+                          >
+                            <a
+                              href="/console/settings/api-keys/${key.id}"
+                              style="font-weight: 600; text-decoration: none; color: var(--sl-color-primary-600);"
+                            >
+                              ${key.name}
+                            </a>
+                            ${
+                              key.managed_agent_id
+                                ? html`<sl-badge variant="neutral" size="small"
+                                    >Agent</sl-badge
+                                  >`
+                                : ''
+                            }
+                          </div>
+                        </td>
+                        <td>
+                          <sl-badge
+                            class="chip"
+                            pill
+                            variant=${this.getActivityVariant(key)}
+                          >
+                            ${this.getActivityLabel(key)}
+                          </sl-badge>
+                        </td>
+                        <td>
+                          ${parseUTCDate(key.created_at).toLocaleDateString()}
+                        </td>
+                        <td>
+                          ${
+                            key.last_activity_at || key.last_used_at
+                              ? parseUTCDate(
+                                  key.last_activity_at || key.last_used_at || ''
+                                ).toLocaleDateString()
+                              : 'Never'
+                          }
+                        </td>
+                        <td>
+                          ${
+                            (key.recent_model_calls ?? 0) +
+                            (key.recent_tool_calls ?? 0)
+                          }
+                          (${key.recent_model_calls ?? 0} model /
+                          ${key.recent_tool_calls ?? 0} tool)
+                        </td>
+                        <td>
+                          ${
+                            key.expires_at
+                              ? parseUTCDate(
+                                  key.expires_at
+                                ).toLocaleDateString()
+                              : 'Never'
+                          }
+                        </td>
+                        <td class="actions-cell">
+                          <!-- A revoked or expired key cannot be revoked again, so
+                           it carries no actions at all. -->
+                          <resource-actions
+                            menu-only
+                            .actions=${
+                              this.isRetired(key)
+                                ? []
+                                : [
+                                    {
+                                      id: 'revoke',
+                                      label: 'Revoke key',
+                                      icon: 'trash',
+                                      variant: 'danger' as const,
+                                      onClick: () =>
+                                        this.handleDeleteApiKey(
+                                          key.id,
+                                          key.name
+                                        ),
+                                    },
+                                  ]
+                            }
+                          ></resource-actions>
+                        </td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
           ${
             hiddenCount > 0 && !this.showAllKeys
@@ -1105,6 +1112,12 @@ export class ApiKeysView extends LitElement {
          because it is anchored to the top and sized by its own content. */
       .table-shell {
         position: relative;
+      }
+      /* Eight columns do not fit a phone: the table scrolls sideways inside
+         its card instead of pushing the page (and the Revoke action) off
+         screen. */
+      .table-scroll {
+        overflow-x: auto;
       }
       .head-bulk-bar {
         position: absolute;

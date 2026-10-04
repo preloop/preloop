@@ -705,4 +705,28 @@ describe('BudgetPolicyEditor', () => {
     );
     expect(select.querySelectorAll('sl-option').length).to.equal(1);
   });
+
+  it('rounds limits for reading and keeps the exact amounts on hover', async () => {
+    stubBillingFetch({
+      policies: [
+        {
+          id: 'policy-small',
+          subject_type: 'global',
+          subject_id: null,
+          model_alias: null,
+          period: 'daily',
+          hard_limit_usd: 12345,
+          soft_limit_usd: 0.005,
+          notify_on_soft: false,
+          notify_on_hard: false,
+        },
+      ],
+    });
+    const element = await mountEditor();
+    const limits = element.shadowRoot!.querySelector('.row-limits')!;
+    expect(limits.textContent).to.contain('Soft < $0.01 · Hard $12,345.00');
+    expect(limits.getAttribute('title')).to.equal(
+      'Soft $0.005 · Hard $12,345.00'
+    );
+  });
 });
