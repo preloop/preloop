@@ -52,6 +52,7 @@ import type {
   RuntimeSessionSummary,
   RuntimeSessionUpdateRequest,
   RuntimeSessionActivityListResponse,
+  ArtifactSearchResponse,
   RuntimeSessionArtifactDescriptor,
   RuntimeSessionArtifactListResponse,
   RuntimeSessionRequestListResponse,
@@ -2467,6 +2468,30 @@ export async function getAccountRuntimeSessionActivityTimeline(
     const refused = await historyUnavailableError(response);
     if (refused) throw refused;
     throw new Error('Failed to fetch session activity timeline');
+  }
+  return response.json();
+}
+
+/**
+ * Search the account's artifacts across sessions (`GET /api/v1/artifacts`,
+ * #1086). `params` is passed through as is, so repeated keys (`kind`,
+ * `label`) stay repeated.
+ */
+export async function searchAccountArtifacts(
+  params: URLSearchParams
+): Promise<ArtifactSearchResponse> {
+  const query = params.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/artifacts${query ? `?${query}` : ''}`
+  );
+  if (response.status === 403) {
+    throw await permissionErrorFromResponse(response);
+  }
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to search artifacts')
+    );
   }
   return response.json();
 }

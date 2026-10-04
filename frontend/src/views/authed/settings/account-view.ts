@@ -577,6 +577,30 @@ export class AccountView extends LitElement {
     return words.charAt(0).toUpperCase() + words.slice(1);
   }
 
+  /** Artifacts page filtered to one kind (#1087). */
+  private _artifactsHref(kind?: string): string {
+    return kind
+      ? `/console/artifacts?kind=${encodeURIComponent(kind)}`
+      : '/console/artifacts';
+  }
+
+  /** A usage cell whose label opens the Artifacts page for that kind. */
+  private _kindUsageMetric(kind: string, label: string, bytes: number) {
+    return html`
+      <div class="usage-metric" data-kind=${kind}>
+        <div class="usage-label">
+          <a
+            href=${this._artifactsHref(kind)}
+            data-testid="artifact-kind-link"
+            title="Browse ${label.toLowerCase()}"
+            >${label}</a
+          >
+        </div>
+        <div class="usage-value">${this._formatBytes(bytes)}</div>
+      </div>
+    `;
+  }
+
   private _renderSessionArtifactUsage() {
     const usage = this._sessionArtifactUsage;
     if (!usage) return '';
@@ -588,6 +612,9 @@ export class AccountView extends LitElement {
       >
         <div class="current-row">
           <span class="plan-name">Session artifact storage</span>
+          <a href=${this._artifactsHref()} data-testid="browse-artifacts-link"
+            >Browse artifacts</a
+          >
         </div>
         <div class="usage-grid">
           <div class="usage-metric">
@@ -597,25 +624,18 @@ export class AccountView extends LitElement {
               ${this._formatBytes(usage.budget_bytes)}
             </div>
           </div>
-          <div class="usage-metric">
-            <div class="usage-label">Screenshots</div>
-            <div class="usage-value">
-              ${this._formatBytes(usage.by_kind.screenshot)}
-            </div>
-          </div>
-          <div class="usage-metric">
-            <div class="usage-label">Recordings</div>
-            <div class="usage-value">
-              ${this._formatBytes(usage.by_kind.recording)}
-            </div>
-          </div>
-          ${this._otherArtifactKinds(usage).map(
-            ([kind, bytes]) => html`
-              <div class="usage-metric" data-kind=${kind}>
-                <div class="usage-label">${this._kindLabel(kind)}</div>
-                <div class="usage-value">${this._formatBytes(bytes)}</div>
-              </div>
-            `
+          ${this._kindUsageMetric(
+            'screenshot',
+            'Screenshots',
+            usage.by_kind.screenshot
+          )}
+          ${this._kindUsageMetric(
+            'recording',
+            'Recordings',
+            usage.by_kind.recording
+          )}
+          ${this._otherArtifactKinds(usage).map(([kind, bytes]) =>
+            this._kindUsageMetric(kind, this._kindLabel(kind), bytes)
           )}
         </div>
       </div>
