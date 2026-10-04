@@ -26,6 +26,20 @@ logger = logging.getLogger(__name__)
 # Only typed, principal-owned execution operations opt into machine authority.
 CI_ROUTE_POLICIES: Mapping[tuple[str, str], CiAction] = MappingProxyType(
     {
+        ("POST", "/api/v1/event-webhooks/endpoints"): CiAction.CREATE_SUBSCRIPTION,
+        ("GET", "/api/v1/event-webhooks/endpoints"): CiAction.READ_SUBSCRIPTION,
+        (
+            "PATCH",
+            "/api/v1/event-webhooks/endpoints/{endpoint_id}",
+        ): CiAction.UPDATE_SUBSCRIPTION,
+        (
+            "DELETE",
+            "/api/v1/event-webhooks/endpoints/{endpoint_id}",
+        ): CiAction.DELETE_SUBSCRIPTION,
+        (
+            "POST",
+            "/api/v1/event-webhooks/endpoints/{endpoint_id}/secret/rotate",
+        ): CiAction.ROTATE_SUBSCRIPTION_SECRET,
         ("POST", "/api/v1/flows/{flow_id}/trigger"): CiAction.TRIGGER,
         ("GET", "/api/v1/flows/executions"): CiAction.READ_EXECUTION,
         ("GET", "/api/v1/flows/executions/{execution_id}"): CiAction.READ_EXECUTION,

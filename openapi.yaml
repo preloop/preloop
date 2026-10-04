@@ -6569,7 +6569,7 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
-      x-restricted-ci: deny
+      x-restricted-ci: subscription:read
     post:
       tags:
       - Outbound Webhooks
@@ -6603,7 +6603,39 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
-      x-restricted-ci: deny
+      x-restricted-ci: subscription:create
+      x-restricted-ci-request-schema:
+        additionalProperties: false
+        description: One completion event for the authenticated principal's bound
+          flow.
+        properties:
+          url:
+            maxLength: 2048
+            title: Url
+            type: string
+          description:
+            anyOf:
+            - maxLength: 255
+              type: string
+            - type: 'null'
+            default: null
+            title: Description
+          event_types:
+            items:
+              const: flow.execution.finished
+              type: string
+            maxItems: 1
+            minItems: 1
+            title: Event Types
+            type: array
+          active:
+            default: true
+            title: Active
+            type: boolean
+        required:
+        - url
+        title: CiSubscriptionCreate
+        type: object
   /api/v1/event-webhooks/endpoints/{endpoint_id}:
     patch:
       tags:
@@ -6646,7 +6678,44 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: subscription:update
+      x-restricted-ci-request-schema:
+        additionalProperties: false
+        description: Mutable receiver settings cannot broaden the immutable subscription.
+        properties:
+          url:
+            anyOf:
+            - maxLength: 2048
+              type: string
+            - type: 'null'
+            default: null
+            title: Url
+          description:
+            anyOf:
+            - maxLength: 255
+              type: string
+            - type: 'null'
+            default: null
+            title: Description
+          event_types:
+            anyOf:
+            - items:
+                const: flow.execution.finished
+                type: string
+              maxItems: 1
+              minItems: 1
+              type: array
+            - type: 'null'
+            default: null
+            title: Event Types
+          active:
+            anyOf:
+            - type: boolean
+            - type: 'null'
+            default: null
+            title: Active
+        title: CiSubscriptionUpdate
+        type: object
     delete:
       tags:
       - Outbound Webhooks
@@ -6678,7 +6747,49 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: subscription:delete
+  /api/v1/event-webhooks/endpoints/{endpoint_id}/secret/rotate:
+    post:
+      tags:
+      - Outbound Webhooks
+      summary: Rotate Webhook Endpoint Secret
+      description: Rotate the secret, returned once; queued sends use the current
+        secret.
+      operationId: rotate_webhook_endpoint_secret_api_v1_event_webhooks_endpoints__endpoint_id__secret_rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Endpoint Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: subscription:secret:rotate
+      x-restricted-ci-request-schema:
+        type: object
+        properties: {}
+        additionalProperties: false
   /api/v1/event-webhooks/endpoints/{endpoint_id}/test:
     post:
       tags:

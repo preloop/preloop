@@ -119,9 +119,10 @@ restricted credentials receive 401, forbidden operations receive 403, and
 protected object handlers apply their consistent not-found policy. Decision
 logs include safe machine/resource identifiers, never token or result contents.
 
-The operation map permits exactly the existing flow trigger, execution list,
-execution detail, persisted result and stop-command routes. All other operations
-remain denied. Trigger accepts only `{"pr_number": 7, "head_sha": "<exact SHA>"}`;
+The operation map permits the existing flow trigger, execution list,
+execution detail, persisted result and stop-command routes, plus principal-owned
+subscription list/create/update/delete and signing-secret rotation. All other
+operations remain denied. Trigger accepts only `{"pr_number": 7, "head_sha": "<exact SHA>"}`;
 the SHA is 40 or 64 lowercase hexadecimal characters. OpenAPI includes the
 restricted request schema beside the ordinary human request contract. The server
 reads the PR/MR by immutable repository ID using its trusted integration and
@@ -250,3 +251,43 @@ Preloop redacts sensitive data before logging, persisting to audit surfaces, or 
 **Known exceptions:** Approval URLs are not logged in full (replaced with `[sent via notification]`). Progress tokens and request context metadata are not logged. Tracker credentials and AI model API keys are not logged when present in payloads.
 
 **Tests:** `tests/utils/test_redaction.py` asserts that representative secrets never appear in redacted output.
+
+
+### Restricted CI completion callbacks
+
+Restricted CI credentials manage only subscriptions owned by their stable
+principal through the existing endpoint list/create/update/delete routes and
+`POST /api/v1/event-webhooks/endpoints/{endpoint_id}/secret/rotate`. Each accepts
+its specific subscription action. Create defaults to exactly
+`flow.execution.finished`; explicit empty, mixed or duplicate filters, foreign
+resource fields and ownership/configuration overrides are rejected. The binding
+snapshots account, principal, project, flow and repository immutably; historical
+account-wide endpoints are never inferred to be machine-owned.
+
+Dispatch requires the stable principal's current `subscription:create` grant,
+active account/principal and unchanged resource binding, plus any EE denial.
+Removing that action or disabling the principal prevents future delivery,
+including queued retries. Revoking an initiating API key blocks that key's API
+use while retaining principal-owned subscriptions and accepted delivery rights.
+Ownership is checked against the trusted persisted terminal execution when
+queuing and again after a worker acquires a send slot, immediately before POST.
+Partial or malformed machine markers are quarantined, with no human-envelope
+fallback. Generic test-send, replay, delivery-history and dead-letter routes
+remain denied to machine credentials; generic administrator replay excludes
+machine subscriptions.
+
+The signed v1 envelope contains only execution/flow/project/repository, PR/MR
+number/provider identity, exact head SHA, terminal status and result readiness.
+Caller event data, runtime prompts, logs and report bodies never enter the
+machine payload. Consumers verify HMAC freshness, deduplicate event IDs across
+retries, match execution and expected head, then read that execution's persisted
+result. A signed completion is not a review-publication receipt and a stale
+head is not current review evidence.
+
+Signing secrets are encrypted and returned once on creation or rotation.
+Queued and retried sends use the current receiver URL and current secret with a
+fresh signature timestamp. A request already in flight can still use the old
+secret: receivers should accept both during their bounded rotation overlap and
+deduplicate by event ID. Endpoint deletion removes its durable delivery history;
+authority-denied queued machine deliveries are marked dead without POST. The
+migration does not backfill and refuses downgrade while retained snapshots exist.
