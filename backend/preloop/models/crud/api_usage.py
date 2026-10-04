@@ -19,7 +19,7 @@ from sqlalchemy import (
     true,
     union_all,
 )
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session, aliased, joinedload
 
 from preloop.models import models
@@ -445,7 +445,17 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 )
 
         db.commit()
-        db.refresh(db_obj)
+        try:
+            db.refresh(db_obj)
+        except SQLAlchemyTimeoutError:
+            # Flush already assigned the id and commit persisted the row.
+            # Refresh is a second checkout for server defaults. A peer holding
+            # the only pool slot must not make this committed row look missing,
+            # or the caller retries the insert and records the call twice.
+            logger.warning(
+                "Gateway usage row %s committed but refresh lost the pool",
+                db_obj.id,
+            )
         return db_obj
 
     def get_gateway_cost_by_provider_day(
