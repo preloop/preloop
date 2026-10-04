@@ -55,6 +55,9 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/artifacts': ['view_runtime_sessions'],
   '/console/cost': ['view_cost'],
   '/console/approvals': ['view_approvals'],
+  // One request, opened from a notification, Slack or email. A link that
+  // carries a decision token is exempt (see _deniedPermissionForPath).
+  '/console/approval': ['view_approvals'],
   '/console/audit': ['view_audit_logs'],
   '/console/settings/users': ['view_users'],
   '/console/settings/teams': ['view_teams'],
@@ -68,6 +71,16 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   // The controls used to sit on the account page, where a reader who could
   // not use them still saw them.
   '/console/settings/emergency': ['manage_kill_switch'],
+};
+
+/**
+ * Pages with no nav entry of their own, and the nav item that owns them.
+ * Without this, a reader who opened a single approval from a notification
+ * saw no item highlighted and the Audit group closed: no wayfinding at all.
+ */
+const NAV_ALIASES: Record<string, string[]> = {
+  '/console/approvals': ['/console/approval'],
+  '/console/cost': ['/console/api-usage'],
 };
 
 const SIDEBAR_BREAKPOINT = 768;
@@ -675,7 +688,15 @@ export class ConsoleShell extends LitElement {
     ) {
       return 'view_policies';
     }
+    // A decision-token link authorizes exactly one request, for somebody
+    // who may not hold view_approvals at all (an escalation recipient). The
+    // approval page falls back to the token itself, so the shell must not
+    // refuse it first.
+    const tokenLink =
+      normalized.startsWith('/console/approval/') &&
+      new URLSearchParams(window.location.search).has('token');
     for (const [href, required] of Object.entries(NAV_PERMISSIONS)) {
+      if (tokenLink && href === '/console/approval') continue;
       if (
         normalized === href ||
         normalized.startsWith(`${href}/`) ||
@@ -776,7 +797,9 @@ export class ConsoleShell extends LitElement {
     if (exact) {
       return current === target;
     }
-    return current === target || current.startsWith(`${target}/`);
+    return [target, ...(NAV_ALIASES[target] ?? [])].some(
+      (prefix) => current === prefix || current.startsWith(`${prefix}/`)
+    );
   }
 
   private _isSettingsActive(): boolean {

@@ -489,6 +489,18 @@ export class LitApp extends LitElement {
           },
           { path: 'audit', component: 'audit-view' },
           { path: 'attention', component: 'attention-view' },
+          // The bell used to link here; the list lives under flows.
+          {
+            path: 'flow-executions',
+            redirect: '/console/flows/executions',
+          },
+          // Must stay the last console child: an unknown /console/* path (a
+          // typo, a stale bookmark, a capability route this deployment does
+          // not serve) renders the 404 inside the shell, with the sidebar,
+          // instead of falling through to the bare top-level page.
+          // CapabilityRouteGate prepends its routes, so they still match
+          // first.
+          { path: '(.*)', component: 'not-found-view' },
         ],
       },
       // Must stay last: Vaadin Router matches in order, so a catch-all above

@@ -139,6 +139,35 @@ describe('router', () => {
       expect(outlet.querySelector(missing)).to.exist;
     });
 
+    it('keeps a nested (.*) inside its parent', async () => {
+      // A console-level 404 must not swallow unrelated top-level paths.
+      const shell = defineTag('rt-nested-shell');
+      const inner = defineTag('rt-nested-missing');
+      const outer = defineTag('rt-outer-missing');
+      await router.setRoutes(
+        [
+          {
+            path: '/app',
+            component: shell,
+            children: [
+              { path: '', component: defineTag('rt-nested-home') },
+              { path: '(.*)', component: inner },
+            ],
+          },
+          { path: '(.*)', component: outer },
+        ],
+        true
+      );
+      await router.render('/app/typo');
+      expect(outlet.querySelector(`${shell} > ${inner}`)).to.exist;
+      await router.render('/elsewhere');
+      expect(outlet.querySelector(outer)).to.exist;
+      expect(outlet.querySelector(shell)).to.equal(null);
+      // A sibling that only shares the prefix's letters is not under it.
+      await router.render('/apps');
+      expect(outlet.querySelector(outer)).to.exist;
+    });
+
     it('sets location on the rendered element', async () => {
       const tag = defineTag('rt-loc');
       await router.setRoutes([{ path: '/loc/:id', component: tag }], true);

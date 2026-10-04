@@ -1062,6 +1062,123 @@ describe('ConsoleShell', () => {
     window.history.replaceState({}, '', originalPath);
   });
 
+  describe('wayfinding on pages without a nav entry', () => {
+    let originalPath: string;
+    let originalSearch: string;
+
+    beforeEach(() => {
+      originalPath = window.location.pathname;
+      originalSearch = window.location.search;
+    });
+
+    afterEach(() => {
+      window.history.replaceState({}, '', originalPath + originalSearch);
+    });
+
+    function auditSection(el: ConsoleShell): HTMLElement | undefined {
+      return Array.from(
+        el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+      ).find((section) => section.textContent?.includes('Audit')) as
+        HTMLElement | undefined;
+    }
+
+    /** RBAC on, with the given permissions. */
+    function withPermissions(permissions: string[]) {
+      invalidateApiCaches();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/api/v1/features')) {
+          return new Response(JSON.stringify({ plugins: [], features: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.endsWith('/api/v1/auth/users/me')) {
+          return new Response(
+            JSON.stringify({
+              username: 'test',
+              email: 'test@example.com',
+              email_verified: true,
+              permissions,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    async function loaded(): Promise<ConsoleShell> {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await waitUntil(
+        () => (el as any)._featuresLoaded && (el as any)._permissionsLoaded,
+        'features and permissions did not load'
+      );
+      await el.updateComplete;
+      return el;
+    }
+
+    it('highlights Approvals and opens Audit on a single approval', async () => {
+      // The deep-link target of every approval notification, Slack and email.
+      window.history.replaceState({}, '', '/console/approval/req-123');
+      const el = await loaded();
+      expect(
+        el.shadowRoot!.querySelector(
+          'a.sidebar-link.active[href="/console/approvals"]'
+        )
+      ).to.exist;
+      expect(auditSection(el)?.hasAttribute('open')).to.be.true;
+    });
+
+    it('highlights Cost on the API usage page', async () => {
+      window.history.replaceState({}, '', '/console/api-usage');
+      const el = await loaded();
+      expect(
+        el.shadowRoot!.querySelector(
+          'a.sidebar-link.active[href="/console/cost"]'
+        )
+      ).to.exist;
+    });
+
+    it('does not mistake Approvals for the single-approval alias the other way', async () => {
+      window.history.replaceState({}, '', '/console/approvals');
+      const el = await loaded();
+      expect(
+        el.shadowRoot!.querySelectorAll('a.sidebar-link.active')
+      ).to.have.length(1);
+    });
+
+    it('gates a single approval on the same permission as the list', async () => {
+      window.history.replaceState({}, '', '/console/approval/req-123');
+      withPermissions(['view_agents']);
+      const el = await loaded();
+      const denied = el.shadowRoot!.querySelector('permission-denied');
+      expect(denied).to.exist;
+      expect(denied!.getAttribute('required-permission')).to.equal(
+        'view_approvals'
+      );
+    });
+
+    it('lets a decision-token link through to the approval page', async () => {
+      // An escalation recipient may hold no view_approvals at all; the page
+      // falls back to the token, which authorizes exactly this request.
+      window.history.replaceState(
+        {},
+        '',
+        '/console/approval/req-123?token=example-token'
+      );
+      withPermissions(['view_agents']);
+      const el = await loaded();
+      expect(el.shadowRoot!.querySelector('permission-denied')).to.not.exist;
+      expect(el.shadowRoot!.querySelector('.main-content slot')).to.exist;
+    });
+  });
+
   describe('responsive sidebar', () => {
     it('shows sidebar as open on desktop by default', async () => {
       const el = (await fixture(

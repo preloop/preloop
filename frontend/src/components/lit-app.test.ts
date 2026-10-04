@@ -298,6 +298,58 @@ describe('LitApp routing', () => {
     );
   });
 
+  it('renders an unknown console path as a 404 inside the shell', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+
+    Router.go('/console/does-not-exist');
+
+    // Inside console-shell, so the sidebar and header stay on screen.
+    await waitUntil(
+      () =>
+        Boolean(el.shadowRoot?.querySelector('console-shell > not-found-view')),
+      'Expected the console 404 to render inside the shell',
+      { timeout: 5000 }
+    );
+    expect(window.location.pathname).to.equal('/console/does-not-exist');
+  });
+
+  it('keeps real console routes ahead of the console 404', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+
+    Router.go('/console/settings/emergency');
+    await waitUntil(
+      () =>
+        Boolean(el.shadowRoot?.querySelector('console-shell > emergency-view')),
+      'Expected the emergency route to render',
+      { timeout: 5000 }
+    );
+    expect(el.shadowRoot?.querySelector('not-found-view')).to.equal(null);
+  });
+
+  it('still renders the bare 404 for an unknown public path', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+
+    Router.go('/no-such-page');
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('main > not-found-view')),
+      'Expected the top-level 404',
+      { timeout: 5000 }
+    );
+    expect(el.shadowRoot?.querySelector('console-shell')).to.equal(null);
+  });
+
+  it('redirects the old bell link to the executions list', async () => {
+    await fixture(html`<lit-app></lit-app>`);
+
+    Router.go('/console/flow-executions');
+
+    await waitUntil(
+      () => window.location.pathname === '/console/flows/executions',
+      'Expected /console/flow-executions to redirect',
+      { timeout: 5000 }
+    );
+  });
+
   it('redirects the console pricing route to the plan page', async () => {
     await fixture(html`<lit-app></lit-app>`);
 

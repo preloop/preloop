@@ -192,7 +192,13 @@ export function baseHrefPrefix(): string {
 function compilePath(path: string): { pattern: RegExp; keys: string[] } {
   const keys: string[] = [];
   if (path.includes('(.*)')) {
-    return { pattern: /^\/.*$/u, keys };
+    // The wildcard is relative to where it sits: `/(.*)` matches anything,
+    // `/console/(.*)` only what is under the console. Treating every `(.*)`
+    // as match-all let a nested catch-all swallow unrelated top-level paths.
+    const escape = (text: string) =>
+      text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const source = normalizePath(path).split('(.*)').map(escape).join('.*');
+    return { pattern: new RegExp('^' + source + '$', 'u'), keys };
   }
   const source = normalizePath(path)
     .split('/')

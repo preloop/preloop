@@ -4,6 +4,32 @@ import { customElement } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 
+/** Read storage without throwing where it is blocked (private windows). */
+function safeGetItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Where the one button on the 404 should go. Inside the console it renders
+ * within the shell, so the way back is the Overview. A signed-in visitor on a
+ * public path is offered the console; an anonymous one the home page, rather
+ * than a sign-in screen they did not ask for.
+ */
+export function notFoundAction(
+  pathname: string,
+  signedIn: boolean
+): { href: string; label: string } {
+  if (pathname === '/console' || pathname.startsWith('/console/')) {
+    return { href: '/console', label: 'Back to Overview' };
+  }
+  if (signedIn) return { href: '/console', label: 'Go to the console' };
+  return { href: '/', label: 'Go to the home page' };
+}
+
 /**
  * Catch-all page. Without it an unknown path (`/agents` instead of
  * `/console/agents`, a stale bookmark, a typo) rendered a blank document.
@@ -43,6 +69,10 @@ export class NotFoundView extends LitElement {
   `;
 
   render() {
+    const cta = notFoundAction(
+      window.location.pathname,
+      Boolean(safeGetItem('accessToken'))
+    );
     return html`
       <div class="wrapper">
         <sl-icon name="compass"></sl-icon>
@@ -51,9 +81,7 @@ export class NotFoundView extends LitElement {
           The page you asked for does not exist. It may have moved, or the link
           may be out of date.
         </p>
-        <sl-button variant="primary" href="/console">
-          Go to the console
-        </sl-button>
+        <sl-button variant="primary" href=${cta.href}> ${cta.label} </sl-button>
       </div>
     `;
   }
