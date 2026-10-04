@@ -85,7 +85,12 @@ def update_spend_outlier_settings(
     """Replace the account's spend outlier thresholds.
 
     Writing takes ``manage_budgets``, the same permission as budget limits.
-    Changing a threshold does not rewrite findings already recorded.
+    Saving here changes nothing by itself. Findings already recorded stand
+    until the daily pass next judges their day: for accounts without an
+    imported-spend replay that never happens, while an account with an
+    active Copilot import has its 28 most recent days re-judged with the new
+    thresholds on the next pass, which can update or supersede a recent
+    finding (see :mod:`preloop.services.spend_outliers`).
     """
     ensure_permission_in_oss(db, current_user, "manage_budgets")
     row = crud_spend_outlier_settings.upsert(

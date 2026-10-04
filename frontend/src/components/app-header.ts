@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router, LOCATION_CHANGED } from '../router';
-import { getUserProfile, getFeatures } from '../api';
+import { getUserProfile, getFeatures, signOut } from '../api';
 import { getBrandConfig, isSaaS } from '../brand-config';
 import { trackGoal } from '../services/web-analytics';
 
@@ -162,17 +162,10 @@ export class AppHeader extends LitElement {
     }
   }
 
-  logout() {
-    localStorage.removeItem('accessToken');
-    localStorage.removeItem('refreshToken');
+  async logout() {
     this.isAuthenticated = false;
     this.user = null;
-    const event = new CustomEvent('auth-change', {
-      bubbles: true,
-      composed: true,
-    });
-    window.dispatchEvent(event);
-    Router.go('/login');
+    await signOut({ destination: '/login', navigate: (url) => Router.go(url) });
   }
 
   render() {

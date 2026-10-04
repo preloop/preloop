@@ -311,7 +311,12 @@ def build_runtime_key_auth_context(
         return None
 
     api_key = crud_api_key.get(db, id=api_key_id)
-    if api_key is None or not api_key.is_active or api_key.is_expired:
+    if (
+        api_key is None
+        or not api_key.is_active
+        or api_key.is_expired
+        or getattr(api_key, "requires_machine_authorization", False) is True
+    ):
         return None
 
     user = crud_user.get(db, id=str(api_key.user_id))

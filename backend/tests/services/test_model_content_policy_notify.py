@@ -29,6 +29,7 @@ from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.policy.schema import (
     ConditionAction,
     ModelIORule,
+    SensitiveDataConfig,
     ToolCondition,
     ToolDefinition,
 )
@@ -335,7 +336,9 @@ def test_notify_only_stream_is_not_buffered(captured) -> None:
             yield f'data: {{"choices":[{{"delta":{{"content":"{chunk}"}}}}]}}\n\n'
         yield "data: [DONE]\n\n"
 
-    with patch.object(mcp, "load_model_io_rules", return_value=[rule]):
+    with patch.object(
+        mcp, "load_gateway_policy_blocks", return_value=([rule], SensitiveDataConfig())
+    ):
         stream = wrap_stream_for_response_policy(
             upstream(),
             gateway=_gateway(),
@@ -371,7 +374,9 @@ def test_notify_only_stream_attributes_to_the_keys_account(captured) -> None:
         'data: {"choices":[{"delta":{"content":"project-x"}}]}\n\n',
         "data: [DONE]\n\n",
     ]
-    with patch.object(mcp, "load_model_io_rules", return_value=[rule]) as load:
+    with patch.object(
+        mcp, "load_gateway_policy_blocks", return_value=([rule], SensitiveDataConfig())
+    ) as load:
         list(
             wrap_stream_for_response_policy(
                 iter(events),
@@ -401,7 +406,9 @@ def test_notify_only_stream_closed_early_still_evaluates(captured) -> None:
         'data: {"choices":[{"delta":{"content":"project-x"}}]}\n\n',
         'data: {"choices":[{"delta":{"content":" more"}}]}\n\n',
     ]
-    with patch.object(mcp, "load_model_io_rules", return_value=[rule]):
+    with patch.object(
+        mcp, "load_gateway_policy_blocks", return_value=([rule], SensitiveDataConfig())
+    ):
         stream = wrap_stream_for_response_policy(
             iter(events),
             gateway=_gateway(),
@@ -439,7 +446,9 @@ def test_mixed_response_rules_still_buffer_and_deny(captured) -> None:
         'data: {"choices":[{"delta":{"content":"project-x"}}]}\n\n',
         "data: [DONE]\n\n",
     ]
-    with patch.object(mcp, "load_model_io_rules", return_value=rules):
+    with patch.object(
+        mcp, "load_gateway_policy_blocks", return_value=(rules, SensitiveDataConfig())
+    ):
         out = list(
             wrap_stream_for_response_policy(
                 iter(events),

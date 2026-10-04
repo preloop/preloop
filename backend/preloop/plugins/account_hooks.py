@@ -39,6 +39,8 @@ Hooks:
 * H7 :data:`BillingAccountResolver`: whose subscription applies.
 * H8 needs no registry: usage summary crud takes an optional
   ``account_ids`` list.
+* H9 :class:`SessionHook`: what signing out of a console session does
+  beyond clearing it, and extra revocation of individual JWTs.
 """
 
 from __future__ import annotations
@@ -495,6 +497,107 @@ def billing_account_id(db: "Session", account_id: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# H9: session hook
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LogoutOutcome:
+    """What the client does after a sign out, beyond clearing its tokens.
+
+    Attributes:
+        redirect_url: Same-origin path (``/...``) to navigate to instead of
+            the client's default destination. Anything else is ignored by
+            :func:`run_logout_hook`.
+    """
+
+    redirect_url: Optional[str] = None
+
+
+def is_same_origin_path(url: Any) -> bool:
+    """Whether ``url`` is a path on this origin (``/x``, not ``//x``)."""
+    if not isinstance(url, str) or not url.startswith("/"):
+        return False
+    if url.startswith("//") or url.startswith("/\\"):
+        return False
+    return not any(ch in url for ch in ("\\", "\r", "\n", "\t"))
+
+
+class SessionHook:
+    """Extension points on the life of a console JWT session.
+
+    The default keeps today's behaviour: sign out only clears the client, and
+    no token is revoked beyond the generation and CLI session checks.
+    """
+
+    def on_logout(
+        self, db: "Session", *, user: "User", claims: Mapping[str, Any]
+    ) -> Optional[LogoutOutcome]:
+        """Run when ``user`` signs out with a token carrying ``claims``.
+
+        Runs inside the request transaction; the caller commits.
+
+        Args:
+            db: Database session of the request.
+            user: The authenticated user of the token.
+            claims: Every claim of the access token being signed out.
+
+        Returns:
+            An outcome for the client, or ``None`` for the default.
+        """
+        return None
+
+    def is_token_revoked(
+        self, db: "Session", *, user: "User", claims: Mapping[str, Any]
+    ) -> bool:
+        """Whether a signed, unexpired, current-generation JWT is revoked.
+
+        Called on every JWT authentication while a hook is registered, so it
+        must answer without a query for tokens it does not track.
+        """
+        return False
+
+
+_session_hook: Optional[SessionHook] = None
+
+
+def register_session_hook(hook: Optional[SessionHook]) -> None:
+    """Register (or clear, with ``None``) the H9 session hook."""
+    global _session_hook
+    _session_hook = hook
+
+
+def get_session_hook() -> Optional[SessionHook]:
+    """Return the registered H9 hook, or ``None``."""
+    return _session_hook
+
+
+def run_logout_hook(
+    db: "Session", user: "User", claims: Mapping[str, Any]
+) -> LogoutOutcome:
+    """Apply H9 on sign out; an empty outcome when unset.
+
+    A redirect that is not a same-origin path is dropped, so a hook can never
+    send the client to another site.
+    """
+    hook = _session_hook
+    if hook is None:
+        return LogoutOutcome()
+    outcome = hook.on_logout(db, user=user, claims=claims)
+    if outcome is None or not is_same_origin_path(outcome.redirect_url):
+        return LogoutOutcome()
+    return outcome
+
+
+def is_token_revoked(db: "Session", user: "User", claims: Mapping[str, Any]) -> bool:
+    """Apply H9 to an authenticated JWT; ``False`` when unset."""
+    hook = _session_hook
+    if hook is None:
+        return False
+    return bool(hook.is_token_revoked(db, user=user, claims=claims))
+
+
+# ---------------------------------------------------------------------------
 
 
 def reset_account_hooks() -> None:
@@ -506,3 +609,4 @@ def reset_account_hooks() -> None:
     register_budget_extension(None)
     register_halt_ancestry(None)
     register_billing_account_resolver(None)
+    register_session_hook(None)

@@ -23,7 +23,11 @@ from preloop.services.model_content_policy import (
     hold_for_model_io_approval,
     wrap_stream_for_response_policy,
 )
-from preloop.services.policy.schema import ModelIORule, ToolCondition
+from preloop.services.policy.schema import (
+    ModelIORule,
+    SensitiveDataConfig,
+    ToolCondition,
+)
 
 
 def _rule(**kwargs) -> ModelIORule:
@@ -272,8 +276,8 @@ def test_wrap_stream_buffers_then_replays_when_allowed():
         "data: [DONE]\n\n",
     ]
     with patch(
-        "preloop.services.model_content_policy.load_model_io_rules",
-        return_value=[],
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=([], SensitiveDataConfig()),
     ):
         out = list(
             wrap_stream_for_response_policy(
@@ -311,8 +315,8 @@ def test_wrap_stream_denies_without_replaying_payload():
         "data: [DONE]\n\n",
     ]
     with patch(
-        "preloop.services.model_content_policy.load_model_io_rules",
-        return_value=[rule],
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=([rule], SensitiveDataConfig()),
     ):
         out = list(
             wrap_stream_for_response_policy(
@@ -379,8 +383,8 @@ def test_wrap_stream_responses_assembled_text_is_not_doubled():
         "data: [DONE]\n\n",
     ]
     with patch(
-        "preloop.services.model_content_policy.load_model_io_rules",
-        return_value=[rule],
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        return_value=([rule], SensitiveDataConfig()),
     ):
         out = list(
             wrap_stream_for_response_policy(
@@ -482,8 +486,11 @@ def test_buffered_response_policy_db_failure_emits_error_without_payload() -> No
         conditions=[ToolCondition(expression="true", action="allow")],
     )
     with patch(
-        "preloop.services.model_content_policy.load_model_io_rules",
-        side_effect=[[rule], SQLAlchemyTimeoutError("sensitive SQL must not escape")],
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        side_effect=[
+            ([rule], SensitiveDataConfig()),
+            SQLAlchemyTimeoutError("sensitive SQL must not escape"),
+        ],
     ):
         out = list(
             wrap_stream_for_response_policy(
@@ -520,8 +527,11 @@ def test_response_buffer_still_enforces_current_deny_rule() -> None:
         _sse_done=lambda: "data: [DONE]\n\n",
     )
     with patch(
-        "preloop.services.model_content_policy.load_model_io_rules",
-        side_effect=[[prepared], [current]],
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        side_effect=[
+            ([prepared], SensitiveDataConfig()),
+            ([current], SensitiveDataConfig()),
+        ],
     ) as load:
         out = list(
             wrap_stream_for_response_policy(
@@ -556,8 +566,12 @@ def test_response_rule_added_after_empty_request_preflight_blocks_output() -> No
         _sse_done=lambda: "data: [DONE]\n\n",
     )
     with patch(
-        "preloop.services.model_content_policy.load_model_io_rules",
-        side_effect=[[], [deny], [deny]],
+        "preloop.services.model_content_policy.load_gateway_policy_blocks",
+        side_effect=[
+            ([], SensitiveDataConfig()),
+            ([deny], SensitiveDataConfig()),
+            ([deny], SensitiveDataConfig()),
+        ],
     ) as load:
         enforce_request_policy(
             gateway,

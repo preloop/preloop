@@ -3,10 +3,14 @@
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
 Preloop masks secrets before it logs, stores or forwards data it handles. It
-does this with two mechanisms, field-name redaction and pattern redaction,
-applied at different surfaces. Neither one removes personal data from free
-text. This page lists both, where each applies, what stays in clear text, and
-how to store less.
+does this with field-name redaction and pattern redaction, applied at
+different surfaces. Those two do not remove personal data from free text. A
+third pass does, when a `sensitive_data` rule uses the `redact` action:
+detected values (email, card numbers, and the other configured types) are
+replaced with `[REDACTED:<type>]` on the storage write paths below.
+`redact_upstream: true` on that rule also rewrites the copy sent onward.
+This page lists each mechanism, where it applies, what stays in clear text,
+and how to store less.
 
 ## Field-name redaction
 
@@ -46,24 +50,46 @@ Free text has no field names, so it is scanned for credential shapes:
   text are masked for labelled secrets (`api_key: value`, `secret=value`)
   before they are indexed or stored.
 
+## Value-level personal-data redaction
+
+A `sensitive_data` rule with `action: redact` runs the same detectors as a
+deny rule, then replaces each match in the stored copy with
+`[REDACTED:<type>]`. Keys are left as written. With no matching redact rule,
+free-text personal data is stored as it is. The rule's `on` list and scope
+(tools, servers, agents) decide which writes are covered.
+
+`redact_upstream` defaults to false: the model provider, the MCP server and
+the agent still receive the original text, and only the stored copy is
+masked. Set `redact_upstream: true` to rewrite that live copy as well. It
+applies to tool arguments sent to the server, tool results returned to the
+agent, and model requests sent to the provider. It is rejected on a rule
+that does not use `action: redact`, and on a rule whose only target is
+`model.response` (a response is masked in storage, not rewritten on the way
+back to the client).
+
 ## Where each applies
 
 | Surface | Mechanism |
 | --- | --- |
-| Approval requests and their notifications (email, mobile, Slack, Mattermost, webhook) | Field-name redaction of tool arguments |
-| Tool execution records and audit payloads | Field-name redaction |
+| Approval requests and their notifications (email, mobile, Slack, Mattermost, webhook) | Field-name redaction of tool arguments, plus value-level personal-data redaction when a `redact` rule matches |
+| Policy-decision rows and tool execution records | Field-name redaction, plus value-level personal-data redaction when a `redact` rule matches |
 | Application logs | Field-name redaction via `redact_for_log()` |
 | Model gateway events (conversation preview, request and response bodies) | Field-name redaction on payload keys plus pattern redaction on content |
-| Flow execution logs | Secret scrubbing of each log line |
-| Session search index, browser steps | Pattern redaction (`redact_text`) |
+| Gateway usage search text | Pattern redaction, plus value-level personal-data redaction when a `redact` rule matches |
+| Flow execution logs | Secret scrubbing of each log line, then value-level personal-data redaction when a `redact` rule matches |
+| Session search index, browser steps | Pattern redaction (`redact_text`), plus value-level personal-data redaction when a `redact` rule matches |
+| Tool arguments sent to an MCP server, tool results returned to the agent, model requests sent to the provider | Unchanged, unless `redact_upstream: true` on a matching `redact` rule, which rewrites that copy |
 
 ## What is not redacted
 
-- **Personal data in free text.** Names, email addresses, postal addresses or
-  customer records inside prompts, completions or tool results are stored as
-  they are. The personal-data detector in
-  [model content policies](../guide/model-content-policies.md) is a policy
-  condition (allow, deny, require approval), not redaction.
+- **Personal data in free text when no `redact` rule matches.** Names, email
+  addresses, postal addresses or customer records inside prompts, completions
+  or tool results are stored as they are until a
+  [sensitive-data rule](../guide/model-content-policies.md) with
+  `action: redact` covers that write. `deny`, `notify` and
+  `require_approval` detect the same values but do not rewrite them.
+  `redact_upstream` is what changes the copy that leaves Preloop; without it
+  the provider, server or agent still sees the original.
 - **Secrets that match no pattern and sit under an unremarkable key.** A
   password in a field called `note` is kept.
 - **Anything your MCP server or model provider logs on its side.**

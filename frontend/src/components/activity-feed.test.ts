@@ -418,6 +418,26 @@ describe('activity-feed', () => {
       expect(labels).to.include('Server');
     });
 
+    it('names the policy and spells out the action of a policy change', () => {
+      const event = feedEventFromAuditGroup(
+        auditGroup(
+          'configuration_change',
+          {
+            id: 'p1',
+            resource_id: 'policy',
+            details: {
+              config_type: 'policy',
+              action: 'rolled_back',
+              new_value: { name: 'v3', version_number: 3 },
+            },
+          },
+          'success'
+        )
+      );
+      expect(event?.text).to.equal('Policy rolled back · v3');
+      expect(event?.entity).to.equal('v3');
+    });
+
     it('says what happened to a tool call, caller first', () => {
       const shape = (outcome: string) =>
         feedEventFromAuditGroup(
