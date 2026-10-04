@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import './agent-detail-view.ts';
 import type { AgentDetailView } from './agent-detail-view';
 import { invalidateApiCaches } from '../../api';
+import { historyStateForNavigation } from '../../utils/in-app-history';
 
 describe('AgentDetailView', () => {
   let fetchStub: sinon.SinonStub;
@@ -1843,19 +1844,49 @@ describe('AgentDetailView', () => {
       expect(window.location.pathname).to.equal('/console/agents/agent-1');
     });
 
-    it('goes back in history only when the previous page is in the console', async () => {
-      const { cameFromInsideConsole } = await import('./agent-detail-view');
-      const origin = 'https://console.example.com';
-      expect(cameFromInsideConsole(1, `${origin}/console`, origin)).to.equal(
-        false
+    it('sends Back to the Agents list on a page loaded directly', async () => {
+      window.history.replaceState(null, '', '/console/agents/agent-1');
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
       );
-      expect(cameFromInsideConsole(3, '', origin)).to.equal(false);
-      expect(
-        cameFromInsideConsole(3, 'https://elsewhere.example.org/', origin)
-      ).to.equal(false);
-      expect(
-        cameFromInsideConsole(3, `${origin}/console/agents`, origin)
-      ).to.equal(true);
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const back = sinon.stub(window.history, 'back');
+      try {
+        const click = new MouseEvent('click', { cancelable: true });
+        (element as any).handleBack(click);
+        // The click is left alone, so the button's href (/console/agents)
+        // is followed instead of leaving the console.
+        expect(click.defaultPrevented).to.equal(false);
+        expect(back.called).to.equal(false);
+      } finally {
+        back.restore();
+      }
+    });
+
+    it('goes back in history after an in-app navigation', async () => {
+      // The router writes in-app entries with pushState, which never updates
+      // document.referrer; the entry's own in-app depth is what counts.
+      window.history.replaceState(null, '', '/console/agents');
+      window.history.pushState(
+        historyStateForNavigation('push'),
+        '',
+        '/console/agents/agent-1'
+      );
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const back = sinon.stub(window.history, 'back');
+      try {
+        const click = new MouseEvent('click', { cancelable: true });
+        (element as any).handleBack(click);
+        expect(click.defaultPrevented).to.equal(true);
+        expect(back.calledOnce).to.equal(true);
+      } finally {
+        back.restore();
+      }
     });
 
     it('links Back to the Agents list for a reader with no history here', async () => {

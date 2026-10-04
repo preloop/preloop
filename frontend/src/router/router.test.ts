@@ -12,6 +12,7 @@ import {
   normalizePath,
   type RouterLocation,
 } from './index';
+import { hasInAppHistory } from '../utils/in-app-history';
 
 /** Custom elements cannot be undefined, so every fixture gets a fresh tag. */
 let tagSeq = 0;
@@ -1013,6 +1014,33 @@ describe('router', () => {
         timeout: 2000,
       });
       expect(window.location.pathname).to.equal('/go-a');
+    });
+
+    it('records in-app history only for entries the router pushed', async () => {
+      const first = defineTag('rt-depth-a');
+      const second = defineTag('rt-depth-b');
+      await router.setRoutes(
+        [
+          { path: '/depth-a', component: first },
+          { path: '/depth-b', component: second },
+        ],
+        true
+      );
+      // The first page of a tab: nothing in-app behind it.
+      window.history.replaceState(null, '', '/depth-a');
+      await router.render('/depth-a', { history: 'replace' });
+      expect(hasInAppHistory()).to.equal(false);
+
+      expect(Router.go('/depth-b')).to.equal(true);
+      await waitUntil(() => !!outlet.querySelector(second));
+      expect(hasInAppHistory()).to.equal(true);
+
+      // Back to the first page: there is nothing in-app behind it again.
+      window.history.back();
+      await waitUntil(() => !!outlet.querySelector(first), 'back re-renders', {
+        timeout: 2000,
+      });
+      expect(hasInAppHistory()).to.equal(false);
     });
 
     it('fires the location-changed event with the resolved location', async () => {

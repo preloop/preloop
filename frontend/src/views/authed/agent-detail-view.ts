@@ -85,6 +85,7 @@ import {
   findModelForAllowedEntry,
   gatewayAliasForModel,
 } from '../../utils/model-allowlist';
+import { hasInAppHistory } from '../../utils/in-app-history';
 import {
   REMOVE_AGENT_CONSEQUENCE,
   getAgentSourceLabel,
@@ -129,24 +130,6 @@ const SPEND_RANGE_OPTIONS: Array<{ value: string; label: string }> = [
  */
 const UUID_IN_IDENTIFIER =
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-
-/**
- * True when going back in history stays in this app: there is an entry
- * behind this one and the document was reached from this origin. A shared
- * link or a new tab has neither, so Back falls back to the Agents list.
- */
-export function cameFromInsideConsole(
-  historyLength: number = window.history.length,
-  referrer: string = document.referrer,
-  origin: string = window.location.origin
-): boolean {
-  if (historyLength <= 1 || !referrer) return false;
-  try {
-    return new URL(referrer).origin === origin;
-  } catch {
-    return false;
-  }
-}
 
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
@@ -2998,13 +2981,13 @@ export class AgentDetailView extends LitElement {
   }
 
   /**
-   * Back returns to the page the reader came from when that page is inside
-   * the console. Opened from a shared link or a new tab there is nothing
-   * in-app behind it, so the button's own link to the Agents list is used
-   * instead of leaving the console.
+   * Back returns to the page the reader came from when the router navigated
+   * here from inside the console. Opened directly, from a shared link or a
+   * new tab there is nothing in-app behind it, so the button's own link to
+   * the Agents list is used instead of leaving the console.
    */
   private handleBack = (event: Event): void => {
-    if (!cameFromInsideConsole()) return;
+    if (!hasInAppHistory()) return;
     event.preventDefault();
     window.history.back();
   };

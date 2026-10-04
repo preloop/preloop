@@ -13,6 +13,8 @@
  * wrapper around one.
  */
 
+import { historyStateForNavigation } from '../utils/in-app-history';
+
 /** The `location` object handed to actions, guards and routed elements. */
 export interface RouterLocation {
   /** Pathname of the resolved URL, without search or hash. */
@@ -756,8 +758,12 @@ export class Router {
       window.location.hash === final.hash;
     if (same) return;
     const url = final.pathname + final.search + final.hash;
+    // The entry carries its in-app depth so Back buttons can tell an entry
+    // this router wrote from the page the tab was opened on (see
+    // utils/in-app-history.ts); `document.referrer` never changes on a
+    // `pushState`, so it cannot.
     window.history[mode === 'push' ? 'pushState' : 'replaceState'](
-      null,
+      historyStateForNavigation(mode),
       '',
       url
     );
