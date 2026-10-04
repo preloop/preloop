@@ -260,6 +260,14 @@ export class PoliciesView extends LitElement {
     presetId: MODEL_IO_PRESETS[0].id,
     idTouched: false,
     piiTypes: [...DEFAULT_PII_TYPES] as string[],
+    // Fields the form does not surface but must write back unchanged: a PUT
+    // replaces the whole rule, so dropping them would reset a YAML-authored
+    // value such as `detector_timeout_ms: 30000` on every save.
+    description: '',
+    conditionDescription: '',
+    conditionType: 'auto' as 'auto' | 'simple' | 'cel',
+    detectorTimeoutMs: 500,
+    moderationBackend: '',
     // Model rules can carry several conditions; the form edits the first and
     // carries the rest through untouched so an edit never drops them.
     extraConditions: [] as ModelIORule['conditions'],
@@ -1022,6 +1030,11 @@ export class PoliciesView extends LitElement {
       presetId: preset.id,
       idTouched: false,
       piiTypes: [...DEFAULT_PII_TYPES],
+      description: '',
+      conditionDescription: '',
+      conditionType: 'auto' as 'auto' | 'simple' | 'cel',
+      detectorTimeoutMs: 500,
+      moderationBackend: '',
       extraConditions: [] as ModelIORule['conditions'],
     };
   }
@@ -1057,6 +1070,7 @@ export class PoliciesView extends LitElement {
     } else if (rule) {
       const [condition, ...extraConditions] = rule.conditions ?? [];
       const action = (condition?.action || 'deny') as ModelIOFormAction;
+      const moderation = rule.detectors?.moderation;
       this._editingModelIOId = rule.id;
       this._modelIOForm = {
         id: rule.id,
@@ -1066,6 +1080,16 @@ export class PoliciesView extends LitElement {
         enabled: rule.enabled !== false,
         action,
         expression: condition?.expression || '',
+        // Carry fields this form does not edit so the whole-rule PUT keeps
+        // them instead of nulling or resetting them.
+        description: rule.description || '',
+        conditionDescription: condition?.description || '',
+        conditionType: condition?.condition_type || 'auto',
+        detectorTimeoutMs: rule.detector_timeout_ms ?? 500,
+        moderationBackend:
+          moderation && typeof moderation === 'object'
+            ? moderation.backend || ''
+            : '',
         approvalWorkflow: rule.approval_workflow || '',
         detectPii: Boolean(rule.detectors?.pii),
         detectInjection: Boolean(rule.detectors?.injection),
@@ -1131,6 +1155,8 @@ export class PoliciesView extends LitElement {
       detectInjection: preset.detectInjection,
       detectModeration: preset.detectModeration,
       piiTypes: [...DEFAULT_PII_TYPES],
+      conditionDescription: '',
+      conditionType: 'auto',
       extraConditions: [],
       id:
         this._modelIOForm.idTouched && this._modelIOForm.id.trim()
@@ -1210,7 +1236,9 @@ export class PoliciesView extends LitElement {
       detectors.injection = true;
     }
     if (form.detectModeration) {
-      detectors.moderation = true;
+      detectors.moderation = form.moderationBackend
+        ? { backend: form.moderationBackend }
+        : true;
     }
     // The backend defaults a condition to `simple`, so a CEL expression saved
     // without its type would be evaluated by the wrong engine. Send the type
@@ -1220,7 +1248,11 @@ export class PoliciesView extends LitElement {
     const primaryCondition = {
       expression,
       action: form.action,
-      condition_type: conditionTypeFor(form.expression),
+      condition_type:
+        form.conditionType === 'auto'
+          ? conditionTypeFor(form.expression)
+          : form.conditionType,
+      description: form.conditionDescription.trim() || null,
     };
     // Conditions after the first are edited elsewhere (or imported as YAML);
     // keep them, with a type, so an edit does not delete them.
@@ -1233,8 +1265,10 @@ export class PoliciesView extends LitElement {
       id: form.id.trim(),
       target: form.target,
       enabled: form.enabled,
+      description: form.description.trim() || null,
       approval_workflow: form.approvalWorkflow || null,
       detectors,
+      detector_timeout_ms: form.detectorTimeoutMs,
       on_detector_timeout: form.onDetectorTimeout,
       conditions: [primaryCondition, ...extraConditions],
     };
@@ -2466,6 +2500,28 @@ export class PoliciesView extends LitElement {
                   <code>moderation.flagged == true</code>,
                   <code>model.id == 'gpt-5'</code>, or
                   <code>session.id != ''</code>.
+                </p>
+              </div>
+              <div class="form-group">
+                <label>Condition language</label>
+                <sl-select
+                  data-testid="condition-type"
+                  .value=${form.conditionType}
+                  @sl-change=${(e: any) =>
+                    this._patchModelIOForm({ conditionType: e.target.value })}
+                >
+                  <sl-option value="auto">
+                    Detect automatically (recommended)
+                  </sl-option>
+                  <sl-option value="simple">Simple comparison</sl-option>
+                  <sl-option value="cel">CEL expression</sl-option>
+                </sl-select>
+                <p class="model-io-hint">
+                  Simple reads comparisons such as
+                  <code>pii.found == true</code>. Pick CEL when the expression
+                  uses <code>contains(...)</code>, <code>in</code>, indexing, or
+                  anything the automatic check reads as simple but the server
+                  rejects.
                 </p>
               </div>
             `

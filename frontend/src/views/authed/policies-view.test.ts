@@ -1146,17 +1146,20 @@ describe('PoliciesView', () => {
       expect(body.conditions[0].condition_type).to.equal('cel');
     });
 
-    it('keeps PII types and extra conditions when editing a model rule', async () => {
+    it('keeps PII types, descriptions, timeout and extra conditions when editing', async () => {
       const stored = {
         id: 'pii-strict',
         target: 'model.request',
         enabled: true,
+        description: 'Narrow PII scan',
+        detector_timeout_ms: 30000,
         detectors: { pii: { types: ['email'] } },
         conditions: [
           {
             expression: 'pii.found == true',
             action: 'deny',
             condition_type: 'simple',
+            description: 'Any PII at all',
           },
           {
             expression: 'pii.types_found.contains("ssn")',
@@ -1190,12 +1193,38 @@ describe('PoliciesView', () => {
         String((put!.args[1] as RequestInit | undefined)?.body)
       );
       expect(body.detectors.pii.types).to.deep.equal(['email']);
+      expect(body.description).to.equal('Narrow PII scan');
+      expect(body.detector_timeout_ms).to.equal(30000);
       expect(body.conditions).to.have.length(2);
       expect(body.conditions[0].condition_type).to.equal('simple');
+      expect(body.conditions[0].description).to.equal('Any PII at all');
       expect(body.conditions[1].expression).to.equal(
         'pii.types_found.contains("ssn")'
       );
       expect(body.conditions[1].condition_type).to.equal('cel');
+    });
+
+    it('lets the author force CEL when automatic detection would pick simple', async () => {
+      const element = await mountWithDialog();
+
+      // The backend simple parser rejects parentheses, while the frontend
+      // heuristic would call this simple; the override must send CEL.
+      (element as any)._patchModelIOForm({
+        id: 'deny-paren',
+        conditionMode: 'custom',
+        action: 'deny',
+        expression: '(pii.found == true)',
+        conditionType: 'cel',
+      });
+      await element.updateComplete;
+
+      const select = element.shadowRoot?.querySelector(
+        '[data-testid="condition-type"]'
+      );
+      expect(select, 'condition language override').to.exist;
+      expect(
+        (element as any).buildModelIORuleFromForm().conditions[0].condition_type
+      ).to.equal('cel');
     });
 
     it('refuses to save a deny rule with no condition', async () => {
