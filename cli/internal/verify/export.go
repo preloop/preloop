@@ -20,12 +20,6 @@ const (
 	SignatureMember = "signature.json"
 )
 
-// maxArchiveBytes bounds what a verifier will expand from an archive it was
-// handed. A period export is a compliance artifact of known scale, and a
-// verifier that can be made to allocate without limit by the file it is
-// checking is not much of a verifier.
-const maxArchiveBytes = 512 << 20
-
 // maxStreamedBytes bounds what ReadExportFrom will read through from an
 // archive. Members are digested as they stream past and never held, so the
 // bound is about time, not memory. It sits above the server's default
@@ -78,7 +72,9 @@ func (r ExportResult) ContentOK() bool {
 	return len(r.Problems) == 0
 }
 
-// ReadExport unpacks a period export and checks it against its own manifest.
+// ReadExport checks an in-memory period export against its own manifest. It
+// is ReadExportFrom over a byte slice, for callers that already hold the
+// archive; the CLI streams from disk instead.
 func ReadExport(archive []byte) (ExportResult, error) {
 	return ReadExportFrom(bytes.NewReader(archive))
 }
@@ -235,38 +231,4 @@ func streamTar(r io.Reader) (map[string]streamedMember, map[string][]byte, error
 		}
 	}
 	return members, held, nil
-}
-
-// untar expands a gzipped tar into memory, refusing paths that try to escape.
-func untar(archive []byte) (map[string][]byte, error) {
-	gz, err := gzip.NewReader(bytes.NewReader(archive))
-	if err != nil {
-		return nil, fmt.Errorf("not a gzip archive: %w", err)
-	}
-	defer func() { _ = gz.Close() }()
-	reader := tar.NewReader(gz)
-	members := map[string][]byte{}
-	budget := int64(maxArchiveBytes)
-	for {
-		header, err := reader.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("not a tar archive: %w", err)
-		}
-		if header.Typeflag != tar.TypeReg {
-			continue
-		}
-		body, err := io.ReadAll(io.LimitReader(reader, budget+1))
-		if err != nil {
-			return nil, fmt.Errorf("cannot read member %q: %w", header.Name, err)
-		}
-		budget -= int64(len(body))
-		if budget < 0 {
-			return nil, errors.New("archive expands past the size a verifier will hold in memory")
-		}
-		members[header.Name] = body
-	}
-	return members, nil
 }

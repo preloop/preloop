@@ -7,6 +7,9 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"testing"
 )
 
@@ -332,4 +335,39 @@ func TestTheReadBudgetCoversTheServerArtifactCap(t *testing.T) {
 	if maxStreamedBytes <= serverDefaultArtifactCap {
 		t.Fatalf("verifier budget %d does not cover the server cap %d", maxStreamedBytes, serverDefaultArtifactCap)
 	}
+}
+
+// untar expands a gzipped tar into memory for tests that repack an archive.
+// It is test-only: the verifier itself streams (ReadExportFrom).
+func untar(archive []byte) (map[string][]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		return nil, fmt.Errorf("not a gzip archive: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	reader := tar.NewReader(gz)
+	members := map[string][]byte{}
+	budget := int64(64 << 20)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("not a tar archive: %w", err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(reader, budget+1))
+		if err != nil {
+			return nil, fmt.Errorf("cannot read member %q: %w", header.Name, err)
+		}
+		budget -= int64(len(body))
+		if budget < 0 {
+			return nil, errors.New("archive expands past the size a verifier will hold in memory")
+		}
+		members[header.Name] = body
+	}
+	return members, nil
 }
