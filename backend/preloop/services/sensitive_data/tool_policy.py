@@ -51,6 +51,7 @@ COMPILED_RULE_PREFIX = "sensitive-data:"
 NOTIFY = ConditionAction.NOTIFY.value
 DENY = ConditionAction.DENY.value
 REQUIRE_APPROVAL = ConditionAction.REQUIRE_APPROVAL.value
+REDACT = ConditionAction.REDACT.value
 ALLOW = ConditionAction.ALLOW.value
 
 MAX_SCANNED_PATHS = 50
@@ -104,7 +105,7 @@ class ScanSummary:
         """Same scan seen through one rule's type list."""
         selected = set(types)
         names = [item for item in self.types_found if item in selected]
-        return ScanSummary(
+        view = ScanSummary(
             found=bool(names),
             types_found=names,
             count=sum(self._counts.get(name, 0) for name in names),
@@ -116,6 +117,12 @@ class ScanSummary:
             text_sha256=self.text_sha256,
             timed_out=self.timed_out,
         )
+        view._counts = {name: self._counts.get(name, 0) for name in names}
+        view._path_types = {
+            path: {name for name in kinds if name in selected}
+            for path, kinds in self._path_types.items()
+        }
+        return view
 
     _counts: Dict[str, int] = field(default_factory=dict, repr=False)
     _path_types: Dict[str, set] = field(default_factory=dict, repr=False)
@@ -131,6 +138,19 @@ class ToolPolicyOutcome:
     scan: Optional[ScanSummary] = None
     reason: Optional[str] = None
     notices: List[tuple] = field(default_factory=list)
+    #: Redact rules that matched: ``(rule, view)``. Never blocking.
+    redactions: List[tuple] = field(default_factory=list)
+
+    def upstream_redaction_types(self, config: SensitiveDataConfig) -> List[str]:
+        """Types to strip from the upstream payload (rules with redact_upstream)."""
+        types: List[str] = []
+        for rule, _view in self.redactions:
+            if not getattr(rule, "redact_upstream", False):
+                continue
+            for item in config.types_for_rule(rule):
+                if item not in types:
+                    types.append(item)
+        return types
 
     @property
     def rule_id(self) -> Optional[str]:
@@ -458,6 +478,9 @@ def evaluate_tool_target(
         if action == NOTIFY:
             outcome.notices.append((rule, view))
             continue
+        if action == REDACT:
+            outcome.redactions.append((rule, view))
+            continue
         outcome.action = action
         outcome.rule = rule
         outcome.summary = view
@@ -475,6 +498,10 @@ def evaluate_tool_target(
     if outcome.notices:
         outcome.action = NOTIFY
         outcome.rule, outcome.summary = outcome.notices[0]
+        outcome.reason = label
+    elif outcome.redactions:
+        outcome.action = REDACT
+        outcome.rule, outcome.summary = outcome.redactions[0]
         outcome.reason = label
     return _finish(
         outcome,
@@ -495,7 +522,21 @@ def _finish(
     user_id: Any = None,
     correlation_id: Optional[str] = None,
 ) -> ToolPolicyOutcome:
-    """Emit notices (audit row plus policy notice) and return the outcome."""
+    """Emit notices and redaction rows, then return the outcome."""
+    for rule, view in outcome.redactions:
+        try:
+            _audit_rule(
+                rule,
+                view,
+                action=REDACT,
+                target=target or "",
+                tool_name=tool_name or "",
+                account_id=account_id,
+                user_id=user_id,
+                correlation_id=correlation_id,
+            )
+        except Exception:  # noqa: BLE001 - redaction audit must not fail the call
+            logger.warning("Sensitive data redaction audit failed", exc_info=True)
     for rule, view in outcome.notices:
         try:
             _audit_rule(
@@ -605,6 +646,21 @@ def _audit_rule(
     from preloop.services.policy_evaluator import _log_policy_decision_async
 
     summary = view.as_dict()
+    extra: Dict[str, Any] = {
+        "source": SOURCE_SENSITIVE_DATA_RULE,
+        "rule_id": rule.id,
+        "target": target,
+        "types_found": list(view.types_found),
+        "detector_summary": summary,
+        "text_sha256": view.text_sha256,
+    }
+    if reason:
+        extra["reason"] = reason
+    if action == REDACT:
+        extra["redaction_counts"] = {
+            name: view._counts.get(name, 0) for name in view.types_found
+        }
+        extra["redact_upstream"] = bool(getattr(rule, "redact_upstream", False))
     _log_policy_decision_async(
         account_id=account_uuid,
         tool_name=tool_name,
@@ -615,15 +671,7 @@ def _audit_rule(
         tool_args={"text_sha256": view.text_sha256},
         user_id=_uuid_or_none(user_id),
         correlation_id=correlation_id,
-        extra_details={
-            "source": SOURCE_SENSITIVE_DATA_RULE,
-            "rule_id": rule.id,
-            "target": target,
-            "types_found": list(view.types_found),
-            "detector_summary": summary,
-            "text_sha256": view.text_sha256,
-            **({"reason": reason} if reason else {}),
-        },
+        extra_details=extra,
     )
 
 
@@ -673,6 +721,10 @@ def compile_model_io_rules(
                     detectors=ModelIODetectors(pii=PIIDetectorConfig(types=types)),
                     detector_timeout_ms=rule.detector_timeout_ms,
                     on_detector_timeout=rule.on_detector_timeout,
+                    # Only requests are rewritten upstream; a compiled
+                    # response rule redacts stored copies only.
+                    redact_upstream=bool(getattr(rule, "redact_upstream", False))
+                    and target == SensitiveDataTarget.MODEL_REQUEST.value,
                     conditions=[
                         ToolCondition(
                             expression="pii.found == true",
@@ -690,3 +742,52 @@ def merge_model_io_rules(
 ) -> List[ModelIORule]:
     """Hand-written rules first, then compiled ones (first match wins)."""
     return list(stored) + list(compiled)
+
+
+def redact_tool_result(result: Any, detector_config: DetectorConfig) -> Any:
+    """Return the result the agent receives with matches replaced.
+
+    Strings are redacted in place; a ``ToolResult`` keeps its shape with
+    text blocks and structured content rewritten; raw content lists are
+    rebuilt as text blocks.
+    """
+    from fastmcp.tools.tool import ToolResult
+    from mcp.types import TextContent
+
+    from preloop.services.sensitive_data.redact import redact_structure, redact_text
+
+    if result is None:
+        return result
+    if isinstance(result, str):
+        return redact_text(result, detector_config)[0]
+    content = getattr(result, "content", None)
+    if isinstance(content, (list, tuple)):
+        blocks = []
+        for block in content:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                blocks.append(
+                    TextContent(type="text", text=redact_text(text, detector_config)[0])
+                )
+            else:
+                blocks.append(block)
+        structured = getattr(result, "structured_content", None)
+        if isinstance(structured, (dict, list)):
+            structured = redact_structure(structured, detector_config)[0]
+        return ToolResult(
+            content=blocks,
+            structured_content=structured if isinstance(structured, dict) else None,
+            is_error=bool(getattr(result, "is_error", False)),
+        )
+    if isinstance(result, (list, tuple)):
+        rebuilt = []
+        for item in result:
+            text = _block_text(item)
+            if text:
+                rebuilt.append(
+                    TextContent(type="text", text=redact_text(text, detector_config)[0])
+                )
+            else:
+                rebuilt.append(item)  # images, resources: kept unchanged
+        return rebuilt
+    return redact_text(str(result), detector_config)[0]

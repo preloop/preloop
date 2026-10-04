@@ -115,6 +115,9 @@ def replace_sensitive_data_config(
     flag_modified(account, "meta_data")
     db.add(account)
     db.flush()
+    from preloop.services.sensitive_data.storage import invalidate_cache
+
+    invalidate_cache(account_id)
     return config or SensitiveDataConfig()
 
 

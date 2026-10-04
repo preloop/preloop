@@ -367,19 +367,39 @@ def _log_policy_decision_async(
         if not db_factory:
             return
 
-        audit_service.log_policy_decision_async(
-            db_factory=db_factory,
-            account_id=account_id,
-            tool_name=tool_name,
-            action=action,
-            rule_description=rule_description,
-            condition_matched=condition_matched,
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-            correlation_id=correlation_id,
-            extra_details=extra_details,
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+            has_cached_config,
         )
+
+        scope = StorageScope(target="tool.args", tool_name=tool_name)
+
+        def _write(args: Optional[Dict[str, Any]]) -> None:
+            # Stored copy of the arguments: the account's redact rules apply
+            # before the row is written and sealed into the chain (#1123).
+            if args:
+                args = apply_storage_redaction(account_id, args, scope=scope)
+            audit_service.log_policy_decision_async(
+                db_factory=db_factory,
+                account_id=account_id,
+                tool_name=tool_name,
+                action=action,
+                rule_description=rule_description,
+                condition_matched=condition_matched,
+                tool_args=args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+
+        if not tool_args or has_cached_config(account_id):
+            _write(tool_args)
+        else:
+            # A cache miss reads the policy; this can run on the async
+            # evaluator's loop, so move the read and the write off it.
+            submit_off_loop(lambda: _write(tool_args))
     except Exception as e:
         logger.debug(f"Failed to log policy decision to audit: {e}")
 

@@ -279,10 +279,16 @@ class ConditionAction(str, Enum):
     # Model I/O rules only: the call proceeds as with allow, and the match is
     # recorded and sent to the policy owners (#959). Tool conditions reject it.
     NOTIFY = "notify"
+    # Model I/O and sensitive_data rules only: the call proceeds, stored
+    # copies are redacted, and an audit row records counts by type (#1123).
+    # Tool conditions reject it.
+    REDACT = "redact"
 
 
 #: Actions a model I/O rule may use but a tool condition may not.
-MODEL_IO_ONLY_ACTIONS = frozenset({ConditionAction.NOTIFY.value})
+MODEL_IO_ONLY_ACTIONS = frozenset(
+    {ConditionAction.NOTIFY.value, ConditionAction.REDACT.value}
+)
 
 
 class ConditionType(str, Enum):
@@ -716,14 +722,23 @@ TOOL_TARGETS = frozenset(
 MODEL_TARGETS = frozenset(
     {SensitiveDataTarget.MODEL_REQUEST.value, SensitiveDataTarget.MODEL_RESPONSE.value}
 )
+#: Targets whose upstream copy can be rewritten by ``redact_upstream``.
+UPSTREAM_REDACTABLE_TARGETS = frozenset(
+    {
+        SensitiveDataTarget.TOOL_ARGS.value,
+        SensitiveDataTarget.TOOL_RESULT.value,
+        SensitiveDataTarget.MODEL_REQUEST.value,
+    }
+)
 
 #: Actions a sensitive-data rule may take. ``allow`` is not one of them: a
-#: rule exists to react to a match, and ``redact`` arrives with #1123.
+#: rule exists to react to a match.
 SENSITIVE_DATA_RULE_ACTIONS = frozenset(
     {
         ConditionAction.NOTIFY.value,
         ConditionAction.DENY.value,
         ConditionAction.REQUIRE_APPROVAL.value,
+        ConditionAction.REDACT.value,
     }
 )
 
@@ -788,9 +803,21 @@ class SensitiveDataRule(BaseModel):
         None,
         description="Types to scan; default the detectors block types or every type",
     )
-    action: ConditionAction = Field(..., description="notify, deny or require_approval")
+    action: ConditionAction = Field(
+        ..., description="notify, deny, require_approval or redact"
+    )
     approval_workflow: Optional[str] = Field(
         None, description="Approval workflow name for require_approval"
+    )
+    redact_upstream: bool = Field(
+        False,
+        description=(
+            "With action redact, also rewrite what goes upstream: the tool "
+            "arguments sent to the server, the tool result returned to the "
+            "agent, the model request sent to the provider. Default keeps the "
+            "original upstream and redacts stored copies only. Tools that need "
+            "the value break when this is on."
+        ),
     )
     detector_timeout_ms: int = Field(
         500, ge=50, le=30000, description="Hard timeout for detectors on this rule"
@@ -810,6 +837,31 @@ class SensitiveDataRule(BaseModel):
         if not stripped:
             raise ValueError("sensitive_data rule id cannot be empty")
         return stripped
+
+    @model_validator(mode="after")
+    def validate_redact_upstream(self) -> "SensitiveDataRule":
+        """``redact_upstream`` needs the redact action and a rewritable target.
+
+        Upstream rewriting exists for tool arguments, tool results and
+        model requests. A model response reaches the client through the
+        provider adapters and is not rewritten; stored copies still are.
+        """
+        if not self.redact_upstream:
+            return self
+        if self.action_value() != ConditionAction.REDACT.value:
+            raise ValueError(
+                f"sensitive_data rule '{self.id}': redact_upstream requires "
+                "action 'redact'"
+            )
+        if not any(
+            item in UPSTREAM_REDACTABLE_TARGETS for item in self.target_values()
+        ):
+            raise ValueError(
+                f"sensitive_data rule '{self.id}': redact_upstream applies to "
+                f"{sorted(UPSTREAM_REDACTABLE_TARGETS)}; model.response is "
+                "redacted at rest only"
+            )
+        return self
 
     @field_validator("on")
     @classmethod
@@ -911,6 +963,13 @@ class SensitiveDataConfig(BaseModel):
         """True when any enabled rule watches a tool target."""
         return any(rule.has_tool_target() for rule in self.enabled_rules())
 
+    def has_redact_rules(self) -> bool:
+        """True when any enabled rule redacts."""
+        return any(
+            rule.action_value() == ConditionAction.REDACT.value
+            for rule in self.enabled_rules()
+        )
+
 
 class ModerationDetectorConfig(BaseModel):
     """Moderation detector configuration.
@@ -979,6 +1038,14 @@ class ModelIORule(BaseModel):
         min_length=1,
         description="First matching condition wins, same as tools",
     )
+    redact_upstream: bool = Field(
+        False,
+        description=(
+            "With a redact condition on model.request, also rewrite the request "
+            "sent to the provider. Default keeps the original upstream and "
+            "redacts at rest. Not available for model.response."
+        ),
+    )
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -990,6 +1057,17 @@ class ModelIORule(BaseModel):
         if not stripped:
             raise ValueError("model_io rule id cannot be empty")
         return stripped
+
+    @model_validator(mode="after")
+    def validate_redact_upstream_target(self) -> "ModelIORule":
+        """Response bodies are not rewritten upstream; reject a silent no-op."""
+        target = str(getattr(self.target, "value", self.target))
+        if self.redact_upstream and target == ModelIOTarget.RESPONSE.value:
+            raise ValueError(
+                f"model_io rule '{self.id}': redact_upstream is not available for "
+                "model.response; responses are redacted at rest only"
+            )
+        return self
 
 
 def _rule_pii_types(rule: ModelIORule) -> List[str]:

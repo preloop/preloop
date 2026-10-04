@@ -45,6 +45,7 @@ from preloop.services.approval_rule_context import (
     build_rule_context,
 )
 from preloop.services.model_content_detectors import (
+    LEGACY_PII_TYPES,
     detect_injection,
     detect_moderation,
     detect_pii,
@@ -74,6 +75,7 @@ from preloop.services.sensitive_data.policy_store import (
     detector_config_from,
     parse_sensitive_data_config,
 )
+from preloop.services.sensitive_data.redact import redact_structure, redact_text
 from preloop.services.sensitive_data.tool_policy import (
     compile_model_io_rules,
     merge_model_io_rules,
@@ -154,12 +156,35 @@ class ModelIODecision:
     #: Notify rules that matched in this evaluation (#959). They never
     #: change ``action``; a later deny or require_approval still applies.
     notices: List[PolicyNotice] = field(default_factory=list)
+    #: Redact rules that matched (#1123): rule id, counts by type and
+    #: whether the upstream payload is rewritten too. Never blocking.
+    redactions: List["RedactionHit"] = field(default_factory=list)
+
+    def upstream_redaction_types(self) -> List[str]:
+        """Types to strip from the upstream payload, if any hit asks for it."""
+        types: List[str] = []
+        for hit in self.redactions:
+            if hit.redact_upstream:
+                for item in hit.types:
+                    if item not in types:
+                        types.append(item)
+        return types
 
     def to_policy_decision(self) -> PolicyDecision:
         """Adapt to the historical PolicyDecision 3-tuple."""
         return PolicyDecision(
             self.action, None, self.rule_description or "No model I/O rules defined"
         )
+
+
+@dataclass
+class RedactionHit:
+    """One matching redact condition."""
+
+    rule_id: str
+    types: List[str]
+    counts: Dict[str, int]
+    redact_upstream: bool = False
 
 
 def load_model_io_rules(db: Session, account_id: Any) -> List[ModelIORule]:
@@ -450,6 +475,20 @@ def _pii_types_for_rule(rule: ModelIORule) -> Optional[List[str]]:
     return list(detectors.pii.types)
 
 
+def _effective_pii_types(
+    rule: ModelIORule, detector_config: Optional[DetectorConfig]
+) -> List[str]:
+    """The types a rule scans: its own list, else the account default, else
+    the legacy three. Mirrors the resolution inside ``detect_pii`` so a
+    redaction hit never carries ``None``."""
+    explicit = _pii_types_for_rule(rule)
+    if explicit:
+        return explicit
+    if detector_config is not None and detector_config.types:
+        return list(detector_config.types)
+    return list(LEGACY_PII_TYPES)
+
+
 def _moderation_backend_for_rule(rule: ModelIORule) -> str:
     detectors = rule.detectors
     if detectors is None or detectors.moderation in (None, False, True):
@@ -557,6 +596,9 @@ def _build_bindings(
 
 
 NOTIFY_ACTION = ConditionAction.NOTIFY.value
+REDACT_ACTION = ConditionAction.REDACT.value
+#: Actions that never block the call.
+NON_BLOCKING_ACTIONS = frozenset({NOTIFY_ACTION, REDACT_ACTION})
 
 
 def _condition_action(condition: Any) -> str:
@@ -565,14 +607,15 @@ def _condition_action(condition: Any) -> str:
 
 
 def is_notify_only(rule: ModelIORule) -> bool:
-    """True when every condition of ``rule`` uses the ``notify`` action.
+    """True when every condition of ``rule`` is non-blocking (notify, redact).
 
     Such a rule can never block a call: detector timeouts and evaluation
     errors skip it instead of failing closed, and a response stream it
     watches is not buffered.
     """
     return bool(rule.conditions) and all(
-        _condition_action(condition) == NOTIFY_ACTION for condition in rule.conditions
+        _condition_action(condition) in NON_BLOCKING_ACTIONS
+        for condition in rule.conditions
     )
 
 
@@ -665,10 +708,12 @@ def evaluate_model_io(
         )
 
     notices: List[PolicyNotice] = []
+    redactions: List[RedactionHit] = []
     rules_by_id = {rule.id: rule for rule in matching}
 
     def finish(decision: ModelIODecision) -> ModelIODecision:
         decision.notices = notices
+        decision.redactions = redactions
         _emit_notices(notices, rules_by_id)
         return decision
 
@@ -740,6 +785,11 @@ def evaluate_model_io(
                 # First matching condition of this rule is used; move on
                 # to the next rule.
                 break
+            if action == REDACT_ACTION:
+                hit = _redaction_hit(rule, text, detector_config)
+                redactions.append(hit)
+                _audit_redaction(account_id, user_id, target, digest, hit, rule)
+                break
             decision = ModelIODecision(
                 action=action,
                 rule_id=rule.id,
@@ -764,11 +814,139 @@ def evaluate_model_io(
                 text_sha256=digest,
             )
         )
-    return ModelIODecision(
-        action="allow",
-        rule_description="No rules matched (default allow)",
-        text_sha256=digest,
+    if redactions:
+        return finish(
+            ModelIODecision(
+                action=REDACT_ACTION,
+                rule_id=redactions[0].rule_id,
+                rule_description=f"Redact rule matched: {redactions[0].rule_id}",
+                text_sha256=digest,
+            )
+        )
+    return finish(
+        ModelIODecision(
+            action="allow",
+            rule_description="No rules matched (default allow)",
+            text_sha256=digest,
+        )
     )
+
+
+def _redaction_hit(
+    rule: ModelIORule, text: str, detector_config: Optional[DetectorConfig]
+) -> RedactionHit:
+    """Counts by type for one redact condition. The text itself is dropped."""
+    types = _effective_pii_types(rule, detector_config)
+    config = (detector_config or DetectorConfig()).with_types(types)
+    _redacted, counts = redact_text(text, config)
+    return RedactionHit(
+        rule_id=rule.id,
+        types=types,
+        counts=counts,
+        redact_upstream=bool(getattr(rule, "redact_upstream", False)),
+    )
+
+
+def _audit_redaction(
+    account_id: Optional[Any],
+    user_id: Optional[Any],
+    target: str,
+    digest: str,
+    hit: RedactionHit,
+    rule: ModelIORule,
+) -> None:
+    """One audit row per redact hit: rule id and counts by type, never values."""
+    account_uuid = _uuid_or_none(account_id)
+    if account_uuid is None:
+        return
+    try:
+        _log_policy_decision_async(
+            account_id=account_uuid,
+            tool_name=target,
+            action=REDACT_ACTION,
+            rule_description=rule.description or f"Redact rule matched: {rule.id}",
+            condition_matched=rule.id,
+            tool_args={"text_sha256": digest},
+            user_id=_uuid_or_none(user_id),
+            extra_details={
+                "rule_id": rule.id,
+                "redaction_counts": dict(hit.counts),
+                "redact_upstream": hit.redact_upstream,
+                "text_sha256": digest,
+            },
+        )
+    except Exception:  # noqa: BLE001 - audit must not change the decision
+        logger.warning("Redaction audit failed", exc_info=True)
+
+
+def redact_request_upstream(
+    messages: Optional[Sequence[Any]],
+    payload: Optional[Dict[str, Any]],
+    types: Sequence[str],
+    detector_config: Optional[DetectorConfig],
+) -> Dict[str, int]:
+    """Rewrite request text in place so the provider receives redacted content.
+
+    String message contents, text blocks inside list contents and a
+    Responses-API ``input`` string are rewritten; everything else is left
+    alone. Returns counts by type.
+    """
+    if not types:
+        return {}
+    config = (detector_config or DetectorConfig()).with_types(list(types))
+    totals: Dict[str, int] = {}
+
+    def add(counts: Dict[str, int]) -> None:
+        for name, count in counts.items():
+            totals[name] = totals.get(name, 0) + count
+
+    # Mirror canonical_request_text / _content_to_text: bare-string messages
+    # and bare-string content items are scanned there, so they are rewritten
+    # here too.
+    if isinstance(messages, list):
+        for index, message in enumerate(messages):
+            if isinstance(message, str):
+                redacted, counts = redact_text(message, config)
+                if counts:
+                    messages[index] = redacted
+                    add(counts)
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            redacted, counts = redact_text(content, config)
+            if counts:
+                message["content"] = redacted
+                add(counts)
+        elif isinstance(content, list):
+            for position, block in enumerate(content):
+                if isinstance(block, str):
+                    redacted, counts = redact_text(block, config)
+                    if counts:
+                        content[position] = redacted
+                        add(counts)
+                elif isinstance(block, dict):
+                    for key in ("text", "content"):
+                        value = block.get(key)
+                        if isinstance(value, str):
+                            redacted, counts = redact_text(value, config)
+                            if counts:
+                                block[key] = redacted
+                                add(counts)
+    if isinstance(payload, dict):
+        raw_input = payload.get("input")
+        if isinstance(raw_input, str):
+            redacted, counts = redact_text(raw_input, config)
+            if counts:
+                payload["input"] = redacted
+                add(counts)
+        elif isinstance(raw_input, list):
+            redacted_input, counts = redact_structure(raw_input, config)
+            if counts:
+                payload["input"] = redacted_input
+                add(counts)
+    return totals
 
 
 def _audit_decision(
@@ -1008,8 +1186,8 @@ def _apply_decision(
     provider: str,
     before_provider: bool,  # noqa: ARG001 - reserved for audit context
 ) -> None:
-    if decision.action in ("allow", NOTIFY_ACTION):
-        # notify proceeds exactly like allow: no hold, no approval request.
+    if decision.action in ("allow", NOTIFY_ACTION, REDACT_ACTION):
+        # notify and redact proceed exactly like allow: no hold, no approval.
         return
     if decision.action == "require_approval":
         approved = _await_model_io_hold(
@@ -1126,6 +1304,11 @@ def enforce_request_policy(
         provider=provider,
         before_provider=True,
     )
+    upstream_types = decision.upstream_redaction_types()
+    if upstream_types:
+        redact_request_upstream(
+            messages, payload, upstream_types, _gateway_detector_config(gateway)
+        )
 
 
 def enforce_response_policy(
