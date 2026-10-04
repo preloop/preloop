@@ -9696,6 +9696,28 @@ class OpenAIGatewayService:
         )
         observed_at = usage_row.timestamp
 
+        late_execution_id = runtime_context.get("flow_execution_id")
+        if late_execution_id:
+            # A call recorded after the run finished must move the stored
+            # rollup too, or /cost/by-issue lags the execution page (#1275).
+            try:
+                from preloop.services.execution_metrics import (
+                    sync_finished_execution_cost_rollup,
+                )
+
+                sync_finished_execution_cost_rollup(
+                    self.db,
+                    late_execution_id,
+                    account_id=self.auth_context.account_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not refresh cost rollup for execution %s",
+                    late_execution_id,
+                    exc_info=True,
+                )
+                self.db.rollback()
+
         if cost_source == "unpriced" and (prompt_tokens or completion_tokens):
             usage_accounting_requested = (
                 _is_openrouter_upstream(ai_model)

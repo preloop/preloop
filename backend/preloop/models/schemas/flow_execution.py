@@ -27,8 +27,13 @@ class ExecutionResumeTotals(BaseModel):
     """Combined tokens and cost for a publishing execution and its repairs."""
 
     total_tokens: int = Field(0, description="Summed tokens across the resume chain")
-    estimated_cost: float = Field(
-        0.0, description="Summed estimated cost across the resume chain"
+    estimated_cost: Optional[float] = Field(
+        0.0,
+        description=(
+            "Summed estimated cost across the resume chain. Null when a member "
+            "spent gateway tokens that could not be priced, matching that "
+            "member's own null (unknown, not free) cost."
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)
@@ -67,6 +72,13 @@ class ExecutionModelProjection(BaseModel):
             "Tokens this execution's gateway traffic consumed, split by "
             "direction and cache participation. Null when the run has no "
             "attributable gateway usage, which is not the same as zero."
+        ),
+    )
+    cost_priced_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "When the usage rows behind ``estimated_cost`` were last priced "
+            "or repriced. Null when the run has no attributable gateway usage."
         ),
     )
     resume_of: Optional[uuid.UUID] = Field(

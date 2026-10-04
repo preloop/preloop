@@ -22097,6 +22097,14 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        cost_priced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cost Priced At
+          description: When the usage rows behind ``estimated_cost`` were last priced
+            or repriced. Null when the run has no attributable gateway usage.
         resume_of:
           anyOf:
           - type: string
@@ -25057,9 +25065,13 @@ components:
           description: Summed tokens across the resume chain
           default: 0
         estimated_cost:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Estimated Cost
-          description: Summed estimated cost across the resume chain
+          description: Summed estimated cost across the resume chain. Null when a
+            member spent gateway tokens that could not be priced, matching that member's
+            own null (unknown, not free) cost.
           default: 0.0
       type: object
       title: ExecutionResumeTotals
@@ -25156,6 +25168,14 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        cost_priced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cost Priced At
+          description: When the usage rows behind ``estimated_cost`` were last priced
+            or repriced. Null when the run has no attributable gateway usage.
         resume_of:
           anyOf:
           - type: string
@@ -25703,6 +25723,14 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        cost_priced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cost Priced At
+          description: When the usage rows behind ``estimated_cost`` were last priced
+            or repriced. Null when the run has no attributable gateway usage.
         resume_of:
           anyOf:
           - type: string
@@ -25910,6 +25938,14 @@ components:
           description: Tokens this execution's gateway traffic consumed, split by
             direction and cache participation. Null when the run has no attributable
             gateway usage, which is not the same as zero.
+        cost_priced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cost Priced At
+          description: When the usage rows behind ``estimated_cost`` were last priced
+            or repriced. Null when the run has no attributable gateway usage.
         resume_of:
           anyOf:
           - type: string

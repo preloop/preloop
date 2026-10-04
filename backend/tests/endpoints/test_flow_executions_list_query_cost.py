@@ -395,31 +395,79 @@ def test_models_used_matches_the_old_aggregate(db_session, test_user, seeded):
     )
 
 
-def test_resume_chain_totals_match_the_old_aggregate(db_session, test_user, seeded):
+def _chain_members(db, account_id, roots, root_texts):
+    """Chain membership, unaggregated, by the original JSONB-path lookup."""
+    resume_root_col = models.FlowExecution.trigger_event_details["_resume"][
+        "resume_root"
+    ].astext
+    chain_key = func.coalesce(resume_root_col, cast(models.FlowExecution.id, String))
+    return db.execute(
+        select(chain_key, models.FlowExecution.id, models.FlowExecution.total_tokens)
+        .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+        .where(
+            models.Flow.account_id == account_id,
+            or_(
+                models.FlowExecution.id.in_(list(roots)),
+                resume_root_col.in_(root_texts),
+            ),
+        )
+    ).all()
+
+
+def test_resume_chain_totals_sum_each_members_displayed_figure(
+    db_session, test_user, seeded
+):
+    """Chain totals equal the sum of the per-run figures the list shows (#1275).
+
+    The reference is independent of the statement under test: membership by
+    the JSONB path, each member's figure from ``get_execution_totals`` (the
+    list's own projection, replay traffic excluded, stored rollup fallback).
+    """
+    from preloop.services.execution_metrics import get_execution_totals
+
     roots = {execution.id for execution in seeded["executions"]}
     root_texts = [str(root) for root in roots]
-
-    def normalize(rows):
-        return sorted(
-            (str(key), int(tokens), float(cost), int(members))
-            for key, tokens, cost, members in rows
+    # Membership agrees with the original aggregate.
+    old_members = {
+        str(key): int(members)
+        for key, _, _, members in _old_chain_totals(
+            db_session, test_user.account_id, roots, root_texts
         )
+    }
+    assert any(count == 4 for count in old_members.values())
 
-    expected = normalize(
-        _old_chain_totals(db_session, test_user.account_id, roots, root_texts)
-    )
-    assert any(members == 4 for *_, members in expected)
-    assert (
-        normalize(
-            crud_flow_execution.get_resume_chain_totals(
+    member_rows = _chain_members(db_session, test_user.account_id, roots, root_texts)
+    per_run = get_execution_totals(db_session, [row[1] for row in member_rows])
+    expected: Dict[str, List[Any]] = {}
+    for chain_root, execution_id, stored_tokens in member_rows:
+        total = per_run[str(execution_id)]
+        usage = total["token_usage"]
+        bucket = expected.setdefault(str(chain_root), [0, 0.0, 0, 0])
+        bucket[0] += usage["total_tokens"] if usage else int(stored_tokens or 0)
+        bucket[1] += float(total["estimated_cost"] or 0)
+        bucket[2] += 1
+        if total["has_gateway_usage"] and total["estimated_cost"] is None:
+            bucket[3] += 1
+
+    actual = {
+        str(key): (int(tokens), float(cost), int(members), int(unpriced))
+        for key, tokens, cost, members, unpriced in (
+            crud_flow_execution.get_resume_chain_cost_totals(
                 db_session,
                 account_id=test_user.account_id,
                 roots=list(roots),
                 root_texts=root_texts,
             )
         )
-        == expected
-    )
+    }
+    assert {key: row[2] for key, row in actual.items()} == old_members
+    assert set(actual) == set(expected)
+    for key, (tokens, cost, members, unpriced) in actual.items():
+        exp_tokens, exp_cost, exp_members, exp_unpriced = expected[key]
+        assert tokens == exp_tokens
+        assert cost == pytest.approx(exp_cost)
+        assert members == exp_members
+        assert unpriced == exp_unpriced
 
 
 def test_window_stats_match_the_old_aggregate(db_session, seeded):

@@ -111,7 +111,8 @@ interface FlowExecution {
    */
   resume_totals?: {
     total_tokens: number;
-    estimated_cost: number;
+    /** Null when a member's usage could not be priced (unknown, not free). */
+    estimated_cost: number | null;
   } | null;
   /**
    * Short human-readable description of what triggered this execution, e.g.

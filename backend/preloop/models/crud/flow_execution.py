@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from sqlalchemy import (
     ColumnElement,
+    Numeric,
     String,
     and_,
     cast,
@@ -1572,7 +1573,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         return query
 
-    def get_resume_chain_totals(
+    def get_resume_chain_cost_totals(
         self,
         db: Session,
         *,
@@ -1580,7 +1581,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         roots: List[uuid.UUID],
         root_texts: List[str],
     ) -> List[Any]:
-        """Tokens, cost and member count per resume chain root.
+        """Chain totals summed from each member's displayed per-run figures.
 
         A chain is the publishing execution (``id`` in ``roots``) plus every
         repair turn whose ``_resume.resume_root`` names it. Both halves are
@@ -1590,19 +1591,34 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         match it to that index; written any other way the lookup reads (and
         detoasts) the trigger payload of every execution in the account.
 
+        Each member
+        contributes the figure the list and the execution page show for it:
+        the sum of its attributed gateway usage rows (``model_gateway``,
+        replay traffic excluded, rounded like
+        ``execution_metrics.get_execution_totals``) when it has any, the
+        stored rollup otherwise. The stored rollup alone lags usage priced
+        after the run, which is how the chain total came to match neither the
+        list nor the header (issue #1275). One statement, so the executions
+        list keeps its query budget.
+
         Returns:
-            Rows of ``(chain_root, total_tokens, estimated_cost, members)``.
+            Rows of ``(chain_root, total_tokens, estimated_cost, members,
+            unpriced)``; ``unpriced`` counts members whose gateway usage could
+            not be priced at all.
         """
         if not roots and not root_texts:
             return []
+        from preloop.models.crud.api_usage import exclude_replay_usage_condition
+        from preloop.models.models.api_usage import ApiUsage
+
         resume_root = literal_column(RESUME_ROOT_SQL, type_=String)
         chain_key = func.coalesce(resume_root, cast(FlowExecution.id, String))
-        return db.execute(
+        members = (
             select(
                 chain_key.label("chain_root"),
-                func.coalesce(func.sum(FlowExecution.total_tokens), 0),
-                func.coalesce(func.sum(FlowExecution.estimated_cost), 0),
-                func.count(FlowExecution.id),
+                FlowExecution.id.label("execution_id"),
+                FlowExecution.total_tokens.label("stored_tokens"),
+                FlowExecution.estimated_cost.label("stored_cost"),
             )
             .join(Flow, Flow.id == FlowExecution.flow_id)
             .where(
@@ -1612,7 +1628,52 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     resume_root.in_(list(root_texts)),
                 ),
             )
-            .group_by(chain_key)
+            .subquery()
+        )
+        usage = (
+            select(
+                ApiUsage.flow_execution_id.label("execution_id"),
+                func.count(ApiUsage.id).label("requests"),
+                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("tokens"),
+                func.round(cast(func.sum(ApiUsage.estimated_cost), Numeric), 4).label(
+                    "cost"
+                ),
+            )
+            .where(
+                ApiUsage.action_type == "model_gateway",
+                ApiUsage.flow_execution_id.in_(select(members.c.execution_id)),
+                exclude_replay_usage_condition(),
+            )
+            .group_by(ApiUsage.flow_execution_id)
+            .subquery()
+        )
+        has_usage = func.coalesce(usage.c.requests, 0) > 0
+        member_tokens = case(
+            (has_usage, usage.c.tokens),
+            else_=func.coalesce(members.c.stored_tokens, 0),
+        )
+        member_cost = case(
+            (has_usage, func.coalesce(usage.c.cost, 0)),
+            else_=func.coalesce(members.c.stored_cost, 0),
+        )
+        # A member with gateway usage none of which could be priced shows
+        # "Not priced" on its own row; the chain cannot claim a dollar figure.
+        unpriced_member = case(
+            (and_(has_usage, usage.c.cost.is_(None)), 1),
+            else_=0,
+        )
+        return db.execute(
+            select(
+                members.c.chain_root,
+                func.coalesce(func.sum(member_tokens), 0),
+                func.coalesce(func.sum(member_cost), 0),
+                func.count(members.c.execution_id),
+                func.coalesce(func.sum(unpriced_member), 0).label("unpriced"),
+            )
+            .select_from(
+                members.outerjoin(usage, usage.c.execution_id == members.c.execution_id)
+            )
+            .group_by(members.c.chain_root)
         ).all()
 
     def get_by_statuses(

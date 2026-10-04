@@ -2388,6 +2388,82 @@ describe('FlowExecutionView', () => {
     await stopping;
     expect((element as any).execution.status).to.equal('STOPPED');
   });
+  it('shows the server cost for a finished run, matching the list and chain total (#1275)', async () => {
+    // The per-call event snapshots sum to twice the server figure. A finished
+    // run's header must show the server's estimated_cost, which is what the
+    // executions list and the chain total read.
+    const gatewayEvent = (id: string) => ({
+      id,
+      execution_id: 'exec-cost',
+      timestamp: '2026-03-09T10:01:00Z',
+      type: 'model_gateway_call',
+      payload: {
+        api_usage_id: id,
+        model_alias: 'openai/gpt-5',
+        outcome: 'success',
+        estimated_cost: 0.37,
+        total_tokens: 1000,
+      },
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      if (url.includes('/flows/executions/exec-cost/gateway-events')) {
+        return json({
+          logs: [gatewayEvent('usage-a'), gatewayEvent('usage-b')],
+          source: 'database',
+          has_more: false,
+        });
+      }
+      if (url.includes('/flows/executions/exec-cost/metrics')) {
+        return json({
+          tool_calls: 0,
+          api_requests: 2,
+          token_usage: { total_tokens: 2000 },
+          estimated_cost: 0.37,
+          has_pricing: true,
+        });
+      }
+      if (url.endsWith('/flows/executions/exec-cost')) {
+        return json({
+          id: 'exec-cost',
+          flow_id: 'flow-1',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-09T10:00:00Z',
+          end_time: '2026-03-09T10:02:00Z',
+          estimated_cost: 0.37,
+          cost_priced_at: '2026-03-10T00:00:00Z',
+          resume_of: 'exec-root-0000',
+          resume_totals: { total_tokens: 4000, estimated_cost: 0.78 },
+        });
+      }
+      if (url.endsWith('/api/v1/flows/flow-1')) {
+        return json({ id: 'flow-1', name: 'Cost Flow', agent_type: 'codex' });
+      }
+      return json({ logs: [], items: [], total: 0 });
+    });
+
+    const element = await load('exec-cost');
+    await waitUntil(
+      () => (element as any).gatewayEventsLoaded,
+      'gateway events did not load'
+    );
+    await element.updateComplete;
+    expect(stripValue(element, 'strip-cost')).to.contain('$0.37');
+    expect(stripValue(element, 'strip-cost')).to.not.contain('$0.74');
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="strip-cost-priced-at"]')
+    ).to.exist;
+    const line = element.shadowRoot!.querySelector(
+      '[data-testid="resume-line"]'
+    ) as HTMLElement;
+    expect(line.textContent).to.contain('$0.78');
+  });
+
   describe('delegation tree', () => {
     const treePanel = (element: FlowExecutionView) =>
       element.shadowRoot!.querySelector('preloop-execution-tree') as any;
