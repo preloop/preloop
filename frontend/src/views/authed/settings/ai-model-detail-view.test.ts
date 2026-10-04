@@ -1581,8 +1581,19 @@ describe('AIModelDetailView', () => {
     search.value = 'timeout';
     search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
 
+    // Wait for the interactions request itself. Any other call that lands
+    // during the debounce (a late price or failure-window read) used to
+    // satisfy a count of "some new API call" before the search was sent,
+    // and the assertion then saw zero search requests.
+    const searchCalls = () =>
+      apiCalls()
+        .slice(callsAfterLoad)
+        .filter(
+          (url) =>
+            url.includes('/interactions') && url.includes('query=timeout')
+        );
     await waitUntil(
-      () => apiCalls().length > callsAfterLoad,
+      () => searchCalls().length >= 1,
       'the debounced search never reached the server',
       { timeout: 3000 }
     );
@@ -1596,10 +1607,11 @@ describe('AIModelDetailView', () => {
     const newCalls = apiCalls().slice(callsAfterLoad);
     // A late price or failure-window read can land in this same pause. The
     // search itself is one interactions request and does not reload the page.
-    const searchCalls = newCalls.filter((url) => url.includes('/interactions'));
-    expect(searchCalls).to.have.length(1);
-    expect(searchCalls[0]).to.contain('/api/v1/ai-models/model-1/interactions');
-    expect(searchCalls[0]).to.contain('query=timeout');
+    expect(searchCalls()).to.have.length(1);
+    expect(searchCalls()[0]).to.contain(
+      '/api/v1/ai-models/model-1/interactions'
+    );
+    expect(searchCalls()[0]).to.contain('query=timeout');
     expect(
       newCalls.filter(
         (url) => url.includes('/summary') || url.includes('/runtime-sessions')
