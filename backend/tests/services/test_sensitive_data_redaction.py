@@ -142,6 +142,24 @@ def test_redact_respects_type_selection() -> None:
 
 def test_redact_action_accepted_for_sensitive_and_model_rules_only() -> None:
     assert _config(_redact_rule()).has_redact_rules()
+    assert not _config(_redact_rule(action="deny")).has_redact_rules()
+
+
+def test_storage_skips_detection_without_redact_rules(mocker) -> None:
+    """The write path uses ``has_redact_rules`` and skips detection when it is false."""
+    config = _config(_redact_rule())
+    mocker.patch.object(SensitiveDataConfig, "has_redact_rules", return_value=False)
+    detect = mocker.patch("preloop.services.sensitive_data.storage.redact_structure")
+    original = {"note": SAMPLE}
+    redacted, counts, rules = redact_for_storage(
+        uuid.uuid4(),
+        original,
+        scope=StorageScope(target="tool.args"),
+        config=config,
+    )
+    assert redacted == original
+    assert counts == {} and rules == []
+    detect.assert_not_called()
     ModelIORule(
         id="r",
         target="model.request",

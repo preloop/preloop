@@ -186,8 +186,12 @@ def redact_for_storage(
         return obj, {}, []
     if config is None:
         config = resolve_config(account_id)
+    # Cheap check before scope matching and detection. Accounts with no
+    # redact rules are the common case on every storage write.
+    if config is None or not config.has_redact_rules():
+        return obj, {}, []
     rules = redact_rules_for(config, scope)
-    if not rules or config is None:
+    if not rules:
         return obj, {}, []
     try:
         redacted, counts = redact_structure(obj, detector_config_for(config, rules))
