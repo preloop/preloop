@@ -77,8 +77,13 @@ class OpenHandsAgent(ContainerAgentExecutor):
         openhands_agent_type = agent_config.get("agent_type", "CodeActAgent")
         openhands_context["openhands_agent_type"] = openhands_agent_type
 
-        # Set max iterations
-        max_iterations = agent_config.get("max_iterations", 10)
+        # Set max iterations. An explicit agent_config.max_iterations wins;
+        # otherwise the flow's per-run turn limit (agent_config.limits
+        # .max_turns, which the gateway also enforces) caps OpenHands' own
+        # loop so it stops cleanly instead of being refused mid-run.
+        limits = agent_config.get("limits")
+        max_turns = limits.get("max_turns") if isinstance(limits, dict) else None
+        max_iterations = agent_config.get("max_iterations") or max_turns or 10
         openhands_context["max_iterations"] = max_iterations
 
         self.logger.info(

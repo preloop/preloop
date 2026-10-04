@@ -1503,6 +1503,49 @@ class FlowExecutionLimits(BaseModel):
     )
 
 
+#: Top-level flow fields that are stored as ``agent_config.limits`` keys.
+#: The console's flow form edits a per-run spend limit and an iteration
+#: limit; the gateway enforces the ``limits`` keys on every request of a run.
+FLOW_LIMIT_FIELDS: Dict[str, str] = {
+    "max_budget": "max_usd",
+    "max_iterations": "max_turns",
+}
+
+
+def apply_flow_limit_fields(
+    agent_config: Optional[Dict[str, Any]], values: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return a copy of ``agent_config`` with flow limit fields folded in.
+
+    Args:
+        agent_config: The agent configuration to merge onto (not mutated).
+        values: Limit fields the caller set, by top-level name
+            (``max_budget``, ``max_iterations``). A ``None`` value clears that
+            limit; a field absent from ``values`` leaves it as stored.
+
+    Returns:
+        The merged agent configuration. ``limits`` is dropped entirely when
+        no limit is left, so "no limits" has one representation.
+    """
+    merged: Dict[str, Any] = dict(agent_config or {})
+    limits: Dict[str, Any] = dict(merged.get("limits") or {})
+    for field_name, limit_key in FLOW_LIMIT_FIELDS.items():
+        if field_name not in values:
+            continue
+        value = values[field_name]
+        if value is None:
+            limits.pop(limit_key, None)
+        else:
+            limits[limit_key] = value
+    if limits:
+        merged["limits"] = FlowExecutionLimits.model_validate(limits).model_dump(
+            exclude_none=True
+        )
+    else:
+        merged.pop("limits", None)
+    return merged
+
+
 class FlowBase(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
@@ -1600,6 +1643,35 @@ class FlowBase(BaseModel):
             "notifications."
         ),
     )
+    # Per-run limits as the console's flow form edits them. They are stored
+    # as agent_config.limits (max_usd / max_turns), which the model gateway
+    # enforces, so they are excluded from model_dump() and never reach the
+    # ORM as columns. FlowResponse reads them back from agent_config.
+    max_budget: Optional[float] = Field(
+        default=None,
+        gt=0,
+        le=1_000_000,
+        exclude=True,
+        description=(
+            "Spend limit for one execution, in USD (estimated cost). Stored "
+            "as agent_config.limits.max_usd: the gateway refuses further "
+            "model requests once the run has reached it and the execution "
+            "fails as budget exceeded. Null clears the limit; unset leaves it "
+            "unchanged."
+        ),
+    )
+    max_iterations: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=1_000_000,
+        exclude=True,
+        description=(
+            "Maximum model requests (agent iterations) for one execution. "
+            "Stored as agent_config.limits.max_turns and enforced by the "
+            "gateway; OpenHands also uses it for its own iteration cap. Null "
+            "clears the limit; unset leaves it unchanged."
+        ),
+    )
 
     @field_validator("review_instructions")
     @classmethod
@@ -1653,6 +1725,26 @@ class FlowBase(BaseModel):
         """Reject duplicate allowlist entries and an oversized list."""
         return validate_callable_flows_shape(v)
 
+    @model_validator(mode="after")
+    def fold_limit_fields_into_agent_config(self):
+        """Store max_budget / max_iterations as agent_config.limits keys.
+
+        Only for a payload that carries an agent_config: an update without
+        one is merged onto the stored configuration by the endpoint, since
+        replacing agent_config here would drop everything else in it. The
+        explicit fields win over limits sent in the same agent_config.
+        """
+        if isinstance(self, FlowResponse):
+            return self
+        values = {
+            name: getattr(self, name)
+            for name in FLOW_LIMIT_FIELDS
+            if name in self.model_fields_set
+        }
+        if values and self.agent_config is not None:
+            self.agent_config = apply_flow_limit_fields(self.agent_config, values)
+        return self
+
 
 class FlowCreate(FlowBase):
     name: str
@@ -1689,8 +1781,25 @@ class FlowResponse(FlowBase):
     # Computed schedule state for schedule-triggered flows (read-only)
     schedule_state: Optional[Dict[str, Any]] = None
     ai_model_name: Optional[str] = None
+    # Read back from agent_config.limits (the stored, enforced values), so a
+    # client edits and displays the same numbers the gateway checks.
+    max_budget: Optional[float] = None
+    max_iterations: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def read_limit_fields_from_agent_config(self):
+        """Fill max_budget / max_iterations from agent_config.limits."""
+        limits = (
+            (self.agent_config or {}).get("limits")
+            if isinstance(self.agent_config, dict)
+            else None
+        )
+        limits = limits if isinstance(limits, dict) else {}
+        self.max_budget = limits.get("max_usd")
+        self.max_iterations = limits.get("max_turns")
+        return self
 
     @field_serializer("webhook_config", return_type=Optional[WebhookConfigResponse])
     def redact_employee_secret(

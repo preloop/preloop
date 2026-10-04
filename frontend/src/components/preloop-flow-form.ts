@@ -1316,6 +1316,30 @@ export class PreloopFlowForm extends LitElement {
       }
     }
 
+    const maxBudget = this.flow.max_budget ?? null;
+    if (
+      maxBudget !== null &&
+      (!Number.isFinite(maxBudget) || maxBudget <= 0 || maxBudget > 1_000_000)
+    ) {
+      await this.failField(
+        '[data-field="max_budget"]',
+        'Spend limit per run must be more than $0 (up to $1,000,000), or blank for no limit.'
+      );
+      return;
+    }
+    const maxIterations = this.flow.max_iterations ?? null;
+    if (
+      maxIterations !== null &&
+      (!Number.isInteger(maxIterations) ||
+        maxIterations < 1 ||
+        maxIterations > 1_000_000)
+    ) {
+      await this.failField(
+        '[data-field="max_iterations"]',
+        'Maximum model calls per run must be a whole number of at least 1, or blank for no limit.'
+      );
+      return;
+    }
     const timeoutSeconds = this.flow.timeout_seconds ?? null;
     if (
       timeoutSeconds !== null &&
@@ -1390,8 +1414,16 @@ export class PreloopFlowForm extends LitElement {
         // Explicit null clears a saved override and restores the deployment default.
         timeout_seconds: timeoutSeconds,
         approval_window_seconds: approvalWindowSeconds,
-        max_iterations: this.flow.max_iterations || undefined,
-        max_budget: this.flow.max_budget || undefined,
+        // Per-run limits, stored as agent_config.limits and enforced by the
+        // gateway. Sent only when this form holds the field: blank (null)
+        // clears the limit, and a fixture that never loaded it leaves the
+        // stored value alone.
+        ...('max_iterations' in this.flow
+          ? { max_iterations: this.flow.max_iterations ?? null }
+          : {}),
+        ...('max_budget' in this.flow
+          ? { max_budget: this.flow.max_budget ?? null }
+          : {}),
         is_enabled: this.flow.is_enabled ?? true,
         runner_pool: this.normalizedFlowRunnerPool(),
         // Sent only when this form has the field. An unrelated fixture that
@@ -4276,17 +4308,31 @@ export class PreloopFlowForm extends LitElement {
 
             <sl-input
               type="number"
-              label="Maximum iterations"
-              .value=${this.flow.max_iterations || '30'}
-              @sl-input=${(e: Event) =>
-                this.handleInputChange('max_iterations', e)}
+              label="Spend limit per run (USD)"
+              data-field="max_budget"
+              min="0.01"
+              step="0.01"
+              placeholder="No limit"
+              help-text="The run stops when its estimated model spend reaches this amount. Leave blank for no limit."
+              .value=${this.flow.max_budget == null ? '' : String(this.flow.max_budget)}
+              @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
             ></sl-input>
 
             <sl-input
               type="number"
-              label="Token budget ($)"
-              .value=${this.flow.max_budget || '10'}
-              @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
+              label="Maximum model calls per run"
+              data-field="max_iterations"
+              min="1"
+              step="1"
+              placeholder="No limit"
+              help-text="The run stops after this many model requests (agent iterations). Leave blank for no limit."
+              .value=${
+                this.flow.max_iterations == null
+                  ? ''
+                  : String(this.flow.max_iterations)
+              }
+              @sl-input=${(e: Event) =>
+                this.handleInputChange('max_iterations', e)}
             ></sl-input>
           </div>
         </sl-card>

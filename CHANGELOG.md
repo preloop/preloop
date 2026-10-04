@@ -455,6 +455,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A flow's spend limit and iteration limit are enforced.** The flow form
+  sent `max_budget` and `max_iterations`, which the API silently dropped, so
+  a flow saved with "$5 per run" had no limit. The API now stores them as the
+  gateway-enforced `agent_config.limits.max_usd` / `max_turns`, returns them
+  on every flow read, and clears one on `null`. The form shows no limit as
+  blank (it displayed 30 and $10 that were never applied), validates the
+  values, and OpenHands uses the turn limit as its own iteration cap.
 - **Console UX fixes from a full review.** Per-agent and per-model limits
   can be created again (a duplicated template binding emptied the subject
   picker). A live update can no longer move which request a keyboard "A"
