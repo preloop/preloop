@@ -30,6 +30,63 @@ describe('ViewHeader', () => {
     );
   });
 
+  // The test runner does not load the Shoelace theme, so its spacing tokens
+  // are undefined and every gap collapses to zero. Define the ones the
+  // header uses with the theme's values for the spacing tests.
+  const SPACING_TOKENS: Record<string, string> = {
+    '--sl-spacing-2x-small': '0.25rem',
+    '--sl-spacing-x-small': '0.5rem',
+    '--sl-spacing-small': '0.75rem',
+    '--sl-spacing-medium': '1rem',
+    '--sl-spacing-large': '1.25rem',
+  };
+  const withThemeSpacing = () => {
+    for (const [name, value] of Object.entries(SPACING_TOKENS)) {
+      document.documentElement.style.setProperty(name, value);
+    }
+  };
+  afterEach(() => {
+    for (const name of Object.keys(SPACING_TOKENS)) {
+      document.documentElement.style.removeProperty(name);
+    }
+  });
+
+  it('keeps the description right under the title, not a section away', async () => {
+    withThemeSpacing();
+    const el = (await fixture(
+      html`<view-header
+        headerText="Cost"
+        description="Understand gateway spend by agent, tool and session."
+      ></view-header>`
+    )) as ViewHeader;
+
+    const header = el.shadowRoot?.querySelector('.header') as HTMLElement;
+    const description = el.shadowRoot?.querySelector(
+      '.description'
+    ) as HTMLElement;
+    const gap =
+      description.getBoundingClientRect().top -
+      header.getBoundingClientRect().bottom;
+    // The shared .header margin plus the column gap used to put ~44px
+    // between a title and the line that explains it.
+    expect(gap).to.be.at.most(12);
+  });
+
+  it('keeps room between a top-slot back link and the title', async () => {
+    withThemeSpacing();
+    const el = (await fixture(
+      html`<view-header headerText="Flow">
+        <a slot="top" href="/console/flows">Back to Flows</a>
+      </view-header>`
+    )) as ViewHeader;
+
+    const link = el.querySelector('a') as HTMLElement;
+    const header = el.shadowRoot?.querySelector('.header') as HTMLElement;
+    const gap =
+      header.getBoundingClientRect().top - link.getBoundingClientRect().bottom;
+    expect(gap).to.be.at.least(8);
+  });
+
   it('renders the title at the console H1 scale, not the marketing one', async () => {
     const el = (await fixture(
       html`<view-header headerText="Overview"></view-header>`

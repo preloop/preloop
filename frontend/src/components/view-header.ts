@@ -34,11 +34,22 @@ export class ViewHeader extends LitElement {
            not add their own spacers or negative margins to compensate. */
         margin-bottom: var(--sl-spacing-large);
       }
+      /* The shared .header margin and the column's flex gap are for page
+         sections. Inside the header they stacked to ~44px between the
+         title and the line that explains it, so the description read as
+         the start of the page body. Spacing here is set per slot instead. */
+      .main-column {
+        gap: 0;
+      }
       .header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: var(--sl-spacing-medium);
+        margin-bottom: 0;
+      }
+      ::slotted([slot='top']) {
+        margin-bottom: var(--sl-spacing-small);
       }
       h1 {
         margin: 0;
