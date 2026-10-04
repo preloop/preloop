@@ -508,7 +508,12 @@ export class AddAIModelModal extends LitElement {
       baseMeta.provider_runtime = {
         ...(baseMeta.provider_runtime as Record<string, unknown> | undefined),
         region: this._bedrockRegion.trim() || BEDROCK_DEFAULT_REGION,
-        auth_method: this._bedrockAuth,
+        // Older/API-created secrets may have no auth metadata. Preserve that
+        // absence on a no-op save rather than guessing the encrypted shape.
+        ...(this._currentModel.api_key ||
+        providerRuntimeString(this.model?.meta_data, 'auth_method')
+          ? { auth_method: this._bedrockAuth }
+          : {}),
       };
     }
     if (provider === 'azure') {

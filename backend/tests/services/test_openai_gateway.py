@@ -4733,3 +4733,77 @@ def test_call_litellm_passes_bedrock_api_key(stream: bool) -> None:
             else {}
         ),
     )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_real_litellm_bedrock_api_key_never_resolves_iam_credentials(
+    stream: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import httpx
+    from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+    from preloop.services.openai_gateway import LiteLLMModelGatewayBackend
+
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ambient-key")
+    monkeypatch.setenv("AWS_REGION_NAME", "us-west-2")
+    before = dict(os.environ)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if stream:
+            return httpx.Response(
+                200,
+                content=b"",
+                headers={"content-type": "application/vnd.amazon.eventstream"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "output": {
+                    "message": {"role": "assistant", "content": [{"text": "Hello"}]}
+                },
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                "metrics": {"latencyMs": 1},
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as http_client,
+        patch.object(
+            BaseAWSLLM,
+            "get_credentials",
+            side_effect=AssertionError("IAM lookup forbidden"),
+        ),
+    ):
+        backend = LiteLLMModelGatewayBackend()
+        client = HTTPHandler(client=http_client)
+        for key, region in [
+            ("synthetic-key-one", "us-east-1"),
+            ("synthetic-key-two", "eu-west-1"),
+        ]:
+            response = backend.completion(
+                model="bedrock/converse/amazon.nova-pro-v1:0",
+                messages=[{"role": "user", "content": "Hello"}],
+                api_key=key,
+                aws_region_name=region,
+                stream=stream,
+                client=client,
+            )
+            if not stream:
+                assert response.choices[0].message.content == "Hello"
+            else:
+                response.completion_stream.close()
+    assert len(requests) == 2
+    for request, key, region in zip(
+        requests,
+        ["synthetic-key-one", "synthetic-key-two"],
+        ["us-east-1", "eu-west-1"],
+        strict=False,
+    ):
+        assert request.headers["Authorization"] == f"Bearer {key}"
+        assert request.url.host == f"bedrock-runtime.{region}.amazonaws.com"
+        assert request.url.path.endswith("/converse-stream" if stream else "/converse")
+    assert dict(os.environ) == before

@@ -96,6 +96,31 @@ a replacement credential. Use the region where the Bedrock API key was generated
 API keys authenticate both **Fetch Models** and gateway inference; listing
 permissions are still required. See [AWS API key usage](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html).
 
+### Create an API-key model through the API
+
+Set `api_key` to the JSON-encoded bearer credential blob. API callers must include
+`meta_data.provider_runtime.auth_method: "api_key"` so the edit dialog selects the
+matching authentication method. The gateway authenticates from the encrypted blob;
+`auth_method` is a console hint, not a server authentication switch. Include the
+region where the key was generated:
+
+```json
+{
+  "name": "Bedrock Nova Micro",
+  "provider_name": "bedrock",
+  "model_identifier": "amazon.nova-micro-v1:0",
+  "api_key": "{\"aws_bearer_token_bedrock\":\"<bedrock-api-key>\"}",
+  "meta_data": {
+    "provider_runtime": { "region": "us-east-1", "auth_method": "api_key" },
+    "gateway": { "enabled": true, "model_alias": "bedrock/amazon.nova-micro-v1:0" }
+  }
+}
+```
+
+Send this body to `POST /api/v1/ai-models`. For IAM credential blobs, use
+`auth_method: "iam"`. When preserving a stored secret with no auth metadata, the
+console leaves the metadata absent on save rather than guessing its credential type.
+
 ### Ambient credentials
 
 When Preloop runs on AWS with an instance profile or task role that has the
