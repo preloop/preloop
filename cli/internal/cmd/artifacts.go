@@ -125,9 +125,9 @@ bytes. The server checks the bytes against the media type.
 
 The kind (screenshot, transcript, document, audio, ...) is inferred by the
 server from the media type when --kind is omitted: PNG, JPEG and WebP images
-are screenshots, text/vtt is a transcript, plain text, markdown and JSON are
-documents, and anything else (PDF, CSV, GIF, ...) is a generated_file. Pass
---kind document for a PDF.
+are screenshots, audio is audio, video is a recording, text/vtt is a
+transcript, plain text, markdown and JSON are documents, and any other file
+type (PDF, CSV, GIF, ...) is a generated_file. Pass --kind document for a PDF.
 
 Labels are key=value. Repeat --label for several; repeating tags=... builds
 the tags list. Documented keys: site, tenant_ref, consent_basis,
