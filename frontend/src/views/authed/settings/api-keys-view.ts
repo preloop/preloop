@@ -83,6 +83,10 @@ export class ApiKeysView extends LitElement {
   @state()
   private newlyCreatedKey: ApiKey | null = null;
 
+  /** Feedback for the one-time key dialog's Copy button. */
+  @state()
+  private keyCopyStatus: 'idle' | 'copied' | 'manual' = 'idle';
+
   @state()
   private isSelectOpen = false;
 
@@ -329,6 +333,7 @@ export class ApiKeysView extends LitElement {
     try {
       const newKey = await createApiKey(trimmedName, expires_at);
       this.newlyCreatedKey = newKey;
+      this.keyCopyStatus = 'idle';
       this.isCreateModalOpen = false;
       this.isShowKeyModalOpen = true;
       this.newKeyName = ''; // Reset for next time
@@ -615,21 +620,53 @@ export class ApiKeysView extends LitElement {
     }
   }
 
-  private _copyKey(e: Event) {
-    const button = e.currentTarget as HTMLElement;
-    const pre = button.previousElementSibling;
-    if (pre && pre.tagName === 'PRE') {
-      const code = pre.querySelector('code');
-      if (code) {
-        navigator.clipboard.writeText(code.innerText).then(() => {
-          const originalHTML = button.innerHTML;
-          button.innerHTML =
-            '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check" viewBox="0 0 16 16"><path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425a.267.267 0 0 1 .02-.022z"/></svg>';
-          setTimeout(() => {
-            button.innerHTML = originalHTML;
-          }, 2000);
-        });
+  /**
+   * `navigator.clipboard` only exists in secure contexts, so a self-hosted
+   * console served over plain HTTP has none.
+   */
+  private _clipboardAvailable(): boolean {
+    return typeof navigator.clipboard?.writeText === 'function';
+  }
+
+  private _keyField(): (HTMLElement & { select: () => void }) | null {
+    return this.renderRoot.querySelector('sl-input.key-field');
+  }
+
+  private async _copyKey() {
+    const key = this.newlyCreatedKey?.key;
+    if (!key) return;
+    if (this._clipboardAvailable()) {
+      try {
+        await navigator.clipboard.writeText(key);
+        this.keyCopyStatus = 'copied';
+        return;
+      } catch (error) {
+        console.warn('Clipboard write failed, falling back:', error);
       }
+    }
+    // Select the key so Ctrl/Cmd+C copies it, and try the legacy copy
+    // command, which still works without a secure context.
+    const field = this._keyField();
+    field?.focus();
+    field?.select();
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch {
+      copied = false;
+    }
+    this.keyCopyStatus = copied ? 'copied' : 'manual';
+  }
+
+  private _closeKeyDialog() {
+    this.isShowKeyModalOpen = false;
+    this.keyCopyStatus = 'idle';
+  }
+
+  /** The key is shown once: only the deliberate close controls dismiss it. */
+  private _guardKeyDialogClose(event: CustomEvent<{ source: string }>) {
+    if (event.detail?.source !== 'close-button') {
+      event.preventDefault();
     }
   }
 
@@ -972,29 +1009,48 @@ export class ApiKeysView extends LitElement {
       <sl-dialog
         label="API key created"
         .open=${this.isShowKeyModalOpen && this.newlyCreatedKey}
-        @sl-hide=${() => (this.isShowKeyModalOpen = false)}
+        @sl-request-close=${this._guardKeyDialogClose}
+        @sl-hide=${(e: Event) => {
+          if (e.target === e.currentTarget) this._closeKeyDialog();
+        }}
       >
-        <p>Here is your new API key:</p>
-        <div class="code-container">
-          <pre><code>${this.newlyCreatedKey?.key}</code></pre>
-          <button class="copy-btn" @click=${this._copyKey}>
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="16"
-              height="16"
-              fill="currentColor"
-              class="bi bi-clipboard"
-              viewBox="0 0 16 16"
-            >
-              <path
-                d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"
-              />
-              <path
-                d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"
-              />
-            </svg>
-          </button>
+        <div class="key-row">
+          <sl-input
+            class="key-field"
+            label="API key"
+            readonly
+            .value=${this.newlyCreatedKey?.key ?? ''}
+            @sl-focus=${(e: Event) =>
+              (e.target as HTMLElement & { select: () => void }).select()}
+          ></sl-input>
+          <sl-button class="copy-key" size="medium" @click=${this._copyKey}>
+            <sl-icon
+              slot="prefix"
+              name=${this.keyCopyStatus === 'copied' ? 'check' : 'clipboard'}
+            ></sl-icon>
+            ${this.keyCopyStatus === 'copied' ? 'Copied' : 'Copy key'}
+          </sl-button>
         </div>
+        <div class="copy-status" role="status" aria-live="polite">
+          ${
+            this.keyCopyStatus === 'copied'
+              ? 'API key copied to clipboard.'
+              : this.keyCopyStatus === 'manual'
+                ? "Couldn't copy automatically. The key is selected: press Ctrl+C (Cmd+C on Mac)."
+                : nothing
+          }
+        </div>
+        ${
+          this.keyCopyStatus === 'idle' && !this._clipboardAvailable()
+            ? html`<p class="copy-hint">
+                Copying isn't available on this connection. Click the key and
+                press Ctrl+C (Cmd+C on Mac).
+              </p>`
+            : nothing
+        }
+        <p class="usage-hint">
+          Send it in the <code>Authorization: Bearer &lt;key&gt;</code> header.
+        </p>
         <div class="warning-text">
           <sl-icon name="exclamation-triangle"></sl-icon>
           <span>Please copy it now. You will not be able to see it again.</span>
@@ -1003,7 +1059,7 @@ export class ApiKeysView extends LitElement {
           slot="footer"
           variant="primary"
           autofocus
-          @click=${() => (this.isShowKeyModalOpen = false)}
+          @click=${this._closeKeyDialog}
           >I have copied my key</sl-button
         >
       </sl-dialog>
@@ -1125,31 +1181,28 @@ export class ApiKeysView extends LitElement {
       .link-button:hover {
         text-decoration: underline;
       }
-      .code-container {
-        position: relative;
-        background-color: var(--sl-color-neutral-100);
-        border-radius: var(--sl-border-radius-medium);
-        margin: 1rem 0;
+      .key-row {
+        display: flex;
+        align-items: flex-end;
+        gap: var(--sl-spacing-x-small);
       }
-      .code-container pre {
-        margin: 0;
-        padding: var(--sl-spacing-medium);
-        white-space: pre-wrap;
-        word-break: break-all;
+      .key-field {
+        flex: 1;
+        min-width: 0;
       }
-      .copy-btn {
-        position: absolute;
-        top: var(--sl-spacing-x-small);
-        right: var(--sl-spacing-x-small);
-        background: none;
-        border: none;
-        color: var(--sl-color-neutral-600);
-        cursor: pointer;
-        padding: var(--sl-spacing-2x-small);
-        border-radius: var(--sl-border-radius-circle);
+      .key-field::part(input) {
+        font-family: var(--sl-font-mono);
       }
-      .copy-btn:hover {
-        background-color: var(--sl-color-neutral-200);
+      .copy-status {
+        margin-top: var(--sl-spacing-x-small);
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-700);
+      }
+      .copy-hint,
+      .usage-hint {
+        margin: var(--sl-spacing-x-small) 0 0;
+        font-size: var(--sl-font-size-small);
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
       }
       .warning-text {
         display: flex;

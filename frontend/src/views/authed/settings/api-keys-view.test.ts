@@ -668,4 +668,108 @@ describe('ApiKeysView', () => {
     const badgeTexts = badges.map((b) => b.textContent?.trim());
     expect(badgeTexts).to.include('Agent');
   });
+
+  describe('one-time key dialog', () => {
+    const openKeyDialog = async () => {
+      const element = await fixture<ApiKeysView>(
+        html`<api-keys-view></api-keys-view>`
+      );
+      await waitUntil(() => !(element as any).isLoading);
+      (element as any).newlyCreatedKey = {
+        id: 'key-new',
+        name: 'CI key',
+        key: 'pl_example_secret_value',
+        created_at: '2026-03-10T09:00:00Z',
+      };
+      (element as any).isShowKeyModalOpen = true;
+      await element.updateComplete;
+      const dialog = element.shadowRoot!.querySelector(
+        'sl-dialog[label="API key created"]'
+      ) as HTMLElement;
+      return { element, dialog };
+    };
+
+    const requestClose = (dialog: HTMLElement, source: string) => {
+      const event = new CustomEvent('sl-request-close', {
+        cancelable: true,
+        detail: { source },
+      });
+      dialog.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+
+    afterEach(() => {
+      sinon.restore();
+      delete (navigator as any).clipboard;
+    });
+
+    it('stays open on Esc and overlay clicks until the user confirms', async () => {
+      const { element, dialog } = await openKeyDialog();
+      expect(requestClose(dialog, 'keyboard')).to.equal(true);
+      expect(requestClose(dialog, 'overlay')).to.equal(true);
+      expect(requestClose(dialog, 'close-button')).to.equal(false);
+      const done = dialog.querySelector(
+        'sl-button[slot="footer"]'
+      ) as HTMLElement;
+      expect(done.textContent?.trim()).to.equal('I have copied my key');
+      done.click();
+      await element.updateComplete;
+      expect((element as any).isShowKeyModalOpen).to.equal(false);
+    });
+
+    it('shows the key in a read-only field with a usage hint', async () => {
+      const { dialog } = await openKeyDialog();
+      const input = dialog.querySelector('sl-input.key-field') as any;
+      expect(input).to.exist;
+      expect(input.readonly).to.equal(true);
+      expect(input.value).to.equal('pl_example_secret_value');
+      expect(input.getAttribute('label')).to.equal('API key');
+      expect(dialog.querySelector('.usage-hint')?.textContent).to.include(
+        'Authorization: Bearer'
+      );
+    });
+
+    it('copies with a labelled button and announces success', async () => {
+      const writeText = sinon.stub().resolves();
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText },
+      });
+      const { element, dialog } = await openKeyDialog();
+      const button = dialog.querySelector('sl-button.copy-key') as HTMLElement;
+      expect(button.textContent?.trim()).to.equal('Copy key');
+      button.click();
+      await waitUntil(() => (element as any).keyCopyStatus === 'copied');
+      await element.updateComplete;
+      expect(writeText.calledOnceWith('pl_example_secret_value')).to.equal(
+        true
+      );
+      expect(button.textContent?.trim()).to.equal('Copied');
+      expect(dialog.querySelector('[role="status"]')?.textContent).to.include(
+        'API key copied'
+      );
+    });
+
+    it('falls back to selecting the key when the clipboard API is missing', async () => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: undefined,
+      });
+      sinon.stub(document, 'execCommand').returns(false);
+      const { element, dialog } = await openKeyDialog();
+      expect(dialog.textContent).to.include('press Ctrl+C (Cmd+C on Mac)');
+      const input = dialog.querySelector('sl-input.key-field') as any;
+      const select = sinon.spy(input, 'select');
+      (dialog.querySelector('sl-button.copy-key') as HTMLElement).click();
+      await waitUntil(() => (element as any).keyCopyStatus === 'manual');
+      await element.updateComplete;
+      expect(select.called).to.equal(true);
+      expect(dialog.querySelector('[role="status"]')?.textContent).to.include(
+        'press Ctrl+C'
+      );
+
+      input.dispatchEvent(new Event('sl-focus'));
+      expect(select.callCount).to.be.greaterThan(1);
+    });
+  });
 });
