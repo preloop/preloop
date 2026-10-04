@@ -860,6 +860,22 @@ agentExecution:
     # If create is false, agents run in the same namespace as Preloop
     name: "agent-executions"
 
+  # RuntimeClass for agent pods: run them under a stronger sandbox runtime
+  # (Kata Containers, gVisor, Firecracker) instead of the node's default.
+  # The RuntimeClass must already exist in the cluster. Empty (the default)
+  # leaves the pod on the node default.
+  runtimeClassName: ""
+
+  # Node selector for agent pods only. This is separate from the top-level
+  # nodeSelector, which places Preloop's own deployments. Empty (the
+  # default) leaves scheduling to Kubernetes.
+  nodeSelector: {}
+
+  # Tolerations for agent pods only. Use this to run agents on a tainted
+  # node pool that provides the RuntimeClass above. Empty (the default)
+  # tolerates nothing.
+  tolerations: []
+
   # RBAC configuration for agent execution
   rbac:
     # If true, creates Role and RoleBinding for agent management
