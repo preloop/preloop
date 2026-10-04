@@ -487,6 +487,11 @@ class AvailableModelsRequest(BaseModel):
     model_kind: Literal["llm", "stt", "tts"] = Field(
         "llm", description="Model service kind to fetch"
     )
+    aws_bearer_token_bedrock: Optional[str] = Field(
+        None,
+        repr=False,
+        description="Bedrock API key. Never logged or persisted by this endpoint.",
+    )
     aws_access_key_id: Optional[str] = Field(
         None,
         description=(
@@ -521,7 +526,12 @@ class AvailableModelsRequest(BaseModel):
         """Keep the key out of any serialized copy of this model (logs, traces)."""
         return "***" if value else value
 
-    @field_serializer("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+    @field_serializer(
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        "aws_bearer_token_bedrock",
+    )
     def _hide_aws_secrets(self, value: Optional[str]) -> Optional[str]:
         """Keep AWS credential material out of serialized copies (logs, traces)."""
         return "***" if value else value

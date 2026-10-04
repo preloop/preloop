@@ -667,6 +667,13 @@ class ManagedAgentEnrollmentValidateRequest(BaseModel):
 
     status: str = Field(default="validated", min_length=1, max_length=32)
     validation_result: dict = Field(default_factory=dict)
+    # Optional discovery link. The CLI sends the same salted hashes it would
+    # report with ``agents discover --report`` so a reported candidate from
+    # this workstation can be marked onboarded. Never a clear id or path.
+    workstation_fingerprint: Optional[str] = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    config_path_hash: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ManagedAgentEnrollmentRestoreRequest(BaseModel):

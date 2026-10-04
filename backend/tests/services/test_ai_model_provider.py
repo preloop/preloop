@@ -2171,3 +2171,93 @@ class TestBedrockModels:
         assert result.source == "fallback"
         assert result.error == ERROR_SDK_MISSING
         assert result.models == []
+
+
+@pytest.mark.asyncio
+async def test_bedrock_bearer_listing_uses_isolated_client_without_iam_keys() -> None:
+    import os
+    from botocore import UNSIGNED
+
+    client = _bedrock_client([_foundation_summary("amazon.nova-pro-v1:0")])
+    session = MagicMock()
+    session.client.return_value = client
+    original_environment = dict(os.environ)
+    with patch("boto3.Session", return_value=session) as make_session:
+        result = await get_available_models_for_provider(
+            "bedrock",
+            aws_auth={
+                "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+                "aws_region_name": "us-east-1",
+            },
+        )
+    assert result.source == "live"
+    make_session.assert_called_once_with()
+    assert session.client.call_args.kwargs["config"].signature_version == UNSIGNED
+    event, handler = client.meta.events.register.call_args.args
+    assert event == "before-send.bedrock.*"
+    request = MagicMock(headers={})
+    handler(request=request)
+    assert request.headers["Authorization"] == "Bearer synthetic-bedrock-key"
+    assert dict(os.environ) == original_environment
+
+
+@pytest.mark.asyncio
+async def test_bedrock_bearer_is_attached_to_real_sdk_request_without_iam_lookup() -> (
+    None
+):
+    import boto3
+    from botocore.awsrequest import AWSResponse
+    from io import BytesIO
+    from typing import Any, Iterator
+
+    class ResponseBody(BytesIO):
+        def stream(
+            self, amt: int = 1024, decode_content: bool = False
+        ) -> Iterator[bytes]:
+            yield self.read()
+
+    session = boto3.Session()
+    real_client = session.client
+    requests: list[Any] = []
+
+    def make_client(*args: Any, **kwargs: Any) -> Any:
+        client = real_client(*args, **kwargs)
+
+        def send(request: Any) -> AWSResponse:
+            requests.append(request)
+            body = (
+                b'{"modelSummaries": []}'
+                if "/foundation-models" in request.url
+                else b'{"inferenceProfileSummaries": []}'
+            )
+            return AWSResponse(
+                request.url,
+                200,
+                {"content-type": "application/json"},
+                ResponseBody(body),
+            )
+
+        client._endpoint.http_session.send = send
+        return client
+
+    with (
+        patch("boto3.Session", return_value=session),
+        patch.object(session, "client", side_effect=make_client),
+        patch.object(
+            session._session,
+            "get_credentials",
+            side_effect=AssertionError("IAM lookup"),
+        ),
+    ):
+        await get_available_models_for_provider(
+            "bedrock",
+            aws_auth={
+                "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+                "aws_region_name": "us-east-1",
+            },
+        )
+    assert len(requests) == 2
+    assert all(
+        request.headers["Authorization"] == "Bearer synthetic-bedrock-key"
+        for request in requests
+    )

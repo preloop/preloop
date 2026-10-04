@@ -1203,7 +1203,7 @@ async def _get_bedrock_models(
     Control-plane APIs:
     https://docs.aws.amazon.com/bedrock/latest/APIReference/API_ListFoundationModels.html
     https://docs.aws.amazon.com/bedrock/latest/APIReference/API_ListInferenceProfiles.html
-    Uses boto3's ``bedrock`` client. Explicit access keys (typed or stored)
+    Uses boto3's ``bedrock`` client. Explicit API keys or IAM keys (typed or stored)
     are required for the picker; ambient instance-profile listing is not
     used. A bad key fails the call with an auth error, which raises
     ProviderAuthError. Inference-profile listing is best-effort: a
@@ -1212,8 +1212,9 @@ async def _get_bedrock_models(
     ids such as ``us.anthropic.claude-sonnet-4-5-...``.
 
     Args:
-        aws_auth: Mapping with ``aws_access_key_id``,
-            ``aws_secret_access_key``, optional ``aws_session_token`` and
+        aws_auth: Mapping with ``aws_bearer_token_bedrock`` or
+            ``aws_access_key_id`` and ``aws_secret_access_key``, plus optional
+            ``aws_session_token`` and
             ``aws_region_name``.
 
     Returns:
@@ -1225,11 +1226,15 @@ async def _get_bedrock_models(
         ProviderAuthError: When AWS rejects the credentials.
     """
     auth = {key: str(value).strip() for key, value in (aws_auth or {}).items() if value}
-    if not auth.get("aws_access_key_id") or not auth.get("aws_secret_access_key"):
+    bearer_token = auth.get("aws_bearer_token_bedrock")
+    if not bearer_token and (
+        not auth.get("aws_access_key_id") or not auth.get("aws_secret_access_key")
+    ):
         return _fallback([], ERROR_MISSING_KEY)
 
     try:
         import boto3  # type: ignore[import-untyped]
+        from botocore import UNSIGNED  # type: ignore[import-untyped]
         from botocore.config import Config  # type: ignore[import-untyped]
     except ImportError:
         logger.warning("boto3 package not installed, cannot list Bedrock models")
@@ -1238,7 +1243,7 @@ async def _get_bedrock_models(
     session_kwargs = {
         key: auth[key]
         for key in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
-        if auth.get(key)
+        if auth.get(key) and not bearer_token
     }
 
     try:
@@ -1249,6 +1254,7 @@ async def _get_bedrock_models(
                 "AWS region is required. Enter a region (e.g. us-east-1) "
                 "or set AWS_DEFAULT_REGION."
             )
+        client_config = {"signature_version": UNSIGNED} if bearer_token else {}
         client = session.client(
             "bedrock",
             region_name=region,
@@ -1256,8 +1262,15 @@ async def _get_bedrock_models(
                 connect_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
                 read_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
                 retries={"max_attempts": 1},
+                **client_config,
             ),
         )
+        if bearer_token:
+            # Per-client headers avoid shared environment mutation and IAM lookup.
+            def authorize(request: Any, **kwargs: Any) -> None:
+                request.headers["Authorization"] = f"Bearer {bearer_token}"
+
+            client.meta.events.register("before-send.bedrock.*", authorize)
         # Control-plane listing is synchronous; keep it off the event loop.
         model_ids = await asyncio.to_thread(_collect_bedrock_model_ids, client)
     except ProviderValidationError:
@@ -1271,7 +1284,7 @@ async def _get_bedrock_models(
         if isinstance(e, (ClientError, BotoCoreError)) and _is_bedrock_auth_error(e):
             logger.warning("Bedrock authentication failed: %s", type(e).__name__)
             raise ProviderAuthError(
-                "Invalid AWS credentials. Check the access key, secret key "
+                "Invalid AWS credentials. Check the Bedrock API key or IAM keys "
                 "and region, then try again."
             ) from e
         logger.warning(

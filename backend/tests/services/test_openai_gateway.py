@@ -4663,3 +4663,147 @@ def test_plain_key_integrity_race_attaches_winner_session(
     )
     usage = db_session.query(ApiUsage).filter(ApiUsage.api_key_id == api_key.id).one()
     assert usage.runtime_session_id == winner.id
+
+
+def test_bedrock_bearer_credentials_are_per_call_and_exclude_iam_keys() -> None:
+    from preloop.services.openai_gateway import _bedrock_credential_kwargs
+
+    assert _bedrock_credential_kwargs(
+        json.dumps(
+            {
+                "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+                "aws_access_key_id": "ignored-key",
+                "aws_secret_access_key": "ignored-secret",
+                "aws_region_name": "us-east-1",
+            }
+        )
+    ) == {"api_key": "synthetic-bedrock-key", "aws_region_name": "us-east-1"}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_call_litellm_passes_bedrock_api_key(stream: bool) -> None:
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    upstream_backend = MagicMock()
+    service = OpenAIGatewayService(
+        MagicMock(), auth_context, upstream_backend=upstream_backend
+    )
+    ai_model = SimpleNamespace(
+        provider_name="bedrock",
+        model_identifier="us.anthropic.claude-opus-4-6-v1",
+        api_endpoint=None,
+        meta_data={"provider_runtime": {"region": "us-east-1"}},
+    )
+
+    with patch(
+        "preloop.services.openai_gateway.get_secret_service"
+    ) as mock_secret_service:
+        mock_secret_service.return_value.resolve_ai_model_credentials.return_value = (
+            SimpleNamespace(
+                credential_type="api_key",
+                value=json.dumps(
+                    {
+                        "aws_bearer_token_bedrock": "synthetic-bedrock-key",
+                        "aws_region_name": "eu-central-1",
+                    }
+                ),
+            )
+        )
+        service._call_litellm(
+            ai_model,
+            messages=[{"role": "user", "content": "Hello"}],
+            payload={},
+            provider="openai",
+            stream=stream,
+        )
+
+    upstream_backend.completion.assert_called_once_with(
+        model="bedrock/converse/us.anthropic.claude-opus-4-6-v1",
+        messages=[{"role": "user", "content": "Hello"}],
+        timeout=600,
+        api_key="synthetic-bedrock-key",
+        aws_region_name="eu-central-1",
+        drop_params=True,
+        extra_headers={"User-Agent": preloop_user_agent()},
+        **(
+            {"stream": True, "stream_options": {"include_usage": True}}
+            if stream
+            else {}
+        ),
+    )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_real_litellm_bedrock_api_key_never_resolves_iam_credentials(
+    stream: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import httpx
+    from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
+    from litellm.llms.custom_httpx.http_handler import HTTPHandler
+    from preloop.services.openai_gateway import LiteLLMModelGatewayBackend
+
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ambient-key")
+    monkeypatch.setenv("AWS_REGION_NAME", "us-west-2")
+    before = dict(os.environ)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if stream:
+            return httpx.Response(
+                200,
+                content=b"",
+                headers={"content-type": "application/vnd.amazon.eventstream"},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "output": {
+                    "message": {"role": "assistant", "content": [{"text": "Hello"}]}
+                },
+                "stopReason": "end_turn",
+                "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+                "metrics": {"latencyMs": 1},
+            },
+        )
+
+    with (
+        httpx.Client(transport=httpx.MockTransport(handler)) as http_client,
+        patch.object(
+            BaseAWSLLM,
+            "get_credentials",
+            side_effect=AssertionError("IAM lookup forbidden"),
+        ),
+    ):
+        backend = LiteLLMModelGatewayBackend()
+        client = HTTPHandler(client=http_client)
+        for key, region in [
+            ("synthetic-key-one", "us-east-1"),
+            ("synthetic-key-two", "eu-west-1"),
+        ]:
+            response = backend.completion(
+                model="bedrock/converse/amazon.nova-pro-v1:0",
+                messages=[{"role": "user", "content": "Hello"}],
+                api_key=key,
+                aws_region_name=region,
+                stream=stream,
+                client=client,
+            )
+            if not stream:
+                assert response.choices[0].message.content == "Hello"
+            else:
+                response.completion_stream.close()
+    assert len(requests) == 2
+    for request, key, region in zip(
+        requests,
+        ["synthetic-key-one", "synthetic-key-two"],
+        ["us-east-1", "eu-west-1"],
+        strict=False,
+    ):
+        assert request.headers["Authorization"] == f"Bearer {key}"
+        assert request.url.host == f"bedrock-runtime.{region}.amazonaws.com"
+        assert request.url.path.endswith("/converse-stream" if stream else "/converse")
+    assert dict(os.environ) == before

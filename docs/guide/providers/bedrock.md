@@ -12,7 +12,7 @@ application inference profile ARNs.
 
 | Area | Support |
 | --- | --- |
-| Auth | Access key id and secret, with an optional session token for temporary credentials. Instance profile or task role credentials are available through the API (see [Ambient credentials](#ambient-credentials)). |
+| Auth | Bedrock API keys generated in the AWS Bedrock console, or IAM access key id and secret, with an optional session token for temporary credentials. Instance profile or task role credentials are available through the API (see [Ambient credentials](#ambient-credentials)). |
 | Regions | Any Bedrock region. Set it per model; it defaults to `us-east-1`. |
 | Model ids | Foundation model ids, system inference profiles (`us.`, `eu.`, `apac.`, `global.` and other geo prefixes), and inference profile ARNs. All are sent through the Bedrock Converse API. |
 | Chat | `/openai/v1/chat/completions`, streaming and non-streaming, including tool calls. |
@@ -71,11 +71,13 @@ can type the model id by hand instead of using **Fetch Models**. Without
 2. **Name**: a label for your team, for example `Bedrock Nova Micro`.
 3. **Type**: LLM.
 4. **Provider**: **AWS Bedrock**.
-5. **AWS Access Key ID** and **AWS Secret Access Key**: the IAM user or role
-   credentials from the policy above.
-6. **AWS Session Token**: only for temporary credentials (for example from
-   `aws sts assume-role` or SSO). Temporary credentials expire; the model
-   stops working when they do, so prefer long-lived keys for a shared gateway.
+5. **Authentication**: choose **Bedrock API key** to paste a key generated
+   in the AWS Bedrock console **Quickstart** into **Bedrock API Key**. Choose
+   **IAM access keys** to enter **AWS Access Key ID** and **AWS Secret Access Key**
+   from the policy above.
+6. **AWS Session Token**: optional for IAM temporary credentials (for example
+   from `aws sts assume-role` or SSO). Short-term Bedrock API keys and temporary
+   IAM credentials expire. Replace the saved credentials before they expire.
 7. **AWS Region**: the region where the model or inference profile is
    available, for example `us-east-1` or `eu-west-1`.
 8. **Model Name / ID**: click **Fetch Models** and pick one, or enter the id
@@ -89,7 +91,35 @@ can type the model id by hand instead of using **Fetch Models**. Without
 
 The credentials are stored as one encrypted secret. They are never returned
 by the API and are not shown again when you edit the model; leave the key
-fields blank on edit to keep them.
+fields blank on edit to keep them. Changing authentication methods requires
+a replacement credential. Use the region where the Bedrock API key was generated.
+API keys authenticate both **Fetch Models** and gateway inference; listing
+permissions are still required. See [AWS API key usage](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html).
+
+### Create an API-key model through the API
+
+Set `api_key` to the JSON-encoded bearer credential blob. API callers must include
+`meta_data.provider_runtime.auth_method: "api_key"` so the edit dialog selects the
+matching authentication method. The gateway authenticates from the encrypted blob;
+`auth_method` is a console hint, not a server authentication switch. Include the
+region where the key was generated:
+
+```json
+{
+  "name": "Bedrock Nova Micro",
+  "provider_name": "bedrock",
+  "model_identifier": "amazon.nova-micro-v1:0",
+  "api_key": "{\"aws_bearer_token_bedrock\":\"<bedrock-api-key>\"}",
+  "meta_data": {
+    "provider_runtime": { "region": "us-east-1", "auth_method": "api_key" },
+    "gateway": { "enabled": true, "model_alias": "bedrock/amazon.nova-micro-v1:0" }
+  }
+}
+```
+
+Send this body to `POST /api/v1/ai-models`. For IAM credential blobs, use
+`auth_method: "iam"`. When preserving a stored secret with no auth metadata, the
+console leaves the metadata absent on save rather than guessing its credential type.
 
 ### Ambient credentials
 

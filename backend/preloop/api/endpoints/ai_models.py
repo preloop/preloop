@@ -974,7 +974,7 @@ def _aws_auth_from_stored_bedrock_secret(
     """Parse a stored Bedrock JSON blob plus routing region into aws_auth.
 
     The stored secret is the same JSON shape the add-model modal writes
-    (``aws_access_key_id``, ``aws_secret_access_key``, optional session
+    (``aws_bearer_token_bedrock`` or IAM access keys and optional session
     token). Region lives on ``meta_data.provider_runtime.region``.
     """
     try:
@@ -985,6 +985,7 @@ def _aws_auth_from_stored_bedrock_secret(
         return None
     auth: Dict[str, str] = {}
     for key in (
+        "aws_bearer_token_bedrock",
         "aws_access_key_id",
         "aws_secret_access_key",
         "aws_session_token",
@@ -999,7 +1000,9 @@ def _aws_auth_from_stored_bedrock_secret(
     region = runtime.get("region") if isinstance(runtime, dict) else None
     if isinstance(region, str) and region.strip() and "aws_region_name" not in auth:
         auth["aws_region_name"] = region.strip()
-    if not auth.get("aws_access_key_id") or not auth.get("aws_secret_access_key"):
+    if not auth.get("aws_bearer_token_bedrock") and (
+        not auth.get("aws_access_key_id") or not auth.get("aws_secret_access_key")
+    ):
         return None
     return auth
 
@@ -1148,6 +1151,7 @@ def _aws_auth_from_request(
     auth = {
         key: getattr(request_in, key)
         for key in (
+            "aws_bearer_token_bedrock",
             "aws_access_key_id",
             "aws_secret_access_key",
             "aws_session_token",

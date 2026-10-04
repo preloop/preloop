@@ -560,6 +560,12 @@ def _bedrock_credential_kwargs(secret_value: Optional[str]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
 
+    if token := payload.get("aws_bearer_token_bedrock"):
+        kwargs = {"api_key": str(token).strip()}
+        if region := payload.get("aws_region_name"):
+            kwargs["aws_region_name"] = str(region).strip()
+        return kwargs
+
     kwargs: Dict[str, Any] = {}
     for source_key, target_key in (
         ("aws_access_key_id", "aws_access_key_id"),

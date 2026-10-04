@@ -247,9 +247,11 @@ preloop approvals deny <id>            # Deny a request
 
 ```bash
 preloop agents discover                 # Interactive discovery; can prompt to onboard
-preloop agents discover --json          # Emit discovery results as JSON
+preloop agents discover --json          # Emit safe discovery summaries as JSON
+preloop agents discover --inventory     # Offline known-app inventory JSON
 preloop agents discover --no-onboard-prompt
 preloop agents discover --yes           # Auto-onboard newly discovered agents
+preloop agents discover --report        # Opt in: report salted hashes to Preloop (or PRELOOP_DISCOVERY_REPORT=1)
 preloop agents enroll openclaw        # Apply managed enrollment for OpenClaw
 preloop agents enroll openclaw --dry-run
 preloop agents enroll openclaw --yes   # Skip the confirmation prompt
@@ -273,6 +275,47 @@ preloop agents sync                     # Alias for agents refresh
 ```
 
 `preloop agents discover` is the starting point for agent onboarding. In interactive terminals it can prompt to onboard newly discovered agents one by one. Use `--no-onboard-prompt` to keep discovery read-only in scripts/CI, or `--yes` to auto-onboard all new candidates. `preloop agents enroll openclaw` remains the explicit mutating command.
+
+Discovery JSON intentionally uses an allowlist: the array retains registered app
+`name` values and adds stable `app_id` and `mcp_server_count` fields. Raw
+`mcp_servers`, config paths, user-defined names and identities, auth/runtime
+details, and drift messages are no longer emitted because they can contain
+credentials or personal information. This is a security correction for JSON
+consumers; use the count instead of inspecting raw server definitions. `--json`
+still skips onboarding prompts, but can perform authenticated enrollment
+lookups and local telemetry counting. Root update checks are skipped so they
+cannot add an update prompt or notification to the JSON stream.
+
+`preloop agents status <agent> --json` uses the same agent allowlist (`name`,
+`app_id`, `mcp_server_count`, and the fixed auth, runtime, onboarding, and
+support enums). Local state keeps registered agent name, enrollment id, whether
+a config existed, the managed server name, and apply timestamps. Remote state
+keeps lifecycle, activity, gateway flags, credential status, and an allowlisted
+validation result. Model rows keep identifier and credential status. Env,
+headers, auth, config paths, tokens, raw local config, and raw remote config
+are omitted. The text status command is unchanged.
+
+Use `preloop agents discover --inventory` for an explicitly offline collection.
+The `preloop.inventory.v1` envelope contains a UTC `observed_at`, collector and
+detector versions, the fixed scope (`user=current`, `coverage=known-registry`),
+`completeness`, per-app `probe_results`, and `apps`. App IDs, evidence kinds,
+probe statuses and error codes are fixed values; MCP data consists only of
+aggregate config and server declaration counts. Counts are summed across the
+supported config files, so alternate files can declare the same server more
+than once. Authentication and usage always remain `unknown`.
+
+Inventory inspects supported app config structure and filesystem/runtime
+markers. Credential artifacts can be checked with metadata-only stat, but are
+never parsed; it performs no auth/keychain queries, provider or enrollment
+calls, telemetry, update checks, executable launches, prompts, or file writes.
+It requires no Preloop login. It rejects `--report`, `--add`, `--yes`, `--force`,
+`--skip-live-validate` and an enabled `PRELOOP_DISCOVERY_REPORT` setting; unset,
+`0`, or `false` reporting settings are accepted. `--json` and
+`--no-onboard-prompt` are redundant but accepted alongside `--inventory`.
+Malformed, unreadable, unknown, or platform-inconclusive probes mark the
+inventory `partial` and use safe error codes. Even `complete` describes only
+the known registry and supported locations: an empty app list never asserts
+that a person or machine does not use AI.
 
 Managed OpenClaw and Hermes onboarding creates a durable managed credential, backs up the local config, adds or replaces the local MCP config with a managed `preloop` entry, writes a `preloop.control.control_ws_url` contract plus the standalone runtime plugin package name (`preloop-hermes-plugin` or `@preloop-ai/openclaw-plugin`), and may also import existing MCP servers plus rewrite supported model settings to Preloop's OpenAI-compatible gateway. Use `--dry-run` to preview changes first. `preloop agents onboard --all -y` also ensures every discovered OpenClaw/Hermes runtime plugin available to the CLI is installed and verified, including agents that were already onboarded locally and would otherwise be skipped by the config rewrite step.
 

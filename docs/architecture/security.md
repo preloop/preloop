@@ -102,6 +102,29 @@ administration must use the dedicated lifecycle seam. Operation enforcement,
 execution ownership and completion dispatch filtering must be implemented
 before usable provisioning is exposed.
 
+The restricted ASGI guard covers every application role before handler work.
+Only one canonical Bearer transport can enter an explicitly classified,
+machine-aware HTTP handler. Duplicate or custom token transports, WebSockets,
+streams, unclassified operations and generic credential/session exchanges deny.
+An explicit test inventory includes lazy included routers, hidden routes and
+mounted applications through their middleware wrappers. OpenAPI records each
+operation's `x-restricted-ci` policy and authentication/authorization errors.
+
+Machine-aware handlers use `get_current_actor` and an explicit `ci_action` on
+`require_permission`; unmarked handlers reject machine actors, including direct
+service calls. The machine branch never invokes the human RBAC/owner path.
+CRUD revalidates key, principal, account, action and immutable binding before
+protected work, so a retained request context cannot preserve revoked authority.
+The optional machine account-policy hook can only deny this core ceiling;
+missing hooks preserve OSS behavior and hook errors fail closed. Invalid
+restricted credentials receive 401, forbidden operations receive 403, and
+protected object handlers apply their consistent not-found policy. Decision
+logs include safe machine/resource identifiers, never token or result contents.
+
+The production operation map remains empty during this stage. Execution and
+completion handlers will opt in only with typed inputs, own-resource CRUD and
+dispatch checks; this foundation does not expose usable CI provisioning.
+
 The account owner can administer through core CRUD. An optional edition hook
 checks human operation/resource authority and may delegate or deny human
 administration, while the core account, project, flow and action checks always

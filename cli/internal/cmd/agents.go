@@ -323,7 +323,8 @@ partially), non-zero only when every attempted agent failed.
 
 Examples:
   preloop agents discover
-  preloop agents discover --json`,
+  preloop agents discover --json
+  preloop agents discover --inventory`,
 	RunE: runAgentsDiscover,
 }
 
@@ -830,11 +831,13 @@ func init() {
 	agentsCmd.AddCommand(agentsStarterPolicyCmd)
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
-	agentsDiscoverCmd.Flags().Bool("json", false, "output discovered agents as JSON (read-only, no prompts)")
+	agentsDiscoverCmd.Flags().Bool("json", false, "output safe discovery summaries as JSON (read-only, no prompts)")
+	agentsDiscoverCmd.Flags().Bool("inventory", false, "output offline known-app inventory JSON (no auth, network, prompts, or writes)")
 	agentsDiscoverCmd.Flags().Bool("no-onboard-prompt", false, "do not prompt to onboard discovered agents")
 	agentsDiscoverCmd.Flags().BoolP("yes", "y", false, "auto-approve interactive onboarding prompts")
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding")
+	agentsDiscoverCmd.Flags().Bool("report", false, "opt in: send salted hashes of what was found to Preloop (also PRELOOP_DISCOVERY_REPORT=1); see docs/guide/agent-discovery-reporting.md")
 	_ = agentsDiscoverCmd.Flags().MarkDeprecated("add", "use 'preloop agents onboard [agent]'")
 	agentsEnrollCmd.Flags().Bool("dry-run", false, "preview account and config changes without writing")
 	agentsEnrollCmd.Flags().BoolP("yes", "y", false, "skip the onboarding confirmation prompt")
@@ -849,7 +852,7 @@ func init() {
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
-	agentsStatusCmd.Flags().Bool("json", false, "output managed status as JSON")
+	agentsStatusCmd.Flags().Bool("json", false, "output allowlisted managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported direct gateway route/accounting probe in addition to config validation (application behavior unverified)")
 	agentsInstallPluginCmd.Flags().Bool("dry-run", false, "print the runtime plugin installation command without running it")
 	agentsRestoreCmd.Flags().BoolP("yes", "y", false, "skip the restore confirmation prompt")
@@ -872,11 +875,15 @@ func init() {
 
 // runAgentsDiscover scans for AI agents on the machine.
 func runAgentsDiscover(cmd *cobra.Command, args []string) error {
+	if isOfflineInventoryCommand(cmd) {
+		return runAgentsInventory(cmd)
+	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	addServers, _ := cmd.Flags().GetBool("add")
 	noOnboardPrompt, _ := cmd.Flags().GetBool("no-onboard-prompt")
 	autoApprove, _ := cmd.Flags().GetBool("yes")
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
+	report, _ := cmd.Flags().GetBool("report")
 
 	if addServers {
 		return fmt.Errorf("discover is now read-only; use 'preloop agents onboard <agent>'")
@@ -884,18 +891,36 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 
 	discovered, err := discoverAgents(os.Stdout, !asJSON)
 	if err != nil {
+		if asJSON {
+			return fmt.Errorf("discovery failed")
+		}
 		return err
 	}
 	client := authenticatedDiscoveryClient()
 	discovered, err = enrichDiscoveredAgents(discovered, client)
 	if err != nil {
+		if asJSON {
+			return fmt.Errorf("discovery enrichment failed")
+		}
 		return err
 	}
 
+	// Opt-in only: without --report or PRELOOP_DISCOVERY_REPORT=1 nothing
+	// about this scan is sent anywhere.
+	if discoveryReportingRequested(report) {
+		reportOut := io.Writer(os.Stdout)
+		if asJSON {
+			reportOut = os.Stderr
+		}
+		if err := sendDiscoveryReport(client, discovered, reportOut); err != nil {
+			return err
+		}
+	}
+
 	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
+		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
-		return enc.Encode(discovered)
+		return enc.Encode(safeDiscoveryJSON(discovered))
 	}
 
 	if len(discovered) == 0 {
@@ -1695,13 +1720,7 @@ func runAgentsStatus(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		payload := map[string]interface{}{
-			"agent":        agent,
-			"local_state":  localState,
-			"remote_state": detail,
-			"models":       agentModels,
-			"desktop":      desktop,
-		}
+		payload := safeStatusJSON(agent, localState, detail, agentModels, desktop)
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(payload)
@@ -5836,6 +5855,13 @@ func validateManagedEnrollmentRecord(
 	request := map[string]interface{}{
 		"status":            status,
 		"validation_result": validationResult,
+	}
+	if status == "validated" {
+		// Salted hashes only; lets the server mark a candidate reported by
+		// `agents discover --report` on this workstation as onboarded.
+		for key, value := range discoveryLinkFields(client, agent) {
+			request[key] = value
+		}
 	}
 	var response managedAgentEnrollmentSummary
 	if err := client.Post(

@@ -151,10 +151,16 @@ function hostnameEqualsOrSuffix(host: string, expected: string): boolean {
  * litellm's aws_* kwargs, so the shape here is load-bearing.
  */
 function buildBedrockCredentialBlob(creds: {
+  bearerToken?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
   sessionToken?: string;
 }): string | undefined {
+  if (creds.bearerToken?.trim()) {
+    return JSON.stringify({
+      aws_bearer_token_bedrock: creds.bearerToken.trim(),
+    });
+  }
   if (!creds.accessKeyId?.trim() || !creds.secretAccessKey?.trim()) {
     return undefined;
   }
@@ -262,6 +268,8 @@ export class AddAIModelModal extends LitElement {
   @state() private _apiKeyTouched = false;
   @state() private _saveAttempted = false;
   /** AWS credential inputs for the bedrock provider. */
+  @state() private _bedrockAuth: 'iam' | 'api_key' = 'iam';
+  @state() private _bedrockApiKey = '';
   @state() private _bedrockAccessKeyId = '';
   @state() private _bedrockSecretAccessKey = '';
   @state() private _bedrockSessionToken = '';
@@ -291,9 +299,22 @@ export class AddAIModelModal extends LitElement {
   /** True once enough AWS material is present to attempt a live listing. */
   private get _bedrockCredsComplete(): boolean {
     return Boolean(
-      this._bedrockAccessKeyId.trim() &&
-      this._bedrockSecretAccessKey.trim() &&
-      this._bedrockRegion.trim()
+      (this._bedrockAuth === 'api_key'
+        ? this._bedrockApiKey.trim()
+        : this._bedrockAccessKeyId.trim() &&
+          this._bedrockSecretAccessKey.trim()) && this._bedrockRegion.trim()
+    );
+  }
+
+  private get _hasStoredBedrockCredentials(): boolean {
+    const storedAuth =
+      providerRuntimeString(this.model?.meta_data, 'auth_method') === 'api_key'
+        ? 'api_key'
+        : 'iam';
+    return Boolean(
+      this._isEditing &&
+      this.model?.has_api_key &&
+      this._bedrockAuth === storedAuth
     );
   }
 
@@ -307,7 +328,9 @@ export class AddAIModelModal extends LitElement {
       return true;
     }
     const apiKey = (this._currentModel.api_key || '').trim();
-    const hasStoredKey = Boolean(this._isEditing && this.model?.has_api_key);
+    const hasStoredKey = this._isBedrock
+      ? this._hasStoredBedrockCredentials
+      : Boolean(this._isEditing && this.model?.has_api_key);
     return (
       this._currentModel.model_kind === 'llm' &&
       (apiKey.length > 0 || hasStoredKey)
@@ -394,6 +417,10 @@ export class AddAIModelModal extends LitElement {
       if (typeof storedRegion === 'string' && storedRegion.trim()) {
         this._bedrockRegion = storedRegion.trim();
       }
+      this._bedrockAuth =
+        providerRuntimeString(this.model.meta_data, 'auth_method') === 'api_key'
+          ? 'api_key'
+          : 'iam';
       // Same for Azure: an edit must not drop the api-version the gateway
       // sends or the base model that prices a custom deployment name.
       this._azureApiVersion = providerRuntimeString(
@@ -420,6 +447,8 @@ export class AddAIModelModal extends LitElement {
 
   /** Clear the AWS credential inputs; editing falls back to "keep stored key". */
   private _resetBedrockFields() {
+    this._bedrockAuth = 'iam';
+    this._bedrockApiKey = '';
     this._bedrockAccessKeyId = '';
     this._bedrockSecretAccessKey = '';
     this._bedrockSessionToken = '';
@@ -439,7 +468,10 @@ export class AddAIModelModal extends LitElement {
     if (!this._isBedrock) return;
     this._currentModel.api_key =
       buildBedrockCredentialBlob({
-        accessKeyId: this._bedrockAccessKeyId,
+        bearerToken:
+          this._bedrockAuth === 'api_key' ? this._bedrockApiKey : undefined,
+        accessKeyId:
+          this._bedrockAuth === 'iam' ? this._bedrockAccessKeyId : undefined,
         secretAccessKey: this._bedrockSecretAccessKey,
         sessionToken: this._bedrockSessionToken,
       }) || undefined;
@@ -476,6 +508,12 @@ export class AddAIModelModal extends LitElement {
       baseMeta.provider_runtime = {
         ...(baseMeta.provider_runtime as Record<string, unknown> | undefined),
         region: this._bedrockRegion.trim() || BEDROCK_DEFAULT_REGION,
+        // Older/API-created secrets may have no auth metadata. Preserve that
+        // absence on a no-op save rather than guessing the encrypted shape.
+        ...(this._currentModel.api_key ||
+        providerRuntimeString(this.model?.meta_data, 'auth_method')
+          ? { auth_method: this._bedrockAuth }
+          : {}),
       };
     }
     if (provider === 'azure') {
@@ -565,7 +603,9 @@ export class AddAIModelModal extends LitElement {
       else if (field === 'api_endpoint' && val)
         this._currentModel.api_endpoint = val;
       else if (field === 'api_key' && val) this._currentModel.api_key = val;
-      else if (field === 'bedrock_access_key_id') {
+      else if (field === 'bedrock_api_key') {
+        this._bedrockApiKey = val || '';
+      } else if (field === 'bedrock_access_key_id') {
         this._bedrockAccessKeyId = val || '';
       } else if (field === 'bedrock_secret_access_key') {
         this._bedrockSecretAccessKey = val || '';
@@ -733,20 +773,26 @@ export class AddAIModelModal extends LitElement {
     const provider = this._currentModel.provider_name;
     const storedModelId =
       this._isEditing && this.model?.id ? String(this.model.id) : undefined;
-    const hasStoredKey = Boolean(this._isEditing && this.model?.has_api_key);
+    const hasStoredKey = this._isBedrock
+      ? this._hasStoredBedrockCredentials
+      : Boolean(this._isEditing && this.model?.has_api_key);
     // Bedrock authenticates with AWS credential fields, not a key/endpoint.
     let awsAuth: AwsDiscoveryAuth | undefined;
     if (provider === 'bedrock') {
       if (this._bedrockCredsComplete) {
         awsAuth = {
-          accessKeyId: this._bedrockAccessKeyId.trim(),
-          secretAccessKey: this._bedrockSecretAccessKey.trim(),
-          sessionToken: this._bedrockSessionToken.trim() || undefined,
+          ...(this._bedrockAuth === 'api_key'
+            ? { bearerToken: this._bedrockApiKey.trim() }
+            : {
+                accessKeyId: this._bedrockAccessKeyId.trim(),
+                secretAccessKey: this._bedrockSecretAccessKey.trim(),
+                sessionToken: this._bedrockSessionToken.trim() || undefined,
+              }),
           region: this._bedrockRegion.trim(),
         };
       } else if (!hasStoredKey) {
         this._modelsFetchError =
-          'Enter the AWS access key, secret key and region first, then fetch models';
+          'Enter the AWS Bedrock API key or IAM keys and region first, then fetch models';
         return;
       }
     }
@@ -904,12 +950,10 @@ export class AddAIModelModal extends LitElement {
     }
     if (this._isBedrock) {
       // Blank credential fields on an edited model mean "keep the stored key".
-      const hasStoredBedrockKey = Boolean(
-        this._isEditing && this.model?.has_api_key
-      );
+      const hasStoredBedrockKey = this._hasStoredBedrockCredentials;
       if (!hasStoredBedrockKey && !this._bedrockCredsComplete) {
         this._formError =
-          'Please fill in the AWS access key, secret key and region';
+          'Please fill in the AWS Bedrock API key or IAM keys and region';
         return;
       }
     } else if (!this._currentModel.api_endpoint) {
@@ -1224,61 +1268,110 @@ export class AddAIModelModal extends LitElement {
           ${
             this._isBedrock
               ? html`
-                  <sl-input
-                    label="AWS access key ID"
-                    data-field="bedrock_access_key_id"
-                    .value=${this._bedrockAccessKeyId}
-                    @sl-input=${(e: Event) => {
-                      this._bedrockAccessKeyId = (
-                        e.target as HTMLInputElement
-                      ).value;
-                      this._syncBedrockApiKey();
-                      this.requestUpdate();
-                    }}
-                    placeholder=${
-                      this._isEditing ? 'Leave blank to keep existing key' : ''
-                    }
+                  <sl-select
+                    label="Authentication"
+                    .value=${this._bedrockAuth}
                     ?disabled=${this._isSubmitting}
+                    @sl-change=${(e: Event) => {
+                      this._bedrockAuth = (e.target as HTMLSelectElement)
+                        .value as 'iam' | 'api_key';
+                      this._bedrockApiKey = '';
+                      this._bedrockAccessKeyId = '';
+                      this._bedrockSecretAccessKey = '';
+                      this._bedrockSessionToken = '';
+                      this._syncBedrockApiKey();
+                    }}
                   >
-                    <div slot="help-text">
-                      IAM credentials with Bedrock access. Find them in the AWS
-                      console under IAM &gt; Access keys.
-                    </div>
-                  </sl-input>
-                  <sl-input
-                    type="password"
-                    password-toggle
-                    label="AWS secret access key"
-                    data-field="bedrock_secret_access_key"
-                    .value=${this._bedrockSecretAccessKey}
-                    @sl-input=${(e: Event) => {
-                      this._bedrockSecretAccessKey = (
-                        e.target as HTMLInputElement
-                      ).value;
-                      this._syncBedrockApiKey();
-                      this.requestUpdate();
-                    }}
-                    placeholder=${
-                      this._isEditing ? 'Leave blank to keep existing key' : ''
-                    }
-                    ?disabled=${this._isSubmitting}
-                  ></sl-input>
-                  <sl-input
-                    type="password"
-                    password-toggle
-                    label="AWS session token"
-                    data-field="bedrock_session_token"
-                    .value=${this._bedrockSessionToken}
-                    @sl-input=${(e: Event) => {
-                      this._bedrockSessionToken = (
-                        e.target as HTMLInputElement
-                      ).value;
-                      this._syncBedrockApiKey();
-                      this.requestUpdate();
-                    }}
-                    placeholder="Optional, for temporary credentials"
-                    ?disabled=${this._isSubmitting}
-                  ></sl-input>
+                    <sl-option value="api_key">Bedrock API key</sl-option>
+                    <sl-option value="iam">IAM access keys</sl-option>
+                  </sl-select>
+                  ${
+                    this._bedrockAuth === 'api_key'
+                      ? html`
+                          <sl-input
+                            type="password"
+                            password-toggle
+                            label="Bedrock API Key"
+                            data-field="bedrock_api_key"
+                            .value=${this._bedrockApiKey}
+                            ?disabled=${this._isSubmitting}
+                            placeholder=${this._isEditing ? 'Leave blank to keep existing key' : ''}
+                            @sl-input=${(e: Event) => {
+                              this._bedrockApiKey = (
+                                e.target as HTMLInputElement
+                              ).value;
+                              this._syncBedrockApiKey();
+                            }}
+                          >
+                            <div slot="help-text">
+                              Generate a key in the AWS Bedrock console
+                              Quickstart. Use the same AWS region. Short-term
+                              keys expire.
+                            </div>
+                          </sl-input>
+                        `
+                      : html`
+                          <sl-input
+                            label="AWS Access Key ID"
+                            data-field="bedrock_access_key_id"
+                            .value=${this._bedrockAccessKeyId}
+                            @sl-input=${(e: Event) => {
+                              this._bedrockAccessKeyId = (
+                                e.target as HTMLInputElement
+                              ).value;
+                              this._syncBedrockApiKey();
+                              this.requestUpdate();
+                            }}
+                            placeholder=${
+                              this._isEditing
+                                ? 'Leave blank to keep existing key'
+                                : ''
+                            }
+                            ?disabled=${this._isSubmitting}
+                          >
+                            <div slot="help-text">
+                              IAM credentials with Bedrock access. Find them in
+                              the AWS console under IAM &gt; Access keys.
+                            </div>
+                          </sl-input>
+                          <sl-input
+                            type="password"
+                            password-toggle
+                            label="AWS Secret Access Key"
+                            data-field="bedrock_secret_access_key"
+                            .value=${this._bedrockSecretAccessKey}
+                            @sl-input=${(e: Event) => {
+                              this._bedrockSecretAccessKey = (
+                                e.target as HTMLInputElement
+                              ).value;
+                              this._syncBedrockApiKey();
+                              this.requestUpdate();
+                            }}
+                            placeholder=${
+                              this._isEditing
+                                ? 'Leave blank to keep existing key'
+                                : ''
+                            }
+                            ?disabled=${this._isSubmitting}
+                          ></sl-input>
+                          <sl-input
+                            type="password"
+                            password-toggle
+                            label="AWS Session Token"
+                            data-field="bedrock_session_token"
+                            .value=${this._bedrockSessionToken}
+                            @sl-input=${(e: Event) => {
+                              this._bedrockSessionToken = (
+                                e.target as HTMLInputElement
+                              ).value;
+                              this._syncBedrockApiKey();
+                              this.requestUpdate();
+                            }}
+                            placeholder="Optional, for temporary credentials"
+                            ?disabled=${this._isSubmitting}
+                          ></sl-input>
+                        `
+                  }
                   <sl-input
                     label="AWS region"
                     data-field="bedrock_region"
