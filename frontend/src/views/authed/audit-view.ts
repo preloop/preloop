@@ -123,6 +123,8 @@ const EVENT_TYPE_OPTIONS = [
  * Once the event is found, its day becomes the date filter, so the operator
  * lands on a page whose filter bar explains itself.
  */
+// Typing in the tool-name search refetches once the user pauses.
+const TOOL_SEARCH_DEBOUNCE_MS = 300;
 const DEEP_LINK_PAGE_SIZE = 200;
 const DEEP_LINK_PAGES = 4;
 /** The fixed console header, which a scrolled-to row must clear. */
@@ -178,6 +180,8 @@ export class AuditView extends AuthedElement {
   // Realtime subscription handle + debounced refresh timer.
   private _unsubscribeRealtime: (() => void) | null = null;
   private _refreshTimer: number | null = null;
+  // Debounce for the tool-name search box, so typing filters the list.
+  private _toolSearchTimer: number | null = null;
   // Live indicator pulse — flips briefly when a websocket event arrives so
   // the user sees the page is wired to the realtime bus.
   @state() private _livePulse = false;
@@ -230,6 +234,7 @@ export class AuditView extends AuthedElement {
       window.clearTimeout(this._refreshTimer);
       this._refreshTimer = null;
     }
+    this._cancelToolSearch();
     if (this._livePulseTimer !== null) {
       window.clearTimeout(this._livePulseTimer);
       this._livePulseTimer = null;
@@ -468,11 +473,29 @@ export class AuditView extends AuthedElement {
   }
 
   private _applyFilters() {
+    this._cancelToolSearch();
     this._page = 0;
     this._loadTimeline();
   }
 
+  private _cancelToolSearch() {
+    if (this._toolSearchTimer !== null) {
+      window.clearTimeout(this._toolSearchTimer);
+      this._toolSearchTimer = null;
+    }
+  }
+
+  private _onToolSearchInput(value: string) {
+    this._toolNameFilter = value;
+    this._cancelToolSearch();
+    this._toolSearchTimer = window.setTimeout(() => {
+      this._toolSearchTimer = null;
+      this._applyFilters();
+    }, TOOL_SEARCH_DEBOUNCE_MS);
+  }
+
   private _clearFilters() {
+    this._cancelToolSearch();
     this._eventTypeFilters = [];
     this._outcomeFilters = [];
     this._toolNameFilter = '';
@@ -1009,10 +1032,20 @@ export class AuditView extends AuthedElement {
     }
   }
 
+  private _policyToolName(event: AuditLog): string {
+    return event.details?.tool_name || event.resource_id || 'unknown tool';
+  }
+
   private _getPrimaryLabel(event: AuditLog): string {
     switch (event.action) {
       case 'tool_call':
         return event.resource_id || event.details?.tool_name || 'Unknown tool';
+      case 'policy_deny':
+        return `Denied by policy: ${this._policyToolName(event)}`;
+      case 'policy_require_approval':
+        return `Approval required: ${this._policyToolName(event)}`;
+      case 'policy_allow':
+        return `Allowed by policy: ${this._policyToolName(event)}`;
       case 'authentication':
         return `Login: ${event.details?.username || 'unknown'}`;
       case 'configuration_change': {
@@ -1303,9 +1336,8 @@ export class AuditView extends AuthedElement {
           size="small"
           clearable
           .value=${this._toolNameFilter}
-          @sl-input=${(e: Event) => {
-            this._toolNameFilter = (e.target as HTMLInputElement).value;
-          }}
+          @sl-input=${(e: Event) =>
+            this._onToolSearchInput((e.target as HTMLInputElement).value)}
           @sl-clear=${() => {
             this._toolNameFilter = '';
             this._applyFilters();
