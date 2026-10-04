@@ -12,7 +12,12 @@ from pathlib import Path
 
 from preloop.config import Settings
 from preloop.models.crud import runtime_session_artifact as crud_artifact
-from preloop.services import artifact_deposit, artifact_mcp_tools, artifact_shapes
+from preloop.services import (
+    artifact_deposit,
+    artifact_mcp_tools,
+    artifact_search,
+    artifact_shapes,
+)
 from preloop.services.artifact_media import _ALLOWED, ARTIFACT_KINDS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,7 +58,12 @@ def test_reserved_label_keys_are_documented():
 def test_every_error_code_is_documented_with_its_status():
     codes = {
         value
-        for module in (artifact_deposit, artifact_mcp_tools, artifact_shapes)
+        for module in (
+            artifact_deposit,
+            artifact_mcp_tools,
+            artifact_search,
+            artifact_shapes,
+        )
         for name, value in vars(module).items()
         if name.startswith("ERROR_") and isinstance(value, str)
     }

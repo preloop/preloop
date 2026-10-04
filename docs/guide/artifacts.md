@@ -251,11 +251,43 @@ is planned in #1089. Until it ships, use the multipart call above.
   `GET /api/v1/runtime-sessions/{id}/artifacts`.
 - **Storage card.** **Settings > Account** shows the session artifact storage
   used per kind against the account budget.
-- **Artifacts page.** A cross-session page with search and filters is planned
-  (memo phase 2).
+- **Account search.** `GET /api/v1/artifacts` searches every session of the
+  account; see [Searching across sessions](#searching-across-sessions).
 
 Browser step screenshots are artifacts of kind `screenshot` too; see
 [Browser steps](browser-agents.md) for how the console shows them.
+
+## Searching across sessions
+
+`GET /api/v1/artifacts` lists the account's artifacts from every session,
+newest first. It needs a user with `view_runtime_sessions`. All parameters are optional and combine with AND:
+
+| Parameter | Meaning |
+| --- | --- |
+| `q` | Full text over the artifact's indexed text (transcripts, documents, and the name, labels and tool of every kind), or a substring of the name. |
+| `kind` | Repeatable; any of the listed kinds. |
+| `label` | Repeatable `key:value`; every value must match (`site:a&label=site:b` matches nothing). `tags:x` matches one tag of the list. |
+| `agent_id`, `tool_name`, `producer`, `runtime_session_id` | Exact match. |
+| `from`, `to` | ISO 8601 on `created_at`; `from` inclusive, `to` exclusive. |
+| `held` | `true` for artifacts under legal hold, `false` for the rest. |
+| `availability` | `available`, `evicted` or `expired`. |
+| `limit`, `cursor` | Same paging as the per-session list. |
+
+Each item is the session list descriptor plus `session_title` and
+`agent_name`. With `q`, a matching text chunk adds `excerpt` (`text`, already
+redacted when it was indexed, and `highlights`, a list of `[start, end)`
+character offsets of the hits) and, for transcripts, `cue_start` in seconds.
+Results stay in time order when `q` is set, so a cursor stays valid while new
+artifacts arrive.
+
+`facets.kind` and `facets.site` count kinds and `labels.site` values over the
+whole filter (not one page). Past 10000 matching rows the counts cover the
+newest 10000 and `facets_truncated` is `true`.
+
+```bash
+curl -s -H "Authorization: Bearer $PRELOOP_TOKEN" \
+  "$PRELOOP_URL/api/v1/artifacts?q=damaged%20pallet&kind=transcript&label=site:nord&from=2026-09-27T00:00:00Z"
+```
 
 ## Retention, legal hold, budget and eviction
 
@@ -335,6 +367,8 @@ whose text starts with the code.
 | 422 | `artifact_parent_invalid` | `parent_artifact_id` is not an artifact of this account. |
 | 422 | `artifact_idempotency_key_invalid` | The `Idempotency-Key` header is empty or too long. |
 | 422 | `artifact_label_filter_invalid`, `artifact_cursor_invalid`, `artifact_limit_invalid` | Bad list query. |
+| 422 | `artifact_availability_invalid`, `artifact_date_range_invalid`, `artifact_query_too_long` | Bad search query (`from` not before `to`, `q` over 500 characters). |
+| 422 | `artifact_agent_id_invalid`, `artifact_runtime_session_id_invalid` | A search id filter is not a UUID. |
 | 507 | `storage_budget_exhausted` | The account budget cannot fit the artifact even after eviction. |
 | (MCP) | `artifact_no_session` | The MCP credential is not bound to a runtime session. |
 | (MCP) | `artifact_link_outside_session` | A `resource_link` names an artifact of another session. |

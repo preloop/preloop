@@ -648,3 +648,189 @@ def account_bytes(
         Sum of ``size_bytes`` where ``availability`` is ``available``.
     """
     return _available_bytes(db, account_id=account_id, kind=kind)
+
+
+#: Matching rows the facet counts read at most (#1086). Past this the counts
+#: describe the newest rows only and the response says so.
+FACET_ROW_CAP = 10_000
+
+
+def _session_visible_after(cutoff: datetime) -> Any:
+    """Session has activity at or after ``cutoff`` (plan history window)."""
+    session = models.RuntimeSession
+    return func.greatest(
+        session.started_at,
+        func.coalesce(session.last_activity_at, session.started_at),
+        func.coalesce(session.ended_at, session.started_at),
+    ) >= cutoff.replace(tzinfo=None)
+
+
+def _account_search_conditions(
+    *,
+    account_id: UUID,
+    query: str | None = None,
+    kinds: list[str] | None = None,
+    labels: list[dict[str, Any]] | None = None,
+    agent_id: UUID | None = None,
+    tool_name: str | None = None,
+    producer: str | None = None,
+    runtime_session_id: UUID | None = None,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    held: bool | None = None,
+    availability: str | None = None,
+    session_cutoff: datetime | None = None,
+) -> list[Any]:
+    """WHERE terms shared by the result page and the facet counts.
+
+    ``account_id`` is first and unconditional on both the artifact and its
+    joined session, so neither the page nor the facets can count a row of
+    another account.
+    """
+    from preloop.models.models.session_search_document import (
+        SOURCE_KIND_ARTIFACT,
+        SessionSearchDocument,
+    )
+
+    table = models.RuntimeSessionArtifact
+    session = models.RuntimeSession
+    conditions: list[Any] = [
+        table.account_id == account_id,
+        session.account_id == account_id,
+    ]
+    if kinds:
+        conditions.append(table.kind.in_(kinds))
+    # One containment term per filter value, ANDed: ``site:a`` and ``site:b``
+    # together match nothing rather than the last value winning.
+    for term in labels or ():
+        conditions.append(table.labels.contains(term))
+    if agent_id is not None:
+        conditions.append(table.agent_id == agent_id)
+    if tool_name is not None:
+        conditions.append(table.tool_name == tool_name)
+    if producer is not None:
+        conditions.append(table.producer == producer)
+    if runtime_session_id is not None:
+        conditions.append(table.runtime_session_id == runtime_session_id)
+    if created_from is not None:
+        conditions.append(table.created_at >= created_from)
+    if created_to is not None:
+        conditions.append(table.created_at < created_to)
+    if held is not None:
+        conditions.append(table.legal_hold.is_(held))
+    if availability is not None:
+        conditions.append(table.availability == availability)
+    if session_cutoff is not None:
+        conditions.append(_session_visible_after(session_cutoff))
+    normalized = " ".join(query.split()) if query else ""
+    if normalized:
+        # One pass over the account's matching chunks (GIN on search_vector),
+        # hashed into a semi-join, instead of a correlated probe per artifact.
+        chunk_match = func.cast(table.id, String).in_(
+            select(SessionSearchDocument.source_id).where(
+                SessionSearchDocument.account_id == account_id,
+                SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT,
+                SessionSearchDocument.search_vector.op("@@")(
+                    func.websearch_to_tsquery("simple", normalized)
+                ),
+            )
+        )
+        escaped = (
+            normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        conditions.append(chunk_match | table.name.ilike(f"%{escaped}%", escape="\\"))
+    return conditions
+
+
+def search_account(
+    db: Session,
+    *,
+    account_id: UUID,
+    limit: int,
+    before: tuple[datetime, UUID] | None = None,
+    **filters: Any,
+) -> list[tuple[models.RuntimeSessionArtifact, str | None, str | None]]:
+    """One page of an account's artifacts across sessions, newest first.
+
+    Keyset pagination on ``(created_at, id)``, also when ``query`` is set:
+    results are ordered by time rather than rank so a cursor stays valid
+    while new artifacts arrive.
+
+    Args:
+        db: Database session.
+        account_id: Account the caller is allowed to read.
+        limit: Maximum rows to return.
+        before: ``(created_at, id)`` of the last row of the previous page.
+        **filters: Keyword filters of :func:`_account_search_conditions`
+            (``query``, ``kinds``, ``labels``, ``agent_id``, ``tool_name``,
+            ``producer``, ``runtime_session_id``, ``created_from``,
+            ``created_to``, ``held``, ``availability``, ``session_cutoff``).
+
+    Returns:
+        ``(artifact, session_title, agent_name)`` tuples. ``agent_name`` is
+        the managed agent's display name, else the session's principal name.
+    """
+    table = models.RuntimeSessionArtifact
+    session = models.RuntimeSession
+    agent = models.ManagedAgent
+    stmt = (
+        select(
+            table,
+            session.title,
+            func.coalesce(agent.display_name, session.runtime_principal_name),
+        )
+        .join(session, session.id == table.runtime_session_id)
+        .outerjoin(
+            agent,
+            (agent.id == table.agent_id) & (agent.account_id == account_id),
+        )
+        .where(*_account_search_conditions(account_id=account_id, **filters))
+    )
+    if before is not None:
+        created_at, artifact_id = before
+        stmt = stmt.where(
+            (table.created_at < created_at)
+            | ((table.created_at == created_at) & (table.id < artifact_id))
+        )
+    stmt = stmt.order_by(table.created_at.desc(), table.id.desc()).limit(limit)
+    return [(row[0], row[1], row[2]) for row in db.execute(stmt).all()]
+
+
+def search_account_facets(
+    db: Session,
+    *,
+    account_id: UUID,
+    cap: int = FACET_ROW_CAP,
+    **filters: Any,
+) -> tuple[dict[str, int], dict[str, int], bool]:
+    """Counts by kind and by ``labels.site`` for the current filter.
+
+    Reads at most ``cap`` matching rows (the newest). The cursor is not a
+    filter here: facets describe the whole result, not one page.
+
+    Returns:
+        ``(by_kind, by_site, truncated)``. ``truncated`` is True when more
+        than ``cap`` rows matched and the counts cover only the newest ``cap``.
+    """
+    table = models.RuntimeSessionArtifact
+    session = models.RuntimeSession
+    matching = (
+        select(table.kind.label("kind"), table.labels["site"].astext.label("site"))
+        .join(session, session.id == table.runtime_session_id)
+        .where(*_account_search_conditions(account_id=account_id, **filters))
+        .order_by(table.created_at.desc(), table.id.desc())
+    )
+    truncated = db.execute(matching.offset(cap).limit(1)).first() is not None
+    capped = matching.limit(cap).subquery()
+    rows = db.execute(
+        select(capped.c.kind, capped.c.site, func.count()).group_by(
+            capped.c.kind, capped.c.site
+        )
+    ).all()
+    by_kind: dict[str, int] = {}
+    by_site: dict[str, int] = {}
+    for kind, site, count in rows:
+        by_kind[kind] = by_kind.get(kind, 0) + int(count)
+        if site is not None:
+            by_site[site] = by_site.get(site, 0) + int(count)
+    return by_kind, by_site, truncated
