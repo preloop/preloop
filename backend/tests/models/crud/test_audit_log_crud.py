@@ -534,6 +534,20 @@ class TestGroupedStandalonePolicyDecisions:
         assert groups[0]["primary_event"].action == "policy_deny"
         assert groups[0]["primary_event"].resource_id == "delete_repo"
 
+    def test_standalone_outcome_comes_from_the_decision(
+        self, db_session: Session, test_account
+    ):
+        row = self._log(
+            db_session, test_account, "policy_deny", "drop_db", "c-x", "denied"
+        )
+        row.details = {**row.details, "decision": "deny"}
+        db_session.flush()
+        groups, _ = crud_audit_log.get_grouped_by_correlation(
+            db_session, account_id=test_account.id, outcome_filter=["deny"]
+        )
+        assert [g["correlation_id"] for g in groups] == ["c-x"]
+        assert groups[0]["outcome"] == "deny"
+
     def test_outcome_filter_deny_includes_standalone(
         self, db_session: Session, test_account, events
     ):

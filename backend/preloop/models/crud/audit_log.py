@@ -535,6 +535,9 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             # e.g. "require_approval" still matches groups that were later
             # approved/declined/expired.
             outcome = event.status  # default (final outcome shown in UI)
+            if event.action in STANDALONE_POLICY_ACTIONS and event.details:
+                # Same source of truth as a correlated decision below.
+                outcome = event.details.get("decision") or outcome
             all_outcomes: set[str] = {outcome} if outcome else set()
             if event.action in _GROUP_ANCHOR_ACTIONS and sub_list:
                 # Look for the policy decision
