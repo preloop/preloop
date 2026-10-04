@@ -269,9 +269,11 @@ describe('FlowExecutionsView', () => {
     ).to.be.at.most(wrapperBox.left + wrapper.clientWidth + 1);
   });
 
-  it('keeps a live duration inside the 960px table without widening it', async () => {
-    // The table's declared min-width. A wider Duration column must come out
-    // of the flexible Subject column, not push the table past its wrapper.
+  it('keeps the Subject column usable at the narrowest layout', async () => {
+    // The table declares a 1080px min-width, which is the fixed columns
+    // (954px) plus a ~120px floor for the flexible Subject column. At a
+    // narrower wrapper the table scrolls instead of crushing the column that
+    // names the run to a sliver.
     fetchStub = stub([
       {
         id: 'exec-running-narrow',
@@ -297,12 +299,19 @@ describe('FlowExecutionsView', () => {
       '.table-wrapper'
     ) as HTMLElement;
     const table = wrapper.querySelector('table') as HTMLElement;
-    expect(table.scrollWidth).to.be.at.most(wrapper.clientWidth);
+    expect(table.clientWidth).to.be.at.least(1080);
+    expect(table.scrollWidth).to.be.greaterThan(wrapper.clientWidth);
 
     const subject = table.querySelector('td.subject-cell') as HTMLElement;
     expect(subject, 'subject cell').to.exist;
-    expect(subject.clientWidth).to.be.greaterThan(0);
-    expect(subject.scrollWidth).to.be.greaterThan(subject.clientWidth);
+    expect(subject.clientWidth).to.be.at.least(120);
+    // The subject is the flexible column and still ellipsizes inside its
+    // floor rather than widening the table.
+    const subjectText = subject.querySelector(
+      '.execution-subject-text'
+    ) as HTMLElement;
+    expect(subjectText, 'subject text').to.exist;
+    expect(subjectText.scrollWidth).to.be.greaterThan(subjectText.clientWidth);
 
     const durationText = table.querySelector(
       'td.duration-cell .duration-text'
@@ -880,14 +889,16 @@ describe('FlowExecutionsView', () => {
       );
     });
 
-    it('fits the widest live duration label without clipping', async () => {
+    it('fits the practical widest live duration label without clipping', async () => {
       const el = await renderRows([
         {
           id: 'exec-running-max',
           flow_id: 'flow-2',
           flow_name: 'Triage',
           status: 'RUNNING',
-          // Ten days in: `formatDurationBetween` emits `999h 59m`.
+          // ~41.7 days in: `formatDurationBetween` emits `999h 59m`, the
+          // widest span the Duration column is tuned to fit. The formatter
+          // has no hour cap, so anything longer clips with an ellipsis.
           start_time: new Date(
             Date.now() - (999 * 60 + 59) * 60_000
           ).toISOString(),

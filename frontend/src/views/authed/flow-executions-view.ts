@@ -183,11 +183,15 @@ export class FlowExecutionsView extends AuthedElement {
          were off-screen behind a scrollbar that only appeared on hover. The
          widths are declared per column in EXECUTION_COLUMNS and set on the
          cell, so a drag can change them; Subject declares none and takes
-         whatever is left. */
+         whatever is left.
+         The 1080px min-width is the fixed columns (954px) plus a ~120px
+         floor for Subject, so the flexible column that names a run stays
+         readable at the narrowest layout. Below that the wrapper scrolls
+         horizontally rather than squeezing Subject to a sliver. */
       table {
         width: 100%;
         border-collapse: collapse;
-        min-width: 960px;
+        min-width: 1080px;
         table-layout: fixed;
         font-size: var(--console-text-body);
       }
@@ -890,11 +894,12 @@ export class FlowExecutionsView extends AuthedElement {
       {
         id: 'duration',
         header: 'Duration',
-        // Fits the widest live label `executionDurationText` emits today,
-        // "Running · 999h 59m" (~142px at the console's 14px tabular-nums,
-        // plus the cell's 8px left padding). The finished labels ("4m 32s")
-        // are far narrower, so this only takes width the flexible Subject
-        // column can spare. Longer elapsed times clip with an ellipsis.
+        // Tuned to the widest live label the console expects to show in
+        // practice, "Running · 999h 59m" (~131px at the 14px tabular-nums,
+        // plus the cell's 8px padding on each side). `formatDurationBetween`
+        // has no hour cap, so a longer span is deliberately clipped by the
+        // cell ellipsis rather than treated as a formatter bound. Finished
+        // labels ("4m 32s") are far narrower.
         width: 152,
         sort: 'number',
         cellClass: 'duration-cell',
