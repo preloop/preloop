@@ -33,6 +33,7 @@ from preloop.services.policy.schema import (
     PolicyValidationError,
     PolicyValidationResult,
     PolicyVersion,
+    SensitiveDataConfig,
     ToolCondition,
     ToolDefinition,
     is_known_tool_source,
@@ -595,6 +596,33 @@ def compute_policy_diff(
                 )
             )
 
+    # Compare the sensitive_data block as one unit
+    current_sensitive = (
+        current.sensitive_data.model_dump(exclude_none=True)
+        if current.sensitive_data
+        else {}
+    )
+    incoming_sensitive = (
+        incoming.sensitive_data.model_dump(exclude_none=True)
+        if incoming.sensitive_data
+        else {}
+    )
+    if current_sensitive != incoming_sensitive:
+        if not incoming_sensitive:
+            operation = "remove"
+        elif not current_sensitive:
+            operation = "add"
+        else:
+            operation = "modify"
+        changes.append(
+            PolicyDiffItem(
+                path="$.sensitive_data",
+                operation=operation,
+                old_value=current_sensitive or None,
+                new_value=incoming_sensitive or None,
+            )
+        )
+
     # Compare defaults
     current_defaults = (
         current.defaults.model_dump(exclude_none=True) if current.defaults else {}
@@ -784,6 +812,9 @@ class PolicyApplier:
 
             if policy.model_io is not None:
                 self._apply_model_io(policy.model_io, dry_run)
+
+            if policy.sensitive_data is not None:
+                self._apply_sensitive_data(policy.sensitive_data, dry_run)
 
             if policy.defaults and not self._apply_defaults(policy.defaults, dry_run):
                 return self._result
@@ -1469,6 +1500,22 @@ class PolicyApplier:
         self._result.model_io_rules_applied = len(rules)
         logger.info("Applied %s model I/O content rules", len(rules))
 
+    def _apply_sensitive_data(
+        self,
+        config: SensitiveDataConfig,
+        dry_run: bool,
+    ) -> None:
+        """Persist the sensitive_data block onto account.meta_data."""
+        from preloop.services.sensitive_data.policy_store import (
+            replace_sensitive_data_config,
+        )
+
+        self._result.sensitive_data_applied = True
+        if dry_run:
+            return
+        replace_sensitive_data_config(self.db, self.account_id, config)
+        logger.info("Applied sensitive_data policy block")
+
 
 def export_current_policy(
     db: Session,
@@ -1646,10 +1693,18 @@ def export_current_policy(
         parse_model_io_rules,
     )
 
-    account = crud_account.get(db, id=account_id_str)
-    model_io_rules = parse_model_io_rules(
-        ((account.meta_data or {}) if account else {}).get(MODEL_IO_META_KEY)
+    from preloop.services.sensitive_data.policy_store import (
+        SENSITIVE_DATA_META_KEY,
+        parse_sensitive_data_config,
     )
+
+    account = crud_account.get(db, id=account_id_str)
+    account_meta = ((account.meta_data or {}) if account else {}) or {}
+    model_io_rules = parse_model_io_rules(account_meta.get(MODEL_IO_META_KEY))
+    sensitive_data = parse_sensitive_data_config(
+        account_meta.get(SENSITIVE_DATA_META_KEY)
+    )
+    has_sensitive_data = bool(sensitive_data.model_dump(exclude_none=True))
 
     return PolicyDocument(
         version=PolicyVersion.V1_0,
@@ -1662,5 +1717,6 @@ def export_current_policy(
         approval_workflows=policy_defs if policy_defs else None,
         tools=tool_defs if tool_defs else None,
         model_io=model_io_rules if model_io_rules else None,
+        sensitive_data=sensitive_data if has_sensitive_data else None,
         defaults=DefaultsDefinition(),  # Default settings
     )

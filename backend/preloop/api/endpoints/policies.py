@@ -53,6 +53,20 @@ from preloop.services.model_content_policy import (
     serialize_model_io_rules,
     upsert_model_io_rule,
 )
+from preloop.services.policy.schema import (
+    PIIDetectorConfig,
+    SensitiveDataDetectorsConfig,
+)
+from preloop.services.sensitive_data.detectors import (
+    DetectorConfig,
+    detect,
+    list_types,
+    types_found,
+)
+from preloop.services.sensitive_data.policy_store import (
+    detector_config_from,
+    load_sensitive_data_config,
+)
 from preloop.services.policy_version_service import PolicyVersionService
 from preloop.utils.permissions import require_permission
 
@@ -145,6 +159,63 @@ class ModelIORulePatchRequest(BaseModel):
     """Partial update for enable/disable."""
 
     enabled: Optional[bool] = None
+
+
+class SensitiveDataTypeInfo(BaseModel):
+    """One selectable sensitive-data type (feeds the console page)."""
+
+    id: str
+    label: str
+    description: str
+    example: str
+    locales: List[str] = Field(default_factory=list)
+    checksum: bool = False
+    builtin: bool = True
+
+
+class SensitiveDataTypesResponse(BaseModel):
+    """Built-in, registered and account-defined types."""
+
+    types: List[SensitiveDataTypeInfo]
+    default_types: List[str] = Field(
+        description="Types the pii detector scans when a rule lists none"
+    )
+
+
+class SensitiveDataTestRequest(BaseModel):
+    """Run the detectors on sample text. The text is never logged or stored."""
+
+    text: str = Field(..., max_length=200_000, description="Sample text to scan")
+    types: Optional[List[str]] = Field(
+        None, description="Types to scan; default every type in the config"
+    )
+    config: Optional[SensitiveDataDetectorsConfig] = Field(
+        None,
+        description=(
+            "Detector configuration to test; default the account's stored block"
+        ),
+    )
+
+
+class SensitiveDataMatch(BaseModel):
+    """One detected span (offsets into the submitted text)."""
+
+    type: str
+    start: int
+    end: int
+    confidence: float
+
+
+class SensitiveDataTestResponse(BaseModel):
+    """Detector output for the submitted text."""
+
+    matches: List[SensitiveDataMatch]
+    types_found: List[str]
+    count: int
+    redacted_preview: Optional[str] = Field(
+        None,
+        description="Text with matches replaced; populated once redaction lands",
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -438,6 +509,89 @@ async def upload_policy(
 
 
 @router.get(
+    "/policies/sensitive-data/types",
+    response_model=SensitiveDataTypesResponse,
+    summary="List sensitive-data detector types",
+)
+@require_permission("view_policies")
+def list_sensitive_data_types(
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SensitiveDataTypesResponse:
+    """Type id, label, description, example and locales for every detector.
+
+    Includes the account's custom patterns and keyword lists so the console
+    can offer them next to the built-ins.
+    """
+    from preloop.services.policy.schema import SUPPORTED_PII_TYPES
+
+    config = detector_config_from(load_sensitive_data_config(db, account.id))
+    return SensitiveDataTypesResponse(
+        types=[SensitiveDataTypeInfo(**info.as_dict()) for info in list_types(config)],
+        default_types=list(SUPPORTED_PII_TYPES),
+    )
+
+
+@router.post(
+    "/policies/sensitive-data/test",
+    response_model=SensitiveDataTestResponse,
+    summary="Test sensitive-data detectors on sample text",
+)
+@require_permission("view_policies")
+def test_sensitive_data_detectors(
+    request: SensitiveDataTestRequest,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SensitiveDataTestResponse:
+    """Return match spans for ``text``. The input is never logged or stored."""
+    if request.config is not None:
+        config = DetectorConfig.from_mapping(
+            request.config.model_dump(exclude_none=True, mode="json")
+        )
+    else:
+        config = detector_config_from(load_sensitive_data_config(db, account.id))
+    if request.types is not None:
+        try:
+            PIIDetectorConfig(types=request.types)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+            ) from exc
+        config = config.with_types(request.types)
+    matches = detect(request.text, config)
+    return SensitiveDataTestResponse(
+        matches=[
+            SensitiveDataMatch(
+                type=m.type, start=m.start, end=m.end, confidence=m.confidence
+            )
+            for m in matches
+        ],
+        types_found=types_found(matches),
+        count=len(matches),
+        redacted_preview=None,
+    )
+
+
+def _reject_unknown_pii_types(db: Session, account: Account, rule: ModelIORule) -> None:
+    """Standalone rule writes cannot see a YAML document; check the account."""
+    detectors = rule.detectors
+    if detectors is None or not isinstance(detectors.pii, PIIDetectorConfig):
+        return
+    known = load_sensitive_data_config(db, account.id).known_types()
+    unknown = [item for item in detectors.pii.types if item not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"Unknown PII types {unknown}. Define custom patterns or keyword "
+                "lists under sensitive_data.detectors first."
+            ),
+        )
+
+
+@router.get(
     "/policies/model-io-rules",
     response_model=ModelIORuleListResponse,
     summary="List model I/O content policy rules",
@@ -465,6 +619,7 @@ def create_model_io_rule(
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Save one model I/O rule from the Policies console form."""
+    _reject_unknown_pii_types(db, account, rule)
     saved = upsert_model_io_rule(db, account.id, rule)
     db.commit()
     return saved.model_dump(exclude_none=True, mode="json")
@@ -491,6 +646,7 @@ def update_model_io_rule(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"model_io rule '{rule_id}' not found",
         )
+    _reject_unknown_pii_types(db, account, rule)
     saved = upsert_model_io_rule(db, account.id, rule)
     db.commit()
     return saved.model_dump(exclude_none=True, mode="json")

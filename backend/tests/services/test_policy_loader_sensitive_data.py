@@ -1,0 +1,86 @@
+"""PolicyApplier and export handle the ``sensitive_data`` block (#1121)."""
+
+from __future__ import annotations
+
+import uuid
+from unittest.mock import MagicMock
+
+from preloop.services.policy import PolicyDocument, export_current_policy
+from preloop.services.policy.loader import PolicyApplier
+
+BLOCK = {
+    "detectors": {
+        "locales": ["de"],
+        "custom_patterns": [{"name": "employee_id", "regex": r"EMP-\d{6}"}],
+    }
+}
+
+
+def test_apply_persists_sensitive_data_block(mocker) -> None:
+    replace = mocker.patch(
+        "preloop.services.sensitive_data.policy_store.replace_sensitive_data_config"
+    )
+    applier = PolicyApplier(MagicMock(), uuid.uuid4())
+    mocker.patch.object(applier, "_validate_references", return_value=[])
+    policy = PolicyDocument.model_validate(
+        {"version": "1.0", "metadata": {"name": "p"}, "sensitive_data": BLOCK}
+    )
+    result = applier.apply(policy, dry_run=False)
+    assert result.success, result.errors
+    assert result.sensitive_data_applied is True
+    replace.assert_called_once()
+    assert replace.call_args.args[2].detectors.locales == ["de"]
+
+
+def test_dry_run_does_not_persist(mocker) -> None:
+    replace = mocker.patch(
+        "preloop.services.sensitive_data.policy_store.replace_sensitive_data_config"
+    )
+    applier = PolicyApplier(MagicMock(), uuid.uuid4())
+    mocker.patch.object(applier, "_validate_references", return_value=[])
+    policy = PolicyDocument.model_validate(
+        {"version": "1.0", "metadata": {"name": "p"}, "sensitive_data": BLOCK}
+    )
+    result = applier.apply(policy, dry_run=True)
+    assert result.success
+    assert result.sensitive_data_applied is True
+    replace.assert_not_called()
+
+
+def test_export_includes_stored_block(mocker) -> None:
+    account = MagicMock()
+    account.meta_data = {"sensitive_data": BLOCK}
+    mocker.patch("preloop.models.crud.crud_account.get", return_value=account)
+    mocker.patch(
+        "preloop.models.crud.crud_mcp_server.get_multi_by_account", return_value=[]
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_approval_workflow.get_multi_by_account",
+        return_value=[],
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_tool_configuration.get_multi_by_account",
+        return_value=[],
+    )
+    exported = export_current_policy(MagicMock(), str(uuid.uuid4()))
+    assert exported.sensitive_data is not None
+    assert exported.sensitive_data.detectors.custom_patterns[0].name == "employee_id"
+
+
+def test_export_omits_block_when_absent(mocker) -> None:
+    account = MagicMock()
+    account.meta_data = {}
+    mocker.patch("preloop.models.crud.crud_account.get", return_value=account)
+    mocker.patch(
+        "preloop.models.crud.crud_mcp_server.get_multi_by_account", return_value=[]
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_approval_workflow.get_multi_by_account",
+        return_value=[],
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_tool_configuration.get_multi_by_account",
+        return_value=[],
+    )
+    exported = export_current_policy(MagicMock(), str(uuid.uuid4()))
+    assert exported.sensitive_data is None

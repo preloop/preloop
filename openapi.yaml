@@ -12268,6 +12268,55 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/policies/sensitive-data/types:
+    get:
+      tags:
+      - Policies
+      summary: List sensitive-data detector types
+      description: 'Type id, label, description, example and locales for every detector.
+
+
+        Includes the account''s custom patterns and keyword lists so the console
+
+        can offer them next to the built-ins.'
+      operationId: list_sensitive_data_types_api_v1_policies_sensitive_data_types_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensitiveDataTypesResponse'
+      security:
+      - bearerAuth: []
+  /api/v1/policies/sensitive-data/test:
+    post:
+      tags:
+      - Policies
+      summary: Test sensitive-data detectors on sample text
+      description: Return match spans for ``text``. The input is never logged or stored.
+      operationId: test_sensitive_data_detectors_api_v1_policies_sensitive_data_test_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SensitiveDataTestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SensitiveDataTestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/policies/model-io-rules:
     get:
       tags:
@@ -20791,6 +20840,46 @@ components:
       type: object
       title: CustomCommands
       description: Configuration for custom commands (admin-only).
+    CustomPatternDefinition:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Type name used in rules (snake_case)
+        regex:
+          type: string
+          title: Regex
+          description: Python regular expression
+        flags:
+          items:
+            type: string
+            enum:
+            - i
+            - m
+            - s
+            - x
+          type: array
+          title: Flags
+          description: 'Regex flags: i, m, s, x'
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable note
+      type: object
+      required:
+      - name
+      - regex
+      title: CustomPatternDefinition
+      description: 'Account-defined regex sensitive-data type.
+
+
+        The regex is compiled through a safety gate: a length cap and a static
+
+        check that rejects nested quantifiers such as ``(a+)+``. It also runs
+
+        under the rule''s detector timeout.'
     DailySchedule:
       properties:
         timezone:
@@ -25020,6 +25109,36 @@ components:
       type: object
       title: IssueUpdate
       description: Model for updating an issue.
+    KeywordListDefinition:
+      properties:
+        name:
+          type: string
+          title: Name
+          description: Type name used in rules (snake_case)
+        terms:
+          items:
+            type: string
+          type: array
+          minItems: 1
+          title: Terms
+          description: Terms to match
+        case_sensitive:
+          type: boolean
+          title: Case Sensitive
+          description: Match case exactly
+          default: false
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Human-readable note
+      type: object
+      required:
+      - name
+      - terms
+      title: KeywordListDefinition
+      description: Account-defined keyword list matched on whole words only.
     KillSwitchActivateRequest:
       properties:
         scopes:
@@ -27368,17 +27487,22 @@ components:
             type: string
           type: array
           title: Types
-          description: PII entity types to scan (email, phone, credit_card)
+          description: Sensitive data types to scan (built-in ids or custom entry
+            names); default email, phone, credit_card
       type: object
       title: PIIDetectorConfig
       description: 'Deterministic PII detector configuration.
 
 
-        ``types`` selects which entity recognizers run. Unknown types are
+        ``types`` selects which entity recognizers run: any built-in sensitive
 
-        rejected at schema validation. Third-party recognizers are out of
+        data type or the name of a custom pattern or keyword list declared under
 
-        scope and must stay off by default.'
+        ``sensitive_data.detectors``. Unknown names are rejected at schema
+
+        validation. Third-party recognizers must be registered explicitly and
+
+        stay off by default.'
     PasskeySummary:
       properties:
         id:
@@ -27575,6 +27699,11 @@ components:
           title: Model Io Rules Applied
           description: Number of model I/O content rules applied
           default: 0
+        sensitive_data_applied:
+          type: boolean
+          title: Sensitive Data Applied
+          description: Whether the sensitive_data block was applied
+          default: false
         warnings:
           items:
             type: string
@@ -31282,6 +31411,178 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SensitiveDataDetectorsConfig:
+      properties:
+        types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Types
+          description: Default types to scan; omit for every built-in and custom type
+        locales:
+          items:
+            type: string
+          type: array
+          title: Locales
+          description: national_id locales (us, de, uk, fr, nl); empty means all
+        custom_patterns:
+          items:
+            $ref: '#/components/schemas/CustomPatternDefinition'
+          type: array
+          title: Custom Patterns
+        keywords:
+          items:
+            $ref: '#/components/schemas/KeywordListDefinition'
+          type: array
+          title: Keywords
+        medical_record_number_pattern:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Medical Record Number Pattern
+          description: Identifier regex that follows an MRN keyword (default digits)
+      type: object
+      title: SensitiveDataDetectorsConfig
+      description: 'Account-wide detector configuration shared by every rule.
+
+
+        ``types`` is the default scan set for rules that do not list their own.
+
+        ``locales`` narrows ``national_id``. Custom patterns and keyword lists
+
+        become selectable type names.'
+    SensitiveDataMatch:
+      properties:
+        type:
+          type: string
+          title: Type
+        start:
+          type: integer
+          title: Start
+        end:
+          type: integer
+          title: End
+        confidence:
+          type: number
+          title: Confidence
+      type: object
+      required:
+      - type
+      - start
+      - end
+      - confidence
+      title: SensitiveDataMatch
+      description: One detected span (offsets into the submitted text).
+    SensitiveDataTestRequest:
+      properties:
+        text:
+          type: string
+          maxLength: 200000
+          title: Text
+          description: Sample text to scan
+        types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Types
+          description: Types to scan; default every type in the config
+        config:
+          anyOf:
+          - $ref: '#/components/schemas/SensitiveDataDetectorsConfig'
+          - type: 'null'
+          description: Detector configuration to test; default the account's stored
+            block
+      type: object
+      required:
+      - text
+      title: SensitiveDataTestRequest
+      description: Run the detectors on sample text. The text is never logged or stored.
+    SensitiveDataTestResponse:
+      properties:
+        matches:
+          items:
+            $ref: '#/components/schemas/SensitiveDataMatch'
+          type: array
+          title: Matches
+        types_found:
+          items:
+            type: string
+          type: array
+          title: Types Found
+        count:
+          type: integer
+          title: Count
+        redacted_preview:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Redacted Preview
+          description: Text with matches replaced; populated once redaction lands
+      type: object
+      required:
+      - matches
+      - types_found
+      - count
+      title: SensitiveDataTestResponse
+      description: Detector output for the submitted text.
+    SensitiveDataTypeInfo:
+      properties:
+        id:
+          type: string
+          title: Id
+        label:
+          type: string
+          title: Label
+        description:
+          type: string
+          title: Description
+        example:
+          type: string
+          title: Example
+        locales:
+          items:
+            type: string
+          type: array
+          title: Locales
+        checksum:
+          type: boolean
+          title: Checksum
+          default: false
+        builtin:
+          type: boolean
+          title: Builtin
+          default: true
+      type: object
+      required:
+      - id
+      - label
+      - description
+      - example
+      title: SensitiveDataTypeInfo
+      description: One selectable sensitive-data type (feeds the console page).
+    SensitiveDataTypesResponse:
+      properties:
+        types:
+          items:
+            $ref: '#/components/schemas/SensitiveDataTypeInfo'
+          type: array
+          title: Types
+        default_types:
+          items:
+            type: string
+          type: array
+          title: Default Types
+          description: Types the pii detector scans when a rule lists none
+      type: object
+      required:
+      - types
+      - default_types
+      title: SensitiveDataTypesResponse
+      description: Built-in, registered and account-defined types.
     SessionArtifactSettingsResponse:
       properties:
         audio_storage_enabled:

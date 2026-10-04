@@ -61,6 +61,8 @@ from preloop.services.policy_evaluator import (
     _log_policy_decision_async,
     evaluate_condition_against_bindings,
 )
+from preloop.services.sensitive_data.detectors import DetectorConfig
+from preloop.services.sensitive_data.policy_store import load_detector_config
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,7 @@ class DetectorSummary:
 
     pii_found: Optional[bool] = None
     pii_types_found: Optional[List[str]] = None
+    pii_count: int = 0
     injection_score: Optional[float] = None
     injection_matched_patterns: Optional[List[str]] = None
     moderation_flagged: Optional[bool] = None
@@ -108,6 +111,7 @@ class DetectorSummary:
         if self.pii_found is not None:
             payload["pii.found"] = self.pii_found
             payload["pii.types_found"] = list(self.pii_types_found or [])
+            payload["pii.count"] = int(self.pii_count)
         if self.injection_score is not None:
             payload["injection.score"] = self.injection_score
             payload["injection.matched_patterns"] = list(
@@ -437,13 +441,18 @@ def _moderation_backend_for_rule(rule: ModelIORule) -> str:
     return detectors.moderation.backend
 
 
-def _run_detectors(rule: ModelIORule, text: str) -> DetectorSummary:
+def _run_detectors(
+    rule: ModelIORule,
+    text: str,
+    detector_config: Optional[DetectorConfig] = None,
+) -> DetectorSummary:
     """Run only the detectors this rule enables."""
     summary = DetectorSummary()
     if _rule_enables_detector(rule, "pii"):
-        result = detect_pii(text, _pii_types_for_rule(rule))
+        result = detect_pii(text, _pii_types_for_rule(rule), config=detector_config)
         summary.pii_found = result.found
         summary.pii_types_found = result.types_found
+        summary.pii_count = result.count
     if _rule_enables_detector(rule, "injection"):
         result = detect_injection(text)
         summary.injection_score = result.score
@@ -455,7 +464,11 @@ def _run_detectors(rule: ModelIORule, text: str) -> DetectorSummary:
     return summary
 
 
-def _run_detectors_with_timeout(rule: ModelIORule, text: str) -> DetectorSummary:
+def _run_detectors_with_timeout(
+    rule: ModelIORule,
+    text: str,
+    detector_config: Optional[DetectorConfig] = None,
+) -> DetectorSummary:
     """Run detectors with the rule's hard timeout.
 
     The future is submitted on a process-level pool so this function can
@@ -464,7 +477,7 @@ def _run_detectors_with_timeout(rule: ModelIORule, text: str) -> DetectorSummary
     process exit.
     """
     timeout_s = max(rule.detector_timeout_ms, 1) / 1000.0
-    future = _DETECTOR_POOL.submit(_run_detectors, rule, text)
+    future = _DETECTOR_POOL.submit(_run_detectors, rule, text, detector_config)
     try:
         return future.result(timeout=timeout_s)
     except concurrent.futures.TimeoutError:
@@ -510,6 +523,7 @@ def _build_bindings(
         "pii": {
             "found": bool(summary.pii_found),
             "types_found": list(summary.pii_types_found or []),
+            "count": int(summary.pii_count),
         },
         "injection": {
             "score": float(summary.injection_score or 0.0),
@@ -599,11 +613,14 @@ def evaluate_model_io(
     session_id: Optional[str] = None,
     account_id: Optional[Any] = None,
     user_id: Optional[Any] = None,
+    detector_config: Optional[DetectorConfig] = None,
 ) -> ModelIODecision:
     """Evaluate model I/O rules for one target.
 
     First matching enabled rule condition wins. No matching rule: allow.
     Detector timeout follows ``on_detector_timeout`` (default deny).
+    ``detector_config`` carries the account's custom patterns, keyword lists
+    and locales (``sensitive_data.detectors``); ``None`` means built-ins only.
 
     ``notify`` is the exception to first match wins (#959): a matching
     notify condition records a hit for its rule and evaluation moves on to
@@ -638,7 +655,7 @@ def evaluate_model_io(
 
     for rule in matching:
         notify_only = is_notify_only(rule)
-        summary = _run_detectors_with_timeout(rule, text)
+        summary = _run_detectors_with_timeout(rule, text, detector_config)
         if summary.timed_out:
             if notify_only:
                 continue
@@ -952,6 +969,12 @@ def _await_model_io_hold(awaitable: Any) -> bool:
     )
 
 
+def _gateway_detector_config(gateway: Any) -> Optional[DetectorConfig]:
+    """Detector configuration parked by ``_load_gateway_policy_rules``."""
+    config = getattr(gateway, "_sensitive_detector_config", None)
+    return config if isinstance(config, DetectorConfig) else None
+
+
 def _session_id_from_gateway(gateway: Any) -> Optional[str]:
     return getattr(gateway, "_client_session_id", None) or getattr(
         gateway, "_resolved_runtime_session_id", None
@@ -990,10 +1013,23 @@ def _apply_decision(
 def _load_gateway_policy_rules(
     gateway: Any, *, ai_model: Any, provider: str
 ) -> List[ModelIORule]:
-    """Finish the policy read before waits, and fail closed on database errors."""
+    """Finish the policy read before waits, and fail closed on database errors.
+
+    The account's detector configuration is read in the same window and
+    parked on ``gateway._sensitive_detector_config`` so the evaluator can
+    use custom patterns after the connection has been released.
+    """
     try:
         try:
-            return load_model_io_rules(gateway.db, gateway.auth_context.account_id)
+            rules = load_model_io_rules(gateway.db, gateway.auth_context.account_id)
+            if rules:
+                try:
+                    gateway._sensitive_detector_config = load_detector_config(
+                        gateway.db, gateway.auth_context.account_id
+                    )
+                except Exception:  # noqa: BLE001 - built-ins only is a safe default
+                    gateway._sensitive_detector_config = None
+            return rules
         finally:
             release = getattr(gateway, "release_db_for_wait", None)
             if release is not None:
@@ -1030,6 +1066,7 @@ def enforce_request_policy(
         session_id=_session_id_from_gateway(gateway),
         account_id=account_id,
         user_id=getattr(gateway.auth_context.user, "id", None),
+        detector_config=_gateway_detector_config(gateway),
     )
     _apply_decision(
         gateway=gateway,
@@ -1061,6 +1098,7 @@ def enforce_response_policy(
         session_id=_session_id_from_gateway(gateway),
         account_id=account_id,
         user_id=getattr(gateway.auth_context.user, "id", None),
+        detector_config=_gateway_detector_config(gateway),
     )
     _apply_decision(
         gateway=gateway,
@@ -1235,6 +1273,7 @@ def _notify_only_stream(
                     session_id=_session_id_from_gateway(gateway),
                     account_id=gateway.auth_context.account_id,
                     user_id=getattr(gateway.auth_context.user, "id", None),
+                    detector_config=_gateway_detector_config(gateway),
                 )
         except Exception:  # noqa: BLE001 - notify must never fail the call
             logger.warning("Notify-only response evaluation failed", exc_info=True)

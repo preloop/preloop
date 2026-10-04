@@ -2,23 +2,35 @@
 
 Detectors are deterministic and have no network I/O unless a test registers
 a fake moderation backend. Prompt-injection scoring reuses
-``security_screen.score_text``. PII is regex plus a Luhn check for
-credit-card-like numbers. Moderation defaults to a local keyword ruleset.
+``security_screen.score_text``. PII detection is a thin wrapper over the
+shared span-returning library in ``preloop.services.sensitive_data``.
+Moderation defaults to a local keyword ruleset.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
 
 from preloop.services.security_screen import score_text
-
-PII_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
-PII_PHONE_RE = re.compile(
-    r"(?<!\w)(?:\+?\d{1,3}[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?)\d{3}[\s.\-]?\d{4}(?!\w)"
+from preloop.services.sensitive_data.detectors import (
+    _CARD_RE,
+    _EMAIL_RE,
+    _PHONE_US_RE,
+    DetectorConfig,
+    detect,
+    types_found,
 )
-PII_CARD_RE = re.compile(r"(?<!\d)(?:\d[ \-]?){13,19}(?!\d)")
+
+#: Types the legacy ``detect_pii`` default scans; new built-in types are
+#: opt-in so existing rules keep their behaviour.
+LEGACY_PII_TYPES = ("email", "phone", "credit_card")
+
+#: Compatibility aliases. ``session_search_index`` masks emails with
+#: ``PII_EMAIL_RE``; the patterns now live in the shared library.
+PII_EMAIL_RE = _EMAIL_RE
+PII_PHONE_RE = _PHONE_US_RE
+PII_CARD_RE = _CARD_RE
 
 _INJECTION_CATEGORY = "prompt_injection"
 
@@ -36,6 +48,7 @@ class PIIResult:
 
     found: bool
     types_found: List[str] = field(default_factory=list)
+    count: int = 0
 
 
 @dataclass(frozen=True)
@@ -73,45 +86,31 @@ def reset_moderation_backends() -> None:
     _MODERATION_BACKENDS["local"] = local_moderation_check
 
 
-def _luhn_ok(digits: str) -> bool:
-    """Return True when ``digits`` pass the Luhn checksum."""
-    if not digits.isdigit() or not (13 <= len(digits) <= 19):
-        return False
-    total = 0
-    reverse = digits[::-1]
-    for index, char in enumerate(reverse):
-        number = int(char)
-        if index % 2 == 1:
-            number *= 2
-            if number > 9:
-                number -= 9
-        total += number
-    return total % 10 == 0
-
-
-def detect_pii(text: str, types: Optional[Sequence[str]] = None) -> PIIResult:
+def detect_pii(
+    text: str,
+    types: Optional[Sequence[str]] = None,
+    config: Optional[DetectorConfig] = None,
+) -> PIIResult:
     """Scan ``text`` for configured PII entity types.
+
+    Thin wrapper over :func:`preloop.services.sensitive_data.detect` kept
+    for the model I/O evaluator and its tests.
 
     Args:
         text: Canonical request or response text.
-        types: Subset of email, phone, credit_card. Default is all three.
+        types: Type names to scan. Default is email, phone, credit_card.
+        config: Account detector configuration (custom patterns, keyword
+            lists, locales). ``types`` narrows it when both are given.
 
     Returns:
-        ``PIIResult`` with ``found`` and the matched type names.
+        ``PIIResult`` with ``found``, the matched type names and the match
+        count.
     """
-    selected = list(types) if types else ["email", "phone", "credit_card"]
-    found: List[str] = []
-    if "email" in selected and PII_EMAIL_RE.search(text):
-        found.append("email")
-    if "phone" in selected and PII_PHONE_RE.search(text):
-        found.append("phone")
-    if "credit_card" in selected:
-        for match in PII_CARD_RE.finditer(text):
-            digits = re.sub(r"\D", "", match.group(0))
-            if _luhn_ok(digits):
-                found.append("credit_card")
-                break
-    return PIIResult(found=bool(found), types_found=found)
+    selected = list(types) if types else list(LEGACY_PII_TYPES)
+    base = config or DetectorConfig()
+    matches = detect(text, base.with_types(selected))
+    names = types_found(matches)
+    return PIIResult(found=bool(names), types_found=names, count=len(matches))
 
 
 _INJECTION_RULE_NAMES = frozenset(

@@ -212,6 +212,7 @@ markers = [
     "github: GitHub-specific tests",
     "gitlab: GitLab-specific tests",
     "jira: Jira-specific tests",
+    "benchmark: timing assertions that may be skipped on slow runners",
 ]
 filterwarnings = [
     # Ignore pytest asyncio marker on non-async functions (class-level pytestmark)
