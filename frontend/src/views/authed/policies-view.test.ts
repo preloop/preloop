@@ -667,6 +667,8 @@ describe('PoliciesView', () => {
   it('saves the Sensitive data tab through the policy diff and upload path', async () => {
     let uploadedYaml = '';
     let previewed = false;
+    const agentUrls: string[] = [];
+    let agentsFail = false;
     fetchStub = sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -691,7 +693,16 @@ describe('PoliciesView', () => {
           return json([]);
         }
         if (url.includes('/api/v1/agents')) {
-          return json({ items: [] });
+          agentUrls.push(url);
+          if (agentsFail) return json({ detail: 'boom' }, 500);
+          // Mirrors the endpoint: le=100 on limit.
+          const limit = Number(
+            new URL(url, location.origin).searchParams.get('limit')
+          );
+          if (limit > 100) return json({ detail: 'limit too large' }, 422);
+          return json({
+            items: [{ id: 'agent-1', display_name: 'Billing bot' }],
+          });
         }
         if (url.includes('/sensitive-data/types')) {
           return json({
@@ -735,6 +746,28 @@ describe('PoliciesView', () => {
       html`<policies-view></policies-view>`
     )) as PoliciesView;
     await waitUntil(() => !(element as any)._loading, 'still loading');
+    // The agent picker loads within the endpoint's page cap, and a failed
+    // load is shown rather than leaving the picker silently empty.
+    agentsFail = true;
+    await (element as any)._loadSensitiveOptions();
+    await element.updateComplete;
+    const failedPanel = element.shadowRoot!.querySelector(
+      'sensitive-data-panel'
+    )!;
+    await failedPanel.updateComplete;
+    expect(
+      failedPanel.shadowRoot!.querySelector(
+        '[data-testid="sensitive-options-error"]'
+      )?.textContent
+    ).to.contain('Could not load the agents list');
+    agentsFail = false;
+    await (element as any)._loadSensitiveOptions();
+    await element.updateComplete;
+    expect(agentUrls.every((url) => url.includes('limit=100'))).to.be.true;
+    expect((element as any)._sensitiveAgents).to.deep.equal([
+      { id: 'agent-1', name: 'Billing bot' },
+    ]);
+    expect((element as any)._sensitiveOptionsError).to.equal('');
     const tab = element.shadowRoot!.querySelector(
       'sl-tab[panel="sensitive-data"]'
     );

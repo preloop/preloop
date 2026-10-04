@@ -214,6 +214,7 @@ export class PoliciesView extends LitElement {
   @state() private _pendingSensitiveSave = false;
   @state() private _sensitiveAgents: AgentOption[] = [];
   @state() private _sensitiveServers: string[] = [];
+  @state() private _sensitiveOptionsError = '';
   private _sensitiveOptionsLoaded = false;
   @state() private _tools: Tool[] = [];
   @state() private _approvalPolicies: ApprovalWorkflow[] = [];
@@ -3390,9 +3391,18 @@ defaults:
     if (this._sensitiveOptionsLoaded) return;
     this._sensitiveOptionsLoaded = true;
     const [agents, servers] = await Promise.allSettled([
-      getAccountAgents({ limit: 200 }),
+      // The endpoint caps a page at 100.
+      getAccountAgents({ limit: 100 }),
       getMCPServers(),
     ]);
+    const failed = [
+      agents.status === 'rejected' ? 'agents' : '',
+      servers.status === 'rejected' ? 'MCP servers' : '',
+    ].filter(Boolean);
+    this._sensitiveOptionsError = failed.length
+      ? `Could not load the ${failed.join(' and ')} list, so those pickers are empty. Reload to try again.`
+      : '';
+    if (failed.length) this._sensitiveOptionsLoaded = false;
     if (agents.status === 'fulfilled') {
       this._sensitiveAgents = agents.value.items.map((agent) => ({
         id: agent.id,
@@ -3546,6 +3556,7 @@ defaults:
                           ...new Set(this._tools.map((tool) => tool.name)),
                         ]}
                         .servers=${this._sensitiveServers}
+                        .optionsError=${this._sensitiveOptionsError}
                         .saving=${this._isUploading}
                         @sensitive-data-save=${this._handleSensitiveSave}
                       ></sensitive-data-panel>

@@ -73,6 +73,8 @@ export class SensitiveDataPanel extends LitElement {
   @property({ type: Array }) servers: string[] = [];
   @property({ type: Boolean }) saving = false;
   @property({ type: Boolean }) readonly = false;
+  /** Set by the page when the agent or server pickers could not load. */
+  @property({ type: String }) optionsError = '';
 
   @state() private _types: SensitiveDataTypeInfo[] = [];
   @state() private _typesError = '';
@@ -402,6 +404,17 @@ export class SensitiveDataPanel extends LitElement {
             </p>`
           : nothing
       }
+      ${
+        this.optionsError
+          ? html`<p
+              class="error"
+              role="alert"
+              data-testid="sensitive-options-error"
+            >
+              ${this.optionsError}
+            </p>`
+          : nothing
+      }
       ${this._renderTypes()} ${this._renderCustom(errors)}
       ${this._renderWhere(errors)} ${this._renderReferences(errors)}
       ${this._renderTest()} ${this._renderSummary()} ${this._renderYaml()}
@@ -554,9 +567,8 @@ export class SensitiveDataPanel extends LitElement {
                 aria-invalid=${nameError(index, item.name) ? 'true' : 'false'}
                 @input=${(e: Event) =>
                   this._update((form) => {
-                    form.customPatterns[index].name = (
-                      e.target as HTMLInputElement
-                    ).value;
+                    const value = (e.target as HTMLInputElement).value;
+                    form.customPatterns[index].name = value;
                   })}
             /></label>
             <label
@@ -606,9 +618,8 @@ export class SensitiveDataPanel extends LitElement {
                 }
                 @input=${(e: Event) =>
                   this._update((form) => {
-                    form.keywords[index].name = (
-                      e.target as HTMLInputElement
-                    ).value;
+                    const value = (e.target as HTMLInputElement).value;
+                    form.keywords[index].name = value;
                   })}
             /></label>
             <label
