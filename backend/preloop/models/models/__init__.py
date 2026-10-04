@@ -59,6 +59,10 @@ from .legal_hold import (
     HOLD_RESOURCE_TYPES,
     LegalHold,
 )
+from .discovered_agent_candidate import (
+    AccountDiscoverySalt,
+    DiscoveredAgentCandidate,
+)
 from .managed_agent import ManagedAgent
 from .managed_agent_ai_model_binding import ManagedAgentAIModelBinding
 from .managed_agent_credential import ManagedAgentCredential
@@ -217,6 +221,8 @@ __all__ = [
     "HOLD_RESOURCE_EVIDENCE_PACK",
     "HOLD_RESOURCE_EXECUTION",
     "HOLD_RESOURCE_TYPES",
+    "AccountDiscoverySalt",
+    "DiscoveredAgentCandidate",
     "ManagedAgent",
     "ManagedAgentAIModelBinding",
     "ManagedAgentCredential",

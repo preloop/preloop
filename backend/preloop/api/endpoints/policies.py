@@ -256,6 +256,25 @@ class SensitiveDataTestRequest(BaseModel):
     )
 
 
+class SensitiveDataHashCheckRequest(BaseModel):
+    """Equality check of a candidate payload against a stored fingerprint."""
+
+    payload: Any = Field(..., description="Candidate arguments or result")
+    args_hmac: str = Field(
+        ..., min_length=16, max_length=128, description="Stored HMAC"
+    )
+    salt_id: Optional[str] = Field(
+        None, description="Salt id from the record; omit to try every account salt"
+    )
+
+
+class SensitiveDataHashCheckResponse(BaseModel):
+    """Whether the candidate matches. The payload is never stored."""
+
+    match: bool
+    salt_id: Optional[str] = None
+
+
 class SensitiveDataMatch(BaseModel):
     """One detected span (offsets into the submitted text)."""
 
@@ -711,6 +730,31 @@ def test_sensitive_data_detectors(
         count=len(matches),
         redacted_preview=preview if matches else request.text,
     )
+
+
+@router.post(
+    "/policies/sensitive-data/hash-check",
+    response_model=SensitiveDataHashCheckResponse,
+    summary="Check a candidate payload against a reference-only fingerprint",
+)
+@require_permission("manage_policies")
+def sensitive_data_hash_check(
+    request: SensitiveDataHashCheckRequest,
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SensitiveDataHashCheckResponse:
+    """Return whether ``payload`` produces ``args_hmac`` under this account's salts.
+
+    Account scoped: only the caller's salts are tried, so a fingerprint from
+    another account never matches. Nothing is stored or logged.
+    """
+    from preloop.services.sensitive_data.reference import verify_hmac
+
+    matched, salt_id = verify_hmac(
+        account.id, request.payload, request.args_hmac, salt_id=request.salt_id, db=db
+    )
+    return SensitiveDataHashCheckResponse(match=matched, salt_id=salt_id)
 
 
 def _reject_unknown_pii_types(db: Session, account: Account, rule: ModelIORule) -> None:

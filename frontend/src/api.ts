@@ -5592,6 +5592,63 @@ export interface ModelIORule {
   conditions: ModelIOCondition[];
 }
 
+export interface SensitiveDataTypeInfo {
+  id: string;
+  label: string;
+  description: string;
+  example: string;
+  locales: string[];
+  checksum: boolean;
+  builtin: boolean;
+}
+
+export interface SensitiveDataTypesResponse {
+  types: SensitiveDataTypeInfo[];
+  default_types: string[];
+}
+
+export interface SensitiveDataTestMatch {
+  type: string;
+  start: number;
+  end: number;
+  confidence: number;
+}
+
+export interface SensitiveDataTestResponse {
+  matches: SensitiveDataTestMatch[];
+  types_found: string[];
+  count: number;
+  redacted_preview?: string | null;
+}
+
+export async function getSensitiveDataTypes(): Promise<SensitiveDataTypesResponse> {
+  const response = await fetchWithAuth('/api/v1/policies/sensitive-data/types');
+  if (!response.ok) {
+    throw new Error('Failed to load sensitive data types');
+  }
+  return response.json();
+}
+
+/** Run the detectors on sample text. The server neither logs nor stores it. */
+export async function testSensitiveData(body: {
+  text: string;
+  types?: string[];
+  config?: Record<string, unknown>;
+}): Promise<SensitiveDataTestResponse> {
+  const response = await fetchWithAuth('/api/v1/policies/sensitive-data/test', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to test sensitive data detectors')
+    );
+  }
+  return response.json();
+}
+
 export async function listModelIORules(): Promise<ModelIORule[]> {
   const response = await fetchWithAuth('/api/v1/policies/model-io-rules');
   if (!response.ok) {
@@ -7316,3 +7373,70 @@ export type {
   SigningKey,
   SigningKeyList,
 } from './records-api';
+
+/** One agent tool reported by opt-in workstation discovery. */
+export interface DiscoveredAgentCandidate {
+  id: string;
+  agent_kind: string;
+  agent_version: string | null;
+  workstation_fingerprint: string;
+  config_path_hash: string;
+  mcp_server_count: number;
+  enrolled: boolean;
+  os_family: string | null;
+  status: 'new' | 'onboarded' | 'ignored';
+  managed_agent_id: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+/** Capped console list plus the full matching count. */
+export interface DiscoveryCandidatePage {
+  items: DiscoveredAgentCandidate[];
+  total: number;
+  truncated: boolean;
+}
+
+/**
+ * List candidates reported by `preloop agents discover --report`.
+ * GET /api/v1/agents/discovery-candidates
+ *
+ * `items` is at most the server cap. `total` counts every match, and
+ * `truncated` is true when the fleet is larger than `items`.
+ */
+export async function getDiscoveryCandidates(
+  statuses: Array<DiscoveredAgentCandidate['status']> = []
+): Promise<DiscoveryCandidatePage> {
+  const params = new URLSearchParams();
+  statuses.forEach((status) => params.append('status', status));
+  const query = params.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/agents/discovery-candidates${query ? `?${query}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to load discovered agents');
+  }
+  return response.json();
+}
+
+/**
+ * Mark a discovery candidate ignored, or put it back to new.
+ * PATCH /api/v1/agents/discovery-candidates/{id}
+ */
+export async function updateDiscoveryCandidate(
+  candidateId: string,
+  status: 'new' | 'ignored'
+): Promise<DiscoveredAgentCandidate> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/discovery-candidates/${encodeURIComponent(candidateId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to update discovered agent');
+  }
+  return response.json();
+}

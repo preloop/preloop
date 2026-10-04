@@ -835,6 +835,7 @@ func init() {
 	agentsDiscoverCmd.Flags().BoolP("yes", "y", false, "auto-approve interactive onboarding prompts")
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding")
+	agentsDiscoverCmd.Flags().Bool("report", false, "opt in: send salted hashes of what was found to Preloop (also PRELOOP_DISCOVERY_REPORT=1); see docs/guide/agent-discovery-reporting.md")
 	_ = agentsDiscoverCmd.Flags().MarkDeprecated("add", "use 'preloop agents onboard [agent]'")
 	agentsEnrollCmd.Flags().Bool("dry-run", false, "preview account and config changes without writing")
 	agentsEnrollCmd.Flags().BoolP("yes", "y", false, "skip the onboarding confirmation prompt")
@@ -877,6 +878,7 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 	noOnboardPrompt, _ := cmd.Flags().GetBool("no-onboard-prompt")
 	autoApprove, _ := cmd.Flags().GetBool("yes")
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
+	report, _ := cmd.Flags().GetBool("report")
 
 	if addServers {
 		return fmt.Errorf("discover is now read-only; use 'preloop agents onboard <agent>'")
@@ -890,6 +892,18 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 	discovered, err = enrichDiscoveredAgents(discovered, client)
 	if err != nil {
 		return err
+	}
+
+	// Opt-in only: without --report or PRELOOP_DISCOVERY_REPORT=1 nothing
+	// about this scan is sent anywhere.
+	if discoveryReportingRequested(report) {
+		reportOut := io.Writer(os.Stdout)
+		if asJSON {
+			reportOut = os.Stderr
+		}
+		if err := sendDiscoveryReport(client, discovered, reportOut); err != nil {
+			return err
+		}
 	}
 
 	if asJSON {
@@ -5836,6 +5850,13 @@ func validateManagedEnrollmentRecord(
 	request := map[string]interface{}{
 		"status":            status,
 		"validation_result": validationResult,
+	}
+	if status == "validated" {
+		// Salted hashes only; lets the server mark a candidate reported by
+		// `agents discover --report` on this workstation as onboarded.
+		for key, value := range discoveryLinkFields(client, agent) {
+			request[key] = value
+		}
 	}
 	var response managedAgentEnrollmentSummary
 	if err := client.Post(
