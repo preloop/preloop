@@ -370,6 +370,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `/vendor/shoelace/` on the console's own origin instead of a public
   CDN. Air-gapped and egress-restricted installs now render styled, and the
   themed components match the bundled Shoelace version.
+- **Approval and invitation pages need no CDN.** The public pages behind
+  approval links (email, Slack, mobile) and invitation links loaded Shoelace
+  from a CDN and broke on air-gapped installs. They are now self-contained
+  HTML with inline styles and icons, with the same behaviour.
 - **Console: navigation.** Settings is grouped (Account, People & access,
   Developers, Personal); the kill switch is a top-level Emergency item; the
   Account page is reachable on every edition; browser tabs are named after
