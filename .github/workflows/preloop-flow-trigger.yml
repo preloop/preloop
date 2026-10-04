@@ -21,8 +21,12 @@
 # Fork posture: a fork PR is reviewed automatically only when its author
 # is an OWNER, MEMBER or COLLABORATOR. Any other fork PR is skipped (it
 # would spend a prod execution per push and feed untrusted text into the
-# review agent). A maintainer who has read the PR can review it with
-# `workflow_dispatch`.
+# review agent). A maintainer who has read the PR opts it in by adding
+# the label `preloop-review`: adding the label reviews it once, and every
+# later push is reviewed while the label stays on. Removing the label
+# returns the PR to the default skip. `workflow_dispatch` still reviews a
+# single head without labelling. Only people with triage access can add
+# labels, so the author of a fork PR cannot opt themselves in.
 #
 # The CLI blocks while the execution runs (stdin is not a TTY), streams
 # the execution log into this job, and exits non-zero on FAILED, STOPPED
@@ -56,6 +60,7 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+      - labeled
       - unlabeled
   # Fork PRs do not receive repo secrets on `pull_request`. This event
   # runs from the base branch and can use PRELOOP_TOKEN. Checkout below
@@ -66,6 +71,7 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+      - labeled
       - unlabeled
   workflow_dispatch:
     inputs:
@@ -89,7 +95,9 @@ jobs:
   trigger:
     # Same-repo: pull_request only. Forks: pull_request_target only.
     # Both events fire on a same-repo PR; the fork clause prevents a
-    # double review. unlabeled only retriggers when skip-review is removed.
+    # double review. Label events only retrigger for the two labels this
+    # workflow owns: skip-review removed, or preloop-review added. Any
+    # other label change is ignored.
     # Dependabot: runs it triggers get no repository secrets, so skip
     # both its PRs and any event it is the actor of.
     if: >
@@ -100,6 +108,7 @@ jobs:
         github.actor != 'dependabot[bot]' &&
         !contains(github.event.pull_request.labels.*.name, 'preloop-skip-review') &&
         (github.event.action != 'unlabeled' || github.event.label.name == 'preloop-skip-review') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'preloop-review') &&
         (
           (
             github.event_name == 'pull_request' &&
@@ -139,6 +148,7 @@ jobs:
           state=$(printf '%s' "$meta" | jq -r .state)
           draft=$(printf '%s' "$meta" | jq -r .isDraft)
           label=$(printf '%s' "$meta" | jq -r '[.labels[].name] | index("preloop-skip-review") != null')
+          optin=$(printf '%s' "$meta" | jq -r '[.labels[].name] | index("preloop-review") != null')
           if [ "$state" != "OPEN" ]; then
             skip "PR #${PR_NUMBER} is ${state}, not OPEN."
           fi
@@ -151,7 +161,12 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$IS_FORK" = "true" ]; then
             case "$AUTHOR_ASSOCIATION" in
               OWNER|MEMBER|COLLABORATOR) ;;
-              *) skip "Fork PR #${PR_NUMBER} from a ${AUTHOR_ASSOCIATION:-unknown} author. A maintainer can review it with workflow_dispatch." ;;
+              *)
+                if [ "$optin" != "true" ]; then
+                  skip "Fork PR #${PR_NUMBER} from a ${AUTHOR_ASSOCIATION:-unknown} author. A maintainer who has read it can add the preloop-review label, or review one head with workflow_dispatch."
+                fi
+                echo "Fork PR #${PR_NUMBER} from a ${AUTHOR_ASSOCIATION:-unknown} author carries the preloop-review label; reviewing."
+                ;;
             esac
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
