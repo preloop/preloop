@@ -423,6 +423,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Listing a server's discovered MCP tools returns 200 again.**
+  `MCPToolResponse` declared `id` and `mcp_server_id` as `str`, but
+  `GET /api/v1/mcp-servers/{id}/tools` validates ORM rows whose identifiers
+  are `UUID`s, so the list raised a pydantic validation error that surfaced
+  as a 500. The schema now uses `UUID` and serializes those fields back to
+  strings (#1137).
 - **Schedule-triggered flows created after the scheduler started now fire.**
   The reconcile job's id shares the per-flow job prefix, so its first pass
   removed itself and later flows never got a job until a restart.
