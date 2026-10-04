@@ -388,6 +388,7 @@ _PRIVATE_RESULT_FIELDS = frozenset(
         "mcp_config",
         "mcp_usage_logs",
         "resolved_prompt",
+        "resolved_input_prompt",
         "auth_headers",
         "headers",
         "logs",

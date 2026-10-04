@@ -56,7 +56,7 @@ def test_projection_result_and_rotation(
         db_obj=execution,
         obj_in={
             "status": "SUCCEEDED",
-            "resolved_prompt": "synthetic private prompt",
+            "resolved_input_prompt": "synthetic private prompt",
             "result": {
                 "review": "persisted review",
                 "nested": [{"api_key": "synthetic-secret", "score": 1}],
