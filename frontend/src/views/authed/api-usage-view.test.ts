@@ -336,6 +336,79 @@ describe('ApiUsageView', () => {
     localStorage.clear();
   });
 
+  it('renders usage totals while captured interactions and telemetry are pending', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (
+          input.toString().includes('/gateway-usage/search') ||
+          input.toString().includes('/rate-limit')
+        )
+          await held;
+        return defaultUsageFetch(input, init);
+      }
+    );
+    const el = await fixture<ApiUsageView>(
+      html`<api-usage-view></api-usage-view>`
+    );
+    try {
+      await waitUntil(() => !(el as any).loading && !!(el as any).summary);
+      await el.updateComplete;
+      expect((el as any).summary.total_requests).to.equal(42);
+      expect(el.shadowRoot!.textContent).to.include(
+        'Loading captured interactions'
+      );
+      expect(el.shadowRoot!.textContent).not.to.include(
+        'No captured gateway interactions'
+      );
+      const summaryCall = fetchStub
+        .getCalls()
+        .find((call) =>
+          call.args[0].toString().includes('include_breakdown=true')
+        )!;
+      expect(summaryCall.args[0].toString()).to.include('breakdown=models');
+      expect(summaryCall.args[0].toString()).not.to.include('breakdown=tools');
+    } finally {
+      release();
+    }
+    await waitUntil(() => !(el as any).searchLoading);
+  });
+
+  it('renders current usage while the totals-only comparison request is pending', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (input.toString().includes('include_breakdown=false')) await pending;
+      return defaultUsageFetch(input);
+    });
+    const el = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+    try {
+      await waitUntil(() => !(el as any).loading && !!(el as any).summary);
+      await el.updateComplete;
+      expect((el as any).summary.total_requests).to.equal(42);
+      expect((el as any).previousSummary).to.equal(null);
+      const comparisons = fetchStub
+        .getCalls()
+        .filter((call) =>
+          call.args[0].toString().includes('include_breakdown=false')
+        );
+      expect(comparisons).to.have.length(1);
+      expect(comparisons[0].args[0].toString()).to.include('start_date=');
+      expect(comparisons[0].args[0].toString()).to.include('end_date=');
+    } finally {
+      release();
+    }
+    await waitUntil(() => !!(el as any).previousSummary);
+    expect((el as any).previousSummary.total_requests).to.equal(42);
+  });
+
   it('renders account gateway usage totals with runtime session breakdowns', async () => {
     const element = (await fixture(
       html`<api-usage-view></api-usage-view>`

@@ -63,6 +63,87 @@ describe('FlowsView', () => {
     invalidateApiCaches();
   });
 
+  it('renders flow rows before execution requests finish', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes('/flows/executions')) await pending;
+        const data =
+          url.includes('/flows') &&
+          !url.includes('/executions') &&
+          !url.includes('/presets')
+            ? [{ id: 'flow-1', name: 'Nightly sweep', is_enabled: true }]
+            : [];
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    const el = await fixture<FlowsView>(html`<flows-view></flows-view>`);
+    try {
+      await waitUntil(() => !(el as any).isLoading);
+      await el.updateComplete;
+      expect(el.shadowRoot!.textContent).to.include('Nightly sweep');
+    } finally {
+      release();
+    }
+  });
+
+  it('keeps pending executions through a range change and ignores older range answers', async () => {
+    const render = sinon
+      .stub(customElements.get('flows-view')!.prototype, 'render')
+      .returns(html``);
+    let releaseExecutions!: () => void;
+    let releaseOlder!: () => void;
+    const executions = new Promise<void>((resolve) => {
+      releaseExecutions = resolve;
+    });
+    const older = new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    });
+    let summaries = 0;
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        let data: unknown = [];
+        if (url.includes('/flows/executions')) {
+          await executions;
+          data = [{ id: 'pending-run', status: 'RUNNING' }];
+        } else if (url.includes('/flows/summary')) {
+          const request = ++summaries;
+          if (request === 2) await older;
+          data = [{ id: 'flow-1', name: `Range ${request}`, is_enabled: true }];
+        }
+        return new Response(JSON.stringify(data), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    const el = await fixture<FlowsView>(html`<flows-view></flows-view>`);
+    await waitUntil(() => !(el as any).isLoading);
+    try {
+      (el as any).range = 'week';
+      const oldRead = (el as any).loadRangeStats();
+      (el as any).range = 'day';
+      await (el as any).loadRangeStats();
+      releaseExecutions();
+      await waitUntil(() => (el as any).activeExecutions.length === 1);
+      releaseOlder();
+      await oldRead;
+      expect((el as any).flows[0].name).to.equal('Range 3');
+      expect((el as any).executions[0].id).to.equal('pending-run');
+    } finally {
+      releaseExecutions();
+      releaseOlder();
+      render.restore();
+    }
+  });
+
   it('renders the flow list view', async () => {
     fetchStub = createFetchStub([], []);
     const element = (await fixture(

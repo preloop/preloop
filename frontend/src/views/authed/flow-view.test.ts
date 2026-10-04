@@ -1,4 +1,4 @@
-import { expect } from '@open-wc/testing';
+import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './flow-view';
@@ -495,6 +495,95 @@ describe('FlowView review instructions', () => {
     } finally {
       unset.remove();
       blank.remove();
+    }
+  });
+});
+
+describe('FlowView progressive detail', () => {
+  it('shows flow details without waiting for executions and avoids editor-only catalogs', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes('/flows/executions')) await pending;
+        const data = url.startsWith('/api/v1/account/governance/flows/flow-1')
+          ? { config: {}, has_override: false, account_defaults: {} }
+          : url.startsWith('/api/v1/flows/flow-1')
+            ? {
+                id: 'flow-1',
+                name: 'Nightly sweep',
+                agent_type: 'codex',
+                trigger_event_source: 'webhook',
+                allowed_mcp_servers: [],
+                allowed_mcp_tools: [],
+              }
+            : url.endsWith('/auth/users/me')
+              ? { id: 'user-1' }
+              : [];
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    try {
+      const el = await fixture<FlowView>(
+        html`<flow-view flowId="flow-1"></flow-view>`
+      );
+      await waitUntil(() => (el as any).flowReady);
+      await el.updateComplete;
+      expect(el.shadowRoot!.textContent).to.include('Nightly sweep');
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) =>
+            /\/(tools|mcp-servers|agents)(?:\?|$)/.test(call.args[0].toString())
+          )
+      ).to.have.length(0);
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) => (call.args[1]?.method || 'GET') !== 'GET')
+      ).to.have.length(0);
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) =>
+            call.args[0].toString().includes('/account/governance/flows/')
+          )
+      ).to.equal(false);
+      const disclosure = el.shadowRoot!.querySelector(
+        '.flow-governance-disclosure'
+      ) as HTMLDetailsElement;
+      disclosure.open = true;
+      await waitUntil(() =>
+        fetchStub
+          .getCalls()
+          .some((call) => call.args[0].toString() === '/api/v1/tools')
+      );
+      expect(el.shadowRoot!.querySelector('flow-governance-card')).to.exist;
+      const card = el.shadowRoot!.querySelector('flow-governance-card') as any;
+      await waitUntil(() => !card.loading);
+      const catalogCalls = fetchStub
+        .getCalls()
+        .filter((call) => call.args[0].toString() === '/api/v1/tools').length;
+      disclosure.open = false;
+      await el.updateComplete;
+      disclosure.open = true;
+      await el.updateComplete;
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) => call.args[0].toString() === '/api/v1/tools')
+      ).to.have.length(catalogCalls);
+    } finally {
+      release();
+      fetchStub.restore();
+      localStorage.clear();
     }
   });
 });

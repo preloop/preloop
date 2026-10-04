@@ -46,7 +46,7 @@ import {
   getAccountAgents,
   removeAccountAgent,
   getAccountGatewayUsageSummary,
-  getFlows,
+  getFlowSummaries,
   getAIModels,
   getFeatures,
   updateAccountAgent,
@@ -1312,6 +1312,7 @@ export class AgentsView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.agentsLoadGeneration;
     this.unsubscribeRealtime?.();
     this.narrowViewportSubscription?.disconnect();
     this.narrowViewportSubscription = null;
@@ -1375,7 +1376,10 @@ export class AgentsView extends LitElement {
     return data.users || [];
   }
 
+  private agentsLoadGeneration = 0;
+
   private async loadAgents(): Promise<void> {
+    const generation = ++this.agentsLoadGeneration;
     this.loading = true;
     this.error = null;
 
@@ -1463,17 +1467,42 @@ export class AgentsView extends LitElement {
         offset: 0,
         items: [],
       };
-      const [agentsData, flowsData, modelsData, featuresData, users] =
-        await Promise.all([
-          skipAgentsFetch
-            ? Promise.resolve(emptyAgentsData)
-            : getAccountAgents(params),
-          getFlows(),
-          getAIModels().catch(() => [] as AIModel[]),
-          getFeatures().catch(() => ({ features: {}, plugins: [] })),
-          this.fetchUsers().catch(() => []),
-        ]);
-      this.aiModels = modelsData;
+      void getAIModels()
+        .then((models) => {
+          if (generation === this.agentsLoadGeneration) this.aiModels = models;
+        })
+        .catch(() => undefined);
+      void getFeatures()
+        .then((data) => {
+          if (generation !== this.agentsLoadGeneration) return;
+          this.featureFlags = data.features || {};
+          this.computeFeatureEnabled = !!this.featureFlags['compute'];
+          this.isEnterprise = (data.plugins?.length ?? 0) > 0;
+        })
+        .catch(() => undefined);
+      void this.fetchUsers()
+        .then((users) => {
+          if (generation === this.agentsLoadGeneration)
+            this.availableUsers = users;
+        })
+        .catch(() => undefined);
+      const [agentsData, flowsData] = await Promise.all([
+        (skipAgentsFetch
+          ? Promise.resolve(emptyAgentsData)
+          : getAccountAgents(params)
+        ).then((data) => {
+          if (generation === this.agentsLoadGeneration) {
+            this.agents = data;
+            this.loading = false;
+            this.initializeNodePositions(false);
+          }
+          return data;
+        }),
+        includeFlows
+          ? getFlowSummaries({ includeStats: true }).catch(() => this.flows)
+          : Promise.resolve([]),
+      ]);
+      if (generation !== this.agentsLoadGeneration) return;
       void this.refreshGatewaySummary();
 
       // Check if a new agent was registered while the dialog is open
@@ -1497,13 +1526,6 @@ export class AgentsView extends LitElement {
 
       this.agents = agentsData;
       this.previousAgentCount = agentsData.items.length;
-      this.featureFlags = featuresData?.features || {};
-      this.computeFeatureEnabled = !!this.featureFlags['compute'];
-      this.isEnterprise =
-        Array.isArray((featuresData as { plugins?: unknown[] })?.plugins) &&
-        ((featuresData as { plugins?: unknown[] }).plugins?.length ?? 0) > 0;
-      this.availableUsers = users;
-
       if (!this.hasAutoOpenedOnboarding && this.previousAgentCount === 0) {
         this.showOnboardingDialog = true;
         this.hasAutoOpenedOnboarding = true;
@@ -1574,13 +1596,14 @@ export class AgentsView extends LitElement {
       }
       this.previousAgentIds = currentAgentIds;
     } catch (error) {
+      if (generation !== this.agentsLoadGeneration) return;
       console.error('Failed to load managed agents or gateway summary:', error);
       this.error =
         error instanceof Error
           ? error.message
           : 'Failed to load managed agents or gateway summary';
     } finally {
-      this.loading = false;
+      if (generation === this.agentsLoadGeneration) this.loading = false;
     }
   }
 

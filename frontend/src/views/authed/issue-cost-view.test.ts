@@ -231,6 +231,8 @@ describe('IssueCostView', () => {
           headers: { 'Content-Type': 'text/csv' },
         });
       } else if (url.includes('/cost/by-issue')) body = report;
+      else if (url.includes('/flows/summary'))
+        body = [{ id: 'flow-1', name: 'Issue triage' }];
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -241,6 +243,28 @@ describe('IssueCostView', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.removeItem('accessToken');
+  });
+
+  it('uses flow summaries without execution statistics for the filter', async () => {
+    const element = await fixture<IssueCostView>(
+      html`<issue-cost-view></issue-cost-view>`
+    );
+    await waitUntil(() => requested.some((url) => url.includes('/flows')));
+    const url = new URL(
+      requested.find((url) => url.includes('/flows'))!,
+      location.origin
+    );
+    expect(url.pathname).to.equal('/api/v1/flows/summary');
+    expect(url.searchParams.get('include_stats')).to.equal('false');
+    expect(url.searchParams.get('limit')).to.equal('500');
+    await waitUntil(() => element.flows.length === 1);
+    expect(element.flows).to.deep.equal([
+      { id: 'flow-1', name: 'Issue triage' },
+    ]);
+    expect(requested.filter((url) => url.includes('/flows')).length).to.equal(
+      1
+    );
+    element.remove();
   });
 
   it('formats cost and leaves missing intervals blank', () => {
