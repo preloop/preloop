@@ -770,7 +770,7 @@ def _reject_cel_syntax_declared_simple(rule: ModelIORule) -> None:
             condition.expression
         ):
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     "condition_type 'simple' cannot parse expression "
                     f"{condition.expression!r}. Set condition_type to 'cel' "
