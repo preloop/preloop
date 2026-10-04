@@ -110,6 +110,13 @@ HEADLINE_OPTIONS = (
 #: without confusing them with markup that is part of the artifact text.
 EXCERPT_START = "\x02"
 EXCERPT_STOP = "\x03"
+#: The metadata header :func:`index_artifact_text` writes at the top of an
+#: artifact's first chunk (``kind: artifact`` then artifact_kind, name,
+#: tool_name and labels lines). It makes those fields searchable; an excerpt
+#: leaves it out so it shows the artifact's own text.
+ARTIFACT_HEADER_PATTERN = (
+    r"^kind: artifact(\n(artifact_kind|name|tool_name|labels): [^\n]*)*\n?"
+)
 EXCERPT_HEADLINE_OPTIONS = (
     f"StartSel={EXCERPT_START}, StopSel={EXCERPT_STOP}, "
     "MaxWords=35, MinWords=10, ShortWord=3, "
@@ -2147,7 +2154,8 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
         Returns:
             ``artifact_id -> (headline, cue_start)``. The headline marks hits
             with :data:`EXCERPT_START` and :data:`EXCERPT_STOP`. Artifacts
-            without a matching returnable chunk are absent.
+            without a matching returnable chunk, or whose only text is the
+            metadata header, are absent.
         """
         normalized = normalize_query(query)
         ids = [str(value) for value in artifact_ids]
@@ -2182,17 +2190,20 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             )
             .subquery()
         )
+        body = func.regexp_replace(ranked.c.content, ARTIFACT_HEADER_PATTERN, "")
         rows = db.execute(
             select(
                 ranked.c.source_id,
                 func.ts_headline(
-                    SEARCH_CONFIG, ranked.c.content, tsquery, EXCERPT_HEADLINE_OPTIONS
+                    SEARCH_CONFIG, body, tsquery, EXCERPT_HEADLINE_OPTIONS
                 ),
                 ranked.c.meta_data,
             ).where(ranked.c.position == 1)
         ).all()
         out: Dict[str, Tuple[str, Optional[float]]] = {}
         for source_id, headline, meta in rows:
+            if not (headline or "").strip():
+                continue
             cue = (meta or {}).get("cue_start")
             out[str(source_id)] = (
                 headline or "",

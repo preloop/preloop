@@ -205,13 +205,20 @@ def test_q_damaged_pallet_returns_transcript_and_summary_with_excerpts(
         marked = [excerpt["text"][a:b].lower() for a, b in excerpt["highlights"]]
         assert {"damaged", "pallet"} <= set(marked)
         assert "\x02" not in excerpt["text"] and "\x03" not in excerpt["text"]
+        # The indexed header (kind, name, labels) is search metadata, not text.
+        assert not excerpt["text"].startswith("kind:"), excerpt["text"]
+        assert "artifact_kind:" not in excerpt["text"]
     assert transcript["cue_start"] == 0.0
     assert summary["cue_start"] is None
     assert body["facets"]["site"] == {"nord": len(body["items"])}
 
 
 def test_q_matches_name(client, warehouse):
-    assert _ids(_get(client, q="dock-5")) == [warehouse["screenshot"]["id"]]
+    body = _get(client, q="dock-5")
+
+    assert _ids(body) == [warehouse["screenshot"]["id"]]
+    # An image has no text body, so a name hit has no excerpt to show.
+    assert body["items"][0]["excerpt"] is None
 
 
 @pytest.mark.parametrize(
