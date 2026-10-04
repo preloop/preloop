@@ -36,6 +36,7 @@ from preloop.api.auth.ci import get_current_actor
 from preloop.api.common import get_account_for_user
 from preloop.models import crud, models
 from preloop.models.crud.ci_principal import CiAuthorizationContext
+from preloop.models.crud.ci_subscription import is_ci_endpoint
 from preloop.models.db.session import get_db_session
 from preloop.models.models.webhook_endpoint import (
     DELIVERY_DEAD,
@@ -90,7 +91,7 @@ def _account_for_actor(
     """Resolve an actor account without authenticating machines as humans."""
     account = crud.crud_account.get(db, id=current_user.account_id)
     if account is None:
-        raise HTTPException(401, "models.Account not found")
+        raise HTTPException(401, "Account not found")
     return account
 
 
@@ -98,10 +99,15 @@ async def _raw_ci_body(request: Request) -> Any:
     """Retain raw fields which permissive human schemas otherwise discard."""
     if isinstance(getattr(request.state, "ci_context", None), CiAuthorizationContext):
         body = await request.body()
-        if not body:
-            return {}
         try:
-            return await request.json()
+            raw = await request.json() if body else {}
+            if request.method == "POST" and request.url.path.endswith("/endpoints"):
+                CiSubscriptionCreate.model_validate(raw)
+            elif request.method == "PATCH":
+                CiSubscriptionUpdate.model_validate(raw)
+            elif raw != {}:
+                raise ValueError("This operation accepts no body overrides")
+            return raw
         except ValueError:
             raise HTTPException(422, "Invalid callback request") from None
     return None
@@ -329,6 +335,12 @@ def update_webhook_endpoint(
     _reject_shim_edit(endpoint, "Edit")
 
     fields = payload.model_dump(exclude_unset=True)
+    if (
+        is_ci_endpoint(endpoint)
+        and "event_types" in fields
+        and fields["event_types"] != endpoint.event_types
+    ):
+        raise HTTPException(422, "Restricted CI callback filter is immutable")
     if fields.get("url"):
         _reject_blocked_target(fields["url"])
     for name, value in fields.items():
