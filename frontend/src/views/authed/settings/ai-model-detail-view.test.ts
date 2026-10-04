@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { getAccountRuntimeSessionActivityTimeline } from '../../../api';
 
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import '../../../setup-tests';
@@ -1558,8 +1559,11 @@ describe('AIModelDetailView', () => {
     )) as AIModelDetailView;
 
     await waitUntil(
-      () => !(element as any).loading,
-      'AI model detail view did not finish loading',
+      // Progressive rendering releases loading before the initial summary,
+      // sessions and failure-window reads finish. Settle those before taking
+      // the baseline, so the search assertions only count search work.
+      () => !(element as any).loading && !(element as any).refreshInFlight,
+      'AI model detail view did not finish its initial data load',
       { timeout: 5000 }
     );
     await element.updateComplete;
@@ -1567,12 +1571,13 @@ describe('AIModelDetailView', () => {
     // The search field promises a list, so the list is on the page.
     expect(element.shadowRoot?.textContent).to.contain('Captured interactions');
 
-    // Icons are fetched too; only the API calls are counted here.
+    // Count this model's API reads. The embedded observer loads its own
+    // session detail/timeline independently of a model-page reload.
     const apiCalls = () =>
       fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
-        .filter((url) => url.startsWith('/api/'));
+        .filter((url) => url.startsWith('/api/v1/ai-models/model-1/'));
     const callsAfterLoad = apiCalls().length;
 
     const search = element.shadowRoot?.querySelector(
@@ -1580,6 +1585,23 @@ describe('AIModelDetailView', () => {
     ) as HTMLInputElement;
     search.value = 'timeout';
     search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+
+    // Release a concurrent observer timeline read after the request baseline.
+    // It must not be mistaken for a reload of the model's sessions list.
+    const callsBeforeObserverRead = fetchStub.getCalls().length;
+    await getAccountRuntimeSessionActivityTimeline('runtime-session-1').catch(
+      () => undefined
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .slice(callsBeforeObserverRead)
+        .some((call) =>
+          String(call.args[0]).startsWith(
+            '/api/v1/runtime-sessions/runtime-session-1/activity'
+          )
+        )
+    ).to.equal(true);
 
     // The debounce is 300ms. A late price, summary, or failure-window read
     // can land first, so this waits for the interactions request itself and
@@ -1612,6 +1634,14 @@ describe('AIModelDetailView', () => {
     expect(element.shadowRoot?.textContent).to.contain(
       'Deployment risk summary completed'
     );
+
+    // The scoped search must not reload model-wide summary/session data.
+    const newCalls = apiCalls().slice(callsAfterLoad);
+    expect(
+      newCalls.filter(
+        (url) => url.includes('/summary') || url.includes('/runtime-sessions')
+      )
+    ).to.have.length(0);
 
     // The summary the search did not touch is still on screen.
     expect(element.shadowRoot?.textContent).to.contain('Usage summary');

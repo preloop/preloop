@@ -1841,3 +1841,141 @@ describe('AddAIModelModal Azure OpenAI provider', () => {
     });
   });
 });
+
+describe('Bedrock API key authentication', () => {
+  let element: AddAIModelModal;
+  let fetchStub: SinonStub;
+  afterEach(() => {
+    sinon.restore();
+    localStorage.clear();
+  });
+  beforeEach(async () => {
+    localStorage.setItem('accessToken', 'synthetic-token');
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .resolves(
+        new Response(
+          JSON.stringify({ models: ['amazon.nova-pro-v1:0'], source: 'live' })
+        )
+      );
+    element = await fixture(html`<add-ai-model-modal></add-ai-model-modal>`);
+    element.open = true;
+    await element.updateComplete;
+    (element as any)._currentModel = { provider_name: 'bedrock' };
+    (element as any)._bedrockAuth = 'api_key';
+    element.requestUpdate();
+    await element.updateComplete;
+  });
+
+  it('stores only the bearer credential and enables listing without IAM keys', async () => {
+    (element as any)._bedrockApiKey = ' synthetic-bedrock-key ';
+    (element as any)._bedrockAccessKeyId = 'stale-iam-key';
+    (element as any)._bedrockSecretAccessKey = 'stale-secret';
+    (element as any)._syncBedrockApiKey();
+    expect(JSON.parse((element as any)._currentModel.api_key)).to.deep.equal({
+      aws_bearer_token_bedrock: 'synthetic-bedrock-key',
+    });
+    expect((element as any)._bedrockCredsComplete).to.equal(true);
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('[data-field="bedrock_api_key"]'))
+      .to.exist;
+    expect(
+      element.shadowRoot!.querySelector('[data-field="bedrock_access_key_id"]')
+    ).not.to.exist;
+  });
+  it('lists with the key only in the POST body and preserves the selected auth on submit', async () => {
+    (element as any)._bedrockApiKey = 'synthetic-bedrock-key';
+    (element as any)._currentModel.model_identifier = 'amazon.nova-pro-v1:0';
+    (element as any)._syncBedrockApiKey();
+    await (element as any)._fetchModelsForCurrentProvider();
+    const call = fetchStub
+      .getCalls()
+      .find((call) => String(call.args[0]).includes('available-models'))!;
+    expect(String(call.args[0])).not.to.contain('synthetic-bedrock-key');
+    expect(JSON.parse(call.args[1]!.body as string)).to.deep.equal({
+      model_kind: 'llm',
+      aws_bearer_token_bedrock: 'synthetic-bedrock-key',
+      aws_region_name: 'us-east-1',
+    });
+    expect(
+      (element as any)._buildMetaDataForSubmit().provider_runtime
+    ).to.include({ auth_method: 'api_key', region: 'us-east-1' });
+  });
+  it('requires a replacement credential when switching an existing IAM model to an API key', async () => {
+    element.model = {
+      id: 'synthetic-model',
+      has_api_key: true,
+      provider_name: 'bedrock',
+      meta_data: { provider_runtime: { region: 'us-east-1' } },
+    } as unknown as AIModel;
+    expect((element as any)._hasStoredBedrockCredentials).to.equal(false);
+    await (element as any)._fetchModelsForCurrentProvider();
+    expect((element as any)._modelsFetchError).to.contain('API key');
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => String(call.args[0]).includes('available-models'))
+    ).to.have.length(0);
+  });
+  it('restores a saved API key model and retains its encrypted key when saved with blank inputs', async () => {
+    fetchStub.callsFake(
+      async () =>
+        new Response(
+          JSON.stringify({ models: ['amazon.nova-pro-v1:0'], source: 'live' })
+        )
+    );
+    element.open = false;
+    await element.updateComplete;
+    element.model = {
+      id: 'existing-api-key-model',
+      name: 'Bedrock Nova',
+      model_kind: 'llm',
+      provider_name: 'bedrock',
+      model_identifier: 'amazon.nova-pro-v1:0',
+      has_api_key: true,
+      meta_data: {
+        provider_runtime: { region: 'eu-west-1', auth_method: 'api_key' },
+      },
+    } as unknown as AIModel;
+    element.open = true;
+    await element.updateComplete;
+    await element.updateComplete;
+    expect((element as any)._bedrockAuth).to.equal('api_key');
+    expect((element as any)._bedrockApiKey).to.equal('');
+    expect((element as any)._hasStoredBedrockCredentials).to.equal(true);
+    expect((element as any)._canEnablePreloopGateway).to.equal(true);
+    await (element as any)._fetchModelsForCurrentProvider();
+    const discovery = fetchStub
+      .getCalls()
+      .find((call) => String(call.args[0]).includes('available-models'))!;
+    expect(JSON.parse(discovery.args[1]!.body as string)).to.deep.equal({
+      model_kind: 'llm',
+      ai_model_id: 'existing-api-key-model',
+    });
+    (element as any)._syncFormFromDom = () => {};
+    await (element as any)._handleFormSubmit(new Event('submit'));
+    expect((element as any)._formError).to.equal(null);
+    const update = fetchStub
+      .getCalls()
+      .find((call) => call.args[1]?.method === 'PUT')!;
+    const body = JSON.parse(update.args[1]!.body as string);
+    expect(body).not.to.have.property('api_key');
+    expect(body.meta_data.provider_runtime).to.deep.equal({
+      region: 'eu-west-1',
+      auth_method: 'api_key',
+    });
+  });
+
+  it('does not invent auth metadata when preserving a legacy/API-created encrypted secret', () => {
+    element.model = {
+      id: 'existing-model',
+      has_api_key: true,
+      meta_data: { provider_runtime: { region: 'us-east-1' } },
+    } as unknown as AIModel;
+    (element as any)._currentModel.model_identifier = 'amazon.nova-pro-v1:0';
+    (element as any)._bedrockAuth = 'iam';
+    expect(
+      (element as any)._buildMetaDataForSubmit().provider_runtime
+    ).not.to.have.property('auth_method');
+  });
+});

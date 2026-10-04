@@ -3934,6 +3934,7 @@ export interface AvailableModelsResult {
  * Carried in the POST body for the same reason as `apiKey`.
  */
 export interface AwsDiscoveryAuth {
+  bearerToken?: string;
   accessKeyId?: string;
   secretAccessKey?: string;
   sessionToken?: string;
@@ -3976,6 +3977,9 @@ export async function getAvailableModelsForProvider(
       ...(apiKey ? { api_key: apiKey } : {}),
       ...(apiEndpoint ? { api_endpoint: apiEndpoint } : {}),
       ...(aiModelId ? { ai_model_id: aiModelId } : {}),
+      ...(awsAuth?.bearerToken
+        ? { aws_bearer_token_bedrock: awsAuth.bearerToken }
+        : {}),
       ...(awsAuth?.accessKeyId
         ? { aws_access_key_id: awsAuth.accessKeyId }
         : {}),
