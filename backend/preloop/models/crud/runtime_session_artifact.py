@@ -512,6 +512,7 @@ def search_page(
     """
     from preloop.models.models.session_search_document import (
         REDACTION_STATE_METADATA_ONLY,
+        SOURCE_KIND_ARTIFACT,
         SessionSearchDocument,
     )
 
@@ -543,7 +544,7 @@ def search_page(
     tsquery = func.websearch_to_tsquery("simple", normalized) if normalized else None
     chunk_scope = (
         chunks.account_id == account_id,
-        chunks.source_kind == "artifact",
+        chunks.source_kind == SOURCE_KIND_ARTIFACT,
         chunks.redaction_state != REDACTION_STATE_METADATA_ONLY,
     )
     if tsquery is not None:

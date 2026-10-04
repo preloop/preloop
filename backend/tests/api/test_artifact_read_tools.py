@@ -327,7 +327,9 @@ class TestFlowIdentity:
         evaluator = _flow(db_session, account_id, "evaluator")
         other = _flow(db_session, account_id, "other")
         _, earlier = _flow_run(db_session, account_id, evaluator)
-        _artifact(db_session, earlier, name="earlier.vtt", created_at=YESTERDAY)
+        earlier_row = _artifact(
+            db_session, earlier, name="earlier.vtt", created_at=YESTERDAY
+        )
         _, foreign = _flow_run(db_session, account_id, other)
         foreign_row = _artifact(
             db_session, foreign, name="other-flow.vtt", created_at=TODAY
@@ -347,6 +349,10 @@ class TestFlowIdentity:
             db_session, caller=caller, arguments={"artifact_id": str(foreign_row.id)}
         )
         assert refused.text.startswith("artifact_not_found")
+        allowed = reads.get(
+            db_session, caller=caller, arguments={"artifact_id": str(earlier_row.id)}
+        )
+        assert not allowed.is_error, allowed.text
 
 
 class TestFilters:
@@ -434,6 +440,16 @@ class TestFilters:
         assert _names(first) == ["a-today.vtt"]
         assert _names(second) == ["a-yesterday.vtt"]
         assert second.structured["next_cursor"] is None
+
+    def test_non_string_cursor_is_refused_not_raised(
+        self, db_session, test_user, corpus
+    ):
+        outcome = reads.search(
+            db_session,
+            caller=_caller(test_user.account_id, "agent-a"),
+            arguments={"cursor": 12},
+        )
+        assert outcome.text.startswith("invalid_request")
 
     def test_limit_is_clamped(self, db_session, test_user, corpus):
         outcome = reads.search(
