@@ -31,7 +31,10 @@ with the format signature, so a file that is not the declared type is refused.
 When a deposit names no kind, Preloop infers one from the content: an image is
 a `screenshot`, audio is `audio`, video is a `recording`, `text/vtt` and
 `application/x-subrip` are a `transcript`, other text is a `document`, and
-anything else is a `generated_file`.
+anything else is a `generated_file`. If the inferred kind does not accept the
+media type (for example `image/gif` or `text/csv`), the deposit is stored as a
+`generated_file` instead of being refused. Audio is the exception: it stays
+`audio`, so the account's audio setting still applies.
 
 A request body may be at most the largest kind cap plus 1 MiB. Larger bodies
 are refused before they are parsed.

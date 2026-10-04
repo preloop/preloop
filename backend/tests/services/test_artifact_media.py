@@ -135,3 +135,49 @@ def test_shapes_mapping_agrees_with_the_kind_table() -> None:
         "application/zip",
     ):
         assert shapes.infer_kind(content_type) in media.ARTIFACT_KINDS
+
+
+# Media types `preloop artifacts put` derives from file extensions
+# (`artifactExtensionTypes` in cli/internal/cmd/artifacts.go). A deposit that
+# leaves the kind to the server must be accepted for each of them.
+CLI_EXTENSION_TYPES = (
+    "text/vtt",
+    "application/x-subrip",
+    "text/markdown",
+    "text/plain",
+    "application/json",
+    "text/csv",
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "video/webm",
+    "video/mp4",
+    "application/zip",
+)
+
+
+@pytest.mark.parametrize("content_type", CLI_EXTENSION_TYPES)
+def test_inferred_kind_accepts_its_media_type(content_type: str) -> None:
+    kind = shapes.infer_kind(content_type)
+    assert media.accepts(kind, content_type), (content_type, kind)
+
+
+@pytest.mark.parametrize(
+    ("content_type", "kind"),
+    [
+        # Pinned by test_artifact_shapes: a PDF needs an explicit kind.
+        ("application/pdf", "generated_file"),
+        ("image/gif", "generated_file"),
+        ("text/csv", "generated_file"),
+        ("text/html", "generated_file"),
+        ("image/png", "screenshot"),
+        ("text/vtt", "transcript"),
+        # Audio stays audio even outside its allowlist, so the audio opt-in
+        # cannot be bypassed by a media type it does not list.
+        ("audio/aac", "audio"),
+    ],
+)
+def test_inference_falls_back_instead_of_refusing(content_type: str, kind: str) -> None:
+    assert shapes.infer_kind(content_type) == kind

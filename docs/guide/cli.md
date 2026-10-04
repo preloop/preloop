@@ -227,8 +227,10 @@ the artifact id and a console link that opens the session at that artifact.
 The media type comes from `--content-type`, then the file extension, then the
 first bytes of the file. Stdin has no name to go by, so it needs
 `--content-type`. Leave out `--kind` and the server picks one from the media
-type: images become `screenshot`, `text/vtt` becomes `transcript`, and PDF or
-text becomes `document`. Labels are `key=value`. Repeat `--label tags=...` to
+type: PNG, JPEG and WebP images become `screenshot`, `text/vtt` becomes
+`transcript`, plain text, markdown and JSON become `document`, and anything
+else (PDF, CSV, GIF, ...) becomes `generated_file`. Pass `--kind document` for
+a PDF. Labels are `key=value`. Repeat `--label tags=...` to
 build the `tags` list. A refusal prints the server's error code as sent, for
 example `artifact_too_large (HTTP 413)`.
 

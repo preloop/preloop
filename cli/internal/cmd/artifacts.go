@@ -124,8 +124,10 @@ type comes from --content-type, else the file extension, else the first
 bytes. The server checks the bytes against the media type.
 
 The kind (screenshot, transcript, document, audio, ...) is inferred by the
-server from the media type when --kind is omitted: images are screenshots,
-text/vtt is a transcript, PDFs and text are documents.
+server from the media type when --kind is omitted: PNG, JPEG and WebP images
+are screenshots, text/vtt is a transcript, plain text, markdown and JSON are
+documents, and anything else (PDF, CSV, GIF, ...) is a generated_file. Pass
+--kind document for a PDF.
 
 Labels are key=value. Repeat --label for several; repeating tags=... builds
 the tags list. Documented keys: site, tenant_ref, consent_basis,
@@ -242,7 +244,8 @@ func artifactsPath(sessionID string) string {
 // A body that is not a string detail is printed raw.
 func artifactAPIError(err error) error {
 	var apiErr *api.APIError
-	if !errors.As(err, &apiErr) {
+	if !errors.As(err, &apiErr) || apiErr.StatusCode == http.StatusUnauthorized {
+		// A 401 keeps the client's own message, which says to log in again.
 		return err
 	}
 	var body struct {
@@ -382,8 +385,16 @@ func runArtifactsPut(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	raw, err := depositArtifact(client, sessionID, name, contentType, metadata, buffered)
+	if api.IsStatus(err, http.StatusUnauthorized) && source != "-" {
+		// An expired access token: refresh it and send the file again. The
+		// file is on disk, so it can be read a second time; stdin cannot,
+		// and gets the login hint below instead.
+		if refreshErr := client.RefreshAccessToken(); refreshErr == nil {
+			raw, err = redepositFile(client, sessionID, name, contentType, metadata, source)
+		}
+	}
 	if err != nil {
-		return err
+		return artifactAPIError(err)
 	}
 	out := cmd.OutOrStdout()
 	if artifactsJSON {
@@ -397,6 +408,21 @@ func runArtifactsPut(cmd *cobra.Command, args []string) error {
 		descriptor.ID, descriptor.Kind, descriptor.ContentType, formatArtifactSize(descriptor.SizeBytes))
 	fmt.Fprintln(out, artifactConsoleURL(client.BaseURL(), sessionID, descriptor.ID)) //nolint:errcheck
 	return nil
+}
+
+// redepositFile opens source again and repeats the deposit.
+func redepositFile(
+	client *api.Client,
+	sessionID, name, contentType string,
+	metadata map[string]interface{},
+	source string,
+) (json.RawMessage, error) {
+	file, err := os.Open(source)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close() //nolint:errcheck
+	return depositArtifact(client, sessionID, name, contentType, metadata, file)
 }
 
 // depositArtifact streams one multipart deposit: the metadata part, then the
@@ -421,7 +447,7 @@ func depositArtifact(
 	// Unblock the writer if the request ended before reading the whole body.
 	pipeReader.Close() //nolint:errcheck
 	if err != nil {
-		return nil, artifactAPIError(err)
+		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	raw, err := io.ReadAll(resp.Body)
@@ -683,14 +709,31 @@ func artifactGetError(artifactID string, err error) error {
 
 // writeArtifactFile streams body into a temporary file beside target and
 // renames it into place only once the copy completed.
+//
+// The temporary file is created with mode 0666 so the process umask applies,
+// as it would to any file the shell creates; an existing target keeps its
+// own mode.
 func writeArtifactFile(target string, body io.Reader) (int64, error) {
 	dir := filepath.Dir(target)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(target)+".part-*")
+	var tmp *os.File
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		name := filepath.Join(dir, fmt.Sprintf(".%s.part-%d-%d", filepath.Base(target), os.Getpid(), time.Now().UnixNano()))
+		tmp, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
+		if !os.IsExist(err) {
+			break
+		}
+	}
 	if err != nil {
 		return 0, err
 	}
 	written, copyErr := io.Copy(tmp, body)
 	closeErr := tmp.Close()
+	if copyErr == nil && closeErr == nil {
+		if info, statErr := os.Stat(target); statErr == nil {
+			closeErr = os.Chmod(tmp.Name(), info.Mode().Perm())
+		}
+	}
 	if copyErr != nil || closeErr != nil {
 		os.Remove(tmp.Name()) //nolint:errcheck
 		if copyErr != nil {

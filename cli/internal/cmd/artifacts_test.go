@@ -11,12 +11,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/spf13/pflag"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
@@ -43,15 +45,21 @@ func artifactDescriptorJSON(id, kind, name, createdAt string) string {
 // runArtifacts runs "preloop artifacts ..." against server with stdin.
 func runArtifacts(t *testing.T, server *httptest.Server, stdin string, args ...string) (string, string, error) {
 	t.Helper()
-	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
 	testenv.SetTempHome(t)
+	return runArtifactsAs(t, stdin, append(args, "--url", server.URL, "--token", "tok")...)
+}
+
+// runArtifactsAs runs the command with whatever credentials the test set up.
+func runArtifactsAs(t *testing.T, stdin string, args ...string) (string, string, error) {
+	t.Helper()
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
 	originalNow := artifactsNow
 	artifactsNow = func() time.Time { return artifactsFixedNow }
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errOut)
 	rootCmd.SetIn(strings.NewReader(stdin))
-	rootCmd.SetArgs(append(args, "--url", server.URL, "--token", "tok"))
+	rootCmd.SetArgs(args)
 	t.Cleanup(func() {
 		artifactsNow = originalNow
 		rootCmd.SetArgs(nil)
@@ -144,7 +152,8 @@ func assertGolden(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("read golden %s: %v (PRELOOP_UPDATE_GOLDEN=1 writes it)", path, err)
 	}
-	if got != string(want) {
+	// Git may check the golden file out with CRLF on Windows.
+	if got != strings.ReplaceAll(string(want), "\r\n", "\n") {
 		t.Errorf("%s mismatch\n--- got\n%s\n--- want\n%s", name, got, want)
 	}
 }
@@ -457,5 +466,82 @@ func TestArtifactsGetSurfacesNotFound(t *testing.T) {
 	_, _, err := runArtifacts(t, server, "", "artifacts", "get", testArtifactID, "--session", testArtifactSession)
 	if err == nil || err.Error() != "Artifact not found (HTTP 404)" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestArtifactsPutRefreshesAnExpiredTokenAndResendsTheFile(t *testing.T) {
+	descriptor := artifactDescriptorJSON(testArtifactID, "document", "notes.txt", "2026-10-04T11:59:00Z")
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/oauth/token":
+			_, _ = w.Write([]byte(`{"access_token":"fresh-token","refresh_token":"rotated"}`))
+		case "/api/v1/runtime-sessions/" + testArtifactSession + "/artifacts":
+			data, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(data))
+			if r.Header.Get("Authorization") != "Bearer fresh-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"detail":"Invalid token"}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(descriptor))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	testenv.SetTempHome(t)
+	if err := config.Save(&config.Config{AccessToken: "expired", RefreshToken: "refresh", APIURL: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(file, []byte("resend me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := runArtifactsAs(t, "", "artifacts", "put", file, "--session", testArtifactSession)
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[1], "resend me") {
+		t.Fatalf("bodies = %q, want the file sent again after the refresh", bodies)
+	}
+	if !strings.HasPrefix(out, "Deposited "+testArtifactID) {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestArtifactsUnauthorizedSaysToLogIn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"detail":"Invalid token"}`))
+	}))
+	t.Cleanup(server.Close)
+	_, _, err := runArtifacts(t, server, "x", "artifacts", "put", "-", "--session", testArtifactSession, "--content-type", "text/plain")
+	if err == nil || !strings.Contains(err.Error(), "preloop login") {
+		t.Fatalf("err = %v, want the login hint", err)
+	}
+}
+
+func TestArtifactsGetKeepsAnExistingFilesMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes")
+	}
+	server := newGetServer(t, http.StatusOK, "text/plain", "new bytes")
+	target := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(target, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runArtifacts(t, server, "", "artifacts", "get", testArtifactID, "--session", testArtifactSession, "-o", target); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	info, _ := os.Stat(target)
+	data, _ := os.ReadFile(target)
+	if info.Mode().Perm() != 0o640 || string(data) != "new bytes" {
+		t.Errorf("mode = %v data = %q, want 0640 and the new bytes", info.Mode().Perm(), data)
 	}
 }

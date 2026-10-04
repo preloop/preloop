@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
-
-	"github.com/preloop/preloop/cli/internal/version"
 )
 
 // streamErrorBodyLimit bounds how much of a failed streaming response is read
@@ -65,22 +62,9 @@ func (c *Client) streamOnce(
 	contentType string,
 	extraHeaders map[string]string,
 ) (*http.Response, error) {
-	req, err := http.NewRequest(method, strings.TrimRight(c.baseURL, "/")+path, body)
+	req, err := c.newRequest(method, path, body, contentType, extraHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	for key, value := range extraHeaders {
-		req.Header.Set(key, value)
-	}
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
-	version.SetClientIdentityHeaders(req.Header)
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		return nil, err
 	}
 	streaming := &http.Client{
 		Transport:     c.httpClient.Transport,
