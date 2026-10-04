@@ -115,7 +115,8 @@ class PreloopClient:
         """Count a batch; re-send rows refused for their image without it."""
         totals.accepted += int(body.get("accepted", 0))
         totals.duplicates += int(body.get("duplicates", 0))
-        retry = []
+        retry: list[dict[str, Any]] = []
+        origin: list[int] = []  # batch index of each retried step
         for row in body.get("rejected") or []:
             index = row.get("index")
             if (
@@ -130,6 +131,7 @@ class PreloopClient:
                     "screenshot_omitted": row["error"],
                 }
                 retry.append(step)
+                origin.append(index)
                 continue
             logger.warning("Preloop refused a Skyvern step: %s", row)
             totals.rejected.append({**row, "index": (index or 0) + start})
@@ -150,7 +152,11 @@ class PreloopClient:
         totals.duplicates += int(again.get("duplicates", 0))
         for row in again.get("rejected") or []:
             logger.warning("Preloop refused a Skyvern step: %s", row)
-            totals.rejected.append(row)
+            sub = row.get("index")
+            index = (
+                origin[sub] if isinstance(sub, int) and 0 <= sub < len(origin) else 0
+            )
+            totals.rejected.append({**row, "index": index + start})
 
     def deposit(
         self,

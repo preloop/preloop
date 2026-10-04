@@ -415,3 +415,33 @@ def test_image_rejected_steps_are_resent_without_the_image(skyvern_handler, capl
     assert "screenshot" not in first
     assert first["extra"]["screenshot_omitted"] == "screenshot_too_large"
     assert "without them" in caplog.text
+
+
+def test_rows_refused_again_on_retry_keep_their_original_index(caplog):
+    responses = [
+        {
+            "accepted": 4,
+            "duplicates": 0,
+            "rejected": [
+                {"index": 2, "error": "screenshot_invalid"},
+                {"index": 5, "error": "screenshot_too_large"},
+            ],
+        },
+        {
+            "accepted": 1,
+            "duplicates": 0,
+            "rejected": [{"index": 1, "error": "extra_too_large"}],
+        },
+    ]
+
+    def handler(request):
+        return httpx.Response(200, json=responses.pop(0))
+
+    preloop = PreloopClient(
+        TARGET, client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    steps = [{"source_step_id": str(i), "screenshot": {"x": 1}} for i in range(6)]
+    with caplog.at_level(logging.WARNING, logger="preloop_skyvern"):
+        totals = preloop.post_steps(steps)
+    assert totals.accepted == 5
+    assert totals.rejected == [{"index": 5, "error": "extra_too_large"}]
