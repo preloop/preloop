@@ -45,12 +45,17 @@ from preloop.services.approval_rule_context import (
     build_rule_context,
 )
 from preloop.services.model_content_detectors import (
+    LEGACY_PII_TYPES,
     detect_injection,
     detect_moderation,
     detect_pii,
 )
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.services.policy.schema import ConditionAction, ModelIORule
+from preloop.services.policy.schema import (
+    ConditionAction,
+    ModelIORule,
+    SensitiveDataConfig,
+)
 from preloop.services.policy_notices import (
     PolicyNotice,
     build_excerpt,
@@ -60,6 +65,20 @@ from preloop.services.policy_evaluator import (
     PolicyDecision,
     _log_policy_decision_async,
     evaluate_condition_against_bindings,
+)
+from preloop.services.sensitive_data.detectors import (
+    DetectorConfig,
+    DetectorTimeoutError,
+)
+from preloop.services.sensitive_data.policy_store import (
+    SENSITIVE_DATA_META_KEY,
+    detector_config_from,
+    parse_sensitive_data_config,
+)
+from preloop.services.sensitive_data.redact import redact_structure, redact_text
+from preloop.services.sensitive_data.tool_policy import (
+    compile_model_io_rules,
+    merge_model_io_rules,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +115,7 @@ class DetectorSummary:
 
     pii_found: Optional[bool] = None
     pii_types_found: Optional[List[str]] = None
+    pii_count: int = 0
     injection_score: Optional[float] = None
     injection_matched_patterns: Optional[List[str]] = None
     moderation_flagged: Optional[bool] = None
@@ -108,6 +128,7 @@ class DetectorSummary:
         if self.pii_found is not None:
             payload["pii.found"] = self.pii_found
             payload["pii.types_found"] = list(self.pii_types_found or [])
+            payload["pii.count"] = int(self.pii_count)
         if self.injection_score is not None:
             payload["injection.score"] = self.injection_score
             payload["injection.matched_patterns"] = list(
@@ -135,12 +156,35 @@ class ModelIODecision:
     #: Notify rules that matched in this evaluation (#959). They never
     #: change ``action``; a later deny or require_approval still applies.
     notices: List[PolicyNotice] = field(default_factory=list)
+    #: Redact rules that matched (#1123): rule id, counts by type and
+    #: whether the upstream payload is rewritten too. Never blocking.
+    redactions: List["RedactionHit"] = field(default_factory=list)
+
+    def upstream_redaction_types(self) -> List[str]:
+        """Types to strip from the upstream payload, if any hit asks for it."""
+        types: List[str] = []
+        for hit in self.redactions:
+            if hit.redact_upstream:
+                for item in hit.types:
+                    if item not in types:
+                        types.append(item)
+        return types
 
     def to_policy_decision(self) -> PolicyDecision:
         """Adapt to the historical PolicyDecision 3-tuple."""
         return PolicyDecision(
             self.action, None, self.rule_description or "No model I/O rules defined"
         )
+
+
+@dataclass
+class RedactionHit:
+    """One matching redact condition."""
+
+    rule_id: str
+    types: List[str]
+    counts: Dict[str, int]
+    redact_upstream: bool = False
 
 
 def load_model_io_rules(db: Session, account_id: Any) -> List[ModelIORule]:
@@ -423,11 +467,26 @@ def _rule_enables_detector(rule: ModelIORule, name: str) -> bool:
     )
 
 
-def _pii_types_for_rule(rule: ModelIORule) -> List[str]:
+def _pii_types_for_rule(rule: ModelIORule) -> Optional[List[str]]:
+    """Explicit type list of a rule, or ``None`` for the account default."""
     detectors = rule.detectors
     if detectors is None or detectors.pii in (None, False, True):
-        return ["email", "phone", "credit_card"]
+        return None
     return list(detectors.pii.types)
+
+
+def _effective_pii_types(
+    rule: ModelIORule, detector_config: Optional[DetectorConfig]
+) -> List[str]:
+    """The types a rule scans: its own list, else the account default, else
+    the legacy three. Mirrors the resolution inside ``detect_pii`` so a
+    redaction hit never carries ``None``."""
+    explicit = _pii_types_for_rule(rule)
+    if explicit:
+        return explicit
+    if detector_config is not None and detector_config.types:
+        return list(detector_config.types)
+    return list(LEGACY_PII_TYPES)
 
 
 def _moderation_backend_for_rule(rule: ModelIORule) -> str:
@@ -437,13 +496,18 @@ def _moderation_backend_for_rule(rule: ModelIORule) -> str:
     return detectors.moderation.backend
 
 
-def _run_detectors(rule: ModelIORule, text: str) -> DetectorSummary:
+def _run_detectors(
+    rule: ModelIORule,
+    text: str,
+    detector_config: Optional[DetectorConfig] = None,
+) -> DetectorSummary:
     """Run only the detectors this rule enables."""
     summary = DetectorSummary()
     if _rule_enables_detector(rule, "pii"):
-        result = detect_pii(text, _pii_types_for_rule(rule))
+        result = detect_pii(text, _pii_types_for_rule(rule), config=detector_config)
         summary.pii_found = result.found
         summary.pii_types_found = result.types_found
+        summary.pii_count = result.count
     if _rule_enables_detector(rule, "injection"):
         result = detect_injection(text)
         summary.injection_score = result.score
@@ -455,7 +519,11 @@ def _run_detectors(rule: ModelIORule, text: str) -> DetectorSummary:
     return summary
 
 
-def _run_detectors_with_timeout(rule: ModelIORule, text: str) -> DetectorSummary:
+def _run_detectors_with_timeout(
+    rule: ModelIORule,
+    text: str,
+    detector_config: Optional[DetectorConfig] = None,
+) -> DetectorSummary:
     """Run detectors with the rule's hard timeout.
 
     The future is submitted on a process-level pool so this function can
@@ -464,10 +532,13 @@ def _run_detectors_with_timeout(rule: ModelIORule, text: str) -> DetectorSummary
     process exit.
     """
     timeout_s = max(rule.detector_timeout_ms, 1) / 1000.0
-    future = _DETECTOR_POOL.submit(_run_detectors, rule, text)
+    future = _DETECTOR_POOL.submit(_run_detectors, rule, text, detector_config)
     try:
         return future.result(timeout=timeout_s)
-    except concurrent.futures.TimeoutError:
+    except (concurrent.futures.TimeoutError, DetectorTimeoutError):
+        # The pool timeout covers slow detectors that yield the GIL; an
+        # account regex that does not is interrupted by the regex engine
+        # itself and surfaces as DetectorTimeoutError. Both are a timeout.
         logger.warning(
             "Model I/O detector timeout rule_id=%s timeout_ms=%s",
             rule.id,
@@ -510,6 +581,7 @@ def _build_bindings(
         "pii": {
             "found": bool(summary.pii_found),
             "types_found": list(summary.pii_types_found or []),
+            "count": int(summary.pii_count),
         },
         "injection": {
             "score": float(summary.injection_score or 0.0),
@@ -524,6 +596,9 @@ def _build_bindings(
 
 
 NOTIFY_ACTION = ConditionAction.NOTIFY.value
+REDACT_ACTION = ConditionAction.REDACT.value
+#: Actions that never block the call.
+NON_BLOCKING_ACTIONS = frozenset({NOTIFY_ACTION, REDACT_ACTION})
 
 
 def _condition_action(condition: Any) -> str:
@@ -532,14 +607,15 @@ def _condition_action(condition: Any) -> str:
 
 
 def is_notify_only(rule: ModelIORule) -> bool:
-    """True when every condition of ``rule`` uses the ``notify`` action.
+    """True when every condition of ``rule`` is non-blocking (notify, redact).
 
     Such a rule can never block a call: detector timeouts and evaluation
     errors skip it instead of failing closed, and a response stream it
     watches is not buffered.
     """
     return bool(rule.conditions) and all(
-        _condition_action(condition) == NOTIFY_ACTION for condition in rule.conditions
+        _condition_action(condition) in NON_BLOCKING_ACTIONS
+        for condition in rule.conditions
     )
 
 
@@ -599,11 +675,14 @@ def evaluate_model_io(
     session_id: Optional[str] = None,
     account_id: Optional[Any] = None,
     user_id: Optional[Any] = None,
+    detector_config: Optional[DetectorConfig] = None,
 ) -> ModelIODecision:
     """Evaluate model I/O rules for one target.
 
     First matching enabled rule condition wins. No matching rule: allow.
     Detector timeout follows ``on_detector_timeout`` (default deny).
+    ``detector_config`` carries the account's custom patterns, keyword lists
+    and locales (``sensitive_data.detectors``); ``None`` means built-ins only.
 
     ``notify`` is the exception to first match wins (#959): a matching
     notify condition records a hit for its rule and evaluation moves on to
@@ -629,16 +708,18 @@ def evaluate_model_io(
         )
 
     notices: List[PolicyNotice] = []
+    redactions: List[RedactionHit] = []
     rules_by_id = {rule.id: rule for rule in matching}
 
     def finish(decision: ModelIODecision) -> ModelIODecision:
         decision.notices = notices
+        decision.redactions = redactions
         _emit_notices(notices, rules_by_id)
         return decision
 
     for rule in matching:
         notify_only = is_notify_only(rule)
-        summary = _run_detectors_with_timeout(rule, text)
+        summary = _run_detectors_with_timeout(rule, text, detector_config)
         if summary.timed_out:
             if notify_only:
                 continue
@@ -704,6 +785,11 @@ def evaluate_model_io(
                 # First matching condition of this rule is used; move on
                 # to the next rule.
                 break
+            if action == REDACT_ACTION:
+                hit = _redaction_hit(rule, text, detector_config)
+                redactions.append(hit)
+                _audit_redaction(account_id, user_id, target, digest, hit, rule)
+                break
             decision = ModelIODecision(
                 action=action,
                 rule_id=rule.id,
@@ -728,11 +814,139 @@ def evaluate_model_io(
                 text_sha256=digest,
             )
         )
-    return ModelIODecision(
-        action="allow",
-        rule_description="No rules matched (default allow)",
-        text_sha256=digest,
+    if redactions:
+        return finish(
+            ModelIODecision(
+                action=REDACT_ACTION,
+                rule_id=redactions[0].rule_id,
+                rule_description=f"Redact rule matched: {redactions[0].rule_id}",
+                text_sha256=digest,
+            )
+        )
+    return finish(
+        ModelIODecision(
+            action="allow",
+            rule_description="No rules matched (default allow)",
+            text_sha256=digest,
+        )
     )
+
+
+def _redaction_hit(
+    rule: ModelIORule, text: str, detector_config: Optional[DetectorConfig]
+) -> RedactionHit:
+    """Counts by type for one redact condition. The text itself is dropped."""
+    types = _effective_pii_types(rule, detector_config)
+    config = (detector_config or DetectorConfig()).with_types(types)
+    _redacted, counts = redact_text(text, config)
+    return RedactionHit(
+        rule_id=rule.id,
+        types=types,
+        counts=counts,
+        redact_upstream=bool(getattr(rule, "redact_upstream", False)),
+    )
+
+
+def _audit_redaction(
+    account_id: Optional[Any],
+    user_id: Optional[Any],
+    target: str,
+    digest: str,
+    hit: RedactionHit,
+    rule: ModelIORule,
+) -> None:
+    """One audit row per redact hit: rule id and counts by type, never values."""
+    account_uuid = _uuid_or_none(account_id)
+    if account_uuid is None:
+        return
+    try:
+        _log_policy_decision_async(
+            account_id=account_uuid,
+            tool_name=target,
+            action=REDACT_ACTION,
+            rule_description=rule.description or f"Redact rule matched: {rule.id}",
+            condition_matched=rule.id,
+            tool_args={"text_sha256": digest},
+            user_id=_uuid_or_none(user_id),
+            extra_details={
+                "rule_id": rule.id,
+                "redaction_counts": dict(hit.counts),
+                "redact_upstream": hit.redact_upstream,
+                "text_sha256": digest,
+            },
+        )
+    except Exception:  # noqa: BLE001 - audit must not change the decision
+        logger.warning("Redaction audit failed", exc_info=True)
+
+
+def redact_request_upstream(
+    messages: Optional[Sequence[Any]],
+    payload: Optional[Dict[str, Any]],
+    types: Sequence[str],
+    detector_config: Optional[DetectorConfig],
+) -> Dict[str, int]:
+    """Rewrite request text in place so the provider receives redacted content.
+
+    String message contents, text blocks inside list contents and a
+    Responses-API ``input`` string are rewritten; everything else is left
+    alone. Returns counts by type.
+    """
+    if not types:
+        return {}
+    config = (detector_config or DetectorConfig()).with_types(list(types))
+    totals: Dict[str, int] = {}
+
+    def add(counts: Dict[str, int]) -> None:
+        for name, count in counts.items():
+            totals[name] = totals.get(name, 0) + count
+
+    # Mirror canonical_request_text / _content_to_text: bare-string messages
+    # and bare-string content items are scanned there, so they are rewritten
+    # here too.
+    if isinstance(messages, list):
+        for index, message in enumerate(messages):
+            if isinstance(message, str):
+                redacted, counts = redact_text(message, config)
+                if counts:
+                    messages[index] = redacted
+                    add(counts)
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            redacted, counts = redact_text(content, config)
+            if counts:
+                message["content"] = redacted
+                add(counts)
+        elif isinstance(content, list):
+            for position, block in enumerate(content):
+                if isinstance(block, str):
+                    redacted, counts = redact_text(block, config)
+                    if counts:
+                        content[position] = redacted
+                        add(counts)
+                elif isinstance(block, dict):
+                    for key in ("text", "content"):
+                        value = block.get(key)
+                        if isinstance(value, str):
+                            redacted, counts = redact_text(value, config)
+                            if counts:
+                                block[key] = redacted
+                                add(counts)
+    if isinstance(payload, dict):
+        raw_input = payload.get("input")
+        if isinstance(raw_input, str):
+            redacted, counts = redact_text(raw_input, config)
+            if counts:
+                payload["input"] = redacted
+                add(counts)
+        elif isinstance(raw_input, list):
+            redacted_input, counts = redact_structure(raw_input, config)
+            if counts:
+                payload["input"] = redacted_input
+                add(counts)
+    return totals
 
 
 def _audit_decision(
@@ -952,6 +1166,12 @@ def _await_model_io_hold(awaitable: Any) -> bool:
     )
 
 
+def _gateway_detector_config(gateway: Any) -> Optional[DetectorConfig]:
+    """Detector configuration parked by ``_load_gateway_policy_rules``."""
+    config = getattr(gateway, "_sensitive_detector_config", None)
+    return config if isinstance(config, DetectorConfig) else None
+
+
 def _session_id_from_gateway(gateway: Any) -> Optional[str]:
     return getattr(gateway, "_client_session_id", None) or getattr(
         gateway, "_resolved_runtime_session_id", None
@@ -966,8 +1186,8 @@ def _apply_decision(
     provider: str,
     before_provider: bool,  # noqa: ARG001 - reserved for audit context
 ) -> None:
-    if decision.action in ("allow", NOTIFY_ACTION):
-        # notify proceeds exactly like allow: no hold, no approval request.
+    if decision.action in ("allow", NOTIFY_ACTION, REDACT_ACTION):
+        # notify and redact proceed exactly like allow: no hold, no approval.
         return
     if decision.action == "require_approval":
         approved = _await_model_io_hold(
@@ -987,13 +1207,58 @@ def _apply_decision(
     raise _gateway_error(provider, decision)
 
 
+def load_gateway_policy_blocks(
+    db: Session, account_id: Any
+) -> tuple[List[ModelIORule], SensitiveDataConfig]:
+    """Load model I/O rules and the sensitive-data block with one account read.
+
+    The gateway calls this on both the request and response sides of a chat
+    completion. Both blocks live on ``account.meta_data``, so each side needs
+    a single SELECT. The lenient parse never raises and never returns
+    ``None``: a missing or malformed sensitive-data block is the empty config.
+    """
+    account = crud_account.get(db, id=account_id)
+    meta = getattr(account, "meta_data", None) if account is not None else None
+    if not isinstance(meta, dict):
+        meta = {}
+    return (
+        parse_model_io_rules(meta.get(MODEL_IO_META_KEY)),
+        parse_sensitive_data_config(meta.get(SENSITIVE_DATA_META_KEY)),
+    )
+
+
 def _load_gateway_policy_rules(
     gateway: Any, *, ai_model: Any, provider: str
 ) -> List[ModelIORule]:
-    """Finish the policy read before waits, and fail closed on database errors."""
+    """Finish the policy read before waits, and fail closed on database errors.
+
+    The account's ``sensitive_data`` block is read in the same window: its
+    model targets compile into model I/O rules appended after the stored
+    ones, and its detector configuration is parked on
+    ``gateway._sensitive_detector_config`` so custom patterns work after the
+    connection has been released.
+    """
     try:
         try:
-            return load_model_io_rules(gateway.db, gateway.auth_context.account_id)
+            account_id = gateway.auth_context.account_id
+            rules, sensitive = load_gateway_policy_blocks(gateway.db, account_id)
+            if sensitive.rules:
+                agent_id = None
+                if any(rule.scope.agents for rule in sensitive.enabled_rules()):
+                    resolver = getattr(gateway, "_resolve_managed_agent_id", None)
+                    if callable(resolver):
+                        try:
+                            agent_id = resolver()
+                        except Exception:  # noqa: BLE001 - scope then excludes
+                            agent_id = None
+                rules = merge_model_io_rules(
+                    rules,
+                    compile_model_io_rules(sensitive, managed_agent_id=agent_id),
+                )
+            gateway._sensitive_detector_config = (
+                detector_config_from(sensitive) if rules and sensitive else None
+            )
+            return rules
         finally:
             release = getattr(gateway, "release_db_for_wait", None)
             if release is not None:
@@ -1030,6 +1295,7 @@ def enforce_request_policy(
         session_id=_session_id_from_gateway(gateway),
         account_id=account_id,
         user_id=getattr(gateway.auth_context.user, "id", None),
+        detector_config=_gateway_detector_config(gateway),
     )
     _apply_decision(
         gateway=gateway,
@@ -1038,6 +1304,11 @@ def enforce_request_policy(
         provider=provider,
         before_provider=True,
     )
+    upstream_types = decision.upstream_redaction_types()
+    if upstream_types:
+        redact_request_upstream(
+            messages, payload, upstream_types, _gateway_detector_config(gateway)
+        )
 
 
 def enforce_response_policy(
@@ -1061,6 +1332,7 @@ def enforce_response_policy(
         session_id=_session_id_from_gateway(gateway),
         account_id=account_id,
         user_id=getattr(gateway.auth_context.user, "id", None),
+        detector_config=_gateway_detector_config(gateway),
     )
     _apply_decision(
         gateway=gateway,
@@ -1235,6 +1507,7 @@ def _notify_only_stream(
                     session_id=_session_id_from_gateway(gateway),
                     account_id=gateway.auth_context.account_id,
                     user_id=getattr(gateway.auth_context.user, "id", None),
+                    detector_config=_gateway_detector_config(gateway),
                 )
         except Exception:  # noqa: BLE001 - notify must never fail the call
             logger.warning("Notify-only response evaluation failed", exc_info=True)

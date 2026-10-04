@@ -7,14 +7,18 @@ no client can mistake these rows for gateway spend.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 #: GitHub organization and enterprise slugs: alphanumerics and hyphens.
 _SLUG_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,98}[A-Za-z0-9])?$"
+#: GitHub user logins after canonicalisation: alphanumerics, hyphens and the
+#: underscore that enterprise managed users carry. No whitespace, no slash.
+_LOGIN_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,99}$")
 
 
 class CopilotConnectionUpsert(BaseModel):
@@ -83,6 +87,92 @@ class CopilotSyncResponse(BaseModel):
     """Acknowledgement that a sync was queued."""
 
     status: Literal["queued"] = "queued"
+
+
+class CopilotUserMappingUpsert(BaseModel):
+    """Map one GitHub login of the connected organization to one user.
+
+    The login is trimmed and lowercased before it is stored, so writing the
+    same login in another letter case updates the one mapping. The user must
+    be an active user of the caller's account.
+    """
+
+    github_login: str = Field(..., min_length=1, max_length=100)
+    user_id: UUID
+
+    @field_validator("github_login")
+    @classmethod
+    def _canonical_login(cls, value: str) -> str:
+        canonical = value.strip().lower()
+        if not _LOGIN_PATTERN.match(canonical):
+            raise ValueError(
+                "github_login must be a GitHub login: letters, digits, hyphens "
+                "or underscores, no whitespace"
+            )
+        return canonical
+
+
+class CopilotUserMappingResponse(BaseModel):
+    """One stored mapping; the user name is resolved within the account."""
+
+    github_login: str
+    user_id: UUID
+    user_name: Optional[str] = None
+    organization: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class CopilotUserMappingListResponse(BaseModel):
+    """Mappings for the account's current Copilot organization."""
+
+    organization: Optional[str] = Field(
+        None, description="Connected organization; null without a connection."
+    )
+    items: List[CopilotUserMappingResponse] = Field(default_factory=list)
+    total: int = 0
+
+
+class CopilotSpendCoverageResponse(BaseModel):
+    """How much stored premium-request spend the spend outlier rules can see.
+
+    Counts rows per outcome over ``[period_start, period_end]`` (UTC days)
+    for the current organization. ``mapped_net_amount`` is null when no row
+    was mapped: unknown is not zero.
+    """
+
+    organization: Optional[str] = None
+    connection_active: bool = False
+    period_start: date
+    period_end: date
+    mapped_rows: int = 0
+    mapped_net_amount: Optional[float] = Field(
+        None,
+        description=(
+            "Sum of the positive per user, day and model nets, which is exactly "
+            "what the rules evaluate. Null when no row was mapped."
+        ),
+    )
+    credited_net_amount: Optional[float] = Field(
+        None,
+        description=(
+            "Per user, day and model nets at or below zero (credits exceeding "
+            "charges); these reach no rule. Null when there were none."
+        ),
+    )
+    known_zero_rows: int = Field(
+        0, description="Mapped rows whose billed amount is exactly zero."
+    )
+    excluded: Dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Rows the rules do not see, by reason: unmapped, unknown_amount, "
+            "unsupported_currency, nonfinite_amount, aggregate_only, "
+            "unattributed, not_daily."
+        ),
+    )
+    unmapped_logins: List[str] = Field(default_factory=list)
+    mapped_logins: List[str] = Field(default_factory=list)
 
 
 class CopilotSeat(BaseModel):

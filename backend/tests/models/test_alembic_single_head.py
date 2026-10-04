@@ -286,6 +286,15 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert artifact_created.down_revision == "20261003_issue_extid_unique"
     audit_lookup = script.get_revision("20261004_audit_lookup_idx")
     assert audit_lookup.down_revision == "20261004_artifact_created_idx"
+    copilot_user_mapping = script.get_revision("20261004_copilot_user_mapping")
+    assert copilot_user_mapping.down_revision == "20261004_audit_lookup_idx"
+    ci_principal = script.get_revision("20261004_ci_principal")
+    assert ci_principal.down_revision == "20261004_audit_lookup_idx"
+    ci_merge = script.get_revision("20261004_ci_copilot_merge")
+    assert set(ci_merge.down_revision) == {
+        "20261004_ci_principal",
+        "20261004_copilot_user_mapping",
+    }
     discovery = script.get_revision("20261003_discovery_candidates")
-    assert discovery.down_revision == "20261004_audit_lookup_idx"
+    assert discovery.down_revision == "20261004_ci_copilot_merge"
     assert script.get_heads() == ["20261003_discovery_candidates"]

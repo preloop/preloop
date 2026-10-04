@@ -391,10 +391,10 @@ test:unit:preloop-endpoints-cost:
   variables:
     TEST_PATHS: "backend/tests/endpoints/test_cost.py"
 
-test:unit:preloop-endpoints-impersonation:
+test:unit:preloop-endpoints-logout:
   extends: .test:unit:template
   variables:
-    TEST_PATHS: "backend/tests/endpoints/test_impersonation.py"
+    TEST_PATHS: "backend/tests/endpoints/test_logout_session_hook.py"
 
 test:unit:preloop-endpoints-websocket-db:
   extends: .test:unit:template
@@ -546,7 +546,7 @@ test:coverage:
     - test:unit:preloop-endpoints-policies
     - test:unit:preloop-services-approval
     - test:unit:preloop-endpoints-cost
-    - test:unit:preloop-endpoints-impersonation
+    - test:unit:preloop-endpoints-logout
     - test:unit:preloop-endpoints-websocket-db
     - test:unit:preloop-integration-gateway-e2e
     - test:unit:preloop-endpoints-extra

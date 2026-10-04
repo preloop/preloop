@@ -43,6 +43,7 @@ from .account import CRUDAccount
 from .account_halt import CRUDAccountHalt, crud_account_halt
 from .agent_control_command import CRUDAgentControlCommand
 from .api_key import CRUDApiKey
+from .ci_principal import CiAuthorizationContext, CRUDCiPrincipal, crud_ci_principal
 from .api_usage import CRUDApiUsage
 from .audit_log import CRUDAuditLog
 from .base import CRUDBase
@@ -88,8 +89,10 @@ from .provider_billing import (
 from .copilot_import import (
     CRUDCopilotImportConnection,
     CRUDCopilotUsage,
+    CRUDCopilotUserMapping,
     crud_copilot_import_connection,
     crud_copilot_usage,
+    crud_copilot_user_mapping,
 )
 from .tool_configuration import CRUDToolConfiguration
 from .mcp_server import CRUDMCPServer
@@ -273,6 +276,9 @@ __all__ = [
     "CRUDEmbeddingModel",
     "CRUDIssueEmbedding",
     "CRUDApiKey",
+    "CiAuthorizationContext",
+    "CRUDCiPrincipal",
+    "crud_ci_principal",
     "CRUDApiUsage",
     "CRUDAuditLog",
     "CRUDComment",
@@ -353,8 +359,10 @@ __all__ = [
     "crud_provider_billing_snapshot",
     "CRUDCopilotImportConnection",
     "CRUDCopilotUsage",
+    "CRUDCopilotUserMapping",
     "crud_copilot_import_connection",
     "crud_copilot_usage",
+    "crud_copilot_user_mapping",
     "crud_tool_configuration",
     "crud_mcp_server",
     "crud_mcp_tool",

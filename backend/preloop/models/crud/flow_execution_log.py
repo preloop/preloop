@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import select, tuple_
 from sqlalchemy.dialects.postgresql import insert
@@ -40,18 +40,67 @@ def _clean_structure(value: Any) -> Any:
     return value
 
 
-def storable_log_message(message: Any) -> Any:
+def storable_log_message(message: Any, account_id: Any = None) -> Any:
     """Scrub secrets, drop NUL and cap the length of one log message.
 
-    The single persistence gate for log messages (#173, #1196).
+    The single persistence gate for log messages (#173, #1196). With an
+    ``account_id`` the account's redact rules run after the credential
+    scrub (#1123).
     """
     message = scrub_secrets(message)
+    if account_id is not None and isinstance(message, str) and message:
+        from preloop.services.sensitive_data.storage import apply_storage_redaction
+
+        message = apply_storage_redaction(account_id, message)
     return _clean_text(message) if isinstance(message, str) else message
 
 
-def storable_log_metadata(metadata: Any) -> Any:
+def storable_log_metadata(metadata: Any, account_id: Any = None) -> Any:
     """Scrub secrets, drop NUL and cap every string in log metadata."""
-    return _clean_structure(scrub_structure(metadata)) if metadata else None
+    if not metadata:
+        return None
+    scrubbed = scrub_structure(metadata)
+    if account_id is not None:
+        from preloop.services.sensitive_data.storage import apply_storage_redaction
+
+        scrubbed = apply_storage_redaction(account_id, scrubbed)
+    return _clean_structure(scrubbed)
+
+
+_execution_accounts: Dict[str, Optional[str]] = {}
+_EXECUTION_ACCOUNT_CACHE_LIMIT = 4096
+
+
+def _account_for_execution(db: Session, execution_id: Any) -> Optional[str]:
+    """Account that owns a flow execution, cached per process.
+
+    Log rows carry only the execution id; the owning account never changes,
+    so one lookup per execution is enough.
+    """
+    key = str(execution_id)
+    cached = _execution_accounts.get(key)
+    if cached is not None:
+        return cached
+    account_id: Optional[str] = None
+    try:
+        # The execution row carries no account; its flow does.
+        row = db.execute(
+            select(models.Flow.account_id)
+            .join(models.FlowExecution, models.FlowExecution.flow_id == models.Flow.id)
+            .where(models.FlowExecution.id == uuid.UUID(key))
+        ).first()
+        if row is not None and row[0] is not None:
+            account_id = str(row[0])
+    except Exception:  # noqa: BLE001 - redaction degrades, the log is kept
+        account_id = None
+    if account_id is None:
+        # A miss or a transient error is retried on the next log line; only
+        # a successful lookup is remembered.
+        return None
+    if len(_execution_accounts) >= _EXECUTION_ACCOUNT_CACHE_LIMIT:
+        _execution_accounts.clear()
+    _execution_accounts[key] = account_id
+    return account_id
 
 
 class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
@@ -187,8 +236,12 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
                     "id": uuid.UUID(log_data["_persistence_id"]),
                     "execution_id": uuid.UUID(execution_id),
                     "log_type": log_data.get("type", "log"),
-                    "message": storable_log_message(message),
-                    "metadata": storable_log_metadata(metadata),
+                    "message": storable_log_message(
+                        message, _account_for_execution(db, execution_id)
+                    ),
+                    "metadata": storable_log_metadata(
+                        metadata, _account_for_execution(db, execution_id)
+                    ),
                 }
             )
         statement = insert(models.FlowExecutionLog.__table__).values(rows)
@@ -215,8 +268,12 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         log_entry = models.FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=storable_log_message(message),
-            metadata_=storable_log_metadata(metadata),
+            message=storable_log_message(
+                message, _account_for_execution(db, execution_id)
+            ),
+            metadata_=storable_log_metadata(
+                metadata, _account_for_execution(db, execution_id)
+            ),
         )
         db.add(log_entry)
         if commit:

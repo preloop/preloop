@@ -70,3 +70,9 @@ status banner comes first and the `Editions:` line follows it.
 3. Open a GitHub pull request with a clear description of the change.
 
 Pull requests are reviewed by a core contributor before merge.
+
+Preloop also reviews its own pull requests with the Pull Request Reviewer
+flow. For pull requests from forks, that automated review does not start
+until a maintainer has read the change and added the `preloop-review`
+label; a maintainer may also skip it with `preloop-skip-review`. Do not
+wait for the bot before asking for a human review.

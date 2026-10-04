@@ -134,6 +134,10 @@ Each condition evaluates against tool arguments:
 | `condition_type` | string | `simple` | `simple` or `cel`, both evaluated in every edition |
 | `description` | string | n/a | Human-readable description |
 
+Tool conditions do not accept `redact`. A `sensitive_data` rule does:
+`notify`, `deny`, `require_approval` or `redact`, with optional
+`redact_upstream`. See [Redaction](../../security/redaction.md).
+
 ### `defaults`
 
 | Field | Type | Default | Description |

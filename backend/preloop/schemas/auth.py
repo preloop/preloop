@@ -36,6 +36,17 @@ class TokenData(BaseModel):
     # Refresh token id ("jti" claim). A CLI refresh token rotates only while
     # its jti is the one recorded on the cli_session row.
     jti: Optional[str] = None
+    # Every claim of the token, for extensions that issue their own claims.
+    # Kept out of repr so request logs do not grow with custom claims.
+    claims: Dict[str, Any] = Field(default_factory=dict, repr=False)
+
+
+class LogoutResponse(BaseModel):
+    """Result of ``POST /auth/logout``."""
+
+    # Same-origin path the client navigates to after clearing its tokens.
+    # None means the client's own default destination.
+    redirect_url: Optional[str] = None
 
 
 class CliSessionResponse(BaseModel):

@@ -32,6 +32,19 @@ existing ``attention_dismissal`` table:
 
 A card stays open for :data:`OPEN_WINDOW_DAYS` after the finding was detected,
 or until a newer finding for the same item replaces it.
+
+Imported spend arrives late (the Copilot import trails by three days) and can
+be corrected by a later import, so the daily pass does not stop at yesterday
+(#1061). For accounts whose registered source asks for it, it replays the
+:data:`REPLAY_WINDOW_DAYS` most recent completed UTC days through the same two
+daily rules. The finding's ``day`` is the spend day; ``detected_at`` is when
+the evaluation actually ran. A replay reconciles what it recorded earlier for
+exactly those rules and days: unchanged findings are left alone (so a
+dismissal or snooze keeps applying), changed evidence is written onto the
+existing row with its first detection time intact, and a day that no longer
+qualifies is stamped superseded and drops out of the open list and the
+digest while its row stays as an audit record. When the imported source
+fails, nothing is reconciled and only gateway spend for yesterday is judged.
 """
 
 from __future__ import annotations
@@ -40,6 +53,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import logging
+import math
+import traceback
 from statistics import median
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 from uuid import UUID
@@ -69,6 +84,15 @@ logger = logging.getLogger(__name__)
 SPEND_ATTENTION_KIND = "spend"
 #: Trailing window the daily rule takes its median from.
 HISTORY_WINDOW_DAYS = 28
+#: Completed UTC days (yesterday included) the daily pass re-judges for
+#: accounts with an imported source that asks for replay. Imports older than
+#: this are summary-only: they show on the Cost page but raise no alert.
+REPLAY_WINDOW_DAYS = 28
+#: ``superseded_reason`` written when a replayed day no longer qualifies.
+SUPERSEDED_NO_LONGER_QUALIFIES = "no_longer_qualifies"
+#: The rules a daily pass evaluates and reconciles. The session rule is not
+#: here: daily import reports cannot identify a session.
+DAILY_RULES: tuple[str, ...] = (SPEND_OUTLIER_RULE_DAILY, SPEND_OUTLIER_RULE_MODEL_MIX)
 #: How long a finding stays on the Attention page after it was detected.
 OPEN_WINDOW_DAYS = 7
 #: The digest covers findings detected in this many trailing days.
@@ -147,41 +171,122 @@ class ImportedSpendRow:
 
 #: ``(db, account_id, start_day, end_day) -> rows`` for ``[start, end]``.
 ImportedSpendSource = Callable[[Session, UUID, date, date], Iterable[ImportedSpendRow]]
+#: ``(db) -> account ids`` whose recent days the daily pass should replay.
+ImportedReplayAccounts = Callable[[Session], Iterable[UUID]]
 
-_imported_spend_sources: List[ImportedSpendSource] = []
+
+@dataclass(frozen=True)
+class _RegisteredSource:
+    source: ImportedSpendSource
+    replay_accounts: Optional[ImportedReplayAccounts]
 
 
-def register_imported_spend_source(source: ImportedSpendSource) -> None:
+_imported_spend_sources: List[_RegisteredSource] = []
+
+
+def register_imported_spend_source(
+    source: ImportedSpendSource,
+    replay_accounts: Optional[ImportedReplayAccounts] = None,
+) -> None:
     """Add a source of per-user spend the gateway did not meter.
 
-    The Copilot import (#788) registers here once it stores per user, per
-    model, per day amounts. With no source registered the rules read gateway
-    spend only.
+    The Copilot adapter (:mod:`preloop.services.copilot_spend_source`)
+    registers here. With no source registered the rules read gateway spend
+    only. Registering the same callable twice keeps one entry, so a worker
+    may call this at every task start.
 
     Args:
         source: Callable returning imported rows for an account and day range.
+        replay_accounts: Optional callable naming the accounts whose recent
+            days the daily pass must replay because this source delivers
+            late or corrected data. None means the source never asks for a
+            replay.
     """
-    if source not in _imported_spend_sources:
-        _imported_spend_sources.append(source)
+    if any(entry.source == source for entry in _imported_spend_sources):
+        return
+    _imported_spend_sources.append(_RegisteredSource(source, replay_accounts))
 
 
 def unregister_imported_spend_source(source: ImportedSpendSource) -> None:
     """Remove a previously registered source (tests, plugin unload)."""
-    if source in _imported_spend_sources:
-        _imported_spend_sources.remove(source)
+    _imported_spend_sources[:] = [
+        entry for entry in _imported_spend_sources if entry.source != source
+    ]
+
+
+def registered_imported_spend_sources() -> List[ImportedSpendSource]:
+    """The source callables currently registered, in registration order."""
+    return [entry.source for entry in _imported_spend_sources]
+
+
+def _source_name(source: ImportedSpendSource) -> str:
+    return getattr(source, "__qualname__", None) or type(source).__name__
 
 
 def _imported_rows(
     db: Session, account_id: UUID, start_day: date, end_day: date
-) -> List[ImportedSpendRow]:
+) -> tuple[List[ImportedSpendRow], bool]:
+    """Rows from every registered source, and whether all of them answered.
+
+    One broken import must not stop gateway alerts, so a failing source is
+    skipped and the rest are kept. The caller learns that the result is
+    incomplete and must not treat the missing rows as "nothing was spent".
+    The diagnostics name the source and the exception type, and at debug
+    level the stack frame locations; neither the exception message nor any
+    source line is logged, since an HTTP client error can carry a request
+    header.
+    """
     rows: List[ImportedSpendRow] = []
-    for source in list(_imported_spend_sources):
+    complete = True
+    for entry in list(_imported_spend_sources):
         try:
-            rows.extend(source(db, account_id, start_day, end_day))
-        except Exception:
-            # One broken import must not stop gateway alerts.
-            logger.exception("Imported spend source failed; skipping it")
-    return rows
+            rows.extend(entry.source(db, account_id, start_day, end_day))
+        except Exception as exc:
+            complete = False
+            logger.warning(
+                "Imported spend source %s failed with %s for account %s; its "
+                "rows are skipped and this evaluation is incomplete",
+                _source_name(entry.source),
+                type(exc).__name__,
+                account_id,
+            )
+            logger.debug(
+                "Imported spend source %s traceback (frame locations only): %s",
+                _source_name(entry.source),
+                " <- ".join(
+                    f"{frame.filename}:{frame.lineno} in {frame.name}"
+                    for frame in reversed(traceback.extract_tb(exc.__traceback__))
+                ),
+            )
+    return rows, complete
+
+
+def _replay_account_ids(db: Session) -> set[UUID]:
+    """Accounts any registered source wants replayed; failures leave them out."""
+    accounts: set[UUID] = set()
+    for entry in list(_imported_spend_sources):
+        if entry.replay_accounts is None:
+            continue
+        try:
+            accounts.update(entry.replay_accounts(db))
+        except Exception as exc:
+            logger.warning(
+                "Imported spend source %s could not list replay accounts (%s)",
+                _source_name(entry.source),
+                type(exc).__name__,
+            )
+    return accounts
+
+
+def replay_days(yesterday: date) -> List[date]:
+    """The completed UTC days a replaying account evaluates, oldest first.
+
+    ``yesterday`` and the days before it, :data:`REPLAY_WINDOW_DAYS` in all.
+    """
+    return [
+        yesterday - timedelta(days=offset)
+        for offset in range(REPLAY_WINDOW_DAYS - 1, -1, -1)
+    ]
 
 
 @dataclass
@@ -448,21 +553,59 @@ def load_config(db: Session, account_id: UUID) -> SpendOutlierConfig:
     )
 
 
+@dataclass
+class _CollectedSpend:
+    """Spend by user over a span, and whether every imported source answered."""
+
+    by_user: Dict[UUID, _UserSpend]
+    imported_complete: bool
+
+
 def _collect_user_spend(
     db: Session, account_id: UUID, start_day: date, end_day: date
-) -> Dict[UUID, _UserSpend]:
+) -> _CollectedSpend:
     by_user: Dict[UUID, _UserSpend] = defaultdict(_UserSpend)
     for row in crud_spend_outlier_finding.gateway_spend_by_user_model_day(
         db, account_id=account_id, start_day=start_day, end_day=end_day
     ):
         by_user[row.user_id].gateway[row.day][row.model] += row.cost_usd
-    for imported in _imported_rows(db, account_id, start_day, end_day):
-        if imported.cost_usd <= 0:
+    imported_rows, complete = _imported_rows(db, account_id, start_day, end_day)
+    for imported in imported_rows:
+        cost = float(imported.cost_usd)
+        if not math.isfinite(cost) or cost <= 0:
+            continue
+        if not start_day <= imported.day <= end_day:
             continue
         spend = by_user[imported.user_id]
-        spend.imported[imported.day][imported.model] += imported.cost_usd
+        spend.imported[imported.day][imported.model] += cost
         spend.imported_sources.add(imported.source)
-    return by_user
+    return _CollectedSpend(by_user=by_user, imported_complete=complete)
+
+
+def _record(
+    db: Session, account_id: UUID, candidate: OutlierCandidate, now: datetime
+) -> Optional[models.SpendOutlierFinding]:
+    """Insert one candidate; None when its fingerprint is already recorded."""
+    return crud_spend_outlier_finding.record(
+        db,
+        account_id=account_id,
+        rule=candidate.rule,
+        user_id=candidate.user_id,
+        runtime_session_id=candidate.runtime_session_id,
+        day=candidate.day,
+        item_id=finding_item_id(
+            candidate.rule, candidate.user_id, candidate.runtime_session_id
+        ),
+        fingerprint=finding_fingerprint(
+            candidate.rule,
+            candidate.user_id,
+            candidate.day,
+            candidate.runtime_session_id,
+        ),
+        details=candidate.details,
+        detected_at=now,
+        commit=False,
+    )
 
 
 def _store(
@@ -473,26 +616,7 @@ def _store(
 ) -> List[models.SpendOutlierFinding]:
     stored: List[models.SpendOutlierFinding] = []
     for candidate in candidates:
-        finding = crud_spend_outlier_finding.record(
-            db,
-            account_id=account_id,
-            rule=candidate.rule,
-            user_id=candidate.user_id,
-            runtime_session_id=candidate.runtime_session_id,
-            day=candidate.day,
-            item_id=finding_item_id(
-                candidate.rule, candidate.user_id, candidate.runtime_session_id
-            ),
-            fingerprint=finding_fingerprint(
-                candidate.rule,
-                candidate.user_id,
-                candidate.day,
-                candidate.runtime_session_id,
-            ),
-            details=candidate.details,
-            detected_at=now,
-            commit=False,
-        )
+        finding = _record(db, account_id, candidate, now)
         if finding is not None:
             stored.append(finding)
     db.commit()
@@ -506,34 +630,184 @@ def _utc(now: Optional[datetime]) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
-def evaluate_daily_rules(
-    db: Session, account_id: UUID, now: Optional[datetime] = None
-) -> List[models.SpendOutlierFinding]:
-    """Run the daily spend and model mix rules for yesterday (UTC).
+@dataclass
+class DailyEvaluation:
+    """What one run of the daily rules over some days did.
 
-    Args:
-        db: Database session.
-        account_id: Account to evaluate.
-        now: Evaluation time; yesterday is the UTC day before it.
-
-    Returns:
-        Findings that were new. A repeat run on the same day returns [].
+    Attributes:
+        days: The UTC days judged, oldest first.
+        new: Findings recorded for the first time (``detected_at`` is now).
+        updated: Existing findings whose evidence changed; their fingerprint
+            and first detection time are unchanged.
+        superseded: Existing findings whose day no longer qualifies; kept as
+            audit rows and hidden from the open list and the digest.
+        imported_complete: False when an imported source failed. Then only
+            yesterday was judged, from gateway spend alone, nothing was
+            updated or superseded, and ``days`` lists what was judged.
     """
-    moment = _utc(now)
-    day = moment.date() - timedelta(days=1)
-    config = load_config(db, account_id)
-    by_user = _collect_user_spend(
-        db, account_id, day - timedelta(days=HISTORY_WINDOW_DAYS), day
-    )
-    candidates: List[OutlierCandidate] = []
+
+    days: List[date] = field(default_factory=list)
+    new: List[models.SpendOutlierFinding] = field(default_factory=list)
+    updated: List[models.SpendOutlierFinding] = field(default_factory=list)
+    superseded: List[models.SpendOutlierFinding] = field(default_factory=list)
+    imported_complete: bool = True
+
+
+def _daily_candidates(
+    by_user: Mapping[UUID, _UserSpend], day: date, config: SpendOutlierConfig
+) -> Dict[str, OutlierCandidate]:
+    """Both daily rules for one day, keyed by fingerprint."""
+    candidates: Dict[str, OutlierCandidate] = {}
     for user_id, spend in by_user.items():
         if spend.day_total(day) <= 0:
             continue
         for rule in (daily_spend_candidate, model_mix_candidate):
             candidate = rule(user_id, spend, day, config)
             if candidate is not None:
-                candidates.append(candidate)
-    return _store(db, account_id, candidates, moment)
+                candidates[
+                    finding_fingerprint(candidate.rule, candidate.user_id, day)
+                ] = candidate
+    return candidates
+
+
+def _reconcile(
+    db: Session,
+    account_id: UUID,
+    days: Sequence[date],
+    candidates: Mapping[str, OutlierCandidate],
+    now: datetime,
+) -> DailyEvaluation:
+    """Bring the stored findings for ``days`` in line with ``candidates``.
+
+    Only the two daily rules and exactly these days are touched. A finding
+    that still qualifies with the same evidence is left alone, so an operator's
+    dismissal or snooze on its fingerprint keeps applying. Changed evidence is
+    written onto the existing row (``detected_at`` is kept). A recorded day
+    that no longer qualifies is stamped superseded, not deleted. A superseded
+    day that qualifies again has its stamp cleared.
+    """
+    result = DailyEvaluation(days=list(days))
+    existing = {
+        finding.fingerprint: finding
+        for finding in crud_spend_outlier_finding.list_for_days(
+            db, account_id=account_id, rules=DAILY_RULES, days=days
+        )
+    }
+    for fingerprint, candidate in candidates.items():
+        finding = existing.get(fingerprint)
+        if finding is None:
+            stored = _record(db, account_id, candidate, now)
+            if stored is not None:
+                result.new.append(stored)
+                continue
+            # Another worker recorded it between our read and our insert.
+            finding = crud_spend_outlier_finding.get_by_fingerprint(
+                db, account_id=account_id, fingerprint=fingerprint
+            )
+            if finding is None:
+                continue
+        if finding.superseded_at is None and finding.details == candidate.details:
+            continue
+        crud_spend_outlier_finding.update_details(
+            db, finding=finding, details=candidate.details, commit=False
+        )
+        result.updated.append(finding)
+    for fingerprint, finding in existing.items():
+        if fingerprint in candidates or finding.superseded_at is not None:
+            continue
+        crud_spend_outlier_finding.mark_superseded(
+            db,
+            finding=finding,
+            superseded_at=now,
+            reason=SUPERSEDED_NO_LONGER_QUALIFIES,
+            commit=False,
+        )
+        result.superseded.append(finding)
+    db.commit()
+    return result
+
+
+def evaluate_days(
+    db: Session,
+    account_id: UUID,
+    days: Iterable[date],
+    now: Optional[datetime] = None,
+) -> DailyEvaluation:
+    """Run the daily spend and model mix rules for explicit UTC days.
+
+    Spend for the whole span (the earliest day's 28-day history through the
+    latest day) is loaded once and each day is judged against the history
+    before it, exactly as :func:`evaluate_daily_rules` judges yesterday. The
+    stored findings for these rules and days are then reconciled (see
+    :func:`_reconcile`). ``detected_at`` of a new finding is ``now``, whatever
+    its spend day.
+
+    When an imported source fails, the missing rows are not "no spend": only
+    the day before ``now``, if it is among ``days``, is judged, from gateway
+    spend alone, and nothing is updated or superseded. The result says so in
+    ``imported_complete``.
+
+    Args:
+        db: Database session.
+        account_id: Account to evaluate.
+        days: UTC days to judge; duplicates are dropped.
+        now: Evaluation (detection) time; defaults to the current time.
+
+    Returns:
+        What was recorded, updated and superseded.
+    """
+    moment = _utc(now)
+    wanted = sorted(set(days))
+    if not wanted:
+        return DailyEvaluation()
+    config = load_config(db, account_id)
+    collected = _collect_user_spend(
+        db,
+        account_id,
+        wanted[0] - timedelta(days=HISTORY_WINDOW_DAYS),
+        wanted[-1],
+    )
+    if collected.imported_complete:
+        candidates: Dict[str, OutlierCandidate] = {}
+        for day in wanted:
+            candidates.update(_daily_candidates(collected.by_user, day, config))
+        return _reconcile(db, account_id, wanted, candidates, moment)
+
+    yesterday = moment.date() - timedelta(days=1)
+    result = DailyEvaluation(imported_complete=False)
+    if yesterday in wanted:
+        result.days = [yesterday]
+        result.new = _store(
+            db,
+            account_id,
+            _daily_candidates(collected.by_user, yesterday, config).values(),
+            moment,
+        )
+    return result
+
+
+def evaluate_daily_rules(
+    db: Session,
+    account_id: UUID,
+    now: Optional[datetime] = None,
+    *,
+    day: Optional[date] = None,
+) -> List[models.SpendOutlierFinding]:
+    """Run the daily spend and model mix rules for one UTC day.
+
+    Args:
+        db: Database session.
+        account_id: Account to evaluate.
+        now: Evaluation time, recorded as ``detected_at``.
+        day: The UTC day to judge; defaults to the day before ``now``.
+
+    Returns:
+        Findings that were new. A repeat run for the same day returns [];
+        see :func:`evaluate_days` for what a repeat run reconciles.
+    """
+    moment = _utc(now)
+    target = day or (moment.date() - timedelta(days=1))
+    return evaluate_days(db, account_id, [target], moment).new
 
 
 def evaluate_session_rule(
@@ -570,31 +844,59 @@ def evaluate_session_rule(
 
 
 def run_daily_pass(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:
-    """The scheduled daily pass over every account with spend yesterday.
+    """The scheduled daily pass.
+
+    Every account with gateway spend yesterday is judged for yesterday.
+    Accounts a registered imported source asks to replay (for Copilot, those
+    with an active import connection) are judged for the
+    :data:`REPLAY_WINDOW_DAYS` most recent completed days instead, yesterday
+    included, so a day whose import arrived late is evaluated on the next
+    pass and a corrected import reconciles what was recorded before.
 
     Also runs the session rule with a one-day activity window, so a session
     that crossed its threshold between periodic checks is still caught.
+    Imported reports never feed the session rule.
 
     Returns:
-        Counts of accounts evaluated and findings recorded.
+        ``accounts`` evaluated, ``findings`` recorded (new, daily and
+        session), ``updated`` and ``superseded`` findings, ``replayed``
+        accounts, and ``incomplete`` accounts whose imported source failed.
     """
     moment = _utc(now)
-    day = moment.date() - timedelta(days=1)
-    account_ids = set(
-        crud_spend_outlier_finding.list_account_ids_with_gateway_spend(db, day=day)
+    yesterday = moment.date() - timedelta(days=1)
+    gateway_accounts = set(
+        crud_spend_outlier_finding.list_account_ids_with_gateway_spend(
+            db, day=yesterday
+        )
     )
-    recorded = 0
-    for account_id in sorted(account_ids, key=str):
+    replaying = _replay_account_ids(db)
+    window = replay_days(yesterday)
+    counts = {
+        "accounts": len(gateway_accounts | replaying),
+        "findings": 0,
+        "updated": 0,
+        "superseded": 0,
+        "replayed": len(replaying),
+        "incomplete": 0,
+    }
+    for account_id in sorted(gateway_accounts | replaying, key=str):
+        days = window if account_id in replaying else [yesterday]
         try:
-            recorded += len(evaluate_daily_rules(db, account_id, moment))
+            result = evaluate_days(db, account_id, days, moment)
         except Exception:
             db.rollback()
             logger.exception("Spend outlier daily rules failed for %s", account_id)
+            continue
+        counts["findings"] += len(result.new)
+        counts["updated"] += len(result.updated)
+        counts["superseded"] += len(result.superseded)
+        if not result.imported_complete:
+            counts["incomplete"] += 1
     for (
         account_id
     ) in crud_spend_outlier_settings.list_account_ids_with_session_threshold(db):
         try:
-            recorded += len(
+            counts["findings"] += len(
                 evaluate_session_rule(
                     db, account_id, moment, active_within=timedelta(days=1)
                 )
@@ -602,7 +904,7 @@ def run_daily_pass(db: Session, now: Optional[datetime] = None) -> Dict[str, int
         except Exception:
             db.rollback()
             logger.exception("Spend outlier session rule failed for %s", account_id)
-    return {"accounts": len(account_ids), "findings": recorded}
+    return counts
 
 
 def run_session_pass(db: Session, now: Optional[datetime] = None) -> Dict[str, int]:

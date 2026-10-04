@@ -724,6 +724,17 @@ class ApprovalService:
             provided_name=managed_agent_name,
         )
 
+        # Stored arguments follow the account's redact rules (#1123). The
+        # in-process approval wait keeps the original in memory; the async
+        # replay path re-executes from this stored copy, so a redact rule on
+        # a tool also redacts what an asynchronously approved replay sends.
+        stored_tool_args = await self._storage_redacted_tool_args(
+            account_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            managed_agent_id=managed_agent_id,
+        )
+
         # Create approval request
         approval_request = ApprovalRequest(
             id=uuid.uuid4(),
@@ -732,7 +743,7 @@ class ApprovalService:
             approval_workflow_id=approval_workflow_id,
             execution_id=execution_id,
             tool_name=tool_name,
-            tool_args=tool_args,
+            tool_args=stored_tool_args,
             agent_reasoning=agent_reasoning,
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
@@ -788,7 +799,9 @@ class ApprovalService:
             correlation_id=corr_id,
             extra_details={
                 "approval_workflow_id": str(approval_workflow_id),
-                "tool_args": redact_dict(tool_args),
+                # Credential scrub over the already policy-redacted copy, so
+                # the lifecycle audit row holds neither secrets nor PII.
+                "tool_args": redact_dict(stored_tool_args or {}),
                 "timeout_seconds": timeout,
                 **({"rule_context": rule_context} if rule_context else {}),
             },
@@ -2016,6 +2029,34 @@ class ApprovalService:
             )
             return False
 
+    async def _storage_redacted_tool_args(
+        self,
+        account_id: Any,
+        *,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        managed_agent_id: Optional[uuid.UUID],
+    ) -> Dict[str, Any]:
+        """Apply the account's redact rules to the stored argument copy."""
+        from preloop.api.loop_safety import run_db_off_loop
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+        )
+
+        scope = StorageScope(
+            target="tool.args",
+            tool_name=tool_name,
+            managed_agent_id=str(managed_agent_id) if managed_agent_id else None,
+        )
+        try:
+            return await run_db_off_loop(
+                lambda: apply_storage_redaction(account_id, tool_args, scope=scope)
+            )
+        except Exception:  # noqa: BLE001 - never block an approval on this
+            logger.warning("Approval storage redaction failed", exc_info=True)
+            return tool_args
+
     async def create_and_notify(
         self,
         account_id: str,
@@ -2092,11 +2133,13 @@ class ApprovalService:
 
             sync_db = await run_db_off_loop(lambda: get_session_factory()())
             try:
+                # The summary is stored on the request and shown on every
+                # surface: generate it from the stored (redacted) arguments.
                 summary = await generate_approval_summary(
                     sync_db,
                     account_id=account_id,
                     tool_name=tool_name,
-                    tool_args=tool_args,
+                    tool_args=approval_request.tool_args or {},
                     agent_reasoning=agent_reasoning,
                     managed_agent_name=managed_agent_name,
                 )
