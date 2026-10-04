@@ -29,6 +29,7 @@ from preloop.services.sensitive_data.reference import (
     rotate_salt,
     seal_original,
     strip_sealed_original,
+    tool_args_for_replay,
     unseal_original,
     verify_hmac,
 )
@@ -461,7 +462,31 @@ async def test_in_scope_proxied_call_leaves_no_payload_in_any_store(
     proxied, monkeypatch, reference_policy, mocker
 ) -> None:
     mcp, client, audit_service, activity = proxied
-    decision_rows = mocker.patch.object(policy_evaluator, "_log_policy_decision_async")
+    decision_audit = MagicMock()
+    monkeypatch.setattr(policy_evaluator, "_get_audit_service", lambda: decision_audit)
+
+    async def _allow_and_record(**kwargs):
+        """The fixture stubs the evaluator. Record a real decision row anyway."""
+        subject = kwargs.get("subject_context") or {}
+        policy_evaluator._log_policy_decision_async(
+            account_id=kwargs["account_id"],
+            tool_name=kwargs["tool_name"],
+            action="allow",
+            rule_description="No tool configuration found",
+            tool_args=kwargs.get("tool_args"),
+            server_name=kwargs.get("server_name"),
+            managed_agent_id=subject.get("managed_agent_id"),
+        )
+        return ("allow", None, None)
+
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        _allow_and_record,
+    )
+    monkeypatch.setattr(
+        policy_evaluator, "_get_db_factory", lambda: (lambda: MagicMock())
+    )
+    monkeypatch.setattr(storage, "has_cached_config", lambda account_id: True)
     monkeypatch.setattr(
         "preloop.services.dynamic_fastmcp._load_sensitive_data_policy",
         lambda account_id: (None, None),
@@ -476,10 +501,20 @@ async def test_in_scope_proxied_call_leaves_no_payload_in_any_store(
         ),
         "activity_summary": activity.call_args.kwargs["summary"] or "",
         "decision_rows": json.dumps(
-            [c.kwargs.get("tool_args") for c in decision_rows.call_args_list],
+            [
+                c.kwargs.get("tool_args")
+                for c in decision_audit.log_policy_decision_async.call_args_list
+            ],
             default=str,
         ),
     }
+    assert decision_audit.log_policy_decision_async.call_args_list, (
+        "no policy-decision row was written"
+    )
+    assert any(
+        is_reference_record(c.kwargs.get("tool_args"))
+        for c in decision_audit.log_policy_decision_async.call_args_list
+    )
     for name, blob in stores.items():
         assert EMAIL not in blob and "P-77" not in blob and "Jane" not in blob, name
     audit_row = audit_service.log_tool_call_async.call_args.kwargs["tool_args"]
@@ -574,6 +609,99 @@ def test_strip_and_seal_helpers() -> None:
     assert strip_sealed_original({"a": 1}) == ({"a": 1}, False)
 
 
+def test_replay_fails_when_the_seal_cannot_be_read() -> None:
+    with pytest.raises(RuntimeError, match="could not be read"):
+        tool_args_for_replay(
+            {REFERENCE_MARKER: True, SEALED_ARGS_KEY: "not-a-real-seal"}
+        )
+    with pytest.raises(RuntimeError, match="never stored"):
+        tool_args_for_replay(
+            {REFERENCE_MARKER: True, "tool_name": "get_patient_record"}
+        )
+    assert tool_args_for_replay({SEALED_ARGS_KEY: seal_original({})}) == {}
+
+
+def _decision_stored(mocker, config, **scope):
+    audit = MagicMock()
+    mocker.patch.object(policy_evaluator, "_get_audit_service", return_value=audit)
+    mocker.patch.object(
+        policy_evaluator, "_get_db_factory", return_value=lambda: MagicMock()
+    )
+    mocker.patch.object(storage, "has_cached_config", return_value=True)
+    mocker.patch.object(storage, "resolve_config", return_value=config)
+    policy_evaluator._log_policy_decision_async(
+        account_id=uuid.uuid4(),
+        tool_name="get_patient_record",
+        action="allow",
+        tool_args=dict(ARGS),
+        **scope,
+    )
+    assert audit.log_policy_decision_async.called
+    return audit.log_policy_decision_async.call_args.kwargs["tool_args"]
+
+
+@pytest.mark.asyncio
+async def test_servers_only_and_agents_only_rules_store_references(
+    mocker, salts
+) -> None:
+    """A rule that names only servers or only agents must not store raw args."""
+    from preloop.services import approval_service as approval_module
+
+    storage.invalidate_cache()
+    agent_id = uuid.uuid4()
+    servers_only = SensitiveDataConfig.model_validate(
+        {
+            "reference_only": [
+                {
+                    "id": "ehr-only",
+                    "scope": {"servers": ["ehr"]},
+                    "keep_fields": ["$.consent_id"],
+                }
+            ]
+        }
+    )
+    agents_only = SensitiveDataConfig.model_validate(
+        {
+            "reference_only": [
+                {
+                    "id": "agent-only",
+                    "scope": {"agents": [str(agent_id)]},
+                    "keep_fields": ["$.consent_id"],
+                }
+            ]
+        }
+    )
+    for stored in (
+        _decision_stored(mocker, servers_only, server_name="ehr"),
+        _decision_stored(mocker, agents_only, managed_agent_id=str(agent_id)),
+    ):
+        assert is_reference_record(stored)
+        assert EMAIL not in json.dumps(stored) and "P-77" not in json.dumps(stored)
+
+    service = approval_module.ApprovalService.__new__(approval_module.ApprovalService)
+    mocker.patch.object(storage, "resolve_config", return_value=servers_only)
+    approved = await service._storage_redacted_tool_args(
+        uuid.uuid4(),
+        tool_name="get_patient_record",
+        tool_args=dict(ARGS),
+        managed_agent_id=None,
+        server_name="ehr",
+    )
+    assert is_reference_record(approved)
+    assert EMAIL not in json.dumps(approved)
+
+    mocker.patch.object(storage, "resolve_config", return_value=agents_only)
+    approved = await service._storage_redacted_tool_args(
+        uuid.uuid4(),
+        tool_name="get_patient_record",
+        tool_args=dict(ARGS),
+        managed_agent_id=agent_id,
+        server_name=None,
+    )
+    assert is_reference_record(approved)
+    assert EMAIL not in json.dumps(approved)
+
+
 # ---------------------------------------------------------------------------
 # Audit chain and export
 # ---------------------------------------------------------------------------
@@ -615,6 +743,11 @@ def test_chain_verifies_with_reference_records_and_export_lists_salt_ids(
     segment = audit_chain.chain_segment(db_session, account_id=account_id)
     salt_id = segment["entries"][0]["payload"]["details"]["tool_args"]["salt_id"]
     assert salt_id in segment["reference_salt_ids"]
+    # FastAPI drops fields the response model does not declare.
+    from preloop.schemas.audit_chain import ChainSegmentRead
+
+    exported = ChainSegmentRead.model_validate(segment).model_dump()
+    assert salt_id in exported["reference_salt_ids"]
     blob = json.dumps(segment)
     assert EMAIL not in blob and "P-77" not in blob
     entries = reference.crud_account.get(db_session, id=account_id).meta_data[

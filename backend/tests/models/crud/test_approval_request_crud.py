@@ -172,6 +172,38 @@ def test_expire_stale_pending_marks_expired(crud_approval_request, mock_db_sessi
     mock_db_session.commit.assert_called_once()
 
 
+def test_expire_stale_pending_strips_sealed_originals(
+    crud_approval_request, mock_db_session
+):
+    """Bulk expiry removes the sealed original, same as a single decision."""
+    from preloop.services.sensitive_data.reference import SEALED_ARGS_KEY
+
+    now = datetime.utcnow()
+    account_id = str(uuid4())
+    row = MagicMock()
+    row.tool_args = {"note": "kept", SEALED_ARGS_KEY: "ciphertext"}
+    account_query = MagicMock()
+    account_query.filter.return_value = account_query
+    account_query.all.return_value = [(account_id,)]
+    row_query = MagicMock()
+    row_query.filter.return_value = row_query
+    row_query.all.return_value = [row]
+    row_query.update.return_value = 1
+
+    def query_side_effect(target):
+        if target is ApprovalRequest.account_id:
+            return account_query
+        return row_query
+
+    mock_db_session.query.side_effect = query_side_effect
+    result = crud_approval_request.expire_stale_pending(
+        mock_db_session, account_id=account_id, now=now
+    )
+    assert result == 1
+    assert SEALED_ARGS_KEY not in row.tool_args
+    assert row.tool_args["note"] == "kept"
+
+
 def test_get_multi_by_account_pending_does_not_expire_stale_rows(
     crud_approval_request, mock_db_session
 ):

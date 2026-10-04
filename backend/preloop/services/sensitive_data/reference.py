@@ -389,6 +389,32 @@ def unseal_original(token: Optional[str]) -> Optional[Any]:
         return None
 
 
+def tool_args_for_replay(stored: Any) -> Any:
+    """Arguments to re-execute after approval.
+
+    A genuine empty original replays as ``{}``. A seal that cannot be
+    decrypted is the same failure as a reference record with no original:
+    replaying ``{}`` would run a side-effecting tool with the wrong input.
+    """
+    sealed = stored.get(SEALED_ARGS_KEY) if isinstance(stored, dict) else None
+    if sealed:
+        unsealed = unseal_original(sealed)
+        if unsealed is None:
+            raise RuntimeError(
+                "This approval is reference-only: the sealed original could "
+                "not be read, so the call cannot be replayed asynchronously. "
+                "Re-issue the tool call while the approval is pending."
+            )
+        return unsealed
+    if is_reference_record(stored):
+        raise RuntimeError(
+            "This approval is reference-only: the original arguments were "
+            "never stored, so the call cannot be replayed asynchronously. "
+            "Re-issue the tool call while the approval is pending."
+        )
+    return stored or {}
+
+
 def strip_sealed_original(tool_args: Any) -> Tuple[Any, bool]:
     """Remove the sealed copy from stored arguments. Returns (args, removed)."""
     if isinstance(tool_args, dict) and SEALED_ARGS_KEY in tool_args:
