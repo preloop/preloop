@@ -82,6 +82,10 @@ import { getAgentControlState } from '../../utils/agent-control';
 import { isCliOnboardableAgentKind } from '../../utils/agent-kinds';
 import { renderAgentIcon } from '../../utils/agent-icons';
 import {
+  findModelForAllowedEntry,
+  gatewayAliasForModel,
+} from '../../utils/model-allowlist';
+import {
   REMOVE_AGENT_CONSEQUENCE,
   getAgentSourceLabel,
   getAgentStatusChip,
@@ -1809,56 +1813,23 @@ export class AgentDetailView extends LitElement {
    * gateway preflight keys on it and it reads as a policy.
    */
   private gatewayAliasForModel(model: AllowedModelCandidate): string {
-    const meta = (model.meta_data || {}) as Record<string, unknown>;
-    const gateway = (meta.gateway as Record<string, unknown> | undefined) || {};
-    const explicit = gateway.model_alias;
-    if (typeof explicit === 'string' && explicit.trim()) {
-      return explicit.trim();
-    }
-    const provider = (model.provider_name || 'openai').trim().toLowerCase();
-    const identifier = (model.model_identifier || '').trim();
-    return identifier ? `${provider}/${identifier}` : provider;
+    return gatewayAliasForModel(model);
   }
 
   /**
    * Find the account model one stored allowlist entry refers to.
-   * Matching contract: backend/preloop/services/model_allowlist.py
-   * Entries may be a gateway alias (or its bare tail), an AI model id, or a
-   * display name (case-insensitive).
+   * Matching contract: utils/model-allowlist.ts, which mirrors
+   * backend/preloop/services/model_allowlist.py. A spelling two models
+   * answer to (a shared bare identifier) resolves to neither, so it is kept
+   * as typed rather than narrowed to one alias.
    */
   private findModelForAllowedEntry(
     entry: string
   ): AllowedModelCandidate | null {
-    const needle = entry.trim();
-    if (!needle) return null;
-    const folded = needle.toLowerCase();
-    const models = this.availableModels as AllowedModelCandidate[];
-    for (const model of models) {
-      if (this.gatewayAliasForModel(model) === needle) return model;
-    }
-    for (const model of models) {
-      if (String(model.id).toLowerCase() === folded) return model;
-    }
-    for (const model of models) {
-      if ((model.name || '').trim().toLowerCase() === folded) return model;
-    }
-    // A bare tail may be shared by two imports of the same upstream model
-    // (acme/alpha-chat and vendor/alpha-chat). The backend honours the
-    // entry for both rows, so rewriting it to one alias would silently
-    // narrow the policy: only resolve when exactly one row matches.
-    let tailMatch: AllowedModelCandidate | null = null;
-    let tailMatches = 0;
-    for (const model of models) {
-      const alias = this.gatewayAliasForModel(model);
-      const tail = alias.includes('/')
-        ? alias.split('/').slice(1).join('/')
-        : '';
-      if (tail && tail === needle) {
-        tailMatch = model;
-        tailMatches += 1;
-      }
-    }
-    return tailMatches === 1 ? tailMatch : null;
+    return findModelForAllowedEntry(
+      entry,
+      this.availableModels as AllowedModelCandidate[]
+    );
   }
 
   /** Persisted key for an allowlist entry: its model's alias, else as typed. */

@@ -1623,6 +1623,49 @@ describe('AgentDetailView', () => {
     );
   }
 
+  /** Re-stub fetch with one model whose configured alias differs from its identifier. */
+  function stubCustomAliasModel(allowedModels: string[]): void {
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url === '/api/v1/ai-models') {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'model-gamma',
+                name: 'Gamma Chat',
+                provider_name: 'acme',
+                model_identifier: 'gamma-upstream-v2',
+                meta_data: {
+                  gateway: { enabled: true, model_alias: 'team/gamma' },
+                },
+              },
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (
+          url === '/api/v1/agents/agent-1/governance' &&
+          (!init?.method || init.method === 'GET')
+        ) {
+          return new Response(
+            JSON.stringify({
+              subject_type: 'managed_agents',
+              subject_id: 'agent-1',
+              config: {
+                allowed_models: allowedModels,
+                model_budgets: {},
+                tool_rules: {},
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return defaultFetch(input, init);
+      }
+    );
+  }
+
   async function loadModelsTab(): Promise<AgentDetailView> {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
@@ -1753,6 +1796,28 @@ describe('AgentDetailView', () => {
       'alpha-chat',
       'other/beta-flash',
     ]);
+  });
+
+  it('checks a model whose allowlist entry is its bare model_identifier under a custom alias', async () => {
+    stubCustomAliasModel(['gamma-upstream-v2']);
+    const element = await loadModelsTab();
+
+    // The gateway accepts the bare identifier even though the model answers
+    // to team/gamma, so the console must show it as allowed and write it
+    // back under the alias.
+    const gammaToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="team/gamma"]'
+    ) as any;
+    expect(gammaToggle.checked).to.be.true;
+    const overrideInput = element.shadowRoot?.querySelector(
+      'sl-input[label="Allowed models"]'
+    ) as any;
+    expect(overrideInput.value).to.equal('team/gamma');
+
+    gammaToggle.checked = false;
+    gammaToggle.dispatchEvent(new Event('sl-change'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lastGovernancePutBody().allowed_models).to.deep.equal([]);
   });
 
   describe('navigation and failure states', () => {

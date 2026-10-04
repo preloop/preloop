@@ -40,6 +40,10 @@ import type {
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { parseUTCDate } from '../../../utils/date';
 import { formatUsd, formatUsdExact } from '../../../utils/money';
+import {
+  allowlistEntryMatchesModel,
+  gatewayAliasForModel,
+} from '../../../utils/model-allowlist';
 
 type SpendRange = 'day' | 'week' | 'month' | 'year' | 'total';
 
@@ -378,26 +382,15 @@ export class ApiKeyView extends LitElement {
     return this.isRevoked() || this.isExpired();
   }
 
-  private gatewayAlias(model: AIModel): string {
-    const provider = (model.provider_name || '').trim().toLowerCase();
-    const identifier = (model.model_identifier || '').trim();
-    return provider && identifier ? `${provider}/${identifier}` : identifier;
-  }
-
   /**
-   * Whether an allowlist entry names this model. A subset of the gateway's
-   * matching (backend/preloop/services/model_allowlist.py): display name
-   * (case-insensitive), model id, alias or provider/identifier, so entries
-   * typed into the manual field still tick their checkbox.
+   * Whether an allowlist entry names this model, by the gateway's own rules
+   * (see utils/model-allowlist.ts): display name or id, the configured
+   * gateway alias, provider/identifier, the bare identifier, or the bare tail
+   * of an alias. A checkbox reads as checked exactly when the gateway would
+   * let this key call the model.
    */
   private entryMatchesModel(entry: string, model: AIModel): boolean {
-    const folded = entry.toLowerCase();
-    return (
-      (model.name || '').trim().toLowerCase() === folded ||
-      String(model.id).toLowerCase() === folded ||
-      (Boolean(model.alias) && model.alias === entry) ||
-      this.gatewayAlias(model) === entry
-    );
+    return allowlistEntryMatchesModel(entry, model);
   }
 
   private allowedEntries(): string[] {
@@ -452,7 +445,25 @@ export class ApiKeyView extends LitElement {
         ? current
         : [...current, model.name];
     } else {
+      // Remove every stored entry that names this model, in whatever form
+      // it was stored, so the gateway stops honouring it.
       next = current.filter((entry) => !this.entryMatchesModel(entry, model));
+      // A removed entry may also have named other models (a bare
+      // identifier shared by two providers). Keep those allowed under
+      // their own alias rather than narrowing them as a side effect.
+      for (const other of this.aiModels) {
+        if (
+          other === model ||
+          this.entryMatchesModel(gatewayAliasForModel(other), model)
+        ) {
+          continue;
+        }
+        const wasAllowed = current.some((e) =>
+          this.entryMatchesModel(e, other)
+        );
+        const stillAllowed = next.some((e) => this.entryMatchesModel(e, other));
+        if (wasAllowed && !stillAllowed) next.push(gatewayAliasForModel(other));
+      }
       if (next.length === 0) {
         // Saving [] would silently widen the key to every model.
         target.checked = true;

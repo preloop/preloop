@@ -23,8 +23,9 @@ Matching contract (source of truth; CLI and console copies must stay aligned):
    - the AIModel display name case-insensitively.
 3. CLI copy: ``cli/internal/cmd/agents_allowed_models.go``
    (``governanceAllowedModels``, ``allowedModelsCoverSelection``).
-4. Console copy: ``frontend/src/views/authed/agent-detail-view.ts``
-   (``findModelForAllowedEntry``). The console only rewrites a bare tail to a
+4. Console copy: ``frontend/src/utils/model-allowlist.ts``
+   (``allowlistEntryMatchesModel``, ``findModelForAllowedEntry``), used by the
+   agent and API key pages. The console only rewrites a bare tail to a
    gateway alias when exactly one inventory row matches that tail, so two
    imports of the same upstream model are not silently narrowed.
 

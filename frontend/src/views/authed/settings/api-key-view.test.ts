@@ -341,6 +341,77 @@ describe('ApiKeyView', () => {
       expect(checkbox(element, 'Model A').checked).to.equal(false);
     });
 
+    const ALIASED_MODELS = [
+      ...MODELS,
+      {
+        id: 'c3d2e1f0-0000-4000-8000-00000000000c',
+        name: 'Model C',
+        provider_name: 'openai',
+        model_identifier: 'model-c-upstream',
+        meta_data: { gateway: { enabled: true, model_alias: 'team/model-c' } },
+      },
+    ];
+
+    it('ticks an entry stored as a bare model_identifier, and unchecking removes it', async () => {
+      fetchStub = createFetchStub({
+        models: ALIASED_MODELS,
+        allowedModels: ['model-c-upstream', 'Model A'],
+      });
+      const element = await mount();
+      const box = checkbox(element, 'Model C');
+      expect(box.checked).to.equal(true);
+      await toggle(box, false);
+      await waitUntil(() => governancePuts().length === 1);
+      expect(governancePuts()[0].allowed_models).to.deep.equal(['Model A']);
+    });
+
+    it('ticks an entry stored as the configured gateway alias, and unchecking removes it', async () => {
+      fetchStub = createFetchStub({
+        models: ALIASED_MODELS,
+        allowedModels: ['Model A', 'team/model-c'],
+      });
+      const element = await mount();
+      const box = checkbox(element, 'Model C');
+      expect(box.checked).to.equal(true);
+      expect(checkbox(element, 'Model B').checked).to.equal(false);
+      await toggle(box, false);
+      await waitUntil(() => governancePuts().length === 1);
+      expect(governancePuts()[0].allowed_models).to.deep.equal(['Model A']);
+    });
+
+    it('keeps another provider allowed when unchecking a shared bare identifier', async () => {
+      fetchStub = createFetchStub({
+        models: [
+          ...MODELS,
+          {
+            id: 'id-vendor-b',
+            name: 'Vendor B',
+            provider_name: 'vendor',
+            model_identifier: 'model-b',
+          },
+        ],
+        allowedModels: ['model-b'],
+      });
+      const element = await mount();
+      expect(checkbox(element, 'Model B').checked).to.equal(true);
+      expect(checkbox(element, 'Vendor B').checked).to.equal(true);
+      await toggle(checkbox(element, 'Model B'), false);
+      await waitUntil(() => governancePuts().length === 1);
+      expect(governancePuts()[0].allowed_models).to.deep.equal([
+        'vendor/model-b',
+      ]);
+    });
+
+    it('ticks an entry stored as the bare tail of the configured alias', async () => {
+      fetchStub = createFetchStub({
+        models: ALIASED_MODELS,
+        allowedModels: ['model-c'],
+      });
+      const element = await mount();
+      expect(checkbox(element, 'Model C').checked).to.equal(true);
+      expect(checkbox(element, 'Model A').checked).to.equal(false);
+    });
+
     it('asks before turning restriction off, and keeps the list on cancel', async () => {
       fetchStub = createFetchStub({
         models: MODELS,
