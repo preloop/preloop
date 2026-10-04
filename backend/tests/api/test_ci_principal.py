@@ -550,3 +550,20 @@ def test_model_copy_cannot_bypass_grant_validation(
         crud.crud_ci_principal.provision(
             db_session, actor=owner, name="Denied", grant=forged
         )
+
+
+def test_aware_expiry_is_persisted_as_utc_without_database_timezone_conversion(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    expiry = (datetime.now(timezone.utc) + timedelta(minutes=5)).astimezone(
+        timezone(timedelta(hours=5))
+    )
+    _, key, _ = crud.crud_ci_principal.provision(
+        db_session,
+        actor=ci_resources[0],
+        name="Short-lived CI",
+        grant=ci_resources[3],
+        expires_at=expiry,
+    )
+    db_session.refresh(key)
+    assert key.expires_at == expiry.astimezone(timezone.utc).replace(tzinfo=None)

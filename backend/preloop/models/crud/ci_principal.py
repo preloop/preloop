@@ -210,6 +210,7 @@ class CRUDCiPrincipal:
             raise ValueError(
                 "Key actions must be a nonempty subset of the principal grant"
             )
+        stored_expiry = None
         if expires_at is not None:
             expiry = (
                 expires_at.replace(tzinfo=timezone.utc)
@@ -218,6 +219,9 @@ class CRUDCiPrincipal:
             )
             if expiry <= datetime.now(timezone.utc):
                 raise ValueError("CI key expiry must be in the future")
+            # ApiKey's timestamp column is naive UTC. Never let the database
+            # session timezone extend validity when an aware value is supplied.
+            stored_expiry = expiry.astimezone(timezone.utc).replace(tzinfo=None)
         token = f"ci_{secrets.token_urlsafe(32)}"
         api_keys = CRUDApiKey(models.ApiKey)
         key = models.ApiKey(
@@ -228,7 +232,7 @@ class CRUDCiPrincipal:
             key_hash=api_keys.build_key_hash(token),
             key_prefix=api_keys.build_key_prefix(token),
             is_active=True,
-            expires_at=expires_at,
+            expires_at=stored_expiry,
             scopes=[],
             credential_type="restricted_ci",
             credential_version=1,
