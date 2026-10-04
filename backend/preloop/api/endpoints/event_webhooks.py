@@ -137,6 +137,7 @@ def _to_read(endpoint: models.WebhookEndpoint) -> WebhookEndpointRead:
         event_types=list(endpoint.event_types or []),
         active=bool(endpoint.active),
         source=endpoint.source,
+        restricted_ci=is_ci_endpoint(endpoint),
         secret_hint=endpoint.secret_hint,
         created_by_user_id=endpoint.created_by_user_id,
         consecutive_failures=endpoint.consecutive_failures or 0,
@@ -434,6 +435,11 @@ def test_webhook_endpoint(
     # envelope posted there would tell the operator nothing about the
     # deliveries that endpoint actually gets.
     _reject_shim_edit(endpoint, "Test")
+    if is_ci_endpoint(endpoint):
+        raise HTTPException(
+            422,
+            "CI completion callbacks do not accept synthetic test events",
+        )
     result = outbox.enqueue_event(
         db,
         account_id=account.id,

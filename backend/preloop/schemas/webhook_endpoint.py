@@ -80,6 +80,7 @@ class WebhookEndpointRead(BaseModel):
     event_types: List[str] = Field(default_factory=list)
     active: bool
     source: str
+    restricted_ci: bool = False
     secret_hint: Optional[str] = None
     created_by_user_id: Optional[UUID] = None
     consecutive_failures: int = 0

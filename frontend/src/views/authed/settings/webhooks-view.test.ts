@@ -209,6 +209,30 @@ describe('WebhooksView', () => {
     ).to.have.length(0);
   });
 
+  it('marks restricted completion callbacks and disables synthetic tests', async () => {
+    stubFetch({
+      endpoints: [
+        {
+          ...ACCOUNT_ENDPOINT,
+          restricted_ci: true,
+          event_types: ['flow.execution.finished'],
+        },
+      ],
+    });
+    const element = await mount();
+    const root = element.shadowRoot!;
+    expect(root.textContent).to.contain('CI completion callback');
+    const test = Array.from(root.querySelectorAll('sl-button')).find((node) =>
+      node.textContent?.includes('Send test')
+    );
+    expect(test?.hasAttribute('disabled')).to.equal(true);
+    const pause = Array.from(root.querySelectorAll('sl-button')).find((node) =>
+      node.textContent?.includes('Pause')
+    );
+    expect(pause?.hasAttribute('disabled')).to.equal(false);
+    expect(calls.some((call) => call.url.endsWith('/test'))).to.equal(false);
+  });
+
   it('replays only a dead delivery, by event id', async () => {
     stubFetch({ deliveries: [DEAD_DELIVERY] });
     const element = await mount();

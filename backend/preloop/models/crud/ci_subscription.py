@@ -4,7 +4,6 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -345,7 +344,6 @@ class CRUDCiSubscription:
             ValueError,
             TypeError,
             AttributeError,
-            SQLAlchemyError,
         ):
             return None
 
@@ -389,7 +387,14 @@ class CRUDCiSubscription:
             if endpoint is not None
             else None
         )
-        if data is None or endpoint is None or blocked_target_reason(endpoint.url):
+        reason = (
+            blocked_target_reason(endpoint.url)
+            if data is not None and endpoint is not None
+            else None
+        )
+        if data is not None and reason == "unresolvable":
+            raise RuntimeError("Restricted CI callback target resolution failed")
+        if data is None or endpoint is None or reason:
             delivery.status = "dead"
             delivery.claimed_at = None
             delivery.last_error = "Restricted CI callback authorization denied"
@@ -406,6 +411,45 @@ class CRUDCiSubscription:
         db.refresh(delivery)
         db.refresh(endpoint)
         return delivery, endpoint
+
+    def record_preparation_failure(self, db: Session, *, delivery_id: UUID) -> None:
+        """Account for transient preparation failures without reopening terminal rows."""
+        from preloop.services.event_webhooks import outbox
+
+        delivery = (
+            db.query(models.WebhookDelivery)
+            .populate_existing()
+            .filter(models.WebhookDelivery.id == delivery_id)
+            .with_for_update()
+            .first()
+        )
+        if delivery is None or delivery.status != "pending":
+            return
+        endpoint = (
+            db.query(models.WebhookEndpoint)
+            .populate_existing()
+            .filter(models.WebhookEndpoint.id == delivery.endpoint_id)
+            .with_for_update()
+            .first()
+        )
+        if endpoint is None or not is_ci_endpoint(endpoint):
+            return
+        moment = outbox._utcnow()
+        if not outbox.endpoint_is_deliverable(endpoint, moment):
+            delivery.claimed_at = None
+            probe_at = outbox.circuit_probe_at(endpoint)
+            if probe_at is not None:
+                delivery.next_attempt_at = probe_at
+        else:
+            outbox.record_attempt(
+                db,
+                delivery=delivery,
+                endpoint=endpoint,
+                success=False,
+                error="Restricted CI callback preparation failed",
+                now=moment,
+            )
+        db.commit()
 
 
 crud_ci_subscription = CRUDCiSubscription()
