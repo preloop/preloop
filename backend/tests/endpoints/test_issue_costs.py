@@ -415,3 +415,69 @@ def test_rebuild_window_limit_counts_partial_days(client, test_user) -> None:
         },
     )
     assert exact.status_code == 200
+
+
+def test_jira_bitbucket_reconciliation_exports_agree(
+    client, db_session: Session, test_user
+) -> None:
+    """The #1064 fixture through the HTTP table, JSON and CSV exports."""
+    from tests import issue_cost_reconciliation as rec
+
+    fixture = rec.seed_reconciliation(db_session, test_user.account_id)
+
+    table = client.get(BASE).json()
+    exported = client.get(f"{BASE}/export", params={"format": "json"}).json()
+    csv_text = client.get(f"{BASE}/export", params={"format": "csv"}).text
+    rows = {row["issue_key"]: row for row in csv.DictReader(io.StringIO(csv_text))}
+
+    table_row = next(r for r in table["issues"] if r["issue_key"] == rec.JIRA_KEY)
+    json_row = next(r for r in exported["issues"] if r["issue_key"] == rec.JIRA_KEY)
+    csv_row = rows[rec.JIRA_KEY]
+    for column in ("first_event_at", "pr_opened_at", "approved_at", "merged_at"):
+        assert table_row[column] == json_row[column]
+        assert datetime.fromisoformat(csv_row[column]) == datetime.fromisoformat(
+            json_row[column].replace("Z", "+00:00")
+        )
+    assert datetime.fromisoformat(csv_row["first_event_at"]) == rec.IMPLEMENTATION_START
+    assert (
+        json_row["first_event_to_pr_opened_hours"],
+        json_row["pr_opened_to_approved_hours"],
+        json_row["approved_to_merged_hours"],
+    ) == (1.0, 2.0, 1.0)
+    assert json_row["pr_opened_at_source"] == csv_row["pr_opened_at_source"] == "forge"
+    assert json_row["estimated_cost"] == float(csv_row["estimated_cost"]) == 1.85
+    assert json_row["run_count"] == int(csv_row["run_count"]) == 5
+    assert json_row["cost_coverage"] == csv_row["cost_coverage"] == "partial"
+    assert json_row["attributed_cost_usd"] is None
+    assert csv_row["attributed_cost_usd"] == ""
+    assert json_row["estimate_hours"] is None and csv_row["estimate_hours"] == ""
+    assert json_row["estimate_points"] == float(csv_row["estimate_points"]) == 0.0
+    assert sorted(json_row["execution_ids"]) == sorted(
+        str(execution_id) for execution_id in fixture.issue_execution_ids
+    )
+    assert exported["unassigned"]["execution_ids"] == [
+        str(fixture.executions["unassigned"].id)
+    ]
+
+    # A period that holds the merge but not the 09:00 first event.
+    excluded = client.get(
+        BASE,
+        params={
+            "start_date": rec.PR_OPENED.isoformat(),
+            "end_date": (rec.MERGED + timedelta(hours=1)).isoformat(),
+        },
+    ).json()
+    assert rec.JIRA_KEY not in [row["issue_key"] for row in excluded["issues"]]
+
+    review_only = client.get(
+        f"{BASE}/export",
+        params={"format": "json", "flow_id": str(fixture.review.id)},
+    ).json()
+    review_row = next(
+        r for r in review_only["issues"] if r["issue_key"] == rec.JIRA_KEY
+    )
+    assert review_row["estimated_cost"] == 0.5
+    assert review_row["run_count"] == 2
+    assert sorted(review_row["execution_ids"]) == sorted(
+        str(fixture.executions[name].id) for name in ("review", "seat")
+    )

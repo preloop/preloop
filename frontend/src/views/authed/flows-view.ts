@@ -18,7 +18,8 @@ import { router } from '../../router';
 import { Router } from '../../router';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import {
-  getFlows,
+  getFlowSummaries,
+  type FlowSummary,
   getFlowPresets,
   getFlowExecutions,
   getTrackers,
@@ -74,6 +75,20 @@ export { flowTriggerSummary };
 
 /** A flow row from the list endpoints, where id and name are always present. */
 type FlowListItem = Flow & { id: string; name: string };
+
+/** Normalize nullable summary metadata to the existing presentation shape. */
+function flowSummaryRow(summary: FlowSummary): FlowListItem {
+  return {
+    ...summary,
+    description: summary.description ?? undefined,
+    icon: summary.icon ?? undefined,
+    account_id: summary.account_id ?? undefined,
+    trigger_event_source: summary.trigger_event_source ?? undefined,
+    trigger_event_types: summary.trigger_event_types ?? undefined,
+    ai_model_id: summary.ai_model_id ?? undefined,
+    execution_stats: summary.execution_stats ?? undefined,
+  };
+}
 
 interface FlowExecution extends ExecutionSubjectSource {
   id: string;
@@ -818,6 +833,8 @@ export class FlowsView extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    ++this.flowsLoadGeneration;
+    ++this.statsLoadGeneration;
     this.unsubscribe?.();
     window.removeEventListener('focus', this.refreshOnReturn);
     document.removeEventListener(
@@ -896,7 +913,12 @@ export class FlowsView extends LitElement {
     return '30d';
   }
 
+  private flowsLoadGeneration = 0;
+  private statsLoadGeneration = 0;
+
   async loadData() {
+    const generation = ++this.flowsLoadGeneration;
+    const statsGeneration = ++this.statsLoadGeneration;
     this.isLoading = true;
     try {
       // Defer /flows/presets (~38KB) until the presets UI is shown or a flow
@@ -906,28 +928,36 @@ export class FlowsView extends LitElement {
       // caught and shown rather than left to become an unhandled rejection
       // that skips the socket and renders "No flows yet" over an account that
       // has flows.
-      const [flows, executions, activeExecutions] = await Promise.all([
-        getFlows({ statsSince: this.rangeStartDate() }).catch((error) => {
-          console.error('Failed to load flows:', error);
-          return null;
-        }),
-        getFlowExecutions({ limit: EXECUTIONS_SAMPLE_LIMIT }).catch(() => []),
-        getFlowExecutions({
-          limit: 20,
-          status: [...IN_FLIGHT_EXECUTION_STATUSES],
-        }).catch(() => []),
-      ]);
+      void getFlowExecutions({ limit: EXECUTIONS_SAMPLE_LIMIT })
+        .then((executions) => {
+          if (generation === this.flowsLoadGeneration)
+            this.executions = executions;
+        })
+        .catch(() => undefined);
+      void getFlowExecutions({
+        limit: 20,
+        status: [...IN_FLIGHT_EXECUTION_STATUSES],
+      })
+        .then((executions) => {
+          if (generation === this.flowsLoadGeneration)
+            this.activeExecutions = executions;
+        })
+        .catch(() => undefined);
+      const flows = await getFlowSummaries({
+        includeStats: true,
+        statsSince: this.rangeStartDate(),
+      }).catch((error) => {
+        console.error('Failed to load flows:', error);
+        return null;
+      });
+      if (generation !== this.flowsLoadGeneration) return;
       if (flows === null) {
         this.loadError = 'Could not load your flows.';
-        this.executions = executions;
-        this.activeExecutions = activeExecutions;
         return;
       }
       this.loadError = null;
-      this.flows = flows;
-      this.executions = executions;
-      this.activeExecutions = activeExecutions;
-
+      if (statsGeneration === this.statsLoadGeneration)
+        this.flows = flows.map(flowSummaryRow);
       if (this.flows.length === 0) {
         this.showPresets = true;
       } else if (!this.hasInitializedPresetVisibility) {
@@ -945,7 +975,11 @@ export class FlowsView extends LitElement {
       }
       void this.loadTrackerNames();
     } finally {
-      this.isLoading = false;
+      if (
+        generation === this.flowsLoadGeneration &&
+        statsGeneration === this.statsLoadGeneration
+      )
+        this.isLoading = false;
     }
   }
 
@@ -958,12 +992,30 @@ export class FlowsView extends LitElement {
    * range change is not a page load").
    */
   private async loadRangeStats(): Promise<void> {
+    const generation = ++this.statsLoadGeneration;
+    const lifecycle = this.flowsLoadGeneration;
+    const range = this.range;
     try {
-      const flows = await getFlows({ statsSince: this.rangeStartDate() });
-      if (Array.isArray(flows)) this.flows = flows;
+      const flows = await getFlowSummaries({
+        includeStats: true,
+        statsSince: this.rangeStartDate(),
+      });
+      if (
+        generation !== this.statsLoadGeneration ||
+        lifecycle !== this.flowsLoadGeneration ||
+        range !== this.range
+      )
+        return;
+      if (Array.isArray(flows)) this.flows = flows.map(flowSummaryRow);
     } catch (error) {
       // Keep the numbers already on screen; they name their own window.
       console.error('Failed to refresh flow stats:', error);
+    } finally {
+      if (
+        generation === this.statsLoadGeneration &&
+        lifecycle === this.flowsLoadGeneration
+      )
+        this.isLoading = false;
     }
   }
 

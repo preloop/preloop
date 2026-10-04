@@ -120,19 +120,35 @@ class TestRuleSchema:
         with pytest.raises(ValidationError, match="Duplicate sensitive_data rule id"):
             _config(_rule(), _rule())
 
-    def test_unknown_workflow_reference_rejected_at_document_level(self) -> None:
-        with pytest.raises(ValidationError, match="unknown approval workflow"):
-            PolicyDocument.model_validate(
-                {
-                    "version": "1.0",
-                    "metadata": {"name": "t"},
-                    "sensitive_data": {
-                        "rules": [
-                            _rule(action="require_approval", approval_workflow="ghost")
-                        ]
-                    },
-                }
-            )
+    def test_unknown_workflow_reference_rejected_by_the_account_check(
+        self, mocker
+    ) -> None:
+        """Cross-references resolve against the account (main's #1240 shape)."""
+        from preloop.services.policy.loader import PolicyApplier
+
+        mocker.patch(
+            "preloop.models.crud.crud_mcp_server.get_active_by_account", return_value=[]
+        )
+        mocker.patch(
+            "preloop.models.crud.crud_approval_workflow.get_multi_by_account",
+            return_value=[],
+        )
+        mocker.patch(
+            "preloop.services.model_content_policy.load_model_io_rules", return_value=[]
+        )
+        policy = PolicyDocument.model_validate(
+            {
+                "version": "1.0",
+                "metadata": {"name": "t"},
+                "sensitive_data": {
+                    "rules": [
+                        _rule(action="require_approval", approval_workflow="ghost")
+                    ]
+                },
+            }
+        )
+        errors = PolicyApplier(MagicMock(), uuid.uuid4())._validate_references(policy)
+        assert any("block-cards" in e and "ghost" in e for e in errors)
 
     def test_rule_types_default_to_detector_block_types(self) -> None:
         config = _config(_rule(types=None), detectors={"types": ["email"]})

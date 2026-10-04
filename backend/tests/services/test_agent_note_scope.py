@@ -334,7 +334,7 @@ def test_a_caller_with_no_execution_at_all_is_refused_with_its_own_reason(
 
     assert result["ok"] is False
     assert result["error"]["code"] == agent_note_scope.REASON_NO_LINEAGE
-    assert "no execution lineage" in result["error"]["message"]
+    assert "no execution or session lineage" in result["error"]["message"]
     assert result["error"]["required_scope"] == agent_note_scope.SCOPE_ACCOUNT
     assert _notes_written(db_session, account) == 0
 
@@ -633,6 +633,10 @@ def test_the_tool_takes_no_lineage_argument(db_session):
         "agent_id",
         "runtime_session_id",
         "execution_id",
+        # Aliases for a target, not lineage claims: ``children`` is resolved
+        # against the caller's session as the platform recorded it (#1045).
+        "external_session_id",
+        "children",
     }
     assert SEND_NOTE_TOOL["schema"]["additionalProperties"] is False
     assert "scope" in SEND_NOTE_TOOL["description"] or (

@@ -282,6 +282,33 @@ describe('PreloopFlowForm event filters behaviour', () => {
     });
   });
 
+  it('round-trips the all-of labels filter', async () => {
+    const element = await mount(
+      trackerFlow({ labels: ['agent-ready'], labels_all: ['complexity:low'] })
+    );
+    (element as any).filtersExpanded = true;
+    await element.updateComplete;
+
+    const all = filterInput(
+      element,
+      'Issue must also carry all of these labels'
+    );
+    expect(all.value).to.equal('complexity:low');
+    all.value = ' complexity:medium, risk:low ';
+    all.dispatchEvent(new CustomEvent('sl-input'));
+
+    let payload = await submit(element);
+    expect(payload.trigger_config).to.deep.equal({
+      labels: ['agent-ready'],
+      labels_all: ['complexity:medium', 'risk:low'],
+    });
+
+    all.value = '';
+    all.dispatchEvent(new CustomEvent('sl-input'));
+    payload = await submit(element);
+    expect(payload.trigger_config).to.deep.equal({ labels: ['agent-ready'] });
+  });
+
   it('does not create trigger_config while rendering a flow without filters', async () => {
     const element = await mount(trackerFlow());
 
