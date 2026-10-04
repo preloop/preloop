@@ -1019,6 +1019,9 @@ describe('ConsoleShell', () => {
       expect(
         el.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]')
       ).to.not.exist;
+      // Approvals is gated on view_approvals, which this user does not have.
+      expect(el.shadowRoot?.querySelector('a[href="/console/approvals"]')).to
+        .not.exist;
     });
 
     it('shows Records under Audit, not Settings, with view_audit_logs', async () => {
