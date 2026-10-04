@@ -43,7 +43,11 @@ from urllib.parse import quote as urllib_quote
 import httpx
 import litellm
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import (
+    IntegrityError,
+    SQLAlchemyError,
+    TimeoutError as SQLAlchemyTimeoutError,
+)
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -264,6 +268,17 @@ _OPENAI_PASSTHROUGH_TIMEOUT_SECONDS = 600
 # in-flight publish cannot block interpreter exit. Cap pending work and
 # drop-on-full: started events are telemetry, not billing.
 _GATEWAY_STARTED_EMIT_MAX_PENDING = 32
+# A completed call must keep its usage row when a peer still holds the only
+# pool slot. The lifetime test checks out with a 0.2s timeout, which is
+# shorter than insert-and-audit under CI load, and QueuePool then raises
+# TimeoutError. Waiting out that peer is what records both rows; the cap
+# stops a dead pool from pinning the worker. Production waits 5s per
+# checkout, so one attempt usually covers a peer. The loop runs before a
+# non-streaming response is returned, so this budget is also the worst-case
+# delay added when the pool is exhausted: 10s covers two production
+# checkouts, then the upstream response is returned either way.
+_GATEWAY_USAGE_RECORD_POOL_WAIT_SECONDS = 10.0
+_GATEWAY_USAGE_RECORD_MAX_ATTEMPTS = 64
 _GATEWAY_STARTED_EMIT_PENDING = 0
 _GATEWAY_STARTED_EMIT_PENDING_LOCK = threading.Lock()
 _GATEWAY_STARTED_EMIT_EXECUTOR = ThreadPoolExecutor(
@@ -9259,17 +9274,27 @@ class OpenAIGatewayService:
                 exc, context="gateway usage recording after stream abandonment"
             )
 
-    def _rollback_activity_recording(self, exc: Exception, *, context: str) -> None:
+    def _rollback_activity_recording(
+        self, exc: Exception, *, context: str, skipped: bool = True
+    ) -> None:
         """Rollback the current bookkeeping unit after a failed write.
 
         HTTP accounting owns this short unit independently of request cleanup;
         internal callers deliberately retain their existing transaction. A
         failed activity write must not poison later bookkeeping or the response.
+
+        Args:
+            exc: The failure being recovered from.
+            context: Short description included in the log line.
+            skipped: When False, roll back without logging a dropped row. Pool
+                timeouts retry; only the attempt that gives up is a skip.
         """
         try:
             self.db.rollback()
         except Exception:  # pragma: no cover - rollback of a dead connection
             logger.warning("Failed to roll back the session after %s failed", context)
+        if not skipped:
+            return
         logger.warning(
             "Skipped %s after %s; returning the upstream response unchanged",
             context,
@@ -9303,47 +9328,84 @@ class OpenAIGatewayService:
         into a customer-visible 502. Every caller, streaming
         and non-streaming alike, gets that protection by going through this
         wrapper rather than each site wrapping itself and one being forgotten.
+
+        A pool ``TimeoutError`` is retried until the peer that holds the slot
+        releases it. Dropping the row there records a successful response as
+        if it never happened. The wait is bounded so a stuck pool still
+        returns the upstream response.
         """
-        try:
-            # Account using the request's scalar identity/configuration. A
-            # fresh worker Session cannot race request dependency teardown.
-            if self._owns_db_session:
-                self.release_db_for_wait()
-            else:
-                ai_model = self._reattach_for_recording(ai_model)
-                self.auth_context = replace(
-                    self.auth_context,
-                    user=self._reattach_for_recording(self.auth_context.user),
-                    api_key=self._reattach_for_recording(self.auth_context.api_key),
-                )
-            self._record_gateway_request_inner(
-                endpoint=endpoint,
-                method=method,
-                status_code=status_code,
-                duration=duration,
-                ai_model=ai_model,
-                requested_model=requested_model,
-                response_payload=response_payload,
-                upstream_response=upstream_response,
-                endpoint_kind=endpoint_kind,
-                budget_result=budget_result,
-                error_detail=error_detail,
-                error_class=error_class,
-                request_payload=request_payload,
-                usage_source=usage_source,
-                accumulated_output_text=accumulated_output_text,
-            )
-        except Exception as exc:
-            self._rollback_activity_recording(exc, context="gateway usage recording")
-        finally:
-            if self._owns_db_session:
-                try:
-                    self.release_db_for_wait(ai_model)
-                except Exception as exc:
-                    self._rollback_activity_recording(
-                        exc, context="gateway accounting cleanup"
+        deadline = time.monotonic() + _GATEWAY_USAGE_RECORD_POOL_WAIT_SECONDS
+        attempts = 0
+        usage_before = getattr(self, "last_usage_id", None)
+        while True:
+            attempts += 1
+            try:
+                # Account using the request's scalar identity/configuration. A
+                # fresh worker Session cannot race request dependency teardown.
+                if self._owns_db_session:
+                    self.release_db_for_wait()
+                else:
+                    ai_model = self._reattach_for_recording(ai_model)
+                    self.auth_context = replace(
+                        self.auth_context,
+                        user=self._reattach_for_recording(self.auth_context.user),
+                        api_key=self._reattach_for_recording(self.auth_context.api_key),
                     )
-                    self._close_owned_db()
+                self._record_gateway_request_inner(
+                    endpoint=endpoint,
+                    method=method,
+                    status_code=status_code,
+                    duration=duration,
+                    ai_model=ai_model,
+                    requested_model=requested_model,
+                    response_payload=response_payload,
+                    upstream_response=upstream_response,
+                    endpoint_kind=endpoint_kind,
+                    budget_result=budget_result,
+                    error_detail=error_detail,
+                    error_class=error_class,
+                    request_payload=request_payload,
+                    usage_source=usage_source,
+                    accumulated_output_text=accumulated_output_text,
+                )
+                return
+            except SQLAlchemyTimeoutError as exc:
+                persisted = getattr(self, "last_usage_id", None) != usage_before
+                give_up = (
+                    persisted
+                    or attempts >= _GATEWAY_USAGE_RECORD_MAX_ATTEMPTS
+                    or time.monotonic() >= deadline
+                )
+                # The row is already committed. Retrying the insert would
+                # double-bill; later bookkeeping can stop.
+                self._rollback_activity_recording(
+                    exc,
+                    context="gateway usage recording",
+                    skipped=give_up and not persisted,
+                )
+                if persisted:
+                    logger.warning(
+                        "Gateway usage %s was saved; bookkeeping stopped "
+                        "after TimeoutError",
+                        self.last_usage_id,
+                    )
+                if give_up:
+                    return
+                logger.debug("Retrying gateway usage recording after TimeoutError")
+            except Exception as exc:
+                self._rollback_activity_recording(
+                    exc, context="gateway usage recording"
+                )
+                return
+            finally:
+                if self._owns_db_session:
+                    try:
+                        self.release_db_for_wait(ai_model)
+                    except Exception as exc:
+                        self._rollback_activity_recording(
+                            exc, context="gateway accounting cleanup"
+                        )
+                        self._close_owned_db()
 
     def _reattach_for_recording(self, instance: Any) -> Any:
         """Recover an internal caller's detached identity using its transaction."""
@@ -9624,7 +9686,14 @@ class OpenAIGatewayService:
                 ),
             },
         )
-        self.last_usage_id = str(usage_row.id)
+        # Identity does not lazy-load. A refresh that lost the pool expires
+        # the row, and reading usage_row.id would check out another connection
+        # and hide the fact that the insert already committed.
+        usage_state = inspect(usage_row, raiseerr=False)
+        usage_identity = usage_state.identity if usage_state is not None else None
+        self.last_usage_id = (
+            str(usage_identity[0]) if usage_identity is not None else str(usage_row.id)
+        )
         observed_at = usage_row.timestamp
 
         if cost_source == "unpriced" and (prompt_tokens or completion_tokens):

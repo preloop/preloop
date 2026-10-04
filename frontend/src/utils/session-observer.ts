@@ -62,6 +62,11 @@ export interface ObservedSession {
   latestNoteAuthorDisplay: string | null;
   latestNoteAuthorAuthMethod: string | null;
   latestNoteAt: string | null;
+  /**
+   * Available artifacts by kind (`screenshot`, `transcript`, ...), from the
+   * list row. Empty for a session without artifacts.
+   */
+  artifactCounts?: Record<string, number>;
   raw: unknown;
 }
 
@@ -303,8 +308,20 @@ export function normalizeObservedSession(
     latestNoteAuthorDisplay: asString(row.latest_note_author_display),
     latestNoteAuthorAuthMethod: asString(row.latest_note_author_auth_method),
     latestNoteAt: asString(row.latest_note_at),
+    artifactCounts: artifactCountsFrom(row.artifact_counts),
     raw: session,
   };
+}
+
+function artifactCountsFrom(value: unknown): Record<string, number> {
+  const counts: Record<string, number> = {};
+  if (!value || typeof value !== 'object') return counts;
+  for (const [kind, count] of Object.entries(
+    value as Record<string, unknown>
+  )) {
+    if (typeof count === 'number' && count > 0) counts[kind] = count;
+  }
+  return counts;
 }
 
 export function normalizeObservedSessions(
@@ -347,6 +364,12 @@ export function normalizeObservedSessions(
       existing.latestNoteAuthorDisplay = session.latestNoteAuthorDisplay;
       existing.latestNoteAuthorAuthMethod = session.latestNoteAuthorAuthMethod;
       existing.latestNoteAt = session.latestNoteAt;
+    }
+    if (
+      !Object.keys(existing.artifactCounts ?? {}).length &&
+      Object.keys(session.artifactCounts ?? {}).length
+    ) {
+      existing.artifactCounts = session.artifactCounts;
     }
   }
   return Array.from(byId.values()).sort((left, right) => {

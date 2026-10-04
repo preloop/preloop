@@ -22,6 +22,7 @@ from preloop.schemas.project import (
     TestConnectionRequest,
     TestConnectionResponse,
 )
+from preloop.services.managed_credentials import tracker_credential_source
 from preloop.sync.trackers import create_tracker_client
 from preloop.models.crud.organization import CRUDOrganization
 from preloop.models.crud.project import (
@@ -494,11 +495,19 @@ async def test_project_connection(
 
         # Create the tracker client
         try:
+            if tracker_type == "bitbucket":
+                # The row's auth mode decides between a pasted token and a
+                # managed grant resolved per request.
+                connection_details = {
+                    **connection_details,
+                    "auth_type": tracker.auth_type,
+                }
             tracker_client = await create_tracker_client(
                 tracker_type=tracker_type,
                 tracker_id=str(tracker.id),
                 api_key=tracker.resolved_api_key,
                 connection_details=connection_details,
+                credential_source=tracker_credential_source(tracker),
             )
             if not tracker_client:
                 raise ValueError("Unsupported tracker type or configuration error")

@@ -270,7 +270,15 @@ describe('AuditView', () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Close toasts the Shoelace way. Pulling one out of the DOM leaves its
+    // auto-hide timer running, and it throws later inside another test.
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await Promise.all(
+      Array.from(document.querySelectorAll('sl-alert')).map((alert) =>
+        (alert as any).hide()
+      )
+    );
     fetchStub.restore();
     wsSubscribeStub.restore();
     wsConnectStub.restore();
@@ -811,11 +819,8 @@ describe('AuditView', () => {
       return element;
     }
 
-    afterEach(() => {
+    afterEach(async () => {
       restoreUrl?.();
-      for (const alert of Array.from(document.querySelectorAll('sl-alert'))) {
-        alert.remove();
-      }
     });
 
     it('expands, marks and holds the event the link asked for', async () => {
@@ -1084,7 +1089,6 @@ describe('AuditView', () => {
         'a failure toast should appear'
       );
       expect(clickedAnchors.length, 'nothing should be saved').to.equal(0);
-      document.querySelectorAll('sl-alert').forEach((alert) => alert.remove());
       element.remove();
     });
   });
@@ -1284,6 +1288,283 @@ describe('AuditView', () => {
     );
 
     document.body.removeChild(element);
+  });
+
+  describe('live refresh under steady traffic', () => {
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    const groupsFor = (id: string) => ({
+      groups: [
+        {
+          correlation_id: null,
+          outcome: 'created',
+          primary_event: {
+            id,
+            action: 'runtime_session_created',
+            status: 'created',
+            timestamp: '2026-03-10T10:00:00Z',
+            details: {},
+          },
+          sub_events: [],
+        },
+      ],
+      total: 1,
+      skip: 0,
+      limit: 50,
+    });
+
+    /** A slow grouped endpoint that counts concurrency and numbers answers. */
+    const slowGrouped = (
+      latencyMs: number,
+      labelFor?: (url: string) => string
+    ) => {
+      const stats = { started: 0, inFlight: 0, maxInFlight: 0 };
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          stats.started += 1;
+          const n = stats.started;
+          stats.inFlight += 1;
+          stats.maxInFlight = Math.max(stats.maxInFlight, stats.inFlight);
+          await sleep(latencyMs);
+          stats.inFlight -= 1;
+          const label = labelFor ? labelFor(url) : `answer-${n}`;
+          return new Response(JSON.stringify(groupsFor(label)), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      return stats;
+    };
+
+    const spinnerShown = (element: AuditView) =>
+      !!element.shadowRoot?.querySelector('.loading sl-spinner');
+    const rowIds = (element: AuditView) =>
+      (element as any)._groups.map((g: any) => g.primary_event.id);
+
+    it('keeps rows on screen and one request in flight while events stream in', async function () {
+      this.timeout(20000);
+      // The reported loop: a slow endpoint and an event every 600 ms.
+      const stats = slowGrouped(1500);
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => !(element as any)._loading, 'first load', {
+        timeout: 3000,
+      });
+      await element.updateComplete;
+      expect(rowIds(element)).to.deep.equal(['answer-1']);
+
+      let spinnerSamples = 0;
+      for (let i = 0; i < 8; i += 1) {
+        wsCallback?.({ type: 'audit_event', action: 'model_gateway_request' });
+        await sleep(600);
+        await element.updateComplete;
+        if (spinnerShown(element)) spinnerSamples += 1;
+      }
+
+      expect(
+        spinnerSamples,
+        'live refresh must not replace rows with a spinner'
+      ).to.equal(0);
+      expect(
+        stats.maxInFlight,
+        'at most one grouped request in flight'
+      ).to.equal(1);
+      // 4.8 s of events: a couple of coalesced refreshes, not one per event.
+      expect(stats.started).to.be.within(2, 4);
+
+      // The trailing refresh lands and its answer is rendered.
+      await waitUntil(
+        () =>
+          stats.inFlight === 0 &&
+          (element as any)._refreshTimer === null &&
+          !(element as any)._liveRefreshInFlight,
+        'settle',
+        { timeout: 8000 }
+      );
+      await element.updateComplete;
+      expect(rowIds(element)).to.deep.equal([`answer-${stats.started}`]);
+      expect(spinnerShown(element)).to.equal(false);
+      element.remove();
+    });
+
+    it('clears a permission error when a live refresh succeeds', async function () {
+      this.timeout(10000);
+      let calls = 0;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          calls += 1;
+          if (calls === 1) {
+            return new Response(JSON.stringify({ detail: 'Forbidden' }), {
+              status: 403,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify(groupsFor('granted')), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => (element as any)._permissionError, 'first 403');
+      wsCallback?.({ type: 'audit_event', action: 'tool_call' });
+      await waitUntil(
+        () => !(element as any)._permissionError,
+        'live refresh should bring the list back',
+        { timeout: 4000 }
+      );
+      expect(rowIds(element)).to.deep.equal(['granted']);
+      element.remove();
+    });
+
+    /** A grouped endpoint that answers each call with the given status. */
+    const groupedByCall = (statuses: number[]) => {
+      let calls = 0;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          const status = statuses[Math.min(calls, statuses.length - 1)];
+          calls += 1;
+          const body =
+            status === 200 ? groupsFor(`answer-${calls}`) : { detail: 'boom' };
+          return new Response(JSON.stringify(body), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      return () => calls;
+    };
+
+    it('clears a load error when a live refresh succeeds', async function () {
+      this.timeout(10000);
+      groupedByCall([500, 200]);
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => (element as any)._loadError, 'first load fails');
+      wsCallback?.({ type: 'audit_event', action: 'tool_call' });
+      await waitUntil(
+        () => !(element as any)._loadError,
+        'live refresh should bring the list back',
+        { timeout: 4000 }
+      );
+      await element.updateComplete;
+      expect(rowIds(element)).to.deep.equal(['answer-2']);
+      expect(element.shadowRoot?.querySelector('sl-alert[variant="danger"]')).to
+        .not.exist;
+      element.remove();
+    });
+
+    it('keeps the rows and raises no error when a live refresh fails', async function () {
+      this.timeout(10000);
+      const calls = groupedByCall([200, 500]);
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => !(element as any)._loading, 'first load');
+      wsCallback?.({ type: 'audit_event', action: 'tool_call' });
+      await waitUntil(
+        () =>
+          calls() >= 2 &&
+          (element as any)._refreshTimer === null &&
+          !(element as any)._liveRefreshInFlight,
+        'live refresh settles',
+        { timeout: 4000 }
+      );
+      await element.updateComplete;
+      expect(rowIds(element)).to.deep.equal(['answer-1']);
+      expect((element as any)._loadError).to.equal(null);
+      expect(spinnerShown(element)).to.equal(false);
+      element.remove();
+    });
+
+    it('does not starve the refresh when events arrive faster than the debounce', async function () {
+      this.timeout(10000);
+      const stats = slowGrouped(50);
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => !(element as any)._loading, 'first load');
+      const before = stats.started;
+      // Check while the stream is still going, not after it stops.
+      for (let i = 0; i < 15; i += 1) {
+        wsCallback?.({ type: 'audit_event', action: 'model_gateway_request' });
+        await sleep(200);
+      }
+      expect(
+        stats.started,
+        'a steady stream still refreshes'
+      ).to.be.greaterThan(before);
+      element.remove();
+    });
+
+    it('drops a live answer for filters the reader has already left', async function () {
+      this.timeout(10000);
+      // The stale unfiltered answer must land AFTER the filtered one.
+      // Equal delays finish in start order, so the filtered row would win
+      // even without the generation guard.
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          const filtered = url.includes('tool_name=');
+          await sleep(filtered ? 40 : 900);
+          return new Response(
+            JSON.stringify(groupsFor(filtered ? 'filtered' : 'unfiltered')),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => !(element as any)._loading, 'first load', {
+        timeout: 3000,
+      });
+
+      wsCallback?.({ type: 'audit_event', action: 'tool_call' });
+      // Wait for the live refresh to start, then change the filter.
+      await waitUntil(
+        () => (element as any)._liveRefreshInFlight,
+        'live start',
+        {
+          timeout: 3000,
+        }
+      );
+      (element as any)._toolNameFilter = 'deploy';
+      (element as any)._page = 0;
+      void (element as any)._loadTimeline();
+
+      await waitUntil(
+        () =>
+          !(element as any)._loading && !(element as any)._liveRefreshInFlight,
+        'both settle',
+        { timeout: 3000 }
+      );
+      await sleep(1100);
+      expect(rowIds(element)).to.deep.equal(['filtered']);
+      element.remove();
+    });
   });
 
   it('marks a row sealed only when the payload already carries chain_seq', async () => {

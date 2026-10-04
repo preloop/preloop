@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "preloop-skyvern"
+version = "0.1.0"
+description = "Import Skyvern task steps, screenshots, HAR, trace and recording into a Preloop runtime session."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Preloop" }]
+# Talks to the Skyvern REST API v1 (/api/v1/tasks/...) directly; no SDK.
+dependencies = ["httpx>=0.27,<1"]
+keywords = ["preloop", "skyvern", "browser-agents", "observability", "timeline"]
+
+[project.urls]
+Homepage = "https://preloop.ai"
+Repository = "https://github.com/preloop/preloop"
+Documentation = "https://docs.preloop.ai/guide/browser-agents/"
+
+[project.scripts]
+preloop-skyvern-import = "preloop_skyvern.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

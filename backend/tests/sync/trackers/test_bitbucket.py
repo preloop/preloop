@@ -563,3 +563,240 @@ async def test_create_commit_status_rejects_unknown_state() -> None:
     tracker = make_tracker(lambda r: ok({}), [])
     with pytest.raises(ValueError):
         await tracker.create_commit_status("abc123", "not-a-state")
+
+
+# ---------------------------------------------------------------------------
+# Managed Bitbucket Cloud grants (issue #1065)
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from preloop.services.managed_credentials import (  # noqa: E402
+    ManagedCredential,
+    ManagedCredentialUnavailableError,
+    ManagedReconnectRequiredError,
+)
+from preloop.utils.bitbucket import BitbucketConfigError  # noqa: E402
+
+CLOCK_START = datetime(2026, 10, 4, 9, 0, tzinfo=timezone.utc)
+
+
+class FakeGrant:
+    """Provider stand-in: a clock-driven token A/B rotation with call records."""
+
+    def __init__(self, lifetime: timedelta = timedelta(hours=1)) -> None:
+        self.now = CLOCK_START
+        self.lifetime = lifetime
+        self.version = 1
+        self.issued_at = CLOCK_START
+        self.calls: List[bool] = []
+        self.failure: Exception | None = None
+
+    @property
+    def token(self) -> str:
+        return f"token-{'abcdefgh'[self.version - 1]}"
+
+    def advance(self, delta: timedelta) -> None:
+        self.now += delta
+
+    async def __call__(self, *, force_refresh: bool = False) -> ManagedCredential:
+        self.calls.append(force_refresh)
+        if self.failure is not None:
+            raise self.failure
+        expired = self.issued_at + self.lifetime <= self.now + timedelta(seconds=60)
+        if force_refresh or expired:
+            self.version += 1
+            self.issued_at = self.now
+        return ManagedCredential(
+            access_token=self.token,
+            expires_at=self.issued_at + self.lifetime,
+            rotation_version=self.version,
+            provider="bitbucket",
+        )
+
+
+def make_managed(
+    handler: Handler, requests: List[httpx.Request], grant: FakeGrant, **details: Any
+) -> BitbucketTracker:
+    def record(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return handler(request)
+
+    connection = {
+        "workspace": "ws",
+        "repository": "repo",
+        "auth_type": "managed_oauth",
+        **details,
+    }
+    return BitbucketTracker(
+        "tracker-1",
+        "",
+        connection,
+        transport=httpx.MockTransport(record),
+        credential_source=grant,
+    )
+
+
+async def test_managed_client_resolves_before_each_request_and_rotates() -> None:
+    requests: List[httpx.Request] = []
+    grant = FakeGrant()
+    tracker = make_managed(lambda r: ok({"full_name": "ws/repo"}), requests, grant)
+    assert tracker.managed is True
+
+    result = await tracker.test_connection()
+    assert result.connected
+    assert requests[0].headers["Authorization"] == "Bearer token-a"
+    assert result.server_info["auth"] == "managed"
+    assert result.server_info["capabilities_verified"] is False
+    assert result.server_info["rotation_version"] == 1
+
+    # The same long-lived client, hours later: a fresh token is used without
+    # anyone touching the client.
+    grant.advance(timedelta(hours=2))
+    await tracker.get_pull_request(1)
+    assert requests[1].headers["Authorization"] == "Bearer token-b"
+    assert grant.calls == [False, False]
+    assert tracker.managed_credential.rotation_version == 2
+
+
+async def test_managed_401_forces_exactly_one_refresh() -> None:
+    requests: List[httpx.Request] = []
+    grant = FakeGrant()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers["Authorization"] == "Bearer token-a":
+            return ok({"error": {"message": "expired"}}, 401)
+        return ok({"id": 1})
+
+    tracker = make_managed(handler, requests, grant, email="dev@example.com")
+    await tracker.get_pull_request(1)
+    assert [r.headers["Authorization"] for r in requests] == [
+        "Bearer token-a",
+        "Bearer token-b",
+    ]
+    assert grant.calls == [False, True]
+    # No Basic fallback for managed grants, even with an email on the row.
+    assert all(not r.headers["Authorization"].startswith("Basic") for r in requests)
+
+
+async def test_managed_second_401_reports_reconnect_without_looping() -> None:
+    requests: List[httpx.Request] = []
+    grant = FakeGrant()
+    tracker = make_managed(lambda r: ok({}, 401), requests, grant)
+    with pytest.raises(TrackerAuthenticationError, match="Reconnect"):
+        await tracker.get_pull_request(1)
+    assert len(requests) == 2
+    assert grant.calls == [False, True]
+
+
+@pytest.mark.parametrize(
+    ("failure", "fragment"),
+    [
+        (ManagedReconnectRequiredError("invalid_grant"), "requires reconnect"),
+        (ManagedCredentialUnavailableError("not_configured"), "could not provide"),
+    ],
+)
+async def test_managed_resolver_failure_is_explicit_and_sends_nothing(
+    failure: Exception, fragment: str
+) -> None:
+    requests: List[httpx.Request] = []
+    grant = FakeGrant()
+    grant.failure = failure
+    tracker = make_managed(lambda r: ok({}), requests, grant)
+    result = await tracker.test_connection()
+    assert result.connected is False
+    assert fragment in result.message
+    assert "token-" not in result.message
+    assert requests == []
+
+
+async def test_managed_without_resolver_never_sends_anonymously() -> None:
+    requests: List[httpx.Request] = []
+
+    def record(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return ok({})
+
+    tracker = BitbucketTracker(
+        "tracker-1",
+        "",
+        {"workspace": "ws", "auth_type": "managed_oauth"},
+        transport=httpx.MockTransport(record),
+    )
+    assert tracker.managed is True
+    with pytest.raises(TrackerAuthenticationError, match="no managed-provider plugin"):
+        await tracker.get_pull_request(1, "ws/repo")
+    assert requests == []
+
+
+async def test_managed_rejects_custom_origin_and_pasted_token() -> None:
+    with pytest.raises(BitbucketConfigError, match="pinned"):
+        make_managed(
+            lambda r: ok({}), [], FakeGrant(), api_url="https://api.example.com/2.0"
+        )
+    with pytest.raises(BitbucketConfigError, match="pasted token"):
+        BitbucketTracker(
+            "t", "pasted", {"workspace": "ws"}, credential_source=FakeGrant()
+        )
+    # A pasted-token client keeps its configurable origin and Basic fallback.
+    manual = make_tracker(lambda r: ok({}), [], api_url="https://api.example.com/2.0")
+    assert manual.managed is False
+    assert manual.api_base_url == "https://api.example.com/2.0"
+
+
+async def test_managed_refuses_redirects() -> None:
+    requests: List[httpx.Request] = []
+    grant = FakeGrant()
+    tracker = make_managed(
+        lambda r: httpx.Response(302, headers={"Location": "https://evil.example/x"}),
+        requests,
+        grant,
+    )
+    with pytest.raises(TrackerResponseError, match="redirect"):
+        await tracker.get_pull_request(1)
+    assert len(requests) == 1
+    assert requests[0].url.host == "api.bitbucket.org"
+
+
+async def test_managed_simultaneous_callers_each_resolve_fresh() -> None:
+    import asyncio
+
+    requests: List[httpx.Request] = []
+    grant = FakeGrant()
+    tracker = make_managed(lambda r: ok({"id": 1}), requests, grant)
+    await asyncio.gather(*(tracker.get_pull_request(i) for i in range(3)))
+    assert len(requests) == 3
+    assert grant.calls == [False, False, False]
+    assert {r.headers["Authorization"] for r in requests} == {"Bearer token-a"}
+
+
+async def test_factory_refuses_managed_without_resolver_and_builds_with_one() -> None:
+    assert (
+        await create_tracker_client(
+            "bitbucket",
+            "tracker-1",
+            "",
+            {"workspace": "ws", "auth_type": "managed_oauth"},
+        )
+        is None
+    )
+    client = await create_tracker_client(
+        "bitbucket",
+        "tracker-1",
+        "stale-key-must-be-ignored",
+        {"workspace": "ws", "auth_type": "managed_oauth"},
+        credential_source=FakeGrant(),
+    )
+    assert isinstance(client, BitbucketTracker)
+    assert client.managed is True
+    assert client.api_key == ""
+    assert (
+        await create_tracker_client(
+            "github",
+            "t",
+            "",
+            {"auth_type": "managed_oauth"},
+            credential_source=FakeGrant(),
+        )
+        is None
+    )

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Scorecard's vulnerable-dependency list is reduced by moving patched
+  transitive locks forward: `undici` 7.29.1 in the ClawHub CI lock, `hono`
+  4.13.13 and `fast-uri` 3.1.8 in the Claude plugin, `urllib3` 2.8.0 in the
+  build lock, and `virtualenv` 21.14.5 in the lint lock. `braces` 3.0.3 has
+  no release above the affected version. `GO-2026-5932` still matches
+  `golang.org/x/crypto` even though the CLI imports only `scrypt`.
+  `nanobot-ai` stays on 0.1.4.post3 because 0.2.1 removed the provider and
+  loop API this plugin calls. `brace-expansion` 5.0.9 stays inside the Pi
+  0.87.1 shrinkwrap, which npm overrides do not replace.
 - The support period stated in SECURITY.md (security updates without charge
   until 31 December 2031, with the release-line table and the
   never-shortened extension rules) is signed off by the release manager as
@@ -17,6 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Managed Bitbucket Cloud connections are consumed end to end.** A tracker
+  with `auth_type: managed_oauth` stores no token; the tracker factory,
+  scanner, REST and MCP clients, connection and scope testing, feedback reads,
+  flow clone credentials and the execution-bound publication credential
+  endpoint resolve a fresh access token through the optional provider
+  resolver (`managed_oauth_resolver:bitbucket`) before every call, pin the
+  API origin, refuse redirects and never fall back to a stale key or an
+  anonymous clone. Behind `bitbucket_cloud_oauth` the console offers
+  **Connect Bitbucket**, completes the consent callback from an opaque handle,
+  shows actor, workspace/repository, real token expiry, connection state and
+  granted/missing/unknown capabilities, and offers reconnect/disconnect.
+  Pasted tokens remain unmanaged and are never converted; a managed tracker
+  rejects a pasted token with 409. Late push and PR creation reuse the
+  publication refresh wrapper with the literal `x-token-auth` username
+  (#1065).
 - **Opt-in Perl toolchain image for Codex.** `environments/perl/Dockerfile`
   extends a digest-pinned Codex-compatible base with `perl`, `cpanm`,
   `perlver`, `perlcritic` and `prove`, and `run-smoke.sh` checks it offline as

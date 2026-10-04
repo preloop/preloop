@@ -13,6 +13,11 @@ Authentication (``Tracker.auth_type``):
   personal API token gets a 401 and the account email is configured, the
   client retries with HTTP Basic ``<email>:<token>`` and keeps using it.
 * ``oauth_token``: a stored OAuth access token, sent as Bearer.
+* ``managed_oauth``: no token is stored. A ``credential_source`` (see
+  ``preloop.services.managed_credentials``) is asked for a fresh access
+  token before every request, a 401 forces exactly one refresh, the API
+  origin is pinned to ``https://api.bitbucket.org/2.0`` and redirects are
+  refused. There is no Basic fallback and no stale-token fallback.
 
 App passwords are rejected up front (see ``preloop.utils.bitbucket``).
 
@@ -33,6 +38,13 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_webhook
 from preloop.models.models.organization import Organization
+from preloop.services.managed_credentials import (
+    MANAGED_AUTH_TYPE,
+    CredentialSource,
+    ManagedCredential,
+    ManagedCredentialError,
+    ManagedCredentialUnavailableError,
+)
 from preloop.models.models.project import Project
 from preloop.models.models.webhook import Webhook
 from preloop.schemas.tracker_models import (
@@ -49,6 +61,7 @@ from preloop.utils.bitbucket import (
     BITBUCKET_API_BASE_URL,
     BITBUCKET_AUTH_API_TOKEN,
     BITBUCKET_WEBHOOK_EVENTS,
+    BitbucketConfigError,
     COMMIT_STATUS_STATES,
     TOKEN_KIND_API_TOKEN,
     build_object_attributes,
@@ -94,17 +107,27 @@ class BitbucketTracker(BaseTracker):
         connection_details: Dict[str, Any],
         *,
         transport: Optional[httpx.AsyncBaseTransport] = None,
+        credential_source: Optional[CredentialSource] = None,
     ) -> None:
         """Initialize the client.
 
         Args:
             tracker_id: ID of the tracker in the database.
             api_key: API token, repository access token or OAuth access token.
+                Empty for managed trackers.
             connection_details: ``workspace`` (required), ``repository``,
                 ``email``, ``username``, ``token_kind``, ``auth_type``,
                 ``token_expires_at`` and, for bound clients,
                 ``repo_full_name``.
             transport: Optional httpx transport, for tests.
+            credential_source: Managed grants only: an async callable
+                (``force_refresh=`` keyword) returning a
+                :class:`~preloop.services.managed_credentials.ManagedCredential`.
+                Resolved before every request, never cached on the tracker.
+
+        Raises:
+            BitbucketConfigError: A managed client configured a custom API
+                origin, or a pasted token together with a credential source.
         """
         super().__init__(tracker_id, api_key, connection_details or {})
         details = self.connection_details
@@ -121,15 +144,33 @@ class BitbucketTracker(BaseTracker):
         self.token_kind: str = str(
             details.get("token_kind") or TOKEN_KIND_API_TOKEN
         ).lower()
-        self.api_base_url: str = str(
-            details.get("api_url") or BITBUCKET_API_BASE_URL
-        ).rstrip("/")
+        self.managed: bool = (
+            credential_source is not None or self.auth_type == MANAGED_AUTH_TYPE
+        )
+        self._credential_source = credential_source
+        configured_api = str(details.get("api_url") or "").rstrip("/")
+        if self.managed:
+            # A managed grant is bound to Bitbucket Cloud. The access token
+            # must never travel to another origin, however the row was edited.
+            if configured_api and configured_api != BITBUCKET_API_BASE_URL:
+                raise BitbucketConfigError(
+                    "Managed Bitbucket Cloud connections are pinned to "
+                    f"{BITBUCKET_API_BASE_URL}; a custom API origin is not allowed."
+                )
+            if api_key:
+                raise BitbucketConfigError(
+                    "A managed Bitbucket connection does not accept a pasted token."
+                )
+            self.api_base_url: str = BITBUCKET_API_BASE_URL
+        else:
+            self.api_base_url = configured_api or BITBUCKET_API_BASE_URL
         repo_full_name = details.get("repo_full_name")
         if not repo_full_name and self.workspace and self.repository:
             repo_full_name = f"{self.workspace}/{self.repository}"
         self.repo_full_name: Optional[str] = repo_full_name or None
         self._transport = transport
         self._use_basic = False
+        self._last_credential: Optional[ManagedCredential] = None
 
     # ------------------------------------------------------------------
     # Transport
@@ -137,17 +178,49 @@ class BitbucketTracker(BaseTracker):
 
     def _can_fall_back_to_basic(self) -> bool:
         return bool(
-            self.email
+            not self.managed
+            and self.email
             and self.auth_type == BITBUCKET_AUTH_API_TOKEN
             and self.token_kind == TOKEN_KIND_API_TOKEN
         )
 
-    def _auth(self) -> Tuple[Dict[str, str], Optional[httpx.BasicAuth]]:
+    def _auth(
+        self, token: Optional[str] = None
+    ) -> Tuple[Dict[str, str], Optional[httpx.BasicAuth]]:
         headers = {"Accept": "application/json"}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+            return headers, None
         if self._use_basic and self.email:
             return headers, httpx.BasicAuth(self.email, self.api_key or "")
         headers["Authorization"] = f"Bearer {self.api_key}"
         return headers, None
+
+    async def _managed_token(self, *, force_refresh: bool = False) -> str:
+        """Resolve the current managed access token before a request.
+
+        Raises:
+            TrackerAuthenticationError: No resolver is installed, the grant
+                needs reconnect, or the provider refused.
+        """
+        if self._credential_source is None:
+            error = ManagedCredentialUnavailableError(
+                "resolver_missing", provider=self.tracker_type
+            )
+            raise TrackerAuthenticationError(error.actionable_message())
+        try:
+            credential = await self._credential_source(force_refresh=force_refresh)
+        except ManagedCredentialError as exc:
+            if exc.provider is None:
+                exc.provider = self.tracker_type
+            raise TrackerAuthenticationError(exc.actionable_message()) from exc
+        self._last_credential = credential
+        return credential.access_token
+
+    @property
+    def managed_credential(self) -> Optional[ManagedCredential]:
+        """The credential used by the most recent managed request, if any."""
+        return self._last_credential
 
     def _url(self, path: str) -> str:
         """Resolve an API path, or check an absolute ``next`` link.
@@ -176,11 +249,14 @@ class BitbucketTracker(BaseTracker):
         *,
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Any] = None,
+        token: Optional[str] = None,
     ) -> httpx.Response:
-        headers, auth = self._auth()
+        headers, auth = self._auth(token)
         async with httpx.AsyncClient(
             timeout=HTTP_TIMEOUT_SECONDS,
-            follow_redirects=True,
+            # A managed access token is pinned to the API origin: a redirect
+            # could carry it elsewhere, so it is reported instead of followed.
+            follow_redirects=not self.managed,
             transport=self._transport,
         ) as client:
             return await client.request(
@@ -223,25 +299,48 @@ class BitbucketTracker(BaseTracker):
             )
         url = self._url(path)
         try:
-            response = await self._send(method, url, params=params, json=json)
-            if (
-                response.status_code == 401
-                and not self._use_basic
-                and self._can_fall_back_to_basic()
-            ):
-                self._use_basic = True
-                response = await self._send(method, url, params=params, json=json)
+            if self.managed:
+                # Fresh credential before the request; a 401 forces exactly one
+                # rotation and retry. A second 401 is reported, never looped.
+                token = await self._managed_token()
+                response = await self._send(
+                    method, url, params=params, json=json, token=token
+                )
                 if response.status_code == 401:
-                    self._use_basic = False
+                    token = await self._managed_token(force_refresh=True)
+                    response = await self._send(
+                        method, url, params=params, json=json, token=token
+                    )
+            else:
+                response = await self._send(method, url, params=params, json=json)
+                if (
+                    response.status_code == 401
+                    and not self._use_basic
+                    and self._can_fall_back_to_basic()
+                ):
+                    self._use_basic = True
+                    response = await self._send(method, url, params=params, json=json)
+                    if response.status_code == 401:
+                        self._use_basic = False
         except httpx.HTTPError as exc:
             raise TrackerConnectionError(
                 f"Could not reach Bitbucket: {type(exc).__name__}"
             ) from exc
 
         status_code = response.status_code
+        if self.managed and 300 <= status_code < 400:
+            raise TrackerResponseError(
+                "Refusing to follow a Bitbucket redirect with a managed credential.",
+                status_code=status_code,
+            )
         if status_code < 400 or status_code in set(allow_status):
             return response
         detail = _error_detail(response)
+        if status_code == 401 and self.managed:
+            raise TrackerAuthenticationError(
+                "Bitbucket rejected the managed access token (401) even after a "
+                "refresh. Reconnect the Bitbucket connection from the tracker page."
+            )
         if status_code == 401:
             raise TrackerAuthenticationError(
                 "Bitbucket rejected the token (401). Check that it is an API "
@@ -303,7 +402,12 @@ class BitbucketTracker(BaseTracker):
     # ------------------------------------------------------------------
 
     async def test_connection(self) -> TrackerConnection:
-        """Check the token against the bound repository or the workspace."""
+        """Check the token against the bound repository or the workspace.
+
+        For a managed grant this proves discovery (the workspace or repository
+        can be read). It does not prove push, approval or webhook capability;
+        those are reported as unknown until exercised.
+        """
         if not self.workspace:
             return TrackerConnection(
                 connected=False, message="Bitbucket workspace is not configured."
@@ -329,13 +433,22 @@ class BitbucketTracker(BaseTracker):
             TrackerRateLimitError,
         ) as exc:
             return TrackerConnection(connected=False, message=str(exc))
+        server_info: Dict[str, Any] = {
+            "workspace": self.workspace,
+            "auth": "managed"
+            if self.managed
+            else ("basic" if self._use_basic else "bearer"),
+        }
+        if self.managed:
+            server_info["capabilities_verified"] = False
+            credential = self._last_credential
+            if credential is not None:
+                server_info["expires_at"] = credential.expires_at.isoformat()
+                server_info["rotation_version"] = credential.rotation_version
         return TrackerConnection(
             connected=True,
             message=message,
-            server_info={
-                "workspace": self.workspace,
-                "auth": "basic" if self._use_basic else "bearer",
-            },
+            server_info=server_info,
         )
 
     async def get_organizations(self) -> List[Dict[str, Any]]:

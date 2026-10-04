@@ -445,11 +445,14 @@ reset_registration_if_fresh_db() {
   # The api container starts only after migrations complete, so once it
   # answers, the user table exists and the count below is authoritative.
   wait_for_api || return 0
+  # Keep the SQL off the exec command line. Scorecard's shell walker treats
+  # `exec` plus a later `-c` flag as a nested shell, then fails to parse `(`.
+  user_count_sql='SELECT count(*) FROM "user"'
   user_count="$(
     cd "$INSTALL_DIR"
     # shellcheck disable=SC2086
     docker compose $COMPOSE_ARGS exec -T postgres \
-      psql -U postgres -d preloop -tAc 'SELECT count(*) FROM "user"' < /dev/null 2>/dev/null \
+      psql -U postgres -d preloop -tAc "$user_count_sql" < /dev/null 2>/dev/null \
       | tr -d '[:space:]'
   )" || user_count=""
   if [ "$user_count" != "0" ]; then

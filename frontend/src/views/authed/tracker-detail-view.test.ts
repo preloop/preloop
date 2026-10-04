@@ -1,7 +1,9 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import { resetRunPresetDialogForTests } from '../../components/run-preset-dialog';
+import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
+import { invalidateApiCaches } from '../../api';
 import './tracker-detail-view';
 import type { TrackerDetailView } from './tracker-detail-view';
 
@@ -871,5 +873,258 @@ describe('TrackerDetailView', () => {
       { kind: 'issue', issue_id: 'issue-1' },
       { kind: 'issue', issue_id: 'issue-2' },
     ]);
+  });
+});
+
+describe('TrackerDetailView managed Bitbucket connection (issue #1065)', () => {
+  let fetchStub: sinon.SinonStub;
+
+  const managedStatus = {
+    tracker_id: trackerId,
+    name: 'Bitbucket Cloud',
+    provider: 'bitbucket',
+    managed: true,
+    state: 'connected',
+    consumer_configured: true,
+    workspace: 'ws',
+    repository: 'repo',
+    actor: { uuid: '{u}', display_name: 'Jane Doe', nickname: 'jane' },
+    expires_at: '2026-10-04T13:00:00+00:00',
+    rotation_version: 3,
+    grant_status: 'active',
+    granted_scopes: ['pullrequest:write'],
+    capabilities: {
+      read_repositories: true,
+      push: true,
+      register_webhooks: false,
+    },
+    capabilities_verified: false,
+    reconnect_reason: null,
+  };
+
+  function stubManaged(opts: {
+    flag: boolean;
+    authType?: string;
+    status?: Record<string, unknown>;
+    statusCode?: number;
+  }) {
+    const {
+      flag,
+      authType = 'managed_oauth',
+      status = managedStatus,
+      statusCode = 200,
+    } = opts;
+    const calls: string[] = [];
+    const stub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(`${(init?.method || 'GET').toUpperCase()} ${url}`);
+        const json = (data: unknown, code = 200) =>
+          new Response(JSON.stringify(data), { status: code });
+        if (url.includes('/api/v1/features')) {
+          return json({
+            plugins: [],
+            features: flag ? { bitbucket_cloud_oauth: true } : {},
+          });
+        }
+        if (url.includes(`/auth/bitbucket/trackers/${trackerId}/status`)) {
+          return json(status, statusCode);
+        }
+        if (url.includes(`/auth/bitbucket/trackers/${trackerId}/reconnect`)) {
+          return json({
+            authorization_url:
+              'https://bitbucket.org/site/oauth2/authorize?r=1',
+            transaction_id: 't',
+            expires_at: '2026-10-04T12:10:00+00:00',
+            tracker_id: trackerId,
+          });
+        }
+        if (url.includes(`/auth/bitbucket/trackers/${trackerId}/disconnect`)) {
+          return new Response(null, { status: 204 });
+        }
+        if (
+          url.includes(`/api/v1/trackers/${trackerId}`) &&
+          !url.includes('/sync')
+        ) {
+          return json({
+            id: trackerId,
+            name: 'Bitbucket Cloud',
+            tracker_type: 'bitbucket',
+            auth_type: authType,
+            created: '2026-01-01T00:00:00Z',
+            last_updated: '2026-01-02T00:00:00Z',
+            is_valid: true,
+            token_expires_at:
+              authType === 'managed_oauth' ? null : '2020-01-01',
+            token_expiry_status:
+              authType === 'managed_oauth' ? null : 'expired',
+          });
+        }
+        if (url.includes('/api/v1/organizations')) {
+          return json({ items: [] });
+        }
+        if (url.includes('/api/v1/projects')) {
+          return json([]);
+        }
+        return json({});
+      });
+    return { stub, calls };
+  }
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    invalidateApiCaches();
+    window.history.replaceState({}, '', `/console/trackers/${trackerId}`);
+  });
+
+  afterEach(() => {
+    fetchStub?.restore();
+    invalidateApiCaches();
+    localStorage.clear();
+    sessionStorage.clear();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('shows state, actor, server expiry and unknown-aware capabilities', async () => {
+    const { stub, calls } = stubManaged({ flag: true });
+    fetchStub = stub;
+    const el = await mountView();
+    const root = el.shadowRoot!;
+    const chip = root.querySelector('.managed-connection');
+    expect(chip).to.exist;
+    expect(chip?.getAttribute('data-state')).to.equal('connected');
+    expect(chip?.textContent).to.contain('connected');
+    // The manual expiry chip never applies to a managed grant.
+    expect(root.querySelector('.token-expiry')).to.not.exist;
+    const panel = root.querySelector('.managed-connection-panel');
+    expect(panel).to.exist;
+    expect(panel?.querySelector('.managed-actor')?.textContent).to.contain(
+      'Jane Doe'
+    );
+    expect(panel?.querySelector('.managed-expiry')?.textContent).to.not.contain(
+      'none'
+    );
+    expect(
+      panel
+        ?.querySelector('[data-capability="push"]')
+        ?.getAttribute('data-value')
+    ).to.equal('granted');
+    expect(
+      panel
+        ?.querySelector('[data-capability="register_webhooks"]')
+        ?.getAttribute('data-value')
+    ).to.equal('missing');
+    expect(panel?.textContent?.replace(/\s+/g, ' ')).to.contain('not tested');
+    expect(panel?.querySelector('.managed-reconnect')).to.exist;
+    expect(panel?.querySelector('.managed-disconnect')).to.exist;
+    expect(calls.some((c) => c.includes('/auth/bitbucket/trackers/'))).to.equal(
+      true
+    );
+    expect(root.textContent).to.not.match(/token-[a-z]/);
+  });
+
+  it('reports unknown capabilities and reconnect reason', async () => {
+    const { stub } = stubManaged({
+      flag: true,
+      status: {
+        ...managedStatus,
+        state: 'reconnect_required',
+        expires_at: null,
+        reconnect_reason: 'invalid_grant',
+        capabilities: { push: null },
+      },
+    });
+    fetchStub = stub;
+    const el = await mountView();
+    const root = el.shadowRoot!;
+    expect(
+      root.querySelector('.managed-connection')?.getAttribute('data-state')
+    ).to.equal('reconnect_required');
+    expect(
+      root.querySelector('[data-capability="push"]')?.getAttribute('data-value')
+    ).to.equal('unknown');
+    expect(root.querySelector('.managed-reason')?.textContent).to.contain(
+      'invalid_grant'
+    );
+    expect(root.querySelector('.managed-expiry')?.textContent).to.contain(
+      'none'
+    );
+  });
+
+  it('reconnect redirects to the provider and disconnect calls the endpoint', async () => {
+    const { stub, calls } = stubManaged({ flag: true });
+    fetchStub = stub;
+    const el = await mountView();
+    const navigate = sinon.stub(el as any, '_navigate');
+    (el.shadowRoot?.querySelector('.managed-reconnect') as HTMLElement).click();
+    await tick(50);
+    expect(navigate).to.have.been.calledOnceWith(
+      'https://bitbucket.org/site/oauth2/authorize?r=1'
+    );
+    expect(
+      calls.some(
+        (c) =>
+          c.startsWith(`POST `) &&
+          c.includes(`/trackers/${trackerId}/reconnect`)
+      )
+    ).to.equal(true);
+
+    // Disconnect asks for confirmation first; nothing is posted before it.
+    (
+      el.shadowRoot?.querySelector('.managed-disconnect') as HTMLElement
+    ).click();
+    await waitUntil(
+      () => !!document.querySelector('confirm-dialog'),
+      'no confirm dialog'
+    );
+    const dialog = document.querySelector('confirm-dialog')!;
+    await (dialog as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    expect(dialog.shadowRoot!.textContent).to.contain('Disconnect');
+    expect(
+      calls.some((c) => c.includes(`/trackers/${trackerId}/disconnect`))
+    ).to.equal(false);
+    const confirm = dialog.shadowRoot!.querySelector<HTMLElement>(
+      '[data-testid="confirm-dialog-confirm"]'
+    )!;
+    confirm.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await waitUntil(
+      () => calls.some((c) => c.includes(`/trackers/${trackerId}/disconnect`)),
+      'disconnect was not requested'
+    );
+    expect(
+      calls.filter((c) => c.includes(`/trackers/${trackerId}/status`)).length
+    ).to.be.greaterThan(1);
+    resetConfirmDialogForTests();
+  });
+
+  it('flag off: managed tracker is marked unavailable, no status call, no manual chip', async () => {
+    const { stub, calls } = stubManaged({ flag: false });
+    fetchStub = stub;
+    const el = await mountView();
+    const root = el.shadowRoot!;
+    const chip = root.querySelector('.managed-connection');
+    expect(chip?.getAttribute('data-state')).to.equal('unavailable');
+    expect(root.querySelector('.managed-connection-panel')).to.exist;
+    expect(root.querySelector('.managed-reconnect')).to.not.exist;
+    expect(root.querySelector('.token-expiry')).to.not.exist;
+    expect(calls.some((c) => c.includes('/auth/bitbucket/'))).to.equal(false);
+  });
+
+  it('pasted-token trackers keep the manual expiry chip and no managed UI', async () => {
+    const { stub, calls } = stubManaged({
+      flag: true,
+      authType: 'oauth_token',
+    });
+    fetchStub = stub;
+    const el = await mountView();
+    const root = el.shadowRoot!;
+    expect(root.querySelector('.managed-connection')).to.not.exist;
+    expect(root.querySelector('.managed-connection-panel')).to.not.exist;
+    expect(root.querySelector('.token-expiry')?.textContent).to.contain(
+      'Token expired'
+    );
+    expect(calls.some((c) => c.includes('/auth/bitbucket/'))).to.equal(false);
   });
 });

@@ -17,10 +17,12 @@
 # that default. The tools land in /usr/bin and are world-readable, so any
 # user the executor picks can run them.
 # See environments/perl/README.md. This is never a default agent image.
-ARG CODEX_BASE_IMAGE
+# Default is the current codex-universal index digest. Override with
+# --build-arg CODEX_BASE_IMAGE=name@sha256:... ; the RUN below rejects a tag.
+ARG CODEX_BASE_IMAGE=ghcr.io/openai/codex-universal@sha256:905e512f36460e1be4cfedb30928a8a28299edb0fcd5de7998ceaa72d27fe304
 FROM ${CODEX_BASE_IMAGE}
 
-ARG CODEX_BASE_IMAGE
+ARG CODEX_BASE_IMAGE=ghcr.io/openai/codex-universal@sha256:905e512f36460e1be4cfedb30928a8a28299edb0fcd5de7998ceaa72d27fe304
 ARG BASE_USER=root
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

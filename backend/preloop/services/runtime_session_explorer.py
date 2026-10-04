@@ -22,6 +22,7 @@ from preloop.models.crud import (
     crud_gateway_usage_search_document,
     crud_runtime_session,
     crud_runtime_session_activity,
+    crud_runtime_session_artifact,
     crud_runtime_session_optimization_result,
 )
 from preloop.models.models.account import Account
@@ -137,6 +138,7 @@ class RuntimeSessionExplorerService:
         parent_session_id: Optional[str] = None,
         flow_execution_id: Optional[str] = None,
         active_within_minutes: Optional[int] = None,
+        has_artifacts: Optional[str] = None,
     ) -> AccountRuntimeSessionListResponse:
         principals, source_types = self._resolve_agent_filters(
             account=account, agent=agent, agent_kind=agent_kind
@@ -170,6 +172,7 @@ class RuntimeSessionExplorerService:
                 if active_within_minutes is not None
                 else None
             ),
+            has_artifacts=has_artifacts,
         )
         raw_items = results["items"]
         self.schedule_missing_session_titles(
@@ -297,6 +300,7 @@ class RuntimeSessionExplorerService:
             self._attach_cwds,
             self._attach_tool_call_counts,
             self._attach_pending_approval_counts,
+            self._attach_artifact_counts,
         ):
             try:
                 attach(account=account, items=items, session_ids=session_ids)
@@ -424,6 +428,20 @@ class RuntimeSessionExplorerService:
         pending = {str(key): int(value or 0) for key, value in rows}
         for item in items:
             item.pending_approval_count = pending.get(item.id, 0)
+
+    def _attach_artifact_counts(
+        self,
+        *,
+        account: Account,
+        items: list[RuntimeSessionSummary],
+        session_ids: list[str],
+    ) -> None:
+        """Count each session's available artifacts by kind (#1084)."""
+        counts = crud_runtime_session_artifact.available_counts_by_session(
+            self.db, account_id=account.id, runtime_session_ids=session_ids
+        )
+        for item in items:
+            item.artifact_counts = counts.get(item.id, {})
 
     def _attach_note_badges(
         self,

@@ -1377,9 +1377,11 @@ async def test_provider_materializes_identity_and_releases_transaction_before_ne
         thread_id = thread.id
         thread.stop_reason = "pending-local-work"
 
-        async def create_client(*args: Any) -> object:
+        async def create_client(*args: Any, **kwargs: Any) -> object:
             assert not db.in_transaction()
             assert database.pool.checkedout() == 0
+            # A pasted-token tracker binds no managed credential source.
+            assert kwargs.get("credential_source") is None
             return object()
 
         with (

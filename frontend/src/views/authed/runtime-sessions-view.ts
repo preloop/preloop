@@ -1,5 +1,9 @@
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import {
+  ARTIFACT_KIND_LABELS as ARTIFACT_GROUP_LABELS,
+  type ArtifactKindGroup,
+} from '../../utils/session-artifacts';
 
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -217,6 +221,10 @@ export class RuntimeSessionsView extends LitElement {
 
   @state()
   private status = 'all';
+
+  /** "Has artifacts" list filter: `all`, `any`, or one artifact kind. */
+  @state()
+  private hasArtifacts = 'all';
 
   @state()
   private interactionQuery = '';
@@ -942,6 +950,9 @@ export class RuntimeSessionsView extends LitElement {
     if (this.sessionSourceType !== 'all') {
       params.sessionSourceType = this.sessionSourceType;
     }
+    if (this.hasArtifacts !== 'all') {
+      params.hasArtifacts = this.hasArtifacts;
+    }
 
     return params;
   }
@@ -1306,6 +1317,12 @@ export class RuntimeSessionsView extends LitElement {
     this.status = (event.target as HTMLInputElement & { value: string }).value;
   }
 
+  private handleHasArtifactsChange(event: Event) {
+    this.hasArtifacts = (
+      event.target as HTMLInputElement & { value: string }
+    ).value;
+  }
+
   private handleInteractionQueryChange(event: Event) {
     this.interactionQuery = (
       event.target as HTMLInputElement & { value: string }
@@ -1343,6 +1360,7 @@ export class RuntimeSessionsView extends LitElement {
     this.searchQuery = '';
     this.sessionSourceType = 'all';
     this.status = 'all';
+    this.hasArtifacts = 'all';
     this.interactionQuery = '';
     this.clearSearchResults();
     this.syncUrl();
@@ -1565,11 +1583,21 @@ export class RuntimeSessionsView extends LitElement {
       this.selectedRange !== 'last-30' ||
       this.searchQuery !== '' ||
       this.sessionSourceType !== 'all' ||
-      this.status !== 'all'
+      this.status !== 'all' ||
+      this.hasArtifacts !== 'all'
     );
   }
 
   private emptySessionsText(): string {
+    if (this.hasArtifacts !== 'all') {
+      const label =
+        ARTIFACT_GROUP_LABELS[this.hasArtifacts as ArtifactKindGroup];
+      const what =
+        this.hasArtifacts === 'any' || !label
+          ? 'artifacts'
+          : label.toLowerCase();
+      return `No sessions with ${what} matched. Agents save transcripts, screenshots and files with the deposit_artifact tool or the API; widen the range or reset the filters to see other sessions.`;
+    }
     return this.hasActiveFilters()
       ? 'No sessions matched the current filters.'
       : 'No sessions yet. A session is recorded automatically the first time an onboarded agent makes a model or tool call through the gateway. Onboard an agent from the Agents page to see your first one.';
@@ -2619,6 +2647,19 @@ export class RuntimeSessionsView extends LitElement {
                 <sl-option value="all">All</sl-option>
                 <sl-option value="active">Active</sl-option>
                 <sl-option value="ended">Ended</sl-option>
+              </sl-select>
+              <sl-select
+                label="Has artifacts"
+                data-testid="has-artifacts-filter"
+                value=${this.hasArtifacts}
+                @sl-change=${this.handleHasArtifactsChange}
+              >
+                <sl-option value="all">Any session</sl-option>
+                <sl-option value="any">Any artifact</sl-option>
+                <sl-option value="transcript">Transcript</sl-option>
+                <sl-option value="screenshot">Screenshot</sl-option>
+                <sl-option value="document">Document</sl-option>
+                <sl-option value="audio">Audio</sl-option>
               </sl-select>
               <div class="filter-actions">
                 <sl-button variant="primary" @click=${this.applyFilters}>

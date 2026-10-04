@@ -131,6 +131,10 @@ const EVENT_TYPE_OPTIONS = [
 // Typing in the tool-name search refetches once the user pauses.
 const TOOL_SEARCH_DEBOUNCE_MS = 300;
 const DEEP_LINK_PAGE_SIZE = 200;
+// Live events are coalesced: a short quiet period gathers a burst, and
+// refreshes start at most this often while events keep coming.
+const LIVE_REFRESH_DEBOUNCE_MS = 400;
+const LIVE_REFRESH_MIN_INTERVAL_MS = 2000;
 const DEEP_LINK_PAGES = 4;
 /** The fixed console header, which a scrolled-to row must clear. */
 const HEADER_OFFSET_PX = 60;
@@ -189,6 +193,12 @@ export class AuditView extends AuthedElement {
   // Realtime subscription handle + debounced refresh timer.
   private _unsubscribeRealtime: (() => void) | null = null;
   private _refreshTimer: number | null = null;
+  // Live refresh coalescing, see _armLiveRefresh.
+  private _liveRefreshInFlight = false;
+  private _liveRefreshStale = false;
+  private _lastLiveRefreshAt = 0;
+  // Bumped by every foreground load, so older answers are not applied.
+  private _timelineGeneration = 0;
   // Debounce for the tool-name search box, so typing filters the list.
   private _toolSearchTimer: number | null = null;
   // Live indicator pulse — flips briefly when a websocket event arrives so
@@ -265,7 +275,7 @@ export class AuditView extends AuthedElement {
 
   private _scheduleRealtimeRefresh() {
     // Pulse the live indicator immediately so the user sees feedback even
-    // before the debounced refetch actually runs.
+    // before the coalesced refetch actually runs.
     this._livePulse = true;
     if (this._livePulseTimer !== null) {
       window.clearTimeout(this._livePulseTimer);
@@ -274,20 +284,59 @@ export class AuditView extends AuthedElement {
       this._livePulse = false;
       this._livePulseTimer = null;
     }, 1500);
+    this._armLiveRefresh();
+  }
 
-    if (this._refreshTimer !== null) {
-      window.clearTimeout(this._refreshTimer);
+  /**
+   * Coalesce live events into background refreshes.
+   *
+   * At most one refresh is in flight. Events that arrive meanwhile mark the
+   * list stale, and one trailing refresh runs after it lands. A pending timer
+   * is never pushed back, so a steady stream of events still refreshes at
+   * least every LIVE_REFRESH_MIN_INTERVAL_MS instead of never. A live refresh
+   * keeps the rows on screen: it never shows the spinner.
+   */
+  private _armLiveRefresh() {
+    if (this._liveRefreshInFlight || this._loading) {
+      this._liveRefreshStale = true;
+      return;
     }
-    // Debounce so a burst of websocket events (notification fan-out across
-    // channels, then approval, then execution) results in a single refetch.
+    if (this._refreshTimer !== null) return;
+    const sinceLast = Date.now() - this._lastLiveRefreshAt;
+    const delay = Math.max(
+      LIVE_REFRESH_DEBOUNCE_MS,
+      LIVE_REFRESH_MIN_INTERVAL_MS - sinceLast
+    );
     this._refreshTimer = window.setTimeout(() => {
       this._refreshTimer = null;
-      // Only auto-refresh page 0 — paging back through history shouldn't
-      // shift under the user's feet when new events arrive.
-      if (this._page === 0) {
-        void this._loadTimeline();
-      }
-    }, 400);
+      void this._runLiveRefresh();
+    }, delay);
+  }
+
+  private async _runLiveRefresh() {
+    // Only auto-refresh page 0: paging back through history shouldn't
+    // shift under the user's feet when new events arrive.
+    if (this._page !== 0 || !this.isConnected) return;
+    if (this._loading) {
+      this._liveRefreshStale = true;
+      return;
+    }
+    this._liveRefreshInFlight = true;
+    this._liveRefreshStale = false;
+    this._lastLiveRefreshAt = Date.now();
+    try {
+      await this._loadTimeline({ background: true });
+    } finally {
+      this._liveRefreshInFlight = false;
+    }
+    this._flushStaleLiveRefresh();
+  }
+
+  /** Run the trailing refresh owed to events seen while a load was busy. */
+  private _flushStaleLiveRefresh() {
+    if (!this._liveRefreshStale || !this.isConnected) return;
+    this._liveRefreshStale = false;
+    this._armLiveRefresh();
   }
 
   // ── Data loading ───────────────────────────────────────────────────
@@ -332,17 +381,36 @@ export class AuditView extends AuthedElement {
     return params;
   }
 
-  private async _loadTimeline() {
-    this._loading = true;
-    this._permissionError = null;
-    this._loadError = null;
+  /**
+   * Load the current page of the timeline.
+   *
+   * A foreground load (first visit, filter, page) shows the spinner and wins
+   * over anything started before it. A background load (live refresh) keeps
+   * the rows on screen and is dropped if a foreground load started after it,
+   * since its answer is for filters the reader has already left.
+   */
+  private async _loadTimeline({
+    background = false,
+  }: { background?: boolean } = {}) {
+    const generation = background
+      ? this._timelineGeneration
+      : ++this._timelineGeneration;
+    if (!background) {
+      this._loading = true;
+      this._permissionError = null;
+      this._loadError = null;
+    }
     try {
       const params = this._timelineParams(
         this._page * this._pageSize,
         this._pageSize
       );
 
-      const res = await fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`);
+      const res = await fetchWithAuth(
+        `/api/v1/audit-logs/grouped?${params}`,
+        background ? { passive: true } : {}
+      );
+      if (generation !== this._timelineGeneration) return;
       if (res.status === 403) {
         this._permissionError = await permissionErrorFromResponse(res);
         this._groups = [];
@@ -350,22 +418,37 @@ export class AuditView extends AuthedElement {
         return;
       }
       if (!res.ok) {
-        // A failed read must never look like an empty audit log.
-        this._loadError = `Couldn't load audit events (HTTP ${res.status}).`;
+        // A failed read must never look like an empty audit log. A failed
+        // live refresh leaves the rows it would have replaced on screen.
+        if (!background) {
+          this._loadError = `Couldn't load audit events (HTTP ${res.status}).`;
+        }
         return;
       }
       const data: GroupedResponse = await res.json();
+      if (generation !== this._timelineGeneration) return;
+      // A live refresh used to be a foreground load, which cleared a stale
+      // permission or load error. A successful background answer has to do
+      // the same, or the error stays up next to the new rows.
+      this._permissionError = null;
+      this._loadError = null;
       this._groups = data.groups;
       this._total = data.total;
     } catch (e) {
       console.error('Failed to load timeline:', e);
-      this._loadError = "Couldn't load audit events.";
+      if (!background && generation === this._timelineGeneration) {
+        this._loadError = "Couldn't load audit events.";
+      }
     } finally {
-      this._loading = false;
+      if (!background && generation === this._timelineGeneration) {
+        this._loading = false;
+      }
     }
+    if (generation !== this._timelineGeneration) return;
     if (this._deepLinkPending) {
       await this._resolveDeepLink();
     }
+    if (!background) this._flushStaleLiveRefresh();
   }
 
   // ── Deep link (?event=) ────────────────────────────────────────────

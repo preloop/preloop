@@ -541,6 +541,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         parent_session_id: Optional[str] = None,
         flow_execution_id: Optional[str] = None,
         active_within: Optional[timedelta] = None,
+        has_artifacts: Optional[str] = None,
     ) -> dict[str, Any]:
         """List runtime sessions with aggregated gateway usage.
 
@@ -554,6 +555,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
 
         ``active_within`` keeps open sessions whose last activity (or start,
         before the first activity) is no older than the window.
+
+        ``has_artifacts`` keeps sessions holding at least one available
+        artifact: ``any`` for any kind, otherwise that artifact kind.
         """
         session_query = db.query(self.model).filter(self.model.account_id == account_id)
 
@@ -588,6 +592,15 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                     self.model.id.in_(execution_usage.distinct()),
                 )
             )
+        if has_artifacts:
+            from preloop.models.crud import runtime_session_artifact
+
+            holders = runtime_session_artifact.sessions_with_available_artifacts(
+                db,
+                account_id=account_id,
+                kind=None if has_artifacts == "any" else has_artifacts,
+            )
+            session_query = session_query.filter(self.model.id.in_(holders.distinct()))
         if active_within is not None:
             cutoff = datetime.now(UTC).replace(tzinfo=None) - active_within
             session_query = session_query.filter(

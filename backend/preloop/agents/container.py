@@ -42,6 +42,7 @@ from .kubernetes_placement import (
 )
 from preloop.services.mcp_config_service import MCPConfigService
 from preloop.agents.verification import build_verification_gate_shell
+from preloop.services.managed_credentials import MANAGED_AUTH_TYPE
 from preloop.services.tracker_git_token import APP_AUTH_TYPES
 from preloop.utils.git_credentials import (
     GitCredential,
@@ -5132,6 +5133,11 @@ true
             creds = git_credentials_map.get(tracker_id) or {}
             if not (creds.get("token") and creds.get("email")):
                 continue
+            if str(creds.get("auth_type") or "").lower() == MANAGED_AUTH_TYPE:
+                # A managed access token is Bearer-only. Mirror the client's
+                # rule here so the generated shell never retries with Basic,
+                # whatever metadata the credential entry happens to carry.
+                return ""
             email = str(creds["email"])
             if re.fullmatch(r"[A-Za-z0-9._%+@-]+", email):
                 return email
@@ -5861,10 +5867,21 @@ true
                     None,
                 )
                 credentials = credential_map.get(tracker_id) or {}
+                credential_auth = str(credentials.get("auth_type") or "").lower()
+                managed_bitbucket = (
+                    credential_auth == MANAGED_AUTH_TYPE
+                    and str(tracker_type or "").lower() == "bitbucket"
+                )
                 if (
-                    str(credentials.get("auth_type") or "").lower() in APP_AUTH_TYPES
+                    credential_auth in APP_AUTH_TYPES
                     and str(tracker_type or "").lower() == "github"
-                ):
+                ) or managed_bitbucket:
+                    # Hosted legacy publication reacquires credentials from the
+                    # controller right before push and PR REST calls: GitHub
+                    # App installation tokens and managed Bitbucket Cloud
+                    # access tokens both outlive their launch copy only on the
+                    # control plane. The runner receives an access token and
+                    # its git username, never a refresh token.
                     from preloop.api.endpoints.publication_credentials import (
                         mint_publication_capability,
                     )
@@ -6000,6 +6017,10 @@ export GIT_TERMINAL_PROMPT=0"""
                                 f'-H "Authorization: token {token_ref}"',
                                 "--config <(printf 'header = \"Authorization: token %s\"\\n' "
                                 + f'"{token_ref}")',
+                            ).replace(
+                                '-H "$PRELOOP_BB_AUTH"',
+                                "--config <(printf 'header = \"%s\"\\n' "
+                                '"$PRELOOP_BB_AUTH")',
                             )
                         repo_post_commands.append(pr_create_cmd)
                         repo_post_commands.append(provenance_failure_exit_shell())
@@ -6276,6 +6297,17 @@ trap _preloop_publication_cleanup EXIT
                 tracker = crud_tracker.get(
                     db, id=organization.tracker_id, account_id=str(account_id)
                 )
+                if tracker and (tracker.auth_type or "").lower() == MANAGED_AUTH_TYPE:
+                    # A managed grant is resolved asynchronously by the
+                    # orchestrator, which fails the run when it cannot and
+                    # otherwise ships the token in ``git_credentials_map``.
+                    # This synchronous fallback never reads a stale key.
+                    self.logger.warning(
+                        "Tracker %s uses a managed connection; its credential "
+                        "must arrive through the execution context",
+                        tracker.id,
+                    )
+                    return None, tracker.tracker_type.lower(), None
                 resolved_token = tracker.resolved_api_key if tracker else ""
                 if not tracker or not resolved_token:
                     if tracker and (tracker.auth_type or "").lower() in APP_AUTH_TYPES:

@@ -155,86 +155,105 @@ describe('RuntimeSessionsView', () => {
       }
 
       if (url.startsWith('/api/v1/runtime-sessions?')) {
-        return new Response(
-          JSON.stringify({
-            period_start: '2026-02-08T00:00:00Z',
-            period_end: '2026-03-09T23:59:59Z',
-            query: null,
-            session_source_type: null,
-            status: 'all',
-            total: 2,
-            limit: 50,
-            offset: 0,
-            items: [
-              {
-                id: 'runtime-session-1',
-                session_source_type: 'claude_code',
-                session_source_id: 'workspace-42',
-                session_reference: 'claude-session-42',
-                runtime_principal_type: 'claude_code',
-                runtime_principal_id: 'workspace-42',
-                runtime_principal_name: 'Claude Workspace',
-                started_at: '2026-03-09T18:00:00Z',
-                last_activity_at: '2026-03-09T20:00:00Z',
-                ended_at: null,
-                flow_id: null,
-                flow_name: null,
-                flow_execution_id: null,
-                latest_model_alias: 'anthropic/claude-sonnet-4',
-                latest_provider_name: 'Anthropic',
-                is_active_now: true,
-                activity_status: 'active_now',
-                total_requests: 4,
-                successful_requests: 3,
-                failed_requests: 1,
-                token_usage: {
-                  prompt_tokens: 1200,
-                  completion_tokens: 450,
-                  total_tokens: 1650,
-                },
-                estimated_cost: 0.42,
-                last_request_at: '2026-03-09T20:00:00Z',
-                note_count: 2,
-                latest_note_author_display: 'Reviewer',
-                latest_note_author_auth_method: 'agent',
-                latest_note_at: '2026-03-09T19:55:00Z',
+        const hasArtifacts = new URL(
+          url,
+          window.location.origin
+        ).searchParams.get('has_artifacts');
+        const page = {
+          period_start: '2026-02-08T00:00:00Z',
+          period_end: '2026-03-09T23:59:59Z',
+          query: null,
+          session_source_type: null,
+          status: 'all',
+          total: 2,
+          limit: 50,
+          offset: 0,
+          items: [
+            {
+              id: 'runtime-session-1',
+              session_source_type: 'claude_code',
+              session_source_id: 'workspace-42',
+              session_reference: 'claude-session-42',
+              runtime_principal_type: 'claude_code',
+              runtime_principal_id: 'workspace-42',
+              runtime_principal_name: 'Claude Workspace',
+              started_at: '2026-03-09T18:00:00Z',
+              last_activity_at: '2026-03-09T20:00:00Z',
+              ended_at: null,
+              flow_id: null,
+              flow_name: null,
+              flow_execution_id: null,
+              latest_model_alias: 'anthropic/claude-sonnet-4',
+              latest_provider_name: 'Anthropic',
+              is_active_now: true,
+              activity_status: 'active_now',
+              total_requests: 4,
+              successful_requests: 3,
+              failed_requests: 1,
+              token_usage: {
+                prompt_tokens: 1200,
+                completion_tokens: 450,
+                total_tokens: 1650,
               },
-              {
-                id: 'runtime-session-2',
-                session_source_type: 'flow_execution',
-                session_source_id: 'execution-1',
-                session_reference: 'session-abc123',
-                runtime_principal_type: 'flow_execution',
-                runtime_principal_id: 'execution-1',
-                runtime_principal_name: 'Triage Assistant',
-                started_at: '2026-03-09T19:00:00Z',
-                last_activity_at: '2026-03-09T19:15:00Z',
-                ended_at: '2026-03-09T19:20:00Z',
-                flow_id: 'flow-1',
-                flow_name: 'Triage Assistant',
-                flow_execution_id: 'execution-1',
-                latest_model_alias: 'openai/gpt-5',
-                latest_provider_name: 'OpenAI',
-                is_active_now: false,
-                activity_status: 'ended',
-                total_requests: 2,
-                successful_requests: 2,
-                failed_requests: 0,
-                token_usage: {
-                  prompt_tokens: 500,
-                  completion_tokens: 200,
-                  total_tokens: 700,
-                },
-                estimated_cost: 0.11,
-                last_request_at: '2026-03-09T19:15:00Z',
+              estimated_cost: 0.42,
+              last_request_at: '2026-03-09T20:00:00Z',
+              note_count: 2,
+              latest_note_author_display: 'Reviewer',
+              latest_note_author_auth_method: 'agent',
+              latest_note_at: '2026-03-09T19:55:00Z',
+              artifact_counts: {
+                screenshot: 3,
+                trace: 2,
+                transcript: 1,
+                document: 1,
+                recording: 1,
               },
-            ],
-          }),
-          {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
+            },
+            {
+              id: 'runtime-session-2',
+              session_source_type: 'flow_execution',
+              session_source_id: 'execution-1',
+              session_reference: 'session-abc123',
+              runtime_principal_type: 'flow_execution',
+              runtime_principal_id: 'execution-1',
+              runtime_principal_name: 'Triage Assistant',
+              started_at: '2026-03-09T19:00:00Z',
+              last_activity_at: '2026-03-09T19:15:00Z',
+              ended_at: '2026-03-09T19:20:00Z',
+              flow_id: 'flow-1',
+              flow_name: 'Triage Assistant',
+              flow_execution_id: 'execution-1',
+              latest_model_alias: 'openai/gpt-5',
+              latest_provider_name: 'OpenAI',
+              is_active_now: false,
+              activity_status: 'ended',
+              total_requests: 2,
+              successful_requests: 2,
+              failed_requests: 0,
+              token_usage: {
+                prompt_tokens: 500,
+                completion_tokens: 200,
+                total_tokens: 700,
+              },
+              estimated_cost: 0.11,
+              last_request_at: '2026-03-09T19:15:00Z',
+            },
+          ],
+        };
+        if (hasArtifacts) {
+          // The server filter, mirrored: only rows holding that kind.
+          page.items = page.items.filter((item: any) => {
+            const counts = item.artifact_counts ?? {};
+            return hasArtifacts === 'any'
+              ? Object.keys(counts).length > 0
+              : (counts[hasArtifacts] ?? 0) > 0;
+          });
+          page.total = page.items.length;
+        }
+        return new Response(JSON.stringify(page), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
 
       if (
@@ -811,6 +830,141 @@ describe('RuntimeSessionsView', () => {
     expect(
       urls.filter((url) => url.startsWith('/api/v1/runtime-sessions?'))
     ).to.have.length(1);
+  });
+
+  describe('artifact counts on the list (#1084)', () => {
+    async function listPanelOf(element: RuntimeSessionsView) {
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+      const observer = element.shadowRoot!.querySelector(
+        'preloop-session-observer'
+      ) as any;
+      await observer.updateComplete;
+      const panel = observer.shadowRoot!.querySelector(
+        'session-list-panel'
+      ) as any;
+      await panel.updateComplete;
+      return { observer, panel };
+    }
+
+    it('renders kind icons with counts, three at most then +N, and a tooltip of every kind', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      const { panel } = await listPanelOf(element);
+      await waitUntil(() =>
+        panel.shadowRoot!.querySelector(
+          '[data-testid="session-artifacts-runtime-session-1"]'
+        )
+      );
+      const cell = panel.shadowRoot!.querySelector(
+        '[data-testid="session-artifacts-runtime-session-1"]'
+      )!;
+      const kinds = Array.from(cell.querySelectorAll('.artifact-kind')).map(
+        (node) => [
+          node.getAttribute('data-kind'),
+          node.textContent!.replace(/\s+/g, ''),
+        ]
+      );
+      expect(kinds).to.deep.equal([
+        ['screenshot', '3'],
+        ['other', '3'],
+        ['transcript', '1'],
+        ['more', '+1'],
+      ]);
+      const tooltip = cell.getAttribute('title')!;
+      for (const part of [
+        'screenshot: 3',
+        'trace: 2',
+        'transcript: 1',
+        'document: 1',
+        'recording: 1',
+      ]) {
+        expect(tooltip).to.contain(part);
+      }
+      // A session without artifacts carries no cell at all.
+      expect(
+        panel.shadowRoot!.querySelector(
+          '[data-testid="session-artifacts-runtime-session-2"]'
+        )
+      ).to.equal(null);
+    });
+
+    it('narrows the list with the "Has artifacts: transcript" filter', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      const { panel } = await listPanelOf(element);
+      expect(panel.sessions).to.have.length(2);
+
+      const select = element.shadowRoot!.querySelector(
+        '[data-testid="has-artifacts-filter"]'
+      ) as any;
+      expect(select, 'filter is on the toolbar').to.exist;
+      select.value = 'transcript';
+      select.dispatchEvent(new Event('sl-change'));
+      await (element as any).applyFilters();
+      await element.updateComplete;
+
+      const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+      expect(
+        urls.some(
+          (url) =>
+            url.startsWith('/api/v1/runtime-sessions?') &&
+            url.includes('has_artifacts=transcript')
+        )
+      ).to.equal(true);
+      const { panel: narrowed } = await listPanelOf(element);
+      await waitUntil(() => narrowed.sessions.length === 1);
+      expect(narrowed.sessions[0].id).to.equal('runtime-session-1');
+    });
+
+    it('says what to do next when no session holds that kind', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await listPanelOf(element);
+      (element as any).hasArtifacts = 'audio';
+      await (element as any).applyFilters();
+      await waitUntil(
+        () => getDeepText(element).includes('No sessions with audio matched.'),
+        'Empty state for the artifact filter did not render'
+      );
+      const text = getDeepText(element);
+      expect(text).to.contain('deposit_artifact');
+    });
+
+    it('opens the session filtered to the kind whose icon was clicked', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      const { observer, panel } = await listPanelOf(element);
+      await waitUntil(() =>
+        panel.shadowRoot!.querySelector(
+          '[data-testid="session-artifacts-runtime-session-1"] [data-kind="transcript"]'
+        )
+      );
+      (
+        panel.shadowRoot!.querySelector(
+          '[data-testid="session-artifacts-runtime-session-1"] [data-kind="transcript"]'
+        ) as HTMLButtonElement
+      ).click();
+
+      await waitUntil(
+        () =>
+          observer.activeSessionId === 'runtime-session-1' &&
+          observer.artifactKindFilter === 'transcript',
+        'Session did not open with the transcript filter'
+      );
+      await observer.updateComplete;
+      const summary = observer.shadowRoot!.querySelector(
+        'session-artifact-summary'
+      ) as any;
+      if (summary) expect(summary.activeKind).to.equal('transcript');
+    });
   });
 
   it('shows flow-backed session content from execution gateway events', async () => {

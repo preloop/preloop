@@ -20,14 +20,19 @@ import '../../components/resource-actions.ts';
 import '../../components/list-toolbar.ts';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
+  BITBUCKET_CLOUD_OAUTH_FEATURE,
   fetchWithAuth,
   getFeatures,
   deleteTracker,
+  disconnectBitbucket,
+  getBitbucketConnectionStatus,
   listIssues,
   listOrganizations,
   listProjectPullRequests,
   listProjects,
+  startBitbucketReconnect,
   syncTracker,
+  type BitbucketConnectionStatus,
   type FeaturesResponse,
 } from '../../api';
 import { openRunPresetDialog } from '../../components/run-preset-dialog';
@@ -105,6 +110,18 @@ export class TrackerDetailView extends LitElement {
 
   @state()
   private _featuresLoaded = false;
+
+  /** Managed Bitbucket connection status (sanitized, never tokens). */
+  @state()
+  private _managedStatus: BitbucketConnectionStatus | null = null;
+
+  /** Full-page navigation to the provider consent URL (overridable in tests). */
+  private _navigate(url: string): void {
+    window.location.href = url;
+  }
+
+  @state()
+  private _managedBusy = false;
 
   @state()
   private _syncing = false;
@@ -195,6 +212,26 @@ export class TrackerDetailView extends LitElement {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-x-small);
+      }
+
+      .managed-connection-panel {
+        margin: 0 0 var(--sl-spacing-large) 0;
+      }
+
+      .managed-connection-facts {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: var(--sl-spacing-2x-small) var(--sl-spacing-medium);
+        margin: 0;
+        font-size: var(--sl-font-size-small);
+      }
+
+      .managed-connection-facts dt {
+        color: var(--sl-color-neutral-600);
+      }
+
+      .managed-connection-facts dd {
+        margin: 0;
       }
 
       .scope-summary {
@@ -924,8 +961,243 @@ export class TrackerDetailView extends LitElement {
       .includes('bitbucket');
   }
 
+  /** A managed Bitbucket grant (browser consent, no pasted token). */
+  private _isManagedBitbucket(): boolean {
+    return this._isBitbucket() && this._tracker?.auth_type === 'managed_oauth';
+  }
+
+  private _managedFeatureEnabled(): boolean {
+    return this._features?.[BITBUCKET_CLOUD_OAUTH_FEATURE] === true;
+  }
+
+  private async _loadManagedStatus() {
+    this._managedStatus = null;
+    if (!this._isManagedBitbucket() || !this._managedFeatureEnabled()) {
+      return;
+    }
+    try {
+      this._managedStatus = await getBitbucketConnectionStatus(this._trackerId);
+    } catch (error) {
+      console.error('Failed to read the Bitbucket connection status:', error);
+    }
+  }
+
+  private async _reconnectBitbucket() {
+    if (this._managedBusy) return;
+    this._managedBusy = true;
+    this._error = null;
+    try {
+      const start = await startBitbucketReconnect(
+        this._trackerId,
+        '/console/trackers'
+      );
+      this._navigate(start.authorization_url);
+    } catch (error) {
+      this._error =
+        error instanceof Error
+          ? error.message
+          : 'Failed to start the Bitbucket reconnect';
+    } finally {
+      this._managedBusy = false;
+    }
+  }
+
+  private async _disconnectBitbucket() {
+    if (!this._tracker || this._managedBusy) return;
+    const confirmed = await confirmDialog({
+      title: 'Disconnect Bitbucket',
+      message: `Disconnect the Bitbucket connection of "${this._tracker.name}"?`,
+      detail:
+        'The grant is erased and the tracker is disabled until it is reconnected. The Bitbucket OAuth consumer is kept.',
+      confirmLabel: 'Disconnect',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    this._managedBusy = true;
+    this._error = null;
+    try {
+      await disconnectBitbucket(this._trackerId);
+      await this._loadData();
+    } catch (error) {
+      this._error =
+        error instanceof Error
+          ? error.message
+          : 'Failed to disconnect the Bitbucket connection';
+    } finally {
+      this._managedBusy = false;
+    }
+  }
+
+  private _managedStateChip(state: BitbucketConnectionStatus['state']) {
+    switch (state) {
+      case 'connected':
+        return { text: 'Managed: connected', variant: 'success' };
+      case 'workspace_required':
+        return { text: 'Managed: workspace required', variant: 'warning' };
+      case 'reconnect_required':
+        return { text: 'Managed: reconnect required', variant: 'danger' };
+      case 'disconnected':
+        return { text: 'Managed: disconnected', variant: 'neutral' };
+      case 'unavailable':
+        return { text: 'Managed: provider unavailable', variant: 'warning' };
+      default:
+        return { text: 'Managed', variant: 'neutral' };
+    }
+  }
+
+  private _capabilityLabel(value: boolean | null | undefined): string {
+    if (value === true) return 'granted';
+    if (value === false) return 'missing';
+    return 'unknown';
+  }
+
+  /** Status chip for a managed grant; the manual expiry chip never applies. */
+  private _renderManagedChip() {
+    if (!this._isManagedBitbucket()) {
+      return nothing;
+    }
+    if (!this._managedFeatureEnabled()) {
+      return html`<sl-badge
+        class="chip managed-connection"
+        variant="warning"
+        pill
+        data-state="unavailable"
+        title="This deployment has no managed Bitbucket provider configured"
+        >Managed: provider unavailable</sl-badge
+      >`;
+    }
+    const status = this._managedStatus;
+    if (!status) {
+      return nothing;
+    }
+    const chip = this._managedStateChip(status.state);
+    return html`<sl-badge
+      class="chip managed-connection"
+      variant=${chip.variant as any}
+      pill
+      data-state=${status.state}
+      title=${
+        status.expires_at
+          ? `Access token expires ${formatLocalDateTime(status.expires_at)}`
+          : ''
+      }
+      >${chip.text}</sl-badge
+    >`;
+  }
+
+  /** Managed connection panel: actor, selection, actual expiry, capabilities. */
+  private _renderManagedConnection() {
+    if (!this._isManagedBitbucket()) {
+      return nothing;
+    }
+    if (!this._managedFeatureEnabled()) {
+      return html`
+        <sl-alert variant="warning" open class="managed-connection-panel">
+          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+          <strong>Managed Bitbucket connections are unavailable here.</strong>
+          This tracker authenticates through a managed provider that is not
+          configured on this deployment, so it cannot refresh its credential
+          until an administrator enables the <code>bitbucket_cloud_oauth</code>
+          capability. Pasted-token trackers are unaffected.
+        </sl-alert>
+      `;
+    }
+    const status = this._managedStatus;
+    if (!status) {
+      return nothing;
+    }
+    const actor =
+      status.actor?.display_name || status.actor?.nickname || 'unknown actor';
+    const busy = this._managedBusy;
+    return html`
+      <sl-card class="managed-connection-panel" data-state=${status.state}>
+        <div
+          slot="header"
+          style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;"
+        >
+          <strong>Managed Bitbucket connection</strong>
+          <div style="display:flex; gap:0.5rem;">
+            <sl-button
+              size="small"
+              class="managed-reconnect"
+              .loading=${busy}
+              ?disabled=${busy}
+              @click=${() => this._reconnectBitbucket()}
+            >
+              <sl-icon slot="prefix" name="arrow-repeat"></sl-icon>
+              Reconnect
+            </sl-button>
+            <sl-button
+              size="small"
+              variant="danger"
+              outline
+              class="managed-disconnect"
+              .loading=${busy}
+              ?disabled=${busy || status.state === 'disconnected'}
+              @click=${() => this._disconnectBitbucket()}
+            >
+              <sl-icon slot="prefix" name="plug"></sl-icon>
+              Disconnect
+            </sl-button>
+          </div>
+        </div>
+        <dl class="managed-connection-facts">
+          <dt>Authorized by</dt>
+          <dd class="managed-actor">${actor}</dd>
+          <dt>Workspace</dt>
+          <dd>${status.workspace ?? 'not selected'}</dd>
+          <dt>Repository</dt>
+          <dd>${status.repository ?? 'any in the workspace'}</dd>
+          <dt>Access token expiry</dt>
+          <dd class="managed-expiry">
+            ${
+              status.expires_at
+                ? formatLocalDateTime(status.expires_at)
+                : 'none (reconnect required)'
+            }
+            <span style="color: var(--sl-color-neutral-500);">
+              (renewed by the provider service)</span
+            >
+          </dd>
+          ${
+            status.reconnect_reason
+              ? html`<dt>Reason</dt>
+                  <dd class="managed-reason">${status.reconnect_reason}</dd>`
+              : ''
+          }
+        </dl>
+        <p style="margin: 0.5rem 0 0.25rem 0;"><strong>Capabilities</strong></p>
+        <ul
+          class="managed-capabilities"
+          style="margin:0; padding-left:1.25rem;"
+        >
+          ${Object.entries(status.capabilities ?? {}).map(
+            ([name, value]) => html`
+              <li
+                data-capability=${name}
+                data-value=${this._capabilityLabel(value)}
+              >
+                ${name.replace(/_/g, ' ')}: ${this._capabilityLabel(value)}
+              </li>
+            `
+          )}
+        </ul>
+        <p
+          style="color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small); margin: 0.5rem 0 0 0;"
+        >
+          Discovery succeeded. Push, approval and webhook capability are derived
+          from consented scopes and are not tested until first use.
+        </p>
+      </sl-card>
+    `;
+  }
+
   /** Warning chip when the recorded token expiry is near or past. */
   private _renderTokenExpiry(tracker: TrackerDetail) {
+    if (this._isManagedBitbucket()) {
+      // Managed grants report their real expiry through the provider status.
+      return nothing;
+    }
     const status = tracker.token_expiry_status;
     if (status !== 'expired' && status !== 'expiring') {
       return nothing;
@@ -1111,6 +1383,7 @@ export class TrackerDetailView extends LitElement {
       this._tracker = await trackerRes.json();
       this._features = featuresRes.features;
       this._featuresLoaded = true;
+      await this._loadManagedStatus();
       await this._loadProjectsForTracker();
       if (
         this._activeTab === 'pull-requests' &&
@@ -1694,7 +1967,7 @@ export class TrackerDetailView extends LitElement {
               pill
               >${tracker.is_valid ? 'Connected' : 'Not validated'}</sl-badge
             >
-            ${this._renderTokenExpiry(tracker)}
+            ${this._renderTokenExpiry(tracker)} ${this._renderManagedChip()}
           </div>
 
           <div class="tracker-meta">
@@ -1719,6 +1992,8 @@ export class TrackerDetailView extends LitElement {
                 : ''
             }
           </div>
+
+          ${this._renderManagedConnection()}
 
           <p class="scope-summary">
             <strong>Scope:</strong> ${this._describeScope()}

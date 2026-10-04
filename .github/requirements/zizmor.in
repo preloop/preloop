@@ -1,0 +1,2 @@
+# Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.12 zizmor.in -o zizmor.txt
+zizmor==1.30.1

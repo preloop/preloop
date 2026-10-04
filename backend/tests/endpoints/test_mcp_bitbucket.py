@@ -13,6 +13,7 @@ from preloop.api.endpoints import mcp, mcp_bitbucket
 from preloop.models.models.organization import Organization
 from preloop.models.models.project import Project
 from preloop.models.models.tracker import Tracker
+from preloop.models.models.tracker_scope_rule import TrackerScopeRule
 from preloop.models.models.user import User
 from preloop.sync.exceptions import TrackerResponseError
 from preloop.sync.trackers.bitbucket import BitbucketTracker
@@ -569,3 +570,149 @@ async def test_create_pull_request_dispatches_to_bitbucket(
         "https://bitbucket.org/ws/repo/pull-requests/7"
     )
     assert mock_record.call_args.kwargs["source_branch"] == "feature"
+
+
+async def test_mcp_client_for_managed_grant_refreshes_between_calls(
+    db_session: Session, test_user: User
+) -> None:
+    """``get_tracker_client`` binds the grant; MCP calls use fresh tokens (#1065)."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from preloop.api.common import get_tracker_client
+    from preloop.services import managed_credentials as mc
+
+    tracker = Tracker(
+        name="bb-managed",
+        account_id=test_user.account_id,
+        tracker_type="bitbucket",
+        auth_type="managed_oauth",
+        api_key=None,
+        url="https://bitbucket.org",
+        connection_details={
+            "workspace": "ws",
+            "repository": "repo",
+            "managed_oauth": True,
+            "auth_type": "oauth_token",
+            "token_kind": "access_token",
+        },
+    )
+    db_session.add(tracker)
+    db_session.commit()
+    db_session.add(
+        TrackerScopeRule(
+            tracker_id=tracker.id,
+            scope_type="ORGANIZATION",
+            rule_type="INCLUDE",
+            identifier="ws",
+        )
+    )
+    organization = Organization(name="ws", identifier="ws", tracker_id=tracker.id)
+    db_session.add(organization)
+    db_session.commit()
+    project = Project(
+        name="repo",
+        identifier="r-uuid",
+        slug="ws/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    class Resolver:
+        def __init__(self) -> None:
+            self.calls: list = []
+            self.now = datetime(2026, 10, 4, 9, 0, tzinfo=timezone.utc)
+            self.issued = self.now
+            self.version = 1
+
+        async def resolve(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["force_refresh"] or self.issued + timedelta(hours=1) <= self.now:
+                self.version += 1
+                self.issued = self.now
+            return SimpleNamespace(
+                access_token=f"mcp-token-{self.version}",
+                expires_at=self.issued + timedelta(hours=1),
+                rotation_version=self.version,
+            )
+
+    resolver = Resolver()
+    mc.register_managed_resolver("bitbucket", resolver)
+    try:
+        client = await get_tracker_client(
+            organization.id, project.id, db_session, test_user
+        )
+        assert isinstance(client, BitbucketTracker)
+        assert client.managed is True
+        fake = FakeBitbucket()
+        client._transport = httpx.MockTransport(fake)
+
+        first = await mcp_bitbucket.get_pull_request(client, 7, include_diff=False)
+        assert first.number == 7
+        resolver.now += timedelta(hours=3)  # the launch token's lifetime is over
+        second = await mcp_bitbucket.get_pull_request(client, 7, include_diff=False)
+        assert second.number == 7
+
+        headers = [r.headers["Authorization"] for r in fake.requests]
+        assert headers[0] == "Bearer mcp-token-1"
+        assert headers[-1] == "Bearer mcp-token-2"
+        assert resolver.calls[0]["account_id"] == uuid.UUID(str(test_user.account_id))
+        assert resolver.calls[0]["tracker_id"] == uuid.UUID(str(tracker.id))
+        assert resolver.calls[0]["repository"] == "repo"
+        # Another tenant's lookup cannot reach this tracker through the API
+        # authorization in get_tracker_client (project/org scoped by account).
+        other = SimpleNamespace(account_id=uuid.uuid4(), username="other")
+        with pytest.raises(HTTPException) as denied:
+            await get_tracker_client(organization.id, project.id, db_session, other)
+        assert denied.value.status_code == 404
+    finally:
+        mc.register_managed_resolver("bitbucket", None)
+
+
+async def test_mcp_client_for_managed_grant_without_plugin_fails_closed(
+    db_session: Session, test_user: User
+) -> None:
+    from preloop.api.common import get_tracker_client
+    from preloop.sync.exceptions import TrackerAuthenticationError
+
+    tracker = Tracker(
+        name="bb-managed-noplugin",
+        account_id=test_user.account_id,
+        tracker_type="bitbucket",
+        auth_type="managed_oauth",
+        api_key=None,
+        url="https://bitbucket.org",
+        connection_details={"workspace": "ws", "repository": "repo"},
+    )
+    db_session.add(tracker)
+    db_session.commit()
+    db_session.add(
+        TrackerScopeRule(
+            tracker_id=tracker.id,
+            scope_type="ORGANIZATION",
+            rule_type="INCLUDE",
+            identifier="ws2",
+        )
+    )
+    organization = Organization(name="ws2", identifier="ws2", tracker_id=tracker.id)
+    db_session.add(organization)
+    db_session.commit()
+    project = Project(
+        name="repo",
+        identifier="r-uuid-2",
+        slug="ws/repo",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    client = await get_tracker_client(
+        organization.id, project.id, db_session, test_user
+    )
+    fake = FakeBitbucket()
+    client._transport = httpx.MockTransport(fake)
+    with pytest.raises(TrackerAuthenticationError, match="no managed-provider plugin"):
+        await mcp_bitbucket.get_pull_request(client, 7, include_diff=False)
+    assert fake.requests == []

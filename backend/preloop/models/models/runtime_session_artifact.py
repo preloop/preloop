@@ -63,6 +63,17 @@ class RuntimeSessionArtifact(Base):
             text("created_at DESC"),
             text("id DESC"),
         ),
+        # Session-list ``has_artifacts`` filter. Partial so evicted and
+        # expired rows stay out; ``kind`` is a key so a kind filter does not
+        # walk every available artifact of the account. Created by migration
+        # 20261004_artifact_avail_idx.
+        Index(
+            "ix_runtime_session_artifact_available_holders",
+            "account_id",
+            "kind",
+            "runtime_session_id",
+            postgresql_where=text("availability = 'available'"),
+        ),
     )
 
     account_id: Mapped[uuid.UUID] = mapped_column(

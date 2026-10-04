@@ -1160,6 +1160,8 @@ export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
   query?: string;
   sessionSourceType?: string;
   status?: 'all' | 'active' | 'ended';
+  /** Only sessions holding an available artifact: `any` or one kind. */
+  hasArtifacts?: string;
   limit?: number;
   offset?: number;
 }
@@ -1265,6 +1267,9 @@ function buildRuntimeSessionListQuery(
   }
   if (params.status) {
     queryParams.set('status', params.status);
+  }
+  if (params.hasArtifacts) {
+    queryParams.set('has_artifacts', params.hasArtifacts);
   }
   if (typeof params.limit === 'number') {
     queryParams.set('limit', String(params.limit));
@@ -6845,6 +6850,249 @@ export async function updateAccountOrganization(
     throw new Error('Failed to update account organization');
   }
   return response.json();
+}
+
+// Managed Bitbucket Cloud OAuth (issue #1065). The routes are served by the
+// managed-provider plugin and advertised through `features.bitbucket_cloud_oauth`.
+// The console only ever handles an opaque completion handle: no code, token or
+// secret reaches the browser.
+export const BITBUCKET_CLOUD_OAUTH_FEATURE = 'bitbucket_cloud_oauth';
+export const BITBUCKET_CONNECT_HANDLE_PARAM = 'bitbucket_connect';
+export const BITBUCKET_CONNECT_TRACKER_PARAM = 'bitbucket_tracker';
+export const BITBUCKET_CONNECT_ERROR_PARAM = 'bitbucket_error';
+
+export type BitbucketConnectionState =
+  | 'connected'
+  | 'workspace_required'
+  | 'reconnect_required'
+  | 'disconnected'
+  | 'unavailable'
+  | 'not_managed';
+
+export interface BitbucketConnectionActor {
+  uuid?: string | null;
+  display_name?: string | null;
+  nickname?: string | null;
+}
+
+export interface BitbucketConnectionStatus {
+  tracker_id: string;
+  name: string;
+  provider: string;
+  managed: boolean;
+  state: BitbucketConnectionState;
+  consumer_configured: boolean;
+  workspace?: string | null;
+  repository?: string | null;
+  actor?: BitbucketConnectionActor | null;
+  /** Actual access-token expiry reported by the provider service (ISO). */
+  expires_at?: string | null;
+  rotation_version?: number | null;
+  grant_status?: string | null;
+  granted_scopes?: string[] | null;
+  /** true: granted, false: missing, null: unknown (never claimed as tested). */
+  capabilities: Record<string, boolean | null>;
+  capabilities_verified: boolean;
+  reconnect_reason?: string | null;
+}
+
+export interface BitbucketAuthorizationStart {
+  authorization_url: string;
+  transaction_id: string;
+  expires_at: string;
+  tracker_id?: string | null;
+}
+
+export interface BitbucketDiscovery {
+  actor?: BitbucketConnectionActor | null;
+  workspaces: Array<{
+    slug: string;
+    name?: string | null;
+    uuid?: string | null;
+  }>;
+  repositories?: Array<{
+    slug: string;
+    full_name?: string | null;
+    is_private?: boolean | null;
+  }> | null;
+}
+
+/** Human-readable text for the sanitized error codes the callback may carry. */
+export function describeBitbucketConnectError(code: string): string {
+  switch (code) {
+    case 'access_denied':
+      return 'Bitbucket access was declined. No connection was created.';
+    case 'invalid_state':
+      return 'The Bitbucket consent link expired or was already used. Start again.';
+    case 'session_mismatch':
+      return 'The Bitbucket callback arrived in a different browser session. Start again from this browser.';
+    case 'exchange_failed':
+      return 'Bitbucket did not complete the authorization. Try again in a moment.';
+    case 'not_configured':
+      return 'Managed Bitbucket connections are not configured on this deployment.';
+    default:
+      return `Bitbucket connection failed (${code}).`;
+  }
+}
+
+async function bitbucketConnectError(
+  response: Response,
+  fallback: string
+): Promise<Error> {
+  const body = await response.json().catch(() => ({}));
+  const detail = body?.detail ?? body?.message;
+  if (response.status === 501 || detail === 'not_configured') {
+    return new Error(describeBitbucketConnectError('not_configured'));
+  }
+  return new Error(typeof detail === 'string' ? detail : fallback);
+}
+
+export async function startBitbucketConnect(
+  returnPath?: string
+): Promise<BitbucketAuthorizationStart> {
+  const query = returnPath
+    ? `?return_path=${encodeURIComponent(returnPath)}`
+    : '';
+  const response = await fetchWithAuth(
+    `/api/v1/auth/bitbucket/authorize${query}`,
+    { credentials: 'include' }
+  );
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to start the Bitbucket connection'
+    );
+  }
+  return response.json();
+}
+
+export async function completeBitbucketConnect(body: {
+  handle: string;
+  name?: string;
+  workspace?: string;
+  repository?: string;
+}): Promise<BitbucketConnectionStatus> {
+  const response = await fetchWithAuth('/api/v1/auth/bitbucket/complete', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to complete the Bitbucket connection'
+    );
+  }
+  return response.json();
+}
+
+export async function getBitbucketConnectionStatus(
+  trackerId: string
+): Promise<BitbucketConnectionStatus> {
+  const response = await fetchWithAuth(
+    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/status`
+  );
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to read the Bitbucket connection status'
+    );
+  }
+  return response.json();
+}
+
+export async function getBitbucketDiscovery(
+  trackerId: string,
+  workspace?: string
+): Promise<BitbucketDiscovery> {
+  const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const response = await fetchWithAuth(
+    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/discovery${query}`
+  );
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to list accessible Bitbucket workspaces'
+    );
+  }
+  return response.json();
+}
+
+export async function bindBitbucketRepository(
+  trackerId: string,
+  body: { workspace: string; repository?: string }
+): Promise<BitbucketConnectionStatus> {
+  const response = await fetchWithAuth(
+    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/binding`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to select the Bitbucket workspace'
+    );
+  }
+  return response.json();
+}
+
+export async function startBitbucketReconnect(
+  trackerId: string,
+  returnPath?: string
+): Promise<BitbucketAuthorizationStart> {
+  const query = returnPath
+    ? `?return_path=${encodeURIComponent(returnPath)}`
+    : '';
+  const response = await fetchWithAuth(
+    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/reconnect${query}`,
+    { method: 'POST', credentials: 'include' }
+  );
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to start the Bitbucket reconnect'
+    );
+  }
+  return response.json();
+}
+
+export async function completeBitbucketReconnect(
+  trackerId: string,
+  handle: string
+): Promise<BitbucketConnectionStatus> {
+  const response = await fetchWithAuth(
+    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/reconnect/complete`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ handle }),
+    }
+  );
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to complete the Bitbucket reconnect'
+    );
+  }
+  return response.json();
+}
+
+export async function disconnectBitbucket(trackerId: string): Promise<void> {
+  const response = await fetchWithAuth(
+    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/disconnect`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    throw await bitbucketConnectError(
+      response,
+      'Failed to disconnect the Bitbucket connection'
+    );
+  }
 }
 
 // GitHub App OAuth API

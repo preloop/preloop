@@ -124,6 +124,7 @@ async def test_test_connection_and_list_orgs_uses_correct_args(
         tracker_id="test-connection",
         api_key="test-key",
         connection_details={"url": "https://gitlab.com", "project_id": "123"},
+        credential_source=None,
     )
 
 
@@ -156,6 +157,7 @@ async def test_list_projects_for_org_uses_correct_args(
             "url": "https://gitlab.com/",
             "project_id": "123",
         },
+        credential_source=None,
     )
 
 
@@ -236,6 +238,7 @@ async def test_test_connection_and_list_orgs_uses_installation_for_app_tracker(
             "auth_type": "github_app",
             "github_installation_id": 4242,
         },
+        credential_source=None,
     )
 
 
@@ -311,6 +314,7 @@ async def test_test_connection_and_list_orgs_keeps_pat_for_token_tracker(
         tracker_id="test-connection",
         api_key="stored-token",
         connection_details={"url": "https://github.com"},
+        credential_source=None,
     )
 
 
@@ -346,6 +350,7 @@ async def test_list_projects_for_org_uses_installation_for_app_tracker(
             "auth_type": "github_app",
             "github_installation_id": 4242,
         },
+        credential_source=None,
     )
     mock_tracker_client.get_projects.assert_awaited_once_with("9001")
 

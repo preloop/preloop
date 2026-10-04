@@ -6,6 +6,10 @@ The [OpenSSF Best Practices badge](https://www.bestpractices.dev/) is a
 maintainer self-assessment against published criteria. It is separate from
 [OpenSSF Scorecard](https://scorecard.dev/), which scans repository practices.
 A Scorecard result or a signed release does not grant the Best Practices badge.
+How Scorecard detects a badge, and the current registration steps, are in
+[OpenSSF Best Practices badge](security/openssf-best-practices.md).
+Scorecard queries bestpractices.dev by repository URL. A badge image in
+README.md does not change that check.
 
 This is a bounded evidence review dated **2026-09-10**, not a completed
 questionnaire or a claim of certification. Use the
@@ -23,13 +27,18 @@ as the authority. Criterion identifiers below match that questionnaire.
    Use the site's allowed N/A answers only when their conditions hold.
 3. Confirm the maintainer-only facts below and resolve applicable gaps. Save
    progress while evidence is incomplete; do not select Met to raise a score.
-4. Once the site actually grants passing status, use the badge URL for the
-   assigned project ID in README.md. Keep answers current as practices change.
+4. Once the site assigns a project ID, the README badge snippet in
+   [OpenSSF Best Practices badge](security/openssf-best-practices.md) can be
+   filled in. That link is for readers. Scorecard already sees the project
+   from the site record. Keep answers current as practices change.
 
 This guide does not register the project, submit answers, or authorize new
-security commitments. In particular, the support-period section of
-[SECURITY.md](https://github.com/preloop/preloop/blob/main/SECURITY.md) is explicitly a draft and is not evidence of an
-approved support commitment.
+security commitments. The support-period section of
+[SECURITY.md](https://github.com/preloop/preloop/blob/main/SECURITY.md) was
+signed by the release manager on 2026-09-27, after this review. It is a
+support commitment for Preloop users, not an answer on the badge form.
+Current CodeQL upload behavior and Scorecard detection are on the security
+page linked above.
 
 ## Evidence already available
 
@@ -59,7 +68,7 @@ all related criteria have been independently verified.
 | `tests_are_added`, `warnings_fixed`, `test_most` | Link tests added with the most recent major changes and evidence of warning handling. Coverage reports help, but a coverage percentage alone does not prove most branches and functionality are tested. `test_most` is suggested. |
 | `release_notes_vulns` | Review actual releases for publicly known runtime vulnerabilities in the project itself that already had a CVE or similar identifier when released. Identify applicable fixes in release notes. The official criterion excludes dependency vulnerabilities and permits N/A if there have been no qualifying vulnerabilities; the maintainer must confirm that history. |
 | `vulnerabilities_fixed_60_days`, `vulnerabilities_critical_fixed` | Confirm there are no unpatched medium-or-higher vulnerabilities publicly known for more than 60 days, and review critical-fix timeliness. Use a fresh scan, applicability analysis, advisory dates and the assessed release. An upgrade prepared locally does not establish a released fix. |
-| `static_analysis_fixed`, `dynamic_analysis_fixed` | Review confirmed exploitable medium-or-higher findings and remediation timing. Successful scanner jobs alone do not prove these criteria. CodeQL's workflow currently sets `upload: false` because of the documented default-setup conflict; distinguish analysis execution from finding ingestion and follow-up. |
+| `static_analysis_fixed`, `dynamic_analysis_fixed` | Review confirmed exploitable medium-or-higher findings and remediation timing. Successful scanner jobs alone do not prove these criteria. On 2026-09-10 the CodeQL workflow set `upload: false` because of a default-setup conflict. The workflow now sets `upload: true`. Distinguish analysis execution from finding follow-up. |
 | `no_leaked_credentials` | [Secret scanning](https://github.com/preloop/preloop/blob/main/.github/workflows/secret-scan.yml) checks the working tree and history. A maintainer must confirm any previously exposed valid credentials were revoked and scan exceptions are justified. Do not publish credentials as evidence. |
 | `crypto_published`, `crypto_call`, `crypto_floss`, `crypto_keylength`, `crypto_working`, `crypto_weaknesses`, `crypto_pfs`, `crypto_random` | Review default cryptographic settings, all relevant call sites and protocol compatibility paths against the exact criteria. Standard libraries are useful evidence, but dependency names do not prove safe parameters, randomness or absence of custom cryptography. |
 | `dynamic_analysis`, `dynamic_analysis_unsafe`, `dynamic_analysis_enable_assertions` | Identify actual tools, scope, assertions and release runs. Dynamic analysis is suggested at passing level; ordinary integration tests do not automatically prove fuzzing or memory-safety analysis. Apply the memory-unsafe-language N/A rule only after checking the project's own code. |
