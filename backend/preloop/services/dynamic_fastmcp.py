@@ -39,6 +39,9 @@ from preloop.services.sensitive_data.storage import (
     StorageScope,
     apply_storage_redaction,
 )
+from preloop.services.sensitive_data.storage import (
+    cached_config as apply_storage_redaction_config,
+)
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
@@ -1928,6 +1931,9 @@ async def {internal_name}({params_str}):
                 f"Access denied: sensitive data policy for '{name}' could not "
                 "be loaded. Please retry."
             )
+        # The block the load above primed, held for this call so the writers
+        # in the finally block never depend on the cache TTL (long calls).
+        storage_config = apply_storage_redaction_config(user_context.account_id)
         if sensitive_config is not None and not _bypass_approval_var.get(False):
             args_outcome = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -2201,6 +2207,7 @@ async def {internal_name}({params_str}):
                                 server_name=scope_server_name,
                                 managed_agent_id=scope_agent_id,
                             ),
+                            config=storage_config,
                         ),
                         result=audit_status,
                         duration_ms=elapsed_ms,
@@ -2255,6 +2262,7 @@ async def {internal_name}({params_str}):
                         arguments=arguments,
                         correlation_id=correlation_id,
                         elapsed_ms=elapsed_ms,
+                        storage_config=storage_config,
                     )
                 except Exception as activity_err:
                     logger.debug(
@@ -2409,6 +2417,7 @@ async def {internal_name}({params_str}):
         arguments: Optional[dict[str, Any]],
         correlation_id: Optional[str],
         elapsed_ms: Optional[int] = None,
+        storage_config: Any = None,
     ) -> None:
         """Write one governed tool-call outcome and fan it out to live streams.
 
@@ -2445,6 +2454,7 @@ async def {internal_name}({params_str}):
                     server_name=server_name,
                     managed_agent_id=getattr(user_context, "managed_agent_id", None),
                 ),
+                config=storage_config,
             )
         )
         arguments_summary = _summarize_arguments(arguments)

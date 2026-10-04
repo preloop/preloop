@@ -261,6 +261,11 @@ not a pass.
 
 The environment image built from `environments/preloop/Dockerfile` ships
 `perlver`. A private runner gets it with `cpanm Perl::MinimumVersion`.
+For a Codex sandbox with the toolchain, build the opt-in image in
+[`environments/perl`](https://github.com/preloop/preloop/tree/main/environments/perl)
+and select it with `CODEX_IMAGE` (hosted) or `agent_config.image` (private
+runner). Its README lists the build, the offline smoke and the evidence to
+keep.
 
 ### Perl 5.10 example
 

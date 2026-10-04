@@ -621,9 +621,18 @@ def chain_segment(
         }
         for row in rows
     ]
+    try:
+        from preloop.services.sensitive_data.reference import salt_ids
+
+        reference_salt_ids = salt_ids(account_id, db)
+    except Exception:  # noqa: BLE001 - the export must not depend on salts
+        reference_salt_ids = []
     return {
         "account_id": str(account_id),
         "row_domain": ROW_DOMAIN.decode("utf-8"),
+        # Reference records in details carry args_hmac/result_hmac keyed by
+        # one of these salts. The ids are listed; the salts never are.
+        "reference_salt_ids": reference_salt_ids,
         "after_seq": int(after_seq),
         "head_seq": int(state.last_seq) if state else 0,
         "pruned_below_seq": int(state.pruned_below_seq) if state else 0,

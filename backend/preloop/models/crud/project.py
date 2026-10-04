@@ -163,6 +163,32 @@ class CRUDProject(CRUDBase[Project]):
             query = query.filter(Tracker.account_id == account_id)
         return query.offset(skip).limit(limit).all()
 
+    def get_for_tracker_by_identifier(
+        self, db: Session, *, tracker_id: Any, identifier: str
+    ) -> Optional[Project]:
+        """Return the project with exactly ``identifier`` synced from a tracker.
+
+        Unlike :meth:`get_by_identifier` this never matches the slug, so a
+        mutable name cannot stand in for an immutable repository id.
+
+        Args:
+            db: Database session.
+            tracker_id: Tracker the project must belong to.
+            identifier: Provider identifier (for example a repository id).
+
+        Returns:
+            The project, or None when the tracker has not synced it.
+        """
+        return (
+            db.query(Project)
+            .join(Organization)
+            .filter(
+                Organization.tracker_id == tracker_id,
+                Project.identifier == identifier,
+            )
+            .first()
+        )
+
     def get_for_tracker_by_path(
         self,
         db: Session,

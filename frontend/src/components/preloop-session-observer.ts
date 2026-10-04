@@ -737,7 +737,7 @@ export class PreloopSessionObserver extends LitElement {
       this.handleInspectRequests
     );
     this.addEventListener('session-create-budget', this.handleCreateBudget);
-    void this.loadAIModels();
+    if (this.replayMode === 'optimize') void this.loadAIModels();
     void this.loadSessions();
   }
 
@@ -1615,15 +1615,30 @@ export class PreloopSessionObserver extends LitElement {
     );
   }
 
-  private async loadAIModels(): Promise<void> {
-    try {
-      this.aiModels = (await getAIModels()).filter(
-        (model) => (model.model_kind || 'llm') === 'llm'
-      );
-    } catch (error) {
-      console.info('Unable to load optimization model choices:', error);
-      this.aiModels = [];
-    }
+  private aiModelsRequest: Promise<void> | null = null;
+  private aiModelsLoaded = false;
+  @state() private aiModelsLoading = false;
+
+  private loadAIModels(): Promise<void> {
+    if (this.aiModelsLoaded) return Promise.resolve();
+    if (this.aiModelsRequest) return this.aiModelsRequest;
+    this.aiModelsLoading = true;
+    const request = (async () => {
+      try {
+        this.aiModels = (await getAIModels()).filter(
+          (model) => (model.model_kind || 'llm') === 'llm'
+        );
+      } catch (error) {
+        console.info('Unable to load optimization model choices:', error);
+        this.aiModels = [];
+      } finally {
+        this.aiModelsLoading = false;
+        this.aiModelsLoaded = true;
+        this.aiModelsRequest = null;
+      }
+    })();
+    this.aiModelsRequest = request;
+    return request;
   }
 
   private getActiveOptimizationSuggestions() {
@@ -2155,6 +2170,7 @@ export class PreloopSessionObserver extends LitElement {
     this.replayMode = mode;
     this.syncReplayModeToUrl();
     if (mode === 'optimize') {
+      void this.loadAIModels();
       // Opening the drawer retires the first-use hint for good.
       this.dismissOptimizeHint();
     }
@@ -2693,6 +2709,7 @@ export class PreloopSessionObserver extends LitElement {
           .totalEvents=${this.activeEventPage?.total ?? null}
           .optimizationEnabled=${this.enabledFeatures.optimization}
           .availableModels=${this.aiModels}
+          .availableModelsLoading=${this.aiModelsLoading}
           .optimizationResult=${
             this.activeSessionId
               ? this.loadedOptimizations[this.activeSessionId] || null

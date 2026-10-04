@@ -1,4 +1,4 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './preloop-agent-deployer';
@@ -341,10 +341,23 @@ describe('PreloopAgentDeployer', () => {
   });
 
   it('shows configured cloud provisioning on a self-hosted community instance', async () => {
-    fetchStub.resolves(new Response(JSON.stringify({ ssh: true, gcp: true })));
+    let releaseCapabilities!: () => void;
+    const capabilities = new Promise<void>((resolve) => {
+      releaseCapabilities = resolve;
+    });
+    fetchStub.callsFake(async () => {
+      await capabilities;
+      return new Response(JSON.stringify({ ssh: true, gcp: true }));
+    });
     const el = await mount();
     el.isEnterprise = false;
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await el.updateComplete;
+    expect(cardByText(el, 'Deploy on a fresh cloud VM')).not.to.exist;
+    releaseCapabilities();
+    await waitUntil(
+      () => (el as any).gcpConfigured,
+      'Deployment capabilities did not finish loading'
+    );
     await el.updateComplete;
     const cloud = cardByText(el, 'Deploy on a fresh cloud VM');
     expect(cloud).to.exist;

@@ -646,6 +646,88 @@ describe('buildConversation tool rows', () => {
   });
 });
 
+describe('buildConversation browser steps', () => {
+  function browserStepActivity(
+    timestamp: string,
+    metadata: Record<string, unknown>
+  ): RuntimeSessionActivityItem {
+    return {
+      activity_type: 'browser_step',
+      timestamp,
+      title: 'navigate',
+      summary: null,
+      status: 'success',
+      api_usage_id: null,
+      tool_name: 'navigate',
+      server_name: null,
+      auth_subject_type: null,
+      api_key_id: null,
+      api_key_name: null,
+      estimated_cost: null,
+      total_tokens: null,
+      metadata,
+    };
+  }
+
+  it('keeps a browser_step as its own row and counts it', () => {
+    const metadata = {
+      source: 'playwright_mcp',
+      source_step_id: 'call-1',
+      step_index: 1,
+      action: 'click',
+      url: 'https://claims.example.test/form',
+      target: 'button "Submit claim"',
+      reasoning: 'The form is complete, so submit it.',
+      screenshot: {
+        artifact_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        availability: 'available',
+        content_type: 'image/png',
+      },
+    };
+    const { items, stats } = buildConversation(
+      [],
+      [browserStepActivity('2026-10-02T10:00:01Z', metadata)]
+    );
+
+    expect(stats.browserStepCount).to.equal(1);
+    // No model/tool turns: only the browser step atom is left.
+    const row = items.find((item) => item.type === 'browser_step');
+    expect(row).to.not.equal(undefined);
+    const activityItem = (row as { activity: RuntimeSessionActivityItem })
+      .activity;
+    expect(activityItem.activity_type).to.equal('browser_step');
+    expect(activityItem.metadata).to.include({
+      action: 'click',
+      url: 'https://claims.example.test/form',
+      target: 'button "Submit claim"',
+    });
+  });
+
+  it('does not count other activity rows as browser steps', () => {
+    const { stats } = buildConversation(
+      [],
+      [
+        {
+          activity_type: 'session_started',
+          timestamp: '2026-10-02T10:00:00Z',
+          title: 'Session started',
+          summary: null,
+          status: null,
+          api_usage_id: null,
+          tool_name: null,
+          server_name: null,
+          auth_subject_type: null,
+          api_key_id: null,
+          api_key_name: null,
+          estimated_cost: null,
+          total_tokens: null,
+        },
+      ]
+    );
+    expect(stats.browserStepCount).to.equal(0);
+  });
+});
+
 describe('transient live coverage', () => {
   it('does not count request-start signals as missing conversation capture', () => {
     const started: FlowGatewayEvent = {

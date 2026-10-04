@@ -537,6 +537,46 @@ def test_model_redact_rule_never_blocks_and_records_counts(mocker) -> None:
     assert is_notify_only(_model_rule())
 
 
+def test_model_redact_rule_without_explicit_types_resolves_them(mocker) -> None:
+    """Implicit types never leave None on the hit (upstream rewrite would crash)."""
+    mocker.patch("preloop.services.model_content_policy._log_policy_decision_async")
+    implicit = ModelIORule(
+        id="redact-default",
+        target="model.request",
+        detectors={"pii": True},
+        conditions=[ToolCondition(expression="pii.found == true", action="redact")],
+        redact_upstream=True,
+    )
+    decision = evaluate_model_io(rules=[implicit], target="model.request", text=SAMPLE)
+    assert decision.action == "redact"
+    assert decision.redactions[0].types == ["email", "phone", "credit_card"]
+    assert decision.upstream_redaction_types() == ["email", "phone", "credit_card"]
+    account_default = DetectorConfig(types=("iban",))
+    decision = evaluate_model_io(
+        rules=[implicit],
+        target="model.request",
+        text=SAMPLE,
+        detector_config=account_default,
+    )
+    assert decision.redactions[0].types == ["iban"]
+    rules = [implicit]
+    mocker.patch(
+        "preloop.services.model_content_policy.load_model_io_rules", return_value=rules
+    )
+    mocker.patch(
+        "preloop.services.model_content_policy.load_sensitive_data_config",
+        return_value=SensitiveDataConfig(),
+    )
+    gateway = MagicMock()
+    gateway.auth_context.account_id = str(uuid.uuid4())
+    gateway.auth_context.user.id = None
+    messages = [{"role": "user", "content": SAMPLE}]
+    enforce_request_policy(
+        gateway, payload={}, ai_model=None, messages=messages, provider="openai"
+    )
+    assert R_EMAIL in messages[0]["content"]
+
+
 def test_model_redact_then_deny_still_denies() -> None:
     deny = _model_rule(
         id="deny-iban",
@@ -802,6 +842,43 @@ async def test_redact_upstream_rewrites_arguments_and_result(
     result = await mcp.call_tool("save_note", {"note": SAMPLE})
     _assert_redacted(json.dumps(client.call_tool.await_args.args[1]))
     _assert_redacted(result_text(result))
+
+
+@pytest.mark.asyncio
+async def test_writers_use_the_block_read_at_call_start_not_the_cache(
+    proxied, monkeypatch, mocker
+) -> None:
+    """A call longer than the cache TTL must not read the policy on the loop."""
+    mcp, _client, audit_service, _activity = proxied
+    mocker.patch.object(policy_evaluator, "_log_policy_decision_async")
+    config = _config(_redact_rule())
+    storage.invalidate_cache()
+
+    def load(account_id):
+        storage.prime_cache(account_id, config)
+        return config, detector_config_from(config)
+
+    monkeypatch.setattr(
+        "preloop.services.dynamic_fastmcp._load_sensitive_data_policy", load
+    )
+
+    async def evaluate_and_expire(**kwargs):
+        # Runs between the policy load and the finally-block writers: the
+        # primed entry is gone, as after a call longer than the TTL.
+        storage.invalidate_cache()
+        return ("allow", None, None)
+
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.evaluate_policy_async", evaluate_and_expire
+    )
+    resolve = mocker.patch.object(
+        storage, "resolve_config", side_effect=AssertionError("policy read on the loop")
+    )
+    await mcp.call_tool("save_note", {"note": SAMPLE})
+    resolve.assert_not_called()
+    _assert_redacted(
+        json.dumps(audit_service.log_tool_call_async.call_args.kwargs["tool_args"])
+    )
 
 
 @pytest.mark.asyncio

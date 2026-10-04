@@ -45,6 +45,7 @@ from preloop.services.approval_rule_context import (
     build_rule_context,
 )
 from preloop.services.model_content_detectors import (
+    LEGACY_PII_TYPES,
     detect_injection,
     detect_moderation,
     detect_pii,
@@ -469,6 +470,20 @@ def _pii_types_for_rule(rule: ModelIORule) -> Optional[List[str]]:
     return list(detectors.pii.types)
 
 
+def _effective_pii_types(
+    rule: ModelIORule, detector_config: Optional[DetectorConfig]
+) -> List[str]:
+    """The types a rule scans: its own list, else the account default, else
+    the legacy three. Mirrors the resolution inside ``detect_pii`` so a
+    redaction hit never carries ``None``."""
+    explicit = _pii_types_for_rule(rule)
+    if explicit:
+        return explicit
+    if detector_config is not None and detector_config.types:
+        return list(detector_config.types)
+    return list(LEGACY_PII_TYPES)
+
+
 def _moderation_backend_for_rule(rule: ModelIORule) -> str:
     detectors = rule.detectors
     if detectors is None or detectors.moderation in (None, False, True):
@@ -816,7 +831,7 @@ def _redaction_hit(
     rule: ModelIORule, text: str, detector_config: Optional[DetectorConfig]
 ) -> RedactionHit:
     """Counts by type for one redact condition. The text itself is dropped."""
-    types = _pii_types_for_rule(rule)
+    types = _effective_pii_types(rule, detector_config)
     config = (detector_config or DetectorConfig()).with_types(types)
     _redacted, counts = redact_text(text, config)
     return RedactionHit(

@@ -186,8 +186,15 @@ def redact_for_storage(
         return obj, {}, []
     if config is None:
         config = resolve_config(account_id)
+    if config is None:
+        return obj, {}, []
+    reference = reference_record_for_storage(
+        account_id, obj, scope=scope, config=config
+    )
+    if reference is not None:
+        return reference, {}, []
     rules = redact_rules_for(config, scope)
-    if not rules or config is None:
+    if not rules:
         return obj, {}, []
     try:
         redacted, counts = redact_structure(obj, detector_config_for(config, rules))
@@ -195,6 +202,72 @@ def redact_for_storage(
         logger.warning("Storage redaction failed; storing unredacted", exc_info=True)
         return obj, {}, []
     return redacted, counts, rules
+
+
+def reference_record_for_storage(
+    account_id: Any,
+    obj: Any,
+    *,
+    scope: Optional[StorageScope],
+    config: SensitiveDataConfig,
+) -> Optional[Any]:
+    """The reference record that replaces ``obj`` for a reference-only call.
+
+    Applies when the scope names a tool covered by an enabled
+    ``reference_only`` rule (#1124). ``tool.args`` scopes fingerprint the
+    arguments, ``tool.result`` scopes the result, other scopes whatever
+    was handed in. Kept fields pass through the redact rules in scope.
+    String stores receive the one-line summary. ``None`` when no rule
+    applies or the record cannot be built (the caller then redacts).
+    """
+    from preloop.services.sensitive_data import reference as reference_module
+
+    if scope is None or not scope.tool_name:
+        return None
+    if reference_module.is_reference_record(obj):
+        return obj
+    rule = reference_module.reference_rule_for(
+        config,
+        tool_name=scope.tool_name,
+        server_name=scope.server_name,
+        managed_agent_id=scope.managed_agent_id,
+    )
+    if rule is None:
+        return None
+    redact_rules = redact_rules_for(config, scope)
+
+    def kept_redactor(kept: Dict[str, Any]) -> Dict[str, Any]:
+        if not redact_rules:
+            return kept
+        return redact_structure(kept, detector_config_for(config, redact_rules))[0]
+
+    try:
+        if scope.target == "tool.result":
+            record = reference_module.build_reference_record(
+                account_id=account_id,
+                rule=rule,
+                tool_name=scope.tool_name,
+                server_name=scope.server_name,
+                principal={"managed_agent_id": scope.managed_agent_id},
+                result=obj,
+                kept_redactor=kept_redactor,
+            )
+        else:
+            record = reference_module.build_reference_record(
+                account_id=account_id,
+                rule=rule,
+                tool_name=scope.tool_name,
+                server_name=scope.server_name,
+                principal={"managed_agent_id": scope.managed_agent_id},
+                arguments=obj,
+                kept_redactor=kept_redactor,
+            )
+    except Exception:  # noqa: BLE001 - fall back to redaction, never to raw
+        logger.warning("Reference record could not be built", exc_info=True)
+        return None
+    if isinstance(obj, str):
+        return reference_module.reference_summary(record)
+    return record
 
 
 def apply_storage_redaction(

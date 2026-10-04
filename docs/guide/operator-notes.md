@@ -159,6 +159,69 @@ firewall, the gateway and the approval policy as before.
 An agent cannot note whatever it likes inside the account. What it can reach is
 [the runs it started](#which-agent-may-note-which-target).
 
+### Steering the runs you started
+
+A conductor agent that starts workers from a shell (`claude -p "..." &`) can
+steer them with `send_note` under the default scope, with no grant and no
+lookup through the API. Three pieces make that work once the Preloop hooks are
+installed (`preloop agents onboard`):
+
+1. **Lineage.** The SessionStart hook registers each run and exports its
+   runtime session id to the commands the run starts, as
+   `PRELOOP_PARENT_SESSION_ID`. A child whose own SessionStart hook sees that
+   variable records the spawner as its `parent_session_id`, so the child is a
+   descendant of the conductor exactly like a child flow execution. The
+   parent must be in the same account, and the field is write-once.
+2. **The id at spawn.** SessionStart writes
+   `~/.preloop/sessions/<external_session_id>.json` with the
+   `runtime_session_id`, `started_at`, `agent_kind` and `cwd`, and in
+   non-interactive mode (`claude -p`) prints one line to stderr:
+   `preloop runtime_session_id=<id>`.
+3. **Discovery.** The `list_sessions` builtin (off by default, enable it like
+   `send_note`) returns the caller's live children with no arguments: id,
+   start time, agent kind, cwd, parent, title and whether it is active now.
+   Listing another session's children, or the whole account
+   (`parent_session_id: "any"`), needs the same operator grant as
+   `search_sessions` scope `account` and is refused by name without it.
+
+The spawn recipe, from inside the conductor's Bash tool:
+
+```bash
+SID=$(uuidgen)
+nohup claude -p --session-id "$SID" "Fix the flaky test in api/" \
+  >"/tmp/worker-$SID.log" 2>&1 &
+sleep 5
+jq -r .runtime_session_id ~/.preloop/sessions/"$SID".json
+```
+
+Then any of these reaches that worker at its next turn boundary, recorded with
+the conductor as author:
+
+```json
+{"text": "Skip the docs, only the test.", "runtime_session_id": "<id from the file>"}
+{"text": "Skip the docs, only the test.", "external_session_id": "<SID>"}
+{"text": "Wrap up and push.", "children": "all"}
+```
+
+`external_session_id` is the harness's own session id (the Claude Code
+`session_id`, which is also its transcript file name). It resolves inside your
+account and is refused as `target_ambiguous` if more than one run carries it.
+`children` takes `latest` (the newest live run your session started) or `all`
+(one note each, at most 20, each checked and rate limited on its own). Exactly
+one target field is still the rule.
+
+The hook also sends the first prompt once, so the server sets a redacted title
+of at most 120 characters and a principal name of agent kind plus working
+directory. Two workers started in the same second show distinct titles in the
+console, `preloop sessions list` and `GET /api/v1/runtime-sessions`.
+
+`send_note` knows which session called it from the credential, or, for a
+durable enrolled-agent key, from the harness session header on the MCP request
+matched against that key's own runs. A call that cannot be tied to a session
+is refused with `note_scope_no_lineage`; name the target by
+`runtime_session_id` from a session that can be, or use
+`preloop notes send --session` as the operator.
+
 ## Which agent may note which target
 
 A note from an agent is text a model will read on its next turn, so the blast

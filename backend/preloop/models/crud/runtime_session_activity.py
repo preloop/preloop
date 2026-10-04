@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
+from uuid import UUID
 
 from sqlalchemy import Integer, and_, case, cast, func, select, tuple_
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +17,7 @@ from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
 
 ManagedAgent = models.ManagedAgent
+ApiKey = models.ApiKey
 RuntimeSession = models.RuntimeSession
 RuntimeSessionActivity = models.RuntimeSessionActivity
 
@@ -1154,6 +1156,51 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .order_by(self.model.timestamp.asc())
             .all()
         )
+
+    def get_tool_call_stats_for_api_keys(
+        self,
+        db: Session,
+        *,
+        account_id: UUID | str,
+        api_key_ids: Sequence[UUID | str],
+        recent_start: datetime,
+    ) -> dict[UUID, tuple[Optional[datetime], int]]:
+        """Aggregate last and recent tool calls for owned keys in one read.
+
+        Args:
+            db: Database session.
+            account_id: Authorized account owning the keys and activity.
+            api_key_ids: Selected key IDs; foreign-account IDs are ignored.
+            recent_start: Inclusive lower bound for the recent call count.
+
+        Returns:
+            Last call timestamp and recent count for each key with tool calls.
+            The count preserves every tool-call outcome, including NULL status.
+        """
+        if not api_key_ids:
+            return {}
+        rows = (
+            db.query(
+                self.model.api_key_id,
+                func.max(self.model.timestamp).label("last_call_at"),
+                func.count(self.model.id)
+                .filter(self.model.timestamp >= recent_start)
+                .label("recent_call_count"),
+            )
+            .join(ApiKey, self.model.api_key_id == ApiKey.id)
+            .filter(
+                ApiKey.account_id == account_id,
+                ApiKey.id.in_(api_key_ids),
+                self.model.account_id == account_id,
+                self.model.activity_type == "tool_call",
+            )
+            .group_by(self.model.api_key_id)
+            .all()
+        )
+        return {
+            row.api_key_id: (row.last_call_at, int(row.recent_call_count or 0))
+            for row in rows
+        }
 
     def get_last_tool_call_timestamp(
         self, db: Session, api_key_id: Any

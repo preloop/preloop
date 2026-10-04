@@ -165,6 +165,46 @@ sensitive_data:
 - Audit rows carry the rule id, target, types found, argument paths and a
   SHA-256 of the scanned text. With no rule in scope no detector runs.
 
+### Reference-only logging
+
+`sensitive_data.reference_only` names tools, servers or agents whose calls
+must leave no payload behind. Every store that would hold the arguments or
+the result of an in-scope call (audit rows, policy decision rows, approval
+rows, activity summaries, the tool-call search index) holds a reference
+record instead: tool, server, principal, rule id, the values named by
+`keep_fields`, `args_hmac` and `result_hmac`, byte sizes, key names, timing
+and cost.
+
+```yaml
+sensitive_data:
+  reference_only:
+    - id: patient-tools
+      scope: {agents: [], tools: [get_patient_record], servers: [ehr]}
+      keep_fields: ["$.consent_id", "$.call.id"]   # dotted keys, [n], [*]
+      approver_view: redacted                       # redacted | original_until_decided
+```
+
+Fingerprints are HMAC-SHA256 over canonical JSON with a per-account salt
+stored encrypted; each record carries its `salt_id`, so a rotation leaves
+old records verifiable. `POST /api/v1/policies/sensitive-data/hash-check`
+(manage_policies) answers whether a candidate payload matches a stored
+fingerprint for the caller's account without storing it. The audit chain
+export lists the account's salt ids and never a salt.
+
+Approvals: with `approver_view: redacted` the approver sees the reference
+record. With `original_until_decided` the raw arguments stay encrypted on
+the pending row, are returned by
+`GET /api/v1/approval-requests/{id}/original-args` (console, decide
+permission) while pending, and are deleted in the same transaction as the
+decision. Emails, webhooks and push payloads never carry them. An
+asynchronous post-approval replay of a reference-only call cannot
+reconstruct the arguments and reports that; the in-process approval wait
+keeps the original in memory and is unaffected.
+
+Retention and legal holds: reference records follow the existing
+retention of their store; a legal hold keeps the records but cannot
+resurrect payloads that were never stored.
+
 Each rule has `detector_timeout_ms` (default 500) and
 `on_detector_timeout` (default `deny`, fail closed). Set
 `on_detector_timeout: allow` to skip that rule on timeout. A rule whose conditions are all `notify` never blocks on

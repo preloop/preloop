@@ -11,6 +11,7 @@ conditional flow triggering based on author, labels, assignee, etc.
 from typing import Dict, Any, List, Optional, Tuple
 
 from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
+from preloop.utils.bitbucket_dc_webhooks import BITBUCKET_DC_EVENT_MAP
 from preloop.utils.schedule_text import describe_schedule_config
 
 # Older Issue Triage clones stored GitHub-style dotted names while webhook
@@ -519,6 +520,9 @@ def normalize_event_type(
     elif tracker_type_lower == "bitbucket":
         return BITBUCKET_EVENT_MAP.get(raw_event_type, raw_event_type)
 
+    elif tracker_type_lower == "bitbucket_dc":
+        return BITBUCKET_DC_EVENT_MAP.get(raw_event_type, raw_event_type)
+
     # Unknown tracker type - return as-is
     return raw_event_type
 
@@ -670,6 +674,35 @@ def _bitbucket_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(target, dict):
                 parts["commit"] = _short_sha(target.get("hash"))
 
+    return parts
+
+
+def _bitbucket_dc_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract subject parts from a normalized Bitbucket Data Center payload."""
+    parts: Dict[str, Any] = {}
+    repo = payload.get("repository") or {}
+    if isinstance(repo, dict) and repo.get("path"):
+        parts["repo"] = repo["path"]
+    pr = payload.get("pull_request")
+    if isinstance(pr, dict) and pr:
+        if pr.get("number"):
+            parts["reference"] = f"#{pr['number']}"
+        if pr.get("title"):
+            parts["title"] = pr["title"]
+        if pr.get("html_url"):
+            parts["url"] = pr["html_url"]
+        head = pr.get("head")
+        if isinstance(head, dict):
+            parts["commit"] = _short_sha(head.get("sha"))
+        return parts
+    push = payload.get("push")
+    if isinstance(push, dict):
+        changes = push.get("changes") or []
+        last = changes[-1] if isinstance(changes, list) and changes else {}
+        if isinstance(last, dict):
+            if last.get("branch"):
+                parts["reference"] = last["branch"]
+            parts["commit"] = _short_sha(last.get("to_hash"))
     return parts
 
 
@@ -856,6 +889,8 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
         parts = _jira_subject(payload)
     elif source == "bitbucket":
         parts = _bitbucket_subject(payload)
+    elif source == "bitbucket_dc":
+        parts = _bitbucket_dc_subject(payload)
     else:
         parts = {}
 
@@ -1227,6 +1262,36 @@ def extract_filter_fields(
             new = (last or {}).get("new") or {}
             if isinstance(new, dict) and new.get("name"):
                 filter_fields["ref"] = new["name"]
+
+    elif tracker_type_lower == "bitbucket_dc":
+        # The intake already normalized the payload (see
+        # preloop.utils.bitbucket_dc_webhooks.normalize_delivery).
+        dc = payload.get("bitbucket_dc") or {}
+        filter_fields["sender"] = dc.get("actor")
+        filter_fields["action"] = raw_event_type.split(":")[-1]
+        pr = payload.get("pull_request")
+        if isinstance(pr, dict) and pr:
+            filter_fields["author"] = pr.get("author")
+            if pr.get("reviewers"):
+                filter_fields["reviewer"] = list(pr["reviewers"])
+            filter_fields["state"] = pr.get("state")
+            filter_fields["merged"] = pr.get("state") == "merged"
+            filter_fields["draft"] = bool(pr.get("draft", False))
+            head = pr.get("head") or {}
+            base = pr.get("base") or {}
+            if head.get("ref"):
+                filter_fields["source_branch"] = head["ref"]
+            if base.get("ref"):
+                filter_fields["target_branch"] = base["ref"]
+            filter_fields["head_changed"] = bool(dc.get("head_changed"))
+        if dc.get("participant_status"):
+            filter_fields["review_state"] = dc["participant_status"]
+        push = payload.get("push")
+        if isinstance(push, dict):
+            changes = push.get("changes") or []
+            last = changes[-1] if isinstance(changes, list) and changes else {}
+            if isinstance(last, dict) and last.get("branch"):
+                filter_fields["ref"] = last["branch"]
 
     return filter_fields
 

@@ -2987,6 +2987,33 @@ export class PreloopFlowForm extends LitElement {
                     help-text="Filter by labels (triggers if any label matches)"
                   ></sl-input>
 
+                  <!-- All-of labels filter (route by tag, e.g. complexity) -->
+                  <sl-input
+                    label="Issue must also carry all of these labels"
+                    placeholder="e.g. complexity:low"
+                    .value=${
+                      (
+                        this.flow.trigger_config?.labels_all as
+                          string[] | undefined
+                      )?.join(', ') || ''
+                    }
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.labels_all = value
+                          .split(',')
+                          .map((l: string) => l.trim())
+                          .filter((l: string) => l.length > 0);
+                      } else {
+                        delete this.flow.trigger_config.labels_all;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Comma-separated. Every label must be on the issue (checked after the change), in addition to the filter above"
+                  ></sl-input>
+
                   <!-- Milestone filter (GitHub/GitLab only) -->
                   ${
                     tracker.tracker_type !== 'jira'
