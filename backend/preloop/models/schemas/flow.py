@@ -1,7 +1,7 @@
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, Union
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -766,6 +766,10 @@ MAX_SCHEDULE_INTERVAL = timedelta(days=366)
 # repeat every matched hour/day, so any sub-minimum gap shows up within the
 # first few matched days - well inside 200 ticks.
 _SCHEDULE_CHECK_MAX_TICKS = 200
+# How far back ScheduleBase.fire_window searches for the previous fire time.
+# The last scan always runs at exactly this bound; eight years covers a
+# "29 February only" cron, whose two previous fires can be 2921 days apart.
+_FIRE_WINDOW_MAX_LOOKBACK = timedelta(days=366 * 8)
 
 # Bounds on ScheduleBase.payload, the static trigger payload a schedule
 # carries. A schedule states options (which baseline to diff against, a
@@ -824,7 +828,14 @@ class ScheduleBase(BaseModel):
                 f"schedule payload declares {len(v)} keys; max is "
                 f"{MAX_SCHEDULE_PAYLOAD_KEYS}"
             )
-        for reserved in ("workspace_files", "schedule", "scheduled_at"):
+        for reserved in (
+            "workspace_files",
+            "schedule",
+            "scheduled_at",
+            "previous_scheduled_at",
+            "last_successful_scheduled_at",
+            "window",
+        ):
             if reserved in v:
                 raise ValueError(f"schedule payload may not declare '{reserved}'")
         try:
@@ -869,6 +880,43 @@ class ScheduleBase(BaseModel):
         """Compute the next fire time from now, or None if it never fires."""
         times = self.next_fire_times(count=1)
         return times[0] if times else None
+
+    def fire_window(self, at: datetime) -> Tuple[datetime, datetime]:
+        """Return ``(current_fire, previous_fire)`` for a tick observed at ``at``.
+
+        Both come from the schedule definition, not from execution history:
+        ``current_fire`` is the latest fire time at or before ``at`` and
+        ``previous_fire`` the one before it. A skipped or failed run still
+        moves the window, so consecutive windows tile time without gaps.
+        When the definition yields fewer than two fires (it never fired
+        before ``at``), both fall back to ``at`` and ``at`` minus the
+        shortest legal interval.
+        """
+        trigger = self.build_trigger()
+        lookback = MIN_SCHEDULE_INTERVAL * 2
+        while True:
+            fires: List[datetime] = []
+            prev: Optional[datetime] = None
+            cursor = at - lookback
+            while True:
+                nxt = trigger.get_next_fire_time(prev, cursor)
+                if nxt is None or nxt > at:
+                    break
+                fires.append(nxt)
+                fires = fires[-2:]
+                prev = nxt
+                cursor = nxt + timedelta(microseconds=1)
+            if len(fires) == 2:
+                return (
+                    fires[1].astimezone(timezone.utc),
+                    fires[0].astimezone(timezone.utc),
+                )
+            if lookback >= _FIRE_WINDOW_MAX_LOOKBACK:
+                break
+            # Widen geometrically, but always finish with one scan at the
+            # cap itself, so the bound is the real bound.
+            lookback = min(lookback * 4, _FIRE_WINDOW_MAX_LOOKBACK)
+        return at, at - MIN_SCHEDULE_INTERVAL
 
 
 class CronSchedule(ScheduleBase):
@@ -968,6 +1016,12 @@ class IntervalSchedule(ScheduleBase):
         from apscheduler.triggers.interval import IntervalTrigger
 
         return IntervalTrigger(**{self.unit: self.every}, timezone=self.timezone)
+
+    def fire_window(self, at: datetime) -> Tuple[datetime, datetime]:
+        """An interval fires relative to when its job was registered, which
+        the definition does not record, so the previous fire is one period
+        before this tick."""
+        return at, at - timedelta(**{self.unit: self.every})
 
     def describe(self) -> str:
         return describe_interval(self.every, self.unit)
@@ -1076,6 +1130,38 @@ def parse_schedule_config(
     return _schedule_config_adapter.validate_python(
         _normalize_legacy_schedule_config(value)
     )
+
+
+def flow_schedule_state(
+    trigger_event_source: Optional[str],
+    schedule_config: Optional[Union[ScheduleBase, Dict[str, Any]]],
+    is_enabled: bool,
+) -> Optional[Dict[str, Any]]:
+    """Project the common schedule presentation for full and summary flows.
+
+    Args:
+        trigger_event_source: The stored flow trigger source.
+        schedule_config: A validated config or its stored JSON representation.
+        is_enabled: Whether this flow's schedule is active.
+
+    Returns:
+        Schedule metadata, including the next run only for active schedules;
+        None for non-schedule triggers or absent configuration.
+    """
+    if trigger_event_source != "schedule" or not schedule_config:
+        return None
+    config = parse_schedule_config(schedule_config)
+    next_run = config.next_fire_time() if is_enabled else None
+    state = {
+        "active": is_enabled,
+        "type": config.type,
+        "description": config.describe(),
+        "timezone": config.timezone,
+        "next_run_at": next_run.isoformat() if next_run else None,
+    }
+    if isinstance(config, CronSchedule):
+        state["cron"] = config.expr
+    return state
 
 
 class SchedulePreviewRequest(BaseModel):
@@ -1635,19 +1721,11 @@ class FlowResponse(FlowBase):
     @model_validator(mode="after")
     def compute_schedule_state(self) -> "FlowResponse":
         """Expose schedule state (next run etc.) for schedule triggers."""
-        if self.trigger_event_source == "schedule" and self.schedule_config:
-            config = self.schedule_config
-            active = bool(self.is_enabled)
-            next_run = config.next_fire_time() if active else None
-            self.schedule_state = {
-                "active": active,
-                "type": config.type,
-                "description": config.describe(),
-                "timezone": config.timezone,
-                "next_run_at": next_run.isoformat() if next_run else None,
-            }
-            if isinstance(config, CronSchedule):
-                self.schedule_state["cron"] = config.expr
+        state = flow_schedule_state(
+            self.trigger_event_source, self.schedule_config, bool(self.is_enabled)
+        )
+        if state is not None:
+            self.schedule_state = state
         return self
 
     @field_serializer(

@@ -57,6 +57,7 @@ dependencies = [
     "bcrypt<5.1.0",
     "python-multipart>=0.0.6",
     "Pillow>=10.0.0",  # Avatar decode/resize/re-encode (preloop.services.avatar)
+    "regex>=2022.10.31",  # Match timeout for account-supplied sensitive-data patterns
     "asyncssh>=2.21.1,<3",  # Explicit host-key pinning for agent deployment
     "httpx[http2]>=0.24.1",  # http2 extra required for APNs push notifications
     "tenacity>=8.2.3",
@@ -93,6 +94,7 @@ dependencies = [
     # deliberately with the gateway streaming tests.
     "litellm>=1.81.13,<1.103",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
+    "azure-identity>=1.17.0",  # Entra ID / managed identity for Azure OpenAI
     "webauthn>=2.0.0",  # WebAuthn passkey registration/authentication ceremonies
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
@@ -211,6 +213,7 @@ markers = [
     "github: GitHub-specific tests",
     "gitlab: GitLab-specific tests",
     "jira: Jira-specific tests",
+    "benchmark: timing assertions that may be skipped on slow runners",
 ]
 filterwarnings = [
     # Ignore pytest asyncio marker on non-async functions (class-level pytestmark)

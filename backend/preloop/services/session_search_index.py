@@ -322,6 +322,18 @@ def write_source_chunks(
             text, redacted = redact_text(text)
         elif content_captured:
             redacted = REDACTED_VALUE in (text or "")
+        if content_captured:
+            # Credential masking above, then the account's redact rules
+            # (#1123). Search text is a mixed store, so every account-wide
+            # redact rule applies; rules scoped to agents or tools do not
+            # (this writer does not know the managed agent or tool).
+            from preloop.services.sensitive_data.storage import (
+                apply_storage_redaction,
+            )
+
+            masked = apply_storage_redaction(account_id, text)
+            if masked != text:
+                text, redacted = masked, True
         redaction_state = _resolve_redaction_state(
             captured=content_captured, redacted=redacted
         )
@@ -607,7 +619,12 @@ def redact_artifact_text(text: str) -> tuple[str, bool]:
     return masked, bool(changed or emails)
 
 
-def _artifact_header(artifact: Any) -> str:
+def artifact_header(artifact: Any) -> str:
+    """Metadata header that starts an artifact's first search chunk.
+
+    Kind, name, tool and labels, redacted. Account artifact search strips
+    exactly this text from excerpts (#1086).
+    """
     labels = getattr(artifact, "labels", None) or {}
     label_text = " ".join(
         f"{key}={' '.join(map(str, value)) if isinstance(value, list) else value}"
@@ -694,7 +711,7 @@ def index_artifact_text(
         db.rollback()
         return []
 
-    header = _artifact_header(artifact)
+    header = artifact_header(artifact)
     content_captured = bool(settings.model_gateway_capture_content)
     has_text = extracted is not None and not extracted.empty
     cue_offsets: List[Tuple[int, Optional[float]]] = []

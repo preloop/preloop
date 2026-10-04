@@ -25,6 +25,8 @@ from preloop.services.dynamic_fastmcp import (
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
     DEPOSIT_ARTIFACT_TOOL,
+    GET_ARTIFACT_TOOL,
+    SEARCH_ARTIFACTS_TOOL,
     GET_EXECUTION_TOOL,
     GET_ISSUE_DESCRIPTION,
     GET_ISSUE_SCHEMA,
@@ -33,6 +35,7 @@ from preloop.tools.builtin_defs import (
     RESOLVE_SBOM_UPSTREAMS_TOOL,
     RUN_FLOW_TOOL,
     SEARCH_SESSIONS_DEFAULT_LIMIT,
+    LIST_SESSIONS_TOOL,
     SEARCH_SESSIONS_TOOL,
     SEND_NOTE_TOOL,
     UPDATE_ISSUE_DESCRIPTION,
@@ -83,6 +86,50 @@ class CancelScopeErrorFilter(logging.Filter):
             return True
 
         return False
+
+
+def _mcp_caller_principal(user_context: Any) -> Optional[tuple[str, str]]:
+    """The caller's ``(type, id)`` runtime principal, when its credential has one."""
+    principal_type = getattr(user_context, "runtime_principal_type", None)
+    principal_id = getattr(user_context, "runtime_principal_id", None)
+    if principal_type and principal_id:
+        return str(principal_type), str(principal_id)
+    return None
+
+
+def _mcp_caller_session_ids(db: Any, user_context: Any) -> list:
+    """The runtime sessions this MCP call was made from (#1045).
+
+    A session-bound key names its session. A durable enrolled-agent key does
+    not, so the harness's own session header on the MCP request is resolved
+    against the caller's principal; see
+    :func:`preloop.services.agent_session_lineage.caller_session_ids`.
+    """
+    from preloop.services.agent_session_lineage import caller_session_ids
+
+    try:
+        from fastmcp.server.dependencies import get_http_headers
+
+        headers = get_http_headers(include_all=True)
+    except Exception:  # noqa: BLE001 - no HTTP request (stdio, tests)
+        headers = {}
+    principal = _mcp_caller_principal(user_context) or (None, None)
+    return caller_session_ids(
+        db,
+        account_id=user_context.account_id,
+        bound_runtime_session_id=getattr(user_context, "runtime_session_id", None),
+        principal_type=principal[0],
+        principal_id=principal[1],
+        headers=headers,
+    )
+
+
+def _artifact_block(block: dict):
+    """Validate one shared-mapping block dict into an MCP ``ContentBlock``."""
+    from mcp.types import ContentBlock
+    from pydantic import TypeAdapter
+
+    return TypeAdapter(ContentBlock).validate_python(block)
 
 
 def initialize_mcp_with_tools() -> DynamicFastMCP:
@@ -214,6 +261,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         expected_revision: str | None = None,
         assessment: str | None = None,
         complexity_label: str | None = None,
+        risk_label: str | None = None,
+        readiness_label: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Apply the configured approval policy before updating an issue."""
@@ -238,6 +287,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             "expected_revision": expected_revision,
             "assessment": assessment,
             "complexity_label": complexity_label,
+            "risk_label": risk_label,
+            "readiness_label": readiness_label,
         }
 
         # Check approval with streaming
@@ -867,6 +918,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         agent_id: str | None = None,
         runtime_session_id: str | None = None,
         execution_id: str | None = None,
+        external_session_id: str | None = None,
+        children: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Leave an operator note for one other agent, session or execution.
@@ -876,6 +929,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             agent_id: Target managed agent, current or next session.
             runtime_session_id: Target runtime session, and only that session.
             execution_id: Target flow execution, resolved to its session.
+            external_session_id: Target named by the harness's own session id.
+            children: ``latest`` or ``all`` live runs the caller started.
             ctx: MCP context (injected by FastMCP).
 
         Returns:
@@ -901,6 +956,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             "agent_id": agent_id,
             "runtime_session_id": runtime_session_id,
             "execution_id": execution_id,
+            "external_session_id": external_session_id,
+            "children": children,
         }
         approved, error = await require_approval(
             tool_name=SEND_NOTE_TOOL["name"],
@@ -924,6 +981,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         caller = attribution_from_user_context(user_context)
         db = next(get_db_session())
         try:
+            author_sessions = _mcp_caller_session_ids(db, user_context)
             result = send_note_from_agent(
                 db,
                 account_id=user_context.account_id,
@@ -932,6 +990,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 agent_id=agent_id,
                 runtime_session_id=runtime_session_id,
                 execution_id=execution_id,
+                external_session_id=external_session_id,
+                children=children,
+                author_session_ids=author_sessions,
+                author_principal=_mcp_caller_principal(user_context),
                 author_execution_id=caller.execution_id,
                 subject_context={
                     "api_key_id": getattr(user_context, "api_key_id", None),
@@ -1236,6 +1298,99 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     get_execution_tool.parameters = deepcopy(GET_EXECUTION_TOOL["schema"])
     mcp.add_tool(get_execution_tool)
 
+    # Register Tool 7f2: list_sessions (shared metadata:
+    # tools.builtin_defs.LIST_SESSIONS_TOOL). A conductor finds the runtime
+    # session ids of the runs it started, to steer them with send_note
+    # (#1045). The calling session comes from the credential and the
+    # harness's own session header, never from an argument.
+    async def list_sessions(
+        parent_session_id: str | None = None,
+        started_since: str | None = None,
+        external_session_id: str | None = None,
+        agent_kind: str | None = None,
+        cwd: str | None = None,
+        active_only: bool | None = None,
+        limit: int | None = None,
+        ctx: Optional[Context] = None,
+    ) -> str:
+        """List the runs the calling session started, compact and capped.
+
+        Args:
+            parent_session_id: Whose children; default the caller's session.
+            started_since: ISO 8601 lower bound on start time.
+            external_session_id: Only the run carrying this harness id.
+            agent_kind: Only this agent kind.
+            cwd: Only runs whose working directory starts with this path.
+            active_only: Only runs that have not ended (default true).
+            limit: Runs to return.
+            ctx: MCP context (injected by FastMCP).
+
+        Returns:
+            JSON: the sessions, or a refusal record naming the reason.
+        """
+        import json
+
+        from preloop.models.db.session import get_db_session
+        from preloop.services.agent_session_list import (
+            LIST_SESSIONS_TOOL_NAME,
+            list_for_agent,
+        )
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return "Error: No user context available"
+
+        approved, error = await require_approval(
+            tool_name=LIST_SESSIONS_TOOL_NAME,
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments={
+                "parent_session_id": parent_session_id,
+                "started_since": started_since,
+                "external_session_id": external_session_id,
+                "agent_kind": agent_kind,
+                "cwd": cwd,
+                "active_only": active_only,
+                "limit": limit,
+            },
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return error
+
+        db = next(get_db_session())
+        try:
+            result = list_for_agent(
+                db,
+                account_id=user_context.account_id,
+                managed_agent_id=getattr(user_context, "managed_agent_id", None),
+                caller_session_ids=_mcp_caller_session_ids(db, user_context),
+                subject_context={
+                    "api_key_id": getattr(user_context, "api_key_id", None),
+                    "managed_agent_id": getattr(user_context, "managed_agent_id", None),
+                },
+                parent_session_id=parent_session_id,
+                started_since=started_since,
+                external_session_id=external_session_id,
+                agent_kind=agent_kind,
+                cwd=cwd,
+                active_only=active_only,
+                limit=limit,
+            )
+        finally:
+            db.close()
+        return json.dumps(result)
+
+    list_sessions_tool = FunctionTool.from_function(
+        list_sessions, description=LIST_SESSIONS_TOOL["description"]
+    )
+    list_sessions_tool.parameters = deepcopy(LIST_SESSIONS_TOOL["schema"])
+    mcp.add_tool(list_sessions_tool)
+
     # Register Tool 7g: search_sessions (shared metadata:
     # tools.builtin_defs.SEARCH_SESSIONS_TOOL). The session corpus as a tool
     # (#658): the agent asks what past sessions did before repeating the
@@ -1417,6 +1572,117 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     )
     deposit_artifact_tool.parameters = deepcopy(DEPOSIT_ARTIFACT_TOOL["schema"])
     mcp.add_tool(deposit_artifact_tool)
+
+    # Register Tools 7i/7j: search_artifacts and get_artifact (shared
+    # metadata: tools.builtin_defs.SEARCH_ARTIFACTS_TOOL / GET_ARTIFACT_TOOL).
+    # The read half of the artifact tools (#1104). Scope (own sessions, or
+    # the account with artifact_search.account_scope), the MCP block
+    # mapping and the audit row all live in services.agent_artifact_read.
+    async def _run_artifact_read(
+        tool_name: str, arguments: dict, ctx: Optional[Context]
+    ) -> ToolResult:
+        from mcp.types import TextContent
+
+        from anyio import to_thread
+        from preloop.models.db import session as db_session_module
+        from preloop.services import agent_artifact_read
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return ToolResult(
+                content=[TextContent(type="text", text="Error: No user context")],
+                is_error=True,
+            )
+        approved, denial = await require_approval(
+            tool_name=tool_name,
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments=arguments,
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return ToolResult(
+                content=[TextContent(type="text", text=str(denial))], is_error=True
+            )
+        caller = agent_artifact_read.Caller.from_user_context(user_context)
+        run = (
+            agent_artifact_read.search
+            if tool_name == SEARCH_ARTIFACTS_TOOL["name"]
+            else agent_artifact_read.get
+        )
+
+        def _run():
+            db = next(db_session_module.get_db_session())
+            try:
+                return run(db, caller=caller, arguments=arguments)
+            finally:
+                db.close()
+
+        outcome = await to_thread.run_sync(_run)
+        return ToolResult(
+            content=[_artifact_block(block) for block in outcome.content()],
+            structured_content=outcome.structured,
+            is_error=outcome.is_error,
+        )
+
+    async def search_artifacts(
+        q: str | None = None,
+        kind: list[str] | None = None,
+        labels: dict | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        scope: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Find artifacts by kind, labels and time window, scoped to the caller."""
+        arguments = {
+            "q": q,
+            "kind": kind,
+            "labels": labels,
+            "since": since,
+            "until": until,
+            "scope": scope,
+            "limit": limit,
+            "cursor": cursor,
+        }
+        return await _run_artifact_read(
+            SEARCH_ARTIFACTS_TOOL["name"],
+            {k: v for k, v in arguments.items() if v is not None},
+            ctx,
+        )
+
+    search_artifacts_tool = FunctionTool.from_function(
+        search_artifacts,
+        description=SEARCH_ARTIFACTS_TOOL["description"],
+        output_schema=None,
+    )
+    search_artifacts_tool.parameters = deepcopy(SEARCH_ARTIFACTS_TOOL["schema"])
+    mcp.add_tool(search_artifacts_tool)
+
+    async def get_artifact(
+        artifact_id: str,
+        max_bytes: int | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Read one artifact in the caller's scope as an MCP content block."""
+        arguments: dict = {"artifact_id": artifact_id}
+        if max_bytes is not None:
+            arguments["max_bytes"] = max_bytes
+        return await _run_artifact_read(GET_ARTIFACT_TOOL["name"], arguments, ctx)
+
+    get_artifact_tool = FunctionTool.from_function(
+        get_artifact,
+        description=GET_ARTIFACT_TOOL["description"],
+        output_schema=None,
+    )
+    get_artifact_tool.parameters = deepcopy(GET_ARTIFACT_TOOL["schema"])
+    mcp.add_tool(get_artifact_tool)
 
     # Register Tool 8: add_comment
     @mcp.tool()

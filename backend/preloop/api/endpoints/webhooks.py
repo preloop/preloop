@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import logging
 import json
+import uuid
 from dataclasses import dataclass, field
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from preloop.models.crud import (
 )
 from preloop.models.db.session import get_db_session, _safe_close_db_session
 from preloop.models.crud.project import find_repository_projects, repository_host
+from preloop.services.issue_intake import IssuePayloadError, issue_values_from_payload
 from preloop.sync.scanner.core import TrackerClient
 
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
@@ -31,6 +33,23 @@ from preloop.utils.bitbucket import (
     BITBUCKET_SIGNATURE_HEADER,
     BITBUCKET_WEBHOOK_EVENTS,
     verify_signature as verify_bitbucket_signature,
+)
+from preloop.utils.bitbucket_dc import (
+    BITBUCKET_DC_TRACKER_TYPE,
+    BitbucketDCConfigError,
+    approved_instance_for,
+    bitbucket_dc_enabled,
+    validate_repository_id,
+)
+from preloop.utils.bitbucket_dc_webhooks import (
+    BITBUCKET_DC_DELIVERY_HEADER,
+    BITBUCKET_DC_EVENT_HEADER,
+    BITBUCKET_DC_SIGNATURE_HEADER,
+    BITBUCKET_DC_WEBHOOK_MAX_BYTES,
+    BitbucketDCWebhookRejectedError,
+    delivery_identity as bitbucket_dc_delivery_identity,
+    normalize_delivery as normalize_bitbucket_dc_delivery,
+    verify_webhook_signature as verify_bitbucket_dc_signature,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,8 +123,15 @@ async def receive_webhook(
     """Receive tracker webhooks and queue event processing.
 
     Return HTTP 503 when task publication is not acknowledged.
+
+    Bitbucket Data Center deliveries use ``bitbucket_dc`` as ``tracker_type``
+    and the tracker id (not an organization id) as the second path segment:
+    the hook belongs to one tracker and its per-tracker secret.
     """
-    raw_body = await request.body()
+    if tracker_type.lower() == BITBUCKET_DC_TRACKER_TYPE:
+        raw_body = await _read_limited_body(request, BITBUCKET_DC_WEBHOOK_MAX_BYTES)
+    else:
+        raw_body = await request.body()
     headers = request.headers
     plan = _WebhookPlan()
     result: dict[str, Any] = {}
@@ -113,6 +139,10 @@ async def receive_webhook(
 
     def prepare() -> dict[str, Any]:
         try:
+            if tracker_type.lower() == BITBUCKET_DC_TRACKER_TYPE:
+                return _prepare_bitbucket_dc_webhook(
+                    organization_id, raw_body, headers, db, plan
+                )
             return _prepare_webhook(
                 tracker_type, organization_id, raw_body, headers, db, plan
             )
@@ -177,6 +207,169 @@ async def receive_webhook(
             "db_processed": False,
         }
     return result
+
+
+async def _read_limited_body(request: Request, limit: int) -> bytes:
+    """Read the request body, refusing anything larger than ``limit`` bytes.
+
+    The declared length is checked first and the stream is cut off as soon
+    as it passes the limit, so an oversized body is never held in memory.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            too_large = int(declared) > limit
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length")
+        if too_large:
+            raise HTTPException(status_code=413, detail="Payload too large")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise HTTPException(status_code=413, detail="Payload too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _prepare_bitbucket_dc_webhook(
+    tracker_id: str,
+    raw_body: bytes,
+    headers: Mapping[str, str],
+    db: Session,
+    plan: _WebhookPlan,
+) -> dict[str, Any]:
+    """Authenticate, validate and normalize one Bitbucket Data Center delivery.
+
+    Order matters: the HMAC over the raw bytes is checked before the body is
+    parsed, and the payload's repository is checked against the tracker's
+    immutable binding before anything is dispatched. Logs carry the tracker
+    id and a fixed reason code, never the secret, signature or payload.
+    """
+    if not bitbucket_dc_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        tracker_uuid = uuid.UUID(str(tracker_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
+    tracker = crud_tracker.get(db, id=tracker_uuid)
+    if (
+        tracker is None
+        or tracker.tracker_type != BITBUCKET_DC_TRACKER_TYPE
+        or getattr(tracker, "is_deleted", False) is True
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    plan.tracker_id = tracker.id
+
+    secret = tracker.resolved_webhook_secret
+    if not secret:
+        logger.warning("Bitbucket DC webhook for tracker %s has no secret", tracker.id)
+        raise HTTPException(status_code=403, detail="Webhook not configured")
+    signature = headers.get(BITBUCKET_DC_SIGNATURE_HEADER)
+    if not signature:
+        logger.warning("Bitbucket DC webhook for tracker %s is unsigned", tracker.id)
+        raise HTTPException(status_code=403, detail="Missing Bitbucket signature")
+    if not verify_bitbucket_dc_signature(secret, raw_body, signature):
+        logger.warning(
+            "Bitbucket DC webhook signature mismatch for tracker %s", tracker.id
+        )
+        raise HTTPException(status_code=403, detail="Invalid Bitbucket signature")
+
+    event_key = headers.get(BITBUCKET_DC_EVENT_HEADER) or ""
+    if not tracker.is_active:
+        return {"status": "ignored", "reason": "tracker_inactive"}
+
+    details = tracker.connection_details or {}
+    try:
+        instance = approved_instance_for(details.get("instance_url") or tracker.url)
+        bound_repository_id = (
+            validate_repository_id(details["repository_id"])
+            if details.get("repository_id") not in (None, "")
+            else None
+        )
+    except BitbucketDCConfigError:
+        logger.warning(
+            "Bitbucket DC webhook for tracker %s: instance no longer approved",
+            tracker.id,
+        )
+        raise HTTPException(status_code=403, detail="instance_not_approved")
+
+    try:
+        payload = json.loads(raw_body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    projects: dict[int, Optional[models.Project]] = {}
+
+    def project_for(repository_id: int) -> Optional[models.Project]:
+        if repository_id not in projects:
+            projects[repository_id] = crud_project.get_for_tracker_by_identifier(
+                db, tracker_id=tracker.id, identifier=str(repository_id)
+            )
+        return projects[repository_id]
+
+    try:
+        delivery = normalize_bitbucket_dc_delivery(
+            event_key,
+            payload,
+            instance=instance,
+            bound_repository_id=bound_repository_id,
+            bound_project_key=details.get("project_key") or None,
+            repository_known=lambda repo_id: project_for(repo_id) is not None,
+            self_user_slug=details.get("username") or None,
+        )
+    except BitbucketDCWebhookRejectedError as exc:
+        logger.warning(
+            "Bitbucket DC webhook rejected for tracker %s: %s", tracker.id, exc.reason
+        )
+        raise HTTPException(status_code=exc.status_code, detail=exc.reason)
+
+    if not delivery.accepted:
+        logger.info(
+            "Bitbucket DC webhook %s acknowledged without dispatch for tracker %s: %s",
+            delivery.event_key,
+            tracker.id,
+            delivery.reason,
+        )
+        return {
+            "status": "ignored",
+            "reason": delivery.reason,
+            "tracker_id": tracker.id,
+        }
+    subscribed = tracker.subscribed_events or []
+    if subscribed and delivery.event_key not in subscribed:
+        return {
+            "status": "ignored",
+            "reason": "not_subscribed",
+            "tracker_id": tracker.id,
+        }
+
+    project = (
+        project_for(delivery.repository_id)
+        if delivery.repository_id is not None
+        else None
+    )
+    if project is not None:
+        plan.organization_id = project.organization_id
+        plan.db_processed = True
+    plan.queue_task(
+        "process_webhook_event",
+        tracker_type=BITBUCKET_DC_TRACKER_TYPE,
+        event_type=delivery.event_key,
+        delivery_id=bitbucket_dc_delivery_identity(
+            tracker.id,
+            headers.get(BITBUCKET_DC_DELIVERY_HEADER),
+            delivery.event_key,
+            delivery.payload,
+            raw_body,
+        ),
+        payload=delivery.payload,
+        tracker_id=str(tracker.id),
+        organization_id=str(plan.organization_id) if plan.organization_id else None,
+        embedding_requests=[],
+    )
+    return {"status": "success", "tracker_id": tracker.id}
 
 
 def _resolve_webhook_project(
@@ -734,69 +927,25 @@ def _prepare_webhook(
                     status_code=400, detail="Issue data missing from payload"
                 )
 
-            # Construct key if it's not in the payload
-            if "key" not in issue_data:
-                if tracker_type.lower() == "gitlab":
-                    project_slug = project.slug
-                    issue_iid = issue_data.get("iid")
-                    if project_slug and issue_iid:
-                        issue_data["key"] = f"{project_slug}#{issue_iid}"
-                    else:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Missing data to construct GitLab issue key.",
-                        )
-                elif tracker_type.lower() == "github":
-                    repo_full_name = project.slug
-                    issue_number = issue_data.get("number")
-                    if repo_full_name and issue_number:
-                        issue_data["key"] = f"{repo_full_name}#{issue_number}"
-                    else:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Missing data to construct GitHub issue key.",
-                        )
-
-            tracker_client = TrackerClient(resolved_tracker, initialize_client=False)
-            if hasattr(tracker_client.client, "transform_issue_webhook"):
-                transformed_issue = tracker_client.client.transform_issue_webhook(
-                    issue_data, project
+            try:
+                transformed_issue = issue_values_from_payload(
+                    resolved_tracker, project, issue_data, tracker_type=tracker_type
                 )
-            else:
-                transformed_issue = tracker_client.client.transform_issue(
-                    issue_data, project
-                )
+            except IssuePayloadError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # The published event payload carries the constructed key.
+            if transformed_issue.get("key"):
+                issue_data.setdefault("key", transformed_issue["key"])
 
-            # Extract fields that are NOT part of the Issue model schema
-            # These need to be handled separately or stored in meta_data
-            dependencies = transformed_issue.pop("dependencies", [])
-            transformed_issue.pop("comments", [])
-
-            # Store dependencies in meta_data if present
-            if dependencies and transformed_issue.get("meta_data"):
-                transformed_issue["meta_data"]["dependencies"] = dependencies
-            elif dependencies:
-                transformed_issue["meta_data"] = {"dependencies": dependencies}
-
-            existing_issue = crud_issue.get_by_external_id(
-                db,
-                project_id=project.id,
-                external_id=transformed_issue.get("external_id"),
+            # Atomic upsert: concurrent deliveries for one issue (opened plus
+            # several labeled events within a second) converge on one row.
+            db_issue, created = crud_issue.upsert(db, obj_in=transformed_issue)
+            logger.info(
+                "%s issue %s from webhook (title: '%s')",
+                "Created" if created else "Updated",
+                db_issue.id,
+                db_issue.title,
             )
-
-            if existing_issue:
-                logger.info(
-                    f"Updating existing issue {existing_issue.id} - "
-                    f"Current title: '{existing_issue.title}', "
-                    f"Webhook title: '{transformed_issue.get('title')}', "
-                    f"Update fields: {list(transformed_issue.keys())}"
-                )
-                db_issue = crud_issue.update(
-                    db, db_obj=existing_issue, obj_in=transformed_issue
-                )
-                logger.info(f"After update, issue title: '{db_issue.title}'")
-            else:
-                db_issue = crud_issue.create(db, obj_in=transformed_issue)
 
             plan.embeddings.append({"issue_id": db_issue.id, "force_update": True})
 

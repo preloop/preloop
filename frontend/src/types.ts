@@ -944,6 +944,15 @@ export interface AccountGovernanceDefaults {
   approval_workflow_id?: string | null;
 }
 
+/**
+ * Per-flow governance override (subject type "flows") plus the account
+ * defaults it inherits. has_override is false when the flow stores none.
+ */
+export interface FlowGovernanceResponse extends SubjectGovernanceResponse {
+  has_override: boolean;
+  account_defaults: AccountGovernanceDefaults;
+}
+
 export interface AccountGovernanceDefaultsResponse {
   defaults: AccountGovernanceDefaults;
   /** Managed agent ids carrying an explicit per-agent override. */
@@ -1074,6 +1083,23 @@ export interface RuntimeSessionArtifactDescriptor {
   legal_hold: boolean;
   created_at: string;
   content_block: McpResourceLink;
+}
+
+/** One item of `GET /api/v1/artifacts` (account-wide search, #1086). */
+export interface ArtifactSearchItem extends RuntimeSessionArtifactDescriptor {
+  session_title?: string | null;
+  agent_name?: string | null;
+  /** Redacted text of the best matching chunk; set only with `q`. */
+  excerpt?: { text: string; highlights: Array<[number, number]> } | null;
+  /** Transcript only: start in seconds of the cue the excerpt is in. */
+  cue_start?: number | null;
+}
+
+export interface ArtifactSearchResponse {
+  items: ArtifactSearchItem[];
+  next_cursor?: string | null;
+  facets: { kind: Record<string, number>; site: Record<string, number> };
+  facets_truncated: boolean;
 }
 
 export interface RuntimeSessionArtifactListResponse {
@@ -1462,6 +1488,15 @@ export interface SessionArtifactUsage {
     [kind: string]: number;
   };
   evicted_count_30d: number;
+}
+
+/** Raw audio storage opt-in (#1102). Off by default; admin only to change. */
+export interface SessionArtifactSettings {
+  audio_storage_enabled: boolean;
+  audio_retention_days: number;
+  audio_retention_max_days: number;
+  updated_by_user_id?: string | null;
+  updated_at?: string | null;
 }
 
 export interface AccountGatewayUsageSummaryResponse {

@@ -104,6 +104,7 @@ const MATRIX: Landing[] = [
     tag: 'runtime-sessions-view',
     params: {},
   },
+  { path: '/console/artifacts', tag: 'artifacts-view', params: {} },
   { path: '/console/audit', tag: 'audit-view', params: {} },
   { path: '/console/attention', tag: 'attention-view', params: {} },
   { path: '/console/cost', tag: 'cost-view', params: {} },

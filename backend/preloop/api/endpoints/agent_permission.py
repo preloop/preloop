@@ -50,6 +50,17 @@ class PermissionIdentity:
     managed_agent_name: str
     runtime_principal_type: Optional[str] = None
     runtime_principal_id: Optional[str] = None
+    flow_id: Optional[UUID] = None
+
+
+def _flow_id_from_context(context: dict) -> Optional[UUID]:
+    """Return the flow id of an execution-scoped flow token, if valid."""
+    if not context.get("flow_execution_id") or not context.get("flow_id"):
+        return None
+    try:
+        return UUID(str(context.get("flow_id")))
+    except ValueError:
+        return None
 
 
 def _resolve_permission_identity(token: str) -> PermissionIdentity:
@@ -94,6 +105,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
             runtime_session_id=runtime_session.id
             if runtime_session
             else runtime_session_id,
+            flow_id=_flow_id_from_context(context),
             runtime_principal_type=principal.get("type")
             or getattr(managed_agent, "session_source_type", None),
             runtime_principal_id=principal.get("id")
@@ -619,6 +631,7 @@ async def agent_permission_check(
         agent_reasoning=payload.agent_reasoning,
         client_decision=payload.client_decision,
         evaluation_phase=payload.evaluation_phase,
+        flow_id=identity.flow_id,
     )
     activity_session_id = origin_id or identity.runtime_session_id
     if activity_session_id is not None and _records_native_tool_call(payload):
@@ -641,4 +654,111 @@ async def agent_permission_check(
         request_id=request_id,
         timed_out=timed_out,
         operator_note=operator_note,
+    )
+
+
+class AgentSessionStartRequest(BaseModel):
+    """A harness session starting (or taking its first prompt) under a hook.
+
+    Sent by the SessionStart and UserPromptSubmit hooks (#1045). Every field
+    but ``session_id`` is optional, and the call is idempotent: the hook may
+    repeat it, and a repeat only fills what is still empty.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: str = Field(
+        ..., min_length=1, max_length=200, description="The harness's own session id"
+    )
+    source: Optional[str] = Field(
+        None, max_length=64, description="Agent adapter, e.g. 'claude_code'"
+    )
+    cwd: Optional[str] = Field(None, max_length=4096, description="Working directory")
+    parent_session_id: Optional[str] = Field(
+        None,
+        max_length=64,
+        description=(
+            "Runtime session id of the session that spawned this one, as the "
+            "hook read it from PRELOOP_PARENT_SESSION_ID. Must be in the "
+            "caller's account; ignored otherwise. Write-once."
+        ),
+    )
+    first_prompt: Optional[str] = Field(
+        None,
+        max_length=20000,
+        description="The first user prompt. Only a redacted 120 character title is kept.",
+    )
+
+
+class AgentSessionStartResponse(BaseModel):
+    """The runtime session the hook's harness session maps to."""
+
+    runtime_session_id: str
+    parent_session_id: Optional[str] = None
+    started_at: str
+    created: bool
+
+
+def _register_session_start(
+    identity: PermissionIdentity, payload: AgentSessionStartRequest
+) -> Optional[Any]:
+    from preloop.services.agent_session_lineage import register_session_start
+
+    principal_type = identity.runtime_principal_type
+    principal_id = identity.runtime_principal_id
+    if not principal_type or not principal_id:
+        return None
+    with get_session_factory()() as db:
+        return register_session_start(
+            db,
+            account_id=identity.account_id,
+            principal_type=principal_type,
+            principal_id=principal_id,
+            principal_name=identity.managed_agent_name,
+            external_session_id=payload.session_id,
+            agent_kind=(payload.source or "").strip() or principal_type,
+            cwd=(payload.cwd or "").strip() or None,
+            parent_session_id=payload.parent_session_id,
+            first_prompt=payload.first_prompt,
+        )
+
+
+@router.post(
+    "/agents/session-start",
+    response_model=AgentSessionStartResponse,
+    tags=["Agent Permissions"],
+)
+async def agent_session_start(
+    payload: AgentSessionStartRequest,
+    authorization: Optional[str] = Header(None),
+) -> AgentSessionStartResponse:
+    """Register a hook-governed harness session and its parent (#1045).
+
+    Returns the runtime session id the spawner can record, which is the id
+    ``send_note`` and ``list_sessions`` take. The session is keyed exactly as
+    the gateway keys the same conversation, so it is one row whichever of
+    the two sees it first.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Runtime bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    result = await run_db_off_loop(lambda: _register_session_start(identity, payload))
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "The session id is not usable, or this credential carries no "
+                "runtime principal to key the session on."
+            ),
+        )
+    return AgentSessionStartResponse(
+        runtime_session_id=result.runtime_session_id,
+        parent_session_id=result.parent_session_id,
+        started_at=result.started_at.isoformat(),
+        created=result.created,
     )

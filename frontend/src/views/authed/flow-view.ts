@@ -4,6 +4,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../router';
 import {
   getFlow,
+  getFlowExecutions,
   createFlow,
   updateFlow,
   deleteFlow,
@@ -41,6 +42,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/radio/radio.js';
+import '../../components/flow-governance-card';
 import '../../components/preloop-flow-form';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
@@ -258,6 +260,8 @@ export class FlowView extends LitElement {
   @state()
   private flowReady = false;
 
+  @state() private governanceOpened = false;
+
   @state()
   private trackers: any[] = [];
 
@@ -313,6 +317,7 @@ export class FlowView extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    ++this.flowLoadGeneration;
     // Clean up polling intervals
     if (this.organizationPollingInterval) {
       clearInterval(this.organizationPollingInterval);
@@ -327,14 +332,16 @@ export class FlowView extends LitElement {
   async connectedCallback() {
     super.connectedCallback();
 
-    try {
-      const { getUserProfile } = await import('../../api');
-      const currentUser = await getUserProfile();
-      this.isAdmin = currentUser.is_superuser || false;
-    } catch (error) {
-      console.error('Failed to get current user:', error);
-      this.isAdmin = false;
-    }
+    void (async () => {
+      try {
+        const { getUserProfile } = await import('../../api');
+        const currentUser = await getUserProfile();
+        this.isAdmin = currentUser.is_superuser || false;
+      } catch (error) {
+        console.error('Failed to get current user:', error);
+        this.isAdmin = false;
+      }
+    })();
 
     if (!this.initialized) {
       this.initialized = true;
@@ -345,15 +352,22 @@ export class FlowView extends LitElement {
     }
   }
 
+  private flowLoadGeneration = 0;
+
   private async loadFlowData(urlParams: URLSearchParams) {
+    const generation = ++this.flowLoadGeneration;
     this.flowReady = false;
+    this.governanceOpened = false;
     this._formInstanceId += 1;
 
     const presetId = urlParams.get('preset_id');
 
     if (this.flowId) {
       this.isNew = false;
-      this.flow = await getFlow(this.flowId);
+      const flow = await getFlow(this.flowId);
+      if (generation !== this.flowLoadGeneration) return;
+      this.flow = flow;
+      if (!this.isEditing) this.flowReady = true;
 
       this.triggerType =
         this.flow.trigger_event_source === 'webhook'
@@ -364,16 +378,20 @@ export class FlowView extends LitElement {
 
       void this.loadScheduleNextRuns();
 
-      const allExecutions = await import('../../api').then((m) =>
-        m.getFlowExecutions({ flowId: this.flowId, limit: 10 })
-      );
-      this.recentExecutions = allExecutions
-        .sort(
-          (a: any, b: any) =>
-            parseUTCDate(b.start_time).getTime() -
-            parseUTCDate(a.start_time).getTime()
-        )
-        .slice(0, 10);
+      void getFlowExecutions({ flowId: this.flowId, limit: 10 })
+        .then((executions) => {
+          if (generation !== this.flowLoadGeneration) return;
+          this.recentExecutions = executions
+            .sort(
+              (a: any, b: any) =>
+                parseUTCDate(b.start_time).getTime() -
+                parseUTCDate(a.start_time).getTime()
+            )
+            .slice(0, 10);
+        })
+        .catch((error) =>
+          console.error('Failed to load recent flow executions:', error)
+        );
 
       this._loadingReferenceData = true;
       try {
@@ -387,11 +405,12 @@ export class FlowView extends LitElement {
         ] = await Promise.all([
           getTrackers(),
           getAIModels(),
-          getAllTools(),
-          getMCPServers(),
+          this.isEditing ? getAllTools() : Promise.resolve([]),
+          this.isEditing ? getMCPServers() : Promise.resolve([]),
           listOrganizations(),
           listProjects(),
         ]);
+        if (generation !== this.flowLoadGeneration) return;
         this.trackers = trackers;
         this.models = models;
         this.availableTools = tools;
@@ -441,8 +460,10 @@ export class FlowView extends LitElement {
       };
     }
 
+    if (!this.isEditing && !this.isNew) return;
     try {
       const agentsRes = await getAccountAgents({ limit: 100 });
+      if (generation !== this.flowLoadGeneration) return;
       this.longRunningAgents = agentsRes.items || [];
 
       if (this.flow && this.flow.agent_config) {
@@ -458,7 +479,7 @@ export class FlowView extends LitElement {
     } catch (e) {
       console.error('Failed to load long-running agents', e);
     } finally {
-      this.flowReady = true;
+      if (generation === this.flowLoadGeneration) this.flowReady = true;
     }
 
     if (presetId) {
@@ -638,9 +659,47 @@ export class FlowView extends LitElement {
         </div>
       </view-header>
       <div class="column-layout wide">
-        <div class="main-column">${this.renderForm()}</div>
+        <div class="main-column">
+          ${this.renderForm()} ${this.isNew ? '' : this.renderGovernanceCard()}
+        </div>
       </div>
     `;
+  }
+
+  /** Readonly details do not need governance editor catalogs until opened. */
+  private renderGovernanceDisclosure() {
+    return html`<details
+      class="flow-governance-disclosure"
+      @toggle=${(event: Event) => {
+        if ((event.target as HTMLDetailsElement).open)
+          this.governanceOpened = true;
+      }}
+    >
+      <summary>Governance</summary>
+      ${this.governanceOpened ? this.renderGovernanceCard() : ''}
+    </details>`;
+  }
+
+  /**
+   * Per-flow governance override. Allowed MCP Tools scope what the agent
+   * sees; this card governs how those calls (and model calls) are decided.
+   */
+  renderGovernanceCard() {
+    if (!this.flowId) return '';
+    return html`<flow-governance-card
+      .flowId=${this.flowId}
+      .allowedToolNames=${(this.flow.allowed_mcp_tools || []).map(
+        (tool) => tool.tool_name
+      )}
+      ?inheritsFromAgent=${this.flowRunsAsAgent()}
+    ></flow-governance-card>`;
+  }
+
+  /** Employee flows run as a managed agent, whose settings fill gaps. */
+  private flowRunsAsAgent(): boolean {
+    const trigger = (this.flow as any).trigger_config;
+    const agentConfig = (this.flow as any).agent_config;
+    return Boolean(trigger?.employee_events && agentConfig?.target_agent_id);
   }
 
   renderFlowDetails() {
@@ -877,7 +936,7 @@ ${this.flow.review_instructions}</pre>
                 `
               : ''
           }
-          ${this.renderPublicationPolicy()}
+          ${this.renderPublicationPolicy()} ${this.renderGovernanceDisclosure()}
           ${
             this.flow.git_clone_config?.enabled &&
             (this.flow.git_clone_config.repositories?.length || 0) > 0
@@ -2397,6 +2456,33 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                       this.requestUpdate();
                     }}
                     help-text="Filter by labels (triggers if ANY label matches)"
+                  ></sl-input>
+
+                  <!-- All-of labels filter (route by tag, e.g. complexity) -->
+                  <sl-input
+                    label="Issue must also carry all of these labels"
+                    placeholder="e.g. complexity:low"
+                    .value=${
+                      (
+                        this.flow.trigger_config?.labels_all as
+                          string[] | undefined
+                      )?.join(', ') || ''
+                    }
+                    @sl-input=${(e: any) => {
+                      if (!this.flow.trigger_config)
+                        this.flow.trigger_config = {};
+                      const value = e.target.value.trim();
+                      if (value) {
+                        this.flow.trigger_config.labels_all = value
+                          .split(',')
+                          .map((l: string) => l.trim())
+                          .filter((l: string) => l.length > 0);
+                      } else {
+                        delete this.flow.trigger_config.labels_all;
+                      }
+                      this.requestUpdate();
+                    }}
+                    help-text="Comma-separated. Every label must be on the issue (checked after the change), in addition to the filter above"
                   ></sl-input>
 
                   <!-- Milestone filter (GitHub/GitLab only) -->

@@ -898,7 +898,8 @@ async def create_issue(
 
         # Create the issue in the database
         try:
-            db_issue = crud_issue.create(db=db, obj_in=issue_data_for_db)
+            # The provider's "opened" webhook may store this issue first.
+            db_issue, _ = crud_issue.upsert(db=db, obj_in=issue_data_for_db)
             db.commit()  # Commit the transaction
             db.refresh(db_issue)  # Refresh to get DB-generated values like ID
         except Exception as db_exc:

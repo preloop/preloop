@@ -17,6 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in Perl toolchain image for Codex.** `environments/perl/Dockerfile`
+  extends a digest-pinned Codex-compatible base with `perl`, `cpanm`,
+  `perlver`, `perlcritic` and `prove`, and `run-smoke.sh` checks it offline as
+  the agent user. Select it with `CODEX_IMAGE` (hosted) or
+  `agent_config.image` (private runner). Defaults are unchanged. The project
+  fixture image now runs the same shared smoke, which also names a missing
+  tool, separates a 5.10 fixture from a newer one and proves `prove` fails on
+  a failing test (#1058).
+- **Scheduled runs know their time window.** A schedule-triggered run's
+  `trigger_event.payload` now carries `previous_scheduled_at` (the previous
+  fire time, computed from the schedule definition in its timezone),
+  `window: {from, to}` and `last_successful_scheduled_at` (from execution
+  history, `null` until a run succeeds). All three are prompt template
+  variables, e.g. `{{trigger_event.payload.window.from}}` (#1105).
 - **Per-user budgets count API-key traffic.** A call made with an API key a
   user owns now counts toward that user's `user` budget and is blocked by its
   hard limit. Agent traffic keeps counting against the agent's owner only, so
@@ -341,6 +355,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is passed only to `x11vnc -storepasswd` (briefly visible to other local
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
+- **Sandbox runtime and node placement for agent pods.** Helm gains
+  `agentExecution.runtimeClassName`, `agentExecution.nodeSelector` and
+  `agentExecution.tolerations` (all empty by default) so agent Jobs and the
+  hosted publication verifier run under a stronger runtime (Kata
+  Containers, gVisor, Firecracker) and on the node pool that provides it.
+  Malformed or Kubernetes-invalid values are ignored so a typo cannot stop
+  an agent from starting (#1076).
+
 ### Changed
 
 - `webhook_config.webhook_secret` is optional in the flow API, so a flow
@@ -417,6 +439,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Listing a server's discovered MCP tools returns 200 again.**
+  `MCPToolResponse` declared `id` and `mcp_server_id` as `str`, but
+  `GET /api/v1/mcp-servers/{id}/tools` validates ORM rows whose identifiers
+  are `UUID`s, so the list raised a pydantic validation error that surfaced
+  as a 500. The schema now uses `UUID` and serializes those fields back to
+  strings (#1137).
+- **Schedule-triggered flows created after the scheduler started now fire.**
+  The reconcile job's id shares the per-flow job prefix, so its first pass
+  removed itself and later flows never got a job until a restart.
 - A Jira-triggered flow bound to a code-host repository now clones that
   repository on Copilot and Cursor host execution profiles too, with the
   code-host tracker's credential only. Before, the host checkout ignored the

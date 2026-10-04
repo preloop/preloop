@@ -1,0 +1,1763 @@
+{
+  "_meta": {
+    "version": "10.2",
+    "source": "Synthetic payloads shaped after the Bitbucket Data Center 10.2 'Event payload' documentation; all hosts, users and ids are invented.",
+    "headers": [
+      "X-Event-Key",
+      "X-Hub-Signature",
+      "X-Request-Id"
+    ]
+  },
+  "events": {
+    "repo:refs_changed": {
+      "eventKey": "repo:refs_changed",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "repository": {
+        "slug": "my-repo",
+        "id": 42,
+        "name": "My Repo",
+        "scmId": "git",
+        "state": "AVAILABLE",
+        "statusMessage": "Available",
+        "forkable": true,
+        "project": {
+          "key": "PRJ",
+          "id": 7,
+          "name": "Example Project",
+          "public": false,
+          "type": "NORMAL"
+        },
+        "public": false,
+        "archived": false,
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+            }
+          ]
+        }
+      },
+      "changes": [
+        {
+          "ref": {
+            "id": "refs/heads/main",
+            "displayId": "main",
+            "type": "BRANCH"
+          },
+          "refId": "refs/heads/main",
+          "fromHash": "9c0e5e2d4b8f4a1c3e6d7f8a9b0c1d2e3f4a5b6c",
+          "toHash": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "UPDATE"
+        }
+      ]
+    },
+    "pr:opened": {
+      "eventKey": "pr:opened",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      }
+    },
+    "pr:from_ref_updated": {
+      "eventKey": "pr:from_ref_updated",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 4,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "previousFromHash": "9c0e5e2d4b8f4a1c3e6d7f8a9b0c1d2e3f4a5b6c"
+    },
+    "pr:modified": {
+      "eventKey": "pr:modified",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 5,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "previousTitle": "Add retry",
+      "previousDescription": "Line one",
+      "previousTarget": {
+        "id": "refs/heads/main",
+        "displayId": "main",
+        "type": "BRANCH",
+        "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd"
+      }
+    },
+    "pr:reviewer:approved": {
+      "eventKey": "pr:reviewer:approved",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "rev",
+        "emailAddress": "rev@example.com",
+        "id": 102,
+        "displayName": "Reviewer",
+        "active": true,
+        "slug": "rev",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "participant": {
+        "user": {
+          "name": "rev",
+          "emailAddress": "rev@example.com",
+          "id": 102,
+          "displayName": "Reviewer",
+          "active": true,
+          "slug": "rev",
+          "type": "NORMAL"
+        },
+        "role": "REVIEWER",
+        "approved": true,
+        "status": "APPROVED",
+        "lastReviewedCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b"
+      },
+      "previousStatus": "UNAPPROVED"
+    },
+    "pr:reviewer:unapproved": {
+      "eventKey": "pr:reviewer:unapproved",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "rev",
+        "emailAddress": "rev@example.com",
+        "id": 102,
+        "displayName": "Reviewer",
+        "active": true,
+        "slug": "rev",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "participant": {
+        "user": {
+          "name": "rev",
+          "emailAddress": "rev@example.com",
+          "id": 102,
+          "displayName": "Reviewer",
+          "active": true,
+          "slug": "rev",
+          "type": "NORMAL"
+        },
+        "role": "REVIEWER",
+        "approved": false,
+        "status": "UNAPPROVED",
+        "lastReviewedCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b"
+      },
+      "previousStatus": "APPROVED"
+    },
+    "pr:reviewer:needs_work": {
+      "eventKey": "pr:reviewer:needs_work",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "rev",
+        "emailAddress": "rev@example.com",
+        "id": 102,
+        "displayName": "Reviewer",
+        "active": true,
+        "slug": "rev",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "participant": {
+        "user": {
+          "name": "rev",
+          "emailAddress": "rev@example.com",
+          "id": 102,
+          "displayName": "Reviewer",
+          "active": true,
+          "slug": "rev",
+          "type": "NORMAL"
+        },
+        "role": "REVIEWER",
+        "approved": false,
+        "status": "NEEDS_WORK",
+        "lastReviewedCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b"
+      },
+      "previousStatus": "UNAPPROVED"
+    },
+    "pr:comment:added": {
+      "eventKey": "pr:comment:added",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "rev",
+        "emailAddress": "rev@example.com",
+        "id": 102,
+        "displayName": "Reviewer",
+        "active": true,
+        "slug": "rev",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "comment": {
+        "properties": {
+          "repositoryId": 42
+        },
+        "id": 502,
+        "version": 0,
+        "text": "Please add a test for the retry path.",
+        "author": {
+          "name": "rev",
+          "emailAddress": "rev@example.com",
+          "id": 102,
+          "displayName": "Reviewer",
+          "active": true,
+          "slug": "rev",
+          "type": "NORMAL"
+        },
+        "createdDate": 1759001000000,
+        "updatedDate": 1759001000000,
+        "comments": [],
+        "tasks": [],
+        "severity": "NORMAL",
+        "state": "OPEN",
+        "threadResolved": false
+      },
+      "commentParentId": 501
+    },
+    "pr:comment:edited": {
+      "eventKey": "pr:comment:edited",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "rev",
+        "emailAddress": "rev@example.com",
+        "id": 102,
+        "displayName": "Reviewer",
+        "active": true,
+        "slug": "rev",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "comment": {
+        "properties": {
+          "repositoryId": 42
+        },
+        "id": 502,
+        "version": 1,
+        "text": "Please add a test for the retry and timeout paths.",
+        "author": {
+          "name": "rev",
+          "emailAddress": "rev@example.com",
+          "id": 102,
+          "displayName": "Reviewer",
+          "active": true,
+          "slug": "rev",
+          "type": "NORMAL"
+        },
+        "createdDate": 1759001000000,
+        "updatedDate": 1759001000000,
+        "comments": [],
+        "tasks": [],
+        "severity": "NORMAL",
+        "state": "OPEN",
+        "threadResolved": false
+      },
+      "commentParentId": 501,
+      "previousComment": "Please add a test for the retry path."
+    },
+    "pr:comment:deleted": {
+      "eventKey": "pr:comment:deleted",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "rev",
+        "emailAddress": "rev@example.com",
+        "id": 102,
+        "displayName": "Reviewer",
+        "active": true,
+        "slug": "rev",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "OPEN",
+        "open": true,
+        "closed": false,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      },
+      "comment": {
+        "properties": {
+          "repositoryId": 42
+        },
+        "id": 502,
+        "version": 1,
+        "text": "Please add a test for the retry and timeout paths.",
+        "author": {
+          "name": "rev",
+          "emailAddress": "rev@example.com",
+          "id": 102,
+          "displayName": "Reviewer",
+          "active": true,
+          "slug": "rev",
+          "type": "NORMAL"
+        },
+        "createdDate": 1759001000000,
+        "updatedDate": 1759001000000,
+        "comments": [],
+        "tasks": [],
+        "severity": "NORMAL",
+        "state": "OPEN",
+        "threadResolved": false
+      },
+      "commentParentId": 501
+    },
+    "pr:merged": {
+      "eventKey": "pr:merged",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "MERGED",
+        "open": false,
+        "closed": true,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      }
+    },
+    "pr:declined": {
+      "eventKey": "pr:declined",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "DECLINED",
+        "open": false,
+        "closed": true,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      }
+    },
+    "pr:deleted": {
+      "eventKey": "pr:deleted",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "pullRequest": {
+        "id": 101,
+        "version": 3,
+        "title": "Add retry to sync",
+        "description": "Line one\n\nLine two",
+        "state": "DECLINED",
+        "open": false,
+        "closed": true,
+        "draft": false,
+        "createdDate": 1759000000000,
+        "updatedDate": 1759003600000,
+        "fromRef": {
+          "id": "refs/heads/feature/retry",
+          "displayId": "feature/retry",
+          "latestCommit": "04c7c5c931b9418ca7b66f51fe934d0bd9b2ba4b",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "toRef": {
+          "id": "refs/heads/main",
+          "displayId": "main",
+          "latestCommit": "6df3858eeb9a53a911cd17e66a9174d44ffb02cd",
+          "type": "BRANCH",
+          "repository": {
+            "slug": "my-repo",
+            "id": 42,
+            "name": "My Repo",
+            "scmId": "git",
+            "state": "AVAILABLE",
+            "statusMessage": "Available",
+            "forkable": true,
+            "project": {
+              "key": "PRJ",
+              "id": 7,
+              "name": "Example Project",
+              "public": false,
+              "type": "NORMAL"
+            },
+            "public": false,
+            "archived": false,
+            "links": {
+              "self": [
+                {
+                  "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+                }
+              ]
+            }
+          }
+        },
+        "locked": false,
+        "author": {
+          "user": {
+            "name": "jdoe",
+            "slug": "jdoe",
+            "displayName": "Jane Doe",
+            "id": 101,
+            "active": true,
+            "type": "NORMAL"
+          },
+          "role": "AUTHOR",
+          "approved": false,
+          "status": "UNAPPROVED"
+        },
+        "reviewers": [
+          {
+            "user": {
+              "name": "rev",
+              "emailAddress": "rev@example.com",
+              "id": 102,
+              "displayName": "Reviewer",
+              "active": true,
+              "slug": "rev",
+              "type": "NORMAL"
+            },
+            "role": "REVIEWER",
+            "approved": false,
+            "status": "UNAPPROVED"
+          }
+        ],
+        "participants": [],
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/pull-requests/101"
+            }
+          ]
+        }
+      }
+    },
+    "diagnostics:ping": {
+      "test": true
+    },
+    "repo:forked": {
+      "eventKey": "repo:forked",
+      "date": "2026-10-01T09:58:11+0000",
+      "actor": {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "Jane Doe",
+        "active": true,
+        "slug": "jdoe",
+        "type": "NORMAL"
+      },
+      "repository": {
+        "slug": "my-repo-fork",
+        "id": 43,
+        "name": "My Repo",
+        "scmId": "git",
+        "state": "AVAILABLE",
+        "statusMessage": "Available",
+        "forkable": true,
+        "project": {
+          "key": "PRJ",
+          "id": 7,
+          "name": "Example Project",
+          "public": false,
+          "type": "NORMAL"
+        },
+        "public": false,
+        "archived": false,
+        "links": {
+          "self": [
+            {
+              "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+            }
+          ]
+        },
+        "origin": {
+          "slug": "my-repo",
+          "id": 42,
+          "name": "My Repo",
+          "scmId": "git",
+          "state": "AVAILABLE",
+          "statusMessage": "Available",
+          "forkable": true,
+          "project": {
+            "key": "PRJ",
+            "id": 7,
+            "name": "Example Project",
+            "public": false,
+            "type": "NORMAL"
+          },
+          "public": false,
+          "archived": false,
+          "links": {
+            "self": [
+              {
+                "href": "https://bitbucket.example.com/bitbucket/projects/PRJ/repos/my-repo/browse"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

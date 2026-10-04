@@ -66,6 +66,24 @@ ended is accepted, including a key pinned to that session, so an adapter
 can flush after the run. The model gateway still rejects that key for
 inference.
 
+## Browser Use
+
+The `preloop-browser-use` package in
+[`runtime-plugins/browser-use-preloop`](https://github.com/preloop/preloop/tree/main/runtime-plugins/browser-use-preloop)
+is a Browser Use `on_step_end` callback. It posts each step with its
+screenshot as `source: browser_use`, in batches, and never stops the agent
+when Preloop is unreachable:
+
+```python
+from preloop_browser_use import PreloopBrowserUseReporter
+
+reporter = PreloopBrowserUseReporter.from_env()
+history = await reporter.run(agent)
+```
+
+Setup, the field mapping and the supported versions are in its
+[README](https://github.com/preloop/preloop/blob/main/runtime-plugins/browser-use-preloop/README.md).
+
 ## Screenshots
 
 Add a `screenshot` object to a step:
@@ -189,8 +207,11 @@ the step index and the agent's reasoning (collapsed). A step with a
 screenshot shows a thumbnail; click it for the full-size viewer, where the
 arrow keys page through the session's steps and Escape closes it.
 
-When a session has browser steps, a strip above the timeline lists one
-entry per step. Click an entry to scroll the timeline to that step.
+When a session has browser steps, a strip above the timeline lists the most
+recent 200 entries; a `+N` button folds the older ones behind it. Clicking
+that button reveals the previous 200 at a time, so a long session stays
+responsive while every step remains reachable. Click an entry to scroll the
+timeline to that step.
 
 The console shows exactly what was stored: steps with `screenshot: null`
 (for example from `--image-responses omit`, or a refused image) have no

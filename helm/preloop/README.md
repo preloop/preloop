@@ -481,6 +481,7 @@ helm install preloop ./helm/preloop \
 | `serviceAccount.annotations`   | Annotations for the service account                   | `{}`        |
 | `serviceAccount.name`          | The name of the service account                       | `""`        |
 | `podAnnotations`               | Annotations for pods                                  | `{}`        |
+| `podLabels`                    | Extra labels on the api, gateway, frontend, and spacesync-* deployments (not health-monitor or Jobs). For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set `azure.workload.identity/use: "true"` and annotate the service account with `azure.workload.identity/client-id` | `{}`        |
 | `podSecurityContext`           | Pod security context                                  | `{}`        |
 | `securityContext`              | Container security context                            | `{}`        |
 | `nodeSelector`                 | Node selector                                         | `{}`        |
@@ -490,6 +491,14 @@ helm install preloop ./helm/preloop \
 | `autoscaling.minReplicas`      | Minimum number of replicas                            | `1`         |
 | `autoscaling.maxReplicas`      | Maximum number of replicas                            | `5`         |
 | `autoscaling.targetCPUUtilizationPercentage` | Target CPU utilization percentage      | `80`        |
+
+### Agent runtime placement parameters
+
+| Name                                                        | Description                                                       | Value           |
+|-------------------------------------------------------------|-------------------------------------------------------------------|-----------------|
+| `agentExecution.runtimeClassName`                            | RuntimeClass for agent pods (Kata Containers, gVisor, Firecracker); empty uses the node default | `""`            |
+| `agentExecution.nodeSelector`                                | Node selector applied to agent pods only                          | `{}`            |
+| `agentExecution.tolerations`                                 | Tolerations applied to agent pods only                            | `[]`            |
 
 ### Agent isolation parameters
 

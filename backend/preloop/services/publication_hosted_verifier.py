@@ -271,6 +271,15 @@ async def _check_kubernetes(
     from kubernetes_asyncio import client
     from kubernetes_asyncio.stream import WsApiClient
 
+    # Imported here because ``preloop.agents`` pulls in the executor package
+    # and importing it at module scope would make this service sensitive to
+    # the application's import order. The executor passed in already loaded it.
+    from preloop.agents.kubernetes_placement import (
+        client_tolerations as agent_client_tolerations,
+        node_selector as agent_node_selector,
+        runtime_class_name as agent_runtime_class_name,
+    )
+
     await executor._init_kubernetes_clients()
     name = "preloop-verify-" + uuid4().hex
     labels = {"preloop.execution_id": policy.execution_id, "preloop.verifier": name}
@@ -285,6 +294,13 @@ async def _check_kubernetes(
                 metadata=client.V1ObjectMeta(labels=labels),
                 spec=client.V1PodSpec(
                     restart_policy="Never",
+                    # Repository code runs in this Job too, so it gets the
+                    # same sandbox runtime and node placement as agent pods
+                    # (issue #1076). ``None`` omits the key, which keeps a
+                    # stock install on the node default.
+                    runtime_class_name=agent_runtime_class_name() or None,
+                    node_selector=agent_node_selector() or None,
+                    tolerations=agent_client_tolerations(client) or None,
                     automount_service_account_token=False,
                     containers=[
                         client.V1Container(

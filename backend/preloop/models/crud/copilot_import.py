@@ -4,6 +4,13 @@ The connection row lives in ``copilot_import_connection``. Imported data lives
 in ``provider_billing_snapshot`` with ``provider='copilot'`` and
 ``usage_source='imported'``; the read helpers here only ever select those
 rows, so gateway usage, budgets and ingestion quota never see them.
+
+``copilot_user_mapping`` (#1061) maps canonical GitHub logins of the
+connected organization to Preloop users of the same account. Every read
+here is filtered by the connection's current organization and joins the user
+row, so a mapping written for an earlier organization, for a user who has
+since been deactivated, or (through a corrupt row) for another account's
+user never contributes.
 """
 
 from __future__ import annotations
@@ -13,10 +20,12 @@ from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 from sqlalchemy import Float, and_, cast, func
-from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Query, Session
 
-from ..models.copilot_import import CopilotImportConnection
+from ..models.copilot_import import CopilotImportConnection, CopilotUserMapping
 from ..models.provider_billing import ProviderBillingSnapshot
+from ..models.user import User
 from .base import CRUDBase
 from .provider_billing import (
     IMPORTED_USAGE_SOURCE,
@@ -31,6 +40,28 @@ LINE_ITEM_PREMIUM_REQUEST = "premium_request"
 LINE_ITEM_SEAT = "seat"
 LINE_ITEM_SEAT_SUMMARY = "seat_summary"
 LINE_ITEM_USAGE_METRICS = "usage_metrics"
+
+
+def canonical_github_login(login: str) -> str:
+    """The form a GitHub login is stored and compared in: trimmed, lowercase.
+
+    GitHub treats logins case-insensitively, and the import stores whatever
+    spelling GitHub returned, so both sides are canonicalised before they
+    meet.
+
+    Args:
+        login: Login as typed or as imported.
+
+    Returns:
+        The canonical login.
+
+    Raises:
+        ValueError: The login is empty once trimmed.
+    """
+    canonical = (login or "").strip().lower()
+    if not canonical:
+        raise ValueError("GitHub login must not be empty")
+    return canonical
 
 
 class CRUDCopilotImportConnection(CRUDBase[CopilotImportConnection]):
@@ -53,6 +84,29 @@ class CRUDCopilotImportConnection(CRUDBase[CopilotImportConnection]):
             .filter(CopilotImportConnection.is_active.is_(True))
             .all()
         )
+
+    def get_active_for_account(
+        self, db: Session, *, account_id: Union[uuid.UUID, str]
+    ) -> Optional[CopilotImportConnection]:
+        """The account's connection when it exists and is active, else None.
+
+        A paused or missing connection contributes nothing to spend alerts,
+        so callers that evaluate imported spend read through this.
+        """
+        connection = self.get_for_account(db, account_id=account_id)
+        if connection is None or not connection.is_active:
+            return None
+        return connection
+
+    def list_active_account_ids(self, db: Session) -> List[uuid.UUID]:
+        """Accounts with an active connection, in a stable order."""
+        rows = (
+            db.query(CopilotImportConnection.account_id)
+            .filter(CopilotImportConnection.is_active.is_(True))
+            .order_by(CopilotImportConnection.account_id)
+            .all()
+        )
+        return [row.account_id for row in rows]
 
     def record_sync(
         self,
@@ -309,5 +363,150 @@ class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
         return {"summary": summary, "seats": seats}
 
 
+class CRUDCopilotUserMapping(CRUDBase[CopilotUserMapping]):
+    """Operator-written mappings from GitHub logins to Preloop users.
+
+    Every method takes the connection, not a bare account id, so the
+    organization filter can never be forgotten: a mapping belongs to the
+    account, the connection and the organization it was written for.
+    """
+
+    def _for_connection(
+        self, db: Session, connection: CopilotImportConnection
+    ) -> Query[CopilotUserMapping]:
+        return db.query(CopilotUserMapping).filter(
+            CopilotUserMapping.account_id == connection.account_id,
+            CopilotUserMapping.connection_id == connection.id,
+            CopilotUserMapping.organization == connection.organization,
+        )
+
+    def list_for_connection(
+        self, db: Session, *, connection: CopilotImportConnection
+    ) -> List[CopilotUserMapping]:
+        """Mappings for the connection's current organization, by login."""
+        return (
+            self._for_connection(db, connection)
+            .order_by(CopilotUserMapping.github_login)
+            .all()
+        )
+
+    def get_for_login(
+        self,
+        db: Session,
+        *,
+        connection: CopilotImportConnection,
+        github_login: str,
+    ) -> Optional[CopilotUserMapping]:
+        """The mapping for one canonical login, or None."""
+        return (
+            self._for_connection(db, connection)
+            .filter(
+                CopilotUserMapping.github_login == canonical_github_login(github_login)
+            )
+            .first()
+        )
+
+    def upsert(
+        self,
+        db: Session,
+        *,
+        connection: CopilotImportConnection,
+        github_login: str,
+        user_id: uuid.UUID,
+        commit: bool = True,
+    ) -> CopilotUserMapping:
+        """Write the mapping for one login, replacing a previous target.
+
+        ``INSERT ... ON CONFLICT DO UPDATE`` on the login's unique key, so
+        the same login written twice (in any letter case) is one row whose
+        user is the last one written.
+
+        The caller validates the user (same account, active) before calling;
+        this method only persists.
+
+        Args:
+            db: Database session.
+            connection: The account's Copilot connection.
+            github_login: Login in any spelling; stored canonical.
+            user_id: Preloop user of the same account.
+            commit: Commit when True, flush otherwise.
+
+        Returns:
+            The stored mapping.
+        """
+        login = canonical_github_login(github_login)
+        statement = (
+            pg_insert(CopilotUserMapping)
+            .values(
+                id=uuid.uuid4(),
+                account_id=connection.account_id,
+                connection_id=connection.id,
+                organization=connection.organization,
+                github_login=login,
+                user_id=user_id,
+            )
+            .on_conflict_do_update(
+                constraint="uq_copilot_user_mapping_login",
+                set_={
+                    "connection_id": connection.id,
+                    "user_id": user_id,
+                    "updated_at": func.now(),
+                },
+            )
+        )
+        db.execute(statement)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        mapping = self.get_for_login(db, connection=connection, github_login=login)
+        assert mapping is not None  # the statement above guarantees the row
+        db.refresh(mapping)
+        return mapping
+
+    def delete_for_login(
+        self,
+        db: Session,
+        *,
+        connection: CopilotImportConnection,
+        github_login: str,
+        commit: bool = True,
+    ) -> int:
+        """Remove the mapping for one login. Returns the rows removed (0 or 1)."""
+        removed = (
+            self._for_connection(db, connection)
+            .filter(
+                CopilotUserMapping.github_login == canonical_github_login(github_login)
+            )
+            .delete(synchronize_session=False)
+        )
+        if commit:
+            db.commit()
+        return int(removed)
+
+    def resolve_user_ids(
+        self, db: Session, *, connection: CopilotImportConnection
+    ) -> Dict[str, uuid.UUID]:
+        """Canonical login to user id for every mapping that may contribute.
+
+        Joins the user row and keeps only active users of the connection's
+        account, so a deactivated user, or a row that (through corruption)
+        points at another account's user, resolves to nothing rather than to
+        spend attributed to the wrong person.
+        """
+        rows = (
+            self._for_connection(db, connection)
+            .join(User, User.id == CopilotUserMapping.user_id)
+            .filter(
+                User.account_id == connection.account_id,
+                User.is_active.is_(True),
+            )
+            .with_entities(CopilotUserMapping.github_login, CopilotUserMapping.user_id)
+            .all()
+        )
+        return {row.github_login: row.user_id for row in rows}
+
+
 crud_copilot_import_connection = CRUDCopilotImportConnection(CopilotImportConnection)
 crud_copilot_usage = CRUDCopilotUsage(ProviderBillingSnapshot)
+crud_copilot_user_mapping = CRUDCopilotUserMapping(CopilotUserMapping)

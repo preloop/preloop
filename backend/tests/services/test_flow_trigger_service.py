@@ -1813,3 +1813,231 @@ class TestFindDuplicateExecutionResourceKey:
         )
         assert duplicate is None
         mock_crud.get_running_by_flow.assert_not_called()
+
+
+class TestTriageDispatchHandOff:
+    """Labels from one triage write start the implementation flow exactly once."""
+
+    @staticmethod
+    def _labeled(label: str, account_id: str) -> dict:
+        return {
+            "source": "github",
+            "type": "issue_labeled",
+            "account_id": account_id,
+            "payload": {
+                "action": "labeled",
+                "sender": {"login": "preloop[bot]"},
+                "label": {"name": label},
+                "issue": {
+                    "number": 17,
+                    "title": "Improve first render performance",
+                    "labels": [{"name": label}],
+                },
+                "repository": {"full_name": "example/widgets"},
+            },
+        }
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    async def test_bot_dispatch_label_starts_implementation_once(
+        self, mock_crud, mock_nats, mock_create_task, flow_trigger_service
+    ):
+        mock_nats.return_value = AsyncMock()
+        implementation = MagicMock()
+        implementation.id = uuid.uuid4()
+        implementation.name = "Automated Issue Implementation"
+        implementation.is_enabled = True
+        implementation.is_preset = False
+        implementation.source_preset_id = None
+        implementation.git_clone_config = None
+        implementation.trigger_config = {"labels": ["agent-ready"]}
+        triage = MagicMock()
+        triage.id = uuid.uuid4()
+        triage.name = "Issue Triage Assistant"
+        triage.is_enabled = True
+        triage.git_clone_config = None
+        triage.trigger_config = None
+        subscribed = {"issue_labeled": [implementation], "issue_updated": [triage]}
+        mock_crud.get_by_trigger.side_effect = lambda db, event_type, **kwargs: list(
+            subscribed.get(event_type, [])
+        )
+        account_id = str(uuid.uuid4())
+        start = AsyncMock()
+        with patch.object(flow_trigger_service, "_start_flow_execution", new=start):
+            # GitHub reports one labeled delivery per label in the delta.
+            for label in (
+                "complexity:low",
+                "risk:low",
+                "readiness:ready",
+                "agent-ready",
+            ):
+                await flow_trigger_service.process_event(
+                    self._labeled(label, account_id)
+                )
+        started = [call.kwargs["flow"] for call in start.await_args_list]
+        assert started == [implementation]
+
+
+def _gh_labeled(label: str, issue_labels: list, action: str = "labeled") -> dict:
+    return {
+        "source": "github",
+        "type": "issue_labeled" if action == "labeled" else "issue_unlabeled",
+        "account_id": str(uuid.uuid4()),
+        "payload": {
+            "action": action,
+            "sender": {"login": "octocat"},
+            "label": {"name": label},
+            "issue": {
+                "number": 42,
+                "title": "Route me",
+                "labels": [{"name": n} for n in issue_labels],
+            },
+            "repository": {"full_name": "example/widgets"},
+        },
+    }
+
+
+class TestLabelsAll:
+    """``labels_all``: the issue must carry every listed label (issue #1243)."""
+
+    def _match(self, svc, flow, config, event):
+        flow.trigger_config = config
+        flow.git_clone_config = None
+        return svc._matches_trigger_config(flow, event)
+
+    def test_any_of_only_unchanged(self, flow_trigger_service, sample_flow):
+        ev = _gh_labeled("agent-ready", ["agent-ready", "complexity:low"])
+        assert self._match(
+            flow_trigger_service, sample_flow, {"labels": ["agent-ready"]}, ev
+        )
+
+    def test_all_of_only(self, flow_trigger_service, sample_flow):
+        cfg = {"labels_all": ["complexity:low", "risk:low"]}
+        ok = {"payload": {"labels": ["complexity:low", "risk:low", "bug"]}}
+        partial = {"payload": {"labels": ["complexity:low"]}}
+        assert self._match(flow_trigger_service, sample_flow, cfg, ok)
+        assert not self._match(flow_trigger_service, sample_flow, cfg, partial)
+
+    def test_both_conditions(self, flow_trigger_service, sample_flow):
+        cfg = {"labels": ["agent-ready"], "labels_all": ["complexity:low"]}
+        low = _gh_labeled("agent-ready", ["agent-ready", "complexity:low"])
+        medium = _gh_labeled("agent-ready", ["agent-ready", "complexity:medium"])
+        other_event = _gh_labeled("complexity:low", ["agent-ready", "complexity:low"])
+        assert self._match(flow_trigger_service, sample_flow, cfg, low)
+        assert not self._match(flow_trigger_service, sample_flow, cfg, medium)
+        # The any-of part still reads the event's own label.
+        assert not self._match(flow_trigger_service, sample_flow, cfg, other_event)
+
+    def test_label_change_reads_object_list(self, flow_trigger_service, sample_flow):
+        cfg = {"labels_all": ["complexity:low"]}
+        # The event's own label is not the required one; the issue list is.
+        ev = _gh_labeled("agent-ready", ["agent-ready", "complexity:low"])
+        assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+        # An unlabeled delivery does not count the label that just left.
+        gone = _gh_labeled("complexity:low", ["agent-ready"], action="unlabeled")
+        assert not self._match(flow_trigger_service, sample_flow, cfg, gone)
+
+    def test_gitlab_object_list(self, flow_trigger_service, sample_flow):
+        cfg = {"labels_all": ["complexity:medium"]}
+        ev = {
+            "type": "issue_labeled",
+            "payload": {
+                "object_kind": "issue",
+                "labels": [{"title": "agent-ready"}, {"title": "complexity:medium"}],
+            },
+        }
+        assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+
+    def test_missing_list_does_not_match(self, flow_trigger_service, sample_flow):
+        cfg = {"labels_all": ["complexity:low"]}
+        assert not self._match(
+            flow_trigger_service, sample_flow, cfg, {"payload": {"title": "x"}}
+        )
+
+    def test_empty_labels_all_is_ignored(self, flow_trigger_service, sample_flow):
+        assert self._match(
+            flow_trigger_service,
+            sample_flow,
+            {"labels_all": []},
+            {"payload": {"title": "x"}},
+        )
+
+    def test_nested_filter_conditions(self, flow_trigger_service, sample_flow):
+        cfg = {"filter_conditions": {"labels_all": ["complexity:low"]}}
+        ev = _gh_labeled("agent-ready", ["agent-ready", "complexity:medium"])
+        assert not self._match(flow_trigger_service, sample_flow, cfg, ev)
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    async def test_one_dispatch_starts_only_matching_flow(
+        self, mock_crud, mock_nats, mock_create_task, flow_trigger_service
+    ):
+        mock_nats.return_value = AsyncMock()
+
+        def _flow(name, tier):
+            f = MagicMock()
+            f.id = uuid.uuid4()
+            f.name = name
+            f.is_enabled = True
+            f.is_preset = False
+            f.source_preset_id = None
+            f.git_clone_config = None
+            f.trigger_config = {"labels": ["agent-ready"], "labels_all": [tier]}
+            return f
+
+        low = _flow("Implementation (low)", "complexity:low")
+        medium = _flow("Implementation (medium)", "complexity:medium")
+        mock_crud.get_by_trigger.side_effect = lambda db, event_type, **kw: (
+            [low, medium] if event_type == "issue_labeled" else []
+        )
+        start = AsyncMock()
+        with patch.object(flow_trigger_service, "_start_flow_execution", new=start):
+            await flow_trigger_service.process_event(
+                _gh_labeled("agent-ready", ["complexity:medium", "agent-ready"])
+            )
+        started = [call.kwargs["flow"] for call in start.await_args_list]
+        assert started == [medium]
+
+    def test_jira_fields_labels(self, flow_trigger_service, sample_flow):
+        cfg = {"labels_all": ["complexity:low"]}
+        ev = {"payload": {"issue": {"fields": {"labels": ["complexity:low"]}}}}
+        assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+
+    def test_github_pull_request_labels(self, flow_trigger_service, sample_flow):
+        cfg = {"labels_all": ["complexity:low", "risk:low"]}
+        ev = {
+            "type": "pull_request_labeled",
+            "payload": {
+                "action": "labeled",
+                "label": {"name": "risk:low"},
+                "pull_request": {
+                    "number": 9,
+                    "labels": [{"name": "complexity:low"}, {"name": "risk:low"}],
+                },
+            },
+        }
+        assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+        ev["payload"]["pull_request"]["labels"] = [{"name": "risk:low"}]
+        assert not self._match(flow_trigger_service, sample_flow, cfg, ev)
+
+    def test_bound_comment_bypasses_both_with_one_lookup(
+        self, flow_trigger_service, sample_flow
+    ):
+        cfg = {"labels": ["agent-ready"], "labels_all": ["complexity:low"]}
+        ev = {
+            "type": "comment_created",
+            "payload": {"issue": {"number": 700, "labels": []}},
+        }
+        with patch(
+            "preloop.services.flow_pr_binding.is_bound_implementation_comment",
+            return_value=True,
+        ) as bound:
+            assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+        assert bound.call_count == 1
+        with patch(
+            "preloop.services.flow_pr_binding.is_bound_implementation_comment",
+            return_value=False,
+        ):
+            assert not self._match(flow_trigger_service, sample_flow, cfg, ev)

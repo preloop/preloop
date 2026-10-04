@@ -1,3 +1,6 @@
 # Keep Cursor transcript fixtures as LF so byte-offset assertions match
 # the JSONL Cursor actually writes (one \\n per line) on every OS.
 cli/internal/cmd/testdata/cursor-transcripts/** text eol=lf
+
+# Golden JSON and table output for `preloop artifacts` tests: LF on every OS.
+cli/internal/cmd/testdata/artifacts/** text eol=lf

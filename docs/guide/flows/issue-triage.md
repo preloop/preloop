@@ -2,10 +2,13 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
-Triage improves the issue itself and applies its complexity tag. It records
-remaining scope, acceptance, evidence, risks and missing decisions in a replaceable
-section of the issue body. A developer can pick up the issue without reading the
-flow execution output.
+Triage turns the issue itself into a spec and applies its complexity, risk and
+readiness tags. It writes a replaceable "Ready for development" section in the
+issue body: Problem, How to measure, What to change, How to verify, Acceptance
+criteria, Out of scope and Tags applied. For performance issues the measure and
+verify sections are mandatory and name a metric and a command; for other kinds
+they collapse into one Validation section. A developer, human or agent, can pick
+up the issue without reading the flow execution output.
 
 The preset ships as `backend/presets/001-issue-triage-assistant.yaml`
 (slug `issue-triage-assistant`) and runs for `issue_opened` and `issue_updated`.
@@ -14,14 +17,16 @@ The preset ships as `backend/presets/001-issue-triage-assistant.yaml`
 
 1. `get_issue` with `include: ["label_catalog", "revision"]` reads fresh provider
    content and a complete, bounded label catalogue for the authorized project. It
-   supplies an expected revision and the permitted complexity scheme.
+   supplies an expected revision and the permitted complexity, risk and
+   readiness schemes.
 2. The agent reconciles linked PRs and available source evidence with the original
    acceptance. It assesses description quality, readiness, complexity and risk
    independently, and selects an exact label from the returned scheme.
-3. `update_issue` with `expected_revision`, `assessment` and `complexity_label`
-   writes the assessment and applies that complexity label. It preserves human text
-   outside the managed section and changes labels through provider deltas, removing
-   only obsolete siblings in the selected family.
+3. `update_issue` with `expected_revision`, `assessment`, `complexity_label`,
+   `risk_label` and `readiness_label` writes the assessment and applies those
+   labels. It preserves human text outside the managed section and changes labels
+   through provider deltas, removing only obsolete siblings in each selected
+   family.
 4. The tool reads the provider state back and synchronizes the observed issue
    through CRUD. Its receipt identifies completed operations, conflicts and
    partial failures. A successful controlled run also persists a versioned
@@ -35,6 +40,67 @@ and `complexity:high`. An ambiguous or truncated catalogue is not evidence that 
 scheme exists. If complexity cannot be estimated, the issue can still receive its
 assessment with the missing information, but the run reports the absent tag as
 incomplete. It never invents an estimate to fill a field.
+
+Risk and readiness follow the same rule. A project's own `risk:*` and
+`readiness:*` labels are reused; without them the service establishes `risk:low`,
+`risk:medium`, `risk:high` and `readiness:ready`, `readiness:needs-spec`,
+`readiness:blocked`, `readiness:in-progress`, `readiness:needs-verification`. A
+null `risk_label` or `readiness_label` leaves that family untouched.
+
+## Dispatch: starting implementation from triage tags
+
+A flow can trigger on the tags triage applies, so no human label is needed to
+hand an issue to an implementation flow. The triage flow opts in with a
+`dispatch` block in its `agent_config`:
+
+```yaml
+agent_config:
+  dispatch:
+    enabled: true
+    label: agent-ready          # default
+    policy:                     # default; any-of per scheme, all schemes required
+      readiness: [readiness:ready]
+      risk: [risk:low]
+      complexity: [complexity:low, complexity:medium]
+```
+
+The model decides readiness, risk and complexity; it cannot apply the dispatch
+label. After a verified triage write by a triage flow execution, the controller
+adds `label` in the same label delta when every policy entry matches the label
+applied for that scheme, and reports an `apply_dispatch_label` operation in the
+receipt. Triage never removes a dispatch label. The policy is operator
+configuration, not part of the model's tool call, and it is part of the flow's
+context identity, so changing it invalidates stored assessment packets. An
+invalid block disables dispatch.
+
+An implementation flow such as the Automated Issue Implementation preset then
+triggers on `issue_labeled` with `trigger_config: {"labels": ["agent-ready"]}`.
+Bot-applied label events pass the loop guard, and a labeled event matches on the
+label it carries, so the complexity, risk and readiness label events of the same
+write do not start it; only the dispatch label event does, once. Those label
+events are not `issue_updated` content changes, so they do not re-trigger triage.
+
+### Route by tags
+
+`trigger_config.labels` is any-of and, on a label event, reads the label the
+event added. `trigger_config.labels_all` adds a second condition: the issue must
+carry every listed label on its current label list (after the change, as the
+GitHub or GitLab payload reports it). Both apply together, so
+`labels` reads "this event added one of" and `labels_all` reads "and the issue
+carries all of". An event without a label list never satisfies `labels_all`.
+
+To send low-complexity issues to a fast model and medium ones to a stronger
+model, create two implementation flows from the same preset:
+
+| Flow | `trigger_config` | Model |
+| --- | --- | --- |
+| Automated Issue Implementation (low) | `{"labels": ["agent-ready"], "labels_all": ["complexity:low"]}` | fast model |
+| Automated Issue Implementation (medium) | `{"labels": ["agent-ready"], "labels_all": ["complexity:medium"]}` | stronger model |
+
+Triage writes `complexity:*` in the same label delta as `agent-ready`, so the
+single `agent-ready` event starts exactly one of them. In the console the field
+is **Issue must also carry all of these labels** under the trigger filters. To
+switch models inside one flow instead, see [model routing](model-routing.md).
 
 Triage has no tools of its own. It is an option on the standard `get_issue` and
 `update_issue` tools, so an agent that already has them needs no extra unlock, and
@@ -190,7 +256,8 @@ complexity tag and successful local synchronization. An assessment only in outpu
 is not successful triage. Conflicts, missing complexity and partial failures use
 `status: error` with a reason and recovery information.
 
-The packet includes `issue_updated`, `applied_complexity_label`, and `application`
+The packet includes `issue_updated`, `applied_complexity_label`,
+`applied_risk_label`, `applied_readiness_label`, `dispatch_label_applied` and `application`
 with the actual status, operations and cache outcome. An unchanged issue sets
 `issue_updated: false`. Existing diagnostic assessment fields remain available:
 

@@ -134,6 +134,10 @@ Each condition evaluates against tool arguments:
 | `condition_type` | string | `simple` | `simple` or `cel`, both evaluated in every edition |
 | `description` | string | n/a | Human-readable description |
 
+Tool conditions do not accept `redact`. A `sensitive_data` rule does:
+`notify`, `deny`, `require_approval` or `redact`, with optional
+`redact_upstream`. See [Redaction](../../security/redaction.md).
+
 ### `defaults`
 
 | Field | Type | Default | Description |
@@ -221,10 +225,10 @@ DELETE /api/v1/policies/versions/{id}
 The schema validates:
 
 1. **No duplicate names**: MCP server and approval workflow names must be unique
-2. **Valid references**: Tools referencing approval workflows or MCP servers must point to defined names
+2. **Valid references**: Tools, `model_io` rules and escalation settings that reference approval workflows or MCP servers must point to a name defined in the file or already configured in your account
 3. **AI policy completeness**: AI-driven workflows require `ai_model` (`ai_guidelines` is optional)
 4. **Expression syntax**: Tool condition expressions cannot be empty
-5. **Default references**: `default_approval_workflow` must reference a defined policy
+5. **Default references**: `default_approval_workflow` must reference a workflow defined in the file or in your account
 
 If validation fails, you get detailed error messages pointing to the exact issue:
 
@@ -233,9 +237,11 @@ If validation fails, you get detailed error messages pointing to the exact issue
   "is_valid": false,
   "errors": [
     {
-      "path": "tools[0].approval_workflow",
-      "message": "Tool 'bash' references unknown approval workflow 'nonexistent'"
+      "path": "$.tools[0].approval_workflow",
+      "message": "Tool 'bash' references approval workflow 'nonexistent' which is not defined. Either add the workflow to your policy file under 'approval_workflows', or configure it in the console first.",
+      "value": "nonexistent"
     }
-  ]
+  ],
+  "warnings": ["Available approval workflows: [my-workflow]"]
 }
 ```
