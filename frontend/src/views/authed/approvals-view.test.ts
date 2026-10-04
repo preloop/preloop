@@ -354,6 +354,74 @@ describe('ApprovalsView', () => {
     expect(element.shadowRoot?.querySelector('.empty-state')).to.exist;
   });
 
+  describe('after a failed load', () => {
+    async function renderFailedList(serverRows: unknown[]) {
+      const state = { fail: true };
+      fetchStub = sinon.stub(window, 'fetch').callsFake(
+        async () =>
+          new Response(
+            JSON.stringify(state.fail ? { detail: 'boom' } : serverRows),
+            {
+              status: state.fail ? 500 : 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
+      );
+      const element = (await fixture(
+        html`<approvals-view></approvals-view>`
+      )) as ApprovalsView;
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      expect((element as any).loadError).to.contain(
+        "Couldn't load approval requests"
+      );
+      return { element, state };
+    }
+
+    const loadError = (element: ApprovalsView) =>
+      element.shadowRoot?.querySelector('[data-testid="approvals-load-error"]');
+
+    for (const type of ['approval_created', 'approval_approved']) {
+      it(`reloads the whole list and clears the error on a live ${type}`, async () => {
+        const { element, state } = await renderFailedList([
+          baseRequest({ id: 'existing' }),
+          baseRequest({ id: 'arrived' }),
+        ]);
+        expect(loadError(element)).to.exist;
+        state.fail = false;
+
+        (element as any).handleWebSocketMessage({
+          type,
+          approval_request_id: 'arrived',
+          tool_name: 'example_tool',
+        });
+
+        await waitUntil(
+          () => !(element as any).loading && !loadError(element),
+          'the live update did not clear the load error'
+        );
+        await element.updateComplete;
+        // The whole list came back, not just the row the message named.
+        const ids = (element as any).approvalRequests.map((r: any) => r.id);
+        expect(ids).to.have.members(['existing', 'arrived']);
+      });
+    }
+
+    it('keeps the error while the reload still fails', async () => {
+      const { element } = await renderFailedList([]);
+
+      (element as any).handleWebSocketMessage({
+        type: 'approval_created',
+        approval_request_id: 'arrived',
+        tool_name: 'example_tool',
+      });
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+
+      expect(loadError(element)).to.exist;
+    });
+  });
+
   it('shows approval list when requests exist', async () => {
     const mockRequests = [
       {

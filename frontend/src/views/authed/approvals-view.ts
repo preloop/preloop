@@ -720,6 +720,19 @@ export class ApprovalsView extends AuthedElement {
   private handleWebSocketMessage(message: any) {
     debugLog('Approvals view received update:', message);
 
+    // After a failed load the list is incomplete, so patching one row into
+    // it would leave the error up over a list that looks half right. A live
+    // message means the server is reachable again: re-read the whole list,
+    // which clears the error once it succeeds.
+    if (
+      this.loadError &&
+      typeof message?.type === 'string' &&
+      message.type.startsWith('approval_')
+    ) {
+      if (!this.loading) void this.loadApprovalRequests();
+      return;
+    }
+
     // Handle new approval request
     if (message.type === 'approval_created') {
       const newApproval: ApprovalRequest = {
