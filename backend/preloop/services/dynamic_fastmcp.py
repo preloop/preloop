@@ -55,6 +55,57 @@ from preloop.utils.redaction import redact_dict
 logger = logging.getLogger(__name__)
 
 
+def _deprecated_alias_names() -> frozenset[str]:
+    """Default-disabled builtin names that ``TOOL_NAME_ALIASES`` still exposes.
+
+    The map is symmetric (``search`` ↔ ``search_issues``). Only the
+    default-disabled side is hidden until a policy names it. Dropping the
+    map entries in 0.18.0 removes this special case from the list and call
+    filters without another edit at those sites.
+    """
+    default_enabled = {
+        str(tool.get("name")): bool(tool.get("default_enabled", True))
+        for tool in BUILTIN_TOOLS
+    }
+    return frozenset(
+        name
+        for name, alias in TOOL_NAME_ALIASES.items()
+        if alias and alias != name and not default_enabled.get(name, True)
+    )
+
+
+# Derived once: the alias map and the builtin catalogue are import-time constants.
+DEPRECATED_ALIAS_NAMES = _deprecated_alias_names()
+
+
+def _rule_enables_deprecated_alias(rule: Any) -> bool:
+    """True when a scoped rule should advertise a default-disabled alias.
+
+    A rule that is switched off, or that denies the tool, names it without
+    offering it. Calls stay gated by policy evaluation either way.
+    """
+    if not isinstance(rule, dict):
+        return False
+    if not rule.get("is_enabled", True):
+        return False
+    return rule.get("action") != "deny"
+
+
+def _policy_enables_deprecated_alias(
+    meta_data: Any,
+    *,
+    tool_name: str,
+    subject_context: dict[str, Any],
+) -> bool:
+    """Whether a scoped policy should surface ``tool_name`` as an alias."""
+    if tool_name not in DEPRECATED_ALIAS_NAMES:
+        return False
+    rules = get_scoped_tool_rules(
+        meta_data, tool_name=tool_name, subject_context=subject_context
+    )
+    return any(_rule_enables_deprecated_alias(rule) for rule in rules)
+
+
 def _tool_error_result(text: str) -> ToolResult:
     """Return an MCP error result so refusals survive output-schema checks."""
     return ToolResult(
@@ -1265,8 +1316,10 @@ class DynamicFastMCP(FastMCP):
                         )
                 elif meta.get("default_enabled", True):
                     enabled_filtered.append(tool)
-                elif tool.name == "search" and get_scoped_tool_rules(
-                    account_meta, tool_name="search", subject_context=subject_context
+                elif _policy_enables_deprecated_alias(
+                    account_meta,
+                    tool_name=tool.name,
+                    subject_context=subject_context,
                 ):
                     enabled_filtered.append(tool)
                 else:
@@ -1958,25 +2011,26 @@ async def {internal_name}({params_str}):
                     builtin_call_meta is not None
                     and user_context.allowed_flow_tools is None
                 ):
-                    has_scoped_search_rule = False
-                    if name == "search" and builtin_explicit_enabled is None:
+                    alias_enabled_by_policy = False
+                    if (
+                        builtin_explicit_enabled is None
+                        and name in DEPRECATED_ALIAS_NAMES
+                    ):
                         call_subject_context = {
                             "api_key_id": user_context.api_key_id,
                             "managed_agent_id": getattr(
                                 user_context, "managed_agent_id", None
                             ),
                         }
-                        has_scoped_search_rule = bool(
-                            get_scoped_tool_rules(
-                                call_account_meta,
-                                tool_name="search",
-                                subject_context=call_subject_context,
-                            )
+                        alias_enabled_by_policy = _policy_enables_deprecated_alias(
+                            call_account_meta,
+                            tool_name=name,
+                            subject_context=call_subject_context,
                         )
                     is_disabled = builtin_explicit_enabled is False or (
                         builtin_explicit_enabled is None
                         and not builtin_call_meta.get("default_enabled", True)
-                        and not has_scoped_search_rule
+                        and not alias_enabled_by_policy
                     )
                     if is_disabled:
                         logger.warning(f"Blocked call to disabled builtin tool: {name}")

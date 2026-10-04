@@ -9,6 +9,7 @@ from preloop.schemas.subject_governance import (
     NATIVE_TOOL_APPROVALS_ENFORCE,
     NATIVE_TOOL_APPROVALS_OFF,
 )
+from preloop.tools.builtin_defs import TOOL_NAME_ALIASES
 
 SUBJECT_GOVERNANCE_KEY = "subject_governance"
 SUBJECT_TYPE_MANAGED_AGENTS = "managed_agents"
@@ -267,6 +268,18 @@ def get_scoped_model_governance(
     return configs
 
 
+def _tool_enabled_override_names(tool_name: str) -> tuple[str, ...]:
+    """Tool name plus its ``TOOL_NAME_ALIASES`` counterpart, when one exists.
+
+    ``search`` and ``search_issues`` are one capability. An override stored
+    under either name has to apply to a call under the other.
+    """
+    alias = TOOL_NAME_ALIASES.get(tool_name)
+    if isinstance(alias, str) and alias and alias != tool_name:
+        return (tool_name, alias)
+    return (tool_name,)
+
+
 def is_tool_enabled_for_subject(
     meta_data: Optional[dict[str, Any]],
     *,
@@ -278,7 +291,13 @@ def is_tool_enabled_for_subject(
     Walks the scope chain (most specific to least specific).
     Returns False if an explicit override disabled the tool.
     Returns True if an explicit override enabled the tool, or if no override exists.
+
+    A deprecated alias and its canonical name share one decision: an override
+    under either name applies to both. When the same scope sets both and they
+    disagree, disable wins, so ``{"search": false}`` still blocks
+    ``search_issues``.
     """
+    names = _tool_enabled_override_names(tool_name)
     for subject_type, subject_id in subject_scope_chain(subject_context):
         config = get_subject_governance(
             meta_data, subject_type=subject_type, subject_id=subject_id
@@ -287,9 +306,13 @@ def is_tool_enabled_for_subject(
         if not isinstance(overrides, dict):
             continue
 
-        # Check if the tool has an explicit override boolean value
-        is_enabled = overrides.get(tool_name)
-        if isinstance(is_enabled, bool):
-            return is_enabled
+        decisions = [
+            overrides[name] for name in names if isinstance(overrides.get(name), bool)
+        ]
+        if not decisions:
+            continue
+        if False in decisions:
+            return False
+        return True
 
     return True

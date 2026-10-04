@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from fastmcp import FastMCP
@@ -13,6 +14,12 @@ from preloop.api.endpoints.tools import BUILTIN_TOOLS
 from preloop.services.dynamic_fastmcp import DynamicFastMCP
 from preloop.services.dynamic_mcp_server import UserContext
 from preloop.services.initialize_mcp import initialize_mcp_with_tools
+from preloop.services.policy_evaluator import evaluate_policy
+from preloop.services.subject_governance import (
+    SUBJECT_TYPE_API_KEYS,
+    is_tool_enabled_for_subject,
+    set_subject_governance,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -133,3 +140,68 @@ async def test_fastmcp_registers_both_tools_with_same_signature():
     sig_issues = inspect.signature(search_issues_tool.fn)
     sig_search = inspect.signature(search_tool.fn)
     assert set(sig_issues.parameters.keys()) == set(sig_search.parameters.keys())
+
+
+async def test_search_override_blocks_search_issues_call():
+    """``tool_enabled_overrides: {"search": false}`` denies a search_issues call.
+
+    The renamed tool is default-enabled, so an override stored under the
+    legacy name has to apply through TOOL_NAME_ALIASES or the disable is
+    silently bypassed.
+    """
+    subject_context = {"api_key_id": "key-search", "managed_agent_id": None}
+    meta = set_subject_governance(
+        {},
+        subject_type=SUBJECT_TYPE_API_KEYS,
+        subject_id="key-search",
+        config={"tool_enabled_overrides": {"search": False}},
+    )
+    assert (
+        is_tool_enabled_for_subject(
+            meta, tool_name="search_issues", subject_context=subject_context
+        )
+        is False
+    )
+    # Same scope, both names set: a disable still wins over an enable.
+    conflict = set_subject_governance(
+        {},
+        subject_type=SUBJECT_TYPE_API_KEYS,
+        subject_id="key-search",
+        config={"tool_enabled_overrides": {"search": False, "search_issues": True}},
+    )
+    assert (
+        is_tool_enabled_for_subject(
+            conflict, tool_name="search_issues", subject_context=subject_context
+        )
+        is False
+    )
+    # The other direction: disabling the canonical name blocks the alias.
+    reverse = set_subject_governance(
+        {},
+        subject_type=SUBJECT_TYPE_API_KEYS,
+        subject_id="key-search",
+        config={"tool_enabled_overrides": {"search_issues": False}},
+    )
+    assert (
+        is_tool_enabled_for_subject(
+            reverse, tool_name="search", subject_context=subject_context
+        )
+        is False
+    )
+
+    account = MagicMock()
+    account.meta_data = meta
+    with patch(
+        "preloop.services.policy_evaluator.crud_account.get",
+        return_value=account,
+    ):
+        action, _approval_id, description = evaluate_policy(
+            db=MagicMock(),
+            tool_name="search_issues",
+            tool_args={"query": "bug"},
+            account_id=uuid4(),
+            subject_context=subject_context,
+        )
+    assert action == "deny"
+    assert description is not None
+    assert "disabled" in description.lower()
