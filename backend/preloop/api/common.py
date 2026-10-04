@@ -222,6 +222,53 @@ async def get_tracker_client(
             or (project.meta_data or {}).get("full_name")
             or f"{organization.identifier}/{project.name}"
         )
+    elif tracker_type == "bitbucket_dc":
+        # Deployment/credential identity belongs to the tracker, never to
+        # project settings. Discovered metadata selects a repository within it.
+        from preloop.utils.bitbucket_dc import (
+            validate_project_key,
+            validate_repository_id,
+            validate_repository_slug,
+        )
+
+        full_config = dict(tracker.connection_details or {})
+        meta = project.meta_data or {}
+        try:
+            key = validate_project_key(
+                meta.get("project_key") or organization.identifier
+            )
+            slug = validate_repository_slug(meta.get("repository_slug"))
+            repo_id = validate_repository_id(
+                meta.get("repository_id") or project.identifier
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                400, "Invalid discovered Data Center repository identity"
+            ) from exc
+        if (
+            key.casefold() != str(organization.identifier).casefold()
+            or (
+                full_config.get("project_key")
+                and key.casefold() != str(full_config["project_key"]).casefold()
+            )
+            or (
+                full_config.get("repository_id") is not None
+                and str(repo_id) != str(full_config["repository_id"])
+            )
+            or (
+                not full_config.get("repository_id")
+                and full_config.get("repository_slug")
+                and slug != full_config["repository_slug"]
+            )
+            or (
+                meta.get("instance_url")
+                and meta["instance_url"] != full_config.get("instance_url")
+            )
+        ):
+            raise HTTPException(
+                403, "Discovered repository is outside the tracker binding"
+            )
+        full_config.update(project_key=key, repository_slug=slug, repository_id=repo_id)
     elif tracker_type == "jira":
         # Jira might need project_key in config for some operations, add if available
         if "project_key" not in full_config:

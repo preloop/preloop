@@ -210,7 +210,7 @@ describe('FlowExecutionsView', () => {
       '[data-testid="resume-line"]'
     ) as HTMLElement;
     expect(line, 'resume line').to.exist;
-    expect(line.textContent).to.contain('Resumption');
+    expect(line.textContent).to.contain('Continuation of original execution');
     expect(line.textContent).to.contain('1.4K');
     expect(line.textContent).to.contain('$0.14');
     const link = line.querySelector(

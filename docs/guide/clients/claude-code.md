@@ -30,6 +30,33 @@ The installer discovers local agents, walks you through login/signup, and offers
 
 <!-- TODO screenshot: `claude-cli-version.png` -->
 
+## Subscription credential recovery
+
+Preloop refreshes an onboarded Claude subscription automatically. Re-onboarding
+reuses a working server credential even when the local access token has not yet
+expired: access-token expiry does not prove a rotating refresh token is usable.
+The server also rejects re-imports of refresh tokens it has recently consumed.
+
+If Anthropic rejects the grant with `invalid_grant`, obtain a fresh subscription
+authorization without rebuilding the enrollment:
+
+```bash
+preloop agents reconnect "Claude Code"
+```
+
+This opens Claude's subscription sign-in and replaces only the server credential.
+If you already signed in with `claude auth login --claudeai`, use
+`preloop agents reconnect "Claude Code" --from-local`. Identity, policy, gateway
+configuration and backups are preserved. Update the Preloop CLI if the command
+is missing from your installed release.
+
+Independent hosts or Preloop instances should authorize separate provider grants.
+Copying a login bundle between them creates competing refresh owners. Refresh
+locks coordinate workers within one Preloop instance; they cannot coordinate a
+native client or a separate instance holding a copy of the same provider grant.
+Provider revocation still requires a new sign-in; transient refresh failures can
+be retried without reconnecting.
+
 ---
 
 ## Onboard Claude Code
@@ -53,8 +80,8 @@ Or run `preloop agents discover` and accept the interactive onboarding prompt. O
 1. Creates (or locates) the managed agent identity in your Preloop account and issues a **durable credential** for it.
 2. **Backs up** your existing Claude Code config next to the original so you can roll back at any time.
 3. Adds a managed `preloop` MCP server entry to `~/.claude/settings.json`.
-4. Rewrites supported model configuration so Claude Code's Anthropic traffic routes through the Preloop Gateway (sets `env.ANTHROPIC_BASE_URL` to your Preloop gateway's `/anthropic` endpoint, `env.ANTHROPIC_API_KEY` to the managed credential, and lets stock Opus/Sonnet/Haiku selectors follow Claude Code defaults).
-5. Runs a live validation prompt through the agent (disable with `--skip-live-validate`).
+4. Configures supported Claude Code model routes through the Preloop Gateway (sets `env.ANTHROPIC_BASE_URL` to your Preloop gateway's `/anthropic` endpoint, `env.ANTHROPIC_API_KEY` to the managed credential, and lets stock Opus/Sonnet/Haiku selectors follow Claude Code defaults).
+5. Sends a direct gateway route/accounting probe using managed configuration (disable with `--skip-live-validate`). It does not launch Claude Code or verify that Claude Code consumed its configuration.
 
 Useful flags (see `preloop agents onboard --help`):
 
@@ -65,7 +92,7 @@ Useful flags (see `preloop agents onboard --help`):
 | `--all` | Onboard every discovered agent |
 | `--approvals` | Also install the native tool-permission hook (see below) |
 | `--pin-model-families` | Persist explicit stock family pins for API-key accounts or gateways with family autoregistration disabled |
-| `--skip-live-validate` | Skip the post-onboarding live validation prompt |
+| `--skip-live-validate` | Skip the post-onboarding direct gateway probe |
 | `--tags key=value` | Add key-value tags to the enrolled agent |
 
 <!-- TODO screenshot: `claude-mcp-list-connected.png` -->
@@ -95,14 +122,16 @@ After onboarding, `~/.claude/settings.json` contains a managed entry like:
 !!! note "Configuration file location"
     Preloop treats `~/.claude/settings.json` as Claude Code's primary configuration file. `~/.claude/mcp-servers.json` is only read as a legacy fallback when `settings.json` is absent. When the `claude` binary is on `PATH`, the CLI registers the managed server through `claude mcp add --scope user` instead of editing files directly.
 
-### Step 3: Verify
+### Step 3: Check configuration and gateway evidence
 
 ```bash
 preloop agents status "claude code"     # local + remote enrollment state
 preloop agents validate "claude code"   # config validation
-preloop agents validate "claude code" --live  # plus a live prompt through the agent
+preloop agents validate "claude code" --live  # plus a direct gateway route/accounting probe
 preloop agents list                     # all managed agents in your account
 ```
+
+A successful direct probe verifies the gateway route and accounting; application behavior remains unverified. Only calls routed through the managed MCP entry reach Preloop.
 
 You can also open **`https://preloop.ai/console/agents`**: Claude Code appears as a card with its onboarding state (`Fully onboarded`, `MCP proxy only`, `Model gateway only`, or `Incomplete`).
 

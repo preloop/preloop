@@ -890,13 +890,67 @@ class Settings(BaseSettings):
             "Larger payloads are rejected before they are encrypted or stored."
         ),
     )
+    runtime_session_screencast_max_bytes: int = Field(
+        64 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session screencast (video/webm or video/mp4 frame sequence). "
+            "Kept low while artifacts are stored in Postgres. Larger payloads "
+            "are rejected before they are encrypted or stored."
+        ),
+    )
+    runtime_session_audio_max_bytes: int = Field(
+        25 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session audio artifact. "
+            "Kept low while artifacts are stored in Postgres. Larger payloads "
+            "are rejected before they are encrypted or stored."
+        ),
+    )
+    runtime_session_transcript_max_bytes: int = Field(
+        5 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session transcript (plain text, WebVTT, SRT or JSON segments). "
+            "Kept low while artifacts are stored in Postgres. Larger payloads "
+            "are rejected before they are encrypted or stored."
+        ),
+    )
+    runtime_session_document_max_bytes: int = Field(
+        10 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session document (text, markdown, JSON or PDF). "
+            "Kept low while artifacts are stored in Postgres. Larger payloads "
+            "are rejected before they are encrypted or stored."
+        ),
+    )
+    runtime_session_generated_file_max_bytes: int = Field(
+        10 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session generated file. "
+            "Kept low while artifacts are stored in Postgres. Larger payloads "
+            "are rejected before they are encrypted or stored."
+        ),
+    )
+    runtime_session_trace_max_bytes: int = Field(
+        25 * 1024**2,
+        ge=1,
+        description=(
+            "Maximum plaintext size in bytes for a runtime-session trace archive (for example a Playwright trace.zip). "
+            "Kept low while artifacts are stored in Postgres. Larger payloads "
+            "are rejected before they are encrypted or stored."
+        ),
+    )
     # TODO: per-account override of this budget. Global setting only for now.
     runtime_session_artifact_account_max_bytes: int = Field(
         5 * 1024**3,
         ge=1,
         description=(
-            "Per-account plaintext budget for runtime-session screenshots and "
-            "recordings. A store that would exceed it evicts the oldest "
+            "Per-account plaintext budget for runtime-session artifacts of "
+            "every kind. A store that would exceed it evicts the oldest "
             "unheld artifacts before inserting. There is no per-account "
             "override yet."
         ),
@@ -1016,6 +1070,16 @@ class Settings(BaseSettings):
             "Off-peak UTC hour window the purge may run in, as 'start-end' "
             "(half open, so '1-5' means 01:00 to 04:59 UTC). Empty string "
             "means any hour (RETENTION_PURGE_WINDOW_UTC)."
+        ),
+    )
+    retention_export_max_artifact_bytes: int = Field(
+        2 * 1024 * 1024 * 1024,
+        ge=1,
+        description=(
+            "Maximum total artifact bytes one period export may carry. Above "
+            "it the export is refused with export_too_large, naming the count "
+            "and the bytes, so the caller narrows the range or the session "
+            "(RETENTION_EXPORT_MAX_ARTIFACT_BYTES)."
         ),
     )
     retention_export_max_rows: int = Field(

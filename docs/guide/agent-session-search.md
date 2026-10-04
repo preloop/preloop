@@ -147,3 +147,11 @@ A search through the tool writes one audit row with the agent as the actor and
 tell an agent's grep over the transcripts from a person's. The query text is
 not stored unless the account opted in. See
 [docs/guide/session-search-audit.md](session-search-audit.md).
+
+## Files an agent stored
+
+Transcripts, documents, screenshots and other files an agent deposits on its
+session are [session artifacts](artifacts.md). They appear on the session
+timeline next to the turns that produced them. Artifacts are not searchable
+yet: neither their contents nor their name and labels are in this index.
+Indexing them is planned (#1082).

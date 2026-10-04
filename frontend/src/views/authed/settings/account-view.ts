@@ -13,9 +13,13 @@ import '@shoelace-style/shoelace/dist/components/details/details.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import pricingStyles from '../../../styles/pricing-styles.css?inline';
 import { Router } from '../../../router';
-import type { SessionArtifactUsage } from '../../../types';
+import type {
+  SessionArtifactSettings,
+  SessionArtifactUsage,
+} from '../../../types';
 import { PLAN_PAGE_PATH } from '../../../utils/premium-features';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -139,6 +143,10 @@ export class AccountView extends LitElement {
   @state() private _error: string | null = null;
   @state() private _canManageBilling = false;
   @state() private _sessionArtifactUsage: SessionArtifactUsage | null = null;
+  @state() private _artifactSettings: SessionArtifactSettings | null = null;
+  @state() private _audioRetentionDraft = '';
+  @state() private _artifactSettingsSaving = false;
+  @state() private _artifactSettingsError = '';
 
   // The 2026 ladder's limits, in the order a buyer weighs them. The legacy
   // keys (api_calls_monthly, ai_calls_monthly, issues_ingested_monthly,
@@ -240,6 +248,7 @@ export class AccountView extends LitElement {
       } catch {
         this._sessionArtifactUsage = null;
       }
+      await this._loadArtifactSettings();
 
       // Only fetch billing data for proprietary version
       const isProprietary = features.features['billing'] === true;
@@ -530,7 +539,7 @@ export class AccountView extends LitElement {
    * consequence is thinner analytics detail. This is a product-safety rule
    * from the canonical pricing spec, not a tone preference.
    */
-  /** Used and budget bytes for session screenshots and recordings. */
+  /** Format a byte count with binary units. */
   private _formatBytes(value: number): string {
     const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
     let size = value;
@@ -554,6 +563,172 @@ export class AccountView extends LitElement {
         .querySelector('#session-artifact-storage')
         ?.scrollIntoView({ block: 'start' });
     });
+  }
+
+  /**
+   * Kinds other than screenshot and recording that hold bytes. Shown with the
+   * raw kind name until display labels land (#1083); unknown future kinds
+   * render the same way instead of breaking the card.
+   */
+  private _otherArtifactKinds(usage: SessionArtifactUsage): [string, number][] {
+    return Object.entries(usage.by_kind).filter(
+      ([kind, bytes]) =>
+        kind !== 'screenshot' &&
+        kind !== 'recording' &&
+        typeof bytes === 'number' &&
+        bytes > 0
+    );
+  }
+
+  /** ``generated_file`` becomes ``Generated file``. */
+  private _kindLabel(kind: string): string {
+    const words = kind.replace(/_/g, ' ');
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
+  private async _loadArtifactSettings(): Promise<void> {
+    try {
+      const res = await fetchWithAuth(
+        '/api/v1/account/session-artifacts/settings'
+      );
+      if (!res.ok) return;
+      const body = await res.json();
+      if (typeof body?.audio_storage_enabled === 'boolean') {
+        this._artifactSettings = body;
+        this._audioRetentionDraft = String(body.audio_retention_days);
+      }
+    } catch {
+      this._artifactSettings = null;
+    }
+  }
+
+  /** Saves the change; resolves true when the server accepted it. */
+  private async _saveArtifactSettings(
+    change: Partial<
+      Pick<
+        SessionArtifactSettings,
+        'audio_storage_enabled' | 'audio_retention_days'
+      >
+    >
+  ): Promise<boolean> {
+    this._artifactSettingsSaving = true;
+    this._artifactSettingsError = '';
+    try {
+      const res = await fetchWithAuth(
+        '/api/v1/account/session-artifacts/settings',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(change),
+        }
+      );
+      if (res.ok) {
+        const body = await res.json();
+        this._artifactSettings = body;
+        // A toggle must not clobber a retention the user is still typing.
+        if (change.audio_retention_days !== undefined) {
+          this._audioRetentionDraft = String(body.audio_retention_days);
+        }
+        return true;
+      } else if (res.status === 403) {
+        this._artifactSettingsError =
+          'Only an account admin can change audio storage.';
+      } else if (res.status === 422) {
+        this._artifactSettingsError = `Retention must be between 1 and ${
+          this._artifactSettings?.audio_retention_max_days ??
+          'the session retention'
+        } days.`;
+      } else {
+        this._artifactSettingsError = 'Could not save audio storage settings.';
+      }
+    } catch {
+      this._artifactSettingsError = 'Could not save audio storage settings.';
+    } finally {
+      this._artifactSettingsSaving = false;
+    }
+    return false;
+  }
+
+  private async _onAudioToggle(event: Event): Promise<void> {
+    const toggle = event.target as HTMLInputElement;
+    const saved = await this._saveArtifactSettings({
+      audio_storage_enabled: toggle.checked,
+    });
+    if (!saved) {
+      // Lit skips an unchanged ?checked binding, so put the control back to
+      // what the server still has; it must never claim a state not saved.
+      toggle.checked = this._artifactSettings?.audio_storage_enabled ?? false;
+    }
+  }
+
+  private _onAudioRetentionSave(): void {
+    const days = Number(this._audioRetentionDraft);
+    if (!Number.isInteger(days)) {
+      this._artifactSettingsError = 'Retention must be a whole number of days.';
+      return;
+    }
+    void this._saveArtifactSettings({ audio_retention_days: days });
+  }
+
+  private _renderAudioStorageSettings() {
+    const audio = this._artifactSettings;
+    if (!audio) return '';
+    return html`
+      <div class="audio-storage" data-testid="audio-storage-settings">
+        <sl-switch
+          data-testid="audio-storage-toggle"
+          ?checked=${audio.audio_storage_enabled}
+          ?disabled=${this._artifactSettingsSaving}
+          @sl-change=${this._onAudioToggle}
+          >Store raw audio</sl-switch
+        >
+        <div class="usage-note" data-testid="audio-storage-copy">
+          Store raw audio deposited by agents. Off by default. Transcripts are
+          stored either way.
+        </div>
+        <div class="audio-retention">
+          <sl-input
+            data-testid="audio-retention-days"
+            type="number"
+            min="1"
+            max=${audio.audio_retention_max_days}
+            label="Keep raw audio for (days)"
+            value=${this._audioRetentionDraft}
+            ?disabled=${this._artifactSettingsSaving}
+            @sl-input=${(e: Event) =>
+              (this._audioRetentionDraft = (
+                e.target as HTMLInputElement
+              ).value)}
+          >
+            <span slot="help-text">
+              Older audio is expired: its bytes are dropped and the artifact row
+              stays. At most ${audio.audio_retention_max_days} days (the session
+              retention).
+            </span>
+          </sl-input>
+          <sl-button
+            size="small"
+            data-testid="audio-retention-save"
+            ?disabled=${
+              this._artifactSettingsSaving ||
+              this._audioRetentionDraft === String(audio.audio_retention_days)
+            }
+            @click=${this._onAudioRetentionSave}
+            >Save retention</sl-button
+          >
+        </div>
+        ${
+          this._artifactSettingsError
+            ? html`<sl-alert
+                variant="danger"
+                open
+                data-testid="audio-storage-error"
+                >${this._artifactSettingsError}</sl-alert
+              >`
+            : ''
+        }
+      </div>
+    `;
   }
 
   private _renderSessionArtifactUsage() {
@@ -588,7 +763,16 @@ export class AccountView extends LitElement {
               ${this._formatBytes(usage.by_kind.recording)}
             </div>
           </div>
+          ${this._otherArtifactKinds(usage).map(
+            ([kind, bytes]) => html`
+              <div class="usage-metric" data-kind=${kind}>
+                <div class="usage-label">${this._kindLabel(kind)}</div>
+                <div class="usage-value">${this._formatBytes(bytes)}</div>
+              </div>
+            `
+          )}
         </div>
+        ${this._renderAudioStorageSettings()}
       </div>
     `;
   }
@@ -789,6 +973,34 @@ export class AccountView extends LitElement {
       .usage-note {
         margin-top: 1rem;
         color: var(--sl-color-neutral-700);
+      }
+
+      .audio-storage {
+        margin-top: 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      .audio-storage sl-switch {
+        /* Only the control and its label are clickable; no dead row. */
+        align-self: flex-start;
+      }
+
+      .audio-storage .usage-note {
+        margin-top: 0;
+      }
+
+      .audio-retention {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.75rem;
+        max-width: 32rem;
+      }
+
+      .audio-retention sl-button {
+        /* Line up with the input, below its label. */
+        margin-top: calc(var(--sl-input-label-font-size-medium) * 1.8);
       }
 
       .usage-models {

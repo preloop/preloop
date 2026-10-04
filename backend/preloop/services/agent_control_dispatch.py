@@ -40,6 +40,7 @@ SUPPORTED_CONTROL_AGENT_KINDS = {
     "pi",
     "deepseek",
     "codex",
+    "nanobot",
 }
 # Pi and DeepSeek accept text on an already-open session only. Shared so the
 # operator endpoint and persistent executor refuse start_new_session together.
@@ -287,7 +288,12 @@ async def persist_and_deliver_command(
         command_status = "delivered"
     subject: Optional[str] = None
     if not local_delivery:
-        subject = await _publish_command(envelope)
+        from preloop.utils.control_credentials import protect_control_credentials
+
+        protected = AgentControlEnvelope.model_validate(
+            protect_control_credentials(envelope.model_dump(mode="json"))
+        )
+        subject = await _publish_command(protected)
         if subject is None and require_delivery:
             try:
                 with db.begin_nested():
@@ -401,3 +407,182 @@ async def dispatch_operator_message(
         expires_at=expires_at,
         require_delivery=require_delivery,
     )
+
+
+# --- terminal attach (#1150) -------------------------------------------------
+
+#: Delivery states a client shows for one operator command, in order. The
+#: command row stores pending|delivered|acked|failed|expired|cancelled; a
+#: successful result leaves the row ``acked`` and stores the result in the
+#: envelope, so "finished" is derived from that.
+COMMAND_DELIVERY_STATES = (
+    "queued",
+    "delivered",
+    "started",
+    "finished",
+    "failed",
+    "expired",
+    "cancelled",
+)
+TERMINAL_COMMAND_DELIVERY_STATES = frozenset(
+    {"finished", "failed", "expired", "cancelled"}
+)
+
+
+def command_delivery_state(record: Any) -> tuple[str, Optional[str]]:
+    """Map a stored command row to the state an operator sees.
+
+    Args:
+        record: ``AgentControlCommand`` row.
+
+    Returns:
+        ``(delivery_state, result_status)``. ``result_status`` is the
+        runtime's own status for a finished command (``completed`` when it
+        did not say), else None.
+    """
+    from preloop.models.crud.agent_control_command import (
+        COMMAND_RESULT_ENVELOPE_KEY,
+    )
+
+    envelope = record.envelope if isinstance(record.envelope, dict) else {}
+    result = envelope.get(COMMAND_RESULT_ENVELOPE_KEY)
+    result_status: Optional[str] = None
+    if isinstance(result, dict):
+        result_status = str(result.get("status") or "completed")
+    status = str(record.status or "pending")
+    if status == "failed":
+        return "failed", result_status or "failed"
+    if status in {"expired", "cancelled"}:
+        return status, result_status
+    if result_status is not None:
+        if result_status in {"failed", "error"}:
+            return "failed", result_status
+        return "finished", result_status
+    if status == "acked":
+        return "started", None
+    if status == "delivered":
+        return "delivered", None
+    return "queued", None
+
+
+@dataclass(frozen=True)
+class SessionControlMode:
+    """Whether a typed line on an attached session can start a new turn.
+
+    ``mode`` is ``command`` when the session belongs to an active managed
+    agent with a verified Agent Control plugin and a live control
+    connection, and ``note`` otherwise. ``reason_code`` and ``reason`` say
+    why a session is in note mode, in words an operator can act on.
+    """
+
+    mode: str
+    reason_code: Optional[str]
+    reason: Optional[str]
+    agent: Any = None
+
+
+def session_managed_agent(db: Session, *, account_id: str, session: Any) -> Any:
+    """Return the managed agent that owns ``session``, or None.
+
+    Uses the same two identities the command endpoint accepts for
+    ``target_session_id``: the session's own source, then its runtime
+    principal. Anything this returns therefore passes that check.
+    """
+    from preloop.models.crud import crud_managed_agent
+
+    pairs = (
+        (session.session_source_type, session.session_source_id),
+        (
+            getattr(session, "runtime_principal_type", None),
+            getattr(session, "runtime_principal_id", None),
+        ),
+    )
+    for source_type, source_id in pairs:
+        if not source_type or not source_id:
+            continue
+        agent = crud_managed_agent.get_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=str(source_type),
+            session_source_id=str(source_id),
+        )
+        if agent is not None:
+            return agent
+    return None
+
+
+def resolve_session_control_mode(
+    db: Session,
+    *,
+    account_id: str,
+    session: Any,
+    now: Optional[datetime] = None,
+) -> SessionControlMode:
+    """Decide command or note mode for one attached session.
+
+    Args:
+        db: Database session.
+        account_id: Caller's account.
+        session: ``RuntimeSession`` row already scoped to ``account_id``.
+        now: Override for tests.
+
+    Returns:
+        The mode, the reason for note mode, and the managed agent if any.
+    """
+    from preloop.services.agent_control_presence import (
+        AGENT_CONTROL_PRESENCE_TTL,
+        control_heartbeat_is_fresh,
+    )
+
+    if session.ended_at is not None:
+        return SessionControlMode(
+            "note", "session_ended", "the session has ended; nothing can be sent"
+        )
+    agent = session_managed_agent(db, account_id=account_id, session=session)
+    if agent is None:
+        return SessionControlMode(
+            "note",
+            "not_managed",
+            "this session is governed through hooks or the gateway, not run by "
+            "an Agent Control agent; a line is a note read at its next tool or "
+            "model call",
+        )
+    kind = str(agent.agent_kind or agent.session_source_type or "").lower()
+    name = agent.display_name or kind or "the agent"
+    if kind not in SUPPORTED_CONTROL_AGENT_KINDS:
+        return SessionControlMode(
+            "note",
+            "unsupported_kind",
+            f"{name} ({kind}) does not take commands through Agent Control; "
+            "a line is a note read at its next tool or model call",
+            agent,
+        )
+    if agent.lifecycle_state != "active":
+        return SessionControlMode(
+            "note",
+            "agent_inactive",
+            f"{name} is {agent.lifecycle_state}, so it cannot take commands",
+            agent,
+        )
+    if not agent_has_control_config(db, account_id=account_id, agent=agent):
+        return SessionControlMode(
+            "note",
+            "no_control_plugin",
+            f"{name} is governed through hooks or the gateway and has no "
+            "verified Agent Control plugin; a line is a note read at its next "
+            "tool or model call ('preloop agents install-plugin' adds command "
+            "mode)",
+            agent,
+        )
+    if agent.runtime_session_id is None or not control_heartbeat_is_fresh(
+        agent.control_last_heartbeat_at, now=now
+    ):
+        seconds = int(AGENT_CONTROL_PRESENCE_TTL.total_seconds())
+        return SessionControlMode(
+            "note",
+            "control_offline",
+            f"{name} has no live Agent Control connection (no heartbeat in the "
+            f"last {seconds}s); a line is a note until it reconnects",
+            agent,
+        )
+    return SessionControlMode("command", None, None, agent)

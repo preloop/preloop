@@ -254,3 +254,43 @@ test("a hung turn rejects after turn_timeout_ms", async () => {
   );
   manager.stop();
 });
+
+test("employee exact-command interrupt never aborts another task", async () => {
+  const controllers = new Map();
+  let next = 0;
+  const manager = new SessionManager(baseConfig, () => ({
+    startThread() {
+      const id = `owned-${++next}`;
+      return { id, run: (_text, options) => new Promise((_resolve, reject) => {
+        controllers.set(id, options.signal);
+        options.signal.addEventListener("abort", () => reject(abortError()));
+      })};
+    }, resumeThread() { throw new Error("unexpected resume"); },
+  }));
+  const first = manager.sendMessage({text:"first", commandId:"command-one", startNewSession:true});
+  const second = manager.sendMessage({text:"second", commandId:"command-two", startNewSession:true});
+  while (controllers.size < 2) await new Promise(resolve => setTimeout(resolve, 1));
+  await manager.interrupt(undefined, "command-one");
+  assert.equal((await first).stopped, true);
+  assert.equal(controllers.get("owned-2").aborted, false);
+  await assert.rejects(manager.interrupt(undefined, "forged-command"), /owned/);
+  await manager.interrupt(undefined, "command-two");
+  await second;
+});
+
+test("employee execution uses scoped gateway and bounded prompt", async () => {
+  const configs = [];
+  const state = { threads: [], starts: [], resumes: [], runs: [] };
+  const manager = new SessionManager(baseConfig, config => {
+    configs.push(config);
+    return makeFakeFactory(state)();
+  });
+  await manager.sendMessage({text:"hello", startNewSession:true, metadata:{
+    gateway:{api_key:"scoped-example", base_url:"https://example.com/openai/v1", model:"openai/example"},
+    run_limits:{max_history_chars:100, timeout_seconds:10},
+  }});
+  assert.equal(configs[0].codex_gateway_api_key, "scoped-example");
+  assert.equal(state.starts[0].options.model, "openai/example");
+  await assert.rejects(manager.sendMessage({text:"too much context", startNewSession:true,
+    metadata:{run_limits:{max_history_chars:2}}}), /context limit/);
+});

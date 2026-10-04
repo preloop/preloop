@@ -55,12 +55,15 @@ preloop agents discover --no-onboard-prompt
 preloop agents onboard <agent>           # onboard one agent ("enroll" is an alias)
 preloop agents onboard --all -y          # everything discovered, no prompts
 preloop agents onboard <agent> --dry-run # preview account + config changes
-preloop agents onboard <agent> --approvals  # + native tool-permission hook (Claude Code, Codex CLI, Cursor)
+preloop agents onboard <agent> --approvals  # + native action gates (Claude Code, Codex CLI, Cursor, Copilot CLI, OpenCode, Pi, DeepSeek Harness)
 preloop agents onboard <agent> --tags env=prod,team=infra
 preloop agents status <agent>            # local + remote enrollment state
 preloop agents list                      # managed agents in the account
 preloop agents validate <agent>          # config validation
-preloop agents validate <agent> --live   # + a live prompt through the agent
+preloop agents validate <agent> --live   # + a direct gateway route/accounting probe
+preloop agents reconnect "Claude Code"  # sign in and repair subscription credentials only
+preloop agents reconnect "Codex CLI"    # same recovery for a ChatGPT subscription
+preloop agents reconnect "Claude Code" --from-local # use a fresh login completed separately
 preloop agents install-plugin <agent>    # Agent Control runtime plugin (openclaw | hermes)
 preloop agents install-runtime <hermes|openclaw>  # install the runtime itself, then onboard
 preloop agents restore <agent>           # restore the most recent local config backup
@@ -69,7 +72,15 @@ preloop agents offboard --all -y --remove-model yes --remove-mcp-servers yes
 preloop agents starter-policy <mcp-server> [-o file] [--apply]
 ```
 
-Onboarding runs a live validation prompt by default; skip it with `--skip-live-validate`.
+Onboarding runs a direct gateway route/accounting probe by default; skip it with `--skip-live-validate`. The probe reads managed configuration but does not launch the application or verify that it consumed that configuration. Application behavior remains unverified.
+
+`agents reconnect` preserves the existing enrollment, model bindings, policies,
+gateway config and backups. It repairs a shared credential once and attaches any
+legacy split model rows to it. It only updates subscription models owned by this
+machine's enrollment in the selected account. Use `--from-local` after completing
+`claude auth login --claudeai` or `codex login`. Expired or incomplete local
+credentials are refused. Update the CLI if your installed version does not yet
+provide this command.
 
 ### The onboarding summary table
 
@@ -156,6 +167,92 @@ preloop approvals pending [-l 20]
 preloop approvals approve <request-id> [-r "reason"]
 preloop approvals deny <request-id> [-r "reason"]
 ```
+
+## Sessions
+
+```bash
+preloop sessions list [--active] [--agent <id|name>] [--kind <kind>] [--since 2h] \
+  [--parent <session-id>] [--execution <id>] [--limit 50] [--json | -o id] [--wide]
+preloop sessions attach <session-id|short-id> [--execution <id>] [--read-only] [--since 10m] [--json]
+preloop agents attach <agent-id|name> [--no-wait] [--read-only] [--since 10m] [--json]
+preloop sessions search "<query>" [--from 2026-09-01] [--to 2026-09-15] [--limit 20] [--json]
+```
+
+`sessions list` prints your account's runtime sessions, most recently active
+first: short id (`--wide` for the full id and the agent kind), agent, started,
+last activity, state (`live` for activity in the last 2 minutes, `idle` for
+open but quiet, `ended`), tool calls, model calls, pending approvals and a
+title. An untitled session is labelled with its agent kind, the base name of
+the working directory its hook reported and its start time; if two rows on the
+page would still share a label, the short id is appended.
+
+| Flag | Server filter |
+| --- | --- |
+| `--active` | open sessions with activity in the last 10 minutes |
+| `--agent <id\|name>` | one managed agent; an unknown name is refused, and a name shared by several agents asks for the id |
+| `--kind <kind>` | `claude-code`, `codex`, `cursor`, `hermes`, ...: managed agents of that kind and sessions recorded from that source |
+| `--since <duration>` | active within `30m`, `2h`, `7d`, ... (default: 30 days) |
+| `--parent <session-id>` | only the sessions that session spawned |
+| `--execution <id>` | only sessions linked to that flow execution |
+| `--limit N` | at most N rows (default 50, at most 1000) |
+
+`--json` prints the endpoint's own items (`GET /api/v1/runtime-sessions`), each
+with `computed_title` and `state` added, under `{"total": ..., "items": [...]}`.
+`-o id` prints one full id per line. The hint line naming
+`preloop notes send --session` is printed only to a terminal. To steer the
+session you found, see [Finding the session to steer](operator-notes.md#finding-the-session-to-steer).
+
+`sessions attach` follows one session live (model requests, tool calls,
+approvals, notes, the end), sends a typed line as an operator note and decides
+a pending approval with `a` or `d`. On a managed agent with a live Agent
+Control connection the input is in command mode instead: a typed line starts
+a new turn and its delivery (queued, delivered, started, finished) is shown
+inline; `/note <text>` still sends a note. `agents attach` does the same by
+agent, attaching its current session or waiting for the next. See
+[Attaching to a session from the terminal](sessions-attach.md).
+
+`sessions search` ranks session content by relevance with the same server
+query the console uses; `preloop sessions search --help` lists its flags.
+
+## Artifacts
+
+```bash
+preloop artifacts put <file|-> --session <id> [--kind <kind>] [--name <name>] \
+  [--label key=value ...] [--parent <artifact-id>] [--content-type <type>] [--json]
+preloop artifacts ls --session <id> [--kind <kind>] [--label key=value ...] [--since 7d] [--limit 100] [--json]
+preloop artifacts get <artifact-id> --session <id> [-o <file>]
+```
+
+These commands use the same deposit API as the console and the
+`deposit_artifact` MCP tool (`/api/v1/runtime-sessions/{id}/artifacts`, see
+[Artifacts](artifacts.md)).
+
+`artifacts put` streams one file (or stdin with `-`) to the session and prints
+the artifact id and a console link that opens the session at that artifact.
+The media type comes from `--content-type`, then the file extension, then the
+first bytes of the file. Stdin has no name to go by, so it needs
+`--content-type`. Leave out `--kind` and the server picks one from the media
+type: PNG, JPEG and WebP images become `screenshot`, audio becomes `audio`,
+video becomes `recording`, `text/vtt` becomes `transcript`, plain text,
+markdown and JSON become `document`, and any other file type (PDF, CSV, GIF,
+...) becomes `generated_file`. Pass `--kind document` for
+a PDF. Labels are `key=value`. Repeat `--label tags=...` to
+build the `tags` list. A refusal prints the server's error code as sent, for
+example `artifact_too_large (HTTP 413)`.
+
+`artifacts ls` lists one session's artifacts, newest first. The server applies
+`--kind` and `--label`. `--since` keeps artifacts created within that window
+and stops paging at the first older one. `--session` is required for now,
+because listing across every session needs the account-wide artifact search.
+
+`artifacts get` streams the bytes to stdout, or with `-o` to a file. The file
+is renamed into place only after the download completes. If the bytes were
+evicted or expired, the command prints why (for example
+`artifact <id> is no longer available: evicted (HTTP 410)`) and exits non-zero.
+
+`--json` on `put` prints the API descriptor unchanged, including its MCP
+`content_block` (a `resource_link`). On `ls` it prints `{"items": [...]}` with
+each descriptor unchanged.
 
 ## Usage import
 

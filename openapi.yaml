@@ -1001,6 +1001,56 @@ paths:
                 $ref: '#/components/schemas/SessionArtifactUsageResponse'
       security:
       - bearerAuth: []
+  /api/v1/account/session-artifacts/settings:
+    get:
+      tags:
+      - Account
+      summary: Get Session Artifact Settings
+      description: Return whether raw audio is stored, and for how long.
+      operationId: get_session_artifact_settings_api_v1_account_session_artifacts_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Account
+      summary: Update Session Artifact Settings
+      description: 'Opt the account in or out of raw audio storage; admin only, audited.
+
+
+        Uses ``manage_policies`` like the retention settings: it governs what
+
+        the account keeps. Every change writes an ``artifact_settings_updated``
+
+        audit row with the before and after value of each changed field; a
+
+        request that changes nothing writes no row.'
+      operationId: update_session_artifact_settings_api_v1_account_session_artifacts_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionArtifactSettingsUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+        '403':
+          description: Caller may not manage account policies
+        '422':
+          description: audio_retention_days_invalid
+      security:
+      - bearerAuth: []
   /api/v1/account/gateway-usage/summary:
     get:
       tags:
@@ -1680,6 +1730,102 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/account/governance/flows/{flow_id}:
+    get:
+      tags:
+      - Account
+      summary: Get Account Flow Governance
+      description: 'Per-flow governance override for every execution of one flow.
+
+
+        Sync on purpose: FastAPI runs it in the threadpool, so the sync DB
+
+        session never blocks the event loop.'
+      operationId: get_account_flow_governance_api_v1_account_governance_flows__flow_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Account
+      summary: Update Account Flow Governance
+      description: Store a governance override for one flow's executions.
+      operationId: update_account_flow_governance_api_v1_account_governance_flows__flow_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubjectGovernanceConfig'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Account
+      summary: Reset Account Flow Governance
+      description: Drop the flow's override so it inherits the account policy again.
+      operationId: reset_account_flow_governance_api_v1_account_governance_flows__flow_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/{agent_id}/governance:
     get:
       tags:
@@ -1915,7 +2061,12 @@ paths:
       tags:
       - Account
       summary: Validate Account Managed Agent Enrollment
-      description: Persist validation state for one managed-agent enrollment.
+      description: 'Persist validation state for one managed-agent enrollment.
+
+
+        The first time an enrollment reaches ``validated`` the agent counts as
+
+        onboarded and ``agent.onboarded`` is enqueued in the same transaction.'
       operationId: validate_account_managed_agent_enrollment_api_v1_agents__agent_id__enrollments__enrollment_id__validate_post
       security:
       - bearerAuth: []
@@ -2133,6 +2284,66 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: agent
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 255
+          - type: 'null'
+          description: Managed agent id or display name; only that agent's sessions
+          title: Agent
+        description: Managed agent id or display name; only that agent's sessions
+      - name: agent_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+          description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+            of managed agents of that kind or recorded from that source
+          title: Agent Kind
+        description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+          of managed agents of that kind or recorded from that source
+      - name: parent_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions this session spawned
+          title: Parent Session Id
+        description: Only sessions this session spawned
+      - name: flow_execution_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions linked to this flow execution
+          title: Flow Execution Id
+        description: Only sessions linked to this flow execution
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1440
+            minimum: 1
+          - type: 'null'
+          description: Only open sessions with activity in the last N minutes
+          title: Active Within Minutes
+        description: Only open sessions with activity in the last N minutes
       responses:
         '200':
           description: Successful Response
@@ -3842,6 +4053,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/approval-workflows/{workflow_id}/webhook-secret/rotate:
+    post:
+      tags:
+      - Tools
+      summary: Rotate Approval Workflow Webhook Secret
+      description: "Replace the workflow's webhook signing secret and return it once.\n\
+        \nDeliveries are signed with the new secret from the next one on. Use this\n\
+        to obtain a secret for a workflow created by policy apply, or one whose\n\
+        secret was not kept.\n\nSync handler on purpose: FastAPI runs it in the threadpool,\
+        \ so the sync\nsession never blocks the event loop.\n\nRaises:\n    HTTPException:\
+        \ 404 if the workflow is not found, 400 if it has no\n        webhook configured."
+      operationId: rotate_approval_workflow_webhook_secret_api_v1_approval_workflows__workflow_id__webhook_secret_rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: workflow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Workflow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalWorkflowResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/tool-configurations/{config_id}/approval-condition:
     get:
       tags:
@@ -4214,9 +4460,14 @@ paths:
       summary: List Approval Requests
       description: "List approval requests for the current account.\n\nArgs:\n   \
         \ status: Filter by status (pending, approved, declined, etc.)\n    execution_id:\
-        \ Filter by execution ID\n    limit: Maximum number of results\n    skip:\
-        \ Number of results to skip\n    current_user: Current authenticated user\n\
-        \nReturns:\n    List of approval requests"
+        \ Filter by execution ID\n    runtime_session_id: Filter by a validated runtime\
+        \ session ID\n        (agent conversation)\n    limit: Maximum number of results\n\
+        \    skip: Number of results to skip\n    current_user: Current authenticated\
+        \ user\n\nReturns:\n    List of approval requests\n\nRaises:\n    HTTPException:\
+        \ 422 when ``runtime_session_id`` is not a UUID. The\n        filter is typed\
+        \ rather than string-matched so a typo returns an\n        explicit validation\
+        \ error instead of an empty list that reads as\n        \"this session needs\
+        \ nothing\"."
       operationId: list_approval_requests_api_v1_approval_requests_get
       security:
       - bearerAuth: []
@@ -4241,12 +4492,24 @@ paths:
           description: Filter by execution ID
           title: Execution Id
         description: Filter by execution ID
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Filter by runtime session ID (agent conversation)
+          title: Runtime Session Id
+        description: Filter by runtime session ID (agent conversation)
       - name: limit
         in: query
         required: false
         schema:
           type: integer
           maximum: 100
+          minimum: 1
           description: Maximum number of results
           default: 50
           title: Limit
@@ -4256,6 +4519,7 @@ paths:
         required: false
         schema:
           type: integer
+          minimum: 0
           description: Number of results to skip
           default: 0
           title: Skip
@@ -4299,11 +4563,13 @@ paths:
           format: uuid
           title: Request Id
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ApprovalDecision'
+              anyOf:
+              - $ref: '#/components/schemas/ApprovalDecision'
+              - type: 'null'
+              title: Decision
       responses:
         '200':
           description: Successful Response
@@ -4340,11 +4606,13 @@ paths:
           format: uuid
           title: Request Id
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ApprovalDecision'
+              anyOf:
+              - $ref: '#/components/schemas/ApprovalDecision'
+              - type: 'null'
+              title: Decision
       responses:
         '200':
           description: Successful Response
@@ -5347,6 +5615,17 @@ paths:
         holds.
 
 
+        Session artifacts created in the period are included as
+
+        ``artifacts/<session_id>/<artifact_id>-<name>`` members with
+
+        ``artifacts/manifest.json``, a list of A2A ``Artifact`` objects. Above
+
+        ``RETENTION_EXPORT_MAX_ARTIFACT_BYTES`` the export is refused with 413
+
+        ``export_too_large``.
+
+
         The archive carries ``manifest.json`` with a sha256 per member and a
 
         digest over the member list, in the same shape an evidence pack manifest
@@ -5376,6 +5655,19 @@ paths:
           description: Period end, exclusive (YYYY-MM-DD)
           title: End
         description: Period end, exclusive (YYYY-MM-DD)
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Limit the artifact members to one runtime session. Audit rows,
+            approvals, receipts and holds still cover the whole period.
+          title: Runtime Session Id
+        description: Limit the artifact members to one runtime session. Audit rows,
+          approvals, receipts and holds still cover the whole period.
       responses:
         '200':
           description: Successful Response
@@ -6011,6 +6303,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProjectResponse'
+        '400':
+          description: The identifier already exists in this organization
+        '404':
+          description: Organization not found in the caller's account
+        '409':
+          description: 'repository_already_registered: the repository is already a
+            project in another organization; move it with POST /api/v1/projects/{project_id}/transfer'
         '422':
           description: Validation Error
           content:
@@ -6266,6 +6565,71 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/projects/{project_id}/transfer:
+    post:
+      tags:
+      - Projects
+      summary: Transfer Project
+      description: 'Rebind a repository project to the organization that now owns
+        it.
+
+
+        A GitHub repository keeps its repository ID when it is transferred to
+
+        another owner or renamed. This keeps the same project row (and so its ID,
+
+        issues, flow triggers, audit and review history) and moves it to the
+
+        destination organization, updating the owner/name that clone and review
+
+        publication use.
+
+
+        Preview by default; send ``dry_run: false`` to apply. Applying again is a
+
+        no-op that returns ``status: unchanged``.
+
+
+        The destination integration must already be able to see the repository
+
+        (checked live with its own credentials) and must include it in scope.
+
+        Repository-level grants on the source integration are not copied; the
+
+        receipt lists them under ``not_carried_over``.'
+      operationId: transfer_project_api_v1_projects__project_id__transfer_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectTransferRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectTransferReceipt'
+        '403':
+          description: Caller lacks manage_trackers
+        '404':
+          description: Project or destination organization not found
+        '409':
+          description: Transfer refused; detail.code says why
+        '422':
+          description: Repository type or host cannot be transferred
+        '502':
+          description: Destination integration could not be queried
   /api/v1/projects/{project_id}/pull-requests:
     get:
       tags:
@@ -10149,6 +10513,51 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/employee-events/{flow_id}:
+    post:
+      tags:
+      - Employee events
+      summary: Receive Employee Event
+      description: 'Verify raw-body HMAC before translating a configured source event.
+
+
+        GlitchTip uses X-Sentry-Hook-Signature. Discord Gateway bridges use
+
+        X-Preloop-Signature (hex HMAC-SHA256). The secret is generated by the
+
+        account owner and stored in the existing Flow webhook configuration.
+
+        The handler is synchronous so that checkout stays off the event loop.
+
+        The body stream and execution dispatch run on the loop.'
+      operationId: receive_employee_event_api_v1_employee_events__flow_id__post
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  anyOf:
+                  - type: string
+                  - type: boolean
+                title: Response Receive Employee Event Api V1 Employee Events  Flow
+                  Id  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/flows:
     post:
       tags:
@@ -12582,6 +12991,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/control/commands/{command_id}:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Managed Agent Command Status
+      description: 'Delivery state of one operator command, for clients that follow
+        it.
+
+
+        The same permission as sending: whoever may send a command may watch
+
+        it land. Another agent''s command id is a 404, not a leak. A sync
+
+        handler: FastAPI runs it in the threadpool, off the event loop.'
+      operationId: get_managed_agent_command_status_api_v1_agents__agent_id__control_commands__command_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Command Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentControlCommandStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/{runtime_session_id}/control:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Runtime Session Control Mode
+      description: 'Say whether a line typed on this session can start a new agent
+        turn.
+
+
+        ``preloop sessions attach`` reads this once on attach and again when a
+
+        command is refused. Sending still goes through the command endpoint and
+
+        its ``control_managed_agent`` check; this only picks the input mode. A
+
+        sync handler: FastAPI runs it in the threadpool, off the event loop.'
+      operationId: get_runtime_session_control_mode_api_v1_runtime_sessions__runtime_session_id__control_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionControlResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/{agent_id}/control/voice-transcripts:
     post:
       tags:
@@ -12726,6 +13217,214 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/chat/connections:
+    get:
+      tags:
+      - Chat
+      summary: List Connections
+      operationId: list_connections_api_v1_chat_connections_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response List Connections Api V1 Chat Connections Get
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - Chat
+      summary: Create Connection
+      operationId: create_connection_api_v1_chat_connections_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Create Connection Api V1 Chat Connections Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
+  /api/v1/chat/connections/{connection_id}:
+    patch:
+      tags:
+      - Chat
+      summary: Update Connection
+      operationId: update_connection_api_v1_chat_connections__connection_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectionUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Update Connection Api V1 Chat Connections  Connection
+                  Id  Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/connections/{connection_id}/link-code:
+    post:
+      tags:
+      - Chat
+      summary: Create Link Code
+      operationId: create_link_code_api_v1_chat_connections__connection_id__link_code_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Create Link Code Api V1 Chat Connections  Connection
+                  Id  Link Code Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/connections/{connection_id}/identity:
+    delete:
+      tags:
+      - Chat
+      summary: Unlink Identity
+      operationId: unlink_identity_api_v1_chat_connections__connection_id__identity_delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/connections/{connection_id}/deliveries:
+    get:
+      tags:
+      - Chat
+      summary: List Deliveries
+      operationId: list_deliveries_api_v1_chat_connections__connection_id__deliveries_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response List Deliveries Api V1 Chat Connections  Connection
+                  Id  Deliveries Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/chat/ingress/{connection_id}:
+    post:
+      tags:
+      - Chat
+      summary: Ingest
+      description: 'Accept one verified provider event.
+
+
+        The handler is synchronous so the session checkout stays on the
+
+        threadpool. The request stream is read on the event loop.'
+      operationId: ingest_api_v1_chat_ingress__connection_id__post
+      parameters:
+      - name: connection_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Connection Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Ingest Api V1 Chat Ingress  Connection Id  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/operator-notes:
     post:
       tags:
@@ -13084,6 +13783,372 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/runtime-sessions/{runtime_session_id}/artifacts:
+    post:
+      tags:
+      - Runtime Sessions
+      summary: Deposit Runtime Session Artifact
+      description: 'Store one artifact on a runtime session and add it to the timeline.
+
+
+        JSON bodies carry one MCP ``ContentBlock`` in ``content``; multipart
+
+        bodies carry a ``file`` part and an optional JSON ``metadata`` part.
+
+        A repeated ``Idempotency-Key`` returns the stored artifact with
+
+        ``Idempotent-Replayed: true``.'
+      operationId: deposit_runtime_session_artifact_api_v1_runtime_sessions__runtime_session_id__artifacts_post
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: Idempotency-Key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency-Key
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionArtifactOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '409':
+          description: artifact_audio_storage_disabled
+        '413':
+          description: artifact_too_large
+        '415':
+          description: artifact_media_type_invalid or artifact_content_mismatch
+        '422':
+          description: artifact_labels_invalid and other request errors
+        '507':
+          description: storage_budget_exhausted
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              description: 'JSON deposit: the metadata fields plus one MCP ``ContentBlock``.'
+              properties:
+                kind:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  description: Artifact kind. Inferred from the media type when omitted
+                    (image -> screenshot, text/vtt -> transcript, ...).
+                  title: Kind
+                name:
+                  maxLength: 255
+                  minLength: 1
+                  title: Name
+                  type: string
+                labels:
+                  anyOf:
+                  - additionalProperties: true
+                    type: object
+                  - type: 'null'
+                  description: 'Up to 16 keys matching ^[a-z][a-z0-9_.-]{0,62}$; string
+                    values up to 128 characters; `tags` is a list of strings. Documented
+                    keys: site, tenant_ref, consent_basis, retention_class, tags.'
+                  title: Labels
+                activity_id:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  description: Existing timeline row in this session the artifact
+                    illustrates.
+                  title: Activity Id
+                parent_artifact_id:
+                  anyOf:
+                  - type: string
+                  - type: 'null'
+                  description: Artifact in this account this one derives from.
+                  title: Parent Artifact Id
+                tool_name:
+                  anyOf:
+                  - maxLength: 255
+                    minLength: 1
+                    type: string
+                  - type: 'null'
+                  title: Tool Name
+                content:
+                  additionalProperties: true
+                  description: 'One MCP ContentBlock: text, image, audio, or resource
+                    (text or blob). A resource_link carries no bytes and is refused.'
+                  title: Content
+                  type: object
+              required:
+              - name
+              - content
+              title: ArtifactDepositIn
+              type: object
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+              - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                metadata:
+                  type: string
+                  description: 'JSON object: kind, name, labels, activity_id, parent_artifact_id,
+                    tool_name'
+      security:
+      - bearerAuth: []
+    get:
+      tags:
+      - Runtime Sessions
+      summary: List Runtime Session Artifacts
+      description: 'List a session''s artifacts, newest first, with cursor pagination.
+
+
+        A key pinned to this session may list it. Any other credential needs a
+
+        user with ``view_runtime_sessions`` in the session''s account.'
+      operationId: list_runtime_session_artifacts_api_v1_runtime_sessions__runtime_session_id__artifacts_get
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+      - name: label
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: Repeatable `key:value` label filter.
+          title: Label
+        description: Repeatable `key:value` label filter.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionArtifactListOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Bad kind, label, limit or cursor
+      security:
+      - bearerAuth: []
+  /api/v1/artifacts:
+    get:
+      tags:
+      - Artifacts
+      summary: Search Artifacts
+      description: 'Search artifacts across sessions, newest first, with facets.
+
+
+        Ordered by ``created_at`` then id (also with ``q``) so the cursor is
+
+        stable while artifacts arrive. Facets count kinds and ``labels.site``
+
+        over the whole filter, up to 10000 rows (``facets_truncated``).'
+      operationId: search_artifacts_api_v1_artifacts_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Full text over artifact text chunks, plus name.
+          title: Q
+        description: Full text over artifact text chunks, plus name.
+      - name: kind
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: Repeatable.
+          title: Kind
+        description: Repeatable.
+      - name: label
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: Repeatable `key:value`; all must match.
+          title: Label
+        description: Repeatable `key:value`; all must match.
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+      - name: tool_name
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Tool Name
+      - name: producer
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Producer
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+      - name: from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: ISO 8601; `created_at >= from`.
+          title: From
+        description: ISO 8601; `created_at >= from`.
+      - name: to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: ISO 8601; `created_at < to`.
+          title: To
+        description: ISO 8601; `created_at < to`.
+      - name: held
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: Legal hold state.
+          title: Held
+        description: Legal hold state.
+      - name: availability
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: available, evicted or expired.
+          title: Availability
+        description: available, evicted or expired.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: 1 to 200.
+          default: 50
+          title: Limit
+        description: 1 to 200.
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactSearchOut'
+        '401':
+          description: Missing or invalid credentials
+        '403':
+          description: User lacks view_runtime_sessions
+        '422':
+          description: Bad kind, label, id, date, limit or cursor
   /api/v1/runtime-sessions/search/saved:
     post:
       tags:
@@ -14683,26 +15748,28 @@ components:
             - 'off'
           - type: 'null'
           title: Native Tool Approvals
-          description: Account default for native tool-call approvals. Agents without
-            an explicit per-agent setting inherit this; absent/None means "enforce".
+          description: Account default for native tool-call approvals. Agents and
+            flow executions without an explicit per-subject setting inherit this;
+            absent/None means "enforce".
         approval_workflow_id:
           anyOf:
           - type: string
           - type: 'null'
           title: Approval Workflow Id
           description: Account default approval workflow for native tool-call approvals.
-            Agents without a per-agent pin inherit this; absent falls back to the
-            account's default workflow.
+            Agents and flows without their own pin inherit this; absent falls back
+            to the account's default workflow.
       type: object
       title: AccountGovernanceDefaults
-      description: 'Account-wide governance defaults inherited by every managed agent.
+      description: 'Account-wide governance defaults inherited by managed agents and
+        flows.
 
 
-        A per-agent subject-governance config with an explicit value overrides
+        A per-agent or per-flow subject-governance config with an explicit value
 
-        these; an absent/None per-agent value inherits. The final fallback when
+        overrides these; an absent/None per-subject value inherits. The final
 
-        both are unset is "enforce" (fail safe).'
+        fallback when both are unset is "enforce" (fail safe).'
     AccountGovernanceDefaultsResponse:
       properties:
         defaults:
@@ -14943,6 +16010,84 @@ components:
       - command_envelope
       title: AgentControlCommandResponse
       description: Result of routing an operator command to a managed agent.
+    AgentControlCommandStatusResponse:
+      properties:
+        command_id:
+          type: string
+          title: Command Id
+        managed_agent_id:
+          type: string
+          format: uuid
+          title: Managed Agent Id
+        status:
+          type: string
+          title: Status
+        delivery_state:
+          type: string
+          enum:
+          - queued
+          - delivered
+          - started
+          - finished
+          - failed
+          - expired
+          - cancelled
+          title: Delivery State
+        terminal:
+          type: boolean
+          title: Terminal
+        result_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Status
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        acked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Acked At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - command_id
+      - managed_agent_id
+      - status
+      - delivery_state
+      - terminal
+      title: AgentControlCommandStatusResponse
+      description: 'Delivery state of one operator command (#1150).
+
+
+        ``delivery_state`` is what an operator sees: queued (persisted, not yet
+
+        on the agent''s connection), delivered (sent on the connection), started
+
+        (the agent acknowledged it), then finished, failed, expired or
+
+        cancelled. ``status`` is the stored row status it is derived from.'
     AgentControlEnvelope:
       properties:
         type:
@@ -15850,15 +16995,26 @@ components:
     ApprovalDecision:
       properties:
         approved:
-          type: boolean
+          anyOf:
+          - type: boolean
+          - type: 'null'
           title: Approved
-          description: Whether the request is approved or declined
+          description: Required on /decide. Optional on /approve and /decline, where
+            the path already names the decision; if sent there it must agree with
+            it.
         comment:
           anyOf:
           - type: string
           - type: 'null'
           title: Comment
           description: Comment from the approver
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+          description: Deprecated alias for comment, used when comment is not set.
+          deprecated: true
         selected_option:
           anyOf:
           - type: string
@@ -15881,8 +17037,6 @@ components:
             JSON. Validated against that schema server-side; x-autofill fields (author,
             date) are stamped by the platform and anything sent for them is ignored.'
       type: object
-      required:
-      - approved
       title: ApprovalDecision
       description: Schema for an approval decision or a question answer.
     ApprovalDecisionRequest:
@@ -16602,6 +17756,19 @@ components:
           - type: string
           - type: 'null'
           title: Account Id
+        webhook_secret:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret
+          description: Webhook signing secret. Present only in the response that generated
+            it; store it, it is not shown again.
+        webhook_secret_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret Hint
+          description: Last characters of the webhook signing secret
         created_at:
           type: string
           format: date-time
@@ -16811,6 +17978,176 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
+    ArtifactExcerpt:
+      properties:
+        text:
+          type: string
+          title: Text
+        highlights:
+          items:
+            prefixItems:
+            - type: integer
+            - type: integer
+            type: array
+            maxItems: 2
+            minItems: 2
+          type: array
+          title: Highlights
+          description: '`[start, end)` character offsets of query hits in `text`.'
+      type: object
+      required:
+      - text
+      title: ArtifactExcerpt
+      description: Redacted text of the best matching chunk, with hit offsets.
+    ArtifactSearchFacets:
+      properties:
+        kind:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Kind
+        site:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Site
+          description: Counts by `labels.site`.
+      type: object
+      title: ArtifactSearchFacets
+      description: Counts for the current filter, cursor excluded.
+    ArtifactSearchItem:
+      properties:
+        id:
+          type: string
+          title: Id
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
+        kind:
+          type: string
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        content_type:
+          type: string
+          title: Content Type
+        size_bytes:
+          type: integer
+          title: Size Bytes
+        sha256:
+          type: string
+          title: Sha256
+        labels:
+          additionalProperties: true
+          type: object
+          title: Labels
+        producer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Producer
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        parent_artifact_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Artifact Id
+        text_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text Status
+        availability:
+          type: string
+          title: Availability
+        legal_hold:
+          type: boolean
+          title: Legal Hold
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        content_block:
+          $ref: '#/components/schemas/McpResourceLink'
+        session_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Title
+        agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Name
+        excerpt:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactExcerpt'
+          - type: 'null'
+          description: Set when `q` is given and a text chunk matched.
+        cue_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cue Start
+          description: 'Transcript only: start in seconds of the cue the excerpt is
+            in.'
+      type: object
+      required:
+      - id
+      - runtime_session_id
+      - kind
+      - content_type
+      - size_bytes
+      - sha256
+      - availability
+      - legal_hold
+      - created_at
+      - content_block
+      title: ArtifactSearchItem
+      description: The session artifact descriptor plus its session and agent names.
+    ArtifactSearchOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ArtifactSearchItem'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+          description: Pass as `cursor` for the next page; null on the last page.
+        facets:
+          $ref: '#/components/schemas/ArtifactSearchFacets'
+        facets_truncated:
+          type: boolean
+          title: Facets Truncated
+          description: More than 10000 rows matched; facets count the newest 10000.
+          default: false
+      type: object
+      required:
+      - items
+      - facets
+      title: ArtifactSearchOut
+      description: One page of account-wide artifact search, newest first.
     AttentionDismissalListResponse:
       properties:
         items:
@@ -17480,6 +18817,21 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        trigger_subject_ci:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci
+          description: Human-readable CI provider that dispatched this execution (e.g.
+            'GitHub Actions'), when a CI job triggered it with a 'ci' provenance block.
+            Null for runs a person or webhook started.
+        trigger_subject_ci_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci Url
+          description: Link to the CI run that dispatched this execution, when the
+            CI provenance block carries a run URL.
         runner:
           $ref: '#/components/schemas/ExecutionRunnerSummary'
           description: Where this execution ran. List rows carry kind and name; detail
@@ -18649,6 +20001,62 @@ components:
         \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
         \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
         \ 1000 && args.approved == false\""
+    ConnectionCreate:
+      properties:
+        provider:
+          type: string
+          enum:
+          - slack
+          - mattermost
+          - discord
+          title: Provider
+        workspace_id:
+          type: string
+          maxLength: 256
+          minLength: 1
+          title: Workspace Id
+        name:
+          type: string
+          maxLength: 120
+          minLength: 1
+          title: Name
+        verification_secret:
+          type: string
+          maxLength: 1024
+          minLength: 1
+          title: Verification Secret
+        bot_token:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Bot Token
+        bot_user_id:
+          type: string
+          maxLength: 256
+          title: Bot User Id
+          default: ''
+        base_url:
+          type: string
+          maxLength: 2048
+          title: Base Url
+          default: ''
+      type: object
+      required:
+      - provider
+      - workspace_id
+      - name
+      - verification_secret
+      - bot_token
+      title: ConnectionCreate
+    ConnectionUpdate:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: ConnectionUpdate
     ContinuationAdoptRequest:
       properties:
         recovery_mode:
@@ -19582,6 +20990,56 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    ExecutionContinuationNavigation:
+      properties:
+        original_execution_id:
+          type: string
+          format: uuid
+          title: Original Execution Id
+        issue_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue Url
+        pr_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr Url
+        follow_ups:
+          items:
+            $ref: '#/components/schemas/ExecutionFollowUp'
+          type: array
+          title: Follow Ups
+        follow_ups_truncated:
+          type: boolean
+          title: Follow Ups Truncated
+          default: false
+      type: object
+      required:
+      - original_execution_id
+      title: ExecutionContinuationNavigation
+      description: Navigation shared by a publisher and its review/CI continuations.
+    ExecutionFollowUp:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        status:
+          type: string
+          title: Status
+        start_time:
+          type: string
+          format: date-time
+          title: Start Time
+      type: object
+      required:
+      - id
+      - status
+      - start_time
+      title: ExecutionFollowUp
+      description: A repair execution linked from its publishing execution.
     ExecutionModelUsage:
       properties:
         model_alias:
@@ -19914,6 +21372,21 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        trigger_subject_ci:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci
+          description: Human-readable CI provider that dispatched this execution (e.g.
+            'GitHub Actions'), when a CI job triggered it with a 'ci' provenance block.
+            Null for runs a person or webhook started.
+        trigger_subject_ci_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci Url
+          description: Link to the CI run that dispatched this execution, when the
+            CI provenance block carries a run URL.
         runner:
           $ref: '#/components/schemas/ExecutionRunnerSummary'
           description: Where this execution ran. List rows carry kind and name; detail
@@ -20424,6 +21897,21 @@ components:
           title: Trigger Subject Url
           description: Link to the resource that triggered this execution (e.g. the
             pull request or merge request), when the trigger payload carries one.
+        trigger_subject_ci:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci
+          description: Human-readable CI provider that dispatched this execution (e.g.
+            'GitHub Actions'), when a CI job triggered it with a 'ci' provenance block.
+            Null for runs a person or webhook started.
+        trigger_subject_ci_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Trigger Subject Ci Url
+          description: Link to the CI run that dispatched this execution, when the
+            CI provenance block carries a run URL.
         runner:
           $ref: '#/components/schemas/ExecutionRunnerSummary'
           description: Where this execution ran. List rows carry kind and name; detail
@@ -20630,11 +22118,11 @@ components:
           description: 'Coarse machine-readable reason a terminal execution did not
             succeed: one of runner_conflict, runner_error, model_transient, model_auth,
             provider_billing, model_quota (legacy, superseded by provider_billing),
-            budget_exceeded, model_config, no_confirmation, agent_no_progress, setup_failed,
-            verification_failed, verification_blocked, tool_error, agent_error, model_stream_idle
-            (timed out while the model stream was silent), timeout, cancelled, unknown.
-            Null for successful or still-running executions, and for executions that
-            predate this field.'
+            budget_exceeded, model_config, no_confirmation, agent_no_progress, publication_missing,
+            setup_failed, verification_failed, verification_blocked, tool_error, agent_error,
+            model_stream_idle (timed out while the model stream was silent), timeout,
+            cancelled, unknown. Null for successful or still-running executions, and
+            for executions that predate this field.'
         queued_reason:
           anyOf:
           - type: string
@@ -20721,6 +22209,10 @@ components:
           - type: string
           - type: 'null'
           title: Flow Name
+        continuation_navigation:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionContinuationNavigation'
+          - type: 'null'
         park:
           anyOf:
           - $ref: '#/components/schemas/ExecutionPark'
@@ -20822,6 +22314,36 @@ components:
       - budget
       title: FlowGatewayUsageSummaryResponse
       description: Flow-scoped gateway usage summary.
+    FlowGovernanceResponse:
+      properties:
+        subject_type:
+          type: string
+          title: Subject Type
+        subject_id:
+          type: string
+          title: Subject Id
+        config:
+          $ref: '#/components/schemas/SubjectGovernanceConfig'
+        has_override:
+          type: boolean
+          title: Has Override
+          default: false
+        account_defaults:
+          $ref: '#/components/schemas/AccountGovernanceDefaults'
+      type: object
+      required:
+      - subject_type
+      - subject_id
+      - config
+      title: FlowGovernanceResponse
+      description: 'Per-flow governance override plus the account defaults it inherits.
+
+
+        ``has_override`` is False when the flow stores no override, in which case
+
+        ``config`` is empty and every execution of the flow is governed by the
+
+        account-wide policy (tool rules, enabled tools) and ``account_defaults``.'
     FlowNotifications:
       properties:
         on_failure:
@@ -20882,7 +22404,7 @@ components:
           title: Trigger Config
         webhook_config:
           anyOf:
-          - $ref: '#/components/schemas/WebhookConfig'
+          - $ref: '#/components/schemas/WebhookConfigResponse'
           - type: 'null'
         schedule_config:
           anyOf:
@@ -23895,7 +25417,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -23948,7 +25472,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -24022,7 +25548,9 @@ components:
             type: object
           - type: 'null'
           title: Auth Config
-          description: JSON configuration for authentication
+          description: 'JSON configuration for authentication. Secret values are write-only:
+            responses return them as ''***REDACTED***''. Sending that marker (or {"redacted":
+            true}) keeps the stored value.'
         status:
           anyOf:
           - type: string
@@ -25089,6 +26617,37 @@ components:
       title: ManagedAgentUsageAggregate
       description: Historical usage aggregate across all sessions for one managed
         agent.
+    McpResourceLink:
+      properties:
+        type:
+          type: string
+          const: resource_link
+          title: Type
+          default: resource_link
+        uri:
+          type: string
+          title: Uri
+        name:
+          type: string
+          title: Name
+        mimeType:
+          type: string
+          title: Mimetype
+        size:
+          type: integer
+          title: Size
+        _meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - uri
+      - name
+      - mimeType
+      - size
+      title: McpResourceLink
+      description: MCP ``ResourceLink`` pointing at the artifact's byte route.
     MobileDeviceRegistration:
       properties:
         platform:
@@ -25456,6 +27015,19 @@ components:
         ``agent`` in the second case and is always derived server side.'
     OperatorNoteCreate:
       properties:
+        source:
+          type: string
+          enum:
+          - api
+          - chat
+          title: Source
+          default: api
+        correlation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Correlation Id
         text:
           type: string
           maxLength: 4096
@@ -25741,12 +27313,14 @@ components:
         created_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Created At
           description: Creation timestamp
         updated_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Updated At
           description: Last update timestamp
@@ -26502,6 +28076,67 @@ components:
       - updated_at
       title: ProjectResponse
       description: Response model for project data.
+    ProjectTransferReceipt:
+      properties:
+        project_id:
+          type: string
+          title: Project Id
+        repository_id:
+          type: string
+          title: Repository Id
+        status:
+          type: string
+          title: Status
+          description: '''preview'', ''transferred'' (moved organization), ''updated''
+            (same organization, owner/name refreshed) or ''unchanged'' (already bound)'
+        source:
+          $ref: '#/components/schemas/RepositoryLocation'
+        destination:
+          $ref: '#/components/schemas/RepositoryLocation'
+        changes:
+          items:
+            type: string
+          type: array
+          title: Changes
+        not_carried_over:
+          items:
+            type: string
+          type: array
+          title: Not Carried Over
+          description: Grants and settings that stay with the source and must be re-established
+            deliberately in the destination, if wanted.
+        manual_actions:
+          items:
+            type: string
+          type: array
+          title: Manual Actions
+      type: object
+      required:
+      - project_id
+      - repository_id
+      - status
+      - source
+      - destination
+      title: ProjectTransferReceipt
+      description: Result of a repository project transfer or its preview.
+    ProjectTransferRequest:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+          description: Destination organization ID
+        dry_run:
+          type: boolean
+          title: Dry Run
+          description: Preview only (default). Set to false to apply the move. The
+            preview runs every check the apply runs, including the live destination
+            access check.
+          default: true
+      type: object
+      required:
+      - organization_id
+      title: ProjectTransferRequest
+      description: Move a repository project to the organization that now owns it.
     ProjectUpdate:
       properties:
         name:
@@ -27123,6 +28758,29 @@ components:
         clone and push credential comes from that tracker, never from the
 
         issue tracker''s token.'
+    RepositoryLocation:
+      properties:
+        organization_id:
+          type: string
+          title: Organization Id
+        organization_name:
+          type: string
+          title: Organization Name
+        tracker_id:
+          type: string
+          title: Tracker Id
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+      type: object
+      required:
+      - organization_id
+      - organization_name
+      - tracker_id
+      title: RepositoryLocation
+      description: Where a repository project is bound.
     RepriceRequest:
       properties:
         start_date:
@@ -27905,6 +29563,11 @@ components:
       title: RunnerResponse
     RuntimeSessionActivityItem:
       properties:
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
         activity_type:
           type: string
           title: Activity Type
@@ -28005,6 +29668,109 @@ components:
       type: object
       title: RuntimeSessionActivityListResponse
       description: List of activity items for a runtime session.
+    RuntimeSessionArtifactListOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionArtifactOut'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+          description: Pass as `cursor` for the next page; null on the last page.
+      type: object
+      required:
+      - items
+      title: RuntimeSessionArtifactListOut
+      description: One page of a session's artifacts, newest first.
+    RuntimeSessionArtifactOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
+        kind:
+          type: string
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        content_type:
+          type: string
+          title: Content Type
+        size_bytes:
+          type: integer
+          title: Size Bytes
+        sha256:
+          type: string
+          title: Sha256
+        labels:
+          additionalProperties: true
+          type: object
+          title: Labels
+        producer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Producer
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        parent_artifact_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Artifact Id
+        text_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text Status
+        availability:
+          type: string
+          title: Availability
+        legal_hold:
+          type: boolean
+          title: Legal Hold
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        content_block:
+          $ref: '#/components/schemas/McpResourceLink'
+      type: object
+      required:
+      - id
+      - runtime_session_id
+      - kind
+      - content_type
+      - size_bytes
+      - sha256
+      - availability
+      - legal_hold
+      - created_at
+      - content_block
+      title: RuntimeSessionArtifactOut
+      description: Descriptor of one stored session artifact.
     RuntimeSessionCacheModelGroup:
       properties:
         model_alias:
@@ -28151,6 +29917,71 @@ components:
         lower bound covering only the priced models. When no contributing model is
 
         priced the figure is ``None`` and ``savings_omitted_reason`` says why.'
+    RuntimeSessionControlResponse:
+      properties:
+        runtime_session_id:
+          type: string
+          format: uuid
+          title: Runtime Session Id
+        mode:
+          type: string
+          enum:
+          - command
+          - note
+          title: Mode
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - session_ended
+            - not_managed
+            - unsupported_kind
+            - agent_inactive
+            - no_control_plugin
+            - control_offline
+          - type: 'null'
+          title: Reason Code
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+        agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Name
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+      type: object
+      required:
+      - runtime_session_id
+      - mode
+      title: RuntimeSessionControlResponse
+      description: 'Whether a line typed on an attached session starts a new turn
+        (#1150).
+
+
+        ``mode`` is ``command`` when the session is run by an active managed
+
+        agent with a verified Agent Control plugin and a live control
+
+        connection: send the line with POST
+
+        ``/agents/{managed_agent_id}/control/prompts`` and ``target_session_id``
+
+        set to this session. Otherwise ``mode`` is ``note`` and ``reason`` says
+
+        why, in words fit to show the operator.'
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
@@ -28997,6 +30828,43 @@ components:
           description: 'True while a legal hold freezes this session: the retention
             purge leaves it and its activity alone until the hold is released'
           default: false
+        managed_agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Id
+          description: Managed agent whose runtime principal owns this session
+        managed_agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Managed Agent Name
+          description: Display name of that managed agent
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+          description: Agent kind of that managed agent (claude_code, codex, hermes,
+            ...), or null when the session has no managed agent
+        cwd:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cwd
+          description: Working directory the agent's hook last reported for this session;
+            an observation used for labelling, not a trusted path
+        tool_call_count:
+          type: integer
+          title: Tool Call Count
+          description: Tool calls recorded for this session, or the count its usage
+            hook reported when no tool call was recorded server side
+          default: 0
+        pending_approval_count:
+          type: integer
+          title: Pending Approval Count
+          description: Approval requests for this session still awaiting a decision
+          default: 0
       type: object
       required:
       - id
@@ -29414,20 +31282,91 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionArtifactSettingsResponse:
+      properties:
+        audio_storage_enabled:
+          type: boolean
+          title: Audio Storage Enabled
+          description: Store raw audio deposited by agents. Off by default.
+        audio_retention_days:
+          type: integer
+          title: Audio Retention Days
+          description: Days raw audio is kept before its bytes expire.
+        audio_retention_max_days:
+          type: integer
+          title: Audio Retention Max Days
+          description: Longest allowed audio retention (the session retention).
+        updated_by_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated By User Id
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - audio_storage_enabled
+      - audio_retention_days
+      - audio_retention_max_days
+      title: SessionArtifactSettingsResponse
+      description: Account artifact storage settings (#1102).
+    SessionArtifactSettingsUpdate:
+      properties:
+        audio_storage_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Audio Storage Enabled
+        audio_retention_days:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Audio Retention Days
+      type: object
+      title: SessionArtifactSettingsUpdate
+      description: Change artifact storage settings; omitted fields are left as they
+        are.
     SessionArtifactUsageByKind:
       properties:
         screenshot:
           type: integer
           title: Screenshot
+          default: 0
         recording:
           type: integer
           title: Recording
+          default: 0
+        screencast:
+          type: integer
+          title: Screencast
+          default: 0
+        audio:
+          type: integer
+          title: Audio
+          default: 0
+        transcript:
+          type: integer
+          title: Transcript
+          default: 0
+        document:
+          type: integer
+          title: Document
+          default: 0
+        generated_file:
+          type: integer
+          title: Generated File
+          default: 0
+        trace:
+          type: integer
+          title: Trace
+          default: 0
       type: object
-      required:
-      - screenshot
-      - recording
       title: SessionArtifactUsageByKind
-      description: Available plaintext bytes by artifact kind.
+      description: Available plaintext bytes by artifact kind (zero when unused).
     SessionArtifactUsageResponse:
       properties:
         used_bytes:
@@ -29950,6 +31889,61 @@ components:
         are all "this saved question changed", and splitting them into three
 
         routes would say nothing extra.'
+    SessionSearchArtifactRef:
+      properties:
+        artifact_id:
+          type: string
+          title: Artifact Id
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
+        kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        content_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Type
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        labels:
+          additionalProperties: true
+          type: object
+          title: Labels
+        cue_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cue Start
+        text_truncated:
+          type: boolean
+          title: Text Truncated
+          default: false
+      type: object
+      required:
+      - artifact_id
+      title: SessionSearchArtifactRef
+      description: 'The artifact an ``artifact`` chunk came from, enough to open it.
+
+
+        ``activity_id`` is the timeline row the deposit wrote, so a console can
+
+        land on that row; ``cue_start`` is the start in seconds of the transcript
+
+        cue the chunk begins in, when the transcript was timed.'
     SessionSearchDegraded:
       properties:
         keyword:
@@ -30050,7 +32044,27 @@ components:
           - type: 'null'
           title: Source Kind
           description: 'One corpus source kind: gateway_interaction, transcript_message,
-            tool_call, browser_step, operator_note, session_summary, flow_log.'
+            tool_call, browser_step, operator_note, session_summary, flow_log, artifact.'
+        kind:
+          anyOf:
+          - type: string
+            maxLength: 32
+            minLength: 1
+          - type: 'null'
+          title: Kind
+          description: Artifact kind, for example transcript or document. Restricts
+            the search to artifact chunks.
+        label:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 16
+          - type: 'null'
+          title: Label
+          description: Artifact label filters as key:value, for example site:nord.
+            Repeatable; every one must match (AND). tags:x matches an artifact whose
+            tags include x. Restricts the search to artifact chunks.
       additionalProperties: false
       type: object
       title: SessionSearchFilters
@@ -30411,6 +32425,12 @@ components:
           description: Cosine similarity between the query vector and this chunk.
             Null for a chunk the vector half never scored, because a keyword match
             has no similarity to report.
+        artifact:
+          anyOf:
+          - $ref: '#/components/schemas/SessionSearchArtifactRef'
+          - type: 'null'
+          description: 'Set when source_kind is artifact: the artifact id, its timeline
+            activity id, kind, name, labels and the transcript cue start.'
       type: object
       required:
       - document_id
@@ -31922,7 +33942,8 @@ components:
             format: uri
           - type: 'null'
           title: Url
-          description: URL of the tracker instance (required for Jira)
+          description: URL of the tracker instance (required for Jira and Bitbucket
+            Data Center)
         is_active:
           type: boolean
           title: Is Active
@@ -31934,7 +33955,10 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Tracker-specific connection details
+          description: Tracker-specific connection details. bitbucket_dc uses instance_url,
+            version (10.2), project_key, repository_id (numeric, stable across rename),
+            repository_slug, and optional reviewer username. Credentials and deployment
+            trust settings must not be stored here.
         meta_data:
           anyOf:
           - additionalProperties: true
@@ -32145,7 +34169,10 @@ components:
             type: object
           - type: 'null'
           title: Connection Details
-          description: Tracker-specific connection details
+          description: Tracker-specific connection details. bitbucket_dc uses instance_url,
+            version (10.2), project_key, repository_id (numeric, stable across rename),
+            repository_slug, and optional reviewer username. Credentials and deployment
+            trust settings must not be stored here.
         organization_identifier:
           anyOf:
           - type: string
@@ -32157,9 +34184,9 @@ components:
           - type: string
           - type: 'null'
           title: Auth Type
-          description: 'Authentication mode for trackers that support several (Bitbucket:
-            ''api_token'' or ''oauth_token''). Ignored when tracker_id is set: the
-            stored mode is used.'
+          description: 'Authentication mode for trackers that support several (Bitbucket
+            Cloud: ''api_token'' or ''oauth_token''; Data Center: ''api_token'' user
+            PAT only). Ignored when tracker_id is set: the stored mode is used.'
       type: object
       required:
       - tracker_type
@@ -32197,6 +34224,7 @@ components:
       - gitlab
       - jira
       - bitbucket
+      - bitbucket_dc
       title: TrackerType
       description: Enum for tracker types.
     TrackerUpdate:
@@ -32952,6 +34980,14 @@ components:
       description: What a console needs to render the create form.
     WebhookConfig:
       properties:
+        employee_secret:
+          anyOf:
+          - type: string
+            minLength: 32
+          - type: 'null'
+          title: Employee Secret
+          description: HMAC secret for signed employee-event ingress.
+          writeOnly: true
         webhook_secret:
           anyOf:
           - type: string
@@ -32978,6 +35014,34 @@ components:
       type: object
       title: WebhookConfig
       description: Configuration for webhook triggers.
+    WebhookConfigResponse:
+      properties:
+        webhook_secret:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Webhook Secret
+          description: Secure token for authenticating webhook requests (auto-generated
+            for webhook triggers; unset on flows triggered by tracker events)
+        supersede_on_update:
+          type: boolean
+          title: Supersede On Update
+          description: When a pull or merge request gets a new head, stop this flow's
+            executions still working on an older head of the same request before starting
+            the new one. Off by default; the Pull Request Reviewer preset turns it
+            on.
+          default: false
+        dedupe_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dedupe Path
+          description: Dotted JSON path into the webhook body used to build a deduplication
+            key (e.g. 'data.issue.id'). When unset, defaults to 'attachments.0.title_link'
+            then 'data.issue.id'.
+      type: object
+      title: WebhookConfigResponse
+      description: Webhook settings on a flow response. The ingress secret is omitted.
     WebhookDeliveryRead:
       properties:
         id:

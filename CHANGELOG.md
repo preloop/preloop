@@ -17,6 +17,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scheduled runs know their time window.** A schedule-triggered run's
+  `trigger_event.payload` now carries `previous_scheduled_at` (the previous
+  fire time, computed from the schedule definition in its timezone),
+  `window: {from, to}` and `last_successful_scheduled_at` (from execution
+  history, `null` until a run succeeds). All three are prompt template
+  variables, e.g. `{{trigger_event.payload.window.from}}` (#1105).
+- **Per-user budgets count API-key traffic.** A call made with an API key a
+  user owns now counts toward that user's `user` budget and is blocked by its
+  hard limit. Agent traffic keeps counting against the agent's owner only, so
+  one call never counts against two users (#1174).
+- **Team budget subject reserved for plugins.** `team` joins `subaccount` and
+  `subaccounts_total` as a reserved budget subject: the core budget endpoint
+  refuses it and the teams plugin serves and enforces it through account hook
+  H5, which may now add buckets in the request's own account. The Cost page
+  gains a Teams tab and team names on budget rows, shown only when the server
+  advertises `team_budgets` and `team_management` (#1174).
+- Webhooks: new `agent.onboarded` event (#1161). It fires once per managed-agent
+  enrollment, the first time the enrollment is validated, with `outcome`
+  `created`, `relinked` or `merged`. The payload names the agent, its owner
+  and whether MCP and the model gateway were rewritten; it carries no
+  hostname, OS user name, config path or server URL.
+- **Governed virtual employees and private chat.** Bounded Codex and Nanobot
+  tasks accept durable tracker, signed incident and Discord events. Nanobot
+  supports DeepSeek through the model gateway. Slack, Mattermost and Discord
+  connections link human identities for scoped inventory/spend questions, approval
+  votes, notes and active-session prompts. Private replies recheck access before
+  delivery; replay protection and uncertain-effect states avoid blind retries.
+  Setup requires the chat migration, a supervised worker and provider credentials;
+  Codex employee tasks require the matching execution-scoped CLI hooks.
+
+- **OTLP attribute stability policy.** `docs/guide/otlp-attribute-stability.md`
+  lists the stable `preloop.*` span attributes and metrics, the experimental
+  `gen_ai.*` names, and the deprecation window for renames (CHANGELOG
+  "Telemetry" entry, then both names emitted for at least two minor releases
+  or 60 days). A unit test keeps the exporter, the registry and the docs in
+  sync.
+
+- **Subscription reconnect without re-onboarding.** `preloop agents reconnect
+  "Claude Code"` and `preloop agents reconnect "Codex CLI"` repair provider OAuth
+  credentials while preserving enrollment, policy and configuration. Working
+  server credentials are preserved during repeated onboarding; credential imports
+  serialize with refresh and reject recently consumed tokens. Invalid grants stop
+  retrying until re-authorized, and gateway errors distinguish those from transient
+  provider failures.
+
+- **Exact digest periods in Cost.** `/console/cost` accepts an
+  `account_id`, `start_date` and `end_date` link (UTC, microsecond
+  precision) and shows that window without changing the saved preset;
+  mismatched or malformed links fetch nothing. Login keeps such return
+  paths and rejects non-local ones. Gateway usage CRUD adds full-window
+  model and agent rankings with unknown and remainder totals.
+
+- **Session artifacts guide.** `docs/guide/artifacts.md` covers kinds and
+  caps, labels, the MCP and REST deposit paths with tested examples, where
+  artifacts appear, retention and budget, the standards mapping and every
+  error code. The browser agents page now says what the console shows and
+  that Playwright MCP `--image-responses omit` yields steps without
+  screenshots (#1090).
+- **`deposit_artifact` MCP tool.** An agent stores a file, image, transcript
+  or text on its own runtime session through the MCP endpoint alone; it
+  shows up in the session's artifact list and timeline. Takes one MCP
+  content block, answers with a `resource_link` and the artifact descriptor,
+  and reports refusals with the same codes as the REST deposit API.
+  Default-off: enable it on the Tools page or in a flow's
+  `allowed_mcp_tools`. See `docs/architecture/mcp.md` (#1081).
 - **`preloop flow trigger --stop-on-interrupt`.** When `--wait` is
   interrupted by SIGINT or SIGTERM, the CLI stops the execution on the
   server (one stop request), prints the execution id and final status, and
@@ -364,6 +429,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Schedule-triggered flows created after the scheduler started now fire.**
+  The reconcile job's id shares the per-flow job prefix, so its first pass
+  removed itself and later flows never got a job until a restart.
 - A Jira-triggered flow bound to a code-host repository now clones that
   repository on Copilot and Cursor host execution profiles too, with the
   code-host tracker's credential only. Before, the host checkout ignored the

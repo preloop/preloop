@@ -229,3 +229,68 @@ def test_get_multi_by_account_approved_does_not_expire_stale_rows(
 
     assert result == []
     expire_stale.assert_not_called()
+
+
+def test_session_scoping_combines_account_execution_status_and_paging(
+    db_session: Session,
+) -> None:
+    """Sessions on a shared agent still require exact account/session matching."""
+    from preloop.models import models
+    from preloop.models.crud import crud_approval_request
+
+    account = models.Account(organization_name="Example account")
+    other = models.Account(organization_name="Other example account")
+    db_session.add_all([account, other])
+    db_session.flush()
+    session_a, session_b = uuid4(), uuid4()
+    expected = None
+    for owner, session_id, status in [
+        (account, session_a, "pending"),
+        (account, session_b, "pending"),
+        (other, session_a, "pending"),
+        (account, session_a, "approved"),
+    ]:
+        workflow = models.ApprovalWorkflow(
+            account_id=owner.id, name=f"Example {uuid4()}", workflow_type="simple"
+        )
+        tool = models.ToolConfiguration(
+            account_id=owner.id, tool_name="terminal", tool_source="builtin"
+        )
+        db_session.add_all([workflow, tool])
+        db_session.flush()
+        row = models.ApprovalRequest(
+            account_id=owner.id,
+            runtime_session_id=session_id,
+            execution_id="execution-example",
+            tool_configuration_id=tool.id,
+            approval_workflow_id=workflow.id,
+            tool_name="terminal",
+            tool_args={},
+            status=status,
+        )
+        db_session.add(row)
+        db_session.flush()
+        if owner is account and session_id == session_a and status == "pending":
+            expected = row.id
+    rows = crud_approval_request.get_multi_by_account(
+        db_session,
+        account_id=str(account.id),
+        runtime_session_id=str(session_a),
+        execution_id="execution-example",
+        status="pending",
+        limit=1,
+        skip=0,
+    )
+    assert [row.id for row in rows] == [expected]
+    assert (
+        crud_approval_request.get_multi_by_account(
+            db_session,
+            account_id=str(account.id),
+            runtime_session_id=str(session_a),
+            execution_id="execution-example",
+            status="pending",
+            limit=1,
+            skip=1,
+        )
+        == []
+    )

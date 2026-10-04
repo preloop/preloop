@@ -24,6 +24,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.cache_accounting import reported_cache_miss_tokens
+from preloop.services.gateway_tool_activity import normalize_tool_activity
 from preloop.services.model_allowlist import is_model_not_allowed_detail
 from preloop.sync.services.event_bus import get_nats_client
 from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
@@ -270,6 +271,15 @@ class ModelGatewayEventEmitter:
         )
         api_key = self.db.get(ApiKey, usage.api_key_id) if usage.api_key_id else None
         managed_agent_id = self._resolve_managed_agent_id(usage=usage, api_key=api_key)
+        # Sanitize once, then derive structure from the sanitized bodies: tool
+        # arguments and results are content, so this module must never be the
+        # path that recovers what the capture policy withheld upstream of it.
+        sanitized_request = self._cap_activity_body(
+            self._sanitize_payload(request_payload)
+        )
+        sanitized_response = self._cap_activity_body(
+            self._sanitize_payload(response_payload)
+        )
         return {
             "topic": "flow_executions",
             "execution_id": str(usage.flow_execution_id)
@@ -284,6 +294,11 @@ class ModelGatewayEventEmitter:
             "type": "model_gateway_call",
             "payload": {
                 "api_usage_id": str(usage.id),
+                "request_id": meta_data.get("request_id"),
+                "tools": self._extract_structured_tools(
+                    request_payload, response_payload
+                ),
+                "tools_metadata_truncated": self._tool_metadata_truncated,
                 "endpoint": usage.endpoint,
                 "endpoint_kind": meta_data.get("endpoint_kind"),
                 "method": usage.method,
@@ -306,6 +321,13 @@ class ModelGatewayEventEmitter:
                 "gateway_attempt": meta_data.get("gateway_attempt"),
                 "is_retry": meta_data.get("is_retry"),
                 "retry_of_api_usage_id": meta_data.get("retry_of_api_usage_id"),
+                # Shared with the `model_gateway_request_started` event this
+                # call announced. Present on rows recorded after the id was
+                # threaded through the gateway; absent on older rows, which is
+                # what makes "never fabricate completion" possible: a start
+                # without a matching id here stays unmatched rather than
+                # closing some other request that happened to finish next.
+                "gateway_request_id": meta_data.get("gateway_request_id"),
                 # Retries the gateway itself made against the provider inside
                 # this single request (mid-stream disconnect, 5xx, 429).
                 # 0 = the call succeeded first time. Lets the console show
@@ -360,18 +382,37 @@ class ModelGatewayEventEmitter:
                 "error_detail": error_detail,
                 "capture_policy": self._build_capture_policy(conversation_preview),
                 "conversation_preview": conversation_preview,
+                # Named tool calls and results for this exchange, recovered from
+                # the structured wire fields rather than left inside raw text.
+                # A session whose gateway history is the only record of what an
+                # agent did can still render `terminal · completed · 1.2s`.
+                # None when neither body carried tool structure.
+                "tool_activity": normalize_tool_activity(
+                    request_payload=sanitized_request,
+                    response_payload=sanitized_response,
+                    capture_content=settings.model_gateway_capture_content,
+                    redact_text=self._redact_for_tool_activity,
+                ),
                 # These two bodies are the ones that carried 533KB of binary
                 # content in the 2026-08-05 incident. Cap them here, at the
                 # point they enter the activity payload, so the JSONB row stays
                 # a bounded size regardless of what the upstream returned.
-                "request": self._cap_activity_body(
-                    self._sanitize_payload(request_payload)
-                ),
-                "response": self._cap_activity_body(
-                    self._sanitize_payload(response_payload)
-                ),
+                "request": sanitized_request,
+                "response": sanitized_response,
             },
         }
+
+    @staticmethod
+    def _redact_for_tool_activity(value: str) -> str:
+        """Secret redaction for tool arguments and results.
+
+        ``_sanitize_payload`` only rewrites the message-content keys, so a
+        bearer token nested inside a tool argument would otherwise reach the
+        activity row untouched. Reusing the emitter's patterns here keeps one
+        definition of "sensitive" for the whole event.
+        """
+        redacted, _ = ModelGatewayEventEmitter._redact_sensitive_text(value)
+        return redacted
 
     def _resolve_managed_agent_id(
         self, *, usage: ApiUsage, api_key: Optional[ApiKey]
@@ -488,6 +529,118 @@ class ModelGatewayEventEmitter:
                 conversation_preview.get("messages")
             ),
         }
+
+    def _extract_structured_tools(
+        self, request: Optional[dict], response: Optional[dict]
+    ) -> list[dict[str, Any]]:
+        """Retain bounded tool identities and policy-sanitized captured content.
+
+        Calls are requests, not evidence that an executor started or succeeded.
+        Stable provider call ids link accumulated history and parallel results.
+        """
+        tools: list[dict[str, Any]] = []
+        remaining_bytes = 64 * 1024
+        self._tool_metadata_truncated = False
+
+        def add(kind: str, item: dict, source: str) -> None:
+            nonlocal remaining_bytes
+            if len(tools) >= 256 or remaining_bytes < 1024:
+                self._tool_metadata_truncated = True
+                return
+            call_id = (
+                item.get("call_id")
+                or item.get("tool_call_id")
+                or item.get("tool_use_id")
+                or item.get("id")
+            )
+            function = item.get("function")
+            if not isinstance(function, dict):
+                function = item
+            name = function.get("name") if isinstance(function, dict) else None
+            value = (
+                function.get("arguments", item.get("input"))
+                if kind == "call"
+                else item.get("output", item.get("content"))
+            )
+            import json
+
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (ValueError, TypeError):
+                    pass
+            original_value = value
+            capped_value = self._cap_activity_body(value)
+            value = self._sanitize_payload(capped_value)
+            key_redacted = value != original_value and "***REDACTED***" in json.dumps(
+                value, default=str
+            )
+            payload_truncated = capped_value != original_value or (
+                value != capped_value and not key_redacted
+            )
+            if not isinstance(value, str):
+                value = json.dumps(value, ensure_ascii=False, default=str)
+            text, meta = self._sanitize_text_with_meta(value)
+            entry = {
+                "kind": kind,
+                "call_id": call_id
+                if isinstance(call_id, str) and 0 < len(call_id) <= 256
+                else None,
+                "name": str(name)[:256] if name else None,
+                "source": source,
+                "text": text,
+                "redacted": meta["redacted"] or key_redacted,
+                "truncated": meta["truncated"] or payload_truncated,
+                "is_error": item.get("is_error") is True,
+            }
+            if isinstance(text, str):
+                encoded = text.encode("utf-8")
+                limit = min(8192, remaining_bytes - 1024)
+                if len(encoded) > limit:
+                    entry["text"] = encoded[:limit].decode("utf-8", errors="ignore")
+                    entry["truncated"] = True
+            size = len(json.dumps(entry, ensure_ascii=False).encode("utf-8"))
+            if size <= remaining_bytes:
+                tools.append(entry)
+                remaining_bytes -= size
+
+        def scan(items: Any, source: str, depth: int = 0) -> None:
+            if depth > 12:
+                self._tool_metadata_truncated = True
+                return
+            if not isinstance(items, list):
+                return
+            for item in items[-256:]:
+                if len(tools) >= 256 or remaining_bytes < 1024:
+                    self._tool_metadata_truncated = True
+                    break
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type in ("function_call", "tool_use"):
+                    add("call", item, source)
+                elif (
+                    item_type in ("function_call_output", "tool_result")
+                    or item.get("role") == "tool"
+                ):
+                    add("result", item, source)
+                raw_calls = item.get("tool_calls")
+                for call in (raw_calls if isinstance(raw_calls, list) else [])[:128]:
+                    if isinstance(call, dict):
+                        add("call", call, source)
+                scan(item.get("content"), source, depth + 1)
+
+        if isinstance(response, dict):
+            scan(response.get("output"), "response")
+            scan(response.get("content"), "response")
+            raw_choices = response.get("choices")
+            for choice in (raw_choices if isinstance(raw_choices, list) else [])[:128]:
+                if isinstance(choice, dict):
+                    scan([choice.get("message")], "response")
+        if isinstance(request, dict):
+            scan(request.get("messages"), "request")
+            scan(request.get("input"), "request")
+        return tools[:256]
 
     def _build_conversation_preview(
         self,
@@ -625,6 +778,24 @@ class ModelGatewayEventEmitter:
                 content=item.get("content", item),
             )
             if preview_message:
+                call_ids = []
+                direct_id = item.get("tool_call_id") or item.get("call_id")
+                if direct_id:
+                    if isinstance(direct_id, str) and len(direct_id) <= 256:
+                        call_ids.append(direct_id)
+                content = item.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if (
+                            isinstance(block, dict)
+                            and block.get("type") == "tool_result"
+                            and block.get("tool_use_id")
+                        ):
+                            identity = block["tool_use_id"]
+                            if isinstance(identity, str) and len(identity) <= 256:
+                                call_ids.append(identity)
+                if call_ids:
+                    preview_message["tool_call_ids"] = call_ids[:128]
                 messages.append(preview_message)
         return messages
 

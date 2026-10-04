@@ -26,6 +26,12 @@ helm install preloop ./helm/preloop \
 
 The command deploys Preloop on the Kubernetes cluster in the default configuration. The [Parameters](#parameters) section lists the parameters that can be configured during installation.
 
+Installing on Azure Kubernetes Service? Start from one of the tier overlays
+(`values-aks-small.yaml`, `values-aks-medium.yaml`, `values-aks-large.yaml`)
+and read [Reference sizing for Helm on AKS](../../docs/operations/sizing-aks.md)
+for node pools, Azure Database for PostgreSQL with pgvector, NATS storage
+and what to monitor.
+
 Alternatively, keep the key out of Helm values entirely by creating a
 Kubernetes Secret and pointing `existingSecret` at it; see
 [Application secrets](#application-secrets).
@@ -261,7 +267,9 @@ Preloop resolves that alias to the model record whose `api_endpoint` is
 ### Resources (small production)
 
 Chart defaults are sized for a small production instance. Raise them under
-load with `--set` or a values overlay:
+load with `--set` or a values overlay. For node pool and database sizing
+derived from these values, see
+[Reference sizing for Helm on AKS](../../docs/operations/sizing-aks.md).
 
 | Component | Default request | Default limit |
 |-----------|-----------------|---------------|
@@ -473,6 +481,7 @@ helm install preloop ./helm/preloop \
 | `serviceAccount.annotations`   | Annotations for the service account                   | `{}`        |
 | `serviceAccount.name`          | The name of the service account                       | `""`        |
 | `podAnnotations`               | Annotations for pods                                  | `{}`        |
+| `podLabels`                    | Extra labels on the api, gateway, frontend, and spacesync-* deployments (not health-monitor or Jobs). For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set `azure.workload.identity/use: "true"` and annotate the service account with `azure.workload.identity/client-id` | `{}`        |
 | `podSecurityContext`           | Pod security context                                  | `{}`        |
 | `securityContext`              | Container security context                            | `{}`        |
 | `nodeSelector`                 | Node selector                                         | `{}`        |

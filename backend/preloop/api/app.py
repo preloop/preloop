@@ -246,7 +246,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     service_role = os.getenv("PRELOOP_SERVICE_ROLE", "all").lower()
     is_testing = os.getenv("TESTING") == "true"
     is_api_role = service_role in {"all", "api"}
-    is_gateway_role = service_role in {"all", "gateway"}
+    is_gateway_role = service_role in {"all", "gateway", "chat"}
 
     # Initialize Sentry if DSN is configured
     init_sentry()
@@ -868,6 +868,7 @@ def _register_control_plane_routes(
         copilot_usage,
         cost,
         event_webhooks,
+        employee_events,
         issue_costs,
         exports,
         features,
@@ -884,6 +885,8 @@ def _register_control_plane_routes(
         pull_requests,
         retention,
         roles,
+        artifact_search,
+        runtime_session_artifacts,
         runtime_session_browser_steps,
         search as search_router,
         security_maintenance,
@@ -1145,6 +1148,7 @@ def _register_control_plane_routes(
     )
     # Note: Issue duplicates endpoint is now loaded via plugins/analytics
     app.include_router(webhooks.router, prefix="/api/v1", tags=["Webhooks"])
+    app.include_router(employee_events.router, prefix="/api/v1")
     from preloop.api.endpoints import flow_artifacts, publication_credentials
 
     app.include_router(flow_artifacts.router, prefix="/api/v1", tags=["Flow artifacts"])
@@ -1197,6 +1201,10 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         tags=["Agent Permissions"],
     )
+    from preloop.api.endpoints import chat
+
+    app.include_router(chat.router, prefix="/api/v1")
+
     # Operator notes: authored on the console/CLI half (session auth), and
     # pulled on the harness half (runtime bearer, authenticated in-route).
     app.include_router(
@@ -1218,6 +1226,18 @@ def _register_control_plane_routes(
         runtime_session_browser_steps.router,
         prefix="/api/v1",
         tags=["Runtime Sessions"],
+    )
+    # Artifact deposit and list authenticate inside the route for the same
+    # reason: the agent's runtime key is the main caller.
+    app.include_router(
+        runtime_session_artifacts.router,
+        prefix="/api/v1",
+        tags=["Runtime Sessions"],
+    )
+    app.include_router(
+        artifact_search.router,
+        prefix="/api/v1",
+        tags=["Artifacts"],
     )
     # Saved searches for that endpoint. They sit under the search path, not
     # beside it, because a two segment sibling of /runtime-sessions would be
@@ -1428,8 +1448,8 @@ def create_app() -> FastAPI:
     )
 
     service_role = os.getenv("PRELOOP_SERVICE_ROLE", "all").lower()
-    is_api_role = service_role in {"all", "api"}
-    is_gateway_role = service_role in {"all", "gateway"}
+    is_api_role = service_role in {"all", "api", "chat"}
+    is_gateway_role = service_role in {"all", "gateway", "chat"}
 
     # Add profiling middleware only for core API
     if is_api_role:
@@ -1460,31 +1480,33 @@ def create_app() -> FastAPI:
         app.add_middleware(MCPPathRewriteMiddleware)
 
     # --- Custom API Docs Routes (Moved to /docs/api and /docs/redoc) ---
+    # FastAPI caches route callables. Resolve the serving app from the request
+    # so those caches cannot retain each application created by tests or reloads.
     @app.get("/docs/api", include_in_schema=False)  # Changed path
-    async def custom_swagger_ui_html() -> Any:
+    async def custom_swagger_ui_html(request: Request) -> Any:
         return get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - Swagger UI",
-            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+            openapi_url=request.app.openapi_url,
+            title=f"{request.app.title} - Swagger UI",
+            oauth2_redirect_url=request.app.swagger_ui_oauth2_redirect_url,
             swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
             swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
         )
 
     @app.get("/api/v1/openapi.yaml", include_in_schema=False)
     @app.get("/api/v1/spec", include_in_schema=False)
-    async def get_openapi_yaml() -> Any:
+    async def get_openapi_yaml(request: Request) -> Any:
         import yaml  # type: ignore
         from fastapi.responses import PlainTextResponse
 
-        schema = app.openapi()
+        schema = request.app.openapi()
         yaml_str = yaml.dump(schema, sort_keys=False)
         return PlainTextResponse(yaml_str, media_type="application/x-yaml")
 
     @app.get("/docs/redoc", include_in_schema=False)  # Changed path
-    async def custom_redoc_html() -> Any:
+    async def custom_redoc_html(request: Request) -> Any:
         return get_redoc_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - ReDoc",
+            openapi_url=request.app.openapi_url,
+            title=f"{request.app.title} - ReDoc",
             redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@2.0.0/bundles/redoc.standalone.js",
         )
 
@@ -1517,6 +1539,8 @@ def create_app() -> FastAPI:
             "/api/v1/billing/plans",
             "/api/v1/billing/create-checkout-session",
             "/api/v1/webhooks/flows",
+            "/api/v1/employee-events/",
+            "/api/v1/chat/ingress/",
             "/",
             "/static",
             "/register",

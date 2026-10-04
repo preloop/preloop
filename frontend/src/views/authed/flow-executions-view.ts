@@ -119,6 +119,10 @@ interface FlowExecution {
   trigger_subject?: string | null;
   /** Link to the triggering pull/merge request, when the payload carries one. */
   trigger_subject_url?: string | null;
+  /** CI provider that dispatched the run ("GitHub Actions"), when CI triggered it. */
+  trigger_subject_ci?: string | null;
+  /** Link to the CI run, when the provenance block carries one. */
+  trigger_subject_ci_url?: string | null;
   /**
    * Which layer broke a failed run: `runner_conflict`, `model_transient`,
    * `no_confirmation`, ... Derived by the server at failure time (#361) and
@@ -1537,7 +1541,7 @@ export class FlowExecutionsView extends AuthedElement {
     if (resumeOf) {
       const href = router.urlForPath(`/console/flows/executions/${resumeOf}`);
       return html`<div class="resume-line" data-testid="resume-line">
-        Resumption of
+        Continuation of original execution
         <a href=${href} data-testid="resume-of-link">${resumeOf.slice(0, 8)}</a
         >${chain}
       </div>`;

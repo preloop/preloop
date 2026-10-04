@@ -156,6 +156,41 @@ call it makes is audited with the agent as the actor; what the row carries is
 described in
 [docs/guide/session-search-audit.md](../guide/session-search-audit.md).
 
+### Artifact deposit tool
+
+`deposit_artifact` lets an agent that only has the Preloop MCP URL store a file,
+image, transcript or text on its own runtime session (#1081). The session comes
+from the session-bound key, never an argument; a key without one gets the tool
+error `artifact_no_session`. The input is one MCP `ContentBlock` (`text`,
+`image`, `audio`, `resource`, or a `resource_link` to an artifact of the same
+session, which copies it with new labels as a child). Storage, the `artifact`
+timeline row and every error code are the deposit service
+(`preloop/services/artifact_deposit.py`); the MCP adapter is
+`preloop/services/artifact_mcp_tools.py`. The result is a `CallToolResult` with
+one `resource_link` block (absolute URI under `PRELOOP_URL`) and the artifact
+descriptor as `structuredContent`. Errors are tool errors whose text starts
+with the deposit API's code string. Default-off: enable it on the Tools page or
+list it in a flow's `allowed_mcp_tools`.
+
+### Artifact read tools
+
+`search_artifacts` and `get_artifact` (#1104) are the read half of
+`deposit_artifact`, for example for a scheduled evaluator. Both are
+default-off. Scope follows `search_sessions`: `own` (default) is the artifacts
+of sessions the calling agent identity (`runtime_principal_id`) ran, across
+runs (for a flow execution, whose principal is the execution id: every
+execution of the same flow); `account` needs the `artifact_search.account_scope` grant in the
+governance store (read in core by `account_scope_granted`, written by EE) and
+is refused as `account_scope_not_granted` without it. `get_artifact` answers an
+id outside the caller's scope with `artifact_not_found`. Results use the shared
+MCP mapping (`preloop/services/artifact_shapes.py`): `ResourceLink` blocks for
+search hits, an `EmbeddedResource` (text up to `max_bytes`, small binaries up to
+1 MiB) or a `ResourceLink` for a read, with `truncated` in
+`_meta["preloop.dev/artifact"]`. Every call writes an audit row
+(`resource_type` `runtime_session_artifact`, action `query` or `read`, actor
+`source` `mcp`). Code: `preloop/services/agent_artifact_read.py`; guide:
+[docs/guide/artifacts.md](../guide/artifacts.md#reading-artifacts-from-an-agent).
+
 ### Issue tools
 
 `get_issue` and `update_issue` carry the issue triage surface. There are no separate
@@ -165,7 +200,7 @@ triage tools: triage is an option on the standard pair.
 
 | Value | Added to the response |
 | --- | --- |
-| `label_catalog` | `label_catalog`, `complexity_scheme` |
+| `label_catalog` | `label_catalog`, `complexity_scheme`, `risk_scheme`, `readiness_scheme` |
 | `revision` | `expected_revision`, `provider_issue` |
 
 Any `include` entry also sets `triage_limitations` and `concurrency`, and makes the
@@ -174,7 +209,7 @@ a 422. Without `include`, `get_issue` performs no provider read and the triage f
 stay `None`.
 
 `update_issue` keeps its metadata parameters and adds `expected_revision`,
-`assessment` and `complexity_label`. A triage write needs both `expected_revision`
+`assessment`, `complexity_label`, `risk_label` and `readiness_label`. A triage write needs both `expected_revision`
 and `assessment`, returns the triage receipt instead of the plain update response,
 and may not be combined with `description`, `status`, `priority`, `assignee`,
 `labels`, `add_reaction` or `remove_reaction`; `title` is allowed. The triage write

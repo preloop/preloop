@@ -1124,7 +1124,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	liveValidationRolledBack := false
 	var liveValidationDuration time.Duration
 	if requestedLiveValidation {
-		fmt.Fprint(output, "Sending test prompt through gateway...") //nolint:errcheck
+		fmt.Fprint(output, "Sending direct gateway route/accounting probe...") //nolint:errcheck
 		started := time.Now()
 		liveOutcome, err := runManagedAgentLiveValidation(client, agent, validationResult)
 		liveValidationDuration = time.Since(started)
@@ -1290,7 +1290,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		fmt.Printf("  Agent Control channel: %s\n", boolStatus(validationResult["control_channel_configured"]))
 	}
 	if status, ok := validationResult["live_validation_status"].(string); ok && strings.TrimSpace(status) != "" {
-		fmt.Printf("  Live validation: %s\n", status)
+		fmt.Printf("  Gateway validation: %s\n", gatewayProbeStatusLabel(status))
 	}
 	fmt.Printf("  Config updated: %s\n", agent.ConfigPath)
 	fmt.Printf("  Backup saved: %s\n", backupState.BackupPath)
@@ -2655,15 +2655,15 @@ func codexServerSecretIsReusable(
 	return strings.TrimSpace(target.CredentialType) == strings.TrimSpace(upstream.CredentialType)
 }
 
-// codexKeepsLiveOAuthSecret reports whether this Codex row already holds a
+// managedAgentKeepsLiveOAuthSecret reports whether this row already holds a
 // same-type OAuth secret that is not in error. A later onboard attaches that
 // lineage instead of uploading another copy of the laptop bundle.
-func codexKeepsLiveOAuthSecret(
+func managedAgentKeepsLiveOAuthSecret(
 	agent AgentConfig,
 	target *aiModelResponse,
 	upstream *managedGatewayUpstream,
 ) bool {
-	if !isCodexCLIAgent(agent) || target == nil || upstream == nil {
+	if (!isCodexCLIAgent(agent) && !isClaudeCodeAgent(agent)) || target == nil || upstream == nil {
 		return false
 	}
 	if !target.HasAPIKey || strings.TrimSpace(target.CredentialsSecretID) == "" {
@@ -6394,46 +6394,17 @@ func syncManagedGatewayAIModel(
 			!isOAuthCredentialType(upstream.CredentialType) {
 			update["api_key"] = upstream.APIKey
 		}
-		// Re-seed the stored credential on re-onboard when the upstream
-		// carries a fresh payload AND either the target has no credential,
-		// the credential type changed, OR the credential is an OAuth bundle.
-		// OAuth subscription tokens (Anthropic/Codex) rotate and expire, so
-		// a re-onboard whose whole purpose is to recover a working token
-		// MUST overwrite the stale stored copy — otherwise the gateway keeps
-		// trying to refresh a dead/expired token and 401s with
-		// "Model credentials could not be refreshed".
+		// Keep a live same-type Claude/Codex secret instead of re-uploading
+		// the local bundle. An access token can still be unexpired after its
+		// single-use refresh token has been consumed by the gateway.
+		// A failed credential may be repaired with a fresh local login; the
+		// server rejects imports of refresh tokens it already consumed.
+		// Expired local bundles cannot replace an existing same-type secret.
 		//
-		// The one exception is a LOCAL bundle that is itself already past
-		// its recorded expiry. Provider refresh tokens are single-use: once
-		// the gateway refreshes the imported copy, the provider rotates the
-		// refresh token and the copy left in the agent's local credential
-		// store is dead. Overwriting the account's live, gateway-refreshed
-		// bundle with that stale local copy bricks the credential
-		// (``invalid_grant`` / "Refresh token not found or invalid") and
-		// downgrades every later onboarding to MCP-only. When the local
-		// bundle is expired and the account already holds a same-type OAuth
-		// credential, keep the account copy — the gateway can refresh it.
-		//
-		// A second exception: when a sibling already holds a same-type
-		// OAuth secret, attach that live lineage instead of minting a
-		// second one. This wins over re-seed even when the target already
-		// has a credential, so split family rows converge onto one secret.
-		// Sibling selection prefers last_verified / last_refresh /
-		// updated_at so a stale first-listed copy does not win.
-		//
-		// The target itself is excluded from the sibling pool, so compare
-		// liveness against it here: if this row already holds a newer
-		// secret than any sibling, keep it. Otherwise the first-synced
-		// live holder would be repointed onto a consumed copy.
-		//
-		// Only secret-derived liveness (credentials_last_verified_at or
-		// metadata timestamps on a same-type secret) participates: row-edit
-		// updated_at on a credentialless or wrong-type target must never
-		// block sibling attachment or re-seeding.
-		//
-		// Codex CLI does not re-upload a laptop bundle onto a live same-type
-		// secret. A secret whose status is error is updated in place, on the
-		// row that already owns it, before any sibling is attached to it.
+		// Prefer a sibling's existing lineage to minting a second secret for
+		// another model family. Compare secret-derived liveness against the
+		// target so the first-synced live holder is not repointed onto a stale
+		// sibling. Row-edit timestamps cannot establish credential freshness.
 		sharedSibling := findManagedOAuthCredentialSibling(
 			existing,
 			managedAgent,
@@ -6465,7 +6436,7 @@ func syncManagedGatewayAIModel(
 				return nil, nil, err
 			}
 			update["credentials_secret_id"] = sharedSecret
-		} else if !codexKeepsLiveOAuthSecret(agent, target, upstream) &&
+		} else if !managedAgentKeepsLiveOAuthSecret(agent, target, upstream) &&
 			len(upstream.CredentialPayload) > 0 &&
 			(!target.HasAPIKey ||
 				strings.TrimSpace(target.CredentialType) != strings.TrimSpace(upstream.CredentialType) ||

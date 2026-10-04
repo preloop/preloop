@@ -1,10 +1,21 @@
 import logging
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional
 
-from sqlalchemy import ColumnElement, and_, func, or_
+from sqlalchemy import (
+    ColumnElement,
+    String,
+    and_,
+    cast,
+    case,
+    func,
+    literal_column,
+    or_,
+    true,
+)
 from sqlalchemy.orm import (
     Session,
     contains_eager,
@@ -20,6 +31,7 @@ from preloop.models import models
 from preloop.models.models.flow_execution import (
     AGENT_CONTROL_BINDING_KEY,
     DELEGATION_DETAILS_KEY,
+    RESUME_ROOT_SQL,
     STOP_COVERAGE_KEY,
     TRIGGER_SUBJECT_KEY,
     FlowExecution,
@@ -33,6 +45,25 @@ from preloop.models.schemas.flow_execution import (
 from .base import CRUDBase
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class FlowExecutionNavigationRow:
+    """Small navigation projection, excluding trigger bodies and results."""
+
+    id: uuid.UUID
+    status: str
+    start_time: datetime
+    use_issue: bool | None
+    issue_html_url: Any
+    issue_web_url: Any
+    issue_url: Any
+    object_html_url: Any
+    object_web_url: Any
+    object_url: Any
+    result_pr_url: Any
+    resume_pr_url: Any
+    feedback_pr_url: Any
 
 
 async def get_flow_execution(
@@ -222,6 +253,61 @@ def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
 
+    def get_continuation_navigation(
+        self, db: Session, *, root_id: uuid.UUID, account_id: uuid.UUID
+    ) -> List[FlowExecutionNavigationRow]:
+        """Read the publisher and repairs without loading logs or prompts.
+
+        Ownership is checked on every member, including the publisher.
+        """
+        details = models.FlowExecution.trigger_event_details
+        issue = details["payload"]["issue"]
+        attributes = details["payload"]["object_attributes"]
+        # Match Python's issue-or-object_attributes choice without returning
+        # either complete object (an issue body can be very large).
+        use_issue = and_(
+            issue.isnot(None),
+            func.jsonb_typeof(issue) != "null",
+            ~issue.in_([{}, [], False, 0, ""]),
+        )
+        rows = (
+            db.query(
+                models.FlowExecution.id,
+                models.FlowExecution.status,
+                models.FlowExecution.start_time,
+                use_issue.label("use_issue"),
+                issue["html_url"].label("issue_html_url"),
+                issue["web_url"].label("issue_web_url"),
+                issue["url"].label("issue_url"),
+                attributes["html_url"].label("object_html_url"),
+                attributes["web_url"].label("object_web_url"),
+                attributes["url"].label("object_url"),
+                models.FlowExecution.result["pr_url"].label("result_pr_url"),
+                details["_resume"]["pr_url"].label("resume_pr_url"),
+                details["_feedback"]["pr_url"].label("feedback_pr_url"),
+            )
+            .join(models.Flow, models.Flow.id == models.FlowExecution.flow_id)
+            .filter(
+                models.Flow.account_id == account_id,
+                or_(
+                    models.FlowExecution.id == root_id,
+                    models.FlowExecution.trigger_event_details["_resume"][
+                        "resume_root"
+                    ].astext
+                    == str(root_id),
+                ),
+            )
+            .order_by(
+                case((models.FlowExecution.id == root_id, 0), else_=1),
+                models.FlowExecution.start_time,
+                models.FlowExecution.id,
+            )
+            # Publisher, the first 100 repairs, and one overflow sentinel.
+            .limit(102)
+            .all()
+        )
+        return [FlowExecutionNavigationRow(*row) for row in rows]
+
     def __init__(self):
         """Initialize with the FlowExecution model."""
         super().__init__(model=FlowExecution)
@@ -339,6 +425,54 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .all()
         )
         return {candidates[row[0]] for row in rows}
+
+    def reserve_employee_event(
+        self,
+        db: Session,
+        *,
+        flow_id: uuid.UUID,
+        account_id: str,
+        event: Dict[str, Any],
+        delivery_key: str,
+    ) -> tuple[models.FlowExecution, bool]:
+        """Atomically reserve one account-owned event, including concurrent replay."""
+        from sqlalchemy.exc import IntegrityError
+        from preloop.services.webhook_delivery_dedupe import is_delivery_key_conflict
+
+        def existing() -> Optional[models.FlowExecution]:
+            return (
+                db.query(models.FlowExecution)
+                .join(models.Flow)
+                .filter(
+                    models.FlowExecution.flow_id == flow_id,
+                    models.Flow.account_id == uuid.UUID(account_id),
+                    models.FlowExecution.webhook_delivery_key == delivery_key,
+                )
+                .first()
+            )
+
+        previous = existing()
+        if previous is not None:
+            return previous, True
+        row = models.FlowExecution(
+            flow_id=flow_id,
+            status="PENDING",
+            trigger_event_details=event,
+            webhook_delivery_key=delivery_key,
+        )
+        db.add(row)
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if not is_delivery_key_conflict(exc):
+                raise
+            winner = existing()
+            if winner is None:
+                raise
+            return winner, True
+        db.refresh(row)
+        return row, False
 
     def create(self, db: Session, obj_in: FlowExecutionCreate) -> FlowExecution:
         """Create a new flow execution (synchronous)."""
@@ -791,6 +925,30 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.order_by(FlowExecution.start_time.desc()).first()
 
+    def last_successful_scheduled_at(
+        self, db: Session, *, flow_id: Any
+    ) -> Optional[str]:
+        """``scheduled_at`` of this flow's newest SUCCEEDED scheduled run.
+
+        Read from the trigger payload the schedule tick wrote, so the value
+        is the tick time the run saw, not when it finished. None when no
+        scheduled run of the flow has succeeded yet.
+        """
+        scheduled_at = FlowExecution.trigger_event_details["payload"][
+            "scheduled_at"
+        ].astext
+        row = (
+            db.query(scheduled_at)
+            .filter(
+                FlowExecution.flow_id == flow_id,
+                FlowExecution.status == "SUCCEEDED",
+                scheduled_at.isnot(None),
+            )
+            .order_by(FlowExecution.start_time.desc())
+            .first()
+        )
+        return row[0] if row else None
+
     def get_by_result_pr_url(
         self,
         db: Session,
@@ -979,6 +1137,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 with_expression(FlowExecution.trigger_subject, subject["text"].astext),
                 with_expression(
                     FlowExecution.trigger_subject_url, subject["url"].astext
+                ),
+                with_expression(FlowExecution.trigger_subject_ci, subject["ci"].astext),
+                with_expression(
+                    FlowExecution.trigger_subject_ci_url, subject["ci_url"].astext
                 ),
                 # Same as the list projection: ExecutionTreeNode inherits
                 # resume_of, and an unpopulated query expression cannot be read.
@@ -1245,6 +1407,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     subject["url"].astext,
                 ),
                 with_expression(
+                    FlowExecution.trigger_subject_ci,
+                    subject["ci"].astext,
+                ),
+                with_expression(
+                    FlowExecution.trigger_subject_ci_url,
+                    subject["ci_url"].astext,
+                ),
+                with_expression(
                     FlowExecution.resume_of,
                     FlowExecution.trigger_event_details["_resume"][
                         "resume_root"
@@ -1347,6 +1517,49 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 query = query.filter(getattr(FlowExecution, key) == value)
 
         return query
+
+    def get_resume_chain_totals(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        roots: List[uuid.UUID],
+        root_texts: List[str],
+    ) -> List[Any]:
+        """Tokens, cost and member count per resume chain root.
+
+        A chain is the publishing execution (``id`` in ``roots``) plus every
+        repair turn whose ``_resume.resume_root`` names it. Both halves are
+        index lookups: the primary key, and the partial expression index
+        ``ix_flow_execution_resume_root`` that holds repair turns only. The
+        expression is spelled as :data:`RESUME_ROOT_SQL` so the planner can
+        match it to that index; written any other way the lookup reads (and
+        detoasts) the trigger payload of every execution in the account.
+
+        Returns:
+            Rows of ``(chain_root, total_tokens, estimated_cost, members)``.
+        """
+        if not roots and not root_texts:
+            return []
+        resume_root = literal_column(RESUME_ROOT_SQL, type_=String)
+        chain_key = func.coalesce(resume_root, cast(FlowExecution.id, String))
+        return db.execute(
+            select(
+                chain_key.label("chain_root"),
+                func.coalesce(func.sum(FlowExecution.total_tokens), 0),
+                func.coalesce(func.sum(FlowExecution.estimated_cost), 0),
+                func.count(FlowExecution.id),
+            )
+            .join(Flow, Flow.id == FlowExecution.flow_id)
+            .where(
+                Flow.account_id == account_id,
+                or_(
+                    FlowExecution.id.in_(list(roots)),
+                    resume_root.in_(list(root_texts)),
+                ),
+            )
+            .group_by(chain_key)
+        ).all()
 
     def get_by_statuses(
         self, db: Session, statuses: List[str], account_id: Optional[str] = None
@@ -1489,12 +1702,16 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             # start_time, not the usage row's timestamp. A long run, a
             # delayed gateway write, or a backdated start_time would
             # otherwise print cost for a period the runs count does not.
-            window_cost = (
-                db.query(
-                    self.model.flow_id,
-                    func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                        "estimated_cost"
-                    ),
+            # Aggregated per execution first, through a LATERAL subquery on
+            # ``ix_api_usage_flow_execution_id``, and only then per flow. The
+            # plain join this replaces let the planner hash the window's
+            # executions against a sequential scan of every account's
+            # gateway rows (issue #1197). GROUP BY keeps the subquery from
+            # being flattened back into that join, and drops executions with
+            # no usage, exactly as the inner join did.
+            per_execution = (
+                select(
+                    func.sum(ApiUsage.estimated_cost).label("estimated_cost"),
                     func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
                         "prompt_tokens"
                     ),
@@ -1506,16 +1723,39 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     ),
                     *cache_split_columns(),
                 )
-                .join(self.model, ApiUsage.flow_execution_id == self.model.id)
-                .filter(
-                    self.model.flow_id.in_(flow_ids),
-                    self.model.start_time >= start_date,
+                .where(
+                    ApiUsage.flow_execution_id == self.model.id,
                     ApiUsage.action_type == "model_gateway",
                     exclude_replay_usage_condition(),
                 )
-                .group_by(self.model.flow_id)
-                .all()
+                .group_by(ApiUsage.flow_execution_id)
+                .lateral("per_execution")
             )
+
+            def _total(column: str, default: Any = 0) -> Any:
+                return func.coalesce(
+                    func.sum(getattr(per_execution.c, column)), default
+                ).label(column)
+
+            window_cost = db.execute(
+                select(
+                    self.model.flow_id,
+                    _total("estimated_cost", 0.0),
+                    _total("prompt_tokens"),
+                    _total("completion_tokens"),
+                    _total("total_tokens"),
+                    _total("cache_read_tokens"),
+                    _total("cache_write_tokens"),
+                    _total("covered_prompt_tokens"),
+                )
+                .select_from(self.model)
+                .join(per_execution, true())
+                .where(
+                    self.model.flow_id.in_(flow_ids),
+                    self.model.start_time >= start_date,
+                )
+                .group_by(self.model.flow_id)
+            ).all()
             window_cost_map = {
                 str(row.flow_id): float(row.estimated_cost or 0.0)
                 for row in window_cost
@@ -1585,8 +1825,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 False when batching many entries and commit manually
                 after the loop.
         """
+        from preloop.models.crud.flow_execution_log import (
+            storable_log_message,
+            storable_log_metadata,
+        )
         from preloop.models.models.flow_execution_log import FlowExecutionLog
-        from preloop.utils.secret_scrubbing import scrub_secrets, scrub_structure
 
         # NATS messages nest actual content under "payload" (e.g. payload.line
         # for agent_log_line).  Derive message from the best available field
@@ -1599,12 +1842,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         # Last gate before persistence: redact known credential formats so a
         # secret cannot be stored even if its producer skipped scrubbing
-        # (issue #173).
+        # (issue #173), and drop NUL bytes PostgreSQL rejects (#1196).
         log_entry = FlowExecutionLog(
             execution_id=execution_id,
             log_type=log_data.get("type", "log"),
-            message=scrub_secrets(message),
-            metadata_=scrub_structure(metadata) if metadata else None,
+            message=storable_log_message(message),
+            metadata_=storable_log_metadata(metadata),
         )
         db.add(log_entry)
         if commit:

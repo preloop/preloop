@@ -1,14 +1,23 @@
+import {
+  renderSessionApproval,
+  renderSessionActivity,
+} from './session-approval-presentation';
+import './session-tool-card';
+import './session-approval-card';
+import './session-live-activity';
+import { type SessionApprovalState } from './session-live-activity';
+import {
+  sessionTools,
+  sessionTimelineTime,
+  type SessionTool,
+} from '../utils/session-live';
+import type { ApprovalRequest } from '../types';
 /**
- * Chat-style session transcript: ONLY top-level user prompts and final agent
- * responses are expanded; tool calls, tool results, system/injected segments
- * and intermediate agent output are nested in collapsed, manually expandable
- * step groups. Reference UX: Claude Code web chat. When in doubt, collapse —
- * except for prompt classification, where doubt keeps the prompt visible
- * (see utils/transcript.ts).
- *
- * Presentational only: events/activity arrive as props from
- * <preloop-session-observer>; paging is requested by re-emitting the
- * observer's existing `session-events-page-requested` event.
+ * Chronological conversation with named captured tools and inline approvals.
+ * System/injected segments and uncorrelated historical steps remain expandable.
+ * Gateway/activity props and paging remain owned by the observer; the shared
+ * live controller fetches permission-gated session approvals and reconciles
+ * websocket updates without replacing the scroll container.
  */
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
@@ -19,7 +28,11 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
+import type {
+  FlowGatewayEvent,
+  RuntimeSessionActivityItem,
+  RuntimeSessionArtifactDescriptor,
+} from '../types';
 import type {
   TranscriptBuildResult,
   TranscriptItem,
@@ -28,10 +41,20 @@ import type {
   TranscriptStepGroupItem,
 } from '../utils/transcript';
 import { buildConversation } from '../utils/transcript';
+import type { LiveSessionState } from '../utils/live-session';
+import { deriveLiveSessionState } from '../utils/live-session';
 import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
 import './browser-step-row';
-import { browserStepKey } from '../utils/session-artifacts';
+import './session-artifact-row';
+import {
+  artifactRowKey,
+  artifactRowMetadata,
+  artifactView,
+  browserStepHasScreenshot,
+  browserStepKey,
+  type ArtifactKindGroup,
+} from '../utils/session-artifacts';
 import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
@@ -77,6 +100,126 @@ export const TALK_RETRY_EVENT = 'talk-retry';
 export class SessionChatView extends LitElement {
   // `attribute: false`: these are data-only properties set via property
   // bindings; an attribute path would (de)serialize large arrays as JSON.
+  @state() private approvalState: SessionApprovalState = {
+    requests: [],
+    canDecide: false,
+    author: '',
+    now: Date.now(),
+  };
+  private renderApproval(request: ApprovalRequest) {
+    return renderSessionApproval(this, this.approvalState, request);
+  }
+  @property({ type: Boolean }) liveEnabled = true;
+  @property({ type: Boolean }) ended = false;
+  private renderActivity() {
+    if (!this.liveEnabled) return nothing;
+    return renderSessionActivity(
+      this,
+      this.sessionId,
+      this.events,
+      this.activity,
+      this.ended,
+      this.approvalState,
+      (state) => {
+        this.approvalState = state;
+      },
+      this.hideLiveActivity
+        ? null
+        : { state: this.liveState, now: this.now || Date.now() }
+    );
+  }
+  private get displayItems(): Array<
+    | TranscriptItem
+    | { type: 'tool'; key: string; tool: SessionTool }
+    | { type: 'approval'; key: string; request: ApprovalRequest }
+  > {
+    const tools = sessionTools(this.events, this.activity);
+    const items: Array<
+      | TranscriptItem
+      | { type: 'tool'; key: string; tool: SessionTool }
+      | { type: 'approval'; key: string; request: ApprovalRequest }
+    > = this.conversation.items.flatMap<TranscriptItem>((item) => {
+      if (item.type !== 'steps') return [item];
+      const steps = item.steps.filter(
+        (step) =>
+          step.kind !== 'tool_call' &&
+          !(
+            step.kind === 'tool_result' &&
+            step.toolCallIds?.length &&
+            step.toolCallIds.every((id) =>
+              tools.some(
+                (tool) => tool.callId === id && tool.result !== undefined
+              )
+            )
+          )
+      );
+      return steps.length ? [{ ...item, steps }] : [];
+    });
+    for (const tool of tools) items.push({ type: 'tool', key: tool.id, tool });
+    for (const request of this.approvalState.requests)
+      items.push({ type: 'approval', key: `approval:${request.id}`, request });
+    const covered = this.transcriptToolKeysCovered(tools);
+    const visible = items.filter((item) => {
+      if (item.type !== 'tool' || !('call' in item)) return true;
+      return !covered.has(item.call.key);
+    });
+    const timestamp = (item: (typeof visible)[number]): string | null => {
+      if (item.type === 'tool') {
+        return 'tool' in item ? item.tool.timestamp : item.call.timestamp;
+      }
+      if (item.type === 'approval') return item.request.requested_at;
+      if (item.type === 'steps') return item.steps[0]?.timestamp ?? null;
+      return item.timestamp;
+    };
+    return visible.sort(
+      (a, b) =>
+        sessionTimelineTime(timestamp(a)) - sessionTimelineTime(timestamp(b))
+    );
+  }
+
+  /**
+   * A transcript tool row that `sessionTools` already folded into a captured
+   * card must not also render as a second live card.
+   *
+   * Both producers read the same evidence, so they collide in two ways and
+   * both are deduped on the one identity they share — the provider call id.
+   * The gateway card (`payload.tools`, keyed `tool:<callId>`) already carries
+   * the call and its result, and the transcript row for the same call is
+   * keyed `gw:<callId>`; a native activity row that `sessionTools` merged
+   * into that card already dropped the transcript's `act:` row. Callers keep
+   * the captured card because it is also the row a native activity item
+   * folds into, so the merge is not undone by dropping the transcript row.
+   */
+  private transcriptToolKeysCovered(tools: SessionTool[]): Set<string> {
+    const covered = new Set<string>();
+    for (const tool of tools) {
+      const callId = tool.callId?.trim();
+      if (callId) covered.add(`gw:${callId}`);
+    }
+    this.activity.forEach((item, index) => {
+      if ((item.activity_type || '').toLowerCase() !== 'tool_call') return;
+      const metadata = item.metadata ?? {};
+      const callId =
+        typeof metadata.tool_call_id === 'string'
+          ? metadata.tool_call_id
+          : undefined;
+      const id = callId
+        ? `tool:${callId}`
+        : `native:${item.activity_id || `${item.timestamp}:${index}`}`;
+      if (!tools.some((tool) => tool.id === id)) return;
+      const correlationId =
+        typeof metadata.correlation_id === 'string' &&
+        metadata.correlation_id.trim()
+          ? metadata.correlation_id.trim()
+          : null;
+      covered.add(
+        correlationId
+          ? `act:${correlationId}`
+          : `act:${item.timestamp}:${index}:${item.tool_name ?? 'tool'}`
+      );
+    });
+    return covered;
+  }
   @property({ attribute: false })
   events: FlowGatewayEvent[] = [];
 
@@ -86,6 +229,18 @@ export class SessionChatView extends LitElement {
   /** Session the activity belongs to; browser-step screenshots load from it. */
   @property({ type: String })
   sessionId = '';
+
+  /** Artifact descriptors by id (sha256, lineage, availability). */
+  @property({ attribute: false })
+  artifacts: Record<string, RuntimeSessionArtifactDescriptor> = {};
+
+  /** When set, the thread shows only artifact rows of this kind group. */
+  @property({ type: String })
+  artifactKindFilter: ArtifactKindGroup | null = null;
+
+  /** Artifact row to highlight (search hit landing, `?artifact=`). */
+  @property({ type: String })
+  highlightArtifactId: string | null = null;
 
   @property({ type: Boolean })
   loading = false;
@@ -118,6 +273,58 @@ export class SessionChatView extends LitElement {
   @property({ attribute: false })
   pending: PendingTalkMessage[] = [];
 
+  /**
+   * Pending approvals for THIS session, already scoped by the host.
+   *
+   * The chat view never fetches them itself: the session id belongs to the
+   * observer, and one session's approvals must never be able to appear under
+   * another. Passing them in keeps that guarantee at the single place the
+   * session id is known.
+   */
+  @property({ attribute: false })
+  pendingApprovals: Array<{
+    id: string;
+    status: string;
+    requested_at?: string;
+  }> = [];
+
+  /**
+   * True once the session itself reported that it ended, and false while the
+   * realtime socket is down. Both feed the compact activity line; neither
+   * changes what is rendered in the thread.
+   */
+  @property({ type: Boolean })
+  sessionEnded = false;
+
+  @property({ type: Boolean })
+  connected = true;
+
+  /**
+   * Clock used for the activity line's elapsed readout, in epoch ms.
+   * Defaults to `Date.now()`; hosts pass their own so the value stays
+   * consistent with whatever they re-render on.
+   */
+  @property({ type: Number })
+  now = 0;
+
+  /**
+   * Hide the activity line entirely. Embedded in a page that already shows
+   * one, the duplicate is noise rather than signal.
+   */
+  @property({ type: Boolean })
+  hideLiveActivity = false;
+
+  /**
+   * Derived live status, recomputed in `willUpdate` and read during render.
+   *
+   * Deliberately NOT reactive state: assigning a `@state` field from
+   * `willUpdate` schedules a second update for every change, and the value is
+   * only ever read by the render that follows. The reactive inputs
+   * (`events`, `activity`, `pendingApprovals`, `connected`, `sessionEnded`)
+   * are what need to trigger the render.
+   */
+  private liveState: LiveSessionState | null = null;
+
   @state()
   private atBottom = true;
 
@@ -141,6 +348,7 @@ export class SessionChatView extends LitElement {
       toolCallCount: 0,
       eventsWithoutRawBody: 0,
       eventsWithPartialToolResults: 0,
+      toolActivityTruncated: false,
       totalEvents: 0,
     },
   };
@@ -400,6 +608,14 @@ export class SessionChatView extends LitElement {
       white-space: pre-wrap;
     }
 
+    .artifact-item {
+      margin: 0.25rem 0;
+    }
+    .artifact-filter-note {
+      font-size: 0.8rem;
+      color: var(--sl-color-neutral-600);
+      margin: 0.25rem 0 0.5rem;
+    }
     .browser-step-item {
       margin: 0.25rem 0;
       border-radius: 8px;
@@ -443,6 +659,13 @@ export class SessionChatView extends LitElement {
   `;
 
   willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has('sessionId'))
+      this.approvalState = {
+        requests: [],
+        canDecide: false,
+        author: '',
+        now: Date.now(),
+      };
     if (changed.has('events') || changed.has('activity')) {
       this.conversation = buildConversation(this.events, this.activity);
       // Screen readers get the agent's reply, not the whole thread: the last
@@ -458,6 +681,22 @@ export class SessionChatView extends LitElement {
           ? `Agent replied: ${latest.text.slice(0, 400)}`
           : 'Agent replied.';
       }
+    }
+    if (
+      changed.has('events') ||
+      changed.has('activity') ||
+      changed.has('pendingApprovals') ||
+      changed.has('sessionEnded') ||
+      changed.has('connected')
+    ) {
+      this.liveState = deriveLiveSessionState({
+        events: this.events,
+        activity: this.activity,
+        pendingApprovals: this.pendingApprovals,
+        ended: this.sessionEnded,
+        connected: this.connected,
+        now: this.now || Date.now(),
+      });
     }
   }
 
@@ -511,7 +750,7 @@ export class SessionChatView extends LitElement {
 
   /** What the thread is showing right now, cheap enough to compare per update. */
   private contentSignature(): string {
-    const items = this.conversation.items;
+    const items = this.displayItems;
     const last = items[items.length - 1];
     return `${items.length}|${last ? last.key : ''}|${this.events.length}|${
       this.activity.length
@@ -902,8 +1141,67 @@ ${
     return true;
   }
 
-  private renderItem(item: TranscriptItem) {
+  /** Scroll one artifact row into view and focus it. */
+  scrollToArtifact(artifactId: string): boolean {
+    const row = this.renderRoot.querySelector<HTMLElement>(
+      `[data-artifact-key="${artifactRowKey(artifactId)}"] session-artifact-row`
+    );
+    if (!row) return false;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.focus({ preventScroll: true });
+    return true;
+  }
+
+  private renderArtifact(activity: RuntimeSessionActivityItem) {
+    const meta = artifactRowMetadata(activity);
+    if (!meta) return nothing;
+    const view = artifactView(activity, this.artifacts[meta.id]);
+    if (!view) return nothing;
+    const parent = view.parentArtifactId
+      ? this.artifacts[view.parentArtifactId]
+      : null;
+    return html`<div
+      class="artifact-item"
+      data-artifact-key=${artifactRowKey(meta.id)}
+    >
+      <session-artifact-row
+        .item=${activity}
+        .artifact=${view}
+        .sessionId=${this.sessionId}
+        .parentName=${parent?.name || ''}
+        ?highlighted=${this.highlightArtifactId === meta.id}
+      ></session-artifact-row>
+    </div>`;
+  }
+
+  private passesArtifactFilter(
+    item: (typeof this.displayItems)[number]
+  ): boolean {
+    if (!this.artifactKindFilter) return true;
+    if (item.type === 'browser_step') {
+      return (
+        this.artifactKindFilter === 'screenshot' &&
+        browserStepHasScreenshot(item.activity)
+      );
+    }
+    if (item.type !== 'artifact') return false;
+    const meta = artifactRowMetadata(item.activity);
+    const view = meta
+      ? artifactView(item.activity, this.artifacts[meta.id])
+      : null;
+    return view?.group === this.artifactKindFilter;
+  }
+
+  private renderItem(item: (typeof this.displayItems)[number]) {
+    if (item.type === 'tool') {
+      if ('tool' in item) {
+        return html`<session-tool-card .tool=${item.tool}></session-tool-card>`;
+      }
+      return html`<session-tool-card .call=${item.call}></session-tool-card>`;
+    }
+    if (item.type === 'approval') return this.renderApproval(item.request);
     if (item.type === 'message') return this.renderMessage(item);
+    if (item.type === 'artifact') return this.renderArtifact(item.activity);
     if (item.type === 'steps') return this.renderStepGroup(item);
     if (item.type === 'browser_step') {
       return html`<div
@@ -997,7 +1295,21 @@ ${
     `;
   }
 
+  private renderLiveActivity() {
+    // The shared controller already paints this line while it is mounted.
+    if (this.liveEnabled || this.hideLiveActivity || !this.liveState)
+      return nothing;
+    return html`<session-live-activity
+      .state=${this.liveState}
+      .now=${this.now || Date.now()}
+    ></session-live-activity>`;
+  }
+
   render() {
+    return html`${this.renderActivity()}${this.renderContent()}`;
+  }
+
+  private renderContent() {
     if (this.loading && !this.events.length && !this.activity.length) {
       return html`
         <div class="loading">
@@ -1007,14 +1319,16 @@ ${
       `;
     }
 
-    const { items, stats } = this.conversation;
+    const { stats } = this.conversation;
+    const items = this.displayItems;
     if (!items.length && !this.pending.length) {
-      return html`${this.renderLiveRegion()}
+      return html`${this.renderLiveRegion()} ${this.renderLiveActivity()}
         <div class="empty">${this.emptyText}</div>`;
     }
 
     return html`
       ${this.renderLiveRegion()}${this.renderJumpPill()}
+      ${this.renderLiveActivity()}
       <div class="thread">
         <div class="thread-content">
           ${
@@ -1055,8 +1369,30 @@ ${
                 `
               : nothing
           }
+          ${
+            stats.toolActivityTruncated
+              ? html`
+                  <div
+                    class="coverage-note"
+                    role="note"
+                    data-testid="tool-activity-truncated"
+                  >
+                    Some tool calls were omitted because the captured tool
+                    history was truncated.
+                  </div>
+                `
+              : nothing
+          }
+          ${
+            this.artifactKindFilter
+              ? html`<div class="artifact-filter-note" role="status">
+                  Showing only artifact rows of this kind. Remove the filter
+                  chip in the header to see the whole conversation.
+                </div>`
+              : nothing
+          }
           ${repeat(
-            items,
+            items.filter((item) => this.passesArtifactFilter(item)),
             (item) => item.key,
             (item) => this.renderItem(item)
           )}

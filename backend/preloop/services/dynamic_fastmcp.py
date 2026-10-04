@@ -9,6 +9,7 @@ Phase 1B: Added support for proxied tools from external MCP servers.
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import keyword
 import logging
@@ -16,6 +17,7 @@ import uuid
 from contextvars import ContextVar
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
+import httpx
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
@@ -203,6 +205,208 @@ def _wrapper_tool_error(text: str, *, status: str) -> ToolResult:
     """
     _tool_outcome_var.set(status)
     return _tool_error_result(text)
+
+
+# Audit ``tool_call`` statuses. ``executed`` means the upstream (or builtin)
+# tool ran and reported success; the others record why it did not.
+AUDIT_TOOL_CALL_EXECUTED = "executed"
+AUDIT_TOOL_CALL_UPSTREAM_ERROR = "upstream_error"
+AUDIT_TOOL_CALL_DECLINED = "declined"
+AUDIT_TOOL_CALL_FAILED = "failed"
+# Approval still open (async polling or parked): not forwarded, not declined.
+AUDIT_TOOL_CALL_PENDING_APPROVAL = "pending_approval"
+_PENDING_APPROVAL_PAYLOAD_STATUSES = frozenset({"pending_approval", "parked_for_human"})
+
+# Wrapper outcome stamped when the upstream server answered with an error.
+_WRAPPER_OUTCOME_UPSTREAM_ERROR = "upstream_error"
+_AUDIT_REASON_MAX_CHARS = 200
+
+# (error_code, short reason) for the audit row, stamped by the wrapper.
+_tool_error_detail_var: ContextVar[Optional[tuple[Optional[str], Optional[str]]]] = (
+    ContextVar("_tool_error_detail_var", default=None)
+)
+
+
+def _short_reason(text: Any) -> Optional[str]:
+    if text is None:
+        return None
+    text = " ".join(str(text).split())
+    if not text:
+        return None
+    if len(text) > _AUDIT_REASON_MAX_CHARS:
+        return text[: _AUDIT_REASON_MAX_CHARS - 3] + "..."
+    return text
+
+
+def _upstream_error_detail(
+    content: Any, structured: Optional[dict]
+) -> tuple[str, Optional[str]]:
+    """Derive an error code and a short reason from an upstream error result."""
+    code: Optional[str] = None
+    reason: Optional[str] = None
+    if isinstance(structured, dict):
+        nested = structured.get("error")
+        source = nested if isinstance(nested, dict) else structured
+        for key in ("code", "error_code", "error"):
+            value = source.get(key)
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                code = str(value)
+                break
+        for key in ("message", "error_description", "detail", "reason"):
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                reason = value
+                break
+    if reason is None:
+        for block in content or []:
+            text = getattr(block, "text", None)
+            if text:
+                reason = text
+                break
+    return (_short_reason(code) or "tool_error"), _short_reason(reason)
+
+
+def _proxied_upstream_result(text: str, upstream: Any) -> Any:
+    """Return what the agent receives for a proxied upstream result.
+
+    A plain success keeps the historical string. When the upstream set
+    ``isError`` or ``structuredContent`` both are forwarded unchanged, so a
+    refusal reaches the agent as an error, and the outcome is stamped for the
+    audit row.
+    """
+    is_error = getattr(upstream, "is_error", False) is True
+    structured = getattr(upstream, "structured_content", None)
+    if not isinstance(structured, dict):
+        structured = None
+    if not is_error and structured is None:
+        return text
+    if is_error:
+        _tool_outcome_var.set(_WRAPPER_OUTCOME_UPSTREAM_ERROR)
+        _tool_error_detail_var.set(
+            _upstream_error_detail(list(upstream or []), structured)
+        )
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured,
+        is_error=is_error,
+    )
+
+
+def _proxied_exception_outcome(
+    cause: BaseException, *, server_id: str, unavailable: bool
+) -> str:
+    """Classify a raised proxied call, stamp audit detail, record last_error.
+
+    An upstream HTTP status (e.g. 401) is an ``upstream_error`` with an
+    ``http_<status>`` code; anything else is ``failed``. Transport and auth
+    failures are written to the MCP server's ``last_error``.
+    """
+    status_code = getattr(getattr(cause, "response", None), "status_code", None)
+    reason = _short_reason(cause) or type(cause).__name__
+    if isinstance(cause, httpx.HTTPStatusError) and isinstance(status_code, int):
+        outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
+        code = f"http_{status_code}"
+    else:
+        outcome = TOOL_CALL_STATUS_FAILED
+        code = "unavailable" if unavailable else type(cause).__name__
+    _tool_error_detail_var.set((code, reason))
+    if unavailable or status_code in (401, 403):
+        _record_mcp_server_error(server_id, f"{code}: {reason}")
+    return outcome
+
+
+def _record_mcp_server_error(server_id: str, message: str) -> None:
+    """Best effort: store a transport/auth failure on the MCP server row."""
+    try:
+        db = next(get_db())
+        try:
+            server = crud_mcp_server.get(db, id=server_id)
+            if server is not None:
+                server.last_error = message[:2000]
+                db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.debug("Failed to record MCP server last_error", exc_info=True)
+
+
+def _is_pending_approval_payload(text: Optional[str]) -> bool:
+    """True for the async-polling / parked payload ``require_approval`` returns."""
+    if not text or not text.lstrip().startswith("{"):
+        return False
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("status") in _PENDING_APPROVAL_PAYLOAD_STATUSES
+    )
+
+
+def _audit_tool_call_outcome(
+    *,
+    exec_status: str,
+    exec_error: Optional[str],
+    wrapper_outcome: Optional[str],
+    result: Any,
+    error_detail: Optional[tuple[Optional[str], Optional[str]]],
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Return (audit status, error code, short reason) for a governed call."""
+    code, reason = error_detail or (None, None)
+    if exec_status == "failed":
+        return AUDIT_TOOL_CALL_FAILED, code, reason or _short_reason(exec_error)
+    full_error_text = _tool_result_error_text(result)
+    error_text = _short_reason(full_error_text)
+    if wrapper_outcome == _WRAPPER_OUTCOME_UPSTREAM_ERROR:
+        return AUDIT_TOOL_CALL_UPSTREAM_ERROR, code, reason or error_text
+    if wrapper_outcome == TOOL_CALL_STATUS_REFUSED and _is_pending_approval_payload(
+        full_error_text
+    ):
+        return AUDIT_TOOL_CALL_PENDING_APPROVAL, None, None
+    if wrapper_outcome == TOOL_CALL_STATUS_REFUSED:
+        return AUDIT_TOOL_CALL_DECLINED, code, reason or error_text
+    if wrapper_outcome == TOOL_CALL_STATUS_FAILED or error_text is not None:
+        return AUDIT_TOOL_CALL_FAILED, code, reason or error_text
+    return AUDIT_TOOL_CALL_EXECUTED, None, None
+
+
+def post_approval_exec_outcome(tool_result: Any) -> tuple[str, Optional[str]]:
+    """Status and error for a tool replayed after approval (async-poll path).
+
+    That path calls the tool without the governed ``call_tool`` finally, so
+    read and clear the wrapper stamps here: an upstream ``isError`` result is
+    ``upstream_error``, any other error result is ``failed``.
+    """
+    wrapper_outcome = _tool_outcome_var.get(None)
+    code, reason = _tool_error_detail_var.get(None) or (None, None)
+    _tool_outcome_var.set(None)
+    _tool_error_detail_var.set(None)
+    if getattr(tool_result, "is_error", False) is not True:
+        return AUDIT_TOOL_CALL_EXECUTED, None
+    reason = reason or _short_reason(_tool_result_error_text(tool_result))
+    error = f"{code}: {reason}" if code and reason else (code or reason)
+    if wrapper_outcome == _WRAPPER_OUTCOME_UPSTREAM_ERROR:
+        return AUDIT_TOOL_CALL_UPSTREAM_ERROR, error
+    return AUDIT_TOOL_CALL_FAILED, error
+
+
+def _audit_error_kwargs(
+    audit_service: Any, error_code: Optional[str], error_reason: Optional[str]
+) -> dict[str, Any]:
+    """Pass error_code/error_reason only to audit services that accept them."""
+    if error_code is None and error_reason is None:
+        return {}
+    try:
+        params = inspect.signature(audit_service.log_tool_call_async).parameters
+    except (TypeError, ValueError):
+        return {}
+    accepts_any = any(p.kind is p.VAR_KEYWORD for p in params.values())
+    out: dict[str, Any] = {}
+    for key, value in (("error_code", error_code), ("error_reason", error_reason)):
+        if value is not None and (accepts_any or key in params):
+            out[key] = value
+    return out
 
 
 # Context variable to pass justification extracted from tool arguments
@@ -518,6 +722,8 @@ _WRAPPER_NAMESPACE_KEYS = (
     "_correlation_id_var",
     "_proxied_raw_result_var",
     "_wrapper_tool_error",
+    "_proxied_upstream_result",
+    "_proxied_exception_outcome",
 )
 
 #: Locals assigned in the generated wrapper body before argument collection.
@@ -983,6 +1189,7 @@ class DynamicFastMCP(FastMCP):
         try:
             subject_context = {
                 "api_key_id": user_context.api_key_id,
+                "flow_id": getattr(user_context, "flow_id", None),
                 "managed_agent_id": getattr(user_context, "managed_agent_id", None),
             }
 
@@ -1215,8 +1422,11 @@ async def {internal_name}({params_str}):
                 return _wrapper_tool_error(denial, status="refused")
             # Call tool on external server
             result = await client.call_tool(tool_name, arguments)
+            # Keep isError/structuredContent before filters rebuild the list.
+            upstream = result
             logger.info(
-                f"Tool {{tool_name}} executed successfully on external server"
+                f"Tool {{tool_name}} returned from external server "
+                f"(is_error={{getattr(upstream, 'is_error', False)}})"
             )
             # Keep the raw content list for the outer call_tool finally
             # (browser_step derivation). Filters and the string conversion
@@ -1236,13 +1446,15 @@ async def {internal_name}({params_str}):
                     ),
                 )
 
-            # Convert result to string
+            # Convert result to string; forward isError/structuredContent.
             if isinstance(result, list):
-                return "\\n".join(
+                text = "\\n".join(
                     item.text if hasattr(item, "text") else str(item)
                     for item in result
                 )
-            return str(result)
+            else:
+                text = str(result)
+            return _proxied_upstream_result(text, upstream)
 
         finally:
             db.close()
@@ -1260,16 +1472,20 @@ async def {internal_name}({params_str}):
             f"Error executing proxied tool {{tool_name}} via {{server_label}}: {{cause}}",
             exc_info=True,
         )
-        if is_mcp_unavailable_error(cause):
+        unavailable = is_mcp_unavailable_error(cause)
+        outcome = _proxied_exception_outcome(
+            cause, server_id=server_id, unavailable=unavailable
+        )
+        if unavailable:
             return _wrapper_tool_error(
                 f"The '{{server_label}}' MCP server is temporarily unavailable, so the "
                 f"'{{tool_name}}' tool could not run. Please retry in a moment; if it "
                 f"keeps happening the server may be down.",
-                status="failed",
+                status=outcome,
             )
         return _wrapper_tool_error(
             f"Error executing tool '{{tool_name}}': {{cause}}",
-            status="failed",
+            status=outcome,
         )
 """
 
@@ -1296,6 +1512,8 @@ async def {internal_name}({params_str}):
             "_correlation_id_var": _correlation_id_var,
             "_proxied_raw_result_var": _proxied_raw_result_var,
             "_wrapper_tool_error": _wrapper_tool_error,
+            "_proxied_upstream_result": _proxied_upstream_result,
+            "_proxied_exception_outcome": _proxied_exception_outcome,
         }
         if namespace_values.keys() != set(_WRAPPER_NAMESPACE_KEYS):
             raise RuntimeError(
@@ -1663,6 +1881,7 @@ async def {internal_name}({params_str}):
                     user_id=uuid.UUID(user_context.user_id),
                     subject_context={
                         "api_key_id": user_context.api_key_id,
+                        "flow_id": getattr(user_context, "flow_id", None),
                         "managed_agent_id": getattr(
                             user_context, "managed_agent_id", None
                         ),
@@ -1791,6 +2010,16 @@ async def {internal_name}({params_str}):
             elapsed_ms = int((time.monotonic() - start_time) * 1000)
             wrapper_outcome = _tool_outcome_var.get(None)
             proxied_raw_result = _proxied_raw_result_var.get(None)
+            error_detail = _tool_error_detail_var.get(None)
+            audit_status, audit_error_code, audit_error_reason = (
+                _audit_tool_call_outcome(
+                    exec_status=exec_status,
+                    exec_error=exec_error,
+                    wrapper_outcome=wrapper_outcome,
+                    result=result,
+                    error_detail=error_detail,
+                )
+            )
 
             # Clean up context vars after execution
             _rule_workflow_id_var.set(None)
@@ -1798,6 +2027,7 @@ async def {internal_name}({params_str}):
             _correlation_id_var.set(None)
             _tool_outcome_var.set(None)
             _proxied_raw_result_var.set(None)
+            _tool_error_detail_var.set(None)
 
             # ── Audit: log tool execution ───────────────────────────────
             try:
@@ -1816,7 +2046,7 @@ async def {internal_name}({params_str}):
                         # show the tool the agent asked for.
                         tool_name=client_tool_name,
                         tool_args=redact_dict(arguments),
-                        result=exec_status,
+                        result=audit_status,
                         duration_ms=elapsed_ms,
                         policy_decision=None,
                         rule_matched=None,
@@ -1827,6 +2057,9 @@ async def {internal_name}({params_str}):
                         runtime_principal_name=user_context.runtime_principal_name,
                         api_key_id=user_context.api_key_id,
                         api_key_name=user_context.api_key_name,
+                        **_audit_error_kwargs(
+                            audit_service, audit_error_code, audit_error_reason
+                        ),
                     )
             except Exception as audit_err:
                 logger.debug(f"Failed to audit tool execution: {audit_err}")
@@ -2387,10 +2620,13 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
         runtime_principal_id = None
         runtime_principal_name = None
         managed_agent_id = None
+        flow_id = None
         api_key_id = str(api_key.id) if api_key else None
         api_key_name = api_key.name if api_key else None
         if api_key and api_key.context_data:
             flow_execution_id = api_key.context_data.get("flow_execution_id")
+            if flow_execution_id and api_key.context_data.get("flow_id"):
+                flow_id = str(api_key.context_data.get("flow_id"))
             runtime_session_id = api_key.context_data.get("runtime_session_id")
             managed_agent_id = api_key.context_data.get("managed_agent_id")
             runtime_principal = api_key.context_data.get("runtime_principal") or {}
@@ -2436,6 +2672,7 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
             managed_agent_id=(
                 str(managed_agent_id) if managed_agent_id is not None else None
             ),
+            flow_id=flow_id,
         )
 
         logger.info(

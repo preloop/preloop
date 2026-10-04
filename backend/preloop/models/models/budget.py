@@ -38,12 +38,13 @@ class BudgetPolicy(Base):
         UUID(as_uuid=True), ForeignKey("account.id", ondelete="CASCADE"), nullable=False
     )
 
-    # 'account', 'flow', 'api_key', 'managed_agent'. The account hierarchy
-    # reserves 'subaccount' (subject_id is the subaccount) and
-    # 'subaccounts_total' (subject_id NULL, all subaccounts together), both
-    # stored under the parent's account_id; see access_values.BUDGET_SUBJECT_*.
-    # Those two are not accepted by
-    # crud.budget_configuration.validate_budget_subject yet.
+    # 'account', 'api_key', 'managed_agent', 'ai_model' and 'user' (spend of
+    # the agents a user owns and of the API keys the user owns). Plugins
+    # reserve 'subaccount' and 'subaccounts_total' (account hierarchy, stored
+    # under the parent's account_id) and 'team' (subject_id is the team); see
+    # access_values.RESERVED_BUDGET_SUBJECTS. Core refuses those in
+    # crud.budget_configuration.validate_budget_subject and the plugin that
+    # owns one validates and enforces it. Legacy 'flow' rows are not enforced.
     subject_type = Column(String, nullable=False, index=True)
     subject_id = Column(
         UUID(as_uuid=True), nullable=True, index=True

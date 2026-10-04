@@ -13,6 +13,7 @@ import random
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -169,7 +170,12 @@ from preloop.services.model_pricing import (
     _iter_litellm_model_candidates,
     estimate_ai_model_usage_cost_detailed,
 )
-from preloop.services.azure_openai import azure_request_kwargs
+from preloop.services.azure_entra import AzureEntraTokenError
+from preloop.services.azure_openai import (
+    azure_entra_auth_error,
+    azure_request_kwargs,
+    uses_azure_entra,
+)
 from preloop.services.litellm_routing import (
     BEDROCK_PROVIDERS,
     apply_preloop_client_headers,
@@ -491,6 +497,20 @@ def _supports_ambient_provider_credentials(ai_model: GatewayModel) -> bool:
     """
     provider = (ai_model.provider_name or "").strip().lower()
     return provider in BEDROCK_PROVIDERS
+
+
+def _azure_kwargs_or_auth_error(
+    ai_model: GatewayModel, *, provider: GatewayProvider
+) -> Dict[str, Any]:
+    """Return the Azure LiteLLM kwargs, mapping token failures to a 401.
+
+    A failed Entra ID token acquisition is an upstream authentication
+    problem of the provider, so it is reported like a rejected key.
+    """
+    try:
+        return azure_request_kwargs(ai_model)
+    except AzureEntraTokenError as exc:
+        raise azure_entra_auth_error(exc, provider=provider) from exc
 
 
 def _openrouter_usage_accounting_enabled() -> bool:
@@ -902,6 +922,7 @@ def gateway_database_scope(operation: Callable[..., Any]) -> Callable[..., Any]:
 
     @wraps(operation)
     def scoped(self: OpenAIGatewayService, *args: Any, **kwargs: Any) -> Any:
+        self._live_request_id = None
         try:
             result = operation(self, *args, **kwargs)
             self.release_db_for_wait()
@@ -918,6 +939,8 @@ class OpenAIGatewayService:
     # __new__ construction (tests, factories) skips __init__. Default keeps
     # release_db_for_wait from crashing on a missing attribute.
     _owns_db_session: bool = False
+    # Service instances are scoped to one HTTP request, including its stream.
+    _live_request_id: Optional[str] = None
 
     def __init__(
         self,
@@ -1043,6 +1066,20 @@ class OpenAIGatewayService:
         # endpoints return it as ``X-Preloop-Usage-Id`` so an operator smoke
         # check can point at the exact row the Cost page counts.
         self.last_usage_id: Optional[str] = None
+        # Stable identity for the CURRENT request, minted in
+        # ``_begin_request_accounting`` and carried on both the
+        # ``model_gateway_request_started`` event and the usage row's
+        # ``model_gateway_call`` event.
+        #
+        # A live console used to pair the two by arrival order ("the last start
+        # belongs to the next completion"), which is wrong the moment two
+        # requests overlap — a parallel tool call plus the next model turn is
+        # the normal case, not an edge case. Both events carry this id, so a
+        # consumer can pair them exactly and an unmatched start is visible as
+        # an unmatched start instead of silently retarding some other request.
+        # It is deliberately NOT the ApiUsage primary key: the started event is
+        # published before the usage row exists.
+        self._gateway_request_id: Optional[str] = None
 
     @property
     def db(self) -> Session:
@@ -1110,6 +1147,10 @@ class OpenAIGatewayService:
         self._last_upstream_retry_count = 0
         self._last_alibaba_cache_mode = None
         self.last_usage_id = None
+        # A fresh identity for every request, including one that never reaches
+        # usage recording. Re-arming here (rather than minting at first use)
+        # keeps it request-scoped under the same discipline as the retry count.
+        self._gateway_request_id = uuid.uuid4().hex
 
     def _adopt_native_session_id(self, payload: Optional[Dict[str, Any]]) -> None:
         """Adopt the agent's own session id from an Anthropic request payload.
@@ -1586,6 +1627,7 @@ class OpenAIGatewayService:
         from preloop.services.model_gateway_events import build_account_event
         from preloop.services.account_realtime import ACCOUNT_TOPIC_GATEWAY_ACTIVITY
 
+        self._live_request_id = str(uuid4())
         runtime_session_id = self._resolve_runtime_session()
         managed_agent_id = self._resolve_managed_agent_id()
 
@@ -1595,6 +1637,7 @@ class OpenAIGatewayService:
                 topic=ACCOUNT_TOPIC_GATEWAY_ACTIVITY,
                 event_type="model_gateway_request_started",
                 payload={
+                    "request_id": self._live_request_id,
                     "status_code": 202,  # accepted, waiting
                     "outcome": "pending",
                     "duration": 0,
@@ -1602,11 +1645,13 @@ class OpenAIGatewayService:
                     "model_alias": requested_model,
                     "managed_agent_id": managed_agent_id,
                     "total_tokens": 0,
+                    # Correlation id shared with the completion event. Consumers
+                    # must pair the two by this and never by arrival order.
+                    "gateway_request_id": self._gateway_request_id,
                     "meta_data": {
                         "endpoint_kind": endpoint_kind,
                         "requested_model": requested_model,
                     },
-                    "request": request_payload,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
                 runtime_session_id=runtime_session_id,
@@ -3760,6 +3805,24 @@ class OpenAIGatewayService:
                     default_gateway_model = ai_model
 
         if requested_model:
+            # Explicit registry IDs avoid alias collisions for first-party
+            # clients selecting the current account default. The authorization
+            # ceiling and gateway-enabled check are identical to alias routing.
+            for ai_model, _alias in gateway_enabled_models:
+                if str(ai_model.id) == str(requested_model):
+                    return ai_model
+            if any(
+                str(model.id) == str(requested_model)
+                for model, _ in unauthorized_gateway_models
+            ):
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=403,
+                    message="Requested model is not authorized",
+                    code="model_not_authorized",
+                )
+
+        if requested_model:
             # Resolution must be deterministic: the resolved row decides which
             # ai_model_id the request is billed and priced against. Two rules,
             # in order:
@@ -4362,12 +4425,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "OpenAI Codex OAuth credentials could not be refreshed. "
-                    'Run `preloop agents sync-credentials "Codex CLI"` to '
-                    "push the local ChatGPT login, or run `codex login` on "
-                    "the agent host and rerun onboarding."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -5665,10 +5723,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="anthropic",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -6319,10 +6374,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         if (
@@ -6930,13 +6982,11 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         supports_ambient = _supports_ambient_provider_credentials(ai_model)
+        supports_entra = uses_azure_entra(ai_model)
         supports_oauth = (
             provider == "anthropic"
             and resolved_credentials is not None
@@ -6949,7 +6999,9 @@ class OpenAIGatewayService:
             and resolved_credentials.credential_type == "api_key"
             and bool(resolved_credentials.value)
         )
-        if not (supports_api_key or supports_oauth or supports_ambient):
+        if not (
+            supports_api_key or supports_oauth or supports_ambient or supports_entra
+        ):
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=400,
@@ -6960,6 +7012,8 @@ class OpenAIGatewayService:
         # savings are shown as a share of the rate-limit window, not dollars.
         if supports_oauth:
             self._last_upstream_credential_type = "oauth"
+        elif supports_entra:
+            self._last_upstream_credential_type = "ambient"
         elif supports_api_key:
             self._last_upstream_credential_type = "api_key"
         elif supports_ambient:
@@ -7004,8 +7058,9 @@ class OpenAIGatewayService:
         if api_base := model_api_base(ai_model):
             kwargs["api_base"] = api_base
         # Azure needs the resource root (not the pasted deployment URL) and
-        # an api-version; both come from the stored model.
-        kwargs.update(azure_request_kwargs(ai_model))
+        # an api-version; both come from the stored model. Entra ID models
+        # also get their bearer token provider here.
+        kwargs.update(_azure_kwargs_or_auth_error(ai_model, provider=provider))
         if alibaba_pricing.is_alibaba(ai_model):
             cache_markers = 0
             for message in messages:
@@ -7356,10 +7411,7 @@ class OpenAIGatewayService:
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=status_code,
-                message=(
-                    "Model credentials could not be refreshed. "
-                    "Reconnect this managed agent or update the model credentials."
-                ),
+                message=exc.recovery_message(),
                 code=exc.code,
             ) from exc
         supports_ambient = _supports_ambient_provider_credentials(ai_model)
@@ -7368,14 +7420,15 @@ class OpenAIGatewayService:
             and resolved_credentials.credential_type == "api_key"
             and bool(resolved_credentials.value)
         )
-        if not (supports_api_key or supports_ambient):
+        supports_entra = uses_azure_entra(ai_model)
+        if not (supports_api_key or supports_ambient or supports_entra):
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=400,
                 message="Model credentials are not configured",
             )
         self._last_upstream_credential_type = (
-            "api_key" if supports_api_key else "ambient"
+            "api_key" if supports_api_key and not supports_entra else "ambient"
         )
 
         kwargs: Dict[str, Any] = {
@@ -7398,8 +7451,9 @@ class OpenAIGatewayService:
         if api_base := model_api_base(ai_model):
             kwargs["api_base"] = api_base
         # Azure needs the resource root (not the pasted deployment URL) and
-        # an api-version; both come from the stored model.
-        kwargs.update(azure_request_kwargs(ai_model))
+        # an api-version; both come from the stored model. Entra ID models
+        # also get their bearer token provider here.
+        kwargs.update(_azure_kwargs_or_auth_error(ai_model, provider="openai"))
         for field in ("dimensions", "encoding_format", "user"):
             if payload.get(field) is not None:
                 kwargs[field] = payload[field]
@@ -9482,6 +9536,8 @@ class OpenAIGatewayService:
             api_key_id=(
                 str(self.auth_context.api_key.id) if self.auth_context.api_key else None
             ),
+            # Known from authentication: spares a lookup for the user budget.
+            api_key_user_id=getattr(self.auth_context.api_key, "user_id", None),
             auth_subject_type=(
                 "api_key"
                 if self.auth_context.api_key
@@ -9515,6 +9571,7 @@ class OpenAIGatewayService:
             runtime_principal_name=runtime_principal.get("name"),
             rate_limit_retry_after_ms=rate_limit_retry_after_ms,
             meta_data={
+                "request_id": getattr(self, "_live_request_id", None),
                 "endpoint_kind": endpoint_kind,
                 "requested_model": requested_model,
                 "gateway_provider": runtime.model_gateway_provider,
@@ -9538,6 +9595,10 @@ class OpenAIGatewayService:
                 "gateway_attempt": gateway_attempt,
                 "is_retry": is_retry,
                 "retry_of_api_usage_id": retry_of_api_usage_id,
+                # Same id the `model_gateway_request_started` event carried, so
+                # a live surface can pair the start with THIS completion even
+                # while other requests overlap.
+                "gateway_request_id": self._gateway_request_id,
                 # Retries the GATEWAY made inside this one request after a
                 # transient upstream failure. Distinct from gateway_attempt /
                 # is_retry, which describe the CLIENT resending a request.

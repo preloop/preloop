@@ -466,6 +466,10 @@ test:unit:scripts:
 
 # Standalone runtime plugins (Hermes Python + OpenClaw npm). Lightweight —
 # no postgres / backend image required.
+# Nanobot tests run here too. PYTHONPATH matches the GitHub workflow
+# (backend and runtime-plugins/nanobot-preloop/src) so the package imports
+# from source. The preloop-ee job of the same name is what
+# publish:nanobot-plugin needs; keep the two suites aligned.
 test:unit:runtime-plugins:
   stage: test
   needs: []
@@ -474,7 +478,9 @@ test:unit:runtime-plugins:
     - pip install -U pip pytest pytest-asyncio
     - pip install -e .
   script:
-    - pytest -v runtime-plugins/tests runtime-plugins/hermes-preloop/tests
+    - export PYTHONPATH="backend:runtime-plugins/nanobot-preloop/src"
+    - export PRELOOP_DISABLE_TELEMETRY=true
+    - pytest -v runtime-plugins/tests runtime-plugins/hermes-preloop/tests runtime-plugins/nanobot-preloop/tests
   rules:
     - changes:
         - runtime-plugins/**/*

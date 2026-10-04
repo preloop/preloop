@@ -346,11 +346,11 @@ async def test_user_stop_reports_success_when_result_wins_the_race(
         acked_at=None,
         kind="command",
     )
-    interrupts: list[str] = []
+    interrupts: list[dict[str, Any]] = []
 
     async def fake_dispatch(*args: Any, **kwargs: Any) -> SimpleNamespace:
         if kwargs.get("interrupt"):
-            interrupts.append(str(kwargs.get("session_mode")))
+            interrupts.append(kwargs)
             command.status = "acked"
             command.envelope = {
                 COMMAND_RESULT_ENVELOPE_KEY: {
@@ -434,5 +434,9 @@ async def test_user_stop_reports_success_when_result_wins_the_race(
 
     assert result["status"] == "SUCCEEDED"
     assert result.get("output_summary") == "Review posted"
-    assert interrupts == ["current"]
+    assert len(interrupts) == 1
+    assert interrupts[0]["session_mode"] == "existing"
+    assert interrupts[0]["metadata"]["target_command_id"] == command.command_id
+    assert interrupts[0]["metadata"]["flow_execution_id"] == str(execution_id)
+    assert interrupts[0]["start_new_session"] is False
     assert await executor.is_stopped(reference) is False

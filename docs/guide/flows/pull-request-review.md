@@ -294,6 +294,11 @@ test on the reviewed head is a finding. The default `codex-universal` image has
 neither runner, so there the reviewer only uses a test command whose
 dependencies are already installed.
 
+Browser tests default to one session at a time in flow containers. Operators
+can set `PRELOOP_TEST_CONCURRENCY` to a positive integer to override it; see
+[test concurrency](environments-and-recovery.md#backend-and-frontend-tests-in-the-image)
+for configuration and resource guidance.
+
 ## Not in this slice
 
 - No tracker-side relation read (GitLab's `/merge_requests/:iid/closes_issues`

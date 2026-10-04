@@ -620,7 +620,7 @@ def read_flow_executions(
     for execution in executions:
         execution.flow_name = execution.flow.name if execution.flow else None
 
-    _project_models_used(db, executions)
+    _project_models_used(db, executions, account_id=current_user.account_id)
     _project_execution_runners(db, executions)
     # Tool calls and cost from the same aggregation the execution page shows,
     # so a row and the page it opens never state different numbers.
@@ -688,7 +688,9 @@ def _project_execution_runners(
         )
 
 
-def _project_models_used(db: Session, executions: List[Any]) -> None:
+def _project_models_used(
+    db: Session, executions: List[Any], *, account_id: Optional[Any] = None
+) -> None:
     """Attach the model projection to each execution row in one query.
 
     "Which model ran this" is answered from gateway usage, which the
@@ -699,7 +701,9 @@ def _project_models_used(db: Session, executions: List[Any]) -> None:
     if not executions:
         return
     models_by_execution = crud_api_usage.get_models_used_for_executions(
-        db, [execution.id for execution in executions]
+        db,
+        [execution.id for execution in executions],
+        account_id=account_id,
     )
     for execution in executions:
         models = models_by_execution.get(str(execution.id), [])
@@ -746,7 +750,7 @@ def read_batch_executions(
 
     # Projected before validation below, so each cell of a model matrix says
     # which model actually served it.
-    _project_models_used(db, executions)
+    _project_models_used(db, executions, account_id=current_user.account_id)
     _project_execution_runners(db, executions, resolve_pool_from_flow=True)
 
     by_status: Dict[str, int] = {}
@@ -1009,12 +1013,17 @@ def read_flow_execution(
 
     # The model that ran this execution, from the same gateway usage the list
     # projects, so the detail page and the table never disagree.
-    _project_models_used(db, [execution])
+    _project_models_used(db, [execution], account_id=current_user.account_id)
     _project_execution_runners(db, [execution], resolve_pool_from_flow=True)
     # Same for tool calls and cost: the page hydrates its strip from this row
     # before /metrics answers, and the number must not change under the user.
     project_execution_totals(db, [execution])
     project_resume_lineage(db, [execution], account_id=current_user.account_id)
+    from preloop.services.flow_continuation_navigation import (
+        project_continuation_navigation,
+    )
+
+    project_continuation_navigation(db, execution, account_id=current_user.account_id)
     _project_execution_park(db, execution)
     # The page paints its title from this row before the flow itself loads.
     execution.flow_name = execution.flow.name if execution.flow else None
@@ -2443,6 +2452,15 @@ def update_flow(
     # with webhook_config=None: the console never shows a webhook URL and
     # the flow is untriggerable. Mirror the create-path behavior here.
     existing_secret = (flow.webhook_config or {}).get("webhook_secret")
+    if (
+        flow_in.webhook_config is not None
+        and "employee_secret" not in flow_in.webhook_config.model_fields_set
+    ):
+        flow_in.webhook_config = flow_in.webhook_config.model_copy(
+            update={
+                "employee_secret": (flow.webhook_config or {}).get("employee_secret")
+            }
+        )
     if flow_in.webhook_config is not None and not flow_in.webhook_config.webhook_secret:
         # A client updating another webhook_config key (for example
         # supersede_on_update) does not resend the secret: keep it.

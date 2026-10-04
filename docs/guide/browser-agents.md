@@ -7,9 +7,12 @@ session. Each step is an observation: the action the agent reports, the
 URL or target it names, and the reasoning it gives. A stored step is not
 an approval, a dispatch, or proof that the browser reached that state.
 
-A step may carry a screenshot. It is stored encrypted as a session
-artifact and served back to the console. A step without one has
-`screenshot: null` in its stored metadata.
+A step may carry a screenshot. It is stored encrypted as a
+[session artifact](artifacts.md) of kind `screenshot`. The console fetches it
+from the artifact byte route and shows it as a thumbnail on the step row (see
+[In the console](#in-the-console)). A step without one has
+`screenshot: null` in its stored metadata and renders as a row without a
+thumbnail.
 
 ## Sending steps
 
@@ -62,6 +65,24 @@ names a different one, the response is 403. A session that has already
 ended is accepted, including a key pinned to that session, so an adapter
 can flush after the run. The model gateway still rejects that key for
 inference.
+
+## Browser Use
+
+The `preloop-browser-use` package in
+[`runtime-plugins/browser-use-preloop`](https://github.com/preloop/preloop/tree/main/runtime-plugins/browser-use-preloop)
+is a Browser Use `on_step_end` callback. It posts each step with its
+screenshot as `source: browser_use`, in batches, and never stops the agent
+when Preloop is unreachable:
+
+```python
+from preloop_browser_use import PreloopBrowserUseReporter
+
+reporter = PreloopBrowserUseReporter.from_env()
+history = await reporter.run(agent)
+```
+
+Setup, the field mapping and the supported versions are in its
+[README](https://github.com/preloop/preloop/blob/main/runtime-plugins/browser-use-preloop/README.md).
 
 ## Screenshots
 
@@ -166,6 +187,13 @@ screenshot under the same size, type and budget rules as an image posted
 to the API. An image the rules refuse is dropped and the step is kept.
 What the agent receives from the tool does not change.
 
+Playwright MCP decides whether a tool result carries an image at all. Started
+with `--image-responses omit`, it returns no `ImageContent`, so the firewall
+has nothing to store: every derived step, including `browser_take_screenshot`,
+is recorded with `screenshot: null` and the console shows the step without a
+thumbnail and without a strip image. Keep the default (`allow`) when you want
+screenshots in Preloop.
+
 Set `MCP_PLAYWRIGHT_DERIVE_BROWSER_STEPS=false` to record those calls as
 plain `tool_call` rows only. Other browser MCP servers are not derived;
 post their steps through the API above.
@@ -181,6 +209,11 @@ arrow keys page through the session's steps and Escape closes it.
 
 When a session has browser steps, a strip above the timeline lists one
 entry per step. Click an entry to scroll the timeline to that step.
+
+The console shows exactly what was stored: steps with `screenshot: null`
+(for example from `--image-responses omit`, or a refused image) have no
+thumbnail. It does not show the image the agent saw if that image was never
+stored.
 
 A screenshot that was evicted by a storage bound or expired under the
 retention policy shows a grey placeholder with the reason and a link to

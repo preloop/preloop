@@ -1,4 +1,4 @@
-"""warehouse-sim: a synthetic MCP server for artifact demos and tests.
+"""warehouse-sim: a synthetic MCP server for artifact tests.
 
 Six tools. Content shapes are MCP ``ContentBlock`` values (spec 2026-07-28):
 ``TextContent``, ``EmbeddedResource`` (``TextResourceContents``) and

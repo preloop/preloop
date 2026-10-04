@@ -310,6 +310,23 @@ describe('FlowExecutionView', () => {
               estimated_cost: 0.04,
               total_tokens: 400,
               resume_of: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              continuation_navigation: {
+                original_execution_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                issue_url: 'https://github.com/preloop/preloop/issues/77',
+                pr_url: 'https://github.com/preloop/preloop/pull/78',
+                follow_ups: [
+                  {
+                    id: 'exec-resume',
+                    status: 'FAILED',
+                    start_time: '2026-03-09T12:00:00Z',
+                  },
+                  {
+                    id: 'exec-repair',
+                    status: 'SUCCEEDED',
+                    start_time: '2026-03-09T13:00:00Z',
+                  },
+                ],
+              },
               resume_totals: { total_tokens: 1400, estimated_cost: 0.14 },
               trigger_subject: 'preloop/preloop #78 · Pull Request Updated',
               trigger_subject_url: 'https://github.com/preloop/preloop/pull/78',
@@ -529,13 +546,13 @@ describe('FlowExecutionView', () => {
     expect(link.getAttribute('rel')).to.equal('noopener noreferrer');
   });
 
-  it('shows Resumption with a link to the publishing execution', async () => {
+  it('labels continuations and links the original, follow-ups, issue and PR', async () => {
     const element = await load('exec-resume');
     const line = element.shadowRoot!.querySelector(
       '[data-testid="resume-line"]'
     ) as HTMLElement;
     expect(line, 'resume line').to.exist;
-    expect(line.textContent).to.contain('Resumption');
+    expect(line.textContent).to.contain('Continuation of original execution');
     expect(line.textContent).to.contain('1.4K');
     expect(line.textContent).to.contain('$0.14');
     const link = line.querySelector(
@@ -544,6 +561,43 @@ describe('FlowExecutionView', () => {
     expect(link.getAttribute('href')).to.equal(
       '/console/flows/executions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     );
+    const navigation = element.shadowRoot!.querySelector(
+      '[data-testid="continuation-navigation"]'
+    )!;
+    expect(navigation.textContent?.replace(/\s+/g, ' ')).to.contain(
+      'Continuation 1 (this execution)'
+    );
+    expect(navigation.querySelector('a')!.getAttribute('href')).to.equal(
+      '/console/flows/executions/exec-repair'
+    );
+    const links = Array.from(navigation.querySelectorAll('sl-button'));
+    expect(links.map((button) => button.getAttribute('href'))).to.deep.equal([
+      'https://github.com/preloop/preloop/issues/77',
+      'https://github.com/preloop/preloop/pull/78',
+    ]);
+  });
+
+  it('links follow-ups from the original execution', async () => {
+    const element = await load('exec-resume');
+    (element as any).execution = {
+      ...(element as any).execution,
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      resume_of: null,
+    };
+    await element.updateComplete;
+    const navigation = element.shadowRoot!.querySelector(
+      '[data-testid="continuation-navigation"]'
+    )!;
+    expect(
+      Array.from(navigation.querySelectorAll('a')).map((link) =>
+        link.getAttribute('href')
+      )
+    ).to.deep.equal([
+      '/console/flows/executions/exec-resume',
+      '/console/flows/executions/exec-repair',
+    ]);
+    expect(element.shadowRoot!.querySelector('[data-testid="resume-of-link"]'))
+      .not.to.exist;
   });
 
   it('renders execution-scoped gateway events with payload details', async () => {
@@ -1961,18 +2015,26 @@ describe('FlowExecutionView', () => {
     });
 
     it('drops the connection-state listener when the view goes away', async () => {
-      const unsubscribeState = sinon.spy();
+      const unsubscribers: sinon.SinonSpy[] = [];
       const stateStub = sinon
         .stub(unifiedWebSocketManager, 'onStateChange')
-        .returns(unsubscribeState);
+        .callsFake(() => {
+          const unsubscribe = sinon.spy();
+          unsubscribers.push(unsubscribe);
+          return unsubscribe;
+        });
 
       try {
         const element = await load('exec-running');
-        expect(unsubscribeState.called).to.be.false;
+        expect(unsubscribers.length).to.be.at.least(1);
+        expect(unsubscribers.every((unsubscribe) => !unsubscribe.called)).to.be
+          .true;
 
         element.remove();
-        expect(unsubscribeState.calledOnce, 'state listener released').to.be
-          .true;
+        expect(
+          unsubscribers.every((unsubscribe) => unsubscribe.calledOnce),
+          'every view and nested session listener released'
+        ).to.be.true;
       } finally {
         stateStub.restore();
       }

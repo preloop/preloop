@@ -1,7 +1,7 @@
 import json
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Tuple, Union
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -766,6 +766,10 @@ MAX_SCHEDULE_INTERVAL = timedelta(days=366)
 # repeat every matched hour/day, so any sub-minimum gap shows up within the
 # first few matched days - well inside 200 ticks.
 _SCHEDULE_CHECK_MAX_TICKS = 200
+# How far back ScheduleBase.fire_window searches for the previous fire time.
+# The last scan always runs at exactly this bound; eight years covers a
+# "29 February only" cron, whose two previous fires can be 2921 days apart.
+_FIRE_WINDOW_MAX_LOOKBACK = timedelta(days=366 * 8)
 
 # Bounds on ScheduleBase.payload, the static trigger payload a schedule
 # carries. A schedule states options (which baseline to diff against, a
@@ -824,7 +828,14 @@ class ScheduleBase(BaseModel):
                 f"schedule payload declares {len(v)} keys; max is "
                 f"{MAX_SCHEDULE_PAYLOAD_KEYS}"
             )
-        for reserved in ("workspace_files", "schedule", "scheduled_at"):
+        for reserved in (
+            "workspace_files",
+            "schedule",
+            "scheduled_at",
+            "previous_scheduled_at",
+            "last_successful_scheduled_at",
+            "window",
+        ):
             if reserved in v:
                 raise ValueError(f"schedule payload may not declare '{reserved}'")
         try:
@@ -869,6 +880,43 @@ class ScheduleBase(BaseModel):
         """Compute the next fire time from now, or None if it never fires."""
         times = self.next_fire_times(count=1)
         return times[0] if times else None
+
+    def fire_window(self, at: datetime) -> Tuple[datetime, datetime]:
+        """Return ``(current_fire, previous_fire)`` for a tick observed at ``at``.
+
+        Both come from the schedule definition, not from execution history:
+        ``current_fire`` is the latest fire time at or before ``at`` and
+        ``previous_fire`` the one before it. A skipped or failed run still
+        moves the window, so consecutive windows tile time without gaps.
+        When the definition yields fewer than two fires (it never fired
+        before ``at``), both fall back to ``at`` and ``at`` minus the
+        shortest legal interval.
+        """
+        trigger = self.build_trigger()
+        lookback = MIN_SCHEDULE_INTERVAL * 2
+        while True:
+            fires: List[datetime] = []
+            prev: Optional[datetime] = None
+            cursor = at - lookback
+            while True:
+                nxt = trigger.get_next_fire_time(prev, cursor)
+                if nxt is None or nxt > at:
+                    break
+                fires.append(nxt)
+                fires = fires[-2:]
+                prev = nxt
+                cursor = nxt + timedelta(microseconds=1)
+            if len(fires) == 2:
+                return (
+                    fires[1].astimezone(timezone.utc),
+                    fires[0].astimezone(timezone.utc),
+                )
+            if lookback >= _FIRE_WINDOW_MAX_LOOKBACK:
+                break
+            # Widen geometrically, but always finish with one scan at the
+            # cap itself, so the bound is the real bound.
+            lookback = min(lookback * 4, _FIRE_WINDOW_MAX_LOOKBACK)
+        return at, at - MIN_SCHEDULE_INTERVAL
 
 
 class CronSchedule(ScheduleBase):
@@ -968,6 +1016,12 @@ class IntervalSchedule(ScheduleBase):
         from apscheduler.triggers.interval import IntervalTrigger
 
         return IntervalTrigger(**{self.unit: self.every}, timezone=self.timezone)
+
+    def fire_window(self, at: datetime) -> Tuple[datetime, datetime]:
+        """An interval fires relative to when its job was registered, which
+        the definition does not record, so the previous fire is one period
+        before this tick."""
+        return at, at - timedelta(**{self.unit: self.every})
 
     def describe(self) -> str:
         return describe_interval(self.every, self.unit)
@@ -1155,6 +1209,43 @@ class FlowNotifications(BaseModel):
 
 class WebhookConfig(BaseModel):
     """Configuration for webhook triggers."""
+
+    employee_secret: Optional[str] = Field(
+        default=None,
+        min_length=32,
+        repr=False,
+        json_schema_extra={"writeOnly": True},
+        description="HMAC secret for signed employee-event ingress.",
+    )
+
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description=(
+            "Secure token for authenticating webhook requests (auto-generated "
+            "for webhook triggers; unset on flows triggered by tracker events)"
+        ),
+    )
+    supersede_on_update: bool = Field(
+        default=False,
+        description=(
+            "When a pull or merge request gets a new head, stop this flow's "
+            "executions still working on an older head of the same request "
+            "before starting the new one. Off by default; the Pull Request "
+            "Reviewer preset turns it on."
+        ),
+    )
+    dedupe_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Dotted JSON path into the webhook body used to build a "
+            "deduplication key (e.g. 'data.issue.id'). When unset, defaults "
+            "to 'attachments.0.title_link' then 'data.issue.id'."
+        ),
+    )
+
+
+class WebhookConfigResponse(BaseModel):
+    """Webhook settings on a flow response. The ingress secret is omitted."""
 
     webhook_secret: Optional[str] = Field(
         default=None,
@@ -1568,6 +1659,22 @@ class FlowResponse(FlowBase):
     ai_model_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_serializer("webhook_config", return_type=Optional[WebhookConfigResponse])
+    def redact_employee_secret(
+        self, value: Optional[WebhookConfig]
+    ) -> Optional[WebhookConfigResponse]:
+        """Keep ingress credentials in storage but out of all Flow responses.
+
+        A dedicated response model keeps ``webhook_secret``,
+        ``supersede_on_update`` and ``dedupe_path`` in the published schema.
+        A dict return type would widen the field to an untyped object.
+        """
+        if value is None:
+            return None
+        return WebhookConfigResponse.model_validate(
+            value.model_dump(exclude={"employee_secret"})
+        )
 
     @computed_field
     @property

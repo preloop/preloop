@@ -1818,12 +1818,16 @@ class ApprovalService:
         Returns:
             True if successful, False otherwise
         """
-        # Get webhook URL from workflow
-        webhook_url = None
-        if approval_workflow.approval_config:
-            webhook_url = approval_workflow.approval_config.get("webhook_url")
+        from preloop.services.approval_summary import fallback_approval_summary
+        from preloop.services.event_webhooks.approval_shim import (
+            resolve_webhook_target,
+        )
 
-        if not webhook_url:
+        # channel_configs.<webhook|slack|mattermost> or the legacy
+        # approval_config.webhook_url; the channel picks the payload format.
+        target = resolve_webhook_target(approval_workflow)
+
+        if target is None:
             error_msg = "No webhook URL configured in approval workflow"
             await self.update_approval_request(
                 approval_request.id,
@@ -1856,7 +1860,8 @@ class ApprovalService:
         headline = ask_text or f"Approval Required: {approval_request.tool_name}"
 
         # Create message based on approval type
-        if approval_workflow.approval_type in ["slack", "mattermost"]:
+        channel = target[0]
+        if channel in ["slack", "mattermost"]:
             # Build message text with all details: summary first when present
             if ask_text:
                 message_text = f"⚠️ **{ask_text}**\n\n"
@@ -1925,7 +1930,11 @@ class ApprovalService:
                 "type": "approval_request",
                 "request_id": str(approval_request.id),
                 "tool_name": approval_request.tool_name,
-                "summary": ask_text,
+                # Never null: receivers show this to a person.
+                "summary": ask_text
+                or fallback_approval_summary(
+                    approval_request.tool_name, approval_request.tool_args
+                ),
                 "tool_args": tool_args_redacted,
                 "agent_reasoning": approval_request.agent_reasoning,
                 "status": approval_request.status,
@@ -1936,7 +1945,8 @@ class ApprovalService:
                     else None
                 ),
                 # "review" is the honest name: the link opens the approval
-                # page, it does not decide anything. Decisions are taken with
+                # page, it does not decide anything. A receiving system decides
+                # with the token URLs under "decision" below, or with
                 # POST /api/v1/approval-requests/{id}/approve or /decline.
                 # "approve", "decline" and "view" are the same URL and always
                 # were; they stay for receivers that read those keys today and
@@ -1946,6 +1956,22 @@ class ApprovalService:
                     "approve": review_url,  # deprecated, same page as review
                     "decline": review_url,  # deprecated, same page as review
                     "view": review_url,  # deprecated, same page as review
+                },
+                # Machine-callable decision URLs. "actions" above are pages
+                # for a person; these are what a receiving system calls to
+                # answer. POST, no Authorization header: the token in the
+                # query string is the credential. Body is optional:
+                # {"comment": "..."} (approve also takes "answer").
+                "decision": {
+                    "method": "POST",
+                    "approve_url": urljoin(
+                        self.base_url,
+                        f"/approval/{approval_request.id}/approve?token={token}",
+                    ),
+                    "decline_url": urljoin(
+                        self.base_url,
+                        f"/approval/{approval_request.id}/decline?token={token}",
+                    ),
                 },
             }
 
@@ -2353,6 +2379,26 @@ class ApprovalService:
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"Failed to resolve approver list for audit: {exc}")
 
+        try:
+            from preloop.services.chat_worker import enqueue_approval_notifications
+
+            results["chat"] = {
+                "queued": await asyncio.to_thread(
+                    enqueue_approval_notifications,
+                    approval_request.account_id,
+                    approval_request.id,
+                    approver_user_ids,
+                )
+            }
+        except Exception:
+            logger.warning(
+                "Failed to enqueue private chat approval notifications", exc_info=True
+            )
+            results["chat"] = {
+                "success": False,
+                "error": "Chat notification queue unavailable",
+            }
+
         partition = await self._partition_approvers_for_stagger(approver_user_ids)
 
         # Push first so watch/mobile get the head start.
@@ -2444,11 +2490,16 @@ class ApprovalService:
                 correlation_id=correlation_id,
             )
 
-        # Handle webhook-based notifications (these are workflow-level, not per-user)
-        # Derive notification channels from approval_type (the model field)
-        workflow_channels = (
-            [approval_workflow.approval_type] if approval_workflow.approval_type else []
+        # Handle webhook-based notifications (these are workflow-level, not per-user).
+        # The channel comes from the configured destination, not approval_type:
+        # policy YAML and the documented channel_configs.webhook form leave
+        # approval_type at its default and must still dispatch.
+        from preloop.services.event_webhooks.approval_shim import (
+            resolve_webhook_target,
         )
+
+        target = resolve_webhook_target(approval_workflow)
+        workflow_channels = [target[0]] if target else []
         for channel in workflow_channels:
             if channel in ["slack", "mattermost", "webhook"]:
                 try:

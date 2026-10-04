@@ -28,8 +28,12 @@ import {
   getAccountAgent,
   getAccountRuntimeSessionActivityTimeline,
   getRuntimeSessionGatewayEvents,
+  listApprovalRequests,
 } from '../../api';
-import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import {
+  ConnectionState,
+  unifiedWebSocketManager,
+} from '../../services/unified-websocket-manager';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import type {
   FlowGatewayEvent,
@@ -84,12 +88,22 @@ export class AgentTalkView extends LitElement {
   @state() private activity: RuntimeSessionActivityItem[] = [];
   @state() private pending: PendingTalkMessage[] = [];
   @state() private followBanner: string | null = null;
+  /** Pending approvals for the followed session only, never account-wide. */
+  @state()
+  private pendingApprovals: Array<{
+    id: string;
+    status: string;
+    requested_at?: string;
+  }> = [];
+  /** Socket health; null until the manager reports its first state. */
+  @state() private realtimeConnected: boolean | null = null;
 
   @query('talk-composer') private composer!: TalkComposer;
 
   private previousDocumentTitle = document.title;
   private nextEventOffset: number | null = null;
   private unsubscribeRealtime: (() => void) | null = null;
+  private unsubscribeRealtimeState: (() => void) | null = null;
   private channel: BroadcastChannel | null = null;
   private heartbeatTimer: number | null = null;
   private reloadTimer: number | null = null;
@@ -398,6 +412,9 @@ export class AgentTalkView extends LitElement {
 
   private async loadEvents(sessionId: string): Promise<void> {
     this.loadingEvents = true;
+    // Approvals are read with the transcript, not after it: whether the agent
+    // is blocked is the first thing an operator looks for on a live session.
+    void this.loadApprovals();
     try {
       const [events, activity] = await Promise.all([
         getRuntimeSessionGatewayEvents(sessionId, {
@@ -473,10 +490,25 @@ export class AgentTalkView extends LitElement {
       unifiedWebSocketManager.subscribe('agent_control', (message) =>
         this.handleActivity(message)
       ),
+      // Approvals have their own topic: a session blocked on a decision emits
+      // no gateway or session traffic at all, so without this the operator is
+      // not told until they happen to reload.
+      unifiedWebSocketManager.subscribe('approvals', (message) =>
+        this.handleApprovalActivity(message)
+      ),
     ];
     this.unsubscribeRealtime = () => {
       for (const unsubscribe of unsubscribers) unsubscribe();
+      this.unsubscribeRealtimeState?.();
+      this.unsubscribeRealtimeState = null;
     };
+    this.unsubscribeRealtimeState = unifiedWebSocketManager.onStateChange(
+      (state) => {
+        this.realtimeConnected = state === ConnectionState.CONNECTED;
+      }
+    );
+    this.realtimeConnected =
+      unifiedWebSocketManager.getState() === ConnectionState.CONNECTED;
     void unifiedWebSocketManager.connect();
   }
 
@@ -503,6 +535,57 @@ export class AgentTalkView extends LitElement {
     this.scheduleReload();
   }
 
+  /**
+   * An approval was created or resolved for a session this page may be showing.
+   *
+   * Scoped to the followed session and re-read from the server rather than
+   * patched in place: the realtime payload deliberately carries no tool
+   * arguments, so the client cannot decide a row's status on its own.
+   */
+  private handleApprovalActivity(message: {
+    payload?: Record<string, unknown>;
+    runtime_session_id?: string;
+  }): void {
+    const payload = message?.payload ?? {};
+    const sessionId =
+      (payload.runtime_session_id as string | undefined) ??
+      message?.runtime_session_id;
+    if (!sessionId || sessionId !== this.sessionId) return;
+    void this.loadApprovals();
+  }
+
+  /**
+   * Read the followed session's pending approvals.
+   *
+   * A failure is logged, not surfaced: approvals are one input to the activity
+   * line, and losing them must not break the conversation underneath.
+   */
+  private async loadApprovals(): Promise<void> {
+    const sessionId = this.sessionId;
+    if (!sessionId) return;
+    try {
+      const rows = await listApprovalRequests({
+        runtime_session_id: sessionId,
+        status: 'pending',
+        limit: 100,
+      });
+      if (this.sessionId !== sessionId) return;
+      this.pendingApprovals = (rows as Array<Record<string, unknown>>).map(
+        (row) => ({
+          id: String(row.id),
+          status: String(row.status ?? 'pending'),
+          requested_at:
+            typeof row.requested_at === 'string' ? row.requested_at : undefined,
+        })
+      );
+    } catch (error) {
+      // Deliberately not surfaced: the conversation underneath is still
+      // readable. The previously known set is kept, so the line can be briefly
+      // stale rather than wrongly claiming nothing is waiting.
+      console.error('Failed to refresh session approvals:', error);
+    }
+  }
+
   /** Test seam: feed one realtime message without a socket. */
   public receiveActivity(message: { payload?: Record<string, unknown> }): void {
     this.handleActivity(message);
@@ -512,6 +595,8 @@ export class AgentTalkView extends LitElement {
     this.sessionId = sessionId;
     this.events = [];
     this.activity = [];
+    // Another session's pending asks must never linger under this one.
+    this.pendingApprovals = [];
     void this.load().then(() => this.announceFollow());
   }
 
@@ -616,7 +701,9 @@ export class AgentTalkView extends LitElement {
       <session-chat-view
         scrollable
         followLive
+        @session-live-reload=${() => this.scheduleReload()}
         .sessionId=${this.sessionId || ''}
+        .ended=${Boolean(this.sessions.find((session) => session.id === this.sessionId)?.ended_at)}
         @browser-step-open=${(event: CustomEvent<{ key: string }>) => {
           this.browserStepViewerIndex = sortBrowserSteps(
             this.activity
@@ -624,6 +711,8 @@ export class AgentTalkView extends LitElement {
         }}
         .events=${this.events}
         .activity=${this.activity}
+        .pendingApprovals=${this.pendingApprovals}
+        .connected=${this.realtimeConnected ?? true}
         .pending=${this.pending}
         .loading=${this.loadingEvents && !this.events.length}
         .hasMoreEvents=${this.hasMoreEvents}

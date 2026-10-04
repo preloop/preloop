@@ -21,6 +21,12 @@ from preloop.models.crud import (
     crud_comment,
     crud_tracker,
 )
+from preloop.models.crud.project import (
+    REPOSITORY_ID_TRACKER_TYPES,
+    find_same_repository_projects,
+    lock_repository_identity,
+    repository_host,
+)
 from preloop.models.db.session import release_transaction
 from preloop.models.models import (
     Issue,
@@ -133,6 +139,15 @@ class TrackerClient:
             from ..trackers.jira import JiraTracker
 
             self.client = JiraTracker(
+                tracker.id, tracker.resolved_api_key, connection_details
+            )
+        elif self.tracker_type == "bitbucket_dc":
+            from ..trackers.bitbucket_dc import BitbucketDCTracker
+
+            connection_details["auth_type"] = (
+                getattr(tracker, "auth_type", None) or "api_token"
+            )
+            self.client = BitbucketDCTracker(
                 tracker.id, tracker.resolved_api_key, connection_details
             )
         elif self.tracker_type == "bitbucket":
@@ -294,10 +309,51 @@ class TrackerClient:
                     account_id=self.tracker.account_id,
                 )
                 if existing_project:
+                    # Same repository ID: this picks up renames. Merge rather
+                    # than replace meta_data so Preloop-owned keys such as
+                    # the repository transfer history survive a refresh.
+                    if isinstance(proj_create_data.get("meta_data"), dict):
+                        proj_create_data["meta_data"] = {
+                            **(existing_project.meta_data or {}),
+                            **proj_create_data["meta_data"],
+                        }
                     project = crud_project.update(
                         db, db_obj=existing_project, obj_in=proj_create_data
                     )
                 else:
+                    org_tracker = organization.tracker
+                    if org_tracker.tracker_type in REPOSITORY_ID_TRACKER_TYPES:
+                        # Serialize with API creates/transfers of this repo;
+                        # released by the commit in crud_project.create.
+                        lock_repository_identity(
+                            db,
+                            account_id=self.tracker.account_id,
+                            host=repository_host(org_tracker),
+                            identifier=str(project_identifier),
+                        )
+                    registered = find_same_repository_projects(
+                        db,
+                        organization=organization,
+                        identifier=str(project_identifier),
+                        account_id=self.tracker.account_id,
+                    )
+                    if registered:
+                        # The repository moved here from another organization.
+                        # Creating a second project would split its history
+                        # and make webhook routing ambiguous; rebinding needs
+                        # an authorised, explicit transfer (#1159).
+                        logger.warning(
+                            f"Repository {project_identifier} ({project_name}) is "
+                            f"visible in organization {organization.id} but is "
+                            f"registered as project {registered[0].id} in "
+                            f"organization {registered[0].organization_id}. Not "
+                            "creating a duplicate. Move it with POST "
+                            f"/api/v1/projects/{registered[0].id}/transfer."
+                        )
+                        # Nothing to write: end the transaction so the
+                        # repository lock is not held past this check.
+                        release_transaction(db)
+                        continue
                     project = crud_project.create(db, obj_in=proj_create_data)
                 processed_projects.append(project)
                 # The project resolved, so any unknown-project backoff/degraded
@@ -324,6 +380,9 @@ class TrackerClient:
         force_update: bool = False,
     ) -> Tuple[List[Issue], int]:
         """Scan and update issues for a project."""
+        if self.tracker_type == "bitbucket_dc":
+            # DC is a repository host. Issue sync belongs to the Jira tracker.
+            return [], 0
         logger.info(
             f"Scanning issues for project {project.id} ({project.name}) since {since}"
         )
@@ -381,7 +440,10 @@ class TrackerClient:
                     )
             else:
                 issue_changed = True
-                current_issue_model = crud_issue.create(db, obj_in=xformed_issue_data)
+                # A webhook may insert the same issue concurrently.
+                current_issue_model, _ = crud_issue.upsert(
+                    db, obj_in=xformed_issue_data
+                )
 
             # Process dependencies
             for dep in dependencies:
@@ -510,7 +572,7 @@ async def _process_organization(
         logger.warning(
             "PRELOOP_URL environment variable not set. Skipping webhook registration."
         )
-    else:
+    elif client.tracker_type != "bitbucket_dc":
         try:
             webhook_target_path = (
                 f"/api/v1/private/webhooks/{client.tracker_type}/{org.id}"

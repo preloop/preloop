@@ -83,11 +83,16 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # the optimization_gating authorizer (402), never by hiding the UI.
     # setdefault so a plugin that already set the flag keeps its value.
     result["features"].setdefault("session_optimization", True)
+    result["features"].setdefault("chat_connections", True)
 
     # Policies console is available by default. Operators may hide the page;
     # backend policy APIs retain their permission checks. Instance
     # admins bypass the flag in the console shell.
     result["features"].setdefault("policies_console", policies_console_enabled())
+
+    from preloop.utils.bitbucket_dc import bitbucket_dc_enabled
+
+    result["features"]["bitbucket_dc"] = bitbucket_dc_enabled()
 
     # Account capabilities (multiple accounts per person, parent and
     # subaccount trees, tag based access rules) are provided by an extension

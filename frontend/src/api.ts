@@ -44,6 +44,7 @@ import type {
   AccountGovernanceDefaultsResponse,
   SubjectGovernanceConfig,
   SubjectGovernanceResponse,
+  FlowGovernanceResponse,
   AccountGatewayUsageSearchResponse,
   AccountRuntimeSessionDetailResponse,
   AccountRuntimeSessionListResponse,
@@ -52,6 +53,8 @@ import type {
   RuntimeSessionSummary,
   RuntimeSessionUpdateRequest,
   RuntimeSessionActivityListResponse,
+  RuntimeSessionArtifactDescriptor,
+  RuntimeSessionArtifactListResponse,
   RuntimeSessionRequestListResponse,
   RuntimeSessionSummaryInsight,
   SimilarSessionsParams,
@@ -2410,6 +2413,48 @@ export async function updateAgentGovernance(
   return response.json();
 }
 
+function flowGovernanceUrl(flowId: string): string {
+  return `/api/v1/account/governance/flows/${encodeURIComponent(flowId)}`;
+}
+
+export async function getFlowGovernance(
+  flowId: string
+): Promise<FlowGovernanceResponse> {
+  const response = await fetchWithAuth(flowGovernanceUrl(flowId));
+  if (!response.ok) {
+    throw new Error('Failed to fetch flow governance');
+  }
+  return response.json();
+}
+
+export async function updateFlowGovernance(
+  flowId: string,
+  config: SubjectGovernanceConfig
+): Promise<FlowGovernanceResponse> {
+  const response = await fetchWithAuth(flowGovernanceUrl(flowId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to update flow governance');
+  }
+  return response.json();
+}
+
+/** Drop the flow override so it inherits the account policy again. */
+export async function resetFlowGovernance(
+  flowId: string
+): Promise<FlowGovernanceResponse> {
+  const response = await fetchWithAuth(flowGovernanceUrl(flowId), {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to reset flow governance');
+  }
+  return response.json();
+}
+
 export async function getAccountRuntimeSessionDetail(
   runtimeSessionId: string,
   _params: RuntimeSessionDetailParams = {}
@@ -2467,6 +2512,42 @@ export async function getAccountRuntimeSessionActivityTimeline(
     throw new Error('Failed to fetch session activity timeline');
   }
   return response.json();
+}
+
+/** Most artifacts the session header reads (5 pages of the list maximum). */
+export const SESSION_ARTIFACT_LIST_CAP = 1000;
+
+/**
+ * List a session's artifacts (descriptors only, never bytes), following
+ * `next_cursor` up to {@link SESSION_ARTIFACT_LIST_CAP} items. The list route
+ * has no total, so `truncated` says the header count is a lower bound.
+ */
+export async function listRuntimeSessionArtifacts(
+  runtimeSessionId: string
+): Promise<{ items: RuntimeSessionArtifactDescriptor[]; truncated: boolean }> {
+  const items: RuntimeSessionArtifactDescriptor[] = [];
+  let cursor: string | null | undefined = null;
+  do {
+    const query = new URLSearchParams({ limit: '200' });
+    if (cursor) query.set('cursor', cursor);
+    const response = await fetchWithAuth(
+      `/api/v1/runtime-sessions/${encodeURIComponent(
+        runtimeSessionId
+      )}/artifacts?${query.toString()}`
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to list session artifacts (${response.status})`);
+    }
+    const page = (await response.json()) as RuntimeSessionArtifactListResponse;
+    const pageItems = Array.isArray(page?.items) ? page.items : [];
+    items.push(...pageItems);
+    // An empty page or a cursor that does not move ends the walk, so a
+    // misbehaving server cannot keep the console fetching.
+    const next =
+      typeof page?.next_cursor === 'string' ? page.next_cursor : null;
+    cursor = pageItems.length && next !== cursor ? next : null;
+  } while (cursor && items.length < SESSION_ARTIFACT_LIST_CAP);
+  return { items, truncated: Boolean(cursor) };
 }
 
 /**
@@ -5881,9 +5962,17 @@ export async function getApprovalRequest(requestId: string): Promise<any> {
   return response.json();
 }
 
+/**
+ * List approval requests for the current account.
+ *
+ * `runtime_session_id` scopes the list to one agent conversation, which is what
+ * a live session view needs. It is ANDed with the account server-side; a
+ * session belonging to another account simply returns no rows.
+ */
 export async function listApprovalRequests(params?: {
   status?: string;
   execution_id?: string;
+  runtime_session_id?: string;
   limit?: number;
   skip?: number;
 }): Promise<any[]> {
@@ -5891,6 +5980,8 @@ export async function listApprovalRequests(params?: {
   if (params?.status) queryParams.append('status', params.status);
   if (params?.execution_id)
     queryParams.append('execution_id', params.execution_id);
+  if (params?.runtime_session_id)
+    queryParams.append('runtime_session_id', params.runtime_session_id);
   if (params?.limit) queryParams.append('limit', params.limit.toString());
   if (params?.skip) queryParams.append('skip', params.skip.toString());
 
@@ -5952,8 +6043,9 @@ export async function approveRequest(
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(
-      extractErrorMessage(errorData, 'Failed to approve request')
+    throw Object.assign(
+      new Error(extractErrorMessage(errorData, 'Failed to approve request')),
+      { status: response.status, detail: errorData.detail }
     );
   }
   return response.json();
@@ -5973,8 +6065,9 @@ export async function declineRequest(
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(
-      extractErrorMessage(errorData, 'Failed to decline request')
+    throw Object.assign(
+      new Error(extractErrorMessage(errorData, 'Failed to decline request')),
+      { status: response.status, detail: errorData.detail }
     );
   }
   return response.json();

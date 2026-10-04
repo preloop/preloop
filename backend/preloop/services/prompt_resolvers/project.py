@@ -47,12 +47,17 @@ class ProjectResolver(PromptResolver):
             project_identifier = payload.get("project_identifier")
 
         # Query project from database using CRUD layer
+        # The payload is caller-supplied, so only the flow's own account
+        # may be read. No account means nothing can be resolved safely.
         project = None
+        account_id = getattr(context, "account_id", None)
+        if not account_id:
+            project_id = project_identifier = None
         if project_id:
-            project = crud_project.get(context.db, id=project_id)
+            project = crud_project.get(context.db, id=project_id, account_id=account_id)
         elif project_identifier:
             project = crud_project.get_by_identifier(
-                context.db, identifier=project_identifier
+                context.db, identifier=project_identifier, account_id=account_id
             )
 
         if not project:

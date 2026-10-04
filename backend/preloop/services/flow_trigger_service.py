@@ -66,6 +66,31 @@ from preloop.services.issue_triage_trigger import (
 
 logger = logging.getLogger(__name__)
 
+
+def _schedule_now() -> datetime:
+    """Wall-clock time of a schedule tick (patched in tests)."""
+    return datetime.now(timezone.utc)
+
+
+def _previous_fire_iso(raw_schedule: Any, now: datetime) -> str:
+    """Previous fire time of a stored schedule as of ``now``, ISO 8601 UTC.
+
+    An unparseable stored config cannot say when it last fired; the run
+    still gets a window, one minimum interval wide, rather than none.
+    """
+    from preloop.models.schemas.flow import (
+        MIN_SCHEDULE_INTERVAL,
+        parse_schedule_config,
+    )
+
+    try:
+        _, previous = parse_schedule_config(raw_schedule).fire_window(now)
+    except Exception:
+        logger.warning("Could not compute previous fire time", exc_info=True)
+        previous = now - MIN_SCHEDULE_INTERVAL
+    return previous.isoformat()
+
+
 # Maximum number of matrix cells a single trigger may fan out to. Keeps a
 # runaway matrix from creating unbounded executions in one request; the
 # design-partner use case is a 5x3 grid, so 25 leaves headroom.
@@ -2322,6 +2347,36 @@ class FlowTriggerService:
             # Trigger each matching flow
             for flow in flows_to_trigger:
                 try:
+                    employee_binding = (flow.trigger_config or {}).get(
+                        "employee_events"
+                    )
+                    if isinstance(employee_binding, dict):
+                        from preloop.services.employee_events import (
+                            ingest_employee_event,
+                        )
+
+                        subject = self._extract_resource_key(event_data)
+                        if not subject:
+                            raise ValueError(
+                                "Employee tracker event is missing an owned subject"
+                            )
+                        # Created/merged objects have one lifecycle event. Providers
+                        # lacking delivery IDs still get a stable replay identity.
+                        event_id = (
+                            event_data.get("delivery_id") or f"{event_type}:{subject}"
+                        )
+                        await ingest_employee_event(
+                            self.db,
+                            account_id=account_id,
+                            flow_id=flow.id,
+                            source=event_source,
+                            connection_id=str(tracker_id or event_source),
+                            event_id=str(event_id),
+                            kind=event_type,
+                            subject=subject,
+                            payload=event_data.get("payload") or {},
+                        )
+                        continue
                     # One provider delivery, one execution per flow. At-least-
                     # once message delivery (a drained pod naks its in-flight
                     # message, ack_wait expires, a pod dies before acking)
@@ -2589,8 +2644,6 @@ class FlowTriggerService:
             One of "triggered", "skipped_overlap", "suppressed_disabled",
             "suppressed_halted", or "not_scheduled".
         """
-        from datetime import datetime, timezone as dt_timezone
-
         from preloop.models.crud import crud_event
 
         flow = crud_flow.get(self.db, id=str(flow_id))
@@ -2632,7 +2685,9 @@ class FlowTriggerService:
             schedule_config = parse_schedule_config(raw_schedule).model_dump()
         except Exception:
             schedule_config = raw_schedule
-        scheduled_at = datetime.now(dt_timezone.utc).isoformat()
+        now = _schedule_now()
+        scheduled_at = now.isoformat()
+        previous_scheduled_at = _previous_fire_iso(raw_schedule, now)
 
         running = crud_flow_execution.get_running_by_flow(self.db, flow_id=flow.id)
         if running:
@@ -2652,6 +2707,7 @@ class FlowTriggerService:
                     "schedule": schedule_config,
                     "timezone": schedule_config.get("timezone", "UTC"),
                     "scheduled_at": scheduled_at,
+                    "previous_scheduled_at": previous_scheduled_at,
                 },
             )
             return "skipped_overlap"
@@ -2670,6 +2726,17 @@ class FlowTriggerService:
                 "schedule": described_schedule,
                 "timezone": schedule_config.get("timezone", "UTC"),
                 "scheduled_at": scheduled_at,
+                # The window since the previous fire of this schedule, from
+                # its definition: a skipped or failed run still moves it, so
+                # consecutive windows tile time. Catch-up is the run's call,
+                # using last_successful_scheduled_at from history.
+                "previous_scheduled_at": previous_scheduled_at,
+                "window": {"from": previous_scheduled_at, "to": scheduled_at},
+                "last_successful_scheduled_at": (
+                    crud_flow_execution.last_successful_scheduled_at(
+                        self.db, flow_id=flow.id
+                    )
+                ),
             }
         )
         event_data = {

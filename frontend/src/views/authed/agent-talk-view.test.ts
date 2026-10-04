@@ -7,6 +7,10 @@ import { TALK_CHANNEL_NAME } from '../../utils/talk-channel';
 import type { TalkChannelMessage } from '../../utils/talk-channel';
 import { TALK_MESSAGE_SENT_EVENT } from '../../components/talk-composer';
 import type { TalkComposer } from '../../components/talk-composer';
+import {
+  ConnectionState,
+  unifiedWebSocketManager,
+} from '../../services/unified-websocket-manager';
 
 const AGENT = {
   id: 'agent-1',
@@ -78,6 +82,11 @@ describe('agent-talk-view', () => {
         return jsonResponse({ logs: [], pagination: { has_more: false } });
       }
       if (url.includes('/activity')) return jsonResponse({ items: [] });
+      if (url.includes('/approval-requests')) {
+        return jsonResponse(
+          url.includes('runtime_session_id') ? [] : [{ id: 'req-other' }]
+        );
+      }
       if (url.includes('/api/v1/agents/agent-1')) {
         return jsonResponse({ agent: AGENT, sessions: [SESSION] });
       }
@@ -281,6 +290,121 @@ describe('agent-talk-view', () => {
       'talk-composer'
     ) as TalkComposer;
     expect(composer.sourceContext).to.equal('talk-window');
+    el.remove();
+  });
+});
+
+describe('agent-talk-view approvals', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events')) {
+        return jsonResponse({ logs: [], pagination: { has_more: false } });
+      }
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      if (url.includes('/approval-requests')) {
+        return jsonResponse([
+          {
+            id: 'req-1',
+            status: 'pending',
+            requested_at: '2026-10-02T09:00:00Z',
+          },
+        ]);
+      }
+      if (url.includes('/api/v1/agents/agent-1')) {
+        return jsonResponse({ agent: AGENT, sessions: [SESSION] });
+      }
+      return new Response('{}', { status: 200 });
+    });
+  });
+
+  afterEach(() => {
+    sinon.restore();
+    delete (document as unknown as { hidden?: boolean }).hidden;
+  });
+
+  function approvalCalls(): string[] {
+    return fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/approval-requests'));
+  }
+
+  it('scopes the approval read to the followed session, never the account', async () => {
+    const el = document.createElement('agent-talk-view') as AgentTalkView;
+    el.onBeforeEnter({ params: { agentId: 'agent-1' }, search: '' });
+    document.body.append(el);
+    await waitUntil(() => approvalCalls().length > 0);
+
+    const calls = approvalCalls();
+    expect(calls[0]).to.contain('runtime_session_id=sess-1');
+    expect(calls[0]).to.contain('status=pending');
+    el.remove();
+  });
+
+  it('tells the conversation it is waiting on a decision', async () => {
+    const el = document.createElement('agent-talk-view') as AgentTalkView;
+    el.onBeforeEnter({ params: { agentId: 'agent-1' }, search: '' });
+    document.body.append(el);
+    await waitUntil(() => approvalCalls().length > 0);
+    const chat = el.shadowRoot!.querySelector('session-chat-view') as
+      | (HTMLElement & {
+          pendingApprovals?: Array<{ id: string; status: string }>;
+        })
+      | null;
+    expect(chat).to.not.equal(null);
+    // Wait for the state, not for the request: the read is async, so asserting
+    // that a fetch happened can pass a microtask before the render.
+    await waitUntil(() => (chat!.pendingApprovals?.length ?? 0) > 0, '', {
+      timeout: 3000,
+    });
+    expect(chat!.pendingApprovals?.map((row) => row.id)).to.deep.equal([
+      'req-1',
+    ]);
+    el.remove();
+  });
+
+  it('reloads approvals when a flat approval_created event arrives', async () => {
+    const callbacks = new Map<
+      string,
+      (message: Record<string, unknown>) => void
+    >();
+    sinon
+      .stub(unifiedWebSocketManager, 'subscribe')
+      .callsFake((topic: string, callback: (message: unknown) => void) => {
+        callbacks.set(
+          topic,
+          callback as (message: Record<string, unknown>) => void
+        );
+        return () => {
+          callbacks.delete(topic);
+        };
+      });
+    sinon
+      .stub(unifiedWebSocketManager, 'getState')
+      .returns(ConnectionState.CONNECTED);
+    sinon
+      .stub(unifiedWebSocketManager, 'onStateChange')
+      .returns(() => undefined);
+    sinon.stub(unifiedWebSocketManager, 'connect').resolves();
+
+    const el = document.createElement('agent-talk-view') as AgentTalkView;
+    el.onBeforeEnter({ params: { agentId: 'agent-1' }, search: '' });
+    document.body.append(el);
+    await waitUntil(() => approvalCalls().length > 0);
+    const before = approvalCalls().length;
+    const onApproval = callbacks.get('approvals');
+    expect(onApproval, 'approvals subscription').to.not.equal(undefined);
+    onApproval!({
+      type: 'approval_created',
+      runtime_session_id: 'sess-1',
+    });
+    await waitUntil(() => approvalCalls().length > before);
+    expect(approvalCalls().at(-1)).to.contain('runtime_session_id=sess-1');
     el.remove();
   });
 });

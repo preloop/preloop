@@ -13,6 +13,7 @@ from preloop.api.auth import get_current_active_user
 from preloop.models.db.session import get_db_session
 from preloop.utils.permissions import require_permission
 from preloop.models import models
+from preloop.models.models.access_values import BUDGET_SUBJECT_TEAM
 from preloop.services.configuration_gating import authorize_budget_configuration
 from preloop.models.crud.budget_configuration import (
     validate_budget_subject,
@@ -338,7 +339,12 @@ def update_budget_policy(
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
 
-    if policy.subject_type in {"team", "flow"}:
+    if policy.subject_type == BUDGET_SUBJECT_TEAM:
+        raise HTTPException(
+            status_code=400,
+            detail="Team budgets are available with the teams plugin",
+        )
+    if policy.subject_type == "flow":
         raise HTTPException(
             status_code=400,
             detail="This budget scope is not enforced; replace it with an account, model, agent or API-key policy",

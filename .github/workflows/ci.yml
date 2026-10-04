@@ -387,7 +387,7 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
-      # Fixture MCP server for artifact demos and tests (#1091). Outside
+      # Fixture MCP server for artifact tests (#1091). Outside
       # backend/tests, so the backend shards do not collect it.
       - name: warehouse-sim fixture tests
         env:
@@ -476,6 +476,7 @@ jobs:
       DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
       # Explicit opt-in for isolated schema lease/crash/lifecycle fixtures.
       FLOW_FEEDBACK_TEST_DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
+      CHAT_TEST_DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
       OPENAI_API_KEY: mock_key
       ANTHROPIC_API_KEY: mock_key
       PRELOOP_DISABLE_TELEMETRY: "true"
@@ -743,10 +744,15 @@ jobs:
           pip install --no-deps -e .
 
       - name: Run runtime-plugin pytest
+        env:
+          PRELOOP_DISABLE_TELEMETRY: "true"
+          PYTHONPATH: backend:runtime-plugins/nanobot-preloop/src:runtime-plugins/browser-use-preloop/src
         run: |
           pytest -v \
             runtime-plugins/tests \
-            runtime-plugins/hermes-preloop/tests
+            runtime-plugins/hermes-preloop/tests \
+            runtime-plugins/nanobot-preloop/tests \
+            runtime-plugins/browser-use-preloop/tests
 
       - name: Test Pi and DeepSeek Harness plugins
         working-directory: runtime-plugins/harness-preloop

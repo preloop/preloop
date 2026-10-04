@@ -71,13 +71,15 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         # Set created_at explicitly: the DB server_default now() is the
         # transaction timestamp, which ties for same-transaction inserts and
         # would make redelivery order nondeterministic.
+        from preloop.utils.control_credentials import protect_control_credentials
+
         record = AgentControlCommand(
             created_at=datetime.now(timezone.utc).replace(tzinfo=None),
             account_id=account_id,
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             command_id=command_id,
-            envelope=envelope,
+            envelope=protect_control_credentials(envelope),
             status="pending",
             source=source,
             created_by_user_id=created_by_user_id,

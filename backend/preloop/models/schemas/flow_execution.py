@@ -258,7 +258,7 @@ class FlowExecutionBase(BaseModel):
             "succeed: one of runner_conflict, runner_error, model_transient, "
             "model_auth, provider_billing, model_quota (legacy, superseded "
             "by provider_billing), budget_exceeded, model_config, "
-            "no_confirmation, agent_no_progress, setup_failed, "
+            "no_confirmation, agent_no_progress, publication_missing, setup_failed, "
             "verification_failed, verification_blocked, tool_error, "
             "agent_error, model_stream_idle (timed out while the model "
             "stream was silent), timeout, cancelled, "
@@ -343,6 +343,24 @@ class FlowExecutionUpdate(BaseModel):
 
 
 # Pydantic model for representing a FlowExecution in API responses (includes DB fields)
+class ExecutionFollowUp(BaseModel):
+    """A repair execution linked from its publishing execution."""
+
+    id: uuid.UUID
+    status: str
+    start_time: datetime
+
+
+class ExecutionContinuationNavigation(BaseModel):
+    """Navigation shared by a publisher and its review/CI continuations."""
+
+    original_execution_id: uuid.UUID
+    issue_url: Optional[str] = None
+    pr_url: Optional[str] = None
+    follow_ups: List[ExecutionFollowUp] = Field(default_factory=list)
+    follow_ups_truncated: bool = False
+
+
 class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     id: uuid.UUID
     created_at: datetime
@@ -350,6 +368,7 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
 
     # Include flow name for display purposes
     flow_name: Optional[str] = None
+    continuation_navigation: Optional[ExecutionContinuationNavigation] = None
     park: Optional[ExecutionPark] = Field(
         None,
         description=(
@@ -435,6 +454,21 @@ class FlowExecutionListResponse(ExecutionModelProjection):
             "Link to the resource that triggered this execution (e.g. the "
             "pull request or merge request), when the trigger payload "
             "carries one."
+        ),
+    )
+    trigger_subject_ci: Optional[str] = Field(
+        None,
+        description=(
+            "Human-readable CI provider that dispatched this execution (e.g. "
+            "'GitHub Actions'), when a CI job triggered it with a 'ci' "
+            "provenance block. Null for runs a person or webhook started."
+        ),
+    )
+    trigger_subject_ci_url: Optional[str] = Field(
+        None,
+        description=(
+            "Link to the CI run that dispatched this execution, when the CI "
+            "provenance block carries a run URL."
         ),
     )
     runner: ExecutionRunnerSummary = Field(

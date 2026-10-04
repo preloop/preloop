@@ -40,6 +40,7 @@ from preloop.models.crud.agent_control_connection import AgentControlConnectionC
 from preloop.models.db.session import get_db_session
 from preloop.schemas.agent_control import (
     AgentControlCommandResponse,
+    AgentControlCommandStatusResponse,
     AgentControlEnvelope,
     AgentControlEnvelopeType,
     AgentControlInboundEnvelope,
@@ -47,9 +48,11 @@ from preloop.schemas.agent_control import (
     AgentControlSessionActionRequest,
     AgentControlSessionMode,
     AgentControlVoiceTranscriptRequest,
+    RuntimeSessionControlResponse,
 )
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AGENT_CONTROL,
+    ACCOUNT_TOPIC_RUNTIME_SESSIONS,
     build_account_event,
     emit_account_event,
 )
@@ -57,13 +60,16 @@ from preloop.sync.services.event_bus import get_nats_client
 from preloop.services.agent_control_dispatch import (
     CONTROL_NEW_SESSION_UNSUPPORTED_KINDS,
     SUPPORTED_CONTROL_AGENT_KINDS,
+    TERMINAL_COMMAND_DELIVERY_STATES,
     AgentControlDispatchError,
     agent_has_control_config,
     build_operator_envelope,
+    command_delivery_state,
     command_source,
     create_command_history_session,
     dispatch_operator_message,
     persist_and_deliver_command,
+    resolve_session_control_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -642,7 +648,9 @@ async def _send_control_command(
             tzinfo=UTC
         ) <= datetime.now(UTC):
             return None
-        return dict(record.envelope)
+        from preloop.utils.control_credentials import hydrate_control_credentials
+
+        return hydrate_control_credentials(record.envelope)
 
     def mark(db: Session) -> None:
         if control_connection.authorize(db, connection) is not None:
@@ -1403,6 +1411,57 @@ def _command_history_session(
     )
 
 
+#: Live events carry a preview of the operator's message; the timeline row
+#: keeps the stored summary.
+_MAX_LIVE_COMMAND_CHARS = 2000
+
+
+def _emit_operator_command_activity(
+    *,
+    account_id: str,
+    runtime_session_id: str,
+    message: str,
+    status: str,
+    command_id: str,
+    author_display: Optional[str],
+    agent: Any,
+) -> None:
+    """Put an operator command on the session's live stream (#1150).
+
+    The command is already a timeline row (``agent_control_message``); this
+    is the same fact as the ``runtime_session_updated`` event notes and tool
+    calls use, so the console's session view and ``preloop sessions attach``
+    show the new turn as soon as it is sent instead of at the agent's first
+    model or tool call. Never raises.
+    """
+    try:
+        emit_account_event(
+            build_account_event(
+                account_id=account_id,
+                topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+                event_type="runtime_session_updated",
+                payload={
+                    "runtime_session_id": runtime_session_id,
+                    "last_activity_at": datetime.now(UTC).isoformat(),
+                    "activity_type": "agent_control_message",
+                    "status": status,
+                    "summary": message[:_MAX_LIVE_COMMAND_CHARS],
+                    "metadata": {
+                        "kind": "operator_command",
+                        "command_id": command_id,
+                        "sent_by": author_display,
+                        "managed_agent_id": str(agent.id),
+                        "agent_name": agent.display_name,
+                    },
+                },
+                managed_agent_id=str(agent.id),
+                runtime_session_id=runtime_session_id,
+            )
+        )
+    except Exception:  # pragma: no cover - live delivery is best effort
+        logger.debug("Live operator command event failed", exc_info=True)
+
+
 async def _route_managed_agent_prompt(
     *,
     agent_id: str,
@@ -1477,6 +1536,11 @@ async def _route_managed_agent_prompt(
     command_ttl_seconds = dispatched.command_ttl_seconds
 
     history_session = _command_history_session(db, agent=agent, request=request)
+    author_display = (
+        getattr(current_user, "full_name", None)
+        or getattr(current_user, "username", None)
+        or getattr(current_user, "email", None)
+    )
     if history_session is not None:
         crud_runtime_session_activity.log_agent_control_message(
             db,
@@ -1485,6 +1549,10 @@ async def _route_managed_agent_prompt(
             message=request.message,
             status="delivered" if local_delivery else "queued",
             metadata={
+                "kind": "operator_command",
+                # Not "author_*": the activity redactor masks any key that
+                # contains "auth".
+                "sent_by": author_display,
                 "command_id": envelope.message_id,
                 "managed_agent_id": str(agent.id),
                 "agent_name": agent.display_name,
@@ -1499,6 +1567,16 @@ async def _route_managed_agent_prompt(
                 "published": subject is not None,
                 "subject": subject,
             },
+        )
+
+        _emit_operator_command_activity(
+            account_id=str(current_user.account_id),
+            runtime_session_id=str(history_session.id),
+            message=request.message,
+            status="delivered" if local_delivery else "queued",
+            command_id=envelope.message_id,
+            author_display=author_display,
+            agent=agent,
         )
 
     emit_account_event(
@@ -1581,6 +1659,106 @@ async def send_managed_agent_prompt(
         request=request,
         current_user=current_user,
         db=db,
+    )
+
+
+@router.get(
+    "/agents/{agent_id}/control/commands/{command_id}",
+    response_model=AgentControlCommandStatusResponse,
+)
+@require_permission("control_managed_agent")
+def get_managed_agent_command_status(
+    agent_id: str,
+    command_id: str,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AgentControlCommandStatusResponse:
+    """Delivery state of one operator command, for clients that follow it.
+
+    The same permission as sending: whoever may send a command may watch
+    it land. Another agent's command id is a 404, not a leak. A sync
+    handler: FastAPI runs it in the threadpool, off the event loop.
+    """
+    try:
+        agent_uuid = uuid.UUID(agent_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
+        ) from None
+    record = crud_agent_control_command.get_by_command_id(
+        db,
+        account_id=current_user.account_id,
+        managed_agent_id=agent_uuid,
+        command_id=command_id.strip(),
+    )
+    if record is None or record.kind != "command":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
+        )
+    delivery_state, result_status = command_delivery_state(record)
+    return AgentControlCommandStatusResponse(
+        command_id=record.command_id,
+        managed_agent_id=record.managed_agent_id,
+        status=record.status,
+        delivery_state=delivery_state,
+        terminal=delivery_state in TERMINAL_COMMAND_DELIVERY_STATES,
+        result_status=result_status,
+        last_error=record.last_error,
+        created_at=getattr(record, "created_at", None),
+        delivered_at=record.delivered_at,
+        acked_at=record.acked_at,
+        expires_at=record.expires_at,
+    )
+
+
+@router.get(
+    "/runtime-sessions/{runtime_session_id}/control",
+    response_model=RuntimeSessionControlResponse,
+)
+@require_permission("view_runtime_sessions")
+def get_runtime_session_control_mode(
+    runtime_session_id: str,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> RuntimeSessionControlResponse:
+    """Say whether a line typed on this session can start a new agent turn.
+
+    ``preloop sessions attach`` reads this once on attach and again when a
+    command is refused. Sending still goes through the command endpoint and
+    its ``control_managed_agent`` check; this only picks the input mode. A
+    sync handler: FastAPI runs it in the threadpool, off the event loop.
+    """
+    try:
+        uuid.UUID(runtime_session_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runtime session not found",
+        ) from None
+    session = crud_runtime_session.get_account_session(
+        db,
+        account_id=str(current_user.account_id),
+        runtime_session_id=runtime_session_id,
+    )
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Runtime session not found",
+        )
+    decision = resolve_session_control_mode(
+        db, account_id=str(current_user.account_id), session=session
+    )
+    agent = decision.agent
+    return RuntimeSessionControlResponse(
+        runtime_session_id=session.id,
+        mode=decision.mode,
+        reason_code=decision.reason_code,
+        reason=decision.reason,
+        managed_agent_id=agent.id if agent is not None else None,
+        agent_name=agent.display_name if agent is not None else None,
+        agent_kind=(agent.agent_kind or agent.session_source_type)
+        if agent is not None
+        else None,
     )
 
 

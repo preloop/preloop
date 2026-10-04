@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import QueuePool
 
 from preloop.api.endpoints import webhooks
+from preloop.services import issue_intake
 from preloop.sync.scanner.core import TrackerClient
 from preloop.models.crud import crud_issue_embedding
 from preloop.sync import tasks
@@ -206,7 +207,10 @@ async def test_issue_webhook_queues_embedding_work_without_waiting_for_provider(
         id=uuid4(),
         webhook_secret="secret",
         tracker=SimpleNamespace(
-            id=uuid4(), is_active=True, subscribed_events=["Issue Hook"]
+            id=uuid4(),
+            account_id=uuid4(),
+            is_active=True,
+            subscribed_events=["Issue Hook"],
         ),
     )
 
@@ -222,15 +226,12 @@ async def test_issue_webhook_queues_embedding_work_without_waiting_for_provider(
         MagicMock(return_value=SimpleNamespace(id=uuid4(), slug="repo")),
     )
     monkeypatch.setattr(
-        webhooks.crud_issue, "get_by_external_id", MagicMock(return_value=None)
-    )
-    monkeypatch.setattr(
         webhooks.crud_issue,
-        "create",
-        MagicMock(return_value=SimpleNamespace(id=issue_id)),
+        "upsert",
+        MagicMock(return_value=(SimpleNamespace(id=issue_id, title="t"), True)),
     )
     monkeypatch.setattr(
-        webhooks,
+        issue_intake,
         "TrackerClient",
         MagicMock(
             return_value=SimpleNamespace(

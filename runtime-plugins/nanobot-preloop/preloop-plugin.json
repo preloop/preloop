@@ -1,0 +1,13 @@
+{
+  "name": "preloop-nanobot-plugin",
+  "displayName": "Preloop for Nanobot",
+  "version": "0.1.0",
+  "runtime": "nanobot",
+  "entrypoint": "preloop_nanobot_plugin.cli:main",
+  "integration": "standalone-sdk-process",
+  "sdkVersion": "nanobot-ai==0.1.4.post3",
+  "permissions": ["network:wss", "network:https", "agent:send_message", "agent:tool_approval"],
+  "capabilities": {"tool_approval": true, "text": true, "new_session": true, "existing_session": true, "interrupt": true, "voice": false},
+  "configSchema": {"path": "preloop.control", "required": ["control_ws_url", "bearer_token", "runtime_principal_id"]},
+  "verification": {"command": "preloop-nanobot-plugin verify"}
+}

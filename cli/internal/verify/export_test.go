@@ -7,6 +7,9 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"testing"
 )
 
@@ -276,4 +279,95 @@ func TestSomethingThatIsNotAnArchiveIsAnError(t *testing.T) {
 	if _, err := ReadExport([]byte("this is not a tar.gz")); err == nil {
 		t.Fatal("expected an error")
 	}
+}
+
+func TestAnArtifactMemberIsDigestedWithoutBeingHeld(t *testing.T) {
+	previous := maxHeldMemberBytes
+	maxHeldMemberBytes = 1024
+	t.Cleanup(func() { maxHeldMemberBytes = previous })
+	private, _ := testKeyPair(t)
+	screenshot := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 4096)
+	archive := buildExport(t, map[string][]byte{
+		"artifacts/manifest.json":    []byte("[]"),
+		"artifacts/s-1/a-1-shot.png": screenshot,
+	}, private)
+
+	result, err := ReadExportFrom(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ContentOK() {
+		t.Fatalf("problems: %v", result.Problems)
+	}
+	if result.ArchiveSha256 != DigestOfBytes(archive) {
+		t.Fatal("streamed archive digest differs from the digest of the bytes")
+	}
+	found := false
+	for _, member := range result.Members {
+		if member.Name == "artifacts/s-1/a-1-shot.png" {
+			found = member.OK && member.Size == len(screenshot)
+		}
+	}
+	if !found {
+		t.Fatalf("artifact member not verified: %+v", result.Members)
+	}
+}
+
+func TestAStreamPastTheReadBudgetIsRefused(t *testing.T) {
+	previous := maxStreamedBytes
+	maxStreamedBytes = 1024
+	t.Cleanup(func() { maxStreamedBytes = previous })
+	private, _ := testKeyPair(t)
+	archive := buildExport(t, map[string][]byte{
+		"artifacts/s-1/a-1-big.bin": bytes.Repeat([]byte("x"), 4096),
+	}, private)
+
+	if _, err := ReadExportFrom(bytes.NewReader(archive)); err == nil {
+		t.Fatal("an archive past the budget was read")
+	}
+}
+
+// The server refuses exports whose artifacts exceed
+// RETENTION_EXPORT_MAX_ARTIFACT_BYTES (default 2 GiB). The verifier has to
+// read at least that much, or the documented check fails on a valid bundle.
+func TestTheReadBudgetCoversTheServerArtifactCap(t *testing.T) {
+	const serverDefaultArtifactCap int64 = 2 << 30
+	if maxStreamedBytes <= serverDefaultArtifactCap {
+		t.Fatalf("verifier budget %d does not cover the server cap %d", maxStreamedBytes, serverDefaultArtifactCap)
+	}
+}
+
+// untar expands a gzipped tar into memory for tests that repack an archive.
+// It is test-only: the verifier itself streams (ReadExportFrom).
+func untar(archive []byte) (map[string][]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		return nil, fmt.Errorf("not a gzip archive: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	reader := tar.NewReader(gz)
+	members := map[string][]byte{}
+	budget := int64(64 << 20)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("not a tar archive: %w", err)
+		}
+		if header.Typeflag != tar.TypeReg {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(reader, budget+1))
+		if err != nil {
+			return nil, fmt.Errorf("cannot read member %q: %w", header.Name, err)
+		}
+		budget -= int64(len(body))
+		if budget < 0 {
+			return nil, errors.New("archive expands past the size a verifier will hold in memory")
+		}
+		members[header.Name] = body
+	}
+	return members, nil
 }

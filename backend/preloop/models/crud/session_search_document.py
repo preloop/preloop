@@ -43,6 +43,7 @@ from sqlalchemy import (
     union_all,
     update,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -59,6 +60,7 @@ from ..models.session_search_document import (
     EMBEDDING_STATE_PENDING,
     REDACTION_STATE_CLEAR,
     REDACTION_STATE_WITHHELD,
+    SOURCE_KIND_ARTIFACT,
     TEXT_RETURNABLE_REDACTION_STATES,
     SessionSearchDocument,
 )
@@ -100,6 +102,17 @@ MULTI_CHUNK_BONUS_WEIGHT = 0.15
 #: its opening words instead, which is what a semantic hit has to show.
 HEADLINE_OPTIONS = (
     "StartSel=<mark>, StopSel=</mark>, "
+    "MaxWords=35, MinWords=10, ShortWord=3, "
+    "MaxFragments=2, FragmentDelimiter= ... "
+)
+
+#: Hit markers of :meth:`CRUDSessionSearchDocument.artifact_excerpts`. Control
+#: characters rather than ``<mark>`` so a caller can turn them into offsets
+#: without confusing them with markup that is part of the artifact text.
+EXCERPT_START = "\x02"
+EXCERPT_STOP = "\x03"
+EXCERPT_HEADLINE_OPTIONS = (
+    f"StartSel={EXCERPT_START}, StopSel={EXCERPT_STOP}, "
     "MaxWords=35, MinWords=10, ShortWord=3, "
     "MaxFragments=2, FragmentDelimiter= ... "
 )
@@ -236,6 +249,12 @@ class SessionSearchFilters:
     api_key_id: Optional[Any] = None
     flow_id: Optional[Any] = None
     source_kind: Optional[str] = None
+    #: Artifact kind (``transcript``, ``document``, ...). Setting it, or
+    #: ``artifact_labels``, restricts the search to artifact chunks.
+    artifact_kind: Optional[str] = None
+    #: JSONB containment terms over the artifact labels, ANDed: each one is
+    #: ``{key: value}`` or ``{"tags": [value]}``.
+    artifact_labels: Optional[List[Dict[str, Any]]] = None
 
 
 @dataclass
@@ -258,6 +277,7 @@ class RankedSnippet:
     rank: float
     redaction_state: str
     text: Optional[str] = None
+    meta_data: Optional[Dict[str, Any]] = None
     match_reason: MatchReason = MATCH_REASON_KEYWORD
     similarity: Optional[float] = None
 
@@ -280,6 +300,7 @@ class VectorChunkHit:
     role: Optional[str]
     redaction_state: str
     similarity: float
+    meta_data: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -927,6 +948,14 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             conditions.append(SessionSearchDocument.flow_id == active.flow_id)
         if active.source_kind:
             conditions.append(SessionSearchDocument.source_kind == active.source_kind)
+        if active.artifact_kind or active.artifact_labels:
+            conditions.append(SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT)
+        if active.artifact_kind:
+            conditions.append(
+                SessionSearchDocument.meta_data["kind"].astext == active.artifact_kind
+            )
+        for term in active.artifact_labels or ():
+            conditions.append(SessionSearchDocument.meta_data["labels"].contains(term))
         return conditions
 
     def _match_conditions(
@@ -1123,6 +1152,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             SessionSearchDocument.occurred_at.label("occurred_at"),
             SessionSearchDocument.role.label("role"),
             SessionSearchDocument.redaction_state.label("redaction_state"),
+            SessionSearchDocument.meta_data.label("meta_data"),
             chunk_rank.label("rank"),
             func.row_number()
             .over(
@@ -1175,6 +1205,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 windowed.c.occurred_at,
                 windowed.c.role,
                 windowed.c.redaction_state,
+                windowed.c.meta_data,
                 windowed.c.rank,
                 headline.label("snippet"),
             )
@@ -1199,6 +1230,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                     role=row.role,
                     rank=float(row.rank or 0.0),
                     redaction_state=row.redaction_state,
+                    meta_data=row.meta_data,
                     text=(
                         row.snippet
                         if include_text
@@ -1329,6 +1361,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 SessionSearchDocument.occurred_at.label("occurred_at"),
                 SessionSearchDocument.role.label("role"),
                 SessionSearchDocument.redaction_state.label("redaction_state"),
+                SessionSearchDocument.meta_data.label("meta_data"),
                 similarity,
             )
             .where(*conditions)
@@ -1346,6 +1379,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 role=row.role,
                 redaction_state=row.redaction_state,
                 similarity=float(row.similarity or 0.0),
+                meta_data=row.meta_data,
             )
             for row in rows
         ]
@@ -2089,3 +2123,113 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             .scalar()
             or 0
         )
+
+    def artifact_excerpts(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        artifact_ids: Sequence[Any],
+        query: str,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Tuple[str, Optional[float]]]:
+        """Best matching chunk of each artifact as a highlighted excerpt.
+
+        Used by the account artifact search (#1086). Only chunks in
+        :data:`TEXT_RETURNABLE_REDACTION_STATES` are read, so a withheld
+        chunk never produces an excerpt; chunk text was already redacted
+        when it was indexed.
+
+        Args:
+            db: Database session.
+            account_id: Account the caller is allowed to read.
+            artifact_ids: Artifacts of the current page.
+            query: Raw search text, parsed with ``websearch_to_tsquery``.
+            headers: ``artifact_id -> header`` as the indexer wrote it at the
+                top of the first chunk (kind, name, tool and label lines).
+                A chunk that starts with exactly that text has it removed, so
+                the excerpt shows the artifact's own text. The match is on
+                the whole header string, never on line prefixes, so body
+                lines that look like metadata are kept.
+
+        Returns:
+            ``artifact_id -> (headline, cue_start)``. The headline marks hits
+            with :data:`EXCERPT_START` and :data:`EXCERPT_STOP`. Artifacts
+            without a matching returnable chunk, or whose only text is the
+            metadata header, are absent.
+        """
+        normalized = normalize_query(query)
+        ids = [str(value) for value in artifact_ids]
+        if not normalized or not ids:
+            return {}
+        tsquery = func.websearch_to_tsquery(SEARCH_CONFIG, normalized)
+        ranked = (
+            select(
+                SessionSearchDocument.source_id,
+                SessionSearchDocument.content,
+                SessionSearchDocument.meta_data,
+                func.row_number()
+                .over(
+                    partition_by=SessionSearchDocument.source_id,
+                    order_by=(
+                        func.ts_rank_cd(
+                            SessionSearchDocument.search_vector, tsquery
+                        ).desc(),
+                        SessionSearchDocument.chunk_index.asc(),
+                    ),
+                )
+                .label("position"),
+            )
+            .where(
+                SessionSearchDocument.account_id == account_id,
+                SessionSearchDocument.source_kind == SOURCE_KIND_ARTIFACT,
+                SessionSearchDocument.source_id.in_(ids),
+                SessionSearchDocument.redaction_state.in_(
+                    TEXT_RETURNABLE_REDACTION_STATES
+                ),
+                SessionSearchDocument.search_vector.op("@@")(tsquery),
+            )
+            .subquery()
+        )
+        best = db.execute(
+            select(ranked.c.source_id, ranked.c.content, ranked.c.meta_data).where(
+                ranked.c.position == 1
+            )
+        ).all()
+        if not best:
+            return {}
+        bodies: List[str] = []
+        for source_id, content, _meta in best:
+            text_value = content or ""
+            header = (headers or {}).get(str(source_id))
+            if header and text_value.startswith(header):
+                text_value = text_value[len(header) :].lstrip("\n")
+            bodies.append(text_value)
+        texts = (
+            func.unnest(cast(bodies, ARRAY(Text)))
+            .table_valued("value", with_ordinality="position")
+            .render_derived(name="excerpt_body")
+        )
+        headlines = db.execute(
+            select(
+                texts.c.position,
+                func.ts_headline(
+                    SEARCH_CONFIG, texts.c.value, tsquery, EXCERPT_HEADLINE_OPTIONS
+                ),
+            )
+        ).all()
+        by_position = {int(position): headline for position, headline in headlines}
+        rows = [
+            (source_id, by_position.get(index + 1), meta)
+            for index, (source_id, _content, meta) in enumerate(best)
+        ]
+        out: Dict[str, Tuple[str, Optional[float]]] = {}
+        for source_id, headline, meta in rows:
+            if not (headline or "").strip():
+                continue
+            cue = (meta or {}).get("cue_start")
+            out[str(source_id)] = (
+                headline or "",
+                float(cue) if isinstance(cue, (int, float)) else None,
+            )
+        return out

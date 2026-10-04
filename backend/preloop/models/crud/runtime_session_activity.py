@@ -275,6 +275,62 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             db.flush()
         return True
 
+    def log_artifact(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        api_key_id: Optional[Any],
+        title: str,
+        producer: str,
+        tool_name: Optional[str],
+        metadata: dict[str, Any],
+        commit: bool = True,
+    ) -> RuntimeSessionActivity:
+        """Add the timeline row for one stored artifact.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Session the artifact belongs to.
+            api_key_id: Credential that deposited it, if any.
+            title: Timeline title, ``"{kind} {name}"``.
+            producer: Ingest path, stored as ``server_name``.
+            tool_name: Tool that produced the artifact, when known.
+            metadata: Row metadata, ``{"artifact": {...}}``.
+            commit: Whether to commit. The deposit service passes ``False``
+                and commits the artifact and this row together.
+
+        Returns:
+            The new activity row.
+        """
+        now = datetime.now(timezone.utc)
+        db_obj = RuntimeSessionActivity(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            api_key_id=api_key_id,
+            activity_type="artifact",
+            server_name=producer,
+            tool_name=tool_name,
+            status="success",
+            summary=title,
+            metadata_=sanitize_for_jsonb(metadata),
+            timestamp=now,
+        )
+        db.add(db_obj)
+        db.flush()
+        self._touch_runtime_session_and_agent(
+            db,
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            activity_timestamp=now,
+        )
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        return db_obj
+
     def log_browser_step(
         self,
         db: Session,
@@ -521,7 +577,8 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         timestamp: Optional[datetime] = None,
         commit: bool = True,
     ) -> RuntimeSessionActivity:
-        """Persist one operator-to-agent control message."""
+        """Persist one operator-to-agent control message with secret-free metadata."""
+        metadata = redact_dict(metadata) if metadata else metadata
         activity_timestamp = timestamp or datetime.now(timezone.utc)
         summary = message[:MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN]
         db_obj = RuntimeSessionActivity(

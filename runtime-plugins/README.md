@@ -34,3 +34,12 @@ Packages:
 - `harness-preloop`: `@preloop-ai/harness-plugin` (npm), Pi extensions and
   DeepSeek Harness Cordis plugins for MCP, approvals, lifecycle hooks, and
   active-session remote control. Also used by ephemeral flow workers.
+
+- `nanobot-preloop`: standalone pinned Nanobot SDK process, owned bounded
+  conversations, gateway model/MCP routing and enforced native approvals.
+  See [setup and limits](nanobot-preloop/README.md).
+
+- `browser-use-preloop`: `preloop-browser-use` (pip install from this
+  path), a Browser Use `on_step_end` callback that reports each step and
+  its screenshot to the runtime session timeline. See
+  [the README](browser-use-preloop/README.md).

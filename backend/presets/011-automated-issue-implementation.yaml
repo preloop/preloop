@@ -12,7 +12,8 @@ trigger_event_source: null
 # comment_created is correlated in the trigger service to a pull request this
 # flow opened, so unrelated comments never start a cold run. Pair this with
 # trigger_config to decide which issues qualify, for example
-# {"labels": ["agent-ready"]}.
+# {"labels": ["agent-ready"]}. The Issue Triage Assistant can apply that label
+# itself when its agent_config.dispatch policy is met (see issue-triage.md).
 trigger_event_types:
   - issue_labeled
   - comment_created
@@ -144,6 +145,8 @@ prompt_template: |
      with `-x` and `-q`. Do not use parallel test workers. Stop at the first
      failure and address it before starting another batch. Leave full-suite
      and broad category coverage to CI, and record that scope in the summary.
+     Run browser tests with `--concurrency 1`; do not launch checks in the
+     background or start a second check before the first process has exited.
      Never run the same suite again just to confirm a pass.
   4. If a check cannot run in this environment (a missing database, a
      missing network service, a missing secret), do not fake it. Record
@@ -174,6 +177,9 @@ prompt_template: |
      modules under the same memory limit as the first run. Repeat checks when
      code or inputs change, failures persist or evidence is inconclusive; do
      not rerun unrelated suites merely because another message arrived.
+     The first-run test scope and sequential-process rules apply here too:
+     directly affected files only, browser `--concurrency 1`, no background
+     checks, and no repository-wide or broad category suites. CI owns those.
      Required invariant checks and the trusted publication gate still apply.
   4. Commit locally. Do not create a new branch and do not open a second
      pull request.

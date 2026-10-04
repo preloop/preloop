@@ -8,7 +8,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, String, func
+from sqlalchemy import (
+    ForeignKey,
+    ForeignKeyConstraint,
+    UniqueConstraint,
+    CheckConstraint,
+    Integer,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import DateTime, Text
@@ -30,6 +38,68 @@ class OAuthToken(Base):
     """
 
     __tablename__ = "oauth_token"
+
+    __table_args__ = (
+        UniqueConstraint("id", "account_id", name="uq_oauth_token_tenant"),
+        UniqueConstraint("tracker_id", name="uq_oauth_token_tracker"),
+        ForeignKeyConstraint(
+            ["tracker_id", "account_id"],
+            ["tracker.id", "tracker.account_id"],
+            name="fk_oauth_grant_tracker_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["configuration_id", "account_id"],
+            [
+                "oauth_provider_configuration.id",
+                "oauth_provider_configuration.account_id",
+            ],
+            name="fk_oauth_grant_configuration_tenant",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["connection_transaction_id", "account_id"],
+            [
+                "oauth_connection_transaction.id",
+                "oauth_connection_transaction.account_id",
+            ],
+            name="fk_oauth_grant_transaction_tenant",
+            ondelete="CASCADE",
+            use_alter=True,
+        ),
+        CheckConstraint("rotation_version >= 0", name="ck_oauth_rotation_version"),
+        CheckConstraint(
+            "auth_mode IS NULL OR (auth_mode = 'managed_oauth' AND "
+            "configuration_id IS NOT NULL AND configuration_version IS NOT NULL AND "
+            "provider_subject IS NOT NULL AND canonical_instance IS NOT NULL AND "
+            "installation_id IS NULL AND status IS NOT NULL AND configuration_version > 0 AND status IN ('pending', 'active', 'disconnected', 'invalidated') AND "
+            "((status = 'pending' AND connection_transaction_id IS NOT NULL AND tracker_id IS NULL) OR "
+            "(status = 'active' AND tracker_id IS NOT NULL) OR status IN ('disconnected', 'invalidated')))",
+            name="ck_oauth_managed_grant",
+        ),
+    )
+
+    auth_mode: Mapped[Optional[str]] = mapped_column(String(50))
+    tracker_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    configuration_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    configuration_version: Mapped[Optional[int]] = mapped_column(Integer)
+    connection_transaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True)
+    )
+    provider_subject: Mapped[Optional[str]] = mapped_column(String(1000))
+    canonical_instance: Mapped[Optional[str]] = mapped_column(String(1000))
+    status: Mapped[Optional[str]] = mapped_column(String(30))
+    rotation_version: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+
+    def to_dict(self) -> dict:
+        """Return metadata only; never serialize encrypted credentials."""
+        return {
+            key: value
+            for key, value in super().to_dict().items()
+            if key not in {"access_token_encrypted", "refresh_token_encrypted"}
+        }
 
     # Provider identification
     provider: Mapped[str] = mapped_column(
@@ -66,12 +136,12 @@ class OAuthToken(Base):
 
     # Token expiration
     expires_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
         comment="When the access token expires",
     )
     refresh_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
         comment="When the refresh token expires",
     )

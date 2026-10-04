@@ -270,4 +270,18 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert share_tag_rule.down_revision == "20260928_person_constraints"
     issue_cost_accuracy = script.get_revision("20260927_issue_cost_accuracy")
     assert issue_cost_accuracy.down_revision == "20260928_share_tag_rule"
-    assert script.get_heads() == ["20260927_issue_cost_accuracy"]
+    artifact_kinds = script.get_revision("20261001_artifact_kinds_labels")
+    assert artifact_kinds.down_revision == "20260927_issue_cost_accuracy"
+    session_cwd = script.get_revision("20261002_runtime_session_cwd")
+    assert session_cwd.down_revision == "20261001_artifact_kinds_labels"
+    resume_root_idx = script.get_revision("20261003_resume_root_idx")
+    assert resume_root_idx.down_revision == "20261002_runtime_session_cwd"
+    managed_oauth = script.get_revision("20261002_managed_oauth")
+    assert managed_oauth.down_revision == "20261003_resume_root_idx"
+    chat_connections = script.get_revision("20261002_chat_connections")
+    assert chat_connections.down_revision == "20261002_managed_oauth"
+    issue_extid = script.get_revision("20261003_issue_extid_unique")
+    assert issue_extid.down_revision == "20261002_chat_connections"
+    artifact_created = script.get_revision("20261004_artifact_created_idx")
+    assert artifact_created.down_revision == "20261003_issue_extid_unique"
+    assert script.get_heads() == ["20261004_artifact_created_idx"]

@@ -1212,6 +1212,31 @@ class TestPostWebhookNotification:
         assert set(actions) == {"review", "approve", "decline", "view"}
         assert len(set(actions.values())) == 1
 
+    async def test_post_webhook_carries_callable_decision_urls(
+        self,
+        monkeypatch,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+    ):
+        """A receiving system gets POST URLs it can call to decide (issue 1128)."""
+        from urllib.parse import urlsplit
+
+        sample_approval_workflow.approval_type = "webhook"
+        captured = self._queue(monkeypatch)
+
+        await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
+
+        decision = captured["payload"]["decision"]
+        assert decision["method"] == "POST"
+        for key, route in (("approve_url", "approve"), ("decline_url", "decline")):
+            parts = urlsplit(decision[key])
+            # The token routes in public_approval.py, token in the query.
+            assert parts.path == f"/approval/{sample_approval_request.id}/{route}"
+            assert parts.query == f"token={sample_approval_request.approval_token}"
+
     async def test_post_webhook_with_agent_reasoning(
         self,
         monkeypatch,

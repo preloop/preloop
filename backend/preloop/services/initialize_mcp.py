@@ -5,12 +5,14 @@ preloop.tools.builtin_defs (and BUILTIN_TOOLS in tools.py).
 """
 
 import logging
+import weakref
 from copy import deepcopy
 from typing import Any, Literal, Optional
 from uuid import UUID
 
 from fastmcp import Context
 from fastmcp.tools import FunctionTool
+from fastmcp.tools.tool import ToolResult
 
 from preloop.services.approval_helper import require_approval
 from preloop.services.dynamic_fastmcp import (
@@ -22,6 +24,9 @@ from preloop.services.dynamic_fastmcp import (
 )
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
+    DEPOSIT_ARTIFACT_TOOL,
+    GET_ARTIFACT_TOOL,
+    SEARCH_ARTIFACTS_TOOL,
     GET_EXECUTION_TOOL,
     GET_ISSUE_DESCRIPTION,
     GET_ISSUE_SCHEMA,
@@ -80,6 +85,14 @@ class CancelScopeErrorFilter(logging.Filter):
             return True
 
         return False
+
+
+def _artifact_block(block: dict):
+    """Validate one shared-mapping block dict into an MCP ``ContentBlock``."""
+    from mcp.types import ContentBlock
+    from pydantic import TypeAdapter
+
+    return TypeAdapter(ContentBlock).validate_python(block)
 
 
 def initialize_mcp_with_tools() -> DynamicFastMCP:
@@ -211,6 +224,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         expected_revision: str | None = None,
         assessment: str | None = None,
         complexity_label: str | None = None,
+        risk_label: str | None = None,
+        readiness_label: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Apply the configured approval policy before updating an issue."""
@@ -235,6 +250,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             "expected_revision": expected_revision,
             "assessment": assessment,
             "complexity_label": complexity_label,
+            "risk_label": risk_label,
+            "readiness_label": readiness_label,
         }
 
         # Check approval with streaming
@@ -1370,6 +1387,201 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     search_sessions_tool.parameters = deepcopy(SEARCH_SESSIONS_TOOL["schema"])
     mcp.add_tool(search_sessions_tool)
 
+    # Register Tool 7h: deposit_artifact (shared metadata:
+    # tools.builtin_defs.DEPOSIT_ARTIFACT_TOOL). An agent stores a file, image
+    # or text on its own runtime session (#1081). The session comes from the
+    # session-bound credential; storage, the timeline row and every error
+    # code are the #1080 deposit service, via services.artifact_mcp_tools.
+    async def deposit_artifact(
+        content: dict,
+        name: str,
+        kind: str | None = None,
+        labels: dict | None = None,
+        parent_artifact_id: str | None = None,
+        activity_id: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Store one MCP content block as an artifact on the caller's session.
+
+        Returns:
+            A CallToolResult with a resource_link to the artifact and the
+            artifact descriptor as structuredContent, or a tool error whose
+            text starts with the stable error code.
+        """
+        from mcp.types import ResourceLink, TextContent
+
+        from preloop.models.db import session as db_session_module
+        from preloop.services import artifact_mcp_tools
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+        from anyio import to_thread
+
+        user_context = get_current_user_context()
+        if not user_context:
+            outcome = artifact_mcp_tools.error(artifact_mcp_tools.ERROR_NO_SESSION)
+        else:
+            arguments = {
+                "content": content,
+                "name": name,
+                "kind": kind,
+                "labels": labels,
+                "parent_artifact_id": parent_artifact_id,
+                "activity_id": activity_id,
+            }
+            approved, denial = await require_approval(
+                tool_name=DEPOSIT_ARTIFACT_TOOL["name"],
+                tool_source="builtin",
+                account_id=user_context.account_id,
+                arguments={k: v for k, v in arguments.items() if k != "content"},
+                ctx=ctx,
+                workflow_id=_rule_workflow_id_var.get(None),
+                correlation_id=_correlation_id_var.get(None),
+                justification=_justification_var.get(None),
+            )
+            if not approved:
+                return ToolResult(
+                    content=[TextContent(type="text", text=str(denial))],
+                    is_error=True,
+                )
+
+            def _run():
+                db = next(db_session_module.get_db_session())
+                try:
+                    return artifact_mcp_tools.deposit_from_mcp(
+                        db, user_context=user_context, arguments=arguments
+                    )
+                finally:
+                    db.close()
+
+            outcome = await to_thread.run_sync(_run)
+
+        blocks: list = [TextContent(type="text", text=outcome.text)]
+        if outcome.content_block is not None:
+            blocks = [ResourceLink.model_validate(outcome.content_block)]
+        return ToolResult(
+            content=blocks,
+            structured_content=outcome.structured,
+            is_error=outcome.is_error,
+        )
+
+    deposit_artifact_tool = FunctionTool.from_function(
+        deposit_artifact,
+        description=DEPOSIT_ARTIFACT_TOOL["description"],
+        output_schema=None,
+    )
+    deposit_artifact_tool.parameters = deepcopy(DEPOSIT_ARTIFACT_TOOL["schema"])
+    mcp.add_tool(deposit_artifact_tool)
+
+    # Register Tools 7i/7j: search_artifacts and get_artifact (shared
+    # metadata: tools.builtin_defs.SEARCH_ARTIFACTS_TOOL / GET_ARTIFACT_TOOL).
+    # The read half of the artifact tools (#1104). Scope (own sessions, or
+    # the account with artifact_search.account_scope), the MCP block
+    # mapping and the audit row all live in services.agent_artifact_read.
+    async def _run_artifact_read(
+        tool_name: str, arguments: dict, ctx: Optional[Context]
+    ) -> ToolResult:
+        from mcp.types import TextContent
+
+        from anyio import to_thread
+        from preloop.models.db import session as db_session_module
+        from preloop.services import agent_artifact_read
+        from preloop.services.dynamic_fastmcp_http import get_current_user_context
+
+        user_context = get_current_user_context()
+        if not user_context:
+            return ToolResult(
+                content=[TextContent(type="text", text="Error: No user context")],
+                is_error=True,
+            )
+        approved, denial = await require_approval(
+            tool_name=tool_name,
+            tool_source="builtin",
+            account_id=user_context.account_id,
+            arguments=arguments,
+            ctx=ctx,
+            workflow_id=_rule_workflow_id_var.get(None),
+            correlation_id=_correlation_id_var.get(None),
+            justification=_justification_var.get(None),
+        )
+        if not approved:
+            return ToolResult(
+                content=[TextContent(type="text", text=str(denial))], is_error=True
+            )
+        caller = agent_artifact_read.Caller.from_user_context(user_context)
+        run = (
+            agent_artifact_read.search
+            if tool_name == SEARCH_ARTIFACTS_TOOL["name"]
+            else agent_artifact_read.get
+        )
+
+        def _run():
+            db = next(db_session_module.get_db_session())
+            try:
+                return run(db, caller=caller, arguments=arguments)
+            finally:
+                db.close()
+
+        outcome = await to_thread.run_sync(_run)
+        return ToolResult(
+            content=[_artifact_block(block) for block in outcome.content()],
+            structured_content=outcome.structured,
+            is_error=outcome.is_error,
+        )
+
+    async def search_artifacts(
+        q: str | None = None,
+        kind: list[str] | None = None,
+        labels: dict | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        scope: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Find artifacts by kind, labels and time window, scoped to the caller."""
+        arguments = {
+            "q": q,
+            "kind": kind,
+            "labels": labels,
+            "since": since,
+            "until": until,
+            "scope": scope,
+            "limit": limit,
+            "cursor": cursor,
+        }
+        return await _run_artifact_read(
+            SEARCH_ARTIFACTS_TOOL["name"],
+            {k: v for k, v in arguments.items() if v is not None},
+            ctx,
+        )
+
+    search_artifacts_tool = FunctionTool.from_function(
+        search_artifacts,
+        description=SEARCH_ARTIFACTS_TOOL["description"],
+        output_schema=None,
+    )
+    search_artifacts_tool.parameters = deepcopy(SEARCH_ARTIFACTS_TOOL["schema"])
+    mcp.add_tool(search_artifacts_tool)
+
+    async def get_artifact(
+        artifact_id: str,
+        max_bytes: int | None = None,
+        ctx: Optional[Context] = None,
+    ) -> ToolResult:
+        """Read one artifact in the caller's scope as an MCP content block."""
+        arguments: dict = {"artifact_id": artifact_id}
+        if max_bytes is not None:
+            arguments["max_bytes"] = max_bytes
+        return await _run_artifact_read(GET_ARTIFACT_TOOL["name"], arguments, ctx)
+
+    get_artifact_tool = FunctionTool.from_function(
+        get_artifact,
+        description=GET_ARTIFACT_TOOL["description"],
+        output_schema=None,
+    )
+    get_artifact_tool.parameters = deepcopy(GET_ARTIFACT_TOOL["schema"])
+    mcp.add_tool(get_artifact_tool)
+
     # Register Tool 8: add_comment
     @mcp.tool()
     async def add_comment(
@@ -1658,6 +1870,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         return result.model_dump_json()
 
     # Register Tool 13: get_approval_status (async approval polling)
+    # Frameworks cache callback signatures/type adapters beyond the lifetime
+    # of a server. Its replay callback must not make those caches own the
+    # server and every registered tool.
+    mcp_reference = weakref.ref(mcp)
+
     @mcp.tool()
     async def get_approval_status(
         request_id: str,
@@ -1825,11 +2042,15 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         exec_error: Optional[str] = None
                         result_preview: Optional[str] = None
                         try:
+                            replay_server = mcp_reference()
+                            if replay_server is None:
+                                raise RuntimeError("MCP server is no longer available")
                             from preloop.services.dynamic_fastmcp import (
                                 _approved_answer_var,
                                 _approved_comment_var,
                                 _approved_id_var,
                                 _bypass_approval_var,
+                                post_approval_exec_outcome,
                             )
 
                             _bypass_approval_var.set(True)
@@ -1840,12 +2061,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 # Try internal (namespaced) name first, fall
                                 # back to original name for built-in tools.
                                 try:
-                                    tool_result = (
-                                        await mcp.call_registered_tool_without_policy(
-                                            internal_name,
-                                            tool_args,
-                                            account_id=str(approval_request.account_id),
-                                        )
+                                    tool_result = await replay_server.call_registered_tool_without_policy(
+                                        internal_name,
+                                        tool_args,
+                                        account_id=str(approval_request.account_id),
                                     )
                                 except Exception as name_err:
                                     if "not found" in str(name_err).lower():
@@ -1853,7 +2072,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                             f"Tool '{internal_name}' not found, "
                                             f"trying original name '{tool_name}'"
                                         )
-                                        tool_result = await mcp.call_registered_tool_without_policy(
+                                        tool_result = await replay_server.call_registered_tool_without_policy(
                                             tool_name,
                                             tool_args,
                                             account_id=str(approval_request.account_id),
@@ -1865,6 +2084,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 _approved_comment_var.set(None)
                                 _approved_answer_var.set(None)
                                 _approved_id_var.set(None)
+
+                            # An upstream isError result is not "executed".
+                            exec_status, exec_error = post_approval_exec_outcome(
+                                tool_result
+                            )
 
                             # Normalise the result to a JSON-safe dict
                             if hasattr(tool_result, "model_dump"):

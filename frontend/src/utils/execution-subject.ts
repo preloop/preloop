@@ -1,4 +1,4 @@
-import { html, TemplateResult } from 'lit';
+import { html, nothing, TemplateResult } from 'lit';
 
 /**
  * The subject of a flow execution: what this run was about.
@@ -20,7 +20,11 @@ export interface ExecutionSubjectSource {
   id?: string | null;
   trigger_subject?: string | null;
   trigger_subject_url?: string | null;
-  /** Only present on the detail endpoints; lists project the two fields. */
+  /** Human-readable CI provider ("GitHub Actions") when CI dispatched the run. */
+  trigger_subject_ci?: string | null;
+  /** Link to the CI run, when the CI provenance block carries one. */
+  trigger_subject_ci_url?: string | null;
+  /** Only present on the detail endpoints; lists project the fields above. */
   trigger_event_details?: Record<string, unknown> | null;
 }
 
@@ -36,14 +40,21 @@ const SUBJECT_KEY = '_subject';
 
 function storedSubject(
   details: Record<string, unknown> | null | undefined
-): { text?: string; url?: string } | null {
+): { text?: string; url?: string; ci?: string; ciUrl?: string } | null {
   if (!details || typeof details !== 'object') return null;
   const stored = (details as Record<string, unknown>)[SUBJECT_KEY];
   if (!stored || typeof stored !== 'object') return null;
-  const { text, url } = stored as { text?: unknown; url?: unknown };
+  const { text, url, ci, ci_url } = stored as {
+    text?: unknown;
+    url?: unknown;
+    ci?: unknown;
+    ci_url?: unknown;
+  };
   return {
     text: typeof text === 'string' ? text : undefined,
     url: typeof url === 'string' ? url : undefined,
+    ci: typeof ci === 'string' ? ci : undefined,
+    ciUrl: typeof ci_url === 'string' ? ci_url : undefined,
   };
 }
 
@@ -102,6 +113,25 @@ export function executionSubjectUrl(
   );
 }
 
+/** The CI provider that dispatched the run ("GitHub Actions"), if any. */
+export function executionSubjectCiText(exec: ExecutionSubjectSource): string {
+  return (
+    (exec.trigger_subject_ci || '').trim() ||
+    (storedSubject(exec.trigger_event_details)?.ci || '').trim()
+  );
+}
+
+/** The link to the CI run that dispatched this run, if one was recorded. */
+export function executionSubjectCiUrl(
+  exec: ExecutionSubjectSource
+): string | null {
+  return (
+    exec.trigger_subject_ci_url ||
+    storedSubject(exec.trigger_event_details)?.ciUrl ||
+    null
+  );
+}
+
 /** True when the text shown is a fallback rather than a real subject. */
 export function isSubjectFallback(exec: ExecutionSubjectSource): boolean {
   return !subjectOf(exec);
@@ -122,28 +152,49 @@ export function renderExecutionSubject(
   const url = executionSubjectUrl(exec);
   const fallback = isSubjectFallback(exec);
   const className = `execution-subject${fallback ? ' is-fallback' : ''}`;
+  const ci = executionSubjectCiText(exec);
+  const ciUrl = executionSubjectCiUrl(exec);
 
   // Only http(s) and console-relative URLs become links. The URL is stored
   // from webhook payloads and from user-supplied test-run payloads, and Lit
   // does not strip `javascript:`; anything else renders as plain text.
-  if (url && isSafeSubjectUrl(url)) {
-    // The icon sits outside the ellipsised text, or a long subject clips the
-    // one mark that says the link leaves the console.
-    return html`<a
-      class="${className} execution-subject-link"
-      href=${url}
-      target="_blank"
-      rel="noopener noreferrer"
-      title=${text}
-      @click=${(event: Event) => event.stopPropagation()}
-      ><span class="execution-subject-text">${text}</span
-      ><sl-icon name="box-arrow-up-right" label="Opens in a new tab"></sl-icon
-    ></a>`;
-  }
+  const main =
+    url && isSafeSubjectUrl(url)
+      ? // The icon sits outside the ellipsised text, or a long subject clips the
+        // one mark that says the link leaves the console.
+        html`<a
+          class="execution-subject-link"
+          href=${url}
+          target="_blank"
+          rel="noopener noreferrer"
+          title=${text}
+          @click=${(event: Event) => event.stopPropagation()}
+          ><span class="execution-subject-text">${text}</span
+          ><sl-icon
+            name="box-arrow-up-right"
+            label="Opens in a new tab"
+          ></sl-icon
+        ></a>`
+      : html`<span class="execution-subject-text" title=${text}>${text}</span>`;
 
-  return html`<span class=${className} title=${text}
-    ><span class="execution-subject-text">${text}</span></span
-  >`;
+  // "via GitHub Actions", linking to the CI run when a safe URL was recorded.
+  const hint = ci
+    ? ciUrl && isSafeSubjectUrl(ciUrl)
+      ? html`<a
+          class="execution-subject-ci-link"
+          href=${ciUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Dispatched via ${ci}"
+          @click=${(event: Event) => event.stopPropagation()}
+          >via ${ci}</a
+        >`
+      : html`<span class="execution-subject-ci" title="Dispatched via ${ci}"
+          >via ${ci}</span
+        >`
+    : nothing;
+
+  return html`<span class=${className}>${main}${hint}</span>`;
 }
 
 /** Shared styling for the two shapes above, as a plain CSS string. */
@@ -167,6 +218,10 @@ export const executionSubjectCss = `
   a.execution-subject-link {
     color: var(--console-link-color);
     text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
   }
   a.execution-subject-link:hover .execution-subject-text,
   a.execution-subject-link:focus-visible .execution-subject-text {
@@ -175,6 +230,20 @@ export const executionSubjectCss = `
   a.execution-subject-link sl-icon {
     flex-shrink: 0;
     font-size: 12px;
+  }
+  /* The CI provenance hint reads in the meta register: it answers "who
+     dispatched this", not "what is this about". */
+  .execution-subject-ci,
+  a.execution-subject-ci-link {
+    color: var(--console-meta-color);
+    white-space: nowrap;
+  }
+  a.execution-subject-ci-link {
+    text-decoration: none;
+  }
+  a.execution-subject-ci-link:hover,
+  a.execution-subject-ci-link:focus-visible {
+    text-decoration: underline;
   }
 `;
 

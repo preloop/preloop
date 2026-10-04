@@ -221,6 +221,7 @@ export interface TextToSpeechRequest {
 }
 
 export interface FlowGatewayConversationPreviewMessage {
+  tool_call_ids?: string[];
   source?: string | null;
   role?: string | null;
   text?: string | null;
@@ -249,6 +250,39 @@ export interface FlowGatewayCapturePolicy {
   conversation_preview_available?: boolean;
 }
 
+/**
+ * One tool invocation recovered from a captured gateway body.
+ *
+ * `id` is the provider's own call id (`tool_calls[].id`, `call_id`,
+ * `tool_use.id`), which is the only identity that provably links a call to its
+ * result across events and retries. It is null when the producer had none to
+ * give; `stable_id` says so, and consumers must scope such a row to the event
+ * that produced it rather than merging it with anything.
+ *
+ * `arguments` and `result` are CONTENT. They are null when the gateway's
+ * capture policy withheld them, in which case `redacted` is true — the tool
+ * NAME and ids survive, because a name is structure, not content.
+ */
+export interface GatewayToolActivityEntry {
+  id?: string | null;
+  stable_id?: boolean;
+  direction?: 'call' | 'result' | string;
+  name?: string | null;
+  dialect?: string | null;
+  arguments?: string | null;
+  result?: string | null;
+  is_error?: boolean | null;
+  redacted?: boolean;
+  truncated?: boolean;
+}
+
+export interface GatewayToolActivity {
+  entries?: GatewayToolActivityEntry[];
+  /** True when the producer's entry cap dropped older calls. */
+  truncated?: boolean;
+  dialect?: string | null;
+}
+
 export interface FlowGatewayEventPayload {
   api_usage_id?: string | null;
   endpoint?: string | null;
@@ -270,6 +304,17 @@ export interface FlowGatewayEventPayload {
   gateway_attempt?: number | null;
   is_retry?: boolean | null;
   retry_of_api_usage_id?: string | null;
+  /**
+   * Identity shared with the `model_gateway_request_started` event this call
+   * announced. Consumers pair the two halves by this and never by arrival
+   * order, which is wrong whenever two requests overlap. Absent on rows
+   * recorded before the id existed, and on a start whose completion is not
+   * (yet) observed — an unpaired start must stay unpaired rather than closing
+   * whichever request happened to finish next.
+   */
+  gateway_request_id?: string | null;
+  /** Named tool calls and results recovered from the captured wire bodies. */
+  tool_activity?: GatewayToolActivity | null;
   finish_reason?: string | null;
   prompt_tokens?: number | null;
   completion_tokens?: number | null;
@@ -551,6 +596,20 @@ export interface AccountRuntimeSessionDetailResponse {
  */
 export type SessionSearchMode = 'keyword' | 'semantic' | 'hybrid';
 
+/** The artifact an `artifact` search chunk came from (#1082). */
+export interface SessionSearchArtifactRef {
+  artifact_id: string;
+  activity_id: string | null;
+  kind: string | null;
+  name: string | null;
+  content_type: string | null;
+  tool_name?: string | null;
+  labels: Record<string, unknown>;
+  /** Start in seconds of the transcript cue the chunk begins in. */
+  cue_start: number | null;
+  text_truncated: boolean;
+}
+
 export interface SessionSearchSnippet {
   document_id: string;
   runtime_session_id: string;
@@ -562,6 +621,7 @@ export interface SessionSearchSnippet {
   rank: number;
   redaction_state: string;
   text: string | null;
+  artifact?: SessionSearchArtifactRef | null;
 }
 
 export interface SessionSearchResult {
@@ -884,6 +944,15 @@ export interface AccountGovernanceDefaults {
   approval_workflow_id?: string | null;
 }
 
+/**
+ * Per-flow governance override (subject type "flows") plus the account
+ * defaults it inherits. has_override is false when the flow stores none.
+ */
+export interface FlowGovernanceResponse extends SubjectGovernanceResponse {
+  has_override: boolean;
+  account_defaults: AccountGovernanceDefaults;
+}
+
 export interface AccountGovernanceDefaultsResponse {
   defaults: AccountGovernanceDefaults;
   /** Managed agent ids carrying an explicit per-agent override. */
@@ -896,6 +965,7 @@ export interface RuntimeSessionUpdateRequest {
 }
 
 export interface RuntimeSessionActivityItem {
+  activity_id?: string | null;
   activity_type:
     | 'model_interaction'
     | 'tool_call'
@@ -903,6 +973,7 @@ export interface RuntimeSessionActivityItem {
     | 'session_ended'
     | 'agent_control_message'
     | 'browser_step'
+    | 'artifact'
     | string;
   timestamp: string;
   title: string;
@@ -963,6 +1034,60 @@ export interface BrowserStepMetadata {
   reasoning?: string | null;
   extra?: Record<string, unknown> | null;
   screenshot?: BrowserStepScreenshotRef | null;
+}
+
+/**
+ * `metadata.artifact` of an `artifact` activity item, written by the deposit
+ * API (#1080) when the artifact is stored.
+ */
+export interface ArtifactRowMetadata {
+  id: string;
+  kind: string;
+  name?: string | null;
+  content_type?: string | null;
+  size_bytes?: number | null;
+  labels?: Record<string, unknown> | null;
+  producer?: string | null;
+}
+
+/**
+ * MCP `ResourceLink` (spec 2026-07-28) pointing at the artifact byte route.
+ * Preloop fields with no MCP slot travel in `_meta["preloop.dev/artifact"]`.
+ */
+export interface McpResourceLink {
+  type: 'resource_link';
+  uri: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  _meta?: Record<string, unknown>;
+}
+
+/** One item of `GET /runtime-sessions/{id}/artifacts`. */
+export interface RuntimeSessionArtifactDescriptor {
+  id: string;
+  runtime_session_id: string;
+  activity_id?: string | null;
+  kind: string;
+  name?: string | null;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  labels: Record<string, unknown>;
+  producer?: string | null;
+  agent_id?: string | null;
+  tool_name?: string | null;
+  parent_artifact_id?: string | null;
+  text_status?: string | null;
+  availability: SessionArtifactAvailability | string;
+  legal_hold: boolean;
+  created_at: string;
+  content_block: McpResourceLink;
+}
+
+export interface RuntimeSessionArtifactListResponse {
+  items: RuntimeSessionArtifactDescriptor[];
+  next_cursor?: string | null;
 }
 
 export interface RuntimeSessionActivityListResponse {
@@ -1332,15 +1457,29 @@ export interface RuntimeSessionOptimizationActionListResponse {
   items: RuntimeSessionOptimizationAppliedAction[];
 }
 
-/** Session screenshot and recording bytes against the account storage budget. */
+/**
+ * Session artifact bytes against the account storage budget. ``by_kind``
+ * always has screenshot and recording; newer servers add screencast, audio,
+ * transcript, document, generated_file and trace, and may add more later.
+ */
 export interface SessionArtifactUsage {
   used_bytes: number;
   budget_bytes: number;
   by_kind: {
     screenshot: number;
     recording: number;
+    [kind: string]: number;
   };
   evicted_count_30d: number;
+}
+
+/** Raw audio storage opt-in (#1102). Off by default; admin only to change. */
+export interface SessionArtifactSettings {
+  audio_storage_enabled: boolean;
+  audio_retention_days: number;
+  audio_retention_max_days: number;
+  updated_by_user_id?: string | null;
+  updated_at?: string | null;
 }
 
 export interface AccountGatewayUsageSummaryResponse {

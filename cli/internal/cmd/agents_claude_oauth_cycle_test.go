@@ -136,11 +136,14 @@ func TestSyncManagedGatewayAIModelKeepsServerOAuthWhenLocalBundleExpired(t *test
 	}
 }
 
-func TestSyncManagedGatewayAIModelReseedsServerOAuthWhenLocalBundleFresh(t *testing.T) {
+func TestSyncManagedGatewayAIModelKeepsLiveClaudeOAuthWhenLocalBundleUnexpired(t *testing.T) {
 	updates := []map[string]interface{}{}
+	stored := claudeGatewayAIModelForTest(true)
+	stored.CredentialsSecretID = "secret-live"
+	stored.CredentialsStatus = "active"
 	server := newClaudeGatewayModelSyncServer(
 		t,
-		[]aiModelResponse{claudeGatewayAIModelForTest(true)},
+		[]aiModelResponse{stored},
 		&updates,
 	)
 	defer server.Close()
@@ -166,17 +169,10 @@ func TestSyncManagedGatewayAIModelReseedsServerOAuthWhenLocalBundleFresh(t *test
 	if model == nil {
 		t.Fatalf("expected reused model, got nil")
 	}
-	reseeded := false
 	for _, update := range updates {
-		if payload, ok := update["credential_payload"].(map[string]interface{}); ok {
-			reseeded = true
-			if payload["access"] != "sk-ant-oat01-fresh" {
-				t.Fatalf("expected fresh access token in re-seed, got %#v", payload)
-			}
+		if _, ok := update["credential_payload"]; ok {
+			t.Fatal("an unexpired access token does not prove its refresh token is still live")
 		}
-	}
-	if !reseeded {
-		t.Fatalf("expected a fresh local OAuth bundle to re-seed the account credential; updates: %#v", updates)
 	}
 }
 

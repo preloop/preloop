@@ -4,9 +4,9 @@
  * Pure functions only: no Lit, no fetch. The builder turns stored gateway
  * events (each carrying the full accumulated message history as a
  * conversation preview, plus the capped raw request body) and activity rows
- * into a chat-shaped item list where ONLY top-level user prompts and final
- * agent responses are expanded; tool calls, tool results, system/injected
- * segments and intermediate agent output are collapsed step groups.
+ * into chronological message and legacy step groups. Session views overlay
+ * normalized named tools and approval cards, replacing provably identical
+ * legacy tool steps while keeping uncorrelated historical content readable.
  *
  * Classification honesty rules (binding, see
  * factory/briefs/2026-08-06-transcript-redesign-spec.md section 2):
@@ -28,6 +28,8 @@ import type {
   FlowGatewayEvent,
   RuntimeSessionActivityItem,
 } from '../types';
+import type { LiveToolCall } from './live-session';
+import { normalizeToolCalls } from './live-session';
 
 export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
@@ -47,6 +49,7 @@ export interface TranscriptStep {
   status?: string | null;
   /** Tool-call metadata, when it may carry `_preloop_repository`. */
   repositoryArgs?: Record<string, unknown> | null;
+  toolCallIds?: string[];
   /** True when the classification came from exact structure, not a heuristic. */
   detectionExact: boolean;
 }
@@ -90,11 +93,41 @@ export interface TranscriptBrowserStepItem {
   activity: RuntimeSessionActivityItem;
 }
 
+/**
+ * One named tool invocation, rendered as its own card in chronological
+ * context.
+ *
+ * Tool calls used to be folded into the anonymous step groups above, which is
+ * exactly what made a session unreadable while it was running: "3 steps —
+ * 2 tool calls, 1 tool result" says nothing about which tool is blocking. The
+ * rows here keep the name, the lifecycle state and the deciding argument
+ * visible without expanding anything.
+ */
+export interface TranscriptToolItem {
+  type: 'tool';
+  key: string;
+  timestamp: string | null;
+  call: LiveToolCall;
+}
+
+/**
+ * One `artifact` activity (deposit API), kept top level like browser steps so
+ * artifacts sit in time order between the turns around them.
+ */
+export interface TranscriptArtifactItem {
+  type: 'artifact';
+  key: string;
+  timestamp: string | null;
+  activity: RuntimeSessionActivityItem;
+}
+
 export type TranscriptItem =
   | TranscriptMessageItem
   | TranscriptStepGroupItem
   | TranscriptDividerItem
-  | TranscriptBrowserStepItem;
+  | TranscriptBrowserStepItem
+  | TranscriptToolItem
+  | TranscriptArtifactItem;
 
 export interface TranscriptStats {
   promptCount: number;
@@ -111,6 +144,8 @@ export interface TranscriptStats {
    *  tool-result items yielded no matchable text — exact detection is only
    *  partial there, so those results may still render as user prompts. */
   eventsWithPartialToolResults: number;
+  /** A gateway `tool_activity` collection dropped entries at its cap. */
+  toolActivityTruncated: boolean;
   totalEvents: number;
 }
 
@@ -319,7 +354,9 @@ type Atom =
   | { type: 'message'; item: TranscriptMessageItem; order: number }
   | { type: 'step'; step: TranscriptStep; order: number }
   | { type: 'divider'; item: TranscriptDividerItem; order: number }
-  | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number };
+  | { type: 'browser_step'; item: TranscriptBrowserStepItem; order: number }
+  | { type: 'tool'; item: TranscriptToolItem; order: number }
+  | { type: 'artifact'; item: TranscriptArtifactItem; order: number };
 
 function atomTime(atom: Atom): number {
   const timestamp =
@@ -350,6 +387,7 @@ export function buildConversation(
     toolCallCount: 0,
     eventsWithoutRawBody: 0,
     eventsWithPartialToolResults: 0,
+    toolActivityTruncated: false,
     totalEvents: 0,
   };
 
@@ -372,7 +410,12 @@ export function buildConversation(
   for (const event of gatewayEvents) {
     const scan = collectRawToolResultPrefixes(event);
     const toolResultPrefixes = scan.prefixes;
-    if (toolResultPrefixes === null) stats.eventsWithoutRawBody += 1;
+    if (
+      toolResultPrefixes === null &&
+      event.type !== 'model_gateway_request_started' &&
+      !Array.isArray(event.payload?.tools)
+    )
+      stats.eventsWithoutRawBody += 1;
     else if (scan.unusableToolResults > 0) {
       stats.eventsWithPartialToolResults += 1;
     }
@@ -404,6 +447,7 @@ export function buildConversation(
         timestamp: event.timestamp || null,
         redacted: Boolean(message.redacted),
         truncated: Boolean(message.truncated),
+        toolCallIds: message.tool_call_ids,
       };
 
       if (source === 'response') {
@@ -520,35 +564,47 @@ export function buildConversation(
     });
   }
 
+  // Named tool rows, from gateway `tool_activity` entries and native
+  // `tool_call` rows. These are top level, never folded into a step group: a
+  // generic "3 steps" count is what made a running session unreadable.
+  const normalizedTools = normalizeToolCalls(gatewayEvents, activity);
+  stats.toolActivityTruncated = normalizedTools.truncated;
+  for (const call of normalizedTools) {
+    stats.toolCallCount += 1;
+    atoms.push({
+      type: 'tool',
+      order: order++,
+      item: {
+        type: 'tool',
+        key: `tool:${call.key}`,
+        timestamp: call.timestamp,
+        call,
+      },
+    });
+  }
+
   for (const [index, item] of activity.entries()) {
     const activityType = (item.activity_type || '').toLowerCase();
     const key = `activity:${index}:${item.timestamp || ''}`;
-    if (activityType === 'tool_call') {
-      stats.toolCallCount += 1;
-      atoms.push({
-        type: 'step',
-        order: order++,
-        step: {
-          key,
-          kind: 'tool_call',
-          label: item.tool_name || item.title || 'Tool call',
-          text: item.summary || '',
-          timestamp: item.timestamp || null,
-          toolName: item.tool_name,
-          serverName: item.server_name,
-          status: item.status,
-          repositoryArgs: item.metadata ?? null,
-          detectionExact: true,
-        },
-      });
-      continue;
-    }
     if (activityType === 'browser_step') {
       atoms.push({
         type: 'browser_step',
         order: order++,
         item: {
           type: 'browser_step',
+          key,
+          timestamp: item.timestamp || null,
+          activity: item,
+        },
+      });
+      continue;
+    }
+    if (activityType === 'artifact') {
+      atoms.push({
+        type: 'artifact',
+        order: order++,
+        item: {
+          type: 'artifact',
           key,
           timestamp: item.timestamp || null,
           activity: item,
@@ -639,7 +695,12 @@ export function buildConversation(
       currentSteps.push(atom.step);
       return;
     }
-    if (atom.type === 'divider' || atom.type === 'browser_step') {
+    if (
+      atom.type === 'divider' ||
+      atom.type === 'browser_step' ||
+      atom.type === 'tool' ||
+      atom.type === 'artifact'
+    ) {
       closeSteps();
       items.push(atom.item);
       return;

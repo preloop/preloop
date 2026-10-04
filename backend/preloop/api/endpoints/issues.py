@@ -898,7 +898,8 @@ async def create_issue(
 
         # Create the issue in the database
         try:
-            db_issue = crud_issue.create(db=db, obj_in=issue_data_for_db)
+            # The provider's "opened" webhook may store this issue first.
+            db_issue, _ = crud_issue.upsert(db=db, obj_in=issue_data_for_db)
             db.commit()  # Commit the transaction
             db.refresh(db_issue)  # Refresh to get DB-generated values like ID
         except Exception as db_exc:
@@ -967,8 +968,9 @@ def _issue_to_list_item(issue: Issue, current_user: User, db: Session) -> IssueR
     """
     project = getattr(issue, "project", None)
     if project is None:
-        # Project scopes through organization.tracker; account_id is a no-op.
-        project = crud_project.get(db, id=issue.project_id)
+        project = crud_project.get(
+            db, id=issue.project_id, account_id=current_user.account_id
+        )
     organization = None
     if project is not None:
         organization = getattr(project, "organization", None)

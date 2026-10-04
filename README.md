@@ -36,7 +36,7 @@ preloop login --url http://localhost:3000    # your self-hosted instance
 preloop agents discover
 ```
 
-`preloop agents discover` finds local agent configs, imports representable MCP servers and model metadata, mints managed credentials, and rewrites supported agents so tool calls go through the **MCP Firewall** and model traffic through the **Gateway**. For Talk (operator commands), the CLI can install the runtime plugin (`preloop agents install-plugin`, or `preloop claude` for Claude Code). The plugin is what keeps the control channel connected.
+`preloop agents discover` finds local agent configs and reports adapter support for model routing, native action gates, and managed MCP separately. `preloop agents onboard` configures supported integrations: only calls routed through the managed MCP entry reach the **MCP Firewall**, while supported model routes use the **Gateway**. Support and configuration do not verify application behavior; live validation sends a direct gateway route/accounting probe without launching the application. For Talk (operator commands), the CLI can install the runtime plugin (`preloop agents install-plugin`, or `preloop claude` for Claude Code). The plugin is what keeps the control channel connected.
 
 [Pi and DeepSeek Harness](runtime-plugins/harness-preloop/README.md) support CLI onboarding, gateway routing, native tool approvals, active-session remote control, and ephemeral flows. Onboard with `preloop agents onboard Pi --approvals` or `preloop agents onboard "DeepSeek Harness" --approvals`.
 
@@ -57,6 +57,8 @@ Onboarding, the MCP firewall, human approvals, and cutting session cost. Recorde
 <p align="center"><a href="https://www.youtube.com/watch?v=Y_geb2Or8zM&list=PLr2Jp0c-Qn2hoYL3aRZGUtBjTCVygWIXt"><b>Watch the full playlist &rarr;</b></a></p>
 
 Guides: [docs.preloop.ai](https://docs.preloop.ai). Start here: [onboard local agents (60s)](https://docs.preloop.ai/quickstart-cli/).
+
+[Event-driven employees](docs/guide/virtual-employees.md) reuse managed-agent identities and persistent Flows for bounded Codex or Nanobot tasks from tracker events, GlitchTip errors and selected Discord activity, with durable replay protection and scoped model credentials.
 
 A run in progress is not out of reach. [Operator notes](docs/guide/operator-notes.md) let an identified human (or, with an opt-in tool, another agent) steer a running agent: the note is delivered at the next turn boundary through the gateway or a hook, costs nothing when there is none, and is recorded with who sent it. Send one from the console, the API, or `preloop notes send`. The [account kill switch](docs/guide/account-kill-switch.md) goes the other way: it blocks gateway and tool traffic, freezes pending approval deadlines, and requests termination of active managed flow executions, with audited staged recovery.
 
@@ -82,6 +84,8 @@ Upstream providers include OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guid
 AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execute
                    → [Gateway] → Budget + attribution             → Model
 ```
+
+[Bitbucket Data Center 10.2 LTS](docs/guide/bitbucket-data-center.md) is available as an opt-in, fixture-tested provider for manual PAT discovery and pull request review. It is off by default; live certification and execution/publication routing are separate.
 
 Connect GitHub, GitLab, Bitbucket Cloud, or Jira as flow triggers and issue tools ([Bitbucket Cloud setup](docs/guide/bitbucket-tracker.md), [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md)). Automations ship as presets, including the [Issue Triage Assistant](./docs/guide/flows/issue-triage.md), [Pull Request Reviewer](./docs/guide/flows/pull-request-review.md) and [Observe / Eval](./backend/presets/003-observe-eval.yaml). Or write your own. A flow can also start another flow of the same account as a child of itself, and the execution page shows the resulting tree: [flow delegation](docs/guide/flows/flow-delegation.md). [Automated issue implementation](docs/guide/flows/durable-implementation-feedback.md) can resume its PR branch and native agent conversation after review or CI feedback, with durable turn budgets and current-head gates. A finished run whose PR publication was not recorded can be recovered by explicitly selecting and verifying its published PR and branch; when the native checkpoint is unavailable, follow-up requires acknowledgment that it starts a fresh conversation.
 
@@ -225,3 +229,16 @@ Execution environment profiles and hosted checkpoint recovery are documented in 
 Operators can enable verified SSH and GCP agent deployment from the console.
 See [remote agent deployment](docs/operations/agent-deployment.md) for host-key
 verification, dedicated cloud credentials, and proxy timeout configuration.
+
+Cost links can carry an exact UTC `start_date` / `end_date` interval, with an
+optional `account_id` context. The console displays a **Digest period** without
+changing the saved preset. Account context is checked against the signed-in
+account; switching accounts and authentication retain the requested window.
+
+Nanobot can run as a governed managed employee through the optional
+[Nanobot integration](runtime-plugins/nanobot-preloop/README.md), with bounded
+conversations and DeepSeek or another authorized model through Preloop.
+
+Chat assistant connections for Slack, Mattermost, and Discord are described in
+[Chat connections](docs/chat-connections.md), including identity linking, scoped
+questions, approval votes, operator notes, and the separate durable worker.

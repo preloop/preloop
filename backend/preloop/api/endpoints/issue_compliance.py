@@ -14,6 +14,8 @@ from preloop.config import get_settings, Settings
 from preloop.schemas.issue import IssueResponse, IssueUpdate
 from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.model_credentials import (
+    AuxApiKeyMissingError,
+    build_aux_openai_client,
     get_aux_openai_sdk_extra_kwargs,
     resolve_model_call_credentials,
 )
@@ -102,7 +104,9 @@ def _calculate_issue_compliance(
     if not issue:
         raise HTTPException(status_code=404, detail="Issue not found")
 
-    project = crud_project.get(db, id=issue.project_id)
+    project = crud_project.get(
+        db, id=issue.project_id, account_id=current_user.account_id
+    )
 
     default_model = crud_ai_model.get_default_active_model(
         db, account_id=current_user.account_id
@@ -127,16 +131,17 @@ def _calculate_issue_compliance(
 
     try:
         creds_kwargs = resolve_model_call_credentials(default_model, db=db)
-        api_key = creds_kwargs.get("api_key")
-        if not api_key:
-            api_key = os.getenv("OPENAI_API_KEY")
-
-        if not api_key:
+        try:
+            client = build_aux_openai_client(
+                openai,
+                default_model,
+                creds_kwargs,
+                static_key_fallback=os.getenv("OPENAI_API_KEY"),
+            )
+        except AuxApiKeyMissingError:
             raise HTTPException(
                 status_code=500, detail="OpenAI API key not configured."
-            )
-
-        client = openai.OpenAI(api_key=api_key)
+            ) from None
         aux_extras = get_aux_openai_sdk_extra_kwargs(
             default_model,
             call_site_kwargs={
@@ -239,13 +244,21 @@ def get_compliance_improvement_suggestion(
         settings=settings,
     )
 
-    issue = crud_issue.get(db, id=issue_id)
+    issue = crud_issue.get(db, id=issue_id, account_id=current_user.account_id)
     if not issue:
         raise HTTPException(status_code=404, detail="Issue not found")
 
     # Authorization check
-    project = crud_project.get(db, id=issue.project_id)
-    organization = crud_organization.get(db, id=project.organization_id)
+    project = crud_project.get(
+        db, id=issue.project_id, account_id=current_user.account_id
+    )
+    organization = (
+        crud_organization.get(
+            db, id=project.organization_id, account_id=current_user.account_id
+        )
+        if project
+        else None
+    )
     if (
         not organization
         or not organization.tracker
@@ -295,14 +308,18 @@ def get_compliance_improvement_suggestion(
     )
 
     creds_kwargs = resolve_model_call_credentials(default_model, db=db)
-    api_key = creds_kwargs.get("api_key")
-    if not api_key:
-        api_key = os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
-        raise HTTPException(status_code=500, detail="OpenAI API key not configured.")
-
-    client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+    try:
+        client = build_aux_openai_client(
+            openai,
+            default_model,
+            creds_kwargs,
+            include_api_base=True,
+            static_key_fallback=os.getenv("OPENAI_API_KEY"),
+        )
+    except AuxApiKeyMissingError:
+        raise HTTPException(
+            status_code=500, detail="OpenAI API key not configured."
+        ) from None
     compliance_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

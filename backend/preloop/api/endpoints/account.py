@@ -30,7 +30,9 @@ from preloop.models.crud import (
     crud_ai_model,
     crud_api_key,
     crud_attention_dismissal,
+    crud_audit_log,
     crud_approval_workflow,
+    crud_flow,
     crud_managed_agent,
     crud_managed_agent_ai_model_binding,
     crud_managed_agent_credential,
@@ -94,6 +96,7 @@ from preloop.schemas.gateway_usage import (
 from preloop.schemas.subject_governance import (
     AccountGovernanceDefaults,
     AccountGovernanceDefaultsResponse,
+    FlowGovernanceResponse,
     SubjectGovernanceConfig,
     SubjectGovernanceResponse,
 )
@@ -135,6 +138,7 @@ from preloop.services.model_credentials import (
 from preloop.services.model_gateway_usage import ModelGatewayUsageService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.services.subject_governance import (
+    SUBJECT_TYPE_FLOWS,
     SUBJECT_TYPE_MANAGED_AGENTS,
     get_account_governance_defaults,
     get_subject_governance,
@@ -164,6 +168,7 @@ AGENT_CONTROL_SUPPORTED_AGENT_KINDS = {
     "opencode",
     "pi",
     "deepseek",
+    "nanobot",
     "codex",
 }
 AGENT_CONTROL_STATE_UNSUPPORTED = "unsupported"
@@ -1081,10 +1086,16 @@ class AccountDetailsResponse(BaseModel):
 
 
 class SessionArtifactUsageByKind(BaseModel):
-    """Available plaintext bytes by artifact kind."""
+    """Available plaintext bytes by artifact kind (zero when unused)."""
 
-    screenshot: int
-    recording: int
+    screenshot: int = 0
+    recording: int = 0
+    screencast: int = 0
+    audio: int = 0
+    transcript: int = 0
+    document: int = 0
+    generated_file: int = 0
+    trace: int = 0
 
 
 class SessionArtifactUsageResponse(BaseModel):
@@ -1165,6 +1176,115 @@ def get_session_artifact_usage(
     return SessionArtifactUsageResponse.model_validate(
         account_usage(db, account_id=account.id)
     )
+
+
+class SessionArtifactSettingsResponse(BaseModel):
+    """Account artifact storage settings (#1102)."""
+
+    audio_storage_enabled: bool = Field(
+        description="Store raw audio deposited by agents. Off by default."
+    )
+    audio_retention_days: int = Field(
+        description="Days raw audio is kept before its bytes expire."
+    )
+    audio_retention_max_days: int = Field(
+        description="Longest allowed audio retention (the session retention)."
+    )
+    updated_by_user_id: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SessionArtifactSettingsUpdate(BaseModel):
+    """Change artifact storage settings; omitted fields are left as they are."""
+
+    audio_storage_enabled: Optional[bool] = None
+    audio_retention_days: Optional[int] = Field(default=None, ge=1)
+
+
+def _artifact_settings_response(account: Account) -> SessionArtifactSettingsResponse:
+    from preloop.services import audio_storage
+
+    resolved = audio_storage.resolve(account.meta_data)
+    return SessionArtifactSettingsResponse(**resolved.__dict__)
+
+
+@router.get(
+    "/account/session-artifacts/settings",
+    response_model=SessionArtifactSettingsResponse,
+)
+@require_permission("view_policies")
+def get_session_artifact_settings(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactSettingsResponse:
+    """Return whether raw audio is stored, and for how long."""
+    return _artifact_settings_response(account)
+
+
+@router.put(
+    "/account/session-artifacts/settings",
+    response_model=SessionArtifactSettingsResponse,
+    responses={
+        403: {"description": "Caller may not manage account policies"},
+        422: {"description": "audio_retention_days_invalid"},
+    },
+)
+@require_permission("manage_policies")
+def update_session_artifact_settings(
+    payload: SessionArtifactSettingsUpdate,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> SessionArtifactSettingsResponse:
+    """Opt the account in or out of raw audio storage; admin only, audited.
+
+    Uses ``manage_policies`` like the retention settings: it governs what
+    the account keeps. Every change writes an ``artifact_settings_updated``
+    audit row with the before and after value of each changed field; a
+    request that changes nothing writes no row.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from preloop.services import audio_storage
+
+    before = audio_storage.resolve(account.meta_data)
+    try:
+        updated = audio_storage.apply_update(
+            account.meta_data,
+            audio_storage_enabled=payload.audio_storage_enabled,
+            audio_retention_days=payload.audio_retention_days,
+            user_id=current_user.id,
+            now=datetime.now(UTC),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    after = audio_storage.resolve(updated)
+    changed = {
+        field: {"from": getattr(before, field), "to": getattr(after, field)}
+        for field in ("audio_storage_enabled", "audio_retention_days")
+        if getattr(before, field) != getattr(after, field)
+    }
+    if not changed:
+        # A no-op request neither logs nor restamps who changed it.
+        return _artifact_settings_response(account)
+    account.meta_data = updated
+    flag_modified(account, "meta_data")
+    db.add(account)
+    crud_audit_log.log_action(
+        db,
+        account_id=account.id,
+        user_id=current_user.id,
+        action=audio_storage.AUDIT_ACTION,
+        resource_type="account_settings",
+        resource_id="artifacts",
+        status="success",
+        details={"changed": changed},
+        commit=False,
+    )
+    db.commit()
+    db.refresh(account)
+    return _artifact_settings_response(account)
 
 
 @router.patch("/account/details", response_model=AccountDetailsResponse)
@@ -1649,6 +1769,134 @@ async def update_account_governance_defaults_endpoint(
     return _governance_defaults_response(account)
 
 
+def _validate_governance_workflow(
+    db: Session, account: Account, approval_workflow_id: Optional[str]
+) -> None:
+    """Reject a governance workflow pin that is malformed or foreign."""
+    if not approval_workflow_id:
+        return
+    try:
+        workflow_id = UUID(approval_workflow_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid approval workflow id",
+        )
+    workflow = crud_approval_workflow.get(
+        db, id=workflow_id, account_id=str(account.id)
+    )
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Approval workflow not found in this account",
+        )
+
+
+def _require_account_flow(db: Session, account: Account, flow_id: str) -> None:
+    """404 unless ``flow_id`` names a flow owned by this account."""
+    try:
+        UUID(flow_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Flow not found"
+        )
+    if crud_flow.get(db, id=flow_id, account_id=str(account.id)) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Flow not found"
+        )
+
+
+def _flow_governance_response(account: Account, flow_id: str) -> FlowGovernanceResponse:
+    """Build the per-flow governance response (override + inherited defaults)."""
+    meta = account.meta_data or {}
+    config = get_subject_governance(
+        meta, subject_type=SUBJECT_TYPE_FLOWS, subject_id=flow_id
+    )
+    return FlowGovernanceResponse(
+        subject_type=SUBJECT_TYPE_FLOWS,
+        subject_id=flow_id,
+        config=SubjectGovernanceConfig.model_validate(config),
+        has_override=bool(config),
+        account_defaults=AccountGovernanceDefaults.model_validate(
+            get_account_governance_defaults(meta)
+        ),
+    )
+
+
+@router.get(
+    "/account/governance/flows/{flow_id}",
+    response_model=FlowGovernanceResponse,
+)
+@require_permission("view_flows")
+def get_account_flow_governance(
+    flow_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> FlowGovernanceResponse:
+    """Per-flow governance override for every execution of one flow.
+
+    Sync on purpose: FastAPI runs it in the threadpool, so the sync DB
+    session never blocks the event loop.
+    """
+    _require_account_flow(db, account, flow_id)
+    return _flow_governance_response(account, flow_id)
+
+
+@router.put(
+    "/account/governance/flows/{flow_id}",
+    response_model=FlowGovernanceResponse,
+)
+@require_permission("edit_flows")
+def update_account_flow_governance(
+    flow_id: str,
+    payload: SubjectGovernanceConfig,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> FlowGovernanceResponse:
+    """Store a governance override for one flow's executions."""
+    _require_account_flow(db, account, flow_id)
+    _validate_governance_workflow(db, account, payload.approval_workflow_id)
+    account.meta_data = set_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_FLOWS,
+        subject_id=flow_id,
+        config=payload.model_dump(),
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    invalidate_account_governance_cache(str(account.id))
+    return _flow_governance_response(account, flow_id)
+
+
+@router.delete(
+    "/account/governance/flows/{flow_id}",
+    response_model=FlowGovernanceResponse,
+)
+@require_permission("edit_flows")
+def reset_account_flow_governance(
+    flow_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> FlowGovernanceResponse:
+    """Drop the flow's override so it inherits the account policy again."""
+    _require_account_flow(db, account, flow_id)
+    account.meta_data = set_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_FLOWS,
+        subject_id=flow_id,
+        config=None,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    invalidate_account_governance_cache(str(account.id))
+    return _flow_governance_response(account, flow_id)
+
+
 @router.get(
     "/agents/{agent_id}/governance",
     response_model=SubjectGovernanceResponse,
@@ -1699,22 +1947,7 @@ async def update_account_managed_agent_governance(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
-    if payload.approval_workflow_id:
-        try:
-            workflow_id = UUID(payload.approval_workflow_id)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid approval workflow id",
-            )
-        workflow = crud_approval_workflow.get(
-            db, id=workflow_id, account_id=str(account.id)
-        )
-        if workflow is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Approval workflow not found in this account",
-            )
+    _validate_governance_workflow(db, account, payload.approval_workflow_id)
     account.meta_data = set_subject_governance(
         account.meta_data or {},
         subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
@@ -2050,10 +2283,31 @@ async def create_account_managed_agent_enrollment(
         validation_result=payload.validation_result,
         restore_available=payload.restore_available,
         last_applied_at=payload.last_applied_at,
-        last_validated_at=payload.last_validated_at,
+        # A row born ``validated`` carries a validation time, so it counts as
+        # a prior onboarding when the agent is re-linked later.
+        last_validated_at=(
+            payload.last_validated_at
+            or (
+                datetime.now(UTC)
+                if payload.status == ENROLLMENT_STATUS_VALIDATED
+                else None
+            )
+        ),
         last_restored_at=payload.last_restored_at,
-        commit=True,
+        commit=False,
     )
+    # A row normally arrives ``applied`` and is onboarded by the validate
+    # call. One that arrives already ``validated`` is onboarded now, or it
+    # would never emit: the validate endpoint skips an already-validated row.
+    if enrollment.status == ENROLLMENT_STATUS_VALIDATED:
+        _emit_agent_onboarded(
+            db,
+            account_id=str(account.id),
+            enrollment=enrollment,
+            actor_user_id=current_user.id,
+        )
+    db.commit()
+    db.refresh(enrollment)
     emit_account_event(
         build_account_event(
             account_id=str(account.id),
@@ -2076,6 +2330,53 @@ async def create_account_managed_agent_enrollment(
     )
 
 
+ENROLLMENT_STATUS_VALIDATED = "validated"
+
+
+def _emit_agent_onboarded(
+    db: Session,
+    *,
+    account_id: str,
+    enrollment: Any,
+    actor_user_id: Any,
+) -> None:
+    """Enqueue ``agent.onboarded`` for an enrollment that just validated."""
+    from preloop.services.event_webhooks.emitters import (
+        agent_onboarded_outcome,
+        emit_agent_onboarded,
+    )
+
+    agent_id = str(enrollment.managed_agent_id)
+    agent = crud_managed_agent.get_for_account(
+        db, account_id=account_id, agent_id=agent_id
+    )
+    if agent is None:
+        return
+    outcome = agent_onboarded_outcome(
+        prior_onboarding_at=crud_managed_agent_enrollment.latest_prior_onboarding_at(
+            db,
+            account_id=account_id,
+            agent_id=agent_id,
+            exclude_enrollment_id=str(enrollment.id),
+        ),
+        latest_merge_at=crud_managed_agent.latest_merge_into_at(
+            db, account_id=account_id, survivor_id=agent_id
+        ),
+    )
+    mcp_rewritten, gateway_routed, _ = _managed_agent_onboarding_flags(
+        crud_managed_agent_enrollment._to_summary(enrollment)
+    )
+    emit_agent_onboarded(
+        db,
+        agent,
+        enrollment,
+        outcome=outcome,
+        actor_user_id=actor_user_id,
+        gateway_routed=gateway_routed,
+        mcp_rewritten=mcp_rewritten,
+    )
+
+
 @router.post(
     "/agents/{agent_id}/enrollments/{enrollment_id}/validate",
     response_model=ManagedAgentEnrollmentSummary,
@@ -2089,7 +2390,20 @@ async def validate_account_managed_agent_enrollment(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
-    """Persist validation state for one managed-agent enrollment."""
+    """Persist validation state for one managed-agent enrollment.
+
+    The first time an enrollment reaches ``validated`` the agent counts as
+    onboarded and ``agent.onboarded`` is enqueued in the same transaction.
+    """
+    existing = crud_managed_agent_enrollment.get_for_agent(
+        db,
+        account_id=str(account.id),
+        agent_id=agent_id,
+        enrollment_id=enrollment_id,
+    )
+    already_validated = (
+        existing is not None and existing.status == ENROLLMENT_STATUS_VALIDATED
+    )
     enrollment = crud_managed_agent_enrollment.mark_validated(
         db,
         account_id=str(account.id),
@@ -2097,13 +2411,22 @@ async def validate_account_managed_agent_enrollment(
         enrollment_id=enrollment_id,
         validation_result=payload.validation_result,
         status=payload.status,
-        commit=True,
+        commit=False,
     )
     if enrollment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Managed agent enrollment not found",
         )
+    if enrollment.status == ENROLLMENT_STATUS_VALIDATED and not already_validated:
+        _emit_agent_onboarded(
+            db,
+            account_id=str(account.id),
+            enrollment=enrollment,
+            actor_user_id=current_user.id,
+        )
+    db.commit()
+    db.refresh(enrollment)
     emit_account_event(
         build_account_event(
             account_id=str(account.id),
@@ -2553,6 +2876,33 @@ async def list_account_runtime_sessions(
     end_date: Optional[datetime] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    agent: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Managed agent id or display name; only that agent's sessions",
+    ),
+    agent_kind: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Agent kind (claude_code, codex, cursor, hermes, ...); sessions of "
+            "managed agents of that kind or recorded from that source"
+        ),
+    ),
+    parent_session_id: Optional[UUID] = Query(
+        None, description="Only sessions this session spawned"
+    ),
+    flow_execution_id: Optional[UUID] = Query(
+        None, description="Only sessions linked to this flow execution"
+    ),
+    active_within_minutes: Optional[int] = Query(
+        None,
+        ge=1,
+        le=1440,
+        description="Only open sessions with activity in the last N minutes",
+    ),
 ):
     """List runtime sessions for the current account."""
     # Off the loop on purpose: the console polls this path, and a saturated
@@ -2568,6 +2918,11 @@ async def list_account_runtime_sessions(
             limit=limit,
             offset=offset,
             background_tasks=background_tasks,
+            agent=agent,
+            agent_kind=agent_kind,
+            parent_session_id=str(parent_session_id) if parent_session_id else None,
+            flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
+            active_within_minutes=active_within_minutes,
         )
     )
 
@@ -3250,11 +3605,11 @@ async def get_dashboard_telemetry(
     db: Session = Depends(get_db_session),
 ):
     """Aggregate high-level metrics for the new global dashboard."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     from preloop.models.crud.runtime_session import crud_runtime_session
     from preloop.models.crud.api_usage import crud_api_usage
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     day_ago = now - timedelta(days=1)
 
     def _query() -> DashboardTelemetryResponse:

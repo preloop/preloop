@@ -133,6 +133,7 @@ RUNTIME_SESSION_SOURCE_TYPES = {
     "hermes",
     "pi",
     "deepseek",
+    "nanobot",
     "desktop_agent",
     "custom",
 }
