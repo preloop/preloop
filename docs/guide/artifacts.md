@@ -233,8 +233,16 @@ The full request and response schemas are in the API reference
 
 ### 3. CLI
 
-`preloop artifacts put <file> --session <id> --kind <kind> --label site=...`
-is planned in #1089. Until it ships, use the multipart call above.
+```bash
+preloop artifacts put standup.vtt --session <id> --label site=nord
+some-tool | preloop artifacts put - --session <id> --content-type text/plain --name notes.txt
+preloop artifacts ls --session <id> --kind transcript --since 7d
+preloop artifacts get <artifact-id> --session <id> -o standup.vtt
+```
+
+`put` streams the multipart call above and prints the artifact id and a
+console link. `--json` prints the descriptor unchanged. See
+[CLI: Artifacts](cli.md#artifacts) for every flag.
 
 ## Where artifacts appear
 
