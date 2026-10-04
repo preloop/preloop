@@ -40,7 +40,9 @@
     /* 13px gray on gray is unreadable in dark; light can afford 500. */
     --console-meta-color: var(--sl-color-neutral-500);
     --console-body-color: var(--sl-color-neutral-900);
-    --console-link-color: var(--sl-color-primary-600);
+    /* primary-600 measured 3.9:1 on the page and 4.1:1 on a card, under the
+       4.5 a 13px link needs. primary-700 is the same hue at 5.6:1 or more. */
+    --console-link-color: var(--sl-color-primary-700);
 
     /* Transient pointer feedback. Never a resting fill. */
     --console-hover-tint: color-mix(
@@ -80,7 +82,10 @@
     --console-card-shadow: none;
     --console-raised-shadow: var(--sl-shadow-large);
 
-    --console-meta-color: var(--sl-color-neutral-600);
+    /* neutral-600 held on a card but measured 4.3:1 on the raised rung,
+       so meta text in every dialog and dropdown missed AA. neutral-700
+       clears 4.5 on all three rungs and still sits well below body text. */
+    --console-meta-color: var(--sl-color-neutral-700);
     --console-body-color: var(--sl-color-neutral-900);
     /* The scale is inverted here too: primary-400 is a dim blue in dark and
        measures 4.0:1 on a card, under the 4.5 a 13px link needs. primary-600
