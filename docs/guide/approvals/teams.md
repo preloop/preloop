@@ -41,7 +41,7 @@ Go to **Settings > Teams**.
 
 The current team UI supports:
 
-- creating a team with **Team Name** and **Description**
+- creating a team with **Team name** and **Description**
 - editing that basic metadata later
 - opening a **Team Members** modal to add or remove members
 - opening **Manage Team Roles** to assign RBAC roles to the team

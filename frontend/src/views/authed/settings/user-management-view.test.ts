@@ -2,6 +2,8 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../../api';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 import './user-management-view';
 import { UserManagementView } from './user-management-view';
 
@@ -20,6 +22,7 @@ describe('UserManagementView', () => {
       featureEnabled?: boolean;
       users?: unknown[];
       usersFail?: boolean;
+      createFails?: boolean;
     } = {}
   ) {
     const featureEnabled = opts.featureEnabled !== false;
@@ -46,7 +49,14 @@ describe('UserManagementView', () => {
           });
         }
 
+        if (url.includes('/deactivate') && method === 'POST') {
+          return json({ ...opts.users?.[0], is_active: false });
+        }
+
         if (url.includes('/api/v1/users') && method === 'POST') {
+          if (opts.createFails) {
+            return json({ detail: 'Username already taken' }, 400);
+          }
           return json({ id: 'user-new', username: 'newuser' });
         }
 
@@ -80,6 +90,7 @@ describe('UserManagementView', () => {
     fetchStub?.restore();
     localStorage.clear();
     invalidateApiCaches();
+    resetConfirmDialogForTests();
   });
 
   it('shows the not-available message when feature is disabled', async () => {
@@ -108,10 +119,10 @@ describe('UserManagementView', () => {
     );
     await element.updateComplete;
 
-    // The page is called what the sidebar calls it.
-    expect(element.shadowRoot?.querySelector('h1')?.textContent).to.equal(
-      'Users'
-    );
+    // The page is called what the sidebar calls it, in the shared header.
+    const header = element.shadowRoot?.querySelector('view-header') as any;
+    expect(header?.headerText).to.equal('Users');
+    expect(header?.querySelector('[slot="main-column"] sl-button')).to.exist;
     expect(element.shadowRoot?.textContent).to.contain('Alice Example');
     expect(element.shadowRoot?.textContent).to.contain('alice@example.com');
   });
@@ -224,5 +235,115 @@ describe('UserManagementView', () => {
       );
     expect(postCall, 'expected a POST to /api/v1/users').to.exist;
     expect((element as any).isCreateModalOpen).to.be.false;
+  });
+
+  async function mountWithUser() {
+    const element = (await fixture(
+      html`<user-management-view></user-management-view>`
+    )) as UserManagementView;
+    await waitUntil(
+      () => (element as any).users?.length === 1,
+      'users did not load'
+    );
+    await element.updateComplete;
+    return element;
+  }
+
+  const deactivateCalls = () =>
+    fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/deactivate'));
+
+  it('asks in the console dialog before deactivating, and explains why', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser] });
+    const nativeConfirm = sinon.stub(window, 'confirm');
+    try {
+      const element = await mountWithUser();
+      const deactivate = element.shadowRoot!.querySelector(
+        '.user-actions sl-button[variant="danger"]'
+      ) as HTMLElement;
+
+      deactivate.click();
+      const prompt = await answerConfirmDialog(false);
+      expect(prompt).to.contain('alice@example.com');
+      expect(prompt).to.contain('can no longer sign in');
+      await element.updateComplete;
+      expect(deactivateCalls()).to.have.length(0);
+
+      deactivate.click();
+      await answerConfirmDialog(true);
+      await waitUntil(() => deactivateCalls().length === 1);
+      expect(nativeConfirm.called).to.equal(false);
+    } finally {
+      nativeConfirm.restore();
+    }
+  });
+
+  it('names every icon-only action for assistive tech', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser] });
+    const element = await mountWithUser();
+    const labels = [
+      ...element.shadowRoot!.querySelectorAll('.user-actions sl-icon'),
+    ].map((icon) => icon.getAttribute('label'));
+    expect(labels).to.deep.equal([
+      'Manage roles',
+      'Edit user',
+      'Deactivate user',
+    ]);
+  });
+
+  it('says which fields are missing inside the create dialog', async () => {
+    fetchStub = createFetchStub({ users: [] });
+    const element = (await fixture(
+      html`<user-management-view></user-management-view>`
+    )) as UserManagementView;
+    await waitUntil(() => !(element as any).isLoading, 'still loading');
+    (element as any).openCreateModal();
+    (element as any).newUser = { username: 'bob' };
+    await (element as any).handleCreateUser();
+    await element.updateComplete;
+
+    const dialog = element.shadowRoot!.querySelector(
+      'sl-dialog[label="Create user"]'
+    )!;
+    const alert = dialog.querySelector('sl-alert[role="alert"]');
+    expect(alert?.textContent).to.contain('Enter an email and a password.');
+    expect(element.shadowRoot!.querySelector('div.error')).to.not.exist;
+  });
+
+  it('shows a failed create inside the open dialog, not behind it', async () => {
+    fetchStub = createFetchStub({ users: [], createFails: true });
+    const element = (await fixture(
+      html`<user-management-view></user-management-view>`
+    )) as UserManagementView;
+    await waitUntil(() => !(element as any).isLoading, 'still loading');
+    (element as any).openCreateModal();
+    (element as any).newUser = {
+      username: 'jane',
+      email: 'jane@example.com',
+      password: 'password123',
+    };
+    await (element as any).handleCreateUser();
+    await element.updateComplete;
+
+    expect((element as any).isCreateModalOpen).to.equal(true);
+    const dialog = element.shadowRoot!.querySelector(
+      'sl-dialog[label="Create user"]'
+    )!;
+    expect(dialog.querySelector('sl-alert')?.textContent).to.contain(
+      'Username already taken'
+    );
+    expect(element.shadowRoot!.querySelector('div.error')).to.not.exist;
+  });
+
+  it('lists roles by their display names in the roles dialog', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser] });
+    const element = await mountWithUser();
+    await waitUntil(() => (element as any).roles.length === 1);
+    await element.updateComplete;
+    const box = element.shadowRoot!.querySelector(
+      'sl-dialog[label="Manage roles"] sl-checkbox'
+    );
+    expect(box?.textContent?.trim()).to.equal('Admin');
   });
 });

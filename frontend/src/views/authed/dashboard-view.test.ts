@@ -1130,6 +1130,49 @@ describe('DashboardView', () => {
       ).to.exist;
     });
 
+    it('remembers a dismissed get-started card even before any agent exists', async () => {
+      // An admin who starts with policies or teams dismisses the takeover,
+      // goes elsewhere and comes back: it must not take the Overview again.
+      agentsResponse = { ...agentsResponse, total: 0, items: [] };
+      flowsResponse = [];
+      flowExecutionsResponse = [];
+      runtimeSessionsResponse = { items: [], total: 0 };
+
+      const element = await mountDashboard();
+      await waitUntil(
+        () => element.shadowRoot?.querySelector('.welcome-container'),
+        'get-started card never rendered'
+      );
+      // Decorative: a screen reader must not read out the file name.
+      expect(
+        element
+          .shadowRoot!.querySelector('.welcome-container img')!
+          .getAttribute('alt')
+      ).to.equal('');
+
+      element
+        .shadowRoot!.querySelector<HTMLElement>(
+          '.welcome-container sl-button[aria-label="Dismiss get started"]'
+        )!
+        .click();
+      await element.updateComplete;
+      expect(element.shadowRoot?.querySelector('.welcome-container')).to.not
+        .exist;
+      expect(localStorage.getItem('dashboard_welcome_dismissed')).to.equal(
+        'true'
+      );
+
+      element.remove();
+      const again = await mountDashboard();
+      await waitUntil(
+        () => again['onboardingResolved'],
+        'onboarding never resolved'
+      );
+      await again.updateComplete;
+      expect(again.shadowRoot?.querySelector('.welcome-container')).to.not
+        .exist;
+    });
+
     it('shows both endpoints without a disclosure', async () => {
       const element = await mountLoaded();
 

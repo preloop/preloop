@@ -7,6 +7,8 @@ import {
   toastCount,
   type MockApi,
 } from '../../../test-helpers/capability-api';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 
 const LIST = '/api/v1/accounts/acc-root/subaccounts';
 
@@ -40,6 +42,7 @@ describe('subaccounts-view', () => {
   afterEach(() => {
     api?.restore();
     localStorage.clear();
+    resetConfirmDialogForTests();
   });
 
   it('lists the subaccounts of the current account', async () => {
@@ -65,15 +68,22 @@ describe('subaccounts-view', () => {
     expect(el.shadowRoot!.textContent).to.contain('site=north');
   });
 
-  it('renders nothing and raises no toast when the endpoint is missing', async () => {
+  it('explains, without a toast, when the endpoint is missing', async () => {
     api = mockApi();
     const before = toastCount();
     const el = await fixture<SubaccountsView>(
       html`<subaccounts-view></subaccounts-view>`
     );
     await waitUntil(() => api.callsTo(LIST).length === 1);
-    await waitUntil(() => el.shadowRoot!.childElementCount === 0);
-    expect(el.shadowRoot!.textContent!.trim()).to.equal('');
+    await waitUntil(() => el.shadowRoot!.querySelector('.off-state'));
+    // A bookmarked link gets a title and a reason, not a blank page.
+    expect(
+      (el.shadowRoot!.querySelector('view-header') as any).headerText
+    ).to.equal('Subaccounts');
+    expect(el.shadowRoot!.querySelector('.off-state')!.textContent).to.contain(
+      "aren't available on this deployment"
+    );
+    expect(el.shadowRoot!.querySelector('#new-name')).to.not.exist;
     expect(toastCount()).to.equal(before);
   });
 
@@ -130,6 +140,9 @@ describe('subaccounts-view', () => {
     expect(el.shadowRoot!.querySelector('.error')!.textContent).to.equal(
       'That subaccount is not in this account.'
     );
+    expect(
+      el.shadowRoot!.querySelector('.error')!.getAttribute('role')
+    ).to.equal('alert');
     expect(api.callsTo(`${LIST}/sub-sibling`, 'PATCH')[0].body).to.eql({
       name: 'Renamed',
       tags: {},

@@ -468,6 +468,13 @@ export class PreloopFlowForm extends LitElement {
   @state()
   private formError: string | null = null;
 
+  /** Reference lists ("trackers", "models") that failed to load. */
+  @state()
+  private referenceListsFailed: string[] = [];
+
+  @state()
+  private retryingReferenceLists = false;
+
   @state()
   private routingRules: Array<{
     id: string;
@@ -630,6 +637,17 @@ export class PreloopFlowForm extends LitElement {
       }
     }
 
+    // Trackers and models feed the selects a flow cannot be saved without,
+    // so a failure there is shown (with a retry) instead of an empty list.
+    const failedLists: string[] = [];
+    const remember =
+      (list: string) =>
+      (error: unknown): [] => {
+        console.error(`Failed to load ${list} for the flow form:`, error);
+        failedLists.push(list);
+        return [];
+      };
+
     try {
       const [
         trackers,
@@ -642,8 +660,8 @@ export class PreloopFlowForm extends LitElement {
         account,
         flowsResult,
       ] = await Promise.all([
-        getTrackers().catch(() => []),
-        getAIModels().catch(() => []),
+        getTrackers().catch(remember('trackers')),
+        getAIModels().catch(remember('models')),
         getAllTools().catch(() => []),
         getMCPServers().catch(() => []),
         getAccountAgents({ limit: 100 }).catch(() => ({ items: [] })),
@@ -672,6 +690,7 @@ export class PreloopFlowForm extends LitElement {
       }
       this.trackers = trackers;
       this.models = models;
+      this.referenceListsFailed = failedLists;
       this.availableTools = tools;
       this.mcpServers = servers;
       this.longRunningAgents = agentsRes.items || [];
@@ -764,6 +783,56 @@ export class PreloopFlowForm extends LitElement {
       this._loadingReferenceData = false;
       this.requestUpdate();
     }
+  }
+
+  /**
+   * Fetches the trackers and models again after they failed to load. Only
+   * those two lists: re-running the whole reference load would re-apply a
+   * preset over what the user already typed.
+   */
+  private async retryReferenceLists(): Promise<void> {
+    if (this.retryingReferenceLists) return;
+    this.retryingReferenceLists = true;
+    const failed: string[] = [];
+    try {
+      const [trackers, models] = await Promise.all([
+        getTrackers().catch(() => {
+          failed.push('trackers');
+          return null;
+        }),
+        getAIModels().catch(() => {
+          failed.push('models');
+          return null;
+        }),
+      ]);
+      if (trackers) this.trackers = trackers;
+      if (models) this.models = models;
+      this.referenceListsFailed = failed;
+    } finally {
+      this.retryingReferenceLists = false;
+    }
+  }
+
+  private renderReferenceListsWarning() {
+    if (this.referenceListsFailed.length === 0) return nothing;
+    const lists = this.referenceListsFailed.includes('trackers')
+      ? this.referenceListsFailed.includes('models')
+        ? 'Trackers and models'
+        : 'Trackers'
+      : 'Models';
+    return html`
+      <sl-alert variant="warning" open data-reference-lists-warning>
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        ${lists} could not be loaded, so their lists below may be empty.
+        <sl-button
+          variant="text"
+          size="small"
+          ?loading=${this.retryingReferenceLists}
+          @click=${() => this.retryReferenceLists()}
+          >Try again</sl-button
+        >
+      </sl-alert>
+    `;
   }
 
   private async syncTriggerStateFromFlow(force = false) {
@@ -1195,15 +1264,82 @@ export class PreloopFlowForm extends LitElement {
     };
   }
 
+  /**
+   * Reports a validation error and moves the reader to the field behind it.
+   *
+   * The banner sits at the end of a long form, so on its own it is easy to
+   * miss: focusing and scrolling to the first invalid field shows what to
+   * fix, and the banner's `role="alert"` announces why.
+   */
+  private async failField(selector: string, message: string): Promise<void> {
+    this.formError = message;
+    await this.updateComplete;
+    const field = this.renderRoot.querySelector<HTMLElement>(selector);
+    if (!field) {
+      return;
+    }
+    field.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    field.focus?.({ preventScroll: true });
+  }
+
   private async handleFormSubmit(e: Event) {
     e.preventDefault();
+    // A second click while the parent is still saving must not create a
+    // second flow.
+    if (this.isSaving) {
+      return;
+    }
     this.formError = null;
 
     if (!this.flow.name) {
-      this.formError = 'Flow name is required.';
+      await this.failField('[data-field="name"]', 'Flow name is required.');
       return;
     }
 
+    // A tracker trigger with no tracker or no events would be saved as a
+    // flow that never fires, so it is refused here instead of being sent
+    // with webhook values filled in.
+    if (this.triggerType === 'tracker') {
+      if (!this.flow.trigger_event_source) {
+        await this.failField(
+          '[data-field="tracker"]',
+          'Choose a tracker for this trigger.'
+        );
+        return;
+      }
+      if (!this.flow.trigger_event_types?.length) {
+        await this.failField(
+          '[data-field="events"]',
+          'Choose at least one event that triggers this flow.'
+        );
+        return;
+      }
+    }
+
+    const maxBudget = this.flow.max_budget ?? null;
+    if (
+      maxBudget !== null &&
+      (!Number.isFinite(maxBudget) || maxBudget <= 0 || maxBudget > 1_000_000)
+    ) {
+      await this.failField(
+        '[data-field="max_budget"]',
+        'Spend limit per run must be more than $0 (up to $1,000,000), or blank for no limit.'
+      );
+      return;
+    }
+    const maxIterations = this.flow.max_iterations ?? null;
+    if (
+      maxIterations !== null &&
+      (!Number.isInteger(maxIterations) ||
+        maxIterations < 1 ||
+        maxIterations > 1_000_000)
+    ) {
+      await this.failField(
+        '[data-field="max_iterations"]',
+        'Maximum model calls per run must be a whole number of at least 1, or blank for no limit.'
+      );
+      return;
+    }
     const timeoutSeconds = this.flow.timeout_seconds ?? null;
     if (
       timeoutSeconds !== null &&
@@ -1211,7 +1347,10 @@ export class PreloopFlowForm extends LitElement {
         timeoutSeconds < FLOW_TIMEOUT_MIN_SECONDS ||
         timeoutSeconds > FLOW_TIMEOUT_MAX_SECONDS)
     ) {
-      this.formError = `Execution timeout must be a whole number between ${FLOW_TIMEOUT_MIN_SECONDS} and ${FLOW_TIMEOUT_MAX_SECONDS} seconds, or blank for the deployment default.`;
+      await this.failField(
+        'sl-input[name="timeout_seconds"]',
+        `Execution timeout must be a whole number between ${FLOW_TIMEOUT_MIN_SECONDS} and ${FLOW_TIMEOUT_MAX_SECONDS} seconds, or blank for the deployment default.`
+      );
       return;
     }
 
@@ -1222,9 +1361,11 @@ export class PreloopFlowForm extends LitElement {
         approvalWindowSeconds < APPROVAL_WINDOW_MIN_SECONDS ||
         approvalWindowSeconds > APPROVAL_WINDOW_MAX_SECONDS)
     ) {
-      this.formError =
+      await this.failField(
+        'sl-input[name="approval_window_amount"]',
         'Approval window must be between 1 minute and 30 days, or blank for ' +
-        'the deployment default.';
+          'the deployment default.'
+      );
       return;
     }
 
@@ -1234,10 +1375,15 @@ export class PreloopFlowForm extends LitElement {
         this.flow.name
       );
       if (callableFlowsError) {
-        this.formError = callableFlowsError;
+        await this.failField('[data-callable-flows]', callableFlowsError);
         return;
       }
     }
+
+    // Only a webhook or schedule trigger has a fixed source to fall back to.
+    // A tracker trigger was validated above and is never sent as a webhook.
+    const fallbackSource =
+      this.triggerType === 'tracker' ? undefined : this.triggerType;
 
     this.isSaving = true;
     try {
@@ -1250,8 +1396,10 @@ export class PreloopFlowForm extends LitElement {
         allowed_mcp_servers: this.flow.allowed_mcp_servers || ['preloop-mcp'],
         allowed_mcp_tools: this.flow.allowed_mcp_tools || [],
         ai_model_id: this.flow.ai_model_id || undefined,
-        trigger_event_source: this.flow.trigger_event_source || 'webhook',
-        trigger_event_types: this.flow.trigger_event_types || ['webhook'],
+        trigger_event_source: this.flow.trigger_event_source || fallbackSource,
+        trigger_event_types:
+          this.flow.trigger_event_types ||
+          (fallbackSource ? [fallbackSource] : undefined),
         trigger_organization_id: this.flow.trigger_organization_id || undefined,
         trigger_project_ids: this.flow.trigger_project_ids || undefined,
         // Explicit null (not undefined) so the backend's exclude_unset update
@@ -1266,8 +1414,16 @@ export class PreloopFlowForm extends LitElement {
         // Explicit null clears a saved override and restores the deployment default.
         timeout_seconds: timeoutSeconds,
         approval_window_seconds: approvalWindowSeconds,
-        max_iterations: this.flow.max_iterations || undefined,
-        max_budget: this.flow.max_budget || undefined,
+        // Per-run limits, stored as agent_config.limits and enforced by the
+        // gateway. Sent only when this form holds the field: blank (null)
+        // clears the limit, and a fixture that never loaded it leaves the
+        // stored value alone.
+        ...('max_iterations' in this.flow
+          ? { max_iterations: this.flow.max_iterations ?? null }
+          : {}),
+        ...('max_budget' in this.flow
+          ? { max_budget: this.flow.max_budget ?? null }
+          : {}),
         is_enabled: this.flow.is_enabled ?? true,
         runner_pool: this.normalizedFlowRunnerPool(),
         // Sent only when this form has the field. An unrelated fixture that
@@ -1304,13 +1460,26 @@ export class PreloopFlowForm extends LitElement {
         payload.preset_update_available = false;
       }
 
+      // The parent saves asynchronously. It hands that save back through
+      // `waitUntil`, so the button stays busy (and a second click is
+      // ignored) until the request settles, not just until this event is
+      // dispatched. A listener that never calls it ends the busy state here.
+      const pending: Promise<unknown>[] = [];
       this.dispatchEvent(
         new CustomEvent('flow-submit', {
           bubbles: true,
           composed: true,
-          detail: { flow: payload },
+          detail: {
+            flow: payload,
+            waitUntil: (work: Promise<unknown>) => {
+              pending.push(Promise.resolve(work));
+            },
+          },
         })
       );
+      if (pending.length > 0) {
+        await Promise.allSettled(pending);
+      }
     } catch (e) {
       this.formError =
         e instanceof Error ? e.message : 'Failed to configure flow.';
@@ -2009,7 +2178,7 @@ export class PreloopFlowForm extends LitElement {
       if (model && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(model)) {
         throw new Error(
           hostType === 'cursor'
-            ? 'Cursor model must be a Cursor model id such as grok-4.7-high, or blank for Auto.'
+            ? 'Cursor model must be a Cursor model id, or blank for Auto.'
             : 'Copilot model must be a model alias from the runner profile model_map, or blank for the Copilot default.'
         );
       }
@@ -2769,8 +2938,14 @@ export class PreloopFlowForm extends LitElement {
     const rejected = callableFlowsErrorEntry(this.formError);
 
     return html`
-      <div class="callable-flows" data-callable-flows>
-        <h5>Flows this flow may call</h5>
+      <div
+        class="callable-flows"
+        data-callable-flows
+        role="group"
+        aria-labelledby="callable-flows-heading"
+        tabindex="-1"
+      >
+        <h5 id="callable-flows-heading">Flows this flow may call</h5>
         <p class="callable-flows-help">
           Delegation is refused unless the flow is listed here. Leave a ceiling
           blank for no limit; the server is the authority on both.
@@ -3483,6 +3658,7 @@ export class PreloopFlowForm extends LitElement {
       }
 
       <form @submit=${this.handleFormSubmit}>
+        ${this.renderReferenceListsWarning()}
         ${
           !this.flow.id
             ? html`
@@ -3510,6 +3686,7 @@ export class PreloopFlowForm extends LitElement {
           </div>
           <sl-input
             label="Flow name"
+            data-field="name"
             .value=${this.flow.name || ''}
             @sl-input=${(e: Event) => this.handleInputChange('name', e)}
             required
@@ -3529,12 +3706,8 @@ export class PreloopFlowForm extends LitElement {
           </div>
 
           <div style="margin-bottom: var(--sl-spacing-large);">
-            <label
-              style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
-            >
-              Trigger type
-            </label>
             <sl-radio-group
+              label="Trigger type"
               value=${this.triggerType}
               @sl-change=${(e: any) =>
                 this.handleTriggerTypeChange(e.target.value)}
@@ -3583,6 +3756,8 @@ export class PreloopFlowForm extends LitElement {
                       >
                         <sl-select
                           label="Tracker"
+                          data-field="tracker"
+                          required
                           placeholder="Select a tracker"
                           .value=${this.flow.trigger_event_source || ''}
                           @sl-change=${this.handleTrackerChange}
@@ -3602,7 +3777,7 @@ export class PreloopFlowForm extends LitElement {
                           style="align-self: flex-start; margin-top: -0.25rem; height: auto; padding: 0;"
                         >
                           <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add
-                          New Tracker
+                          new tracker
                         </sl-button>
                       </div>
 
@@ -3651,6 +3826,8 @@ export class PreloopFlowForm extends LitElement {
 
                       <sl-select
                         label="Events"
+                        data-field="events"
+                        required
                         placeholder="Select the events that trigger this flow"
                         multiple
                         .value=${this.flow.trigger_event_types || []}
@@ -3685,12 +3862,8 @@ export class PreloopFlowForm extends LitElement {
             this.longRunningAgents.length > 0
               ? html`
                   <div style="margin-bottom: var(--sl-spacing-large);">
-                    <label
-                      style="display: block; margin-bottom: 0.5rem; font-weight: 500;"
-                    >
-                      Execution mode
-                    </label>
                     <sl-radio-group
+                      label="Execution mode"
                       value=${this.flowExecutionPath}
                       @sl-change=${(e: Event) => {
                         const target = e.target as HTMLInputElement | null;
@@ -3702,11 +3875,11 @@ export class PreloopFlowForm extends LitElement {
                       style="display: flex; gap: var(--sl-spacing-large);"
                     >
                       <sl-radio value="ephemeral"
-                        >Ephemeral (Provision on-demand short-lived
-                        agent)</sl-radio
+                        >On-demand (new sandbox per run)</sl-radio
                       >
                       <sl-radio value="persistent"
-                        >Persistent (Govern persistent agent node)</sl-radio
+                        >Existing agent (a long-running agent you
+                        connected)</sl-radio
                       >
                     </sl-radio-group>
                   </div>
@@ -3787,9 +3960,9 @@ export class PreloopFlowForm extends LitElement {
                     Cursor runs as cursor-agent on the private runner, using
                     that machine's Cursor login. Preloop's model catalog is not
                     Cursor's catalog, so it is hidden here. Leave Cursor model
-                    blank and cursor-agent uses Auto, Cursor's own selector.
-                    Auto is not Grok 4.7. To pin Grok 4.7, enter grok-4.7-high
-                    and map that same id in the runner profile model_map.
+                    blank and cursor-agent uses Auto, Cursor's own selector. To
+                    pin a model, enter its Cursor model id and map that same id
+                    in the runner profile model_map.
                   </p>
                   <sl-input
                     label="Cursor model"
@@ -3988,9 +4161,8 @@ export class PreloopFlowForm extends LitElement {
                   >
                     <sl-input
                       label="Git author name"
-                      .value=${
-                        this.flow.git_clone_config?.git_user_name || 'Preloop'
-                      }
+                      placeholder="Preloop"
+                      .value=${this.flow.git_clone_config?.git_user_name || ''}
                       @sl-input=${(e: any) => {
                         this.flow.git_clone_config = {
                           ...this.flow.git_clone_config,
@@ -4001,10 +4173,8 @@ export class PreloopFlowForm extends LitElement {
 
                     <sl-input
                       label="Git author email"
-                      .value=${
-                        this.flow.git_clone_config?.git_user_email ||
-                        'git@preloop.ai'
-                      }
+                      placeholder="git@preloop.ai"
+                      .value=${this.flow.git_clone_config?.git_user_email || ''}
                       @sl-input=${(e: any) => {
                         this.flow.git_clone_config = {
                           ...this.flow.git_clone_config,
@@ -4015,9 +4185,8 @@ export class PreloopFlowForm extends LitElement {
 
                     <sl-input
                       label="Source branch"
-                      .value=${
-                        this.flow.git_clone_config?.source_branch || 'main'
-                      }
+                      placeholder="main"
+                      .value=${this.flow.git_clone_config?.source_branch || ''}
                       @sl-input=${(e: any) => {
                         this.flow.git_clone_config = {
                           ...this.flow.git_clone_config,
@@ -4145,17 +4314,31 @@ export class PreloopFlowForm extends LitElement {
 
             <sl-input
               type="number"
-              label="Maximum iterations"
-              .value=${this.flow.max_iterations || '30'}
-              @sl-input=${(e: Event) =>
-                this.handleInputChange('max_iterations', e)}
+              label="Spend limit per run (USD)"
+              data-field="max_budget"
+              min="0.01"
+              step="0.01"
+              placeholder="No limit"
+              help-text="The run stops when its estimated model spend reaches this amount. Leave blank for no limit."
+              .value=${this.flow.max_budget == null ? '' : String(this.flow.max_budget)}
+              @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
             ></sl-input>
 
             <sl-input
               type="number"
-              label="Token budget ($)"
-              .value=${this.flow.max_budget || '10'}
-              @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
+              label="Maximum model calls per run"
+              data-field="max_iterations"
+              min="1"
+              step="1"
+              placeholder="No limit"
+              help-text="The run stops after this many model requests (agent iterations). Leave blank for no limit."
+              .value=${
+                this.flow.max_iterations == null
+                  ? ''
+                  : String(this.flow.max_iterations)
+              }
+              @sl-input=${(e: Event) =>
+                this.handleInputChange('max_iterations', e)}
             ></sl-input>
           </div>
         </sl-card>
@@ -4163,7 +4346,7 @@ export class PreloopFlowForm extends LitElement {
         ${
           this.formError
             ? html`
-                <sl-alert variant="danger" open>
+                <sl-alert variant="danger" open role="alert" data-form-error>
                   <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
                   <strong>Error:</strong> ${this.formError}
                 </sl-alert>

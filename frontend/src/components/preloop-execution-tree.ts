@@ -164,7 +164,6 @@ export class PreloopExecutionTree extends LitElement {
       display: inline-block;
       width: 1.5rem;
     }
-    .empty,
     .error {
       color: var(--sl-color-neutral-600);
       font-size: var(--sl-font-size-small);
@@ -351,10 +350,9 @@ export class PreloopExecutionTree extends LitElement {
     const rollup = this.tree.rollup;
     const children = this.childrenOf(this.tree.execution_id);
     if (children.length === 0) {
-      // The overwhelming majority of runs. One line, no table, no headings.
-      return html`<div class="empty" data-testid="execution-tree-empty">
-        No delegated executions.
-      </div>`;
+      // The overwhelming majority of runs. A "nothing delegated" line only
+      // pushed the error and the tabs further down, so nothing renders.
+      return nothing;
     }
 
     return html`

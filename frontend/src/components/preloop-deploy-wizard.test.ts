@@ -1,4 +1,10 @@
-import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import {
+  html,
+  fixture,
+  fixtureCleanup,
+  expect,
+  waitUntil,
+} from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './preloop-deploy-wizard';
@@ -1176,5 +1182,112 @@ describe('PreloopDeployWizard step progress and phone layout', () => {
     (custom as any).customSubStep = 'result';
     await custom.updateComplete;
     expectNoHorizontalOverflow(custom, 'custom-result');
+  });
+});
+
+/**
+ * The event-driven flow step saves through the flow form. The form only stays
+ * busy while the parent hands its save back through `waitUntil`, so the
+ * wizard has to: otherwise Save re-enables while the create is in flight and
+ * a double click creates two flows.
+ */
+describe('PreloopDeployWizard flow step save', () => {
+  let fetchStub: sinon.SinonStub;
+  let finishCreate: ((response: Response) => void) | null;
+  let createCalls: number;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    finishCreate = null;
+    createCalls = 0;
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/api/v1/flows') && init?.method === 'POST') {
+          createCalls += 1;
+          return new Promise<Response>((resolve) => {
+            finishCreate = resolve;
+          });
+        }
+        if (url.includes('/api/v1/agents')) {
+          return new Response(JSON.stringify({ items: [] }));
+        }
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    );
+  });
+
+  afterEach(() => {
+    fixtureCleanup();
+    fetchStub.restore();
+    localStorage.clear();
+  });
+
+  async function mountFlowStep(): Promise<{
+    wizard: PreloopDeployWizard;
+    form: any;
+  }> {
+    const wizard = await fixture<PreloopDeployWizard>(
+      html`<preloop-deploy-wizard
+        initial-path="deploy"
+      ></preloop-deploy-wizard>`
+    );
+    (wizard as any).deploySubStep = 'flow-config';
+    await wizard.updateComplete;
+    const form = wizard.shadowRoot!.querySelector('preloop-flow-form') as any;
+    expect(form, 'flow form renders').to.exist;
+    await form.updateComplete;
+    while (form._loadingReferenceData) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    form.flow = { ...form.flow, name: 'Inbound hook' };
+    await form.updateComplete;
+    return { wizard, form };
+  }
+
+  it('keeps the form busy until the create settles and creates one flow on a double click', async () => {
+    const { wizard, form } = await mountFlowStep();
+    const success = sinon.spy();
+    wizard.addEventListener('deploy-flow-success', success);
+
+    const first = form.handleFormSubmit(new Event('submit'));
+    await waitUntil(() => createCalls === 1, 'create request sent');
+    expect(form.isSaving, 'busy while the create is pending').to.equal(true);
+
+    await form.handleFormSubmit(new Event('submit'));
+    expect(createCalls, 'second click while saving').to.equal(1);
+
+    finishCreate!(
+      new Response(JSON.stringify({ id: 'flow-1', name: 'Inbound hook' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    await first;
+    expect(form.isSaving, 'busy ends once the create settles').to.equal(false);
+    expect(success.calledOnce).to.equal(true);
+    expect(success.firstCall.args[0].detail.flow.id).to.equal('flow-1');
+  });
+
+  it('shows a failed create on the form once the request settles', async () => {
+    const { form } = await mountFlowStep();
+
+    const first = form.handleFormSubmit(new Event('submit'));
+    await waitUntil(() => createCalls === 1, 'create request sent');
+    expect(form.isSaving).to.equal(true);
+
+    finishCreate!(
+      new Response(JSON.stringify({ detail: 'Flow name already in use' }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    await first;
+    expect(form.isSaving).to.equal(false);
+    expect(form.formError).to.contain('Flow name already in use');
   });
 });

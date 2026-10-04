@@ -6,6 +6,7 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { DEFAULT_THEME, Theme } from '../../../theme';
+import '../../../components/view-header';
 
 @customElement('appearance-view')
 export class AppearanceView extends LitElement {

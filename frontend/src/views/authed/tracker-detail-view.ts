@@ -52,6 +52,7 @@ import { confirmDialog } from '../../components/confirm-dialog';
 import { trackerKindLabel } from '../../components/tracker-list';
 import { getStatusVariant } from '../../utils/verdict';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import '../../components/add-tracker-modal';
 
 /** Where the last project read on a tracker is remembered, per session. */
 const PROJECT_MEMORY_KEY = 'preloop.tracker.project.';

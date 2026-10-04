@@ -69,6 +69,10 @@ import {
 } from '../../components/tools-editor-component';
 import type { GatewayUsageByTool } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import { confirmDialog, showToast } from '../../components/confirm-dialog';
+import { ruleActionLabel } from '../../utils/rule-actions';
+import { Router } from '../../router';
+import '../../components/view-header';
 
 type ToolsTab = 'mcp' | 'native';
 
@@ -1357,8 +1361,22 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleDeleteRule(e: CustomEvent) {
-    const { rule } = e.detail;
-    if (!confirm('Delete this access rule? This cannot be undone.')) {
+    const { rule, tool } = e.detail as {
+      rule: AccessRuleSummary;
+      tool?: { name?: string };
+    };
+    const toolName = tool?.name;
+    const confirmed = await confirmDialog({
+      title: 'Delete this access rule?',
+      message: `The ${ruleActionLabel(rule.action).toLowerCase()} rule${
+        toolName ? ` on ${toolName}` : ''
+      } stops applying as soon as it is deleted. This cannot be undone.`,
+      detail:
+        'Calls it matched fall through to the next rule, or to the default when no other rule matches.',
+      confirmLabel: 'Delete rule',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -1491,7 +1509,28 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     input.click();
   }
 
+  /**
+   * Apply a policy YAML file, after saying what it replaces.
+   *
+   * Tools has no diff of its own, so the confirm points at the Policies page,
+   * whose Import shows one before anything changes.
+   */
   private async _importFile(file: File) {
+    const confirmed = await confirmDialog({
+      title: 'Apply this configuration?',
+      message: `Importing ${file.name} replaces the matching MCP servers, approval workflows and access rules with the ones in the file. This page applies it without a preview.`,
+      detail:
+        'To see a diff before anything changes, cancel and use Import YAML on the Policies page.',
+      confirmLabel: 'Apply file',
+      variant: 'danger',
+    });
+    if (!confirmed) {
+      showToast('Nothing was imported.', 'neutral', {
+        label: 'Preview on Policies',
+        onClick: () => Router.go('/console/policies'),
+      });
+      return;
+    }
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -1508,6 +1547,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         );
       }
 
+      showToast(`Imported ${file.name}.`, 'success');
       await this.loadData();
     } catch (err: any) {
       this.error = err.message || 'Failed to import configuration';
@@ -1532,11 +1572,20 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleDeletePolicy(policy: ApprovalWorkflow) {
-    if (
-      !confirm(
-        `Delete approval workflow "${policy.name}"? This cannot be undone.`
-      )
-    ) {
+    const usedBy = this.tools.filter((tool) =>
+      this._toolUsesWorkflow(tool, policy.id)
+    ).length;
+    const confirmed = await confirmDialog({
+      title: 'Delete this approval workflow?',
+      message: `"${policy.name}" will be deleted. This cannot be undone.`,
+      detail:
+        usedBy > 0
+          ? `${usedBy} ${usedBy === 1 ? 'tool uses' : 'tools use'} it for approvals. Their rules are unlinked from it, so check that each still routes approvals where you expect.`
+          : 'No tool on this page uses it.',
+      confirmLabel: 'Delete workflow',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
     try {
@@ -2037,7 +2086,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           >
             <sl-option value="with_rules">With rules</sl-option>
             <sl-option value="no_rules">No rules</sl-option>
-            <sl-option value="require_approval">Requires approval</sl-option>
+            <sl-option value="require_approval">Require approval</sl-option>
           </sl-select>
           <sl-select
             class="workflow-filter"
@@ -2203,7 +2252,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           >
             <sl-option value="with_rules">With rules</sl-option>
             <sl-option value="no_rules">No rules</sl-option>
-            <sl-option value="require_approval">Requires approval</sl-option>
+            <sl-option value="require_approval">Require approval</sl-option>
             <sl-option value="allowed">Allowed</sl-option>
             <sl-option value="blocked">Blocked</sl-option>
           </sl-select>
@@ -2304,7 +2353,9 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             Connect an agent
           </sl-button>
 
-          <sl-tooltip content="Import configuration from YAML">
+          <sl-tooltip
+            content="Apply a configuration YAML file (no preview; Policies shows a diff first)"
+          >
             <sl-button size="small" @click=${this._triggerImport}>
               <sl-icon slot="prefix" name="upload"></sl-icon>
               Import

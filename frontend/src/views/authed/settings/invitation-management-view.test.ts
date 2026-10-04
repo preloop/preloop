@@ -2,6 +2,8 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../../api';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 import './invitation-management-view';
 import type { InvitationManagementView } from './invitation-management-view';
 
@@ -46,6 +48,10 @@ describe('InvitationManagementView', () => {
           });
         }
 
+        if (url.includes('/api/v1/invitations/') && method === 'DELETE') {
+          return new Response(null, { status: 204 });
+        }
+
         if (url.includes('/api/v1/teams')) {
           return json({ teams: [], total: 0 });
         }
@@ -73,6 +79,7 @@ describe('InvitationManagementView', () => {
     fetchStub?.restore();
     localStorage.clear();
     invalidateApiCaches();
+    resetConfirmDialogForTests();
   });
 
   it('shows the not-available message when feature is disabled', async () => {
@@ -98,10 +105,10 @@ describe('InvitationManagementView', () => {
     await waitUntil(() => !(element as any).isLoading, 'still loading');
     await element.updateComplete;
 
-    // The page is called what the sidebar calls it.
-    expect(element.shadowRoot?.querySelector('h1')?.textContent).to.equal(
-      'Invitations'
-    );
+    // The page is called what the sidebar calls it, in the shared header.
+    expect(
+      (element.shadowRoot?.querySelector('view-header') as any)?.headerText
+    ).to.equal('Invitations');
     expect(element.shadowRoot?.textContent).to.contain('No invitations found');
   });
 
@@ -165,5 +172,40 @@ describe('InvitationManagementView', () => {
       .find((c) => String(c.args[0]).includes('status=accepted'));
     expect(acceptedCall, 'expected a request filtered by status=accepted').to
       .exist;
+  });
+
+  it('asks before cancelling an invitation', async () => {
+    fetchStub = createFetchStub({ invitations: [sampleInvitation] });
+    const nativeConfirm = sinon.stub(window, 'confirm');
+    try {
+      const element = (await fixture(
+        html`<invitation-management-view></invitation-management-view>`
+      )) as InvitationManagementView;
+      await waitUntil(() => (element as any).invitations?.length === 1);
+      await element.updateComplete;
+      const deletes = () =>
+        fetchStub
+          .getCalls()
+          .filter((call) => call.args[1]?.method === 'DELETE');
+      const cancel = element.shadowRoot!.querySelector(
+        '.invitation-actions sl-button[variant="danger"]'
+      ) as HTMLElement;
+      expect(cancel.querySelector('sl-icon')?.getAttribute('label')).to.equal(
+        'Cancel invitation'
+      );
+
+      cancel.click();
+      const prompt = await answerConfirmDialog(false);
+      expect(prompt).to.contain('invitee@example.com');
+      expect(prompt).to.contain('stops working');
+      expect(deletes()).to.have.length(0);
+
+      cancel.click();
+      await answerConfirmDialog(true);
+      await waitUntil(() => deletes().length === 1);
+      expect(nativeConfirm.called).to.equal(false);
+    } finally {
+      nativeConfirm.restore();
+    }
   });
 });

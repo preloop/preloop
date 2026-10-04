@@ -1290,6 +1290,7 @@ export class AddAIModelModal extends LitElement {
                       ? html`
                           <sl-input
                             type="password"
+                            password-toggle
                             label="Bedrock API Key"
                             data-field="bedrock_api_key"
                             .value=${this._bedrockApiKey}
@@ -1335,6 +1336,7 @@ export class AddAIModelModal extends LitElement {
                           </sl-input>
                           <sl-input
                             type="password"
+                            password-toggle
                             label="AWS Secret Access Key"
                             data-field="bedrock_secret_access_key"
                             .value=${this._bedrockSecretAccessKey}
@@ -1354,6 +1356,7 @@ export class AddAIModelModal extends LitElement {
                           ></sl-input>
                           <sl-input
                             type="password"
+                            password-toggle
                             label="AWS Session Token"
                             data-field="bedrock_session_token"
                             .value=${this._bedrockSessionToken}
@@ -1370,7 +1373,7 @@ export class AddAIModelModal extends LitElement {
                         `
                   }
                   <sl-input
-                    label="AWS Region"
+                    label="AWS region"
                     data-field="bedrock_region"
                     .value=${this._bedrockRegion}
                     @sl-input=${(e: Event) => {
@@ -1434,6 +1437,7 @@ export class AddAIModelModal extends LitElement {
                   <sl-input
                     class="full-width"
                     type="password"
+                    password-toggle
                     label="API key"
                     ?hidden=${this._isAzureEntra}
                     data-field="api_key"

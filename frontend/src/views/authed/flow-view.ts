@@ -1,4 +1,4 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -24,7 +24,10 @@ import {
   formatRelativeTime,
 } from '../../utils/date';
 import { executionDurationText } from '../../utils/execution';
-import { executionStatusLabel } from '../../utils/execution-presentation';
+import {
+  executionStatusLabel,
+  executionStatusVariant,
+} from '../../utils/execution-presentation';
 import { flowTriggerSummary } from '../../utils/flow-trigger';
 import { getAgentKindPresentation } from '../../utils/agent-kinds';
 import {
@@ -57,6 +60,7 @@ import { getTrackerEventOptions } from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import '../../components/capability-extension';
+import '../../components/view-header';
 
 /**
  * Runtime ids as the product spells them.
@@ -67,6 +71,52 @@ import '../../components/capability-extension';
  * fall back to the shared agent-kind table, then to the id itself, which is
  * still more use than an empty chip.
  */
+/**
+ * The reference lists the detail page loads next to the flow, in the order
+ * the warning names them. Each is fetched (and retried) on its own, so one
+ * list that is down does not blank the others or force a full reload.
+ */
+const REFERENCE_LISTS = [
+  'trackers',
+  'models',
+  'tools',
+  'mcpServers',
+  'organizations',
+  'projects',
+] as const;
+
+type ReferenceList = (typeof REFERENCE_LISTS)[number];
+
+const REFERENCE_LIST_LABELS: Record<ReferenceList, string> = {
+  trackers: 'trackers',
+  models: 'models',
+  tools: 'tools',
+  mcpServers: 'MCP servers',
+  organizations: 'organizations',
+  projects: 'projects',
+};
+
+const REFERENCE_LIST_FETCHERS: Record<ReferenceList, () => Promise<any[]>> = {
+  trackers: () => getTrackers(),
+  models: () => getAIModels(),
+  tools: () => getAllTools(),
+  mcpServers: () => getMCPServers(),
+  organizations: () => listOrganizations(),
+  projects: () => listProjects(),
+};
+
+/** "Trackers", "Trackers and projects", "Trackers, models and projects". */
+export function referenceListsSentence(
+  lists: readonly ReferenceList[]
+): string {
+  const labels = lists.map((list) => REFERENCE_LIST_LABELS[list]);
+  const joined =
+    labels.length <= 1
+      ? labels.join('')
+      : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+  return joined.charAt(0).toUpperCase() + joined.slice(1);
+}
+
 const FLOW_RUNTIME_LABELS: Record<string, string> = {
   codex: 'Codex CLI',
   gemini: 'Gemini CLI',
@@ -120,6 +170,18 @@ export class FlowView extends LitElement {
          (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
+      }
+      /* Named for a screen reader where a heading already says what it is. */
+      .sr-label::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
       }
       /* The subject column takes the slack: fixed layout plus a zero max
          width makes the cell shrink to its share and ellipsise inside it,
@@ -260,6 +322,20 @@ export class FlowView extends LitElement {
   @state()
   private flowReady = false;
 
+  /**
+   * Why the flow itself could not be loaded (deleted, no access, server
+   * error). Set instead of leaving the page on an endless spinner.
+   */
+  @state()
+  private loadError: string | null = null;
+
+  /** The reference lists that failed to load for the detail page. */
+  @state()
+  private referenceListsFailed: ReferenceList[] = [];
+
+  @state()
+  private retryingReferenceLists = false;
+
   @state() private governanceOpened = false;
 
   @state()
@@ -357,6 +433,8 @@ export class FlowView extends LitElement {
   private async loadFlowData(urlParams: URLSearchParams) {
     const generation = ++this.flowLoadGeneration;
     this.flowReady = false;
+    this.loadError = null;
+    this.referenceListsFailed = [];
     this.governanceOpened = false;
     this._formInstanceId += 1;
 
@@ -364,7 +442,20 @@ export class FlowView extends LitElement {
 
     if (this.flowId) {
       this.isNew = false;
-      const flow = await getFlow(this.flowId);
+      let flow: Flow;
+      try {
+        flow = await getFlow(this.flowId);
+      } catch (error) {
+        if (generation !== this.flowLoadGeneration) return;
+        // A deleted flow, a stale link, no access or a server error: say so
+        // and offer a way back instead of spinning forever.
+        this.loadError =
+          error instanceof Error && error.message
+            ? error.message
+            : 'The flow could not be loaded.';
+        this.flowReady = true;
+        return;
+      }
       if (generation !== this.flowLoadGeneration) return;
       this.flow = flow;
       if (!this.isEditing) this.flowReady = true;
@@ -395,30 +486,20 @@ export class FlowView extends LitElement {
 
       this._loadingReferenceData = true;
       try {
-        const [
-          trackers,
-          models,
-          tools,
-          servers,
-          allOrganizations,
-          allProjects,
-        ] = await Promise.all([
-          getTrackers(),
-          getAIModels(),
-          this.isEditing ? getAllTools() : Promise.resolve([]),
-          this.isEditing ? getMCPServers() : Promise.resolve([]),
-          listOrganizations(),
-          listProjects(),
-        ]);
+        // Tools and MCP servers only feed the editor.
+        if (!this.isEditing) {
+          this.availableTools = [];
+          this.mcpServers = [];
+        }
+        const failed = await this.loadReferenceLists(
+          REFERENCE_LISTS.filter(
+            (list) =>
+              this.isEditing || (list !== 'tools' && list !== 'mcpServers')
+          ),
+          generation
+        );
         if (generation !== this.flowLoadGeneration) return;
-        this.trackers = trackers;
-        this.models = models;
-        this.availableTools = tools;
-        this.mcpServers = servers;
-        this.organizations = allOrganizations;
-        this.projects = allProjects;
-      } catch (error) {
-        console.error('Failed to load reference data:', error);
+        this.referenceListsFailed = failed;
       } finally {
         this._loadingReferenceData = false;
       }
@@ -636,6 +717,10 @@ export class FlowView extends LitElement {
       `;
     }
 
+    if (this.loadError) {
+      return this.renderLoadError(this.loadError);
+    }
+
     if (!this.isNew && !this.isEditing) {
       // View mode - show flow details
       return this.renderFlowDetails();
@@ -644,7 +729,7 @@ export class FlowView extends LitElement {
     // Edit/Create mode - show form
     return html`
       <view-header
-        headerText="${this.isNew ? 'Create Flow' : 'Edit Flow'}"
+        headerText="${this.isNew ? 'Create flow' : 'Edit flow'}"
         width="wide"
       >
         <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
@@ -663,6 +748,138 @@ export class FlowView extends LitElement {
           ${this.renderForm()} ${this.isNew ? '' : this.renderGovernanceCard()}
         </div>
       </div>
+    `;
+  }
+
+  /**
+   * Fetch the given reference lists side by side, keeping each list that
+   * loads. Returns the lists that failed, in warning order. Nothing is
+   * assigned once a newer load has started.
+   */
+  private async loadReferenceLists(
+    lists: readonly ReferenceList[],
+    generation: number
+  ): Promise<ReferenceList[]> {
+    const failed = new Set<ReferenceList>();
+    await Promise.all(
+      lists.map(async (list) => {
+        try {
+          const items = await REFERENCE_LIST_FETCHERS[list]();
+          if (generation === this.flowLoadGeneration) {
+            this.assignReferenceList(list, items);
+          }
+        } catch (error) {
+          console.error(
+            `Failed to load ${REFERENCE_LIST_LABELS[list]} for the flow page:`,
+            error
+          );
+          failed.add(list);
+        }
+      })
+    );
+    return REFERENCE_LISTS.filter((list) => failed.has(list));
+  }
+
+  private assignReferenceList(list: ReferenceList, items: any[]): void {
+    switch (list) {
+      case 'trackers':
+        this.trackers = items;
+        break;
+      case 'models':
+        this.models = items;
+        break;
+      case 'tools':
+        this.availableTools = items;
+        break;
+      case 'mcpServers':
+        this.mcpServers = items;
+        break;
+      case 'organizations':
+        this.organizations = items;
+        break;
+      case 'projects':
+        this.projects = items;
+        break;
+    }
+  }
+
+  /**
+   * Retry only the reference lists that failed. Reloading the whole page
+   * would refetch the flow and every list that already loaded.
+   */
+  private async retryReferenceLists(): Promise<void> {
+    if (this.retryingReferenceLists) return;
+    const generation = this.flowLoadGeneration;
+    this.retryingReferenceLists = true;
+    try {
+      const failed = await this.loadReferenceLists(
+        this.referenceListsFailed,
+        generation
+      );
+      if (generation === this.flowLoadGeneration) {
+        this.referenceListsFailed = failed;
+      }
+    } finally {
+      this.retryingReferenceLists = false;
+    }
+  }
+
+  /** Reloads the flow and its reference data after a failed load. */
+  private retryLoad = () => {
+    void this.loadFlowData(new URLSearchParams(window.location.search));
+  };
+
+  /** The page shown when the flow itself could not be loaded. */
+  private renderLoadError(message: string) {
+    return html`
+      <view-header headerText="Flow" width="wide">
+        <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
+          <sl-button
+            variant="text"
+            size="small"
+            href="/console/flows"
+            style="margin-left: -12px;"
+          >
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Flows
+          </sl-button>
+        </div>
+      </view-header>
+      <div class="column-layout wide">
+        <div class="main-column">
+          <sl-alert variant="danger" open role="alert" data-flow-load-error>
+            <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+            <strong>Could not load this flow</strong><br />
+            ${message}
+            <div style="margin-top: var(--sl-spacing-small);">
+              <sl-button size="small" @click=${this.retryLoad}>
+                <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+                Try again
+              </sl-button>
+            </div>
+          </sl-alert>
+        </div>
+      </div>
+    `;
+  }
+
+  /** Inline warning naming the reference lists that could not be loaded. */
+  private renderReferenceDataWarning() {
+    if (this.referenceListsFailed.length === 0) return nothing;
+    const lists = referenceListsSentence(this.referenceListsFailed);
+    return html`
+      <sl-alert variant="warning" open data-reference-data-warning>
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        ${`${lists} could not be loaded.`} Some names on this page may be
+        missing.
+        <sl-button
+          variant="text"
+          size="small"
+          ?loading=${this.retryingReferenceLists}
+          @click=${() => this.retryReferenceLists()}
+          style="margin-left: var(--sl-spacing-2x-small);"
+          >Try again</sl-button
+        >
+      </sl-alert>
     `;
   }
 
@@ -762,6 +979,7 @@ export class FlowView extends LitElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
+          ${this.renderReferenceDataWarning()}
           <!-- Flow Info Card -->
           <sl-card>
             <div slot="header">
@@ -919,6 +1137,8 @@ ${this.flow.review_instructions}</pre>
                       >
                         <sl-input
                           readonly
+                          class="sr-label"
+                          label="Webhook URL"
                           style="flex: 1;"
                           value="${
                             window.location.origin
@@ -1278,8 +1498,12 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               ? html`
                   <strong>Last run:</strong>
                   <span>
-                    <sl-badge variant=${this.getStatusVariant(lastRun.status)}>
-                      ${lastRun.status}
+                    <sl-badge
+                      class="chip"
+                      pill
+                      variant=${this.getStatusVariant(lastRun.status)}
+                    >
+                      ${executionStatusLabel(lastRun.status)}
                     </sl-badge>
                     <span
                       style="color: var(--sl-color-neutral-600); margin-left: var(--sl-spacing-x-small);"
@@ -1295,17 +1519,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     `;
   }
 
+  /** The executions pages' taxonomy, so a run reads the same everywhere. */
   getStatusVariant(status: string) {
-    switch (status) {
-      case 'SUCCEEDED':
-        return 'success';
-      case 'FAILED':
-        return 'danger';
-      case 'RUNNING':
-        return 'primary';
-      default:
-        return 'neutral';
-    }
+    return executionStatusVariant(status);
   }
 
   private extractTriggerEventPlaceholders(): string[] {
@@ -1479,29 +1695,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       () => html`
         <preloop-flow-form
           .flow=${this.flow}
-          @flow-submit=${async (e: CustomEvent) => {
-            const payload = e.detail.flow;
-            try {
-              if (this.isNew) {
-                if (this.sourcePresetId) {
-                  payload.source_preset_id = this.sourcePresetId;
-                  payload.prompt_customized = false;
-                  payload.tools_customized = false;
-                  payload.preset_update_available = false;
-                }
-                const newFlow = await createFlow(payload);
-                Router.go(`/console/flows/${newFlow.id}`);
-              } else {
-                await updateFlow(this.flowId!, payload);
-                Router.go(`/console/flows/${this.flowId}`);
-              }
-            } catch (error: any) {
-              const target = e.target as { formError?: string } | null;
-              if (target) {
-                target.formError =
-                  error?.message || 'Failed to save flow. Please try again.';
-              }
-            }
+          @flow-submit=${(e: CustomEvent) => {
+            // Hand the save back so the form's button stays busy until the
+            // request settles; a double click must not create two flows.
+            const save = this.saveFlowFromForm(e);
+            e.detail.waitUntil?.(save);
           }}
           @flow-cancel=${() =>
             Router.go(
@@ -1510,6 +1708,33 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         ></preloop-flow-form>
       `
     );
+  }
+
+  private async saveFlowFromForm(e: CustomEvent): Promise<void> {
+    const payload = e.detail.flow;
+    // Read the form now: once dispatch ends, a target inside this view's
+    // shadow root is cleared, so a later server error had nowhere to go.
+    const form = e.target as { formError?: string } | null;
+    try {
+      if (this.isNew) {
+        if (this.sourcePresetId) {
+          payload.source_preset_id = this.sourcePresetId;
+          payload.prompt_customized = false;
+          payload.tools_customized = false;
+          payload.preset_update_available = false;
+        }
+        const newFlow = await createFlow(payload);
+        Router.go(`/console/flows/${newFlow.id}`);
+      } else {
+        await updateFlow(this.flowId!, payload);
+        Router.go(`/console/flows/${this.flowId}`);
+      }
+    } catch (error: any) {
+      if (form) {
+        form.formError =
+          error?.message || 'Failed to save flow. Please try again.';
+      }
+    }
   }
 
   handleInputChange(field: keyof Flow, e: Event) {
@@ -2113,16 +2338,12 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             webhook URL below.
           </p>
           <div>
-            <label
-              style="display: block; margin-bottom: var(--sl-spacing-2x-small); font-weight: 600;"
-            >
-              Webhook URL
-            </label>
             <div
-              style="display: flex; gap: var(--sl-spacing-small); align-items: center;"
+              style="display: flex; gap: var(--sl-spacing-small); align-items: flex-end;"
             >
               <sl-input
                 readonly
+                label="Webhook URL"
                 style="flex: 1;"
                 value="${window.location.origin}/api/v1/webhooks/flows/${
                   this.flowId

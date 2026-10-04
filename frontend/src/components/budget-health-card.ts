@@ -6,6 +6,7 @@ import type {
   ManagedAgentSummary,
 } from '../types';
 import { budgetTrackStyles } from '../styles/budget-track';
+import { formatUsd, formatUsdExact } from '../utils/money';
 import {
   budgetPeriodLabel,
   budgetPeriodWindow,
@@ -159,9 +160,7 @@ export class BudgetHealthCard extends LitElement {
   ];
 
   private formatCurrency(value?: number | null): string {
-    const amount = Number(value || 0);
-    if (amount === 0) return '$0.00';
-    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
+    return formatUsd(value);
   }
 
   private formatBudgetPeriod(period: string): string {
@@ -410,7 +409,10 @@ export class BudgetHealthCard extends LitElement {
             <sl-icon name=${icon} aria-hidden="true"></sl-icon>
             ${label}
           </span>
-          <span class="row-value${limitExceeded ? ' exceeded' : ''}">
+          <span
+            class="row-value${limitExceeded ? ' exceeded' : ''}"
+            title=${formatUsdExact(spend)}
+          >
             ${this.formatCurrency(spend)}
             ${
               maxLimit > 0
@@ -431,6 +433,7 @@ export class BudgetHealthCard extends LitElement {
                   aria-valuemin="0"
                   aria-valuemax="100"
                   aria-valuenow=${Math.round(fillPercent)}
+                  aria-valuetext=${`${this.formatCurrency(spend)} of ${this.formatCurrency(maxLimit)}`}
                 >
                   ${
                     successFillPercent > 0

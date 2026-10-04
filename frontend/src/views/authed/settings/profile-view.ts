@@ -10,6 +10,7 @@ import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '../../../components/user-avatar';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import '../../../components/view-header';
 
 @customElement('profile-view')
 export class ProfileView extends LitElement {

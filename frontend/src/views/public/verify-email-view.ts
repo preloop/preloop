@@ -115,7 +115,7 @@ export class VerifyEmailView extends LitElement {
             ${
               this.signedIn
                 ? 'Your email is verified and you are signed in.'
-                : 'Your email has been successfully verified. You can now log in.'
+                : 'Your email has been successfully verified. You can now sign in.'
             }
           </sl-alert>
           <div class="form-links">

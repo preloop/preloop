@@ -13,6 +13,8 @@
  * wrapper around one.
  */
 
+import { historyStateForNavigation } from '../utils/in-app-history';
+
 /** The `location` object handed to actions, guards and routed elements. */
 export interface RouterLocation {
   /** Pathname of the resolved URL, without search or hash. */
@@ -192,7 +194,13 @@ export function baseHrefPrefix(): string {
 function compilePath(path: string): { pattern: RegExp; keys: string[] } {
   const keys: string[] = [];
   if (path.includes('(.*)')) {
-    return { pattern: /^\/.*$/u, keys };
+    // The wildcard is relative to where it sits: `/(.*)` matches anything,
+    // `/console/(.*)` only what is under the console. Treating every `(.*)`
+    // as match-all let a nested catch-all swallow unrelated top-level paths.
+    const escape = (text: string) =>
+      text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const source = normalizePath(path).split('(.*)').map(escape).join('.*');
+    return { pattern: new RegExp('^' + source + '$', 'u'), keys };
   }
   const source = normalizePath(path)
     .split('/')
@@ -750,8 +758,12 @@ export class Router {
       window.location.hash === final.hash;
     if (same) return;
     const url = final.pathname + final.search + final.hash;
+    // The entry carries its in-app depth so Back buttons can tell an entry
+    // this router wrote from the page the tab was opened on (see
+    // utils/in-app-history.ts); `document.referrer` never changes on a
+    // `pushState`, so it cannot.
     window.history[mode === 'push' ? 'pushState' : 'replaceState'](
-      null,
+      historyStateForNavigation(mode),
       '',
       url
     );

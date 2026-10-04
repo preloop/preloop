@@ -24,7 +24,11 @@ from preloop.models.models.user import User
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.schemas.flow_summary import FlowSummaryResponse
-from preloop.models.schemas.flow import flow_schedule_state
+from preloop.models.schemas.flow import (
+    FLOW_LIMIT_FIELDS,
+    apply_flow_limit_fields,
+    flow_schedule_state,
+)
 from preloop.schemas.host_exec_usage import HostExecSessionsResponse
 from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.execution_metrics import (
@@ -2444,6 +2448,25 @@ def update_flow(
     # We forcibly preserve the existing source_preset_id to prevent any modification,
     # including unlinking by setting to None.
     flow_in.source_preset_id = flow.source_preset_id
+
+    # A per-run limit sent without an agent_config (the flow form's spend
+    # limit and iteration fields) is merged onto the stored agent_config:
+    # agent_config is replaced whole on update, so building one from the
+    # limits alone would drop every other setting in it.
+    limit_values = {
+        name: getattr(flow_in, name)
+        for name in FLOW_LIMIT_FIELDS
+        if name in flow_in.model_fields_set
+    }
+    if limit_values and flow_in.agent_config is None:
+        try:
+            flow_in.agent_config = apply_flow_limit_fields(
+                flow.agent_config if isinstance(flow.agent_config, dict) else {},
+                limit_values,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     source_id = getattr(flow, "source_preset_id", None)
     if isinstance(source_id, uuid.UUID):
         source_preset = crud_flow.get(db=db, id=source_id)

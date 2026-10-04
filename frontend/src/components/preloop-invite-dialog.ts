@@ -11,6 +11,15 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import { roleLabel } from '../utils/role-label';
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** One address the last send could not invite, and why. */
+interface FailedInvite {
+  email: string;
+  reason: string;
+}
 
 @customElement('preloop-invite-dialog')
 export class PreloopInviteDialog extends LitElement {
@@ -33,6 +42,11 @@ export class PreloopInviteDialog extends LitElement {
 
       .success-alert {
         margin-top: 1rem;
+      }
+
+      .failure-list {
+        margin: var(--sl-spacing-x-small) 0 0;
+        padding-left: var(--sl-spacing-large);
       }
 
       sl-select::part(combobox) {
@@ -72,6 +86,10 @@ export class PreloopInviteDialog extends LitElement {
   @state()
   private successMessage: string | null = null;
 
+  /** Addresses the last send could not invite, kept for a retry. */
+  @state()
+  private failedInvites: FailedInvite[] = [];
+
   async connectedCallback() {
     super.connectedCallback();
     await this.loadData();
@@ -106,52 +124,100 @@ export class PreloopInviteDialog extends LitElement {
     return !hasSufficient;
   }
 
-  private parseEmails(): string[] {
-    if (!this.emailsText) return [];
-    return this.emailsText
-      .split(/[\s,\n]+/)
-      .map((e) => e.trim())
-      .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+  /**
+   * Split the textarea into addresses. Anything that does not look like an
+   * email is returned as invalid rather than dropped, so "jane@example.com,
+   * bob" is reported instead of quietly inviting one person.
+   */
+  private parseEmails(): { valid: string[]; invalid: string[] } {
+    const valid: string[] = [];
+    const invalid: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of (this.emailsText || '').split(/[\s,;]+/)) {
+      const entry = raw.trim();
+      if (!entry) continue;
+      const key = entry.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      (EMAIL_PATTERN.test(entry) ? valid : invalid).push(entry);
+    }
+    return { valid, invalid };
   }
 
   async handleSendInvitations() {
     this.error = null;
     this.successMessage = null;
+    this.failedInvites = [];
 
-    const emails = this.parseEmails();
+    const { valid: emails, invalid } = this.parseEmails();
+    if (invalid.length > 0) {
+      this.error = `${invalid.length === 1 ? 'This is' : 'These are'} not ${invalid.length === 1 ? 'an email address' : 'email addresses'}: ${invalid.join(', ')}. Fix or remove ${invalid.length === 1 ? 'it' : 'them'}, then send again.`;
+      return;
+    }
     if (emails.length === 0) {
-      this.error = 'Please enter at least one valid email address.';
+      this.error = 'Enter at least one email address.';
       return;
     }
 
     if (this.selectedRoleIds.length === 0) {
-      this.error = 'Please select at least one role for the invitees.';
+      this.error = 'Choose at least one role for the people you invite.';
       return;
     }
 
     this.isSending = true;
     try {
-      const promises = emails.map((email) =>
-        createInvitation({
-          email,
-          role_ids: this.selectedRoleIds,
-          team_ids:
-            this.selectedTeamIds.length > 0 ? this.selectedTeamIds : undefined,
-        })
+      const results = await Promise.allSettled(
+        emails.map((email) =>
+          createInvitation({
+            email,
+            role_ids: this.selectedRoleIds,
+            team_ids:
+              this.selectedTeamIds.length > 0
+                ? this.selectedTeamIds
+                : undefined,
+          })
+        )
       );
-      await Promise.all(promises);
+      const failed: FailedInvite[] = [];
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          failed.push({
+            email: emails[index],
+            reason:
+              result.reason instanceof Error && result.reason.message
+                ? result.reason.message
+                : 'Failed to send',
+          });
+        }
+      });
+      const sent = emails.length - failed.length;
 
-      this.successMessage = `Successfully sent ${emails.length} invitation${emails.length > 1 ? 's' : ''}!`;
+      if (sent > 0) {
+        this.dispatchEvent(
+          new CustomEvent('invitations-sent', {
+            bubbles: true,
+            composed: true,
+            detail: { partial: failed.length > 0 },
+          })
+        );
+      }
+
+      if (failed.length > 0) {
+        // Keep only the failed addresses, so a retry does not invite the
+        // others twice.
+        this.emailsText = failed.map((entry) => entry.email).join('\n');
+        this.failedInvites = failed;
+        this.error =
+          sent > 0
+            ? `Sent ${sent} · ${failed.length} failed. The failed ${failed.length === 1 ? 'address is' : 'addresses are'} left above to retry.`
+            : `No invitations were sent.`;
+        return;
+      }
+
+      this.successMessage = `Sent ${sent} invitation${sent === 1 ? '' : 's'}.`;
       this.emailsText = '';
       this.selectedRoleIds = [];
       this.selectedTeamIds = [];
-
-      this.dispatchEvent(
-        new CustomEvent('invitations-sent', {
-          bubbles: true,
-          composed: true,
-        })
-      );
 
       // Auto close after a short delay so user sees the success state
       setTimeout(() => {
@@ -173,6 +239,7 @@ export class PreloopInviteDialog extends LitElement {
     this.open = false;
     this.error = null;
     this.successMessage = null;
+    this.failedInvites = [];
     this.dispatchEvent(
       new CustomEvent('close', { bubbles: true, composed: true })
     );
@@ -181,15 +248,16 @@ export class PreloopInviteDialog extends LitElement {
   render() {
     return html`
       <sl-dialog
-        label="Invite Team Members"
+        label="Invite team members"
         ?open=${this.open}
         @sl-request-close=${this.handleClose}
         style="--width: 32rem;"
       >
         <div class="form-grid">
           <sl-textarea
-            label="Email Addresses"
-            placeholder="Enter email addresses (separated by comma, space, or newline)"
+            label="Email addresses"
+            placeholder="jane@example.com, john@example.com"
+            help-text="Separate addresses with commas, spaces or new lines."
             rows="3"
             .value=${this.emailsText}
             @sl-input=${(e: any) => {
@@ -199,7 +267,7 @@ export class PreloopInviteDialog extends LitElement {
           ></sl-textarea>
 
           <sl-select
-            label="Assign Roles"
+            label="Roles"
             placeholder="Select roles for the invited users"
             multiple
             clearable
@@ -212,7 +280,7 @@ export class PreloopInviteDialog extends LitElement {
             ${this.roles.map(
               (role) => html`
                 <sl-option .value=${role.id} title=${role.description || ''}>
-                  ${role.name}
+                  ${roleLabel(role.name)}
                 </sl-option>
               `
             )}
@@ -221,19 +289,17 @@ export class PreloopInviteDialog extends LitElement {
           ${
             this.showPermissionWarning
               ? html`
-                  <sl-alert variant="warning" open class="warning-alert">
-                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-                    <strong>Insufficient Permissions Warning:</strong><br />
-                    The selected roles do not have sufficient permissions to
-                    create or execute flows, which are required for onboarding
-                    or adding agents.
+                  <sl-alert variant="neutral" open class="warning-alert">
+                    <sl-icon slot="icon" name="info-circle"></sl-icon>
+                    These roles can't create or run flows, so the people you
+                    invite won't be able to onboard or add agents.
                   </sl-alert>
                 `
               : ''
           }
 
           <sl-select
-            label="Assign Teams (Optional)"
+            label="Teams (optional)"
             placeholder="Select teams for the invited users"
             multiple
             clearable
@@ -255,9 +321,24 @@ export class PreloopInviteDialog extends LitElement {
           ${
             this.error
               ? html`
-                  <sl-alert variant="danger" open class="error-alert">
+                  <sl-alert
+                    variant="danger"
+                    open
+                    class="error-alert"
+                    role="alert"
+                  >
                     <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
                     ${this.error}
+                    ${
+                      this.failedInvites.length > 0
+                        ? html`<ul class="failure-list">
+                            ${this.failedInvites.map(
+                              (entry) =>
+                                html`<li>${entry.email}: ${entry.reason}</li>`
+                            )}
+                          </ul>`
+                        : ''
+                    }
                   </sl-alert>
                 `
               : ''
@@ -265,7 +346,12 @@ export class PreloopInviteDialog extends LitElement {
           ${
             this.successMessage
               ? html`
-                  <sl-alert variant="success" open class="success-alert">
+                  <sl-alert
+                    variant="success"
+                    open
+                    class="success-alert"
+                    role="status"
+                  >
                     <sl-icon slot="icon" name="check-circle"></sl-icon>
                     ${this.successMessage}
                   </sl-alert>
@@ -281,7 +367,7 @@ export class PreloopInviteDialog extends LitElement {
           ?loading=${this.isSending}
           ?disabled=${this.isLoading}
         >
-          Send Invitation(s)
+          Send invitations
         </sl-button>
         <sl-button
           slot="footer"

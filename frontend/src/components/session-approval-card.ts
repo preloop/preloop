@@ -9,6 +9,7 @@ import {
   isUnexpiredPendingRequest,
   normalizeApprovalRequest,
   approvalStatusLabel,
+  approvalStatusVariant,
 } from '../utils/approvals';
 import { readablePayload } from '../utils/session-live';
 import { requestNeedsForm } from '../actions/approval-actions';
@@ -191,8 +192,7 @@ export class SessionApprovalCard extends LitElement {
     return html`<article aria-label=${`Approval for ${r.tool_name}`}>
       <header>
         <span>${r.tool_name}</span
-        ><sl-badge
-          variant=${r.status === 'pending' ? 'warning' : r.status === 'approved' ? 'success' : 'neutral'}
+        ><sl-badge variant=${approvalStatusVariant(r.status)}
           >${approvalStatusLabel(r.status)}</sl-badge
         >
       </header>

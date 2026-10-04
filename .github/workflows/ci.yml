@@ -641,11 +641,20 @@ jobs:
       - name: Production build
         run: |
           npm run build
-          if find dist -name '*.css' -print | grep -q .; then
+          # dist/vendor holds third-party files copied verbatim (Shoelace's
+          # theme stylesheets are linked from index.html and must stay
+          # standalone); the guard is about the console's own CSS.
+          if find dist -path dist/vendor -prune -o -name '*.css' -print | grep -q .; then
             echo "standalone CSS files must not be emitted; CSS is injected into JS" >&2
-            find dist -name '*.css' -print >&2
+            find dist -path dist/vendor -prune -o -name '*.css' -print >&2
             exit 1
           fi
+          for asset in themes/light.css themes/dark.css shoelace-autoloader.js; do
+            if [ ! -f "dist/vendor/shoelace/$asset" ]; then
+              echo "vendored Shoelace asset missing from dist: $asset" >&2
+              exit 1
+            fi
+          done
           if ! grep -q 'vite-plugin-css-injected-by-js' dist/assets/main-*.js; then
             echo "CSS injection marker missing from the main JS bundle" >&2
             exit 1

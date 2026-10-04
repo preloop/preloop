@@ -107,6 +107,9 @@ const AGENT_KIND_VALUES = AVAILABLE_AGENT_KINDS.map((k) => k.value);
 
 const DEFAULT_AGENT_KINDS = AGENT_KIND_VALUES.filter((k) => k !== 'flows');
 
+/** The agents list endpoint's largest page (`limit` is capped at 100). */
+const AGENT_PAGE_CAP = 100;
+
 // Filter selections persist as a *hidden* list so agent kinds added in later
 // releases stay visible by default — a kind absent from storage means
 // "unknown at save time", never "deselected by the user". (A `claude_desktop`
@@ -387,6 +390,14 @@ export class AgentsView extends LitElement {
   private previousAgentIds: string[] | null = null;
   // Tracks if the onboarding dialog was automatically opened at least once upon page load
   private hasAutoOpenedOnboarding = false;
+
+  /** The query the current page of agents was fetched with, for Load more. */
+  private lastAgentListParams: ManagedAgentListParams | null = null;
+
+  /** The filters behind the current list, to tell a refresh from a new query. */
+  private lastAgentQueryKey: string | null = null;
+
+  @state() private loadingMoreAgents = false;
 
   // Switcher state
   @state() private currentView: AgentsViewMode = loadViewMode(
@@ -903,6 +914,40 @@ export class AgentsView extends LitElement {
         padding: var(--sl-spacing-large);
         color: var(--sl-color-neutral-600);
         background: transparent;
+      }
+      .empty-state .empty-title {
+        margin: 0 0 var(--sl-spacing-small);
+        color: var(--sl-color-neutral-900);
+        font-weight: var(--sl-font-weight-semibold);
+      }
+      .empty-state .empty-body {
+        margin: 0 0 var(--sl-spacing-medium);
+        max-width: 60ch;
+      }
+      .empty-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+      }
+      .empty-card {
+        width: 100%;
+      }
+      /* Named for a screen reader; the toolbar has no room to print it. */
+      .last-seen-filter::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .load-more {
+        display: flex;
+        justify-content: center;
+        padding: var(--sl-spacing-medium) 0;
       }
       :host(:host-context(.sl-theme-dark)) .title-row {
         border-color: var(--sl-color-neutral-800);
@@ -1455,6 +1500,22 @@ export class AgentsView extends LitElement {
       if (ownerUsername) params.ownerUsername = ownerUsername;
     }
 
+    // A live refresh of the same query keeps the pages "Load more" already
+    // added (up to the API's page cap), so rows do not vanish on an update.
+    const queryKey = JSON.stringify({
+      ...params,
+      lastSeenAfter: this.lastSeenAfter,
+      skipAgentsFetch,
+    });
+    if (
+      queryKey === this.lastAgentQueryKey &&
+      this.agents &&
+      this.agents.items.length > (params.limit ?? 50)
+    ) {
+      params.limit = Math.min(AGENT_PAGE_CAP, this.agents.items.length);
+    }
+    this.lastAgentQueryKey = queryKey;
+
     try {
       // Agent list first — gateway summary is refreshed separately so it never
       // blocks first paint (cached value may already be showing).
@@ -1487,11 +1548,19 @@ export class AgentsView extends LitElement {
             this.availableUsers = users;
         })
         .catch(() => undefined);
+      this.lastAgentListParams = skipAgentsFetch ? null : { ...params };
       const [agentsData, flowsData] = await Promise.all([
         (skipAgentsFetch
           ? Promise.resolve(emptyAgentsData)
           : getAccountAgents(params)
-        ).then((data) => {
+        ).then((page) => {
+          // A page without items (an older server, a partial stub) is an
+          // empty page. Every count below reads items.length, and one
+          // missing array used to crash the whole render.
+          const data = {
+            ...page,
+            items: Array.isArray(page?.items) ? page.items : [],
+          };
           if (generation === this.agentsLoadGeneration) {
             this.agents = data;
             this.loading = false;
@@ -1527,7 +1596,15 @@ export class AgentsView extends LitElement {
 
       this.agents = agentsData;
       this.previousAgentCount = agentsData.items.length;
-      if (!this.hasAutoOpenedOnboarding && this.previousAgentCount === 0) {
+      // Only a first visit with no agents at all opens the wizard. A filter
+      // that matches nothing (a kind hidden last time, a search) is not "no
+      // agents": it gets the filtered empty state instead.
+      if (
+        !this.hasAutoOpenedOnboarding &&
+        !this.agentFiltersActive &&
+        (agentsData.total ?? 0) === 0 &&
+        this.previousAgentCount === 0
+      ) {
         this.showOnboardingDialog = true;
         this.hasAutoOpenedOnboarding = true;
       }
@@ -3301,11 +3378,147 @@ export class AgentsView extends LitElement {
         'flow_status' in item || ('name' in item && !('display_name' in item))
     ).length;
     const agents = items.length - flows;
-    const parts = [`${agents} ${agents === 1 ? 'agent' : 'agents'}`];
+    const total = this.agents?.total ?? 0;
+    const loaded = this.agents?.items?.length ?? 0;
+    // The list is fetched a page at a time: "50 of 120 agents" says the rest
+    // exists instead of passing the first page off as all of them.
+    const parts = [
+      total > loaded
+        ? `${agents} of ${total.toLocaleString()} agents`
+        : `${agents} ${agents === 1 ? 'agent' : 'agents'}`,
+    ];
     if (flows > 0) {
       parts.push(`${flows} ${flows === 1 ? 'flow' : 'flows'}`);
     }
     return parts.join(' · ');
+  }
+
+  /** True when every agent kind is selected (flows are not a narrowing). */
+  private get allAgentKindsSelected(): boolean {
+    return AVAILABLE_AGENT_KINDS.every(
+      (kind) => kind.value === 'flows' || this.agentKinds.includes(kind.value)
+    );
+  }
+
+  /** True when a kind, last-seen window or search narrows the list. */
+  private get agentFiltersActive(): boolean {
+    return (
+      !this.allAgentKindsSelected ||
+      this.lastSeenAfter !== 'all' ||
+      this.searchQuery.trim() !== ''
+    );
+  }
+
+  /**
+   * Clears the kind, last-seen and search filters. Whether flows are shown
+   * is a view choice, not a filter, so it is kept.
+   */
+  private resetAgentFilters = (): void => {
+    const includeFlows = this.agentKinds.includes('flows');
+    this.agentKinds = AGENT_KIND_VALUES.filter(
+      (kind) => kind !== 'flows' || includeFlows
+    );
+    persistAgentKinds(this.agentKinds);
+    this.lastSeenAfter = 'all';
+    this.searchQuery = '';
+    void this.loadAgents();
+  };
+
+  /** True when the server holds more agents than this page loaded. */
+  private get hasMoreAgents(): boolean {
+    return Boolean(
+      this.agents &&
+      this.lastAgentListParams &&
+      this.agents.total > this.agents.items.length
+    );
+  }
+
+  /** Fetches the next page of agents with the same filters and appends it. */
+  private loadMoreAgents = async (): Promise<void> => {
+    if (!this.agents || !this.lastAgentListParams || this.loadingMoreAgents) {
+      return;
+    }
+    const generation = this.agentsLoadGeneration;
+    this.loadingMoreAgents = true;
+    try {
+      const page = await getAccountAgents({
+        ...this.lastAgentListParams,
+        offset: this.agents.items.length,
+      });
+      if (generation !== this.agentsLoadGeneration || !this.agents) return;
+      const seen = new Set(this.agents.items.map((item) => item.id));
+      this.agents = {
+        ...this.agents,
+        total: page.total,
+        items: [
+          ...this.agents.items,
+          ...page.items.filter((item) => !seen.has(item.id)),
+        ],
+      };
+      this.previousAgentCount = this.agents.items.length;
+      this.initializeNodePositions(false);
+    } catch (error) {
+      showToast(
+        error instanceof Error && error.message
+          ? `Could not load more agents: ${error.message}`
+          : 'Could not load more agents. Try again.',
+        'danger'
+      );
+    } finally {
+      this.loadingMoreAgents = false;
+    }
+  };
+
+  private renderLoadMore() {
+    if (!this.hasMoreAgents || !this.agents) return nothing;
+    return html`<div class="load-more">
+      <sl-button
+        size="small"
+        ?loading=${this.loadingMoreAgents}
+        @click=${this.loadMoreAgents}
+        >Load more agents</sl-button
+      >
+    </div>`;
+  }
+
+  /**
+   * Nothing to list. A first visit says how to connect an agent and offers
+   * both ways to do it; a filter that matched nothing offers to reset it.
+   */
+  private renderEmptyState() {
+    if (this.loading) {
+      return html`<div class="empty-state">Loading agents...</div>`;
+    }
+    if (this.agentFiltersActive) {
+      return html`<div class="empty-state" data-empty="filtered">
+        <p class="empty-title">No agents match these filters</p>
+        <sl-button size="small" @click=${this.resetAgentFilters}
+          >Reset filters</sl-button
+        >
+      </div>`;
+    }
+    return html`<sl-card class="empty-card" data-empty="first-run">
+      <div class="empty-state">
+        <p class="empty-title">No agents connected yet</p>
+        <p class="empty-body">
+          Connect an agent you already run, such as a coding agent on your
+          machine, or deploy a new one that Preloop governs from the start.
+        </p>
+        <div class="empty-actions">
+          <sl-button
+            variant="primary"
+            @click=${() => (this.showOnboardingDialog = true)}
+          >
+            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+            Onboard existing agent
+          </sl-button>
+          <sl-button @click=${() => (this.showDeployDialog = true)}>
+            <sl-icon slot="prefix" name="cloud-arrow-up"></sl-icon>
+            Deploy new agent
+          </sl-button>
+        </div>
+      </div>
+    </sl-card>`;
   }
 
   /** Flattens agents and flow nodes into the rows the table renders. */
@@ -3577,17 +3790,7 @@ export class AgentsView extends LitElement {
     const rows = this.selectionRows;
 
     if (rows.length === 0) {
-      return html`
-        <div class="list-bounds">
-          <div class="empty-state">
-            ${
-              this.loading
-                ? 'Loading agents...'
-                : 'No agents or flows found matching your query.'
-            }
-          </div>
-        </div>
-      `;
+      return html` <div class="list-bounds">${this.renderEmptyState()}</div> `;
     }
 
     return html`
@@ -3652,6 +3855,7 @@ export class AgentsView extends LitElement {
             </table>
           </div>
         </sl-card>
+        ${this.renderLoadMore()}
       </div>
     `;
   }
@@ -3987,14 +4191,11 @@ export class AgentsView extends LitElement {
       <div class="cards">
         ${
           rows.length === 0 && !this.loading
-            ? html`
-                <div class="empty-state">
-                  No agents or flows found matching your query.
-                </div>
-              `
+            ? this.renderEmptyState()
             : rows.map((row) => this.renderAgentCard(row.source))
         }
       </div>
+      ${rows.length > 0 ? this.renderLoadMore() : nothing}
     `;
   }
 
@@ -4563,7 +4764,7 @@ export class AgentsView extends LitElement {
   private renderOnboardingDialog() {
     return html`
       <sl-dialog
-        label="Onboard Agents"
+        label="Onboard an existing agent"
         ?open=${this.showOnboardingDialog}
         @sl-after-hide=${(e: Event) => {
           if (e.target === e.currentTarget) {
@@ -4630,7 +4831,7 @@ export class AgentsView extends LitElement {
         ${this.renderOnboardingDialog()}
 
         <sl-dialog
-          label="Deploy Governed Agent"
+          label="Deploy a new agent"
           ?open=${this.showDeployDialog}
           @sl-after-hide=${(e: Event) => {
             if (e.target === e.currentTarget) {
@@ -4696,7 +4897,7 @@ export class AgentsView extends LitElement {
           >
             <sl-dropdown stay-open-on-select>
               <sl-button slot="trigger" caret variant="default">
-                Agent Kinds
+                Agent kinds
                 (${
                   this.agentKinds.length === AVAILABLE_AGENT_KINDS.length
                     ? 'All'
@@ -4717,7 +4918,7 @@ export class AgentsView extends LitElement {
                   @sl-change=${(e: any) =>
                     this.handleAgentKindChange('all', e.target.checked)}
                 >
-                  Select All
+                  Select all
                 </sl-checkbox>
                 <sl-divider
                   style="margin: var(--sl-spacing-x-small) 0;"
@@ -4740,10 +4941,12 @@ export class AgentsView extends LitElement {
             </sl-dropdown>
 
             <sl-select
+              class="last-seen-filter"
+              label="Last seen"
               value=${this.lastSeenAfter}
               @sl-change=${this.handleLastSeenAfterChange}
             >
-              <sl-option value="all">All Time</sl-option>
+              <sl-option value="all">All time</sl-option>
               <sl-option value="last_10_minutes">Last 10 minutes</sl-option>
               <sl-option value="last_1_hour">Last 1 hour</sl-option>
               <sl-option value="last_24_hours">Last 24 hours</sl-option>

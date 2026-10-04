@@ -347,10 +347,12 @@ export class AccessRulesPanel extends LitElement {
 
   render() {
     if (!this.data) {
-      return this.error ? html`<p class="error">${this.error}</p>` : nothing;
+      return this.error
+        ? html`<p class="error" role="alert">${this.error}</p>`
+        : nothing;
     }
     return html`
-      ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+      ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
       <section>
         <h3>Access rules</h3>
         <table data-testid="rules">

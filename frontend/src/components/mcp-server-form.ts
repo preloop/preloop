@@ -114,20 +114,8 @@ export class MCPServerForm extends LitElement {
           placeholder="e.g., http://localhost:8001"
         ></sl-input>
         <div class="help-text">
-          Enter the base URL of your MCP server (e.g., http://localhost:8001)<br />
-          Phase 1B supports HTTP Streaming transport only.
-        </div>
-
-        <sl-input
-          label="Transport"
-          name="transport"
-          .value=${'http-streaming'}
-          disabled
-          readonly
-        ></sl-input>
-        <div class="help-text">
-          Only HTTP Streaming (streamable-http) transport is currently
-          supported.
+          The base URL of your MCP server. Servers that use the Streamable HTTP
+          transport are supported.
         </div>
 
         <sl-select
@@ -190,7 +178,7 @@ export class MCPServerForm extends LitElement {
         }
         ${
           this.errorMessage
-            ? html`<p class="error">${this.errorMessage}</p>`
+            ? html`<p class="error" role="alert">${this.errorMessage}</p>`
             : ''
         }
         ${

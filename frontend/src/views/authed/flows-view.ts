@@ -4,6 +4,7 @@ import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -55,6 +56,10 @@ import {
 // same way, so the reading lives in one module.
 import { flowTriggerSummary } from '../../utils/flow-trigger';
 import {
+  executionStatusLabel,
+  executionStatusVariant,
+} from '../../utils/execution-presentation';
+import {
   executionSubjectCss,
   renderExecutionSubject,
   type ExecutionSubjectSource,
@@ -70,6 +75,7 @@ import {
   type ListViewMode,
   type NarrowViewportSubscription,
 } from '../../utils/view-mode';
+import '../../components/view-header';
 
 export { flowTriggerSummary };
 
@@ -490,6 +496,20 @@ export class FlowsView extends LitElement {
       .row-link:hover,
       .row-link:focus-visible {
         text-decoration: underline;
+      }
+      /* The filter selects are named for a screen reader; the toolbar has
+         no room to print the label. */
+      .preset-filter::part(form-control-label),
+      .status-filter::part(form-control-label) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
       }
       .row-subtitle {
         color: var(--console-meta-color);
@@ -943,16 +963,24 @@ export class FlowsView extends LitElement {
             this.activeExecutions = executions;
         })
         .catch(() => undefined);
+      let failure = '';
       const flows = await getFlowSummaries({
         includeStats: true,
         statsSince: this.rangeStartDate(),
       }).catch((error) => {
         console.error('Failed to load flows:', error);
+        const reason =
+          error instanceof Error && error.message
+            ? error.message.trim()
+            : 'The request did not complete';
+        failure = /[.!?]$/.test(reason) ? reason : `${reason}.`;
         return null;
       });
       if (generation !== this.flowsLoadGeneration) return;
       if (flows === null) {
-        this.loadError = 'Could not load your flows.';
+        // The card's title already says the flows could not be loaded, so
+        // this holds the reason, not a second copy of the title.
+        this.loadError = failure;
         return;
       }
       this.loadError = null;
@@ -1688,6 +1716,7 @@ export class FlowsView extends LitElement {
       >
         <sl-select
           class="preset-filter"
+          label="Flow type"
           multiple
           clearable
           max-options-visible="1"
@@ -1715,6 +1744,7 @@ export class FlowsView extends LitElement {
 
         <sl-select
           class="status-filter"
+          label="Flow status"
           multiple
           clearable
           max-options-visible="1"
@@ -1986,13 +2016,7 @@ export class FlowsView extends LitElement {
         style="text-decoration: none; color: inherit;"
       >
         <span class="last-run-line">
-          <sl-badge
-            class="status-chip"
-            pill
-            variant=${this.getStatusVariant(run.status)}
-            >${this.statusLabel(run.status)}</sl-badge
-          >
-          ${renderExecutionSubject(run)}
+          ${this.renderRunStatusChip(run.status)} ${renderExecutionSubject(run)}
         </span>
         <span class="meta" title=${formatLocalDateTime(run.start_time)}
           >${formatRelativeTime(run.start_time, undefined, {
@@ -2190,13 +2214,7 @@ export class FlowsView extends LitElement {
         title=${formatLocalDateTime(run.start_time)}
         @click=${(event: Event) => event.stopPropagation()}
       >
-        <sl-badge
-          class="status-chip"
-          pill
-          variant=${this.getStatusVariant(run.status)}
-          >${this.statusLabel(run.status)}</sl-badge
-        >
-        ${renderExecutionSubject(run)}
+        ${this.renderRunStatusChip(run.status)} ${renderExecutionSubject(run)}
         <span class="meta"
           >${formatRelativeTime(run.start_time, undefined, {
             maxRelativeDays: 30,
@@ -2250,7 +2268,7 @@ export class FlowsView extends LitElement {
             </div>
             <h3 class="empty-card-title">Could not load your flows</h3>
             <p class="empty-card-desc">
-              ${this.loadError} The list below is not empty — it is unknown.
+              ${this.loadError} Try again in a moment.
             </p>
             <sl-button
               class="empty-cta-btn"
@@ -2276,7 +2294,8 @@ export class FlowsView extends LitElement {
             </div>
             <h3 class="empty-card-title">No flows yet</h3>
             <p class="empty-card-desc">
-              No flows yet. Create your first custom flow or clone a starter
+              Flows start an agent when something happens: a new issue, a
+              webhook or a schedule. Create one from scratch or start from a
               preset below.
             </p>
             <sl-button
@@ -2312,7 +2331,7 @@ export class FlowsView extends LitElement {
                       size="small"
                       variant="danger"
                       outline
-                      @click=${() => this.removePreset(preset.id)}
+                      @click=${() => this.removePreset(preset.id, preset.name)}
                     >
                       Remove
                     </sl-button>
@@ -2329,21 +2348,19 @@ export class FlowsView extends LitElement {
   renderExecutionItem(exec: FlowExecution) {
     const flow = this.flows.find((f) => f.id === exec.flow_id);
     const duration = executionDurationText(exec);
+    const href = `/console/flows/executions/${exec.id}`;
+    const name = flow?.name || exec.flow_name || 'Unknown flow';
+    // The row stays clickable as a convenience; the name is a real link
+    // (keyboard, cmd-click) and the arrow a labelled link to the same run.
     return html`
       <div
         class="execution-item"
-        @click=${() => Router.go(`/console/flows/executions/${exec.id}`)}
+        @click=${(event: MouseEvent) => this.handleExecutionItemClick(event, href)}
       >
         <div class="execution-info">
-          <sl-badge
-            class="status-chip"
-            pill
-            variant=${this.getStatusVariant(exec.status)}
-          >
-            ${this.statusLabel(exec.status)}
-          </sl-badge>
+          ${this.renderRunStatusChip(exec.status)}
           <div style="min-width: 0;">
-            <strong>${flow?.name || exec.flow_name || 'Unknown flow'}</strong>
+            <a class="row-link" href=${href}>${name}</a>
             <div class="row-subtitle">
               Started
               ${formatLocalDateTime(exec.start_time)}${
@@ -2359,12 +2376,50 @@ export class FlowsView extends LitElement {
           <resource-actions
             .actions=${this.executionActions(exec)}
           ></resource-actions>
-          <sl-button size="small">
-            <sl-icon name="arrow-right"></sl-icon>
-          </sl-button>
+          <sl-icon-button
+            name="arrow-right"
+            label=${`Open run of ${name}`}
+            href=${href}
+          ></sl-icon-button>
         </div>
       </div>
     `;
+  }
+
+  /**
+   * A click on the in-flight row opens the run, unless it was meant for a
+   * link (which navigates itself) or used a modifier to open a new tab.
+   */
+  private handleExecutionItemClick(event: MouseEvent, href: string) {
+    if (event.defaultPrevented) return;
+    if (
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.button !== 0
+    ) {
+      return;
+    }
+    for (const node of event.composedPath()) {
+      if (!(node instanceof HTMLElement)) continue;
+      if (node.classList.contains('execution-item')) break;
+      if (node.tagName.toLowerCase() === 'a') return;
+    }
+    Router.go(href);
+  }
+
+  /**
+   * A run's status chip, in the taxonomy the executions pages use: blue in
+   * flight, amber waiting on a person, green succeeded, solid red broken.
+   */
+  private renderRunStatusChip(status: string) {
+    const variant = executionStatusVariant(status);
+    return html`<sl-badge
+      class="status-chip ${variant === 'danger' ? 'solid' : ''}"
+      pill
+      variant=${variant}
+      >${executionStatusLabel(status)}</sl-badge
+    >`;
   }
 
   /**
@@ -2409,24 +2464,6 @@ export class FlowsView extends LitElement {
     }
   }
 
-  /** Title case, so "SUCCEEDED" and "Active now" read as the same object. */
-  private statusLabel(status: string): string {
-    const text = String(status || '').replace(/_/g, ' ');
-    return text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
-  }
-
-  getStatusVariant(status: string): 'success' | 'danger' | 'neutral' {
-    switch (status) {
-      case 'SUCCEEDED':
-        return 'success';
-      case 'FAILED':
-        return 'danger';
-      default:
-        // Running and pending are neutral: a run in flight is not a problem.
-        return 'neutral';
-    }
-  }
-
   /** Under a cent renders four decimals rather than collapsing to $0.00. */
   private formatMoney(value: number): string {
     if (!value) return '$0.00';
@@ -2438,8 +2475,31 @@ export class FlowsView extends LitElement {
     Router.go(`/console/flows/new?preset_id=${presetId}`);
   }
 
-  async removePreset(presetId: string) {
-    await deleteFlow(presetId);
+  /**
+   * Remove an account preset, after asking: one misclick used to delete a
+   * preset the team saved, and a failure was an unhandled rejection.
+   */
+  async removePreset(presetId: string, presetName = 'this preset') {
+    const confirmed = await confirmDialog({
+      title: 'Remove preset',
+      message: `Remove "${presetName}"?`,
+      detail: 'Flows created from it keep working. This cannot be undone.',
+      confirmLabel: 'Remove preset',
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+    try {
+      await deleteFlow(presetId);
+    } catch (error) {
+      showToast(
+        error instanceof Error && error.message
+          ? `Could not remove the preset: ${error.message}`
+          : 'Could not remove the preset. Try again.',
+        'danger'
+      );
+      return;
+    }
+    showToast(`Removed "${presetName}".`, 'success');
     this.presetsLoaded = false;
     await this.ensurePresetsLoaded();
   }

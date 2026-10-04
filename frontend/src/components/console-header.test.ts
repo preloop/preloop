@@ -713,6 +713,203 @@ describe('console-header bell approvals', () => {
     );
     expect(el.shadowRoot!.querySelector('.notification-badge')).to.not.exist;
   });
+
+  it('links "View all" to the approvals page with a real href', async () => {
+    const el = await header();
+    const link = el
+      .shadowRoot!.querySelector<HTMLAnchorElement>('.approval-list')!
+      .parentElement!.querySelector<HTMLAnchorElement>('a.section-link')!;
+    expect(link.getAttribute('href')).to.equal('/console/approvals');
+  });
+
+  it('reaches a pending approval from the keyboard through its name', async () => {
+    const el = await header();
+    const name = el.shadowRoot!.querySelector<HTMLAnchorElement>(
+      '.approval-item a.approval-name'
+    )!;
+    expect(name.getAttribute('href')).to.equal('/console/approval/ar-1');
+    // The row's own buttons stay reachable: the row is not a role="link"
+    // that would flatten them.
+    const row = el.shadowRoot!.querySelector('.approval-item')!;
+    expect(row.getAttribute('role')).to.equal(null);
+
+    // A click on the name is the router's (the href), not the row's too.
+    name.addEventListener('click', (event) => event.preventDefault(), {
+      once: true,
+    });
+    name.click();
+    expect(routes).to.deep.equal([]);
+
+    // Anywhere else on the row still opens it for a mouse.
+    (row.querySelector('.approval-time') as HTMLElement).click();
+    expect(routes).to.deep.equal(['/console/approval/ar-1']);
+  });
+
+  it('names the pending count in the bell label', async () => {
+    const el = await header();
+    const bell = el.shadowRoot!.querySelector(
+      '.notification-button sl-icon-button'
+    )!;
+    expect(bell.getAttribute('label')).to.equal('Notifications, 1 pending');
+
+    emit({ type: 'approval_approved', approval_request_id: 'ar-1' });
+    await el.updateComplete;
+    expect(bell.getAttribute('label')).to.equal('Notifications');
+  });
+
+  it('tells the operator when a decision from the bell fails', async () => {
+    restoreFetch();
+    const original = window.fetch;
+    window.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/approve')) {
+        return new Response(
+          JSON.stringify({ detail: 'This approval request has expired.' }),
+          { status: 409, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      const body = url.includes('/users/me')
+        ? USER
+        : url.includes('/approval-requests')
+          ? approvals
+          : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof window.fetch;
+    restoreFetch = () => {
+      window.fetch = original;
+    };
+
+    const el = await header();
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '.approval-actions sl-button[variant="success"]'
+    )!.click();
+
+    await waitUntil(
+      () =>
+        Array.from(document.querySelectorAll('sl-alert')).some((alert) =>
+          alert.textContent?.includes('This approval request has expired.')
+        ),
+      'no toast for the failed approval'
+    );
+    const alert = Array.from(document.querySelectorAll('sl-alert')).find((a) =>
+      a.textContent?.includes('This approval request has expired.')
+    ) as HTMLElement & { variant: string };
+    expect(alert.variant).to.equal('danger');
+    // The row stays: nothing was decided.
+    expect(names(el)).to.deep.equal(['write_file']);
+    document.querySelectorAll('sl-alert').forEach((a) => a.remove());
+  });
+});
+
+describe('console-header desktop notification permission', () => {
+  let restoreFetch: () => void;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    restoreFetch = stubFetch();
+  });
+
+  afterEach(() => {
+    restoreFetch();
+    sinon.restore();
+    localStorage.removeItem('accessToken');
+  });
+
+  it('does not prompt on load, only when the bell is clicked', async () => {
+    if (!('Notification' in window)) return;
+    sinon.stub(Notification, 'permission').get(() => 'default');
+    const request = sinon
+      .stub(Notification, 'requestPermission')
+      .resolves('default');
+
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await el.updateComplete;
+    expect(request, 'no prompt before the person does anything').to.not.have
+      .been.called;
+
+    el.shadowRoot!.querySelector<HTMLElement>('.notification-button')!.click();
+    expect(request).to.have.been.calledOnce;
+  });
+
+  /**
+   * A websocket message is not a user gesture: browsers ignore (or count
+   * against the site) a permission prompt raised from one. An execution
+   * start only shows a notification the person already allowed.
+   */
+  describe('on a websocket execution start', () => {
+    let receiveFlowUpdate: Parameters<
+      typeof unifiedWebSocketManager.subscribe
+    >[1];
+    let FakeNotification: sinon.SinonStub & {
+      permission: NotificationPermission;
+      requestPermission: sinon.SinonStub;
+    };
+
+    beforeEach(() => {
+      sinon
+        .stub(unifiedWebSocketManager, 'subscribe')
+        .callsFake((topic, cb) => {
+          if (topic === 'flow_executions') receiveFlowUpdate = cb;
+          return () => {};
+        });
+      FakeNotification = Object.assign(sinon.stub(), {
+        permission: 'default' as NotificationPermission,
+        requestPermission: sinon.stub().resolves('default'),
+      });
+      FakeNotification.prototype.close = () => {};
+      sinon.replace(
+        window,
+        'Notification',
+        FakeNotification as unknown as typeof Notification
+      );
+    });
+
+    async function startExecution(id: string): Promise<void> {
+      const el = await fixture<ConsoleHeader>(
+        html`<console-header></console-header>`
+      );
+      await el.updateComplete;
+      receiveFlowUpdate({
+        type: 'execution_started',
+        execution_id: id,
+        flow_id: 'flow-1',
+        timestamp: '2030-01-01T12:00:00Z',
+        payload: { status: 'RUNNING', flow_name: 'Nightly sweep' },
+      } as never);
+    }
+
+    it('does not ask for permission while it is still undecided', async () => {
+      await startExecution('exec-1');
+      // Plain counts: a failing sinon-chai assertion on these stubs hangs
+      // the runner while it serialises the stub.
+      expect(FakeNotification.requestPermission.callCount).to.equal(0);
+      expect(FakeNotification.callCount, 'no notification shown').to.equal(0);
+    });
+
+    it('shows the notification once permission was granted', async () => {
+      FakeNotification.permission = 'granted';
+      await startExecution('exec-2');
+      expect(FakeNotification.requestPermission.callCount).to.equal(0);
+      expect(FakeNotification.callCount).to.equal(1);
+      expect(FakeNotification.firstCall.args[0]).to.equal(
+        'Flow Execution Started'
+      );
+    });
+  });
+
+  it('fits the dropdown on a phone', () => {
+    const cssText = (
+      customElements.get('console-header') as unknown as {
+        styles: { cssText: string };
+      }
+    ).styles.cssText;
+    expect(cssText).to.contain('min-width: min(380px, calc(100vw - 16px))');
+  });
 });
 
 describe('console-header approval deadlines', () => {
@@ -1028,6 +1225,45 @@ describe('console-header in-flight executions', () => {
     await waitUntil(() => inFlight(el) === 10, 'in-flight runs never loaded');
     return el;
   }
+
+  it('links "View all" to the executions list that exists', async () => {
+    const el = await header();
+    const link = el
+      .shadowRoot!.querySelector('.execution-list')!
+      .parentElement!.querySelector('a.section-link')!;
+    // /console/flow-executions was never a route; it fell through to the
+    // full-page 404 outside the console chrome.
+    expect(link.getAttribute('href')).to.equal('/console/flows/executions');
+  });
+
+  it('opens a running execution from the keyboard', async () => {
+    const routes: string[] = [];
+    const go = sinon.stub(Router, 'go').callsFake((path: any) => {
+      routes.push(String(path));
+      return true;
+    });
+    try {
+      const el = await header();
+      const row = el.shadowRoot!.querySelector<HTMLElement>('.execution-item')!;
+      expect(row.getAttribute('role')).to.equal('link');
+      expect(row.getAttribute('tabindex')).to.equal('0');
+      expect(row.getAttribute('data-href')).to.equal(
+        '/console/flows/executions/exec-0'
+      );
+      row.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      );
+      row.dispatchEvent(
+        new KeyboardEvent('keydown', { key: ' ', bubbles: true })
+      );
+      expect(routes).to.deep.equal([
+        '/console/flows/executions/exec-0',
+        '/console/flows/executions/exec-0',
+      ]);
+    } finally {
+      go.restore();
+    }
+  });
 
   it('recounts the runs in flight when the tab becomes visible again', async () => {
     const el = await header();

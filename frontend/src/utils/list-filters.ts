@@ -9,15 +9,49 @@
 
 export const FLOW_EXECUTION_FILTERS_KEY = 'preloop.flow-executions.filters';
 
-/** Status values `applyQueryParams` already accepts from `?status=`. */
+/**
+ * Status values the executions status filter offers, in its order, and the
+ * ones `applyQueryParams` accepts from `?status=`. Waiting for approval and
+ * Stopped are the queues operators most often need.
+ */
 export const FLOW_EXECUTION_STATUSES = [
   'all',
   'RUNNING',
   'PENDING',
+  'WAITING_FOR_HUMAN',
   'SUCCEEDED',
   'FAILED',
+  'TIMEOUT',
+  'STOPPED',
   'CANCELLED',
 ] as const;
+
+/** What each status filter option reads, in sentence case. */
+export const FLOW_EXECUTION_STATUS_LABELS: Record<
+  Exclude<(typeof FLOW_EXECUTION_STATUSES)[number], 'all'>,
+  string
+> = {
+  RUNNING: 'Running',
+  PENDING: 'Pending',
+  WAITING_FOR_HUMAN: 'Waiting for approval',
+  SUCCEEDED: 'Succeeded',
+  FAILED: 'Failed',
+  TIMEOUT: 'Timed out',
+  STOPPED: 'Stopped',
+  CANCELLED: 'Cancelled',
+};
+
+/**
+ * The `status` values sent to the list endpoint for a filter choice.
+ *
+ * The backend writes a timed-out run as either `TIMEOUT` or `TIMED_OUT`
+ * depending on the path that ended it, so "Timed out" asks for both.
+ */
+export function flowExecutionStatusQuery(status: string): string[] | undefined {
+  if (!status || status === 'all') return undefined;
+  if (status === 'TIMEOUT') return ['TIMEOUT', 'TIMED_OUT'];
+  return [status];
+}
 
 /** Range values the executions range control offers. */
 export const FLOW_EXECUTION_RANGES = [

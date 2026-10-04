@@ -36,8 +36,11 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '../../../components/view-header.ts';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
+import { confirmDialog } from '../../../components/confirm-dialog';
+import { roleLabel } from '../../../utils/role-label';
 
 @customElement('team-management-view')
 export class TeamManagementView extends LitElement {
@@ -88,12 +91,15 @@ export class TeamManagementView extends LitElement {
 
   /** Role names are stored lower case (`owner`); the chip says "Owner". */
   static roleLabel(name: string | null | undefined): string {
-    const value = String(name || '').trim();
-    if (!value) return 'Role';
-    return value
-      .replace(/_/g, ' ')
-      .replace(/^\w/, (character) => character.toUpperCase());
+    return roleLabel(name);
   }
+
+  /**
+   * The failure of an action taken inside an open dialog. It renders in that
+   * dialog: a page-level message would sit behind the modal that caused it.
+   */
+  @state()
+  private dialogError: string | null = null;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -105,17 +111,22 @@ export class TeamManagementView extends LitElement {
         display: block;
       }
 
-      .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 2rem;
+      .dialog-error {
+        margin-bottom: var(--sl-spacing-medium);
       }
 
-      h1 {
+      .empty-state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-2x-large) var(--sl-spacing-large);
+        text-align: center;
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+      }
+
+      .empty-state p {
         margin: 0;
-        font-size: 1.5rem;
-        font-weight: 600;
       }
 
       .teams-grid {
@@ -325,16 +336,18 @@ export class TeamManagementView extends LitElement {
 
   async handleCreateTeam() {
     if (!this.newTeam.name) {
+      this.dialogError = 'Enter a team name.';
       return;
     }
 
+    this.dialogError = null;
     try {
       await createTeam(this.newTeam as TeamCreate);
       this.isCreateModalOpen = false;
       this.newTeam = {};
       await this.fetchTeams();
     } catch (error) {
-      this.error =
+      this.dialogError =
         error instanceof Error ? error.message : 'Failed to create team';
     }
   }
@@ -342,6 +355,7 @@ export class TeamManagementView extends LitElement {
   async handleEditTeam() {
     if (!this.selectedTeam) return;
 
+    this.dialogError = null;
     try {
       await updateTeam(this.selectedTeam.id, this.editTeam);
       this.isEditModalOpen = false;
@@ -349,13 +363,21 @@ export class TeamManagementView extends LitElement {
       this.editTeam = {};
       await this.fetchTeams();
     } catch (error) {
-      this.error =
+      this.dialogError =
         error instanceof Error ? error.message : 'Failed to update team';
     }
   }
 
   async handleDeleteTeam(team: Team) {
-    if (!confirm(`Are you sure you want to delete team "${team.name}"?`)) {
+    const confirmed = await confirmDialog({
+      title: 'Delete team?',
+      message: `Delete the team "${team.name}"?`,
+      detail:
+        'Members keep their accounts but lose any roles they had through this team. This cannot be undone.',
+      confirmLabel: 'Delete team',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -370,6 +392,7 @@ export class TeamManagementView extends LitElement {
 
   async openMembersModal(team: Team) {
     this.selectedTeam = team;
+    this.dialogError = null;
     this.isMembersModalOpen = true;
     try {
       this.teamMembers = await getTeamMembers(team.id);
@@ -386,24 +409,39 @@ export class TeamManagementView extends LitElement {
       await addTeamMember(this.selectedTeam.id, this.selectedUserId);
       this.selectedUserId = '';
       this.teamMembers = await getTeamMembers(this.selectedTeam.id);
+      this.dialogError = null;
     } catch (error) {
-      this.error =
+      this.dialogError =
         error instanceof Error ? error.message : 'Failed to add team member';
     }
   }
 
+  private memberName(userId: string): string {
+    const user = this.users.find((u) => u.id === userId);
+    return user?.full_name || user?.username || user?.email || 'this member';
+  }
+
   async handleRemoveMember(userId: string) {
     if (!this.selectedTeam) return;
+    const team = this.selectedTeam;
 
-    if (!confirm('Are you sure you want to remove this member?')) {
+    const confirmed = await confirmDialog({
+      title: 'Remove member?',
+      message: `Remove ${this.memberName(userId)} from "${team.name}"?`,
+      detail: 'They lose any roles they had through this team.',
+      confirmLabel: 'Remove',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
     try {
-      await removeTeamMember(this.selectedTeam.id, userId);
-      this.teamMembers = await getTeamMembers(this.selectedTeam.id);
+      await removeTeamMember(team.id, userId);
+      this.teamMembers = await getTeamMembers(team.id);
+      this.dialogError = null;
     } catch (error) {
-      this.error =
+      this.dialogError =
         error instanceof Error ? error.message : 'Failed to remove team member';
     }
   }
@@ -414,11 +452,27 @@ export class TeamManagementView extends LitElement {
       name: team.name,
       description: team.description || undefined,
     };
+    this.dialogError = null;
     this.isEditModalOpen = true;
+  }
+
+  private openCreateModal() {
+    this.dialogError = null;
+    this.isCreateModalOpen = true;
+  }
+
+  private renderDialogError() {
+    return this.dialogError
+      ? html`<sl-alert class="dialog-error" variant="danger" open role="alert">
+          <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+          ${this.dialogError}
+        </sl-alert>`
+      : '';
   }
 
   async openRoleModal(team: Team) {
     this.selectedTeam = team;
+    this.dialogError = null;
     this.isRoleModalOpen = true;
     try {
       this.teamRoles = await getTeamRoles(team.id);
@@ -441,8 +495,9 @@ export class TeamManagementView extends LitElement {
       this.teamRoles = await getTeamRoles(this.selectedTeam.id);
       // Refresh teams to update role display in cards
       await this.fetchTeams();
+      this.dialogError = null;
     } catch (error) {
-      this.error =
+      this.dialogError =
         error instanceof Error ? error.message : 'Failed to update role';
     }
   }
@@ -465,18 +520,37 @@ export class TeamManagementView extends LitElement {
     }
 
     return html`
-      <div class="header">
-        <h1>Teams</h1>
-        <sl-button
-          variant="primary"
-          @click=${() => (this.isCreateModalOpen = true)}
-        >
-          <sl-icon slot="prefix" name="people-fill"></sl-icon>
-          Create team
-        </sl-button>
-      </div>
+      <view-header headerText="Teams" width="narrow">
+        <div slot="main-column">
+          <sl-button variant="primary" @click=${this.openCreateModal}>
+            <sl-icon slot="prefix" name="people-fill"></sl-icon>
+            Create team
+          </sl-button>
+        </div>
+      </view-header>
 
-      ${this.error ? html`<div class="error">${this.error}</div>` : ''}
+      ${
+        this.error
+          ? html`<div class="error" role="alert">${this.error}</div>`
+          : ''
+      }
+      ${
+        this.teams.length === 0 && !this.error
+          ? html`<div class="empty-state">
+              <sl-icon
+                name="people"
+                style="font-size: 2.5rem;"
+                aria-hidden="true"
+              ></sl-icon>
+              <p>
+                No teams yet. Teams let several people share the same roles.
+              </p>
+              <sl-button size="small" @click=${this.openCreateModal}>
+                Create team
+              </sl-button>
+            </div>`
+          : ''
+      }
 
       <div class="teams-grid">
         ${repeat(
@@ -518,21 +592,24 @@ export class TeamManagementView extends LitElement {
                 <div class="team-actions">
                   <sl-button
                     size="small"
+                    title="Manage roles"
                     @click=${() => this.openRoleModal(team)}
                   >
-                    <sl-icon name="shield-check"></sl-icon>
+                    <sl-icon name="shield-check" label="Manage roles"></sl-icon>
                   </sl-button>
                   <sl-button
                     size="small"
+                    title="Members"
                     @click=${() => this.openMembersModal(team)}
                   >
-                    <sl-icon name="person-lines-fill"></sl-icon>
+                    <sl-icon name="person-lines-fill" label="Members"></sl-icon>
                   </sl-button>
                   <sl-button
                     size="small"
+                    title="Edit team"
                     @click=${() => this.openEditModal(team)}
                   >
-                    <sl-icon name="pencil"></sl-icon>
+                    <sl-icon name="pencil" label="Edit team"></sl-icon>
                   </sl-button>
                   <!-- Outline, last, after a gap (DESIGN.md "Destructive
                        actions"). -->
@@ -544,7 +621,7 @@ export class TeamManagementView extends LitElement {
                     title="Delete team"
                     @click=${() => this.handleDeleteTeam(team)}
                   >
-                    <sl-icon name="trash"></sl-icon>
+                    <sl-icon name="trash" label="Delete team"></sl-icon>
                   </sl-button>
                 </div>
               </div>
@@ -553,15 +630,17 @@ export class TeamManagementView extends LitElement {
         )}
       </div>
 
-      <!-- Create Team Modal -->
+      <!-- Create team modal -->
       <sl-dialog
-        label="Create Team"
+        label="Create team"
         ?open=${this.isCreateModalOpen}
         @sl-request-close=${() => (this.isCreateModalOpen = false)}
       >
+        ${this.renderDialogError()}
         <div class="form-grid">
           <sl-input
-            label="Team Name"
+            label="Team name"
+            required
             placeholder="Enter team name"
             value=${this.newTeam.name || ''}
             @sl-input=${(e: any) => (this.newTeam.name = e.target.value)}
@@ -578,7 +657,7 @@ export class TeamManagementView extends LitElement {
           variant="primary"
           @click=${this.handleCreateTeam}
         >
-          Create Team
+          Create team
         </sl-button>
         <sl-button
           slot="footer"
@@ -589,15 +668,16 @@ export class TeamManagementView extends LitElement {
         </sl-button>
       </sl-dialog>
 
-      <!-- Edit Team Modal -->
+      <!-- Edit team modal -->
       <sl-dialog
-        label="Edit Team"
+        label="Edit team"
         ?open=${this.isEditModalOpen}
         @sl-request-close=${() => (this.isEditModalOpen = false)}
       >
+        ${this.renderDialogError()}
         <div class="form-grid">
           <sl-input
-            label="Team Name"
+            label="Team name"
             value=${this.editTeam.name || ''}
             @sl-input=${(e: any) => (this.editTeam.name = e.target.value)}
           ></sl-input>
@@ -613,7 +693,7 @@ export class TeamManagementView extends LitElement {
           variant="primary"
           @click=${this.handleEditTeam}
         >
-          Save Changes
+          Save changes
         </sl-button>
         <sl-button
           slot="footer"
@@ -624,12 +704,13 @@ export class TeamManagementView extends LitElement {
         </sl-button>
       </sl-dialog>
 
-      <!-- Team Members Modal -->
+      <!-- Team members modal -->
       <sl-dialog
-        label="Team Members"
+        label="Team members"
         ?open=${this.isMembersModalOpen}
         @sl-request-close=${() => (this.isMembersModalOpen = false)}
       >
+        ${this.renderDialogError()}
         <div class="members-list">
           ${
             this.teamMembers.length === 0
@@ -640,16 +721,18 @@ export class TeamManagementView extends LitElement {
                     <div class="member-item">
                       <div class="member-info">
                         <span class="member-name">
-                          ${user?.full_name || user?.username || 'Unknown User'}
+                          ${user?.full_name || user?.username || 'Unknown user'}
                         </span>
                         <span class="member-email">${user?.email || ''}</span>
                       </div>
                       <sl-button
                         size="small"
                         variant="danger"
+                        outline
+                        title="Remove from team"
                         @click=${() => this.handleRemoveMember(member.user_id)}
                       >
-                        <sl-icon name="x-lg"></sl-icon>
+                        <sl-icon name="x-lg" label="Remove from team"></sl-icon>
                       </sl-button>
                     </div>
                   `;
@@ -658,9 +741,10 @@ export class TeamManagementView extends LitElement {
         </div>
 
         <div class="add-member-section">
-          <h4>Add Member</h4>
+          <h4>Add member</h4>
           <div class="add-member-form">
             <sl-select
+              aria-label="User to add"
               placeholder="Select user"
               value=${this.selectedUserId}
               @sl-change=${(e: any) => (this.selectedUserId = e.target.value)}
@@ -687,16 +771,17 @@ export class TeamManagementView extends LitElement {
           variant="primary"
           @click=${() => (this.isMembersModalOpen = false)}
         >
-          Done
+          Close
         </sl-button>
       </sl-dialog>
 
-      <!-- Manage Team Roles Modal -->
+      <!-- Manage team roles modal -->
       <sl-dialog
-        label="Manage Team Roles"
+        label="Manage team roles"
         ?open=${this.isRoleModalOpen}
         @sl-request-close=${() => (this.isRoleModalOpen = false)}
       >
+        ${this.renderDialogError()}
         <div class="role-list">
           ${this.roles.map((role) => {
             const isAssigned = this.teamRoles.some((r) => r.id === role.id);
@@ -707,7 +792,7 @@ export class TeamManagementView extends LitElement {
                   @sl-change=${(e: any) =>
                     this.handleToggleRole(role.id, e.target.checked)}
                 >
-                  ${role.name}
+                  ${roleLabel(role.name)}
                 </sl-checkbox>
                 ${
                   role.description
@@ -727,7 +812,7 @@ export class TeamManagementView extends LitElement {
           variant="primary"
           @click=${() => (this.isRoleModalOpen = false)}
         >
-          Done
+          Close
         </sl-button>
       </sl-dialog>
     `;

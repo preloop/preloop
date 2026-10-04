@@ -3,6 +3,7 @@ import { expect } from '@open-wc/testing';
 import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
+  approvalStatusVariant,
   formatNextWaitingLabel,
   isExpiringSoon,
   isUnexpiredPendingRequest,
@@ -121,6 +122,16 @@ describe('approvalStatusLabel', () => {
     expect(approvalStatusLabel('declined')).to.equal('Denied');
     expect(approvalStatusLabel('expired')).to.equal('Timed out');
     expect(approvalStatusLabel('cancelled')).to.equal('Cancelled');
+  });
+});
+
+describe('approvalStatusVariant', () => {
+  it('colours a denied request red and a waiting one amber', () => {
+    expect(approvalStatusVariant('pending')).to.equal('warning');
+    expect(approvalStatusVariant('approved')).to.equal('success');
+    expect(approvalStatusVariant('declined')).to.equal('danger');
+    expect(approvalStatusVariant('expired')).to.equal('neutral');
+    expect(approvalStatusVariant('cancelled')).to.equal('neutral');
   });
 });
 

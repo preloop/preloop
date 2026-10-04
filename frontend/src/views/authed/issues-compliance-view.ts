@@ -38,6 +38,7 @@ import type {
 
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { debugLog } from '../../utils/debug';
+import '../../components/view-header';
 
 /** Tracker spelling in, console sentence case out. */
 function complianceStatusLabel(status: string | null | undefined): string {

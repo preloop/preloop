@@ -8,6 +8,8 @@ import {
   toastCount,
   type MockApi,
 } from '../../../test-helpers/capability-api';
+import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
+import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 
 const SHARES = '/api/v1/accounts/acc-root/shares';
 const SUBS = '/api/v1/accounts/acc-root/subaccounts';
@@ -35,6 +37,7 @@ describe('resource-access-panel', () => {
   afterEach(() => {
     api?.restore();
     localStorage.clear();
+    resetConfirmDialogForTests();
   });
 
   it('shows the share toggle with the current target, and only shares of this resource', async () => {
@@ -245,6 +248,8 @@ describe('resource-access-panel', () => {
       const el = await mount(['account_hierarchy']);
       await waitUntil(() => q(el, 'share-list'));
       click(el, 'li[data-share="sh-tag"] sl-button');
+      const prompt = await answerConfirmDialog(true);
+      expect(prompt).to.contain('Subaccounts tagged customer=acme');
       await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
       expect(api.callsTo(/\/shares\//, 'DELETE').map((c) => c.path)).to.eql([
         '/api/v1/accounts/acc-root/shares/sh-tag',
@@ -258,10 +263,25 @@ describe('resource-access-panel', () => {
       click(el, '[data-testid="share-toggle"]');
       await el.updateComplete;
       click(el, '[data-testid="share-stop"]');
+      const prompt = await answerConfirmDialog(true);
+      expect(prompt).to.contain('Stop all 2 shares');
       await waitUntil(() => api.callsTo(SHARES, 'GET').length === 2);
       expect(
         api.callsTo(/\/shares\//, 'DELETE').map((c) => c.path.split('/').pop())
       ).to.eql(['sh-all', 'sh-tag']);
+    });
+
+    it('keeps a share when the stop is cancelled', async () => {
+      api = mockApi({ capabilities: ['account_hierarchy'], routes: routes() });
+      const el = await mount(['account_hierarchy']);
+      await waitUntil(() => q(el, 'share-list'));
+      click(el, 'li[data-share="sh-all"] sl-button');
+      await answerConfirmDialog(false);
+      await el.updateComplete;
+      expect(api.callsTo(/\/shares\//, 'DELETE')).to.have.length(0);
+      expect(
+        el.shadowRoot!.querySelectorAll('[data-testid="share-list"] li')
+      ).to.have.length(2);
     });
 
     it('rereads the shares after a failed add and deletes nothing', async () => {

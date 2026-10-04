@@ -2,7 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../api';
-import { Router } from '../../router';
+import { LOCATION_CHANGED, Router } from '../../router';
 import './console-shell';
 import type { ConsoleShell } from './console-shell';
 
@@ -200,6 +200,25 @@ describe('ConsoleShell', () => {
     expect(sidebar).to.exist;
     expect(sidebar?.getAttribute('role')).to.equal('navigation');
     expect(sidebar?.getAttribute('aria-label')).to.equal('Console navigation');
+  });
+
+  it('stacks the kill-switch banner above the bypass banner', async () => {
+    // A halted account is the most severe governance state, so it reads
+    // first when both are active.
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await el.updateComplete;
+    const order = Array.from(
+      el.shadowRoot!.querySelectorAll(
+        'kill-switch-banner, approval-bypass-banner, usage-nudge-banner'
+      )
+    ).map((node) => node.localName);
+    expect(order).to.eql([
+      'kill-switch-banner',
+      'approval-bypass-banner',
+      'usage-nudge-banner',
+    ]);
   });
 
   it('has main view with header and content area', async () => {
@@ -963,10 +982,66 @@ describe('ConsoleShell', () => {
         null,
       'Plan link did not render'
     );
+    // Account is core (account name, artifact storage), so it stays; the
+    // people pages need user management and do not.
     expect(el.shadowRoot?.querySelector('a[href="/console/settings/account"]'))
-      .to.not.exist;
+      .to.exist;
     expect(el.shadowRoot?.querySelector('a[href="/console/settings/users"]')).to
       .not.exist;
+  });
+
+  it('offers Account on an open-source install without user management', async () => {
+    // Default stub: no plugins. The account page holds the account name and
+    // the session artifact storage card, which core pages deep-link to.
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
+        null,
+      'Settings links did not render'
+    );
+    expect(el.shadowRoot?.querySelector('a[href="/console/settings/account"]'))
+      .to.exist;
+  });
+
+  it('groups Settings under labels and hides a label with nothing under it', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]') !==
+        null,
+      'Settings links did not render'
+    );
+    const labels = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-menu-label.nav-group-label') ?? []
+    ).map((label) => label.textContent?.trim());
+    // No user or team management in the default stub: no people heading.
+    expect(labels).to.deep.equal(['Account', 'Developers', 'Personal']);
+    expect(
+      el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]')
+        ?.textContent
+    ).to.contain('API keys');
+  });
+
+  it('puts the kill switch outside Settings, one click from any page', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector(
+          'a[href="/console/settings/emergency"]'
+        ) !== null,
+      'Emergency link did not render'
+    );
+    const emergency = el.shadowRoot?.querySelector(
+      'a[href="/console/settings/emergency"]'
+    );
+    expect(emergency?.closest('sl-details')).to.equal(null);
   });
 
   it('shows All events under Audit when audit_logs is enabled', async () => {
@@ -1043,6 +1118,123 @@ describe('ConsoleShell', () => {
     window.history.replaceState({}, '', originalPath);
   });
 
+  describe('wayfinding on pages without a nav entry', () => {
+    let originalPath: string;
+    let originalSearch: string;
+
+    beforeEach(() => {
+      originalPath = window.location.pathname;
+      originalSearch = window.location.search;
+    });
+
+    afterEach(() => {
+      window.history.replaceState({}, '', originalPath + originalSearch);
+    });
+
+    function auditSection(el: ConsoleShell): HTMLElement | undefined {
+      return Array.from(
+        el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+      ).find((section) => section.textContent?.includes('Audit')) as
+        HTMLElement | undefined;
+    }
+
+    /** RBAC on, with the given permissions. */
+    function withPermissions(permissions: string[]) {
+      invalidateApiCaches();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/api/v1/features')) {
+          return new Response(JSON.stringify({ plugins: [], features: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (url.endsWith('/api/v1/auth/users/me')) {
+          return new Response(
+            JSON.stringify({
+              username: 'test',
+              email: 'test@example.com',
+              email_verified: true,
+              permissions,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    async function loaded(): Promise<ConsoleShell> {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await waitUntil(
+        () => (el as any)._featuresLoaded && (el as any)._permissionsLoaded,
+        'features and permissions did not load'
+      );
+      await el.updateComplete;
+      return el;
+    }
+
+    it('highlights Approvals and opens Audit on a single approval', async () => {
+      // The deep-link target of every approval notification, Slack and email.
+      window.history.replaceState({}, '', '/console/approval/req-123');
+      const el = await loaded();
+      expect(
+        el.shadowRoot!.querySelector(
+          'a.sidebar-link.active[href="/console/approvals"]'
+        )
+      ).to.exist;
+      expect(auditSection(el)?.hasAttribute('open')).to.be.true;
+    });
+
+    it('highlights Cost on the API usage page', async () => {
+      window.history.replaceState({}, '', '/console/api-usage');
+      const el = await loaded();
+      expect(
+        el.shadowRoot!.querySelector(
+          'a.sidebar-link.active[href="/console/cost"]'
+        )
+      ).to.exist;
+    });
+
+    it('does not mistake Approvals for the single-approval alias the other way', async () => {
+      window.history.replaceState({}, '', '/console/approvals');
+      const el = await loaded();
+      expect(
+        el.shadowRoot!.querySelectorAll('a.sidebar-link.active')
+      ).to.have.length(1);
+    });
+
+    it('gates a single approval on the same permission as the list', async () => {
+      window.history.replaceState({}, '', '/console/approval/req-123');
+      withPermissions(['view_agents']);
+      const el = await loaded();
+      const denied = el.shadowRoot!.querySelector('permission-denied');
+      expect(denied).to.exist;
+      expect(denied!.getAttribute('required-permission')).to.equal(
+        'view_approvals'
+      );
+    });
+
+    it('lets a decision-token link through to the approval page', async () => {
+      // An escalation recipient may hold no view_approvals at all; the page
+      // falls back to the token, which authorizes exactly this request.
+      window.history.replaceState(
+        {},
+        '',
+        '/console/approval/req-123?token=example-token'
+      );
+      withPermissions(['view_agents']);
+      const el = await loaded();
+      expect(el.shadowRoot!.querySelector('permission-denied')).to.not.exist;
+      expect(el.shadowRoot!.querySelector('.main-content slot')).to.exist;
+    });
+  });
+
   describe('responsive sidebar', () => {
     it('shows sidebar as open on desktop by default', async () => {
       const el = (await fixture(
@@ -1070,7 +1262,7 @@ describe('ConsoleShell', () => {
       );
 
       const hamburger = el.shadowRoot?.querySelector(
-        'sl-icon-button[name="list"]'
+        '#console-nav-toggle'
       ) as HTMLElement;
       expect(hamburger).to.exist;
 
@@ -1142,7 +1334,7 @@ describe('ConsoleShell', () => {
 
       const sidebar = el.shadowRoot?.querySelector('.sidebar');
       const hamburger = el.shadowRoot?.querySelector(
-        'sl-icon-button[name="list"]'
+        '#console-nav-toggle'
       ) as HTMLElement;
       const toolsLink = el.shadowRoot?.querySelector(
         'a[href="/console/tools"]'
@@ -1161,17 +1353,283 @@ describe('ConsoleShell', () => {
       expect(sidebar?.classList.contains('closed')).to.be.true;
     });
   });
+  describe('keyboard and landmarks', () => {
+    function useMobile() {
+      const mockMediaQuery = createMatchMediaStub(true);
+      matchMediaStub.restore();
+      matchMediaStub = sinon
+        .stub(window, 'matchMedia')
+        .callsFake((query: string) => {
+          if (query.includes(`${SIDEBAR_BREAKPOINT}`)) {
+            return mockMediaQuery as unknown as MediaQueryList;
+          }
+          return {
+            matches: false,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+          } as unknown as MediaQueryList;
+        });
+    }
+
+    async function mount(): Promise<ConsoleShell> {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('a[href="/console/tools"]') !== null,
+        'Sidebar menu did not render'
+      );
+      return el;
+    }
+
+    const toggle = (el: ConsoleShell) =>
+      el.shadowRoot!.querySelector('#console-nav-toggle') as HTMLButtonElement;
+    const sidebar = (el: ConsoleShell) =>
+      el.shadowRoot!.querySelector('#console-nav') as HTMLElement;
+
+    it('offers "Skip to content" first, landing focus on the content area', async () => {
+      const el = await mount();
+      const first = el.shadowRoot!.querySelector('a, button') as HTMLElement;
+      expect(first.textContent?.trim()).to.equal('Skip to content');
+      expect(first.getAttribute('href')).to.equal('#console-main');
+
+      first.click();
+      const main = el.shadowRoot!.querySelector('#console-main') as HTMLElement;
+      expect(main.getAttribute('tabindex')).to.equal('-1');
+      expect(el.shadowRoot!.activeElement).to.equal(main);
+      // The click is handled, not followed: no stray fragment in the URL.
+      expect(window.location.hash).to.equal('');
+    });
+
+    it('never nests a second <main> inside the app outlet', async () => {
+      const el = await mount();
+      expect(el.shadowRoot!.querySelector('main')).to.not.exist;
+    });
+
+    it('states the sidebar state on the toggle and keeps a hidden sidebar inert', async () => {
+      const el = await mount();
+      expect(toggle(el).getAttribute('aria-controls')).to.equal('console-nav');
+      expect(toggle(el).getAttribute('aria-expanded')).to.equal('true');
+      expect(toggle(el).getAttribute('aria-label')).to.equal('Hide navigation');
+      expect(sidebar(el).hasAttribute('inert')).to.be.false;
+
+      toggle(el).click();
+      await el.updateComplete;
+
+      expect(toggle(el).getAttribute('aria-expanded')).to.equal('false');
+      expect(toggle(el).getAttribute('aria-label')).to.equal('Show navigation');
+      // Collapsed to zero width, so its links must leave the tab order.
+      expect(sidebar(el).hasAttribute('inert')).to.be.true;
+    });
+
+    it('keeps the closed mobile drawer inert', async () => {
+      useMobile();
+      const el = await mount();
+      expect(sidebar(el).hasAttribute('inert')).to.be.true;
+      expect(toggle(el).getAttribute('aria-expanded')).to.equal('false');
+    });
+
+    it('moves focus into the mobile drawer, and Escape closes it back to the toggle', async () => {
+      useMobile();
+      const el = await mount();
+      toggle(el).click();
+      await waitUntil(
+        () =>
+          (el.shadowRoot!.activeElement as HTMLElement | null)?.closest?.(
+            '#console-nav'
+          ),
+        'focus did not move into the drawer'
+      );
+
+      el.shadowRoot!.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await waitUntil(
+        () => sidebar(el).classList.contains('closed'),
+        'Escape did not close the drawer'
+      );
+      await el.updateComplete;
+      expect(el.shadowRoot!.activeElement).to.equal(toggle(el));
+    });
+
+    it('ignores Escape on desktop, where the sidebar is not a drawer', async () => {
+      const el = await mount();
+      el.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      );
+      await el.updateComplete;
+      expect(sidebar(el).classList.contains('open')).to.be.true;
+    });
+
+    it('starts a newly opened page at the top of the content area', async () => {
+      const originalPath = window.location.pathname;
+      const el = await mount();
+      await waitUntil(
+        () => el.shadowRoot!.querySelector('.main-content slot'),
+        'outlet did not render'
+      );
+      const main = el.shadowRoot!.querySelector('.main-content') as HTMLElement;
+      // A tall routed child, so the content area really scrolls.
+      const filler = document.createElement('div');
+      filler.style.minHeight = '5000px';
+      el.appendChild(filler);
+      await el.updateComplete;
+      main.scrollTop = 500;
+      expect(main.scrollTop).to.be.greaterThan(0);
+
+      window.history.pushState({}, '', '/console/agents');
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(main.scrollTop).to.equal(0);
+
+      // Back keeps the place it had, like the router does for the window.
+      main.scrollTop = 400;
+      window.history.pushState({}, '', '/console/tools');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(main.scrollTop).to.equal(400);
+
+      window.history.replaceState({}, '', originalPath);
+    });
+
+    it('shows the loading line, not a blank page, while features load', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      (el as unknown as { _featuresLoaded: boolean })._featuresLoaded = false;
+      el.requestUpdate();
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.main-content route-loading')).to
+        .exist;
+      expect(el.shadowRoot!.querySelector('.main-content slot')).to.not.exist;
+    });
+  });
+
+  describe('toasts', () => {
+    afterEach(() => {
+      document.body.querySelectorAll('sl-alert').forEach((a) => a.remove());
+    });
+
+    it('turns a show-toast request into a visible toast', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      window.dispatchEvent(
+        new CustomEvent('show-toast', {
+          detail: { message: 'Slow down a little.', variant: 'warning' },
+        })
+      );
+      const alert = Array.from(document.querySelectorAll('sl-alert')).find(
+        (a) => a.textContent?.includes('Slow down a little.')
+      ) as (HTMLElement & { variant: string }) | undefined;
+      expect(alert, 'toast rendered').to.exist;
+      expect(alert!.variant).to.equal('warning');
+    });
+
+    it('accepts a request that bubbles up from a routed view', async () => {
+      const el = (await fixture(
+        html`<console-shell><div id="child"></div></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      el.querySelector('#child')!.dispatchEvent(
+        new CustomEvent('show-toast', {
+          bubbles: true,
+          composed: true,
+          detail: { message: 'Logs copied.', variant: 'bogus' },
+        })
+      );
+      const alert = Array.from(document.querySelectorAll('sl-alert')).find(
+        (a) => a.textContent?.includes('Logs copied.')
+      ) as (HTMLElement & { variant: string }) | undefined;
+      expect(alert).to.exist;
+      // An unknown variant falls back rather than rendering unstyled.
+      expect(alert!.variant).to.equal('primary');
+    });
+
+    it('ignores a request with nothing to say', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      const before = document.querySelectorAll('sl-alert').length;
+      window.dispatchEvent(
+        new CustomEvent('show-toast', { detail: { message: '  ' } })
+      );
+      expect(document.querySelectorAll('sl-alert').length).to.equal(before);
+    });
+
+    it('stops listening once the shell is gone', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await el.updateComplete;
+      el.remove();
+      const before = document.querySelectorAll('sl-alert').length;
+      window.dispatchEvent(
+        new CustomEvent('show-toast', { detail: { message: 'Gone.' } })
+      );
+      expect(document.querySelectorAll('sl-alert').length).to.equal(before);
+    });
+  });
+
   describe('upgrade modal', () => {
     /** Collapse Lit's template line breaks so assertions test copy, not layout. */
     function copy(el: ConsoleShell): string {
       return (el.shadowRoot?.textContent ?? '').replace(/\s+/g, ' ').trim();
     }
 
-    async function openGate(feature: string) {
+    /** Serve /features with the billing plugin on or off. */
+    function withBilling(billing: boolean) {
+      invalidateApiCaches();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/api/v1/features')) {
+          return new Response(
+            JSON.stringify({
+              plugins: billing ? ['billing'] : [],
+              features: billing ? { billing: true } : {},
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/api/v1/auth/users/me')) {
+          return new Response(
+            JSON.stringify({
+              username: 'test',
+              email: 'test@example.com',
+              email_verified: true,
+              permissions: null,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    async function mountShell(): Promise<ConsoleShell> {
       const el = (await fixture(
         html`<console-shell></console-shell>`
       )) as ConsoleShell;
+      await waitUntil(
+        () => (el as any)._featuresLoaded,
+        'features did not load'
+      );
       await el.updateComplete;
+      return el;
+    }
+
+    beforeEach(() => withBilling(true));
+
+    async function openGate(feature: string) {
+      const el = await mountShell();
       // show() would open a real dialog and animate; the copy under test is
       // rendered from _upgradeFeature either way.
       sinon.stub((el as any)._upgradeModal, 'show');
@@ -1275,10 +1733,7 @@ describe('ConsoleShell', () => {
 
     it('offers the plan page without a feature when the gate names none', async () => {
       const go = sinon.stub(Router, 'go').returns(true);
-      const el = (await fixture(
-        html`<console-shell></console-shell>`
-      )) as ConsoleShell;
-      await el.updateComplete;
+      const el = await mountShell();
       sinon.stub((el as any)._upgradeModal, 'show');
       window.dispatchEvent(
         new CustomEvent('show-upgrade-modal', { detail: {} })
@@ -1287,6 +1742,33 @@ describe('ConsoleShell', () => {
       footer(el, 'upgrade-now').click();
       await el.updateComplete;
       expect(go.lastCall.args[0]).to.equal('/console/settings/plan');
+    });
+
+    it('never opens where nothing is sold (OSS)', async () => {
+      // Without the billing plugin "Upgrade now" leads to a page that says
+      // every feature is already available, so the dialog stays shut no
+      // matter what raised it.
+      withBilling(false);
+      const el = await mountShell();
+      const show = sinon.stub((el as any)._upgradeModal, 'show');
+      window.dispatchEvent(
+        new CustomEvent('show-upgrade-modal', {
+          detail: { code: 'upgrade_required', feature: 'rbac' },
+        })
+      );
+      await el.updateComplete;
+      expect(show).to.not.have.been.called;
+    });
+
+    it('opens where the billing plugin sells plans', async () => {
+      const el = await mountShell();
+      const show = sinon.stub((el as any)._upgradeModal, 'show');
+      window.dispatchEvent(
+        new CustomEvent('show-upgrade-modal', {
+          detail: { code: 'upgrade_required', feature: 'rbac' },
+        })
+      );
+      expect(show).to.have.been.calledOnce;
     });
 
     it('falls back to a full page load where no router is mounted', async () => {

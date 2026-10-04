@@ -98,9 +98,9 @@ export class DiscoveredAgentsPanel extends LitElement {
   async refresh(): Promise<void> {
     try {
       const page = await this.loader();
-      this.candidates = page.items;
-      this.total = page.total;
-      this.truncated = page.truncated;
+      this.candidates = Array.isArray(page?.items) ? page.items : [];
+      this.total = page?.total ?? this.candidates.length;
+      this.truncated = page?.truncated === true;
       this.error = null;
     } catch {
       // A load failure (older server, no view permission) hides the section:

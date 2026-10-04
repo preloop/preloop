@@ -93,6 +93,60 @@ describe('PreloopFlowForm copy', () => {
     ).to.deep.equal([]);
   });
 
+  it('shows git defaults as placeholders and still submits nothing for them', async () => {
+    const el = await mount({
+      name: 'Reviewer',
+      git_clone_config: { enabled: true },
+    });
+    const field = (label: string) =>
+      el.shadowRoot?.querySelector(`sl-input[label="${label}"]`) as
+        (HTMLElement & { value: string }) | null;
+
+    expect(field('Git author name')?.value).to.equal('');
+    expect(field('Git author name')?.getAttribute('placeholder')).to.equal(
+      'Preloop'
+    );
+    expect(field('Git author email')?.getAttribute('placeholder')).to.equal(
+      'git@preloop.ai'
+    );
+    expect(field('Source branch')?.getAttribute('placeholder')).to.equal(
+      'main'
+    );
+
+    // Untouched, the keys stay absent so the server default applies, as
+    // before the defaults moved to placeholders.
+    const listener = sinon.spy();
+    el.addEventListener('flow-submit', listener);
+    await (el as any).handleFormSubmit(new Event('submit'));
+    const git = listener.firstCall.args[0].detail.flow.git_clone_config;
+    expect(git).to.not.have.property('git_user_name');
+    expect(git).to.not.have.property('git_user_email');
+    expect(git).to.not.have.property('source_branch');
+  });
+
+  it('offers "Add new tracker" in sentence case', async () => {
+    const el = await mount({ name: 'Reviewer' });
+    (el as any).handleTriggerTypeChange('tracker');
+    await el.updateComplete;
+    const labels = [
+      ...(el.shadowRoot?.querySelectorAll('sl-button') || []),
+    ].map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim());
+    expect(labels).to.include('Add new tracker');
+  });
+
+  it('names the execution modes by what they do', async () => {
+    const el = await mount();
+    (el as any).longRunningAgents = [{ id: 'agent-1', display_name: 'Agent' }];
+    await el.updateComplete;
+    const radios = [...(el.shadowRoot?.querySelectorAll('sl-radio') || [])].map(
+      (node) => (node.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+    expect(radios).to.include('On-demand (new sandbox per run)');
+    expect(radios.some((label) => label.startsWith('Existing agent'))).to.equal(
+      true
+    );
+  });
+
   it('names the trigger radios in sentence case', async () => {
     const el = await mount();
     const radios = [...(el.shadowRoot?.querySelectorAll('sl-radio') || [])].map(

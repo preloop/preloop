@@ -28,6 +28,10 @@ export class KillSwitchBanner extends LitElement {
   @state()
   private error: string | null = null;
 
+  /** True when the last poll failed and `status` is the last known one. */
+  @state()
+  private stale = false;
+
   private pollTimer?: number;
 
   private static readonly SCOPE_LABELS: Record<
@@ -53,9 +57,17 @@ export class KillSwitchBanner extends LitElement {
       gap: 12px;
       padding: 12px 16px;
       border-radius: 4px;
-      border-left: 4px solid #ff5d5d;
-      background: rgba(255, 93, 93, 0.14);
-      color: #e6edf3;
+      /* Theme tokens, not hex: the console theme is a class on <html> that
+         the reader picks, and it need not match the OS. Text that followed
+         the OS colour scheme went near-white on a pale strip whenever the
+         two disagreed. */
+      border-left: 4px solid var(--sl-color-danger-600);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-danger-500) 14%,
+        transparent
+      );
+      color: var(--console-body-color, var(--sl-color-neutral-900));
       font-size: 14px;
       line-height: 1.4;
     }
@@ -94,8 +106,13 @@ export class KillSwitchBanner extends LitElement {
       gap: 5px;
       padding: 3px 8px;
       border-radius: 999px;
-      background: rgba(255, 93, 93, 0.18);
-      border: 1px solid rgba(255, 93, 93, 0.4);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-danger-500) 18%,
+        transparent
+      );
+      border: 1px solid
+        color-mix(in srgb, var(--sl-color-danger-500) 40%, transparent);
       font-size: 12px;
       font-weight: 600;
     }
@@ -109,9 +126,10 @@ export class KillSwitchBanner extends LitElement {
     }
 
     button {
-      background: #0f1720;
-      color: #e6edf3;
-      border: 1px solid rgba(255, 93, 93, 0.55);
+      background: var(--console-surface, var(--sl-color-neutral-0));
+      color: var(--console-body-color, var(--sl-color-neutral-900));
+      border: 1px solid
+        color-mix(in srgb, var(--sl-color-danger-500) 55%, transparent);
       border-radius: 4px;
       padding: 8px 12px;
       font-size: 13px;
@@ -130,21 +148,21 @@ export class KillSwitchBanner extends LitElement {
     }
 
     button.resume-all {
-      background: #0284c7;
-      border-color: #0284c7;
-      color: #fff;
+      background: var(--sl-color-primary-600);
+      border-color: var(--sl-color-primary-600);
+      color: var(--sl-color-neutral-0);
     }
 
-    .error {
-      color: #ffb4b4;
+    .stale {
+      color: var(--sl-color-neutral-600);
       font-size: 13px;
       margin-top: 8px;
     }
 
-    @media (prefers-color-scheme: light) {
-      .banner {
-        color: #1c2128;
-      }
+    .error {
+      color: var(--sl-color-danger-700);
+      font-size: 13px;
+      margin-top: 8px;
     }
   `;
 
@@ -161,12 +179,17 @@ export class KillSwitchBanner extends LitElement {
     if (this.pollTimer) window.clearInterval(this.pollTimer);
   }
 
-  /** Reload halt status, failing silently (the banner is advisory chrome). */
+  /**
+   * Reload halt status. A failed read keeps the last known status: this
+   * banner is the account's only persistent halted signal, so a transient
+   * poll failure must not make it vanish. Only a successful read clears it.
+   */
   private async refresh() {
     try {
       this.status = await getKillSwitchStatus();
+      this.stale = false;
     } catch {
-      this.status = null;
+      this.stale = this.status !== null;
     }
   }
 
@@ -182,6 +205,7 @@ export class KillSwitchBanner extends LitElement {
         scopes,
         reason: 'Staged recovery from console banner',
       });
+      this.stale = false;
       this.dispatchEvent(
         new CustomEvent('kill-switch-changed', {
           bubbles: true,
@@ -258,6 +282,14 @@ export class KillSwitchBanner extends LitElement {
               `
             )}
           </div>
+          ${
+            this.stale
+              ? html`<div class="stale">
+                  Couldn't refresh the halt status. Showing the last known
+                  state.
+                </div>`
+              : ''
+          }
           ${this.error ? html`<div class="error">${this.error}</div>` : ''}
         </div>
         <div class="actions">

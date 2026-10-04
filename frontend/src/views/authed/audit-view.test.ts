@@ -322,6 +322,90 @@ describe('AuditView', () => {
     element.remove();
   });
 
+  describe('when the timeline cannot be shown', () => {
+    function groupedResponse(status: number, body: unknown) {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    async function mount() {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('shows a danger alert with Retry, not the empty state, when loading fails', async () => {
+      let fail = true;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          return fail
+            ? groupedResponse(500, { detail: 'boom' })
+            : groupedResponse(200, { groups: [], total: 0 });
+        }
+        return groupedResponse(200, []);
+      });
+
+      const element = await mount();
+      const alert = element.shadowRoot?.querySelector(
+        'sl-alert[variant="danger"]'
+      );
+      expect(alert, 'expected a danger alert').to.exist;
+      expect(alert?.textContent).to.contain("Couldn't load audit events");
+      expect(element.shadowRoot?.textContent).to.not.contain(
+        'No audit events yet'
+      );
+
+      fail = false;
+      const retry = alert?.querySelector('sl-button') as HTMLElement;
+      expect(retry.textContent?.trim()).to.equal('Retry');
+      retry.click();
+      await waitUntil(
+        () =>
+          !(element as any)._loading &&
+          !element.shadowRoot?.querySelector('sl-alert[variant="danger"]'),
+        'Retry did not reload'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot?.textContent).to.contain('No audit events yet');
+      element.remove();
+    });
+
+    it('says no events match, with Clear filters, when a filter is active', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          return groupedResponse(200, { groups: [], total: 0 });
+        }
+        return groupedResponse(200, []);
+      });
+
+      const element = await mount();
+      (element as any)._outcomeFilters = ['denied'];
+      await (element as any)._loadTimeline();
+      await element.updateComplete;
+
+      const empty = element.shadowRoot?.querySelector('.empty-state');
+      expect(empty?.textContent).to.contain('No events match these filters.');
+      expect(empty?.textContent).to.not.contain('No audit events yet');
+      const clear = empty?.querySelector('sl-button') as HTMLElement;
+      expect(clear.textContent?.trim()).to.equal('Clear filters');
+      clear.click();
+      await waitUntil(() => !(element as any)._loading);
+      await element.updateComplete;
+      expect((element as any)._outcomeFilters).to.deep.equal([]);
+      expect(element.shadowRoot?.textContent).to.contain('No audit events yet');
+      element.remove();
+    });
+  });
+
   it('renders expandable runtime session events and API token attribution', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);
@@ -354,6 +438,57 @@ describe('AuditView', () => {
     expect(expandedContent).to.contain('Runtime Session Id');
 
     document.body.removeChild(element);
+  });
+
+  it('opens an event from a keyboard-reachable button with aria-expanded', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const toggle = element.shadowRoot?.querySelector(
+      '.primary-row button.expand-toggle'
+    ) as HTMLButtonElement;
+    expect(toggle, 'expected an expand button on the row').to.exist;
+    expect(toggle.getAttribute('aria-expanded')).to.equal('false');
+    expect(toggle.getAttribute('aria-label')).to.contain('Details for');
+
+    toggle.click();
+    await element.updateComplete;
+    // One click opens once: the row's own click handler must not undo it.
+    expect(toggle.getAttribute('aria-expanded')).to.equal('true');
+    expect(element.shadowRoot?.textContent).to.contain('claude-session-42');
+
+    element.remove();
+  });
+
+  it('names every filter, so From and To can be told apart', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const labels = Array.from(
+      element.shadowRoot?.querySelectorAll(
+        '.filter-bar sl-input, .filter-bar sl-select'
+      ) ?? []
+    ).map((control) => control.getAttribute('label'));
+    expect(labels).to.deep.equal([
+      'Tool',
+      'Event type',
+      'Outcome',
+      'From date',
+      'To date',
+      'Min cost ($)',
+      'Max cost ($)',
+    ]);
+    element.remove();
   });
 
   it('shortens the ids in an expanded event and links the ones with a page', async () => {
@@ -623,7 +758,7 @@ describe('AuditView', () => {
     );
 
     expect(gatewayRow).to.exist;
-    expect(element.shadowRoot?.textContent || '').to.contain('Budget Denied');
+    expect(element.shadowRoot?.textContent || '').to.contain('Budget denied');
 
     gatewayRow?.click();
     await element.updateComplete;
@@ -657,7 +792,7 @@ describe('AuditView', () => {
     await element.updateComplete;
 
     const expanded = element.shadowRoot?.textContent || '';
-    expect(expanded).to.contain('Policy: Require Approval');
+    expect(expanded).to.contain('Policy: require approval');
     expect(expanded).to.contain('Default Rule');
     expect(expanded).to.contain('Approval requested for pay');
     expect(expanded).to.contain('Notified via Email');
@@ -1096,7 +1231,7 @@ describe('AuditView', () => {
         element.shadowRoot?.querySelectorAll('.primary-label') || []
       ).map((el) => (el.textContent || '').trim());
       expect(labels).to.deep.equal([
-        'Denied by policy: delete_repo',
+        'Blocked by policy: delete_repo',
         'Approval required: delete_repo',
       ]);
 
@@ -1292,6 +1427,70 @@ describe('AuditView', () => {
         { timeout: 4000 }
       );
       expect(rowIds(element)).to.deep.equal(['granted']);
+      element.remove();
+    });
+
+    /** A grouped endpoint that answers each call with the given status. */
+    const groupedByCall = (statuses: number[]) => {
+      let calls = 0;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          const status = statuses[Math.min(calls, statuses.length - 1)];
+          calls += 1;
+          const body =
+            status === 200 ? groupsFor(`answer-${calls}`) : { detail: 'boom' };
+          return new Response(JSON.stringify(body), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      return () => calls;
+    };
+
+    it('clears a load error when a live refresh succeeds', async function () {
+      this.timeout(10000);
+      groupedByCall([500, 200]);
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => (element as any)._loadError, 'first load fails');
+      wsCallback?.({ type: 'audit_event', action: 'tool_call' });
+      await waitUntil(
+        () => !(element as any)._loadError,
+        'live refresh should bring the list back',
+        { timeout: 4000 }
+      );
+      await element.updateComplete;
+      expect(rowIds(element)).to.deep.equal(['answer-2']);
+      expect(element.shadowRoot?.querySelector('sl-alert[variant="danger"]')).to
+        .not.exist;
+      element.remove();
+    });
+
+    it('keeps the rows and raises no error when a live refresh fails', async function () {
+      this.timeout(10000);
+      const calls = groupedByCall([200, 500]);
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(() => !(element as any)._loading, 'first load');
+      wsCallback?.({ type: 'audit_event', action: 'tool_call' });
+      await waitUntil(
+        () =>
+          calls() >= 2 &&
+          (element as any)._refreshTimer === null &&
+          !(element as any)._liveRefreshInFlight,
+        'live refresh settles',
+        { timeout: 4000 }
+      );
+      await element.updateComplete;
+      expect(rowIds(element)).to.deep.equal(['answer-1']);
+      expect((element as any)._loadError).to.equal(null);
+      expect(spinnerShown(element)).to.equal(false);
       element.remove();
     });
 

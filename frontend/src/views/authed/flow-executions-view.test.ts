@@ -691,6 +691,42 @@ describe('FlowExecutionsView', () => {
     ]);
   });
 
+  it('names the operator queues and asks for both timed-out spellings', async () => {
+    const requested: string[] = [];
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      requested.push(String(input));
+      return new Response(JSON.stringify([]), { status: 200 });
+    });
+    window.history.replaceState(
+      {},
+      '',
+      '/console/flows/executions?status=TIMED_OUT'
+    );
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+
+    const labels = Array.from(
+      el.shadowRoot?.querySelectorAll('sl-select.status-filter sl-option') || []
+    ).map((option) => option.textContent?.trim());
+    expect(labels).to.include.members([
+      'Waiting for approval',
+      'Stopped',
+      'Timed out',
+    ]);
+    const status = el.shadowRoot?.querySelector(
+      'sl-select.status-filter'
+    ) as HTMLElement & { value: string };
+    expect(status.value).to.equal('TIMEOUT');
+    const list = requested.filter((url) =>
+      url.includes('/api/v1/flows/executions?')
+    );
+    expect(list.some((url) => /status=TIMEOUT&status=TIMED_OUT/.test(url))).to
+      .be.true;
+  });
+
   it('keeps the stored range allowlist in step with the control', () => {
     expect([...FLOW_EXECUTION_RANGES]).to.deep.equal(
       RANGE_OPTIONS.map((option) => option.value)

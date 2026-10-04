@@ -6,6 +6,11 @@ import { CapabilityRouteGate } from '../lazy-routes';
 import type { LitApp } from './lit-app';
 import './lit-app';
 
+// Tag names rather than the element classes: a failing assertion on a class
+// stalls the test runner's error reporting until the file times out.
+const definedElements = (tags: string[]): string[] =>
+  tags.filter((tag) => customElements.get(tag) !== undefined);
+
 describe('LitApp routing', () => {
   let fetchStub: sinon.SinonStub;
 
@@ -27,7 +32,13 @@ describe('LitApp routing', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
-    fetchStub = sinon.stub(window, 'fetch');
+    // One stub for the whole file (see after()): several tests mount the
+    // console shell, whose requests can still be in flight when a test
+    // ends. Restoring the real fetch between tests let those late requests
+    // reach the test server and its auth handling, which made the file
+    // hang under CI load.
+    if (!fetchStub) fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.resetHistory();
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('/api/v1/features')) {
@@ -56,17 +67,51 @@ describe('LitApp routing', () => {
     });
   });
 
-  afterEach(() => {
-    fetchStub.restore();
+  afterEach(async () => {
+    // Leave the console before clearing credentials, so a mounted shell
+    // unmounts while its requests still resolve against the stub.
+    Router.go('/');
+    await new Promise((resolve) => setTimeout(resolve, 0));
     localStorage.clear();
     delete (window as any).BRAND_CONFIG;
     window.history.replaceState({}, '', '/');
   });
 
+  after(() => {
+    fetchStub.restore();
+  });
+
   it('keeps console pages out of the initial public page registration', () => {
-    expect(customElements.get('profile-view')).to.equal(undefined);
-    expect(customElements.get('agent-detail-view')).to.equal(undefined);
-    expect(customElements.get('flow-execution-view')).to.equal(undefined);
+    expect(
+      definedElements([
+        'profile-view',
+        'agent-detail-view',
+        'flow-execution-view',
+      ])
+    ).to.deep.equal([]);
+  });
+
+  // Runs before any test that mounts the console: those leave lazy console
+  // chunks loading after they finish, which would define these elements
+  // behind this test's back.
+  it('renders the landing page and /login without touching a console chunk', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('landing-view')),
+      'Expected the landing page to render'
+    );
+
+    Router.go('/login');
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('login-view')),
+      'Expected /login to render'
+    );
+
+    // The two doors an anonymous visitor uses. Neither may drag the console
+    // in behind it; that is the whole point of the split.
+    expect(
+      definedElements(['console-shell', 'dashboard-view', 'agents-view'])
+    ).to.deep.equal([]);
   });
 
   it('removes capability listeners on disconnect and restores one on reconnect', async () => {
@@ -203,24 +248,24 @@ describe('LitApp routing', () => {
     }
   });
 
-  it('renders the landing page and /login without touching a console chunk', async () => {
-    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
-    await waitUntil(
-      () => Boolean(el.shadowRoot?.querySelector('landing-view')),
-      'Expected the landing page to render'
-    );
-
-    Router.go('/login');
-    await waitUntil(
-      () => Boolean(el.shadowRoot?.querySelector('login-view')),
-      'Expected /login to render'
-    );
-
-    // The two doors an anonymous visitor uses. Neither may drag the console
-    // in behind it; that is the whole point of the split.
-    expect(customElements.get('console-shell')).to.equal(undefined);
-    expect(customElements.get('dashboard-view')).to.equal(undefined);
-    expect(customElements.get('agents-view')).to.equal(undefined);
+  it('puts the served title back when the reader leaves the console', async () => {
+    const original = document.title;
+    try {
+      const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+      await waitUntil(() =>
+        Boolean(el.shadowRoot?.querySelector('landing-view'))
+      );
+      // A console page retitled the tab (view-header does this).
+      document.title = 'Agents · Preloop';
+      Router.go('/login');
+      await waitUntil(
+        () => Boolean(el.shadowRoot?.querySelector('login-view')),
+        'Expected /login to render'
+      );
+      expect(document.title).to.equal(original);
+    } finally {
+      document.title = original;
+    }
   });
 
   it('registers a nested console view on navigation and handles OAuth tokens', async () => {
@@ -274,6 +319,80 @@ describe('LitApp routing', () => {
       () =>
         Boolean(el.shadowRoot?.querySelector('console-shell > emergency-view')),
       'Expected the emergency route to render',
+      { timeout: 5000 }
+    );
+  });
+
+  it('renders an unknown console path as a 404 inside the shell', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+
+    Router.go('/console/does-not-exist');
+
+    // Inside console-shell, so the sidebar and header stay on screen.
+    await waitUntil(
+      () =>
+        Boolean(el.shadowRoot?.querySelector('console-shell > not-found-view')),
+      'Expected the console 404 to render inside the shell',
+      { timeout: 5000 }
+    );
+    expect(window.location.pathname).to.equal('/console/does-not-exist');
+  });
+
+  it('names the console 404 in the tab, not the previous page', async () => {
+    const original = document.title;
+    try {
+      const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+      // The page the reader came from titled the tab (view-header does this).
+      document.title = 'Agents · Preloop';
+
+      Router.go('/console/does-not-exist');
+      await waitUntil(
+        () =>
+          Boolean(
+            el.shadowRoot?.querySelector('console-shell > not-found-view')
+          ),
+        'Expected the console 404 to render inside the shell',
+        { timeout: 5000 }
+      );
+      expect(document.title).to.equal('Page not found · Preloop');
+    } finally {
+      document.title = original;
+    }
+  });
+
+  it('keeps real console routes ahead of the console 404', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+
+    Router.go('/console/settings/emergency');
+    await waitUntil(
+      () =>
+        Boolean(el.shadowRoot?.querySelector('console-shell > emergency-view')),
+      'Expected the emergency route to render',
+      { timeout: 5000 }
+    );
+    expect(el.shadowRoot?.querySelector('not-found-view')).to.equal(null);
+  });
+
+  it('still renders the bare 404 for an unknown public path', async () => {
+    const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+
+    Router.go('/no-such-page');
+    await waitUntil(
+      () => Boolean(el.shadowRoot?.querySelector('main > not-found-view')),
+      'Expected the top-level 404',
+      { timeout: 5000 }
+    );
+    expect(el.shadowRoot?.querySelector('console-shell')).to.equal(null);
+  });
+
+  it('redirects the old bell link to the executions list', async () => {
+    await fixture(html`<lit-app></lit-app>`);
+
+    Router.go('/console/flow-executions');
+
+    await waitUntil(
+      () => window.location.pathname === '/console/flows/executions',
+      'Expected /console/flow-executions to redirect',
       { timeout: 5000 }
     );
   });

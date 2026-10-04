@@ -1665,6 +1665,58 @@ describe('FlowExecutionView', () => {
       );
     });
 
+    it('puts the error right after the summary and records after the tabs', async () => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        status: 'FAILED',
+        error_message: 'Agent exited with code 1\nTraceback (most recent call)',
+      };
+      await element.updateComplete;
+
+      const root = element.shadowRoot!;
+      const strip = root.querySelector('[data-testid="summary-strip"]')!;
+      const line = root.querySelector('[data-testid="error-line"]')!;
+      const tree = root.querySelector('preloop-execution-tree')!;
+      const tabs = root.querySelector('sl-tab-group')!;
+      const records = root.querySelector('execution-records-card')!;
+      const follows = (a: Node, b: Node) =>
+        Boolean(
+          a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+        );
+
+      expect(follows(strip, line), 'error after the summary').to.equal(true);
+      expect(follows(line, tree), 'error before the tree').to.equal(true);
+      expect(follows(line, tabs), 'error before the tabs').to.equal(true);
+      expect(follows(tabs, records), 'records after the tabs').to.equal(true);
+      expect(line.getAttribute('role')).to.equal('alert');
+    });
+
+    it('opens the Output tab from "Show full error"', async () => {
+      const element = await load('exec-1');
+      (element as any).execution = {
+        ...(element as any).execution,
+        status: 'FAILED',
+        error_message: 'Agent exited with code 1\nTraceback (most recent call)',
+      };
+      await element.updateComplete;
+
+      const button = element.shadowRoot!.querySelector(
+        '[data-testid="show-full-error"]'
+      ) as HTMLElement;
+      expect(button.textContent?.trim()).to.equal('Show full error');
+      button.click();
+      await waitUntil(() => (element as any).activeTab === 'output');
+      await element.updateComplete;
+      expect(new URL(window.location.href).searchParams.get('tab')).to.equal(
+        'output'
+      );
+      const panel = element.shadowRoot!.querySelector(
+        'sl-tab-panel[name="output"]'
+      )!;
+      expect(panel.hasAttribute('active')).to.equal(true);
+    });
+
     it('says why the server stopped a run on its own', async () => {
       const element = await load('exec-1');
       const reason =
@@ -2355,10 +2407,11 @@ describe('FlowExecutionView', () => {
       await waitUntil(() => !panel.loading);
       await panel.updateComplete;
 
-      // The empty state, and no tree section.
+      // No empty-state line and no tree section.
       expect(
         panel.shadowRoot.querySelector('[data-testid="execution-tree-empty"]')
-      ).to.exist;
+      ).to.not.exist;
+      expect(panel.shadowRoot.textContent.trim()).to.equal('');
       expect(panel.shadowRoot.querySelector('[data-testid="execution-tree"]'))
         .to.not.exist;
 
@@ -2396,9 +2449,14 @@ describe('FlowExecutionView', () => {
       );
       expect((element as any).execution.status).to.equal('RUNNING');
     } finally {
-      document.body.querySelectorAll('sl-alert').forEach((node) => {
-        node.remove();
-      });
+      // Hide rather than remove: a toast takes itself out of the toast stack
+      // once hidden, and removing it first makes that cleanup throw in
+      // whichever test is running when its timer fires.
+      await Promise.all(
+        [...document.body.querySelectorAll('sl-alert')].map((node) =>
+          (node as HTMLElement & { hide: () => Promise<void> }).hide()
+        )
+      );
     }
   });
 });

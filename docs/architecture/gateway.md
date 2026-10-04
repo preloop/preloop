@@ -160,6 +160,16 @@ failure category and a message naming the ceiling. `max_turns` is counted at
 the gateway as one turn per model request, since no bundled runtime exposes a
 usable max-turns flag. Flows without `limits` are unchanged.
 
+The flow API also accepts `max_budget` (USD) and `max_iterations` as top-level
+fields, which is what the console's flow form edits ("Spend limit per run" and
+"Maximum model calls per run"). They are stored as `limits.max_usd` and
+`limits.max_turns`, merged onto the stored `agent_config` when an update
+carries no `agent_config`, and returned on every flow read from those same
+keys. `null` clears a limit; an omitted field leaves it unchanged. OpenHands
+also uses `max_turns` as its own `-i` iteration cap when
+`agent_config.max_iterations` is unset, so it stops cleanly before the gateway
+would refuse it.
+
 ### Historical repricing jobs
 
 The billing repricing endpoint runs windows up to seven days in a worker

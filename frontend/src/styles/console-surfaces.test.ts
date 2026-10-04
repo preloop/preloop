@@ -111,10 +111,58 @@ describe('console surface ladder', () => {
     const darkMeta = await resolve('dark', '--console-meta-color');
     const darkSurface = await resolve('dark', '--console-surface');
 
-    // neutral-500 on a dark card is gray on gray; neutral-600 is the step
-    // that keeps a 13px timestamp scannable.
+    // neutral-500 on a dark card is gray on gray; neutral-700 is the step
+    // that keeps a 13px timestamp readable on cards and dialogs alike.
     expect(lightMeta).to.equal('rgb(113, 113, 122)');
-    expect(darkMeta).to.equal('rgb(142, 142, 154)');
+    expect(darkMeta).to.equal('rgb(182, 182, 190)');
     expect(luminance(darkMeta)).to.be.greaterThan(luminance(darkSurface) * 2);
+  });
+
+  /** WCAG 2.x contrast ratio between two resolved `rgb()` colours. */
+  function contrast(a: string, b: string) {
+    const channel = (value: number) => {
+      const c = value / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    const relative = (rgb: string) => {
+      const [r, g, bl] = rgb.match(/[\d.]+/g)!.map(Number);
+      return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(bl);
+    };
+    const [hi, lo] = [relative(a), relative(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  it('keeps inline links at WCAG AA on every rung in both themes', async () => {
+    for (const theme of ['light', 'dark'] as const) {
+      const link = await resolve(theme, '--console-link-color');
+      for (const rung of [
+        '--console-page',
+        '--console-surface',
+        '--console-surface-raised',
+      ]) {
+        const ground = await resolve(theme, rung);
+        expect(
+          contrast(link, ground),
+          `${theme} link on ${rung}`
+        ).to.be.at.least(4.5);
+      }
+    }
+  });
+
+  it('keeps meta text at WCAG AA on every rung in both themes', async () => {
+    for (const theme of ['light', 'dark'] as const) {
+      const meta = await resolve(theme, '--console-meta-color');
+      for (const rung of [
+        '--console-page',
+        '--console-surface',
+        '--console-surface-raised',
+      ]) {
+        const ground = await resolve(theme, rung);
+        expect(
+          contrast(meta, ground),
+          `${theme} meta on ${rung}`
+        ).to.be.at.least(4.5);
+      }
+    }
   });
 });

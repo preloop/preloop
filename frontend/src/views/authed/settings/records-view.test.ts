@@ -490,6 +490,40 @@ describe('RecordsView', () => {
     }
   });
 
+  it('lists jump links only for the sections this viewer can see', async () => {
+    install({ permissions: ['view_policies'] });
+    const el = await fixture<RecordsView>(html`<records-view></records-view>`);
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('#retention'),
+      'retention did not render'
+    );
+    const links = Array.from(el.shadowRoot!.querySelectorAll('nav.jump a')).map(
+      (link) => link.getAttribute('href')
+    );
+    expect(links).to.deep.equal(['#retention', '#legal-holds']);
+    for (const href of links) {
+      expect(el.shadowRoot!.querySelector(href!), `${href} is missing`).to
+        .exist;
+    }
+  });
+
+  it('shows a failed export as a danger alert, not a grey note', async () => {
+    install({});
+    const el = await mount();
+    (el as any).exportError = 'Export failed';
+    await el.updateComplete;
+    const alert = el.shadowRoot!.querySelector(
+      '#period-exports sl-alert[variant="danger"]'
+    );
+    expect(alert, 'expected a danger alert').to.exist;
+    expect(alert?.textContent).to.contain('Export failed');
+    expect(
+      Array.from(el.shadowRoot!.querySelectorAll('p.note')).some((note) =>
+        note.textContent?.includes('Export failed')
+      )
+    ).to.equal(false);
+  });
+
   it('labels the next checkpoint page as newer rows', async () => {
     const page = Array.from({ length: 50 }, (_, index) => ({
       seq: index + 1,

@@ -8,6 +8,7 @@ import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../../components/view-header.ts';
+import { confirmDialog } from '../../../components/confirm-dialog';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { getTeams, getUsers } from '../../../api';
 import { isCapabilityOff } from '../../../capabilities';
@@ -28,6 +29,9 @@ interface SubjectOption {
   id: string;
   label: string;
 }
+
+const HIERARCHY_DOCS_URL =
+  'https://docs.preloop.ai/guide/accounts-and-profiles';
 
 const LEVELS: Record<GrantLevel, string> = {
   read: 'Read (viewer)',
@@ -63,6 +67,13 @@ export class AccessGrantsView extends LitElement {
       }
       .error {
         color: var(--sl-color-danger-700);
+      }
+      .off-state,
+      .hint {
+        color: var(--console-meta-color, var(--sl-color-neutral-600));
+      }
+      .table-scroll {
+        overflow-x: auto;
       }
     `,
   ];
@@ -184,6 +195,15 @@ export class AccessGrantsView extends LitElement {
   }
 
   private async revoke(grant: AccessGrant) {
+    const level = (LEVELS[grant.level] ?? grant.level).toLowerCase();
+    const ok = await confirmDialog({
+      title: 'Revoke access?',
+      message: `Revoke ${this.subjectLabel(grant)}'s ${level} access?`,
+      detail: `Where: ${this.targetLabel(grant)}. They lose that access right away.`,
+      confirmLabel: 'Revoke',
+      variant: 'danger',
+    });
+    if (!ok) return;
     try {
       await deleteAccessGrant(this.accountId, grant.id);
       this.grants = await listAccessGrants(this.accountId);
@@ -200,7 +220,20 @@ export class AccessGrantsView extends LitElement {
   }
 
   render() {
-    if (this.off) return nothing;
+    if (this.off) {
+      // A bookmarked link on a server without the extension: say so rather
+      // than leave a blank page, and raise no error toast.
+      return html`
+        <view-header headerText="Access grants"></view-header>
+        <p class="off-state">
+          Access grants aren't available on this deployment: the server does not
+          have the account hierarchy extension enabled.
+          <a href=${HIERARCHY_DOCS_URL} target="_blank" rel="noopener"
+            >Learn about subaccounts</a
+          >
+        </p>
+      `;
+    }
     return html`
       <view-header
         headerText="Access grants"
@@ -255,6 +288,16 @@ export class AccessGrantsView extends LitElement {
                   <sl-radio value="selected">Selected subaccounts</sl-radio>
                 </sl-radio-group>
                 ${
+                  this.target === 'selected' && this.subaccounts.length === 0
+                    ? html`<p class="hint" data-testid="no-subaccounts">
+                        This account has no subaccounts yet.
+                        <a href="/console/settings/subaccounts"
+                          >Create a subaccount first</a
+                        >, or grant access in all subaccounts.
+                      </p>`
+                    : nothing
+                }
+                ${
                   this.target === 'selected'
                     ? this.subaccounts.map(
                         (sub) =>
@@ -277,38 +320,44 @@ export class AccessGrantsView extends LitElement {
                     >Add grant</sl-button
                   >
                 </div>
-                ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
+                ${
+                  this.error
+                    ? html`<p class="error" role="alert">${this.error}</p>`
+                    : nothing
+                }
               </form>
               ${
                 this.grants.length === 0
                   ? html`<p class="empty-state">No grants yet.</p>`
-                  : html`<table>
-                      <thead>
-                        <tr>
-                          <th>Who</th>
-                          <th>Level</th>
-                          <th>Where</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${this.grants.map(
-                          (grant) =>
-                            html`<tr data-id=${grant.id}>
-                              <td>${this.subjectLabel(grant)}</td>
-                              <td>${LEVELS[grant.level] ?? grant.level}</td>
-                              <td>${this.targetLabel(grant)}</td>
-                              <td>
-                                <sl-button
-                                  size="small"
-                                  @click=${() => this.revoke(grant)}
-                                  >Revoke</sl-button
-                                >
-                              </td>
-                            </tr>`
-                        )}
-                      </tbody>
-                    </table>`
+                  : html`<div class="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Who</th>
+                            <th>Level</th>
+                            <th>Where</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${this.grants.map(
+                            (grant) =>
+                              html`<tr data-id=${grant.id}>
+                                <td>${this.subjectLabel(grant)}</td>
+                                <td>${LEVELS[grant.level] ?? grant.level}</td>
+                                <td>${this.targetLabel(grant)}</td>
+                                <td>
+                                  <sl-button
+                                    size="small"
+                                    @click=${() => this.revoke(grant)}
+                                    >Revoke</sl-button
+                                  >
+                                </td>
+                              </tr>`
+                          )}
+                        </tbody>
+                      </table>
+                    </div>`
               }
             `
       }

@@ -148,9 +148,10 @@ const MATRIX: Landing[] = [
     tag: 'policies-view',
   },
   {
+    // An unknown console path renders the 404 inside the shell, so the
+    // reader keeps the sidebar and header.
     path: '/console/does-not-exist',
     tag: 'not-found-view',
-    atOutlet: true,
   },
 ];
 

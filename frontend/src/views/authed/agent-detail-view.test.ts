@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import './agent-detail-view.ts';
 import type { AgentDetailView } from './agent-detail-view';
 import { invalidateApiCaches } from '../../api';
+import { historyStateForNavigation } from '../../utils/in-app-history';
 
 describe('AgentDetailView', () => {
   let fetchStub: sinon.SinonStub;
@@ -654,6 +655,29 @@ describe('AgentDetailView', () => {
     expect(flowCalls()).to.have.length(1);
   });
 
+  it('paints its cards from the theme surface, never a fixed white', async () => {
+    // Inline white backgrounds under theme-coloured text read at 1.5:1 in
+    // the dark theme: two whole cards became bright slabs with pale text.
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => !(el as any).loading);
+    el.shadowRoot!.querySelector('sl-tab-group')!.dispatchEvent(
+      new CustomEvent('sl-tab-show', {
+        detail: { name: 'associated-flows' },
+        bubbles: true,
+      })
+    );
+    await waitUntil(() => (el as any).associatedFlowsLoaded);
+    await el.updateComplete;
+    const whiteCards = Array.from(
+      el.shadowRoot!.querySelectorAll<HTMLElement>('[style]')
+    ).filter((node) =>
+      /background:\s*#fff(?:fff)?\b/i.test(node.getAttribute('style') ?? '')
+    );
+    expect(whiteCards).to.have.length(0);
+  });
+
   it('allows the new agent associated-flows request while an old failure is pending', async () => {
     let releaseOld!: () => void;
     let releaseNew!: () => void;
@@ -1197,6 +1221,11 @@ describe('AgentDetailView', () => {
     const text = getDeepText(element).replace(/\s+/g, ' ');
     expect(text).to.not.contain('Sessions History');
     expect(text).to.contain('Session History');
+    await element.updateComplete;
+    const refresh = element.shadowRoot!.querySelector(
+      'sl-icon-button[name="arrow-clockwise"]'
+    );
+    expect(refresh?.getAttribute('label')).to.equal('Refresh sessions');
   });
 
   it('lets the user pick the approval workflow for native tool approvals', async () => {
@@ -1595,6 +1624,49 @@ describe('AgentDetailView', () => {
     );
   }
 
+  /** Re-stub fetch with one model whose configured alias differs from its identifier. */
+  function stubCustomAliasModel(allowedModels: string[]): void {
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url === '/api/v1/ai-models') {
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'model-gamma',
+                name: 'Gamma Chat',
+                provider_name: 'acme',
+                model_identifier: 'gamma-upstream-v2',
+                meta_data: {
+                  gateway: { enabled: true, model_alias: 'team/gamma' },
+                },
+              },
+            ]),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (
+          url === '/api/v1/agents/agent-1/governance' &&
+          (!init?.method || init.method === 'GET')
+        ) {
+          return new Response(
+            JSON.stringify({
+              subject_type: 'managed_agents',
+              subject_id: 'agent-1',
+              config: {
+                allowed_models: allowedModels,
+                model_budgets: {},
+                tool_rules: {},
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return defaultFetch(input, init);
+      }
+    );
+  }
+
   async function loadModelsTab(): Promise<AgentDetailView> {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
@@ -1725,5 +1797,163 @@ describe('AgentDetailView', () => {
       'alpha-chat',
       'other/beta-flash',
     ]);
+  });
+
+  it('checks a model whose allowlist entry is its bare model_identifier under a custom alias', async () => {
+    stubCustomAliasModel(['gamma-upstream-v2']);
+    const element = await loadModelsTab();
+
+    // The gateway accepts the bare identifier even though the model answers
+    // to team/gamma, so the console must show it as allowed and write it
+    // back under the alias.
+    const gammaToggle = element.shadowRoot?.querySelector(
+      'sl-checkbox[data-model-allow-toggle="team/gamma"]'
+    ) as any;
+    expect(gammaToggle.checked).to.be.true;
+    const overrideInput = element.shadowRoot?.querySelector(
+      'sl-input[label="Allowed models"]'
+    ) as any;
+    expect(overrideInput.value).to.equal('team/gamma');
+
+    gammaToggle.checked = false;
+    gammaToggle.dispatchEvent(new Event('sl-change'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(lastGovernancePutBody().allowed_models).to.deep.equal([]);
+  });
+
+  describe('navigation and failure states', () => {
+    afterEach(() => {
+      window.history.replaceState({}, '', '/');
+    });
+
+    it('writes the open tab to ?tab= so a reload keeps it', async () => {
+      window.history.replaceState({}, '', '/console/agents/agent-1');
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+
+      const group = element.shadowRoot!.querySelector('sl-tab-group')!;
+      group.dispatchEvent(
+        new CustomEvent('sl-tab-show', { detail: { name: 'tools' } })
+      );
+      expect(new URL(window.location.href).searchParams.get('tab')).to.equal(
+        'tools'
+      );
+      expect(window.location.pathname).to.equal('/console/agents/agent-1');
+    });
+
+    it('sends Back to the Agents list on a page loaded directly', async () => {
+      window.history.replaceState(null, '', '/console/agents/agent-1');
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const back = sinon.stub(window.history, 'back');
+      try {
+        const click = new MouseEvent('click', { cancelable: true });
+        (element as any).handleBack(click);
+        // The click is left alone, so the button's href (/console/agents)
+        // is followed instead of leaving the console.
+        expect(click.defaultPrevented).to.equal(false);
+        expect(back.called).to.equal(false);
+      } finally {
+        back.restore();
+      }
+    });
+
+    it('goes back in history after an in-app navigation', async () => {
+      // The router writes in-app entries with pushState, which never updates
+      // document.referrer; the entry's own in-app depth is what counts.
+      window.history.replaceState(null, '', '/console/agents');
+      window.history.pushState(
+        historyStateForNavigation('push'),
+        '',
+        '/console/agents/agent-1'
+      );
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const back = sinon.stub(window.history, 'back');
+      try {
+        const click = new MouseEvent('click', { cancelable: true });
+        (element as any).handleBack(click);
+        expect(click.defaultPrevented).to.equal(true);
+        expect(back.calledOnce).to.equal(true);
+      } finally {
+        back.restore();
+      }
+    });
+
+    it('links Back to the Agents list for a reader with no history here', async () => {
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const back = element.shadowRoot!.querySelector('sl-button.back-button');
+      expect(back?.getAttribute('href')).to.equal('/console/agents');
+    });
+
+    it('offers Back to Agents and Try again when the agent fails to load', async () => {
+      let fail = true;
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          if (fail && url.startsWith('/api/v1/agents/agent-1')) {
+            return new Response(JSON.stringify({ detail: 'Unavailable' }), {
+              status: 500,
+            });
+          }
+          return defaultFetch(input, init);
+        }
+      );
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+
+      const root = element.shadowRoot!;
+      const alert = root.querySelector('[data-agent-error]');
+      expect(alert?.textContent).to.contain('Could not load this agent');
+      const back = root.querySelector('view-header sl-button');
+      expect(back?.getAttribute('href')).to.equal('/console/agents');
+      expect(back?.textContent).to.contain('Back to Agents');
+
+      fail = false;
+      const retry = [...alert!.querySelectorAll('sl-button')].find((button) =>
+        button.textContent?.includes('Try again')
+      ) as HTMLElement;
+      retry.click();
+      await waitUntil(() =>
+        getDeepText(element).includes('Claude Code Workspace')
+      );
+    });
+
+    it('says "Agent not found" without internal jargon', async () => {
+      const element = document.createElement(
+        'agent-detail-view'
+      ) as AgentDetailView & Record<string, any>;
+      element.initialized = true;
+      element.loading = false;
+      element.error = null;
+      element.agent = null;
+      element.loadData = async () => undefined;
+      document.body.appendChild(element);
+      try {
+        element.loading = false;
+        await element.updateComplete;
+        const text = element.shadowRoot!.textContent || '';
+        expect(text).to.contain('Agent not found');
+        expect(text).to.not.contain('Managed agent');
+      } finally {
+        element.remove();
+      }
+    });
   });
 });

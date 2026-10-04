@@ -199,6 +199,46 @@ describe('AgentsView', () => {
     }
   });
 
+  it('treats an agents page without items as empty instead of crashing', async () => {
+    // A partial response (an older server, a generic stub) used to throw
+    // "reading 'length'" from the count label on every render.
+    const errors: unknown[] = [];
+    const onError = (event: PromiseRejectionEvent | ErrorEvent) =>
+      errors.push('reason' in event ? event.reason : event.error);
+    window.addEventListener('unhandledrejection', onError);
+    window.addEventListener('error', onError);
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      // The discovery panel has its own data shape; keep it out of this test.
+      if (url.startsWith('/api/v1/agents/discovery-')) {
+        return new Response(JSON.stringify({ items: [], total: 0 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // Only the list itself: the other /agents endpoints keep their data.
+      if (/^\/api\/v1\/agents(?:\?|$)/.test(url)) {
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return defaultFetch(input);
+    });
+    try {
+      const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+      await waitUntil(() => !(el as any).loading, 'Agents did not load');
+      await el.updateComplete;
+      await nextFrame();
+      expect((el as any).agents.items).to.deep.equal([]);
+      expect((el as any).resultsLabel).to.equal('0 agents');
+      expect(errors).to.deep.equal([]);
+    } finally {
+      window.removeEventListener('unhandledrejection', onError);
+      window.removeEventListener('error', onError);
+    }
+  });
+
   it('does not request flows when flow kinds are filtered out', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);
@@ -788,9 +828,117 @@ describe('AgentsView', () => {
     expect(agentNodes?.length ?? 0).to.equal(0);
     const emptyState = el.shadowRoot?.querySelector('.empty-state');
     expect(emptyState).to.exist;
-    expect(emptyState?.textContent).to.contain(
-      'No agents or flows found matching your query.'
+    expect(emptyState?.textContent).to.contain('No agents match these filters');
+    // The account may well have agents: a filter is not a first visit.
+    expect((el as any).showOnboardingDialog).to.equal(false);
+  });
+
+  it('offers Reset filters from the filtered empty state', async () => {
+    localStorage.setItem(
+      'preloopAgentKindsHidden',
+      JSON.stringify(['claude_code', 'flows'])
     );
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+    agentItems = [];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitUntil(() => !!el.shadowRoot?.querySelector('.empty-state'));
+    await el.updateComplete;
+    expect((el as any).showOnboardingDialog).to.equal(false);
+
+    agentItems = [makeAgent('agent-1', 'Claude Code Workspace', 'claude_code')];
+    const reset = el.shadowRoot!.querySelector(
+      '[data-empty="filtered"] sl-button'
+    ) as HTMLElement;
+    expect(reset.textContent?.trim()).to.equal('Reset filters');
+    reset.click();
+    await waitUntil(() =>
+      (el.shadowRoot?.textContent || '').includes('Claude Code Workspace')
+    );
+    expect(JSON.parse(localStorage.getItem('preloopAgentKindsHidden')!)).to.eql(
+      ['flows']
+    );
+  });
+
+  it('opens onboarding and shows first-run actions only with no agents and no filters', async () => {
+    localStorage.setItem('preloop.agents.view_mode', 'list');
+    agentItems = [];
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[data-empty]'));
+    await el.updateComplete;
+
+    expect((el as any).showOnboardingDialog).to.equal(true);
+    const empty = el.shadowRoot!.querySelector('[data-empty="first-run"]')!;
+    expect(empty.textContent).to.contain('No agents connected yet');
+    expect(empty.textContent).to.not.contain('query');
+    const actions = [...empty.querySelectorAll('sl-button')].map((button) =>
+      button.textContent?.trim()
+    );
+    expect(actions).to.deep.equal([
+      'Onboard existing agent',
+      'Deploy new agent',
+    ]);
+  });
+
+  it('says how many agents exist beyond the first page and loads more', async () => {
+    const all = Array.from({ length: 60 }, (_, index) =>
+      makeAgent(`agent-${index}`, `Agent ${index}`, 'claude_code')
+    );
+    const requested: string[] = [];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.startsWith('/api/v1/agents')) {
+        requested.push(url);
+        const params = new URL(url, window.location.origin).searchParams;
+        const offset = Number(params.get('offset') || 0);
+        const limit = Number(params.get('limit') || 50);
+        return new Response(
+          JSON.stringify({
+            query: null,
+            status: 'all',
+            total: all.length,
+            limit,
+            offset,
+            items: all.slice(offset, offset + limit),
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return defaultFetch(input);
+    });
+
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const count = () =>
+      el.shadowRoot
+        ?.querySelector('list-toolbar [slot="count"]')
+        ?.textContent?.trim();
+    expect(count()).to.equal('50 of 60 agents');
+
+    const more = el.shadowRoot!.querySelector(
+      '.load-more sl-button'
+    ) as HTMLElement;
+    expect(more.textContent?.trim()).to.equal('Load more agents');
+    more.click();
+    await waitUntil(() => count() === '60 agents');
+    expect(requested.some((url) => url.includes('offset=50'))).to.equal(true);
+    expect(el.shadowRoot!.querySelector('.load-more')).to.equal(null);
+  });
+
+  it('names the last-seen filter and titles dialogs after their buttons', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+
+    const lastSeen = el.shadowRoot!.querySelector('sl-select.last-seen-filter');
+    expect(lastSeen?.getAttribute('label')).to.equal('Last seen');
+    const titles = [...el.shadowRoot!.querySelectorAll('sl-dialog')].map(
+      (dialog) => dialog.getAttribute('label')
+    );
+    expect(titles).to.include.members([
+      'Onboard an existing agent',
+      'Deploy a new agent',
+    ]);
   });
 
   it('keeps kinds added after a legacy saved filter visible (claude_desktop)', async () => {

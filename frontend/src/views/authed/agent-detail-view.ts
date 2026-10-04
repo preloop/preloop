@@ -82,6 +82,11 @@ import { getAgentControlState } from '../../utils/agent-control';
 import { isCliOnboardableAgentKind } from '../../utils/agent-kinds';
 import { renderAgentIcon } from '../../utils/agent-icons';
 import {
+  findModelForAllowedEntry,
+  gatewayAliasForModel,
+} from '../../utils/model-allowlist';
+import { hasInAppHistory } from '../../utils/in-app-history';
+import {
   REMOVE_AGENT_CONSEQUENCE,
   getAgentSourceLabel,
   getAgentStatusChip,
@@ -1594,7 +1599,7 @@ export class AgentDetailView extends LitElement {
     if (!this.agentId) return nothing;
     return html`
       <sl-card
-        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: #ffffff; width: 100%; margin-top: var(--sl-spacing-medium);"
+        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: var(--console-surface); width: 100%; margin-top: var(--sl-spacing-medium);"
       >
         <div style="padding: var(--sl-spacing-large);">
           <div
@@ -1791,56 +1796,23 @@ export class AgentDetailView extends LitElement {
    * gateway preflight keys on it and it reads as a policy.
    */
   private gatewayAliasForModel(model: AllowedModelCandidate): string {
-    const meta = (model.meta_data || {}) as Record<string, unknown>;
-    const gateway = (meta.gateway as Record<string, unknown> | undefined) || {};
-    const explicit = gateway.model_alias;
-    if (typeof explicit === 'string' && explicit.trim()) {
-      return explicit.trim();
-    }
-    const provider = (model.provider_name || 'openai').trim().toLowerCase();
-    const identifier = (model.model_identifier || '').trim();
-    return identifier ? `${provider}/${identifier}` : provider;
+    return gatewayAliasForModel(model);
   }
 
   /**
    * Find the account model one stored allowlist entry refers to.
-   * Matching contract: backend/preloop/services/model_allowlist.py
-   * Entries may be a gateway alias (or its bare tail), an AI model id, or a
-   * display name (case-insensitive).
+   * Matching contract: utils/model-allowlist.ts, which mirrors
+   * backend/preloop/services/model_allowlist.py. A spelling two models
+   * answer to (a shared bare identifier) resolves to neither, so it is kept
+   * as typed rather than narrowed to one alias.
    */
   private findModelForAllowedEntry(
     entry: string
   ): AllowedModelCandidate | null {
-    const needle = entry.trim();
-    if (!needle) return null;
-    const folded = needle.toLowerCase();
-    const models = this.availableModels as AllowedModelCandidate[];
-    for (const model of models) {
-      if (this.gatewayAliasForModel(model) === needle) return model;
-    }
-    for (const model of models) {
-      if (String(model.id).toLowerCase() === folded) return model;
-    }
-    for (const model of models) {
-      if ((model.name || '').trim().toLowerCase() === folded) return model;
-    }
-    // A bare tail may be shared by two imports of the same upstream model
-    // (acme/alpha-chat and vendor/alpha-chat). The backend honours the
-    // entry for both rows, so rewriting it to one alias would silently
-    // narrow the policy: only resolve when exactly one row matches.
-    let tailMatch: AllowedModelCandidate | null = null;
-    let tailMatches = 0;
-    for (const model of models) {
-      const alias = this.gatewayAliasForModel(model);
-      const tail = alias.includes('/')
-        ? alias.split('/').slice(1).join('/')
-        : '';
-      if (tail && tail === needle) {
-        tailMatch = model;
-        tailMatches += 1;
-      }
-    }
-    return tailMatches === 1 ? tailMatch : null;
+    return findModelForAllowedEntry(
+      entry,
+      this.availableModels as AllowedModelCandidate[]
+    );
   }
 
   /** Persisted key for an allowlist entry: its model's alias, else as typed. */
@@ -2276,7 +2248,7 @@ export class AgentDetailView extends LitElement {
       >
         <sl-card
           style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
-            this.isFullscreen ? '#1e293b' : '#ffffff'
+            this.isFullscreen ? '#1e293b' : 'var(--console-surface)'
           }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
@@ -2472,7 +2444,7 @@ export class AgentDetailView extends LitElement {
       >
         <sl-card
           style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
-            this.isFullscreen ? '#1e293b' : '#ffffff'
+            this.isFullscreen ? '#1e293b' : 'var(--console-surface)'
           }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
@@ -2707,7 +2679,7 @@ export class AgentDetailView extends LitElement {
       >
         <sl-card
           style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: ${
-            this.isFullscreen ? '#1e293b' : '#ffffff'
+            this.isFullscreen ? '#1e293b' : 'var(--console-surface)'
           }; width: 100%;"
         >
           <div style="padding: var(--sl-spacing-large);">
@@ -2870,7 +2842,7 @@ export class AgentDetailView extends LitElement {
     }
     return html`
       <sl-card
-        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: #ffffff; width: 100%;"
+        style="border: none; box-shadow: 0 10px 32px rgba(19,27,46,0.03); border-radius: var(--sl-border-radius-large); background: var(--console-surface); width: 100%;"
       >
         <div style="padding: var(--sl-spacing-large);">
           <div
@@ -2943,8 +2915,8 @@ export class AgentDetailView extends LitElement {
                       (flow) => html`
                         <div
                           style="
-                        background: #ffffff;
-                        border: 1px solid var(--sl-color-neutral-200);
+                        background: var(--console-surface);
+                        border: 1px solid var(--console-hairline);
                         border-radius: var(--sl-border-radius-medium);
                         padding: var(--sl-spacing-large);
                         display: flex;
@@ -3008,6 +2980,49 @@ export class AgentDetailView extends LitElement {
     `;
   }
 
+  /**
+   * Back returns to the page the reader came from when the router navigated
+   * here from inside the console. Opened directly, from a shared link or a
+   * new tab there is nothing in-app behind it, so the button's own link to
+   * the Agents list is used instead of leaving the console.
+   */
+  private handleBack = (event: Event): void => {
+    if (!hasInAppHistory()) return;
+    event.preventDefault();
+    window.history.back();
+  };
+
+  /** Writes the open tab to `?tab=` so a reload or a shared link keeps it. */
+  private rememberTab(tab: string): void {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('tab') === tab) return;
+    url.searchParams.set('tab', tab);
+    window.history.replaceState(
+      window.history.state,
+      '',
+      `${url.pathname}${url.search}${url.hash}`
+    );
+  }
+
+  /** An error or a missing agent, with a way back to the list. */
+  private renderLoadProblem(body: unknown) {
+    return html`
+      <view-header headerText="Agent">
+        <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
+          <sl-button
+            variant="text"
+            size="small"
+            href="/console/agents"
+            style="margin-left: -12px;"
+          >
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Agents
+          </sl-button>
+        </div>
+      </view-header>
+      <div class="page" style="padding-top: 0;">${body}</div>
+    `;
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -3019,11 +3034,28 @@ export class AgentDetailView extends LitElement {
     }
 
     if (this.error) {
-      return html`<sl-alert open variant="danger">${this.error}</sl-alert>`;
+      return this.renderLoadProblem(
+        html`<sl-alert open variant="danger" role="alert" data-agent-error>
+          <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+          <strong>Could not load this agent</strong><br />
+          ${this.error}
+          <div style="margin-top: var(--sl-spacing-small);">
+            <sl-button size="small" @click=${() => void this.loadData()}>
+              <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+              Try again
+            </sl-button>
+          </div>
+        </sl-alert>`
+      );
     }
 
     if (!this.agent) {
-      return html`<div class="empty-state">Managed agent not found.</div>`;
+      return this.renderLoadProblem(
+        html`<div class="empty-state" data-agent-not-found>
+          Agent not found. It may have been removed, or you may not have access
+          to it.
+        </div>`
+      );
     }
 
     const aggregate = this.aggregate;
@@ -3036,7 +3068,9 @@ export class AgentDetailView extends LitElement {
           <sl-button
             variant="text"
             size="small"
-            @click=${() => window.history.back()}
+            href="/console/agents"
+            class="back-button"
+            @click=${this.handleBack}
             style="margin-left: -12px;"
           >
             <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back
@@ -3082,6 +3116,7 @@ export class AgentDetailView extends LitElement {
               <sl-tab-group
                 @sl-tab-show=${(e: any) => {
                   this.activeTab = e.detail.name as typeof this.activeTab;
+                  this.rememberTab(this.activeTab);
                   if (this.activeTab === 'tools' || this.activeTab === 'models')
                     void this.ensureEditorContext();
                   if (this.activeTab === 'associated-flows')
@@ -3179,6 +3214,7 @@ export class AgentDetailView extends LitElement {
                                 Session History
                                 <sl-icon-button
                                   name="arrow-clockwise"
+                                  label="Refresh sessions"
                                   style="font-size: 1.1rem; color: var(--console-meta-color);"
                                   @click=${() => this.loadData(true)}
                                 ></sl-icon-button>

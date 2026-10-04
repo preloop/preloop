@@ -8,6 +8,7 @@ import './tool-rule-editor';
 import type { ApprovalWorkflow } from './tool-card';
 import type { AccessRule } from '../api';
 import type { RuleFormData } from './tool-rule-editor';
+import { ruleActionMeta } from '../utils/rule-actions';
 
 export interface AccessRuleSummary {
   id: string;
@@ -113,16 +114,25 @@ export class GovernanceRuleSetEditor extends LitElement {
       padding-top: 1px;
     }
 
-    .rule-action-icon.deny {
+    /* Colour by the shared rule-action variant (utils/rule-actions.ts). */
+    .rule-action-icon.danger {
       color: var(--sl-color-danger-600);
     }
 
-    .rule-action-icon.approval {
+    .rule-action-icon.warning {
+      color: var(--sl-color-warning-600);
+    }
+
+    .rule-action-icon.success {
+      color: var(--sl-color-success-600);
+    }
+
+    .rule-action-icon.primary {
       color: var(--sl-color-primary-600);
     }
 
-    .rule-action-icon.allow {
-      color: var(--sl-color-success-600);
+    .rule-action-icon.neutral {
+      color: var(--sl-color-neutral-600);
     }
 
     .rule-details {
@@ -135,16 +145,24 @@ export class GovernanceRuleSetEditor extends LitElement {
       font-size: var(--sl-font-size-small);
     }
 
-    .rule-action-label.deny {
+    .rule-action-label.danger {
       color: var(--sl-color-danger-700);
     }
 
-    .rule-action-label.approval {
+    .rule-action-label.warning {
+      color: var(--sl-color-warning-700);
+    }
+
+    .rule-action-label.success {
+      color: var(--sl-color-success-700);
+    }
+
+    .rule-action-label.primary {
       color: var(--sl-color-primary-700);
     }
 
-    .rule-action-label.allow {
-      color: var(--sl-color-success-700);
+    .rule-action-label.neutral {
+      color: var(--sl-color-neutral-700);
     }
 
     .rule-condition {
@@ -185,45 +203,6 @@ export class GovernanceRuleSetEditor extends LitElement {
       background: var(--sl-color-neutral-50);
     }
   `;
-
-  private _getActionIconName(action: string): string {
-    switch (action) {
-      case 'deny':
-        return 'x-octagon-fill';
-      case 'require_approval':
-        return 'shield-lock-fill';
-      case 'allow':
-        return 'check-circle-fill';
-      default:
-        return 'question-circle';
-    }
-  }
-
-  private _getActionColorClass(action: string): string {
-    switch (action) {
-      case 'deny':
-        return 'deny';
-      case 'require_approval':
-        return 'approval';
-      case 'allow':
-        return 'allow';
-      default:
-        return '';
-    }
-  }
-
-  private _getActionLabel(action: string): string {
-    switch (action) {
-      case 'deny':
-        return 'DENY';
-      case 'require_approval':
-        return 'REQUIRE APPROVAL';
-      case 'allow':
-        return 'ALLOW';
-      default:
-        return action.toUpperCase();
-    }
-  }
 
   private _openRuleEditor(rule: AccessRuleSummary | null = null) {
     this._editingRule = rule as AccessRule | null;
@@ -349,7 +328,8 @@ export class GovernanceRuleSetEditor extends LitElement {
     const workflow = rule.approval_workflow_id
       ? this.workflows.find((p) => p.id === rule.approval_workflow_id)
       : null;
-    const colorClass = this._getActionColorClass(rule.action);
+    const actionMeta = ruleActionMeta(rule.action);
+    const colorClass = actionMeta.variant;
     const isDragging = this._dragIndex === index;
     const isDragOver = this._dragOverIndex === index;
     const dragPosition =
@@ -375,11 +355,11 @@ export class GovernanceRuleSetEditor extends LitElement {
         <span class="rule-priority">${index + 1}.</span>
         <sl-icon
           class="rule-action-icon ${colorClass}"
-          name=${this._getActionIconName(rule.action)}
+          name=${actionMeta.icon}
         ></sl-icon>
         <div class="rule-details">
           <span class="rule-action-label ${colorClass}">
-            ${this._getActionLabel(rule.action)}${
+            ${actionMeta.label}${
               rule.action === 'require_approval' && workflow
                 ? html` <span
                     style="font-weight: normal; font-size: var(--sl-font-size-x-small);"
@@ -407,12 +387,14 @@ export class GovernanceRuleSetEditor extends LitElement {
           <sl-tooltip content="Edit rule">
             <sl-icon-button
               name="pencil"
+              label=${`Edit rule ${index + 1}`}
               @click=${() => this._openRuleEditor(rule)}
             ></sl-icon-button>
           </sl-tooltip>
           <sl-tooltip content="Delete rule">
             <sl-icon-button
               name="trash"
+              label=${`Delete rule ${index + 1}`}
               @click=${() => this._handleDeleteRule(rule)}
             ></sl-icon-button>
           </sl-tooltip>

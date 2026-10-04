@@ -245,7 +245,7 @@ describe('Policies page repro', () => {
     ) as HTMLElement;
     expect(card).to.exist;
     const badge = card.querySelector('sl-badge') as HTMLElement;
-    expect(badge.textContent?.trim()).to.equal('deny');
+    expect(badge.textContent?.trim()).to.equal('Deny');
     expect(card.querySelector('code')?.textContent).to.contain(
       'contains("rm")'
     );

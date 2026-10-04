@@ -11,10 +11,10 @@ import type { ApprovalBypassStatus } from '../types';
  * carries a one-click "Restore approvals" action so re-tightening is never
  * more than a single tap away.
  *
- * Colors follow DESIGN.md semantic states: pending/warning amber `#F2A93B`
- * for a muted-but-still-gating bypass, denied/error red `#FF5D5D` accents when
- * approvals are actually being skipped. A bypass is a warning condition and is
- * never rendered in neutral chrome.
+ * Colors follow DESIGN.md semantic states, through the Shoelace tokens so
+ * they track the console theme: warning amber for a muted-but-still-gating
+ * bypass, danger red accents when approvals are actually being skipped. A
+ * bypass is a warning condition and is never rendered in neutral chrome.
  */
 @customElement('approval-bypass-banner')
 export class ApprovalBypassBanner extends LitElement {
@@ -42,17 +42,27 @@ export class ApprovalBypassBanner extends LitElement {
       gap: 12px;
       padding: 12px 16px;
       border-radius: 4px;
-      border-left: 4px solid #f2a93b;
-      background: rgba(242, 169, 59, 0.12);
-      color: #e6edf3;
+      /* Theme tokens, not hex: the console theme is a class on <html> that
+         the reader picks, and it need not match the OS. */
+      border-left: 4px solid var(--sl-color-warning-600);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-warning-500) 12%,
+        transparent
+      );
+      color: var(--console-body-color, var(--sl-color-neutral-900));
       font-size: 14px;
       line-height: 1.4;
     }
 
     /* Approvals are actually being skipped - the more severe state. */
     .banner.bypassing {
-      border-left-color: #ff5d5d;
-      background: rgba(255, 93, 93, 0.12);
+      border-left-color: var(--sl-color-danger-600);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-danger-500) 12%,
+        transparent
+      );
     }
 
     .icon {
@@ -77,8 +87,8 @@ export class ApprovalBypassBanner extends LitElement {
 
     button {
       flex-shrink: 0;
-      background: #0284c7;
-      color: #fff;
+      background: var(--sl-color-primary-600);
+      color: var(--sl-color-neutral-0);
       border: none;
       border-radius: 4px;
       padding: 8px 14px;
@@ -111,12 +121,6 @@ export class ApprovalBypassBanner extends LitElement {
       opacity: 0.95;
       padding: 6px 10px;
       border-radius: var(--sl-border-radius-small);
-    }
-
-    @media (prefers-color-scheme: light) {
-      .banner {
-        color: #1c2128;
-      }
     }
   `;
 

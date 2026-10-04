@@ -152,7 +152,10 @@ describe('PreloopFlowForm host execution submit', () => {
     expect(
       element.shadowRoot?.querySelector('sl-select[label="AI model"]')
     ).to.equal(null);
-    expect(element.shadowRoot?.textContent).to.include('not Grok 4.7');
+    // Generic guidance on pinning a model, not a note about one model.
+    const help = (element.shadowRoot?.textContent || '').replace(/\s+/g, ' ');
+    expect(help).to.include('To pin a model, enter its Cursor model id');
+    expect(help).to.not.include('Grok');
     const model = element.shadowRoot?.querySelector(
       '[data-cursor-model]'
     ) as HTMLInputElement;

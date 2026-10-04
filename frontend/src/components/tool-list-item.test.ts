@@ -296,14 +296,141 @@ describe('ToolListItem – justification settings', () => {
     expect(ruleSummaryText(el)).to.equal('No rules · blocked');
   });
 
+  it('passes a rule delete or reorder up once, with the tool attached', async () => {
+    stubApi();
+    const el = await createItem();
+    el.expanded = true;
+    await el.updateComplete;
+    const editor = el.shadowRoot?.querySelector(
+      'governance-rule-set-editor'
+    ) as HTMLElement;
+    expect(editor).to.exist;
+
+    const seen: Array<{ type: string; detail: any }> = [];
+    const record = (event: Event) =>
+      seen.push({ type: event.type, detail: (event as CustomEvent).detail });
+    document.addEventListener('delete-rule', record);
+    document.addEventListener('reorder-rules', record);
+    try {
+      for (const type of ['delete-rule', 'reorder-rules']) {
+        editor.dispatchEvent(
+          new CustomEvent(type, {
+            detail: {
+              toolName: 'bash',
+              rule: { id: 'r1' },
+              reorderedRules: [],
+            },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      }
+    } finally {
+      document.removeEventListener('delete-rule', record);
+      document.removeEventListener('reorder-rules', record);
+    }
+    expect(seen.map((event) => event.type)).to.deep.equal([
+      'delete-rule',
+      'reorder-rules',
+    ]);
+    expect(seen.every((event) => event.detail.tool?.name === 'bash')).to.equal(
+      true
+    );
+  });
+
+  it('counts rules with the shared action words and colours', async () => {
+    stubApi();
+    const rule = (id: string, action: string) => ({
+      id,
+      action,
+      condition_expression: null,
+      condition_type: 'cel',
+      priority: 1,
+      description: null,
+      is_enabled: true,
+      approval_workflow_id: null,
+    });
+    const el = (await fixture(
+      html`<tool-list-item
+        .tool=${{ ...baseTool, source: 'mcp', source_name: 'Example MCP' }}
+        .accessRules=${[
+          rule('r1', 'require_approval'),
+          rule('r2', 'require_approval'),
+          rule('r3', 'deny'),
+        ]}
+        .policies=${[]}
+        .features=${{}}
+      ></tool-list-item>`
+    )) as ToolListItem;
+    await el.updateComplete;
+
+    const counts = Array.from(
+      el.shadowRoot?.querySelectorAll('.rule-count') ?? []
+    );
+    expect(
+      counts.map((c) => c.textContent?.replace(/\s+/g, ' ').trim())
+    ).to.deep.equal(['1 deny', '2 require approval']);
+    expect(counts[1].classList.contains('warning')).to.equal(true);
+    expect(counts[1].getAttribute('title')).to.equal(
+      '2 require approval rules'
+    );
+  });
+
   it('labels the native switch with the verb Block', async () => {
     stubApi();
     const el = await createNativeItem();
 
-    const label = el.shadowRoot
-      ?.querySelector('.tool-toggle sl-switch')
-      ?.textContent?.trim();
-    expect(label).to.equal('Block');
+    const toggle = el.shadowRoot?.querySelector('.tool-toggle sl-switch');
+    expect(
+      toggle?.querySelector('.switch-label')?.textContent?.trim()
+    ).to.equal('Block');
+    // The accessible name says which tool it blocks.
+    expect(toggle?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      'Block Bash'
+    );
+  });
+
+  it('labels the MCP switch Enabled instead of leaving it blank', async () => {
+    stubApi();
+    const el = await createItem({
+      source: 'mcp',
+      source_name: 'Example',
+    } as any);
+
+    const toggle = el.shadowRoot?.querySelector('.tool-toggle sl-switch');
+    expect(
+      toggle?.querySelector('.switch-label')?.textContent?.trim()
+    ).to.equal('Enabled');
+    expect(toggle?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      'Enabled bash'
+    );
+    // Named for assistive tech, not printed beside every switch: on a
+    // disabled tool a visible "Enabled" reads as the wrong status.
+    expect(
+      toggle?.querySelector('.switch-label')?.classList.contains('sr-only')
+    ).to.be.true;
+  });
+
+  it('opens the rules from a keyboard-reachable button with aria-expanded', async () => {
+    stubApi();
+    const el = await createItem();
+    let toggles = 0;
+    el.addEventListener('toggle-expand', () => toggles++);
+
+    const button = el.shadowRoot?.querySelector(
+      '.tool-header button.expand-toggle'
+    ) as HTMLButtonElement;
+    expect(button).to.exist;
+    expect(button.getAttribute('aria-expanded')).to.equal('false');
+    expect(button.getAttribute('aria-label')).to.equal('Rules for bash');
+
+    button.click();
+    // One toggle, not two: the row's own click handler must not also fire.
+    expect(toggles).to.equal(1);
+
+    el.expanded = true;
+    await el.updateComplete;
+    expect(button.getAttribute('aria-expanded')).to.equal('true');
   });
 
   it('keeps the tool name in the row header at 390px', async () => {

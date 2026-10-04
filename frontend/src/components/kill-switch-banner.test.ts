@@ -112,6 +112,24 @@ describe('kill-switch-banner', () => {
     await el.updateComplete;
   }
 
+  it("takes its colours from the console theme, not the OS's", async () => {
+    // The console theme is a class the reader picks on <html>; it need not
+    // match prefers-color-scheme. Text that followed the OS went near-white
+    // on a pale strip whenever the two disagreed.
+    const cssText = (
+      customElements.get('kill-switch-banner') as unknown as {
+        styles: { cssText: string };
+      }
+    ).styles.cssText;
+    expect(cssText).to.not.contain('prefers-color-scheme');
+    expect(cssText).to.not.match(/#[0-9a-f]{3,6}\b/i);
+
+    await mount([FULL_HALT]);
+    el.style.setProperty('--console-body-color', 'rgb(1, 2, 3)');
+    const banner = el.shadowRoot!.querySelector('.banner')!;
+    expect(getComputedStyle(banner).color).to.equal('rgb(1, 2, 3)');
+  });
+
   it('renders nothing while the account is not halted', async () => {
     await mount([INACTIVE]);
     expect(el.shadowRoot?.textContent?.trim()).to.equal('');
@@ -205,6 +223,70 @@ describe('kill-switch-banner', () => {
       scopes: ['gateway', 'tools', 'flows'],
       reason: 'Staged recovery from console banner',
     });
+  });
+
+  /** Answer the status poll with `status` from now on (a 500 when null). */
+  function answerPollWith(status: KillSwitchStatus | null): void {
+    const previous = window.fetch;
+    const restorePrevious = restoreFetch;
+    window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/account/kill-switch/status')) {
+        return status
+          ? new Response(JSON.stringify(status), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          : new Response(JSON.stringify({ detail: 'unavailable' }), {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            });
+      }
+      return previous(input, init);
+    }) as typeof window.fetch;
+    restoreFetch = () => {
+      window.fetch = previous;
+      restorePrevious?.();
+    };
+  }
+
+  it('keeps the halt banner up when a status poll fails', async () => {
+    await mount([FULL_HALT]);
+    answerPollWith(null);
+
+    await (el as any).refresh();
+    await el.updateComplete;
+
+    // A transient failure is not news that the halt was lifted.
+    const text = el.shadowRoot!.textContent ?? '';
+    expect(text).to.contain('Agent requests are halted');
+    expect(text).to.contain('Model requests blocked');
+    expect(text).to.contain("Couldn't refresh the halt status");
+
+    // Only a successful read clears it.
+    restoreFetch();
+    await mount([FULL_HALT]);
+    answerPollWith(INACTIVE);
+    await (el as any).refresh();
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent?.trim()).to.equal('');
+  });
+
+  it('drops the stale note once a poll succeeds again', async () => {
+    await mount([PARTIAL_HALT]);
+    answerPollWith(null);
+    await (el as any).refresh();
+    await el.updateComplete;
+    expect(el.shadowRoot!.textContent).to.contain(
+      "Couldn't refresh the halt status"
+    );
+
+    answerPollWith(PARTIAL_HALT);
+    await (el as any).refresh();
+    await el.updateComplete;
+    const text = el.shadowRoot!.textContent ?? '';
+    expect(text).to.contain('Agent requests are partially halted');
+    expect(text).to.not.contain("Couldn't refresh the halt status");
   });
 
   it('keeps the banner up with an inline error when the lift fails', async () => {

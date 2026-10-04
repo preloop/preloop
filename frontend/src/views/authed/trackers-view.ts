@@ -13,6 +13,7 @@ import {
   describeBitbucketConnectError,
 } from '../../api';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import '../../components/view-header';
 
 @customElement('trackers-view')
 export class TrackersView extends LitElement {

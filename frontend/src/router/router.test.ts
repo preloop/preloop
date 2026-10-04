@@ -12,6 +12,7 @@ import {
   normalizePath,
   type RouterLocation,
 } from './index';
+import { hasInAppHistory } from '../utils/in-app-history';
 
 /** Custom elements cannot be undefined, so every fixture gets a fresh tag. */
 let tagSeq = 0;
@@ -137,6 +138,35 @@ describe('router', () => {
       expect(outlet.querySelector(real)).to.exist;
       await router.render('/nothing/here');
       expect(outlet.querySelector(missing)).to.exist;
+    });
+
+    it('keeps a nested (.*) inside its parent', async () => {
+      // A console-level 404 must not swallow unrelated top-level paths.
+      const shell = defineTag('rt-nested-shell');
+      const inner = defineTag('rt-nested-missing');
+      const outer = defineTag('rt-outer-missing');
+      await router.setRoutes(
+        [
+          {
+            path: '/app',
+            component: shell,
+            children: [
+              { path: '', component: defineTag('rt-nested-home') },
+              { path: '(.*)', component: inner },
+            ],
+          },
+          { path: '(.*)', component: outer },
+        ],
+        true
+      );
+      await router.render('/app/typo');
+      expect(outlet.querySelector(`${shell} > ${inner}`)).to.exist;
+      await router.render('/elsewhere');
+      expect(outlet.querySelector(outer)).to.exist;
+      expect(outlet.querySelector(shell)).to.equal(null);
+      // A sibling that only shares the prefix's letters is not under it.
+      await router.render('/apps');
+      expect(outlet.querySelector(outer)).to.exist;
     });
 
     it('sets location on the rendered element', async () => {
@@ -984,6 +1014,33 @@ describe('router', () => {
         timeout: 2000,
       });
       expect(window.location.pathname).to.equal('/go-a');
+    });
+
+    it('records in-app history only for entries the router pushed', async () => {
+      const first = defineTag('rt-depth-a');
+      const second = defineTag('rt-depth-b');
+      await router.setRoutes(
+        [
+          { path: '/depth-a', component: first },
+          { path: '/depth-b', component: second },
+        ],
+        true
+      );
+      // The first page of a tab: nothing in-app behind it.
+      window.history.replaceState(null, '', '/depth-a');
+      await router.render('/depth-a', { history: 'replace' });
+      expect(hasInAppHistory()).to.equal(false);
+
+      expect(Router.go('/depth-b')).to.equal(true);
+      await waitUntil(() => !!outlet.querySelector(second));
+      expect(hasInAppHistory()).to.equal(true);
+
+      // Back to the first page: there is nothing in-app behind it again.
+      window.history.back();
+      await waitUntil(() => !!outlet.querySelector(first), 'back re-renders', {
+        timeout: 2000,
+      });
+      expect(hasInAppHistory()).to.equal(false);
     });
 
     it('fires the location-changed event with the resolved location', async () => {

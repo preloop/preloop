@@ -476,3 +476,38 @@ class TestOpenHandsPromptTransport:
             assert env["AGENT_PROMPT_FILE"] == PROMPT_FILE_PATH
             assert f"{PROMPT_ENV_PREFIX}0" in env
             assert env["AGENT_TYPE"] == "CodeActAgent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent_config,expected",
+    [
+        # The flow's per-run turn limit caps OpenHands' own loop.
+        ({"limits": {"max_turns": 40}}, 40),
+        # An explicit OpenHands setting still wins over the run limit.
+        ({"max_iterations": 15, "limits": {"max_turns": 40}}, 15),
+        # Neither set: the long-standing default.
+        ({}, 10),
+    ],
+)
+async def test_start_takes_max_iterations_from_run_limits(agent_config, expected):
+    """agent_config.limits.max_turns becomes OpenHands' -i when unset."""
+    from unittest.mock import patch
+
+    from preloop.agents.openhands import ContainerAgentExecutor
+
+    agent = OpenHandsAgent({})
+    with patch.object(
+        ContainerAgentExecutor, "start", new=AsyncMock(return_value="ref")
+    ) as parent_start:
+        await agent.start(
+            {
+                "flow_id": "flow-1",
+                "execution_id": "exec-1",
+                "prompt": "Triage new issues.",
+                "agent_config": agent_config,
+            }
+        )
+
+    context = parent_start.call_args.args[0]
+    assert context["max_iterations"] == expected

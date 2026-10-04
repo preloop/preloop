@@ -25629,6 +25629,28 @@ components:
           - type: 'null'
           description: When to comment on the triggering issue and raise a console
             attention item after a terminal execution. Leave unset for no notifications.
+        max_budget:
+          anyOf:
+          - type: number
+            maximum: 1000000.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Max Budget
+          description: 'Spend limit for one execution, in USD (estimated cost). Stored
+            as agent_config.limits.max_usd: the gateway refuses further model requests
+            once the run has reached it and the execution fails as budget exceeded.
+            Null clears the limit; unset leaves it unchanged.'
+        max_iterations:
+          anyOf:
+          - type: integer
+            maximum: 1000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Iterations
+          description: Maximum model requests (agent iterations) for one execution.
+            Stored as agent_config.limits.max_turns and enforced by the gateway; OpenHands
+            also uses it for its own iteration cap. Null clears the limit; unset leaves
+            it unchanged.
       type: object
       required:
       - name
@@ -26506,6 +26528,16 @@ components:
           - type: 'null'
           description: When to comment on the triggering issue and raise a console
             attention item after a terminal execution. Leave unset for no notifications.
+        max_budget:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Max Budget
+        max_iterations:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Iterations
         id:
           anyOf:
           - type: string
@@ -26902,6 +26934,28 @@ components:
           - type: 'null'
           description: When to comment on the triggering issue and raise a console
             attention item after a terminal execution. Leave unset for no notifications.
+        max_budget:
+          anyOf:
+          - type: number
+            maximum: 1000000.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Max Budget
+          description: 'Spend limit for one execution, in USD (estimated cost). Stored
+            as agent_config.limits.max_usd: the gateway refuses further model requests
+            once the run has reached it and the execution fails as budget exceeded.
+            Null clears the limit; unset leaves it unchanged.'
+        max_iterations:
+          anyOf:
+          - type: integer
+            maximum: 1000000.0
+            minimum: 1.0
+          - type: 'null'
+          title: Max Iterations
+          description: Maximum model requests (agent iterations) for one execution.
+            Stored as agent_config.limits.max_turns and enforced by the gateway; OpenHands
+            also uses it for its own iteration cap. Null clears the limit; unset leaves
+            it unchanged.
       type: object
       title: FlowUpdate
     FollowUpFiling-Input:

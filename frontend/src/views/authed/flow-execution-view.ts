@@ -578,6 +578,22 @@ export class FlowExecutionView extends LitElement {
         overflow-wrap: anywhere;
         white-space: normal;
       }
+      /* The line plus its "Show full error" control, which opens Output. */
+      .error-block-line {
+        margin: -4px 0 16px;
+      }
+      .error-block-line .error-line {
+        margin: 0;
+      }
+      .error-block-line .show-full-error::part(base) {
+        padding-left: 24px;
+        height: auto;
+        line-height: 1.6;
+      }
+      .records-after-tabs {
+        display: block;
+        margin-top: var(--sl-spacing-large);
+      }
       /* A run the server stopped because its pull request moved on is not
          broken: neutral, and it says why. */
       .stop-line {
@@ -2539,6 +2555,21 @@ export class FlowExecutionView extends LitElement {
     this.rememberTab('report');
   }
 
+  /**
+   * The error line shows only the first line, clamped to three. The whole
+   * message (stack trace included) is in the Output tab, so this opens it
+   * and brings it into view instead of leaving it behind a tooltip.
+   */
+  private showFullError = async (): Promise<void> => {
+    this.activeTab = 'output';
+    this.rememberTab('output');
+    await this.updateComplete;
+    const group = this.renderRoot.querySelector('sl-tab-group') as
+      (HTMLElement & { show?: (panel: string) => void }) | null;
+    group?.show?.('output');
+    group?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+  };
+
   private rememberTab(tab: ExecutionTab) {
     try {
       window.localStorage.setItem(TAB_STORAGE_KEY, tab);
@@ -3811,13 +3842,53 @@ ${execution.resolved_input_prompt}</pre>
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          ${this.renderSummaryStrip(execution)} ${this.renderHostSessions()}
+          ${this.renderSummaryStrip(execution)}
+          <!-- Why the run is waiting, failed or stopped comes first: it is
+               the first question a reader of this page has. -->
+          ${this.renderWaitingLine(execution)}
+          ${
+            errorLine
+              ? html`<div class="error-block-line">
+                  <div
+                    class="error-line"
+                    role="alert"
+                    data-testid="error-line"
+                    title=${execution.error_message || ''}
+                  >
+                    <sl-icon name="exclamation-triangle"></sl-icon>
+                    <span class="error-text">${errorLine}</span>
+                  </div>
+                  ${
+                    execution.error_message
+                      ? html`<sl-button
+                          variant="text"
+                          size="small"
+                          class="show-full-error"
+                          data-testid="show-full-error"
+                          @click=${this.showFullError}
+                          >Show full error</sl-button
+                        >`
+                      : nothing
+                  }
+                </div>`
+              : ''
+          }
+          ${
+            stopLine
+              ? html`<div
+                  class="stop-line"
+                  role="status"
+                  data-testid="stop-line"
+                >
+                  <sl-icon name="stop-circle"></sl-icon>
+                  <span>${stopLine}</span>
+                </div>`
+              : ''
+          }
+          ${this.renderHostSessions()}
           ${this.renderContinuationNavigation(execution)}
-          <execution-records-card
-            execution-id=${execution.id}
-          ></execution-records-card>
-          <!-- What this run delegated, and what that cost. Renders one quiet
-               line for the overwhelming majority of runs, which delegate
+          <!-- What this run delegated, and what that cost. Renders nothing
+               for the overwhelming majority of runs, which delegate
                nothing. -->
           <preloop-execution-tree
             execution-id=${execution.id}
@@ -3825,28 +3896,7 @@ ${execution.resolved_input_prompt}</pre>
           <preloop-execution-continuation
             .execution=${execution}
           ></preloop-execution-continuation>
-          ${this.renderWaitingLine(execution)}
           ${this.renderOperatorNotes(execution)}
-          ${
-            errorLine
-              ? html`<div
-                  class="error-line"
-                  data-testid="error-line"
-                  title=${execution.error_message || ''}
-                >
-                  <sl-icon name="exclamation-triangle"></sl-icon>
-                  <span class="error-text">${errorLine}</span>
-                </div>`
-              : ''
-          }
-          ${
-            stopLine
-              ? html`<div class="stop-line" data-testid="stop-line">
-                  <sl-icon name="stop-circle"></sl-icon>
-                  <span>${stopLine}</span>
-                </div>`
-              : ''
-          }
           <sl-tab-group
             class="execution-tabs"
             @sl-tab-show=${this.handleTabShow}
@@ -3924,6 +3974,12 @@ ${execution.resolved_input_prompt}</pre>
               >${this.renderInputPanel(execution)}</sl-tab-panel
             >
           </sl-tab-group>
+          <!-- Compliance records matter for audits, not for reading a run,
+               so they sit after the tabs. -->
+          <execution-records-card
+            class="records-after-tabs"
+            execution-id=${execution.id}
+          ></execution-records-card>
         </div>
       </div>
     `;

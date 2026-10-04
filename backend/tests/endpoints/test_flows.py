@@ -184,6 +184,60 @@ async def test_update_flow(mock_account: Account, mocker: MockerFixture):
 
 
 @pytest.mark.asyncio
+async def test_update_flow_merges_run_limits_onto_stored_agent_config(
+    mock_account: Account, mocker: MockerFixture
+):
+    """A spend or iteration limit alone keeps the rest of agent_config.
+
+    The flow form sends max_budget / max_iterations without an agent_config.
+    agent_config is replaced whole on update, so the endpoint must merge the
+    limits onto the stored configuration instead of writing limits alone.
+    """
+    flow_id = uuid.uuid4()
+    flow_update = schemas.FlowUpdate(max_budget=5, max_iterations=None)
+    mock_crud_flow = mocker.patch(
+        "preloop.api.endpoints.flows.crud_flow",
+        new_callable=MagicMock,
+    )
+    mock_flow = MagicMock()
+    mock_flow.name = "Nightly triage"
+    mock_flow.is_preset = False
+    mock_flow.source_preset_id = None
+    mock_flow.agent_type = "openhands"
+    mock_flow.agent_config = {
+        "agent_type": "CodeActAgent",
+        "limits": {"max_total_tokens": 10, "max_turns": 300},
+    }
+    mock_crud_flow.get.return_value = mock_flow
+    mock_crud_flow.update.return_value = schemas.FlowResponse(
+        id=flow_id,
+        name="Nightly triage",
+        prompt_template="Triage new issues.",
+        created_at=datetime.now(ZoneInfo("UTC")),
+        updated_at=datetime.now(ZoneInfo("UTC")),
+        account_id=mock_account.account_id,
+    )
+
+    await maybe_await(
+        flows.update_flow(
+            db=MagicMock(),
+            flow_id=flow_id,
+            flow_in=flow_update,
+            current_user=mock_account,
+        )
+    )
+
+    sent = mock_crud_flow.update.call_args.kwargs["flow_in"]
+    assert sent.agent_config == {
+        "agent_type": "CodeActAgent",
+        "limits": {"max_total_tokens": 10, "max_usd": 5.0},
+    }
+    assert "agent_config" in sent.model_dump(exclude_unset=True)
+    # The stored row's dict is not mutated before crud_flow.update runs.
+    assert mock_flow.agent_config["limits"]["max_turns"] == 300
+
+
+@pytest.mark.asyncio
 async def test_delete_flow(mock_account: Account, mocker: MockerFixture):
     """Tests that a flow is deleted correctly."""
     # Arrange

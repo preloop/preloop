@@ -24,6 +24,8 @@ import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '../../../components/preloop-invite-dialog';
+import '../../../components/view-header.ts';
+import { confirmDialog, showToast } from '../../../components/confirm-dialog';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 
 @customElement('invitation-management-view')
@@ -59,19 +61,6 @@ export class InvitationManagementView extends LitElement {
          (styles/console-styles.css, "The page box"). */
       :host {
         display: block;
-      }
-
-      .header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 2rem;
-      }
-
-      h1 {
-        margin: 0;
-        font-size: 1.5rem;
-        font-weight: 600;
       }
 
       .invitations-grid {
@@ -233,7 +222,7 @@ export class InvitationManagementView extends LitElement {
   async handleResendInvitation(invitation: UserInvitation) {
     try {
       await resendInvitation(invitation.id);
-      alert('Invitation resent successfully');
+      showToast(`Invitation resent to ${invitation.email}.`, 'success');
     } catch (error) {
       this.error =
         error instanceof Error ? error.message : 'Failed to resend invitation';
@@ -241,11 +230,16 @@ export class InvitationManagementView extends LitElement {
   }
 
   async handleCancelInvitation(invitation: UserInvitation) {
-    if (
-      !confirm(
-        `Are you sure you want to cancel the invitation to ${invitation.email}?`
-      )
-    ) {
+    const confirmed = await confirmDialog({
+      title: 'Cancel invitation?',
+      message: `Cancel the invitation to ${invitation.email}?`,
+      detail:
+        'The link in their email stops working. You can send a new invitation later.',
+      confirmLabel: 'Cancel invitation',
+      cancelLabel: 'Keep invitation',
+      variant: 'danger',
+    });
+    if (!confirmed) {
       return;
     }
 
@@ -302,18 +296,23 @@ export class InvitationManagementView extends LitElement {
     }
 
     return html`
-      <div class="header">
-        <h1>Invitations</h1>
-        <sl-button
-          variant="primary"
-          @click=${() => (this.isCreateModalOpen = true)}
-        >
-          <sl-icon slot="prefix" name="envelope-plus"></sl-icon>
-          Send invitation
-        </sl-button>
-      </div>
+      <view-header headerText="Invitations" width="narrow">
+        <div slot="main-column">
+          <sl-button
+            variant="primary"
+            @click=${() => (this.isCreateModalOpen = true)}
+          >
+            <sl-icon slot="prefix" name="envelope-plus"></sl-icon>
+            Send invitation
+          </sl-button>
+        </div>
+      </view-header>
 
-      ${this.error ? html`<div class="error">${this.error}</div>` : ''}
+      ${
+        this.error
+          ? html`<div class="error" role="alert">${this.error}</div>`
+          : ''
+      }
 
       <sl-tab-group
         @sl-tab-show=${(e: CustomEvent) => {
@@ -346,8 +345,10 @@ export class InvitationManagementView extends LitElement {
         @close=${() => {
           this.isCreateModalOpen = false;
         }}
-        @invitations-sent=${() => {
-          this.isCreateModalOpen = false;
+        @invitations-sent=${(e: CustomEvent) => {
+          if (!e.detail?.partial) {
+            this.isCreateModalOpen = false;
+          }
           this.fetchInvitations();
         }}
       ></preloop-invite-dialog>
@@ -421,7 +422,10 @@ export class InvitationManagementView extends LitElement {
                               this.handleResendInvitation(invitation)}
                             title="Resend invitation"
                           >
-                            <sl-icon name="arrow-repeat"></sl-icon>
+                            <sl-icon
+                              name="arrow-repeat"
+                              label="Resend invitation"
+                            ></sl-icon>
                           </sl-button>
                           <!-- Outline, last, after a gap (DESIGN.md
                                "Destructive actions"). -->
@@ -434,7 +438,10 @@ export class InvitationManagementView extends LitElement {
                               this.handleCancelInvitation(invitation)}
                             title="Cancel invitation"
                           >
-                            <sl-icon name="x-lg"></sl-icon>
+                            <sl-icon
+                              name="x-lg"
+                              label="Cancel invitation"
+                            ></sl-icon>
                           </sl-button>
                         `
                       : ''

@@ -754,3 +754,34 @@ describe('AddTrackerModal', () => {
     });
   });
 });
+
+describe('AddTrackerModal secret fields', () => {
+  let sandbox: SinonSandbox;
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    sandbox = sinon.createSandbox();
+    sandbox.stub(window, 'fetch').resolves(new Response(JSON.stringify([])));
+  });
+
+  afterEach(() => {
+    sandbox.restore();
+    localStorage.clear();
+  });
+
+  for (const trackerType of ['github', 'jira']) {
+    it(`offers a show/hide toggle on the ${trackerType} token field`, async () => {
+      const element = await fixture<AddTrackerModal>(
+        html`<add-tracker-modal></add-tracker-modal>`
+      );
+      element.trackerType = trackerType;
+      await element.updateComplete;
+      const token = element.shadowRoot!.querySelector(
+        'sl-input[name="api_key"]'
+      );
+      expect(token, 'token field').to.exist;
+      expect(token!.getAttribute('type')).to.equal('password');
+      expect(token!.hasAttribute('password-toggle')).to.equal(true);
+    });
+  }
+});

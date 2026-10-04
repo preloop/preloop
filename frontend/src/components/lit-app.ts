@@ -43,8 +43,24 @@ export class LitApp extends LitElement {
   private websocketStarted = false;
   private resumeRouteInstallation?: () => void;
 
+  /**
+   * The document title the page was served with. Console pages retitle the
+   * tab after themselves (view-header); leaving the console puts this back,
+   * so the sign-in page never keeps the name of the last console page.
+   */
+  private readonly publicTitle = document.title;
+
+  private restorePublicTitle = () => {
+    const path = window.location.pathname;
+    const inConsole = path === '/console' || path.startsWith('/console/');
+    if (!inConsole) {
+      document.title = this.publicTitle;
+    }
+  };
+
   connectedCallback() {
     super.connectedCallback();
+    window.addEventListener(LOCATION_CHANGED, this.restorePublicTitle);
     if (this.syncInConsole) {
       window.addEventListener(LOCATION_CHANGED, this.syncInConsole);
     }
@@ -79,6 +95,7 @@ export class LitApp extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener(LOCATION_CHANGED, this.restorePublicTitle);
     if (this.syncInConsole) {
       window.removeEventListener(LOCATION_CHANGED, this.syncInConsole);
     }
@@ -474,6 +491,18 @@ export class LitApp extends LitElement {
           },
           { path: 'audit', component: 'audit-view' },
           { path: 'attention', component: 'attention-view' },
+          // The bell used to link here; the list lives under flows.
+          {
+            path: 'flow-executions',
+            redirect: '/console/flows/executions',
+          },
+          // Must stay the last console child: an unknown /console/* path (a
+          // typo, a stale bookmark, a capability route this deployment does
+          // not serve) renders the 404 inside the shell, with the sidebar,
+          // instead of falling through to the bare top-level page.
+          // CapabilityRouteGate prepends its routes, so they still match
+          // first.
+          { path: '(.*)', component: 'not-found-view' },
         ],
       },
       // Must stay last: Vaadin Router matches in order, so a catch-all above

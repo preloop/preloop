@@ -16,8 +16,10 @@ console and the CLI show the related views and commands only when
 All three are `false` unless a plugin sets them. With all three off, none of
 the gated routes, nav items or panels is registered and their code is never
 downloaded. If an account endpoint answers 404 anyway (for example after the
-plugin was removed), the view hides without an error toast. A 404 on one item,
-such as a sibling's subaccount id, shows "not found".
+plugin was removed), the Subaccounts and Access grants pages say the feature
+is not available on this deployment and other gated panels hide, without an
+error toast. A 404 on one item, such as a sibling's subaccount id, shows "not
+found".
 
 ## CLI profiles and accounts
 

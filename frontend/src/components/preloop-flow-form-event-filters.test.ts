@@ -341,6 +341,8 @@ describe('PreloopFlowForm event filters behaviour', () => {
     await element.updateComplete;
 
     expect(element.flow.trigger_config).to.equal(null);
+    // A tracker change clears the events, and a tracker trigger needs one.
+    element.flow.trigger_event_types = ['merge_request_opened'];
     const payload = await submit(element);
     expect(payload.trigger_event_source).to.equal(GITLAB_TRACKER.id);
     expect(payload.trigger_config).to.equal(null);
