@@ -3129,6 +3129,55 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             for row in rows
         ]
 
+    def get_model_call_stats_for_api_keys(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        api_key_ids: Sequence[Union[uuid.UUID, str]],
+        recent_start: datetime,
+    ) -> Dict[uuid.UUID, tuple[Optional[datetime], int]]:
+        """Aggregate last and recent model calls for owned keys in one read.
+
+        Args:
+            db: Database session.
+            account_id: Authorized account owning the keys.
+            api_key_ids: Already selected key IDs; foreign-account IDs are ignored.
+            recent_start: Inclusive lower bound for the recent call count.
+
+        Returns:
+            Last call timestamp and recent count for each key with model calls.
+            Missing keys have no calls. Legacy usage without an account can be
+            attributed through its owned key, but explicitly foreign rows cannot.
+        """
+        if not api_key_ids:
+            return {}
+        rows = (
+            db.query(
+                ApiUsage.api_key_id,
+                func.max(ApiUsage.timestamp).label("last_call_at"),
+                func.count(ApiUsage.id)
+                .filter(ApiUsage.timestamp >= recent_start)
+                .label("recent_call_count"),
+            )
+            .join(ApiKey, ApiUsage.api_key_id == ApiKey.id)
+            .filter(
+                ApiKey.account_id == account_id,
+                ApiKey.id.in_(api_key_ids),
+                or_(
+                    ApiUsage.account_id == account_id,
+                    ApiUsage.account_id.is_(None),
+                ),
+                ApiUsage.action_type == "model_gateway",
+            )
+            .group_by(ApiUsage.api_key_id)
+            .all()
+        )
+        return {
+            row.api_key_id: (row.last_call_at, int(row.recent_call_count or 0))
+            for row in rows
+        }
+
     def get_last_model_call_timestamp(
         self, db: Session, api_key_id: str
     ) -> Optional[datetime]:

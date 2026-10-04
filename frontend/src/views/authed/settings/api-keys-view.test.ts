@@ -110,6 +110,45 @@ describe('ApiKeysView', () => {
     localStorage.clear();
   });
 
+  it('loads keys without fetching catalogs, including when creating a key', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+    const urls = () => fetchStub.getCalls().map((call) => String(call.args[0]));
+    expect(
+      urls().some((url) => /tools|approval-workflows|features/.test(url))
+    ).to.equal(false);
+    const createButton = element.shadowRoot!.querySelector(
+      'view-header sl-button'
+    ) as HTMLElement;
+    createButton.click();
+    await element.updateComplete;
+    expect((element as any).isCreateModalOpen).to.equal(true);
+    expect(
+      urls().some((url) => /tools|approval-workflows|features/.test(url))
+    ).to.equal(false);
+  });
+
+  it('loads full tool schemas only when the legacy governance entry opens', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    await (element as any).openGovernanceDialog({ id: 'key-1', name: 'Key' });
+    expect((element as any).toolCatalog[0].schema).to.deep.equal({
+      properties: { query: { type: 'string' } },
+    });
+    expect((element as any).approvalWorkflows[0].id).to.equal('wf-1');
+    expect((element as any).governanceAllowedModels).to.equal('openai/gpt-5');
+    const toolCalls = fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/api/v1/tools'));
+    expect(toolCalls.length).to.equal(1);
+    expect(String(toolCalls[0].args[0])).to.equal('/api/v1/tools');
+  });
+
   it('renders activity status', async () => {
     const element = await fixture<ApiKeysView>(
       html`<api-keys-view></api-keys-view>`

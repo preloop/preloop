@@ -3,7 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import {
   AuthedElement,
   exportIssueCosts,
-  getFlows,
+  getFlowSummaries,
   getIssueCostExecutions,
   getIssueCosts,
   getUnassignedIssueCostExecutions,
@@ -233,7 +233,7 @@ export class IssueCostView extends AuthedElement {
     try {
       const [projects, flows] = await Promise.all([
         listProjects(),
-        getFlows({ limit: 500 }),
+        getFlowSummaries({ limit: 500, includeStats: false }),
       ]);
       this.projects = projects.map((project) => ({
         id: String(project.id),
