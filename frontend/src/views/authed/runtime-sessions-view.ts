@@ -1149,9 +1149,11 @@ export class RuntimeSessionsView extends LitElement {
           ? error.message
           : 'Could not load more sessions.';
     } finally {
-      if (seq === this.loadSequence) {
-        this.loadingMore = false;
-      }
+      // Always clear: this flag tracks THIS request, and only one load-more
+      // can be in flight at a time. A superseding load (live refresh or
+      // filter change) bumps loadSequence and would otherwise leave the
+      // button stuck in its loading state forever.
+      this.loadingMore = false;
     }
   }
 

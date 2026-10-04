@@ -2127,5 +2127,54 @@ describe('RuntimeSessionsView', () => {
         element.shadowRoot!.querySelector('[data-testid="more-error"]')
       ).to.equal(null);
     });
+
+    it('clears the loading flag when a refresh supersedes a load-more', async () => {
+      let resolveMore: ((response: Response) => void) | null = null;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/runtime-sessions?')) {
+          const params = new URL(url, window.location.origin).searchParams;
+          const offset = Number(params.get('offset') ?? 0);
+          if (offset > 0) {
+            // Hold the "load more" page open so a refresh can supersede it
+            // while it is still in flight.
+            return new Promise<Response>((resolve) => {
+              resolveMore = resolve;
+            });
+          }
+          return listPage(120, 0, 50);
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const pending = (element as any).loadMoreSessions();
+      await waitUntil(() => resolveMore !== null, 'Load more did not start');
+      expect((element as any).loadingMore).to.equal(true);
+
+      // A live refresh supersedes the in-flight page and bumps loadSequence.
+      await (element as any).loadSessions(true);
+      await element.updateComplete;
+
+      resolveMore!(listPage(120, 50, 50));
+      await pending;
+      await element.updateComplete;
+
+      expect((element as any).loadingMore).to.equal(false);
+      const button = loadMoreButton(element);
+      expect(button).to.not.equal(null);
+      expect(button!.hasAttribute('loading')).to.equal(false);
+    });
   });
 });
