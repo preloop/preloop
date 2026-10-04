@@ -122,6 +122,10 @@ export class AttentionView extends AuthedElement {
    */
   @state() private permissions: UserPermissions = null;
   @state() private permissionsReady = false;
+  @state() private permissionsLoading = false;
+  @state() private permissionsError: string | null = null;
+  private permissionsRequest: Promise<void> | null = null;
+  private permissionsGeneration = 0;
   @state() private lastUpdatedAt: string | null = null;
   @state() private billingEnabled = false;
   @state() private showLimitsDialog = false;
@@ -610,6 +614,8 @@ export class AttentionView extends AuthedElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    // Permissions recover independently when an older analytics wave is held.
+    void this.loadPermissions();
     void this.fetchAll();
     this.connectRealtime();
   }
@@ -617,6 +623,12 @@ export class AttentionView extends AuthedElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     ++this.refreshGeneration;
+    ++this.permissionsGeneration;
+    this.permissionsRequest = null;
+    this.permissionsLoading = false;
+    this.permissionsReady = false;
+    this.permissions = null;
+    this.permissionsError = null;
     this.refreshQueued = false;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
@@ -688,10 +700,39 @@ export class AttentionView extends AuthedElement {
     }
   }
 
+  /** Retry permissions separately so a slow analytics wave cannot block recovery. */
+  private loadPermissions(): Promise<void> {
+    if (this.permissionsRequest) return this.permissionsRequest;
+    const generation = ++this.permissionsGeneration;
+    this.permissionsLoading = true;
+    this.permissionsError = null;
+    const request = getUserProfile()
+      .then((profile) => {
+        if (generation !== this.permissionsGeneration || !this.isConnected)
+          return;
+        this.permissions = profile?.permissions ?? null;
+        this.permissionsReady = true;
+      })
+      .catch(() => {
+        if (generation !== this.permissionsGeneration || !this.isConnected)
+          return;
+        this.permissionsReady = false;
+        this.permissionsError =
+          'Could not load your permissions. Retry to enable approval decisions.';
+      })
+      .finally(() => {
+        if (this.permissionsRequest === request) this.permissionsRequest = null;
+        if (generation === this.permissionsGeneration)
+          this.permissionsLoading = false;
+      });
+    this.permissionsRequest = request;
+    return request;
+  }
+
   private async performFetchAll(generation: number): Promise<void> {
     // Exactly the same loader the Overview uses, so the hero count and this
     // page can never be computed from differently shaped data.
-    const [inputs, features, profile] = await Promise.all([
+    const [inputs, features] = await Promise.all([
       loadAttentionInputs({
         onApprovalsLoaded: (approvals) => {
           if (generation !== this.refreshGeneration || !this.isConnected)
@@ -703,15 +744,7 @@ export class AttentionView extends AuthedElement {
         },
       }),
       getFeatures().catch(() => null),
-      getUserProfile()
-        .catch(() => null)
-        .then((profile) => {
-          if (generation === this.refreshGeneration && this.isConnected) {
-            this.permissions = profile?.permissions ?? null;
-            this.permissionsReady = profile !== null;
-          }
-          return profile;
-        }),
+      this.loadPermissions(),
     ]);
 
     if (generation !== this.refreshGeneration || !this.isConnected) return;
@@ -729,7 +762,6 @@ export class AttentionView extends AuthedElement {
     this.spendOutliers = inputs.spendOutliers || [];
     this.dismissals = (inputs.dismissals || []) as AttentionDismissal[];
     this.dismissalsSupported = inputs.dismissalsSupported;
-    this.permissions = profile?.permissions ?? null;
     this.billingEnabled = features?.features?.billing === true;
 
     this.lastUpdatedAt = new Date().toISOString();
@@ -1864,6 +1896,20 @@ export class AttentionView extends AuthedElement {
 
       <div class="column-layout wide">
         <div class="main-column">
+          ${
+            this.permissionsError
+              ? html`<div role="alert" class="row-detail">
+                  ${this.permissionsError}
+                  <sl-button
+                    class="retry-permissions"
+                    size="small"
+                    ?loading=${this.permissionsLoading}
+                    @click=${() => void this.loadPermissions()}
+                    >Retry permissions</sl-button
+                  >
+                </div>`
+              : nothing
+          }
           ${
             this.loading
               ? html`${this.approvalsReady ? this.renderSection('approval', grouped.get('approval') || []) : nothing}

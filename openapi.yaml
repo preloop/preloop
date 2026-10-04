@@ -10539,7 +10539,7 @@ paths:
         required: false
         schema:
           type: integer
-          maximum: 100
+          maximum: 500
           minimum: 1
           default: 100
           title: Limit

@@ -232,6 +232,102 @@ describe('AttentionView', () => {
     localStorage.clear();
   });
 
+  it('explains a permissions failure and retries decisions independently of pending analytics', async () => {
+    let release!: () => void;
+    pendingGatewaySummary = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub
+      .withArgs('/api/v1/auth/users/me')
+      .onFirstCall()
+      .resolves(new Response('{}', { status: 500 }));
+    fetchStub
+      .withArgs('/api/v1/auth/users/me')
+      .onSecondCall()
+      .resolves(json({ id: 'user-1', permissions: null }));
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    try {
+      await waitUntil(
+        () => (el as any).approvalsReady && !!(el as any).permissionsError
+      );
+      await el.updateComplete;
+      expect(el.shadowRoot!.textContent).to.include(
+        'Could not load your permissions'
+      );
+      expect(
+        (el.shadowRoot!.querySelector('.row-approve') as any).disabled
+      ).to.equal(true);
+      (
+        el.shadowRoot!.querySelector('.retry-permissions') as HTMLElement
+      ).click();
+      await waitUntil(() => (el as any).permissionsReady);
+      await el.updateComplete;
+      expect((el as any).loading).to.equal(true);
+      expect(el.shadowRoot!.querySelector('.retry-permissions')).to.equal(null);
+      expect(
+        (el.shadowRoot!.querySelector('.row-approve') as any).disabled
+      ).to.equal(false);
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) =>
+            call.args[0].toString().includes('/gateway-usage/summary')
+          )
+      ).to.have.length(1);
+      (el.shadowRoot!.querySelector('.row-approve') as HTMLElement).click();
+      await waitUntil(() => (el as any).resolvedApprovalIds.has('approval-1'));
+    } finally {
+      release();
+    }
+    await (el as any).refreshInFlight;
+  });
+
+  it('loads current permissions after reconnect while old profile and analytics remain pending', async () => {
+    let releaseOldProfile!: () => void;
+    let releaseAnalytics!: () => void;
+    const oldProfile = new Promise<void>((resolve) => {
+      releaseOldProfile = resolve;
+    });
+    pendingGatewaySummary = new Promise<void>((resolve) => {
+      releaseAnalytics = resolve;
+    });
+    let profileCalls = 0;
+    fetchStub.withArgs('/api/v1/auth/users/me').callsFake(async () => {
+      if (++profileCalls === 1) {
+        await oldProfile;
+        return json({ id: 'old-user', permissions: [] });
+      }
+      return json({ id: 'current-user', permissions: ['approve_requests'] });
+    });
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    await waitUntil(() => profileCalls === 1 && (el as any).approvalsReady);
+    const parent = el.parentElement!;
+    el.remove();
+    expect((el as any).permissionsLoading).to.equal(false);
+    expect((el as any).permissionsReady).to.equal(false);
+    // Simulate a changed identity on reconnection; normal same-identity
+    // reconnects can reuse the transport but need fresh lifecycle callbacks.
+    invalidateApiCaches();
+    try {
+      parent.append(el);
+      await waitUntil(() => profileCalls === 2 && (el as any).permissionsReady);
+      expect((el as any).permissions).to.deep.equal(['approve_requests']);
+      expect((el as any).loading).to.equal(true);
+      releaseOldProfile();
+      await oldProfile;
+      await aTimeout(0);
+      expect((el as any).permissions).to.deep.equal(['approve_requests']);
+    } finally {
+      releaseOldProfile();
+      releaseAnalytics();
+    }
+    await (el as any).refreshInFlight;
+  });
+
   it('shows approvals while analytics are pending without claiming all-clear or complete counts', async () => {
     let release!: () => void;
     pendingGatewaySummary = new Promise<void>((resolve) => {

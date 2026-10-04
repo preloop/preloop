@@ -24,7 +24,7 @@ from preloop.models.models.user import User
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
 from preloop.schemas.gateway_usage import FlowGatewayUsageSummaryResponse
 from preloop.schemas.flow_summary import FlowSummaryResponse
-from preloop.models.schemas.flow import CronSchedule, parse_schedule_config
+from preloop.models.schemas.flow import flow_schedule_state
 from preloop.schemas.host_exec_usage import HostExecSessionsResponse
 from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.execution_metrics import (
@@ -319,7 +319,7 @@ def read_flows(
 def read_flow_summaries(
     db: Session = Depends(get_db),
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=100),
+    limit: int = Query(100, ge=1, le=500),
     include_stats: bool = False,
     stats_since: Optional[datetime] = None,
     current_user: User = Depends(get_current_active_user),
@@ -347,19 +347,9 @@ def read_flow_summaries(
     summaries = []
     for row in rows:
         summary = FlowSummaryResponse.model_validate(row)
-        if row.trigger_event_source == "schedule" and row.schedule_config:
-            config = parse_schedule_config(row.schedule_config)
-            active = bool(row.is_enabled)
-            next_run = config.next_fire_time() if active else None
-            summary.schedule_state = {
-                "active": active,
-                "type": config.type,
-                "description": config.describe(),
-                "timezone": config.timezone,
-                "next_run_at": next_run.isoformat() if next_run else None,
-            }
-            if isinstance(config, CronSchedule):
-                summary.schedule_state["cron"] = config.expr
+        summary.schedule_state = flow_schedule_state(
+            row.trigger_event_source, row.schedule_config, bool(row.is_enabled)
+        )
         # A reused request session may already have attached statistics. A
         # selector that did not ask for them never returns stale totals.
         if not include_stats:

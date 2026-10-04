@@ -3,6 +3,7 @@ import sinon from 'sinon';
 
 import './agent-detail-view.ts';
 import type { AgentDetailView } from './agent-detail-view';
+import { invalidateApiCaches } from '../../api';
 
 describe('AgentDetailView', () => {
   let fetchStub: sinon.SinonStub;
@@ -651,6 +652,81 @@ describe('AgentDetailView', () => {
       })
     );
     expect(flowCalls()).to.have.length(1);
+  });
+
+  it('allows the new agent associated-flows request while an old failure is pending', async () => {
+    let releaseOld!: () => void;
+    let releaseNew!: () => void;
+    const oldRead = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    const newRead = new Promise<void>((resolve) => {
+      releaseNew = resolve;
+    });
+    let flowCalls = 0;
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = input.toString();
+        if (url === '/api/v1/flows') {
+          const request = ++flowCalls;
+          if (request === 1) {
+            await oldRead;
+            return new Response('{}', { status: 500 });
+          }
+          await newRead;
+          return new Response(
+            JSON.stringify([
+              {
+                id: 'flow-B',
+                name: 'B flow',
+                agent_config: {
+                  execution_path: 'persistent',
+                  target_agent_id: 'agent-2',
+                },
+              },
+            ]),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (/\/agents\/agent-2(?:\?|$)/.test(url)) {
+          const response = await defaultFetch(
+            url.replace('agent-2', 'agent-1'),
+            init
+          );
+          const body = await response.json();
+          body.agent.id = 'agent-2';
+          return new Response(JSON.stringify(body), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return defaultFetch(input, init);
+      }
+    );
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await (el as any).loadInFlight;
+    (el as any).activeTab = 'associated-flows';
+    const stale = (el as any).loadAssociatedFlows();
+    await waitUntil(() => flowCalls === 1);
+    try {
+      invalidateApiCaches();
+      (el as any).onBeforeEnter({ params: { agentId: 'agent-2' } });
+      await waitUntil(() => flowCalls === 2);
+      releaseOld();
+      await stale;
+      expect((el as any).associatedFlowsLoading).to.equal(true);
+      expect((el as any).associatedFlowsError).to.equal(null);
+      releaseNew();
+      await waitUntil(() => (el as any).associatedFlowsLoaded);
+      expect(
+        (el as any).associatedFlows.map((flow: any) => flow.id)
+      ).to.deep.equal(['flow-B']);
+      expect((el as any).associatedFlowsLoading).to.equal(false);
+    } finally {
+      releaseOld();
+      releaseNew();
+    }
   });
 
   it('does not reload static editor catalogs during a realtime refresh', async () => {

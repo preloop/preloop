@@ -633,6 +633,11 @@ export class AgentDetailView extends LitElement {
       this.editorContextRequest = null;
       this.editorContextReady = false;
       this.agent = null;
+      ++this.associatedFlowsGeneration;
+      this.associatedFlowsLoading = false;
+      this.associatedFlowsLoaded = false;
+      this.associatedFlowsError = null;
+      this.associatedFlows = [];
       this.loading = true;
       void this.loadData();
     }
@@ -665,6 +670,8 @@ export class AgentDetailView extends LitElement {
     super.disconnectedCallback();
     ++this.detailLoadGeneration;
     ++this.editorContextGeneration;
+    ++this.associatedFlowsGeneration;
+    this.associatedFlowsLoading = false;
     this.unsubscribeRealtime?.();
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
@@ -707,6 +714,7 @@ export class AgentDetailView extends LitElement {
   }
 
   private detailLoadGeneration = 0;
+  private associatedFlowsGeneration = 0;
   private editorContextGeneration = 0;
   private editorContextAgentId = '';
   private editorContextReadyGeneration = -1;
@@ -937,11 +945,15 @@ export class AgentDetailView extends LitElement {
       return;
     this.associatedFlowsLoading = true;
     this.associatedFlowsError = null;
-    const generation = this.detailLoadGeneration;
+    const generation = ++this.associatedFlowsGeneration;
     const agentId = this.agentId;
     try {
       const flows = await getFlows();
-      if (generation !== this.detailLoadGeneration || agentId !== this.agentId)
+      if (
+        generation !== this.associatedFlowsGeneration ||
+        agentId !== this.agentId ||
+        !this.isConnected
+      )
         return;
       this.associatedFlows = (flows || []).filter((flow: any) => {
         try {
@@ -959,10 +971,20 @@ export class AgentDetailView extends LitElement {
       });
       this.associatedFlowsLoaded = true;
     } catch (error) {
+      if (
+        generation !== this.associatedFlowsGeneration ||
+        agentId !== this.agentId ||
+        !this.isConnected
+      )
+        return;
       console.warn('Failed to load associated flows', error);
       this.associatedFlowsError = 'Could not load associated flows.';
     } finally {
-      this.associatedFlowsLoading = false;
+      if (
+        generation === this.associatedFlowsGeneration &&
+        agentId === this.agentId
+      )
+        this.associatedFlowsLoading = false;
     }
   }
 
