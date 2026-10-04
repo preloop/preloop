@@ -483,6 +483,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The console audit list keeps rendering under a steady live-event stream.**
+  Every websocket `audit` event restarted a full-page spinner load, so on an
+  account with continuous agent traffic `/console/audit` never settled and a
+  slow `/audit-logs/grouped` answer could be overwritten by an older one. Live
+  refreshes are now background loads that keep the rows on screen, run at most
+  one at a time with a bounded trailing refresh, and are dropped once a newer
+  foreground load has taken over; a successful refresh also clears a stale
+  permission denial. Regression coverage lives in `audit-view.test.ts` (#1278).
 - **A flow's spend limit and iteration limit are enforced.** The flow form
   sent `max_budget` and `max_iterations`, which the API silently dropped, so
   a flow saved with "$5 per run" had no limit. The API now stores them as the
