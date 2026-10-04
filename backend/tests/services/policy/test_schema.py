@@ -396,13 +396,26 @@ class TestModelIORule:
             )
 
     def test_unknown_pii_type_rejected(self):
-        with pytest.raises(ValidationError):
+        # A malformed name fails on the rule itself.
+        with pytest.raises(ValidationError, match="Unknown PII types"):
             ModelIORule(
                 id="bad-pii",
                 target="model.request",
-                detectors={"pii": {"types": ["ssn"]}},
+                detectors={"pii": {"types": ["Not A Type"]}},
                 conditions=[ToolCondition(expression="pii.found == true")],
             )
+        # A well-formed name that is neither a built-in type nor a custom
+        # entry declared under sensitive_data.detectors fails on the document
+        # (a standalone rule cannot see the declarations; the API checks the
+        # account's block instead).
+        rule = ModelIORule(
+            id="bad-pii",
+            target="model.request",
+            detectors={"pii": {"types": ["ssn"]}},
+            conditions=[ToolCondition(expression="pii.found == true")],
+        )
+        with pytest.raises(ValidationError, match="unknown PII types"):
+            PolicyDocument(metadata=PolicyMetadata(name="Content"), model_io=[rule])
 
     def test_document_round_trips_model_io(self):
         policy = PolicyDocument(
