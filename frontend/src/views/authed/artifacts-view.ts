@@ -971,9 +971,11 @@ export class ArtifactsView extends AuthedElement {
           key can then hand Preloop a file.
         </li>
         <li data-path="cli">
-          <strong>CLI or REST.</strong> <code>preloop artifacts put</code>
-          (#1089), or today
-          <code>POST /api/v1/runtime-sessions/{id}/artifacts</code> with a file.
+          <strong>CLI or REST.</strong>
+          <code>preloop artifacts put &lt;file&gt; --session &lt;id&gt;</code>
+          uploads a file, or
+          <code>POST /api/v1/runtime-sessions/{id}/artifacts</code> does the
+          same over HTTP.
         </li>
         <li data-path="playwright">
           <strong>Playwright MCP through the firewall.</strong> Screenshots a
