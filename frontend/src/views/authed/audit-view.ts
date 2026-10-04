@@ -495,6 +495,7 @@ export class AuditView extends AuthedElement {
   }
 
   private _clearFilters() {
+    this._cancelToolSearch();
     this._eventTypeFilters = [];
     this._outcomeFilters = [];
     this._toolNameFilter = '';

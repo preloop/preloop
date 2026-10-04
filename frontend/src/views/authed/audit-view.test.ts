@@ -996,6 +996,21 @@ describe('AuditView', () => {
       element.remove();
     });
 
+    it('drops a pending search when the filters are cleared', async () => {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      (element as any)._onToolSearchInput('dep');
+      (element as any)._clearFilters();
+      (element as any)._page = 2;
+      await new Promise((r) => setTimeout(r, 400));
+      expect((element as any)._page).to.equal(2);
+      element.remove();
+    });
+
     it('names the tool on policy deny and approval-required rows', async () => {
       const policyEvent = (id: string, action: string, status: string) => ({
         correlation_id: `corr-${id}`,
