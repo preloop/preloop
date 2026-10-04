@@ -1936,3 +1936,237 @@ def test_a_daily_import_is_never_charged_to_a_ticket(world: World) -> None:
     assert row.cost_coverage == "unknown"
     assert row.unknown_cost_run_count == 1
     assert row.attributed_cost_usd is None
+
+
+# --- Jira and Bitbucket reconciliation (#1064) -------------------------------
+
+from tests import issue_cost_reconciliation as rec  # noqa: E402
+
+
+@pytest.fixture
+def reconciliation(world: World) -> rec.Reconciliation:
+    return rec.seed_reconciliation(world.db, world.account.id)
+
+
+def _rec_row(world: World, **kwargs: Any):
+    report = world.report(**kwargs)
+    rows = [row for row in report.issues if row.issue_key == rec.JIRA_KEY]
+    return report, rows
+
+
+def test_bitbucket_pull_request_payload_is_a_pull_request_subject() -> None:
+    subject = parse_trigger_subject(
+        {
+            "source": "bitbucket",
+            "payload": {
+                "repository": {"full_name": rec.WORKSPACE_REPO},
+                "pullrequest": rec.bitbucket_pull_request(description="Fixes REC-7"),
+            },
+        }
+    )
+    assert subject is not None
+    assert subject.kind == "pull_request"
+    assert subject.url == rec.PR_URL
+    assert subject.platform == "bitbucket"
+    assert rollup_service.closing_issue_keys(subject) == ["REC-7"]
+
+
+def test_reconciliation_milestones_and_intervals(
+    world: World, reconciliation: rec.Reconciliation
+) -> None:
+    _, rows = _rec_row(world)
+    assert len(rows) == 1
+    row = rows[0]
+    # The first event is the earliest attributed execution start (09:00),
+    # never the Jira creation time (08:00).
+    assert row.first_event_at == rec.IMPLEMENTATION_START
+    assert row.first_event_at != rec.TICKET_CREATED
+    assert row.pr_opened_at == rec.PR_OPENED
+    assert row.pr_opened_at_source == "forge"
+    assert row.approved_at == rec.APPROVED
+    assert row.merged_at == rec.MERGED
+    assert row.first_event_to_pr_opened_hours == 1.0
+    assert row.pr_opened_to_approved_hours == 2.0
+    assert row.approved_to_merged_hours == 1.0
+    assert row.pr_url == rec.PR_URL
+
+
+def test_reconciliation_costs_runs_and_coverage(
+    world: World, reconciliation: rec.Reconciliation
+) -> None:
+    report, rows = _rec_row(world, include_execution_ids=True)
+    row = rows[0]
+    runs = reconciliation.executions
+    # Four priced runs (1.00 + 0.25 + 0.50 + 0.10) and one seat-backed run.
+    assert row.estimated_cost == 1.85
+    assert row.run_count == 5
+    assert row.failed_run_count == 1
+    assert (row.known_cost_run_count, row.unknown_cost_run_count) == (4, 1)
+    assert row.cost_coverage == "partial"
+    assert row.attributed_cost_usd is None
+    assert row.total_tokens == 4000 + 1500 + 800 + 300 + 600
+    assert set(row.execution_ids or []) == reconciliation.issue_execution_ids
+    assert len(row.execution_ids or []) == 5
+    links = {
+        name: world.fact(execution).link
+        for name, execution in runs.items()
+        if name != "unassigned"
+    }
+    assert links == {
+        "failed": "trigger_issue",
+        "retry": "retry",
+        "review": "pull_request",
+        "repair": "resume",
+        "seat": "pull_request",
+    }
+    # Missing estimate stays null, a stated zero stays zero.
+    assert row.estimate_hours is None
+    assert row.estimate_points == 0.0
+    assert row.estimate_points_source == f"jira:{rec.POINTS_FIELD}"
+
+    project = next(p for p in report.by_project if p.id == reconciliation.project.id)
+    assert project.estimated_cost == 1.85
+    assert project.run_count == 5
+    flows = {summary.id: summary for summary in report.by_flow}
+    assert flows[reconciliation.implement.id].estimated_cost == 1.25
+    assert flows[reconciliation.implement.id].run_count == 2
+    assert flows[reconciliation.review.id].estimated_cost == 0.5
+    assert flows[reconciliation.review.id].run_count == 2
+    assert flows[reconciliation.review.id].cost_coverage == "partial"
+    assert flows[reconciliation.repair.id].estimated_cost == 0.1
+    assert round(sum(summary.estimated_cost for summary in flows.values()), 2) == 1.85
+    assert sum(summary.run_count for summary in flows.values()) == 5
+    assert report.unassigned.estimated_cost == 0.07
+    assert report.unassigned.run_count == 1
+    assert [item.execution_id for item in report.unassigned.executions] == [
+        runs["unassigned"].id
+    ]
+
+
+def test_reconciliation_four_priced_runs_are_complete(
+    world: World,
+) -> None:
+    rec.seed_reconciliation(world.db, world.account.id, seat_backed=False)
+    row = _rec_row(world)[1][0]
+    assert row.estimated_cost == 1.85
+    assert row.run_count == 4
+    assert row.cost_coverage == "complete"
+    assert row.attributed_cost_usd == 1.85
+
+
+def test_reconciliation_events_are_not_executions(
+    world: World, reconciliation: rec.Reconciliation
+) -> None:
+    facts = world.db.scalars(
+        select(models.IssueCostExecution).where(
+            models.IssueCostExecution.account_id == world.account.id
+        )
+    ).all()
+    # Five issue executions and one unassigned: approvals, merges and the
+    # replayed completion added no facts.
+    assert len(facts) == 6
+    assert len({fact.execution_id for fact in facts}) == 6
+    pulls = world.db.scalars(
+        select(models.IssueCostPullRequest).where(
+            models.IssueCostPullRequest.account_id == world.account.id
+        )
+    ).all()
+    # A "created" delivery for a pull request nobody published or claimed
+    # does not create a pull request row either.
+    assert [pull.pr_key for pull in pulls] == [rec.PR_URL]
+
+
+def test_reconciliation_period_selects_by_first_event(
+    world: World, reconciliation: rec.Reconciliation
+) -> None:
+    # The merge (13:00) is inside this window but the first event is not.
+    _, rows = _rec_row(world, start=rec.PR_OPENED, end=rec.MERGED + timedelta(hours=1))
+    assert rows == []
+    # Start is inclusive, end exclusive.
+    assert len(_rec_row(world, start=rec.IMPLEMENTATION_START)[1]) == 1
+    assert _rec_row(world, end=rec.IMPLEMENTATION_START)[1] == []
+    # The ticket creation time does not select the issue either.
+    assert (
+        _rec_row(world, start=rec.TICKET_CREATED, end=rec.IMPLEMENTATION_START)[1] == []
+    )
+
+
+def test_reconciliation_flow_filter_uses_only_that_flows_facts(
+    world: World, reconciliation: rec.Reconciliation
+) -> None:
+    report, rows = _rec_row(
+        world, flow_id=reconciliation.review.id, include_execution_ids=True
+    )
+    row = rows[0]
+    assert row.estimated_cost == 0.5
+    assert row.run_count == 2
+    assert row.cost_coverage == "partial"
+    assert set(row.execution_ids or []) == {
+        reconciliation.executions["review"].id,
+        reconciliation.executions["seat"].id,
+    }
+    # Milestones stay those of the issue, not of the selected flow.
+    assert row.first_event_at == rec.IMPLEMENTATION_START
+    assert [summary.id for summary in report.by_flow] == [reconciliation.review.id]
+
+
+def test_reconciliation_csv_and_json_agree(
+    world: World, reconciliation: rec.Reconciliation
+) -> None:
+    report = world.report(include_execution_ids=True)
+    csv_rows = {
+        row["issue_key"]: row
+        for row in csv.DictReader(io.StringIO(rollup_service.report_to_csv(report)))
+    }
+    document = json.loads(rollup_service.report_to_json(report))
+    json_row = next(r for r in document["issues"] if r["issue_key"] == rec.JIRA_KEY)
+    csv_row = csv_rows[rec.JIRA_KEY]
+
+    for column in ("first_event_at", "pr_opened_at", "approved_at", "merged_at"):
+        from_csv = datetime.fromisoformat(csv_row[column])
+        from_json = datetime.fromisoformat(json_row[column].replace("Z", "+00:00"))
+        assert from_csv == from_json
+        assert from_csv.utcoffset() == timedelta(0)
+    assert datetime.fromisoformat(csv_row["first_event_at"]) == rec.IMPLEMENTATION_START
+    for column, expected in (
+        ("first_event_to_pr_opened_hours", 1.0),
+        ("pr_opened_to_approved_hours", 2.0),
+        ("approved_to_merged_hours", 1.0),
+        ("estimated_cost", 1.85),
+        ("estimate_points", 0.0),
+    ):
+        assert float(csv_row[column]) == json_row[column] == expected
+    for column in ("run_count", "known_cost_run_count", "unknown_cost_run_count"):
+        assert int(csv_row[column]) == json_row[column]
+    assert (json_row["run_count"], json_row["unknown_cost_run_count"]) == (5, 1)
+    # Nullable values are null in JSON and empty in CSV, never zero.
+    for column in ("attributed_cost_usd", "estimate_hours", "estimate_hours_source"):
+        assert json_row[column] is None
+        assert csv_row[column] == ""
+    assert csv_row["pr_opened_at_source"] == json_row["pr_opened_at_source"] == "forge"
+    assert csv_row["cost_coverage"] == json_row["cost_coverage"] == "partial"
+    unassigned = csv_rows[rollup_service.UNASSIGNED_ISSUE_KEY]
+    assert (
+        float(unassigned["estimated_cost"]) == document["unassigned"]["estimated_cost"]
+    )
+    assert document["unassigned"]["execution_ids"] == [
+        str(reconciliation.executions["unassigned"].id)
+    ]
+
+
+def test_reconciliation_is_scoped_to_its_account(
+    world: World, reconciliation: rec.Reconciliation, db_session: Session
+) -> None:
+    other = World(db_session, name="other")
+    assert other.report().issues == []
+    assert other.report().unassigned.run_count == 0
+    # Bitbucket events naming the account's pull request but sent for
+    # another account change nothing on this account's row.
+    foreign = rec.approval_event(reconciliation, rec.APPROVED - timedelta(hours=1))
+    foreign["account_id"] = str(other.account.id)
+    rollup_service.record_pull_request_event(
+        db_session, foreign, now=rec.APPROVED - timedelta(hours=1)
+    )
+    db_session.commit()
+    assert _rec_row(world)[1][0].approved_at == rec.APPROVED
+
