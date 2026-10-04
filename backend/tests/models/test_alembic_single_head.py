@@ -286,4 +286,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert artifact_created.down_revision == "20261003_issue_extid_unique"
     audit_lookup = script.get_revision("20261004_audit_lookup_idx")
     assert audit_lookup.down_revision == "20261004_artifact_created_idx"
-    assert script.get_heads() == ["20261004_audit_lookup_idx"]
+    copilot_user_mapping = script.get_revision("20261004_copilot_user_mapping")
+    assert copilot_user_mapping.down_revision == "20261004_audit_lookup_idx"
+    assert script.get_heads() == ["20261004_copilot_user_mapping"]

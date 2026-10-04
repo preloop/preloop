@@ -173,6 +173,7 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
         account_id: UUID,
         since: datetime,
         until: Optional[datetime] = None,
+        include_superseded: bool = False,
     ) -> List[SpendOutlierFinding]:
         """Every finding detected in ``[since, until)``, oldest first.
 
@@ -180,6 +181,10 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
         upper bound, which is what the Attention page wants: it shows what it
         has. A digest passes the end of its window so a finding recorded
         after that end cannot appear in it.
+
+        Superseded findings (a replay found the day no longer qualifies) are
+        left out unless ``include_superseded`` is set; they stay in the table
+        as audit rows only.
 
         Ordering is total: detection time first, then the fingerprint, then
         the row id, so two findings detected at the same instant keep the
@@ -190,6 +195,7 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
             account_id: Account the findings belong to.
             since: Inclusive window start.
             until: Exclusive window end, or None for no upper bound.
+            include_superseded: Also return superseded findings.
 
         Returns:
             The findings in the window, oldest first.
@@ -206,7 +212,93 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
         )
         if until is not None:
             query = query.filter(SpendOutlierFinding.detected_at < until)
+        if not include_superseded:
+            query = query.filter(SpendOutlierFinding.superseded_at.is_(None))
         return query.all()
+
+    def list_for_days(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        rules: Sequence[str],
+        days: Sequence[date],
+    ) -> List[SpendOutlierFinding]:
+        """Findings of the given rules about the given days, superseded included.
+
+        This is what a replay reconciles against: everything it recorded
+        earlier for exactly the rules and days it is about to judge again,
+        and nothing else.
+        """
+        if not rules or not days:
+            return []
+        return (
+            db.query(SpendOutlierFinding)
+            .filter(SpendOutlierFinding.account_id == account_id)
+            .filter(SpendOutlierFinding.rule.in_(list(rules)))
+            .filter(SpendOutlierFinding.day.in_(list(days)))
+            .order_by(SpendOutlierFinding.fingerprint.asc())
+            .all()
+        )
+
+    def get_by_fingerprint(
+        self, db: Session, *, account_id: UUID, fingerprint: str
+    ) -> Optional[SpendOutlierFinding]:
+        """The one finding with this fingerprint in the account, if any."""
+        return (
+            db.query(SpendOutlierFinding)
+            .filter(SpendOutlierFinding.account_id == account_id)
+            .filter(SpendOutlierFinding.fingerprint == fingerprint)
+            .first()
+        )
+
+    def update_details(
+        self,
+        db: Session,
+        *,
+        finding: SpendOutlierFinding,
+        details: Dict[str, Any],
+        commit: bool = True,
+    ) -> SpendOutlierFinding:
+        """Replace the evidence on a finding that still qualifies.
+
+        The fingerprint and ``detected_at`` are untouched, so a dismissal or
+        snooze keyed on the fingerprint keeps applying and the first
+        detection time is preserved. A superseded stamp is cleared, because
+        the day qualifies again.
+        """
+        finding.details = details
+        finding.superseded_at = None
+        finding.superseded_reason = None
+        db.add(finding)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return finding
+
+    def mark_superseded(
+        self,
+        db: Session,
+        *,
+        finding: SpendOutlierFinding,
+        superseded_at: datetime,
+        reason: str,
+        commit: bool = True,
+    ) -> SpendOutlierFinding:
+        """Stamp a finding whose day no longer qualifies; the row is kept.
+
+        ``dismissed_at`` is left as it is: whether the operator dismissed the
+        finding and whether the evidence still holds are separate facts.
+        """
+        finding.superseded_at = superseded_at
+        finding.superseded_reason = reason
+        db.add(finding)
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        return finding
 
     def set_dismissed(
         self,

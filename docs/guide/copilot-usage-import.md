@@ -147,8 +147,114 @@ model. When a developer has no billed premium requests in the window, the
 share of user-initiated interactions per model from the usage metrics report
 is shown instead, labelled as based on request counts.
 
-## Stored for spend alerts
+## Spend alerts from imported premium requests
 
 Premium-request rows are stored per day, per user and per model with the
-billed `netAmount`, so a later spend alert can compare developers and models
-without calling GitHub again. The alert itself is not part of this import.
+billed `netAmount`, so the [spend outlier rules](../architecture/cost.md#spend-outlier-alerts)
+can judge imported spend without calling GitHub again. Two things have to be
+true before an imported dollar reaches a rule: the GitHub login must be
+mapped to a Preloop user, and the day must be inside the replay horizon.
+
+### Map GitHub logins to Preloop users
+
+Imported rows name GitHub logins; the rules evaluate Preloop users. Nothing
+is inferred from usernames, email addresses, seat lists or OAuth identities.
+An operator writes each mapping explicitly, and only mapped logins count.
+
+- A mapping belongs to the account and to the organization the connection
+  points at when it is written. Change the connection to another
+  organization and the old mappings stay stored but no longer apply; switch
+  back and they apply again.
+- A login maps to exactly one active user of the same account. Several
+  logins may map to the same user; their spend is summed.
+- Logins are compared the way GitHub compares them: trimmed and lowercased.
+  Writing `Alice` after `alice` updates the one mapping.
+- A deactivated user, a deleted user, a paused connection and a deleted
+  connection all stop contributing immediately. Deleting the connection
+  deletes its mappings; imported history stays.
+
+Reads take `view_cost`; writes take `manage_budgets`, like budget limits.
+
+```bash
+# What is mapped for the connected organization
+curl "$PRELOOP_URL/api/v1/cost/copilot/mappings" \
+  -H "Authorization: Bearer $PRELOOP_TOKEN"
+
+# Map a login to a user of this account (repeat to change the user)
+curl -X PUT "$PRELOOP_URL/api/v1/cost/copilot/mappings" \
+  -H "Authorization: Bearer $PRELOOP_TOKEN" -H "Content-Type: application/json" \
+  -d '{"github_login": "jane-doe", "user_id": "<preloop user uuid>"}'
+
+# Remove a mapping (any letter case)
+curl -X DELETE "$PRELOOP_URL/api/v1/cost/copilot/mappings/jane-doe" \
+  -H "Authorization: Bearer $PRELOOP_TOKEN"
+
+# How much of the stored spend the rules can see, and why the rest is left out
+curl "$PRELOOP_URL/api/v1/cost/copilot/spend-coverage?start_day=2026-09-01&end_day=2026-09-28" \
+  -H "Authorization: Bearer $PRELOOP_TOKEN"
+```
+
+A `user_id` that is not an active user of your account is refused with one
+fixed message, whether the id is unknown, deactivated or belongs to another
+account. There is no console form for mappings yet; the API above is the
+supported way to configure them.
+
+### What the rules read, and what they do not
+
+The rules see the **net billed amount** GitHub reported for each day, user
+and model (`cost_basis = reconciled`), netted per user, day and model so a
+credit lowers that day rather than being dropped. They never multiply a
+request count by a list price. Only positive nets are evaluated; a day
+billed at exactly `$0` is a known zero and cannot be a spike.
+
+Everything else stays on the Cost page and never reaches a rule:
+
+| Stored data | Why it is excluded |
+| --- | --- |
+| Seat snapshots, seat summary, the monthly seat estimate | Not premium-request spend |
+| Usage metrics (request counts, editors, features) | Adoption data, not dollars |
+| The organization total stored when GitHub refused per-user answers | Cannot be attributed to a user |
+| **Not matched to a current seat** (the unattributed residual) | Cannot be attributed to a user, and is never assigned to the account owner |
+| Rows for logins without a mapping | Unknown user |
+| Rows without an amount, in a currency other than USD, or with a non-finite amount | Unknown is not zero |
+
+`GET /api/v1/cost/copilot/spend-coverage` reports these as counts per reason
+(`unmapped`, `unknown_amount`, `unsupported_currency`, `nonfinite_amount`,
+`aggregate_only`, `unattributed`, `not_daily`) together with the mapped and
+unmapped logins, so an operator can see which mappings are missing. It
+returns no tokens and no stored payloads. `mapped_net_amount` is the sum of
+the positive per user, day and model nets, which is exactly what the rules
+evaluate; it is `null` when nothing was mapped, never `$0`. A user, day and
+model whose credits exceed its charges nets at or below zero, reaches no
+rule, and is reported apart as `credited_net_amount`.
+
+### Replay horizon and delayed days
+
+GitHub settles a day up to two full days later, so the newest day this
+import stores is three days old, and a day can be corrected by a later
+import. The daily spend outlier pass therefore does not stop at yesterday
+for accounts with an active Copilot connection: it re-judges the **28 most
+recent completed UTC days** (yesterday included) on every run. A day first
+imported three days late is evaluated on the next pass. The finding keeps
+that day as its spend day; its detection time is when the pass ran.
+
+Replaying the same day again and again records one finding per rule, user
+and day, with its first detection time preserved; a re-import with the same
+numbers changes nothing. When a corrected import, a removed mapping or a
+mapping moved to another user changes the result:
+
+- a day that still qualifies has its evidence updated on the existing
+  finding, keeping its fingerprint, so a dismissal or snooze keeps applying;
+- a day that no longer qualifies is marked **superseded**. It leaves the
+  Attention page and the weekly digest, and the row stays as an audit record
+  with the dismissal state it had. If a later correction makes the day
+  qualify again, the same finding comes back.
+
+Imports older than 28 days are summary-only: they show on the Cost page but
+raise no alert. If the adapter fails to read the stored rows, the pass keeps
+every earlier finding, reconciles nothing, judges only yesterday from
+gateway spend, and logs the source and the error type (never a token).
+
+Daily reports cannot identify a session, so imported spend never feeds the
+expensive-session rule. Imported amounts are never written to gateway
+usage, budgets, quota, execution costs or per-issue cost rollups.
