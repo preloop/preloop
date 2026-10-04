@@ -22,6 +22,7 @@ describe('BudgetPolicyEditor', () => {
     advanced?: boolean;
     policies?: unknown[];
     users?: Array<{ id: string; email: string; username?: string }>;
+    models?: Array<{ id: string; name: string; alias?: string }>;
   }) => {
     fetchStub.callsFake(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -64,7 +65,7 @@ describe('BudgetPolicyEditor', () => {
           return new Response('models unavailable', { status: 500 });
         }
         if (url.includes('/api/v1/ai-models')) {
-          return new Response(JSON.stringify([]), {
+          return new Response(JSON.stringify(opts?.models || []), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -646,5 +647,62 @@ describe('BudgetPolicyEditor', () => {
           call.args[1]?.method === 'POST'
       );
     expect(JSON.parse(sent!.args[1].body).hard_limit_usd).to.equal(0);
+  });
+
+  it('lists subjects and records the choice after switching to a model scope', async () => {
+    stubBillingFetch({
+      models: [
+        { id: 'model-a', name: 'Model A', alias: 'example/model-a' },
+        { id: 'model-b', name: 'Model B', alias: 'example/model-b' },
+      ],
+    });
+    const element = await mountEditor();
+    (element as any).startAdd();
+    await element.updateComplete;
+    await waitUntil(
+      () => (element as any).subjectsLoaded,
+      'subjects finished loading'
+    );
+    const group = element.shadowRoot!.querySelector(
+      'sl-radio-group[label="Scope"]'
+    ) as HTMLElement & { value: string };
+    group.value = 'ai_model';
+    group.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+    await element.updateComplete;
+
+    const select = element.shadowRoot!.querySelector(
+      'sl-select[label="Model"]'
+    ) as HTMLElement & { value: string };
+    expect(select).to.exist;
+    const options = select.querySelectorAll('sl-option');
+    expect(options.length).to.equal(2);
+    expect(options[0].textContent?.trim()).to.equal('example/model-a');
+    // A shifted binding used to print the change handler's source as text.
+    expect(select.textContent).to.not.include('=>');
+    expect(select.getAttribute('help-text') ?? '').to.equal('');
+
+    select.value = 'model-b';
+    select.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+    await element.updateComplete;
+    expect((element as any).newSubjectId).to.equal('model-b');
+  });
+
+  it('describes the agent owner scope once', async () => {
+    stubBillingFetch({
+      users: [{ id: 'user-1', email: 'jane@example.com', username: 'jane' }],
+    });
+    const element = await mountEditor();
+    (element as any).startAdd();
+    await waitUntil(() => (element as any).subjectsLoaded);
+    (element as any).newSubjectType = 'user';
+    (element as any).newSubjectId = '';
+    await element.updateComplete;
+    const select = element.shadowRoot!.querySelector(
+      'sl-select[label="Agent owner"]'
+    )!;
+    expect(select.getAttribute('help-text')).to.equal(
+      'Applies to model spending by agents owned by this person.'
+    );
+    expect(select.querySelectorAll('sl-option').length).to.equal(1);
   });
 });

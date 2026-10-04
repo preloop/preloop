@@ -807,11 +807,6 @@ export class BudgetPolicyEditor extends LitElement {
           value=${this.newSubjectId}
           hoist
           ?disabled=${this.loadingSubjects || this.editingPolicyId !== null}
-          help-text=${
-            this.newSubjectType === 'user'
-              ? 'Enforces across all agents owned by this user'
-              : ''
-          }
           @sl-change=${(e: any) => (this.newSubjectId = e.target.value)}
         >
           ${visible.map(
