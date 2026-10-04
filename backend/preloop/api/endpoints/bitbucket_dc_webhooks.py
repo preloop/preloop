@@ -31,8 +31,8 @@ from preloop.models.db.session import get_db_session
 from preloop.schemas.auth import AuthUserResponse
 from preloop.sync.exceptions import (
     TrackerAuthenticationError,
+    TrackerError,
     TrackerPermissionError,
-    TrackerResponseError,
 )
 from preloop.sync.trackers.factory import create_tracker_client
 from preloop.utils.bitbucket_dc import (
@@ -76,7 +76,11 @@ class BitbucketDCWebhookStatus(BaseModel):
         None,
         description=(
             "Hook state on the bound repository when checked: registered, "
-            "inactive, events_missing, missing, permission_denied, unauthorized."
+            "inactive, events_missing, missing, permission_denied, "
+            "unauthorized, unbound_repository (no bound repository to check), "
+            "configuration_invalid (instance no longer approved or invalid "
+            "connection details) or unavailable (instance unreachable, rate "
+            "limited or answering with an error)."
         ),
     )
     instructions: str
@@ -135,7 +139,18 @@ def _status(
     }
 
 
-def _client(tracker: models.Tracker) -> Any:
+INVALID_CONFIGURATION = (
+    "The tracker configuration is invalid or its Bitbucket Data Center "
+    "instance is no longer approved."
+)
+
+
+def _client(tracker: models.Tracker) -> Optional[Any]:
+    """Build the adapter, or None when the configuration is not usable.
+
+    ``create_tracker_client`` logs and returns None for construction errors
+    such as an instance that left the approved list.
+    """
     try:
         return asyncio.run(
             create_tracker_client(
@@ -149,8 +164,8 @@ def _client(tracker: models.Tracker) -> Any:
                 },
             )
         )
-    except BitbucketDCConfigError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except BitbucketDCConfigError:
+        return None
 
 
 @router.get(
@@ -170,12 +185,14 @@ def get_bitbucket_dc_webhook_status(
     url = _callback_url(tracker)
     if check and url and tracker.auth_type == BITBUCKET_DC_AUTH_API_TOKEN:
         client = _client(tracker)
-        if client is None or not getattr(client, "repo_full_name", None):
+        if client is None:
+            registration = {"status": "configuration_invalid", "missing_events": []}
+        elif not getattr(client, "repo_full_name", None):
             registration = {"status": "unbound_repository", "missing_events": []}
         else:
             try:
                 registration = asyncio.run(client.inspect_repository_webhook(url))
-            except TrackerResponseError as exc:
+            except TrackerError as exc:
                 logger.warning(
                     "Webhook inspection failed for tracker %s: %s",
                     tracker.id,
@@ -247,6 +264,8 @@ def register_bitbucket_dc_webhook(
             detail="Generate a webhook secret before registering the webhook.",
         )
     client = _client(tracker)
+    if client is None:
+        raise HTTPException(status_code=400, detail=INVALID_CONFIGURATION)
     repository = body.repository if body else None
     try:
         result = asyncio.run(
@@ -266,8 +285,13 @@ def register_bitbucket_dc_webhook(
                 "to add the webhook. " + SETUP_INSTRUCTIONS
             ),
         ) from exc
-    except TrackerResponseError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except TrackerError as exc:
+        # Unreachable instance, rate limit or another error answer. The
+        # adapter's messages carry no token; the type tells them apart.
+        raise HTTPException(
+            status_code=502,
+            detail=f"Bitbucket Data Center did not accept the request: {exc}",
+        ) from exc
     return _status(
         tracker,
         {

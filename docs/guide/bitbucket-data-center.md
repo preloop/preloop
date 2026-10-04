@@ -116,7 +116,11 @@ the administrator instructions; Preloop never asks for broader permissions.
 returns the callback URL, the required events, whether a secret is configured
 (`signature`), and the hook state on the bound repository: `registered`,
 `events_missing` (with the missing events), `inactive`, `missing`,
-`permission_denied` or `unauthorized`.
+`permission_denied` or `unauthorized`. It reports `unbound_repository` when
+the tracker has no single repository to check, `configuration_invalid` when
+the instance is no longer approved or the connection details are invalid, and
+`unavailable` when the instance cannot be reached, rate limits the request or
+answers with an error.
 
 **What the intake enforces.**
 
@@ -140,7 +144,8 @@ returns the callback URL, the required events, whether a secret is configured
   Preloop's own and do not start flows (reviewer comments with Preloop's
   review marker still hand off as on other providers).
 * A pull request update that arrives after a newer one (lower PR `version`
-  than an active run) neither starts a run nor supersedes the newer run.
+  than a run of the same flow has already seen, active or finished) neither
+  starts a run nor supersedes the newer run.
 
 **Troubleshooting deliveries.** The hook's **View details** page on the
 instance shows each delivery's HTTP status. `403 Missing Bitbucket signature`

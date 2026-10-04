@@ -19073,7 +19073,10 @@ components:
           - type: 'null'
           title: Registration
           description: 'Hook state on the bound repository when checked: registered,
-            inactive, events_missing, missing, permission_denied, unauthorized.'
+            inactive, events_missing, missing, permission_denied, unauthorized, unbound_repository
+            (no bound repository to check), configuration_invalid (instance no longer
+            approved or invalid connection details) or unavailable (instance unreachable,
+            rate limited or answering with an error).'
         instructions:
           type: string
           title: Instructions
@@ -19116,7 +19119,10 @@ components:
           - type: 'null'
           title: Registration
           description: 'Hook state on the bound repository when checked: registered,
-            inactive, events_missing, missing, permission_denied, unauthorized.'
+            inactive, events_missing, missing, permission_denied, unauthorized, unbound_repository
+            (no bound repository to check), configuration_invalid (instance no longer
+            approved or invalid connection details) or unavailable (instance unreachable,
+            rate limited or answering with an error).'
         instructions:
           type: string
           title: Instructions

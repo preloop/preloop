@@ -12,7 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from preloop.api.endpoints import bitbucket_dc_webhooks as setup
-from preloop.sync.exceptions import TrackerPermissionError
+from preloop.sync.exceptions import TrackerConnectionError, TrackerPermissionError
 from preloop.utils import bitbucket_dc as dc
 from preloop.utils.bitbucket_dc_webhooks import BITBUCKET_DC_WEBHOOK_EVENTS
 
@@ -189,3 +189,44 @@ def test_registration_preconditions(monkeypatch, overrides, env_unset) -> None:
             )
     assert exc.value.status_code == 409
     factory.assert_not_awaited()
+
+
+def test_unusable_configuration_is_a_setup_error_not_a_crash() -> None:
+    with (
+        patch.object(setup, "crud_tracker") as crud,
+        patch.object(setup, "create_tracker_client", AsyncMock(return_value=None)),
+    ):
+        crud.get_by_id_and_account.return_value = tracker()
+        with pytest.raises(HTTPException) as exc:
+            register_endpoint(
+                tracker_id=TRACKER_ID, body=None, current_user=USER, db=MagicMock()
+            )
+        assert exc.value.status_code == 400
+        result = status_endpoint(
+            tracker_id=TRACKER_ID, check=True, current_user=USER, db=MagicMock()
+        )
+    assert result["registration"]["status"] == "configuration_invalid"
+
+
+def test_unreachable_instance_is_reported_not_a_500() -> None:
+    client = MagicMock(repo_full_name="PRJ/my-repo")
+    client.inspect_repository_webhook = AsyncMock(
+        side_effect=TrackerConnectionError("Could not reach Bitbucket Data Center")
+    )
+    client.ensure_repository_webhook = AsyncMock(
+        side_effect=TrackerConnectionError("Could not reach Bitbucket Data Center")
+    )
+    with (
+        patch.object(setup, "crud_tracker") as crud,
+        patch.object(setup, "create_tracker_client", AsyncMock(return_value=client)),
+    ):
+        crud.get_by_id_and_account.return_value = tracker()
+        result = status_endpoint(
+            tracker_id=TRACKER_ID, check=True, current_user=USER, db=MagicMock()
+        )
+        assert result["registration"]["status"] == "unavailable"
+        with pytest.raises(HTTPException) as exc:
+            register_endpoint(
+                tracker_id=TRACKER_ID, body=None, current_user=USER, db=MagicMock()
+            )
+    assert exc.value.status_code == 502
