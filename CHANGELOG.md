@@ -365,6 +365,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Console: Shoelace assets ship with the console.** The theme
+  stylesheets, autoloader, lazily loaded components and icons are served
+  from `/vendor/shoelace/` on the console's own origin instead of a public
+  CDN. Air-gapped and egress-restricted installs now render styled, and the
+  themed components match the bundled Shoelace version.
+- **Console: navigation.** Settings is grouped (Account, People & access,
+  Developers, Personal); the kill switch is a top-level Emergency item; the
+  Account page is reachable on every edition; browser tabs are named after
+  the page; detail pages keep their nav highlight; unknown console URLs show
+  the 404 inside the console; and a "Skip to content" link and an operable
+  sidebar toggle were added.
+- **Console: one vocabulary.** Rule actions, approval outcomes and run
+  statuses use the same labels and colours on every page ("Require
+  approval" is amber everywhere; a reviewer's denial and a policy block are
+  told apart).
+
 - `webhook_config.webhook_secret` is optional in the flow API, so a flow
   triggered by tracker events can carry `webhook_config` for
   `supersede_on_update` alone. An update that sends `webhook_config`
@@ -438,6 +454,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the breakdown limit are unchanged. Refs #914.
 
 ### Fixed
+
+- **Console UX fixes from a full review.** Per-agent and per-model limits
+  can be created again (a duplicated template binding emptied the subject
+  picker). A live update can no longer move which request a keyboard "A"
+  approves. Approvals, Audit, flow and approval-link pages show load
+  errors with Retry instead of empty states or endless spinners. A "Tracker
+  event" flow can no longer be saved as a webhook flow by omission. An HTTP
+  429 shows a rate-limit message instead of the upgrade dialog, which no
+  longer opens on deployments without billing. Thirteen pages that lost
+  their title and description on a direct load now import their header.
+  One-time secrets (API keys, webhook signing secrets) can no longer be
+  dismissed by Escape, and copying works on plain-HTTP installs.
+  Destructive actions use the console's confirmation dialog with their
+  consequences. The kill switch page no longer shows "not halted" when it
+  cannot read the status. Link and dark-mode meta text meet WCAG AA
+  contrast, and Agent detail cards follow the dark theme.
 
 - **Listing a server's discovered MCP tools returns 200 again.**
   `MCPToolResponse` declared `id` and `mcp_server_id` as `str`, but
