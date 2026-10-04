@@ -5,6 +5,7 @@ from .account import Account
 from .account_halt import AccountHalt, HALT_SCOPES
 from .agent_control_command import AgentControlCommand
 from .api_key import ApiKey
+from .ci_principal import CiPrincipal
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
 from .base import Base
@@ -177,6 +178,7 @@ __all__ = [
     "IssueEmbedding",
     "IssueDuplicate",
     "ApiKey",
+    "CiPrincipal",
     "ApiUsage",
     "AuditLog",
     "ClientVersionLog",
