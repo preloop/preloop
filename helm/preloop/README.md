@@ -492,6 +492,14 @@ helm install preloop ./helm/preloop \
 | `autoscaling.maxReplicas`      | Maximum number of replicas                            | `5`         |
 | `autoscaling.targetCPUUtilizationPercentage` | Target CPU utilization percentage      | `80`        |
 
+### Agent runtime placement parameters
+
+| Name                                                        | Description                                                       | Value           |
+|-------------------------------------------------------------|-------------------------------------------------------------------|-----------------|
+| `agentExecution.runtimeClassName`                            | RuntimeClass for agent pods (Kata Containers, gVisor, Firecracker); empty uses the node default | `""`            |
+| `agentExecution.nodeSelector`                                | Node selector applied to agent pods only                          | `{}`            |
+| `agentExecution.tolerations`                                 | Tolerations applied to agent pods only                            | `[]`            |
+
 ### Agent isolation parameters
 
 | Name                                                        | Description                                                       | Value           |

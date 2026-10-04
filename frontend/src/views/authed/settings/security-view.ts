@@ -6,7 +6,7 @@ import {
   fetchWithAuth,
   getFeatures,
   listCliSessions,
-  performLocalSignOut,
+  signOut,
   revokeCliSession,
 } from '../../../api';
 import { confirmDialog } from '../../../components/confirm-dialog';
@@ -252,7 +252,13 @@ export class SecurityView extends LitElement {
       // Local sign-out still proceeds. Other sessions stay valid if the
       // server was unreachable, matching the CLI offline path.
     }
-    performLocalSignOut((url) => this._navigate(url));
+    // revoke-all already ended every session server-side, including this
+    // token, so a server sign out would only be rejected. Extensions see
+    // that revocation through the revoke fan-out (H2), not the logout hook.
+    await signOut({
+      serverSignOut: false,
+      navigate: (url) => this._navigate(url),
+    });
   }
 
   private _navigate(url: string): void {

@@ -19,6 +19,19 @@ namespace otherwise. The second case is the easy one to deploy and the
 dangerous one to leave unguarded, because the database, NATS, the console,
 and the other tenants' agent pods are then neighbours.
 
+The NetworkPolicy below is a network boundary; it does not change the
+kernel an agent shares with the host. A stronger boundary is a sandbox
+runtime: set `agentExecution.runtimeClassName` to a RuntimeClass the
+cluster already offers (for example `kata-containers`, `gvisor`, or
+`firecracker`) and every agent pod is scheduled into a VM or a user-space
+kernel, so a container escape reaches a guest kernel instead of the node.
+Pair it with `agentExecution.nodeSelector` and
+`agentExecution.tolerations` when only one tainted node pool runs that
+runtime. The same placement is applied to the hosted publication verifier
+Job, which also executes repository code, while Preloop's own deployments
+stay where they are. The settings are empty by default and render no change
+to the pod spec, so an existing install keeps the node's default runtime.
+
 Nothing in the cluster dials into an agent pod. Output leaves it two ways:
 
 - the pod log stream, which the runner reads through the API server

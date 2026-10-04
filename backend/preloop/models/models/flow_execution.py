@@ -162,6 +162,18 @@ class FlowExecution(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    ci_principal_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("ci_principal.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    initiating_ci_key_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("api_key.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     flow_id = Column(
         UUID(as_uuid=True), ForeignKey("flow.id"), nullable=False, index=True
     )

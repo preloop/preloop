@@ -1050,7 +1050,10 @@ export class AuditView extends AuthedElement {
         return `Login: ${event.details?.username || 'unknown'}`;
       case 'configuration_change': {
         const ct = event.details?.config_type || event.resource_id || 'unknown';
-        const act = event.details?.action || 'changed';
+        const act = String(event.details?.action || 'changed').replace(
+          /_/g,
+          ' '
+        );
         const labels: Record<string, string> = {
           mcp_server: 'MCP Server',
           tool_configuration: 'Tool',
@@ -1058,6 +1061,7 @@ export class AuditView extends AuthedElement {
           approval_workflow: 'Approval Workflow',
           tracker: 'Tracker',
           flow: 'Flow',
+          policy: 'Policy',
         };
         const pretty = labels[ct] || ct;
         const name = event.details?.new_value

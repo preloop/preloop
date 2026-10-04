@@ -322,6 +322,18 @@ def write_source_chunks(
             text, redacted = redact_text(text)
         elif content_captured:
             redacted = REDACTED_VALUE in (text or "")
+        if content_captured:
+            # Credential masking above, then the account's redact rules
+            # (#1123). Search text is a mixed store, so every account-wide
+            # redact rule applies; rules scoped to agents or tools do not
+            # (this writer does not know the managed agent or tool).
+            from preloop.services.sensitive_data.storage import (
+                apply_storage_redaction,
+            )
+
+            masked = apply_storage_redaction(account_id, text)
+            if masked != text:
+                text, redacted = masked, True
         redaction_state = _resolve_redaction_state(
             captured=content_captured, redacted=redacted
         )

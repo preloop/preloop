@@ -15,6 +15,14 @@ keyed by the same ``item_id`` and ``fingerprint``. ``dismissed_at`` is only a
 record of that decision for the weekly digest, which lists dismissed findings
 too and needs to know which ones they were after the dismissal row has moved
 on to a later day's fingerprint.
+
+``superseded_at`` is a different state (#1061). Imported spend arrives days
+late and can be corrected, so the daily rules replay recent days. When a
+replay finds that a recorded day no longer qualifies, the row is kept as an
+audit record and stamped superseded; the open list and the digest skip it.
+A later replay that finds the day qualifying again clears the stamp. A
+dismissal is the operator's decision about a finding; supersession is the
+evaluator's statement that the evidence changed. Neither implies the other.
 """
 
 from datetime import date, datetime
@@ -164,6 +172,16 @@ class SpendOutlierFinding(Base):
         DateTime(timezone=True),
         nullable=True,
         comment="Set when the operator dismissed this exact fingerprint",
+    )
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Set when a replay found the day no longer qualifies",
+    )
+    superseded_reason: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Why the finding was superseded, e.g. no_longer_qualifies",
     )
 
     def __repr__(self) -> str:
