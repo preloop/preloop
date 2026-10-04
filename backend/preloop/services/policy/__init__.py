@@ -28,6 +28,9 @@ from preloop.services.policy.schema import (
     PolicyVersion,
     SensitiveDataConfig,
     SensitiveDataDetectorsConfig,
+    SensitiveDataRule,
+    SensitiveDataScope,
+    SensitiveDataTarget,
     ToolCondition,
     ToolDefinition,
     ToolSource,
@@ -71,6 +74,9 @@ __all__ = [
     # Sensitive data
     "SensitiveDataConfig",
     "SensitiveDataDetectorsConfig",
+    "SensitiveDataRule",
+    "SensitiveDataScope",
+    "SensitiveDataTarget",
     # Defaults
     "DefaultsDefinition",
     "UnknownToolsPolicy",

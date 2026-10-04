@@ -50,7 +50,11 @@ from preloop.services.model_content_detectors import (
     detect_pii,
 )
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.services.policy.schema import ConditionAction, ModelIORule
+from preloop.services.policy.schema import (
+    ConditionAction,
+    ModelIORule,
+    SensitiveDataConfig,
+)
 from preloop.services.policy_notices import (
     PolicyNotice,
     build_excerpt,
@@ -65,7 +69,15 @@ from preloop.services.sensitive_data.detectors import (
     DetectorConfig,
     DetectorTimeoutError,
 )
-from preloop.services.sensitive_data.policy_store import load_detector_config
+from preloop.services.sensitive_data.policy_store import (
+    SENSITIVE_DATA_META_KEY,
+    detector_config_from,
+    parse_sensitive_data_config,
+)
+from preloop.services.sensitive_data.tool_policy import (
+    compile_model_io_rules,
+    merge_model_io_rules,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1017,25 +1029,57 @@ def _apply_decision(
     raise _gateway_error(provider, decision)
 
 
+def load_gateway_policy_blocks(
+    db: Session, account_id: Any
+) -> tuple[List[ModelIORule], SensitiveDataConfig]:
+    """Load model I/O rules and the sensitive-data block with one account read.
+
+    The gateway calls this on both the request and response sides of a chat
+    completion. Both blocks live on ``account.meta_data``, so each side needs
+    a single SELECT. The lenient parse never raises and never returns
+    ``None``: a missing or malformed sensitive-data block is the empty config.
+    """
+    account = crud_account.get(db, id=account_id)
+    meta = getattr(account, "meta_data", None) if account is not None else None
+    if not isinstance(meta, dict):
+        meta = {}
+    return (
+        parse_model_io_rules(meta.get(MODEL_IO_META_KEY)),
+        parse_sensitive_data_config(meta.get(SENSITIVE_DATA_META_KEY)),
+    )
+
+
 def _load_gateway_policy_rules(
     gateway: Any, *, ai_model: Any, provider: str
 ) -> List[ModelIORule]:
     """Finish the policy read before waits, and fail closed on database errors.
 
-    The account's detector configuration is read in the same window and
-    parked on ``gateway._sensitive_detector_config`` so the evaluator can
-    use custom patterns after the connection has been released.
+    The account's ``sensitive_data`` block is read in the same window: its
+    model targets compile into model I/O rules appended after the stored
+    ones, and its detector configuration is parked on
+    ``gateway._sensitive_detector_config`` so custom patterns work after the
+    connection has been released.
     """
     try:
         try:
-            rules = load_model_io_rules(gateway.db, gateway.auth_context.account_id)
-            if rules:
-                try:
-                    gateway._sensitive_detector_config = load_detector_config(
-                        gateway.db, gateway.auth_context.account_id
-                    )
-                except Exception:  # noqa: BLE001 - built-ins only is a safe default
-                    gateway._sensitive_detector_config = None
+            account_id = gateway.auth_context.account_id
+            rules, sensitive = load_gateway_policy_blocks(gateway.db, account_id)
+            if sensitive.rules:
+                agent_id = None
+                if any(rule.scope.agents for rule in sensitive.enabled_rules()):
+                    resolver = getattr(gateway, "_resolve_managed_agent_id", None)
+                    if callable(resolver):
+                        try:
+                            agent_id = resolver()
+                        except Exception:  # noqa: BLE001 - scope then excludes
+                            agent_id = None
+                rules = merge_model_io_rules(
+                    rules,
+                    compile_model_io_rules(sensitive, managed_agent_id=agent_id),
+                )
+            gateway._sensitive_detector_config = (
+                detector_config_from(sensitive) if rules and sensitive else None
+            )
             return rules
         finally:
             release = getattr(gateway, "release_db_for_wait", None)

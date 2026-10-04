@@ -34,6 +34,7 @@ from preloop.models.db.session import get_db_session as get_db
 from preloop.api.endpoints.tools import BUILTIN_TOOLS
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.subject_governance import is_tool_enabled_for_subject
+from preloop.services.sensitive_data import tool_policy as sensitive_tool_policy
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
@@ -400,6 +401,65 @@ def _audit_error_kwargs(
         if value is not None and (accepts_any or key in params):
             out[key] = value
     return out
+
+
+BUILTIN_SERVER_NAME = "preloop-mcp"
+
+
+def _load_sensitive_data_policy(account_id: str):
+    """Load the account's ``sensitive_data`` block and detector config (sync).
+
+    Strict read: a database error or a malformed stored block raises, and
+    the caller refuses the call. "No rules" must mean the operator wrote
+    none, never that the policy could not be read.
+    """
+    from preloop.services.sensitive_data.policy_store import (
+        detector_config_from,
+        load_sensitive_data_config,
+    )
+
+    db = next(get_db())
+    try:
+        config = load_sensitive_data_config(db, account_id, strict=True)
+    finally:
+        db.close()
+    if not config.has_tool_rules():
+        return None, None
+    return config, detector_config_from(config)
+
+
+def _resolve_approval_workflow_id(
+    account_id: str, workflow_name: Optional[str]
+) -> Optional[str]:
+    """Workflow id for a sensitive-data rule: by name, else the account default."""
+    from preloop.models.crud import crud_approval_workflow
+
+    db = next(get_db())
+    try:
+        if workflow_name:
+            workflow = crud_approval_workflow.get_by_name(
+                db, account_id=account_id, name=workflow_name
+            )
+            return str(workflow.id) if workflow else None
+        workflow = crud_approval_workflow.get_default(db, account_id=account_id)
+        return str(workflow.id) if workflow else None
+    finally:
+        db.close()
+
+
+def _sensitive_denial_text(outcome: Any, *, where: str) -> str:
+    """Refusal shown to the agent. Types only, never the matched values."""
+    summary = outcome.detector_summary()
+    types = ", ".join(summary.get("pii.types_found") or []) or "sensitive data"
+    if summary.get("detector_timeout"):
+        return (
+            f"Access denied: sensitive data rule '{outcome.rule_id}' could not "
+            f"scan {where} in time (fail closed)."
+        )
+    return (
+        f"Access denied: sensitive data rule '{outcome.rule_id}' matched "
+        f"{where} (types: {types})."
+    )
 
 
 # Context variable to pass justification extracted from tool arguments
@@ -1827,6 +1887,60 @@ async def {internal_name}({params_str}):
             )
             return await _refuse(f"Access denied: Tool '{name}' is not available")
 
+        # ── Sensitive data rules on tool arguments (#1122) ───────────────
+        # Runs before the access rules so their conditions can read the
+        # detector bindings (pii.found, pii.types_found, pii.paths) next to
+        # args. No rule in scope means no detector runs. A replayed call
+        # (post-approval) was scanned on its first pass and is not rescanned.
+        scope_server_name = self._proxied_tool_server_names.get(
+            name, BUILTIN_SERVER_NAME
+        )
+        scope_agent_id = getattr(user_context, "managed_agent_id", None)
+        sensitive_config = None
+        sensitive_detectors = None
+        sensitive_bindings: Optional[dict] = None
+        args_outcome = None
+        try:
+            sensitive_config, sensitive_detectors = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None, _load_sensitive_data_policy, user_context.account_id
+                ),
+                timeout=30,
+            )
+        except Exception as e:
+            # SECURITY: fail closed. A rule the operator wrote must not be
+            # skipped because the policy could not be read.
+            logger.error(
+                f"Sensitive data policy load failed for '{name}': {e}. "
+                "Blocking tool call (fail closed)."
+            )
+            return await _refuse(
+                f"Access denied: sensitive data policy for '{name}' could not "
+                "be loaded. Please retry."
+            )
+        if sensitive_config is not None and not _bypass_approval_var.get(False):
+            args_outcome = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: sensitive_tool_policy.evaluate_tool_target(
+                    config=sensitive_config,
+                    detector_config=sensitive_detectors,
+                    target="tool.args",
+                    payload=arguments,
+                    tool_name=name,
+                    server_name=scope_server_name,
+                    managed_agent_id=scope_agent_id,
+                    account_id=user_context.account_id,
+                    user_id=user_context.user_id,
+                    correlation_id=correlation_id,
+                ),
+            )
+            if args_outcome.action == "deny":
+                return await _refuse(
+                    _sensitive_denial_text(args_outcome, where="tool arguments")
+                )
+            if args_outcome.scan is not None:
+                sensitive_bindings = args_outcome.bindings()
+
         # ── Evaluate access rules (ToolAccessRule) ──────────────────────
         # This is the central enforcement point for all tool calls.
         # evaluate_policy_async() checks rules in priority order and returns:
@@ -1844,6 +1958,7 @@ async def {internal_name}({params_str}):
                     tool_args=arguments,
                     account_id=uuid.UUID(user_context.account_id),
                     user_id=uuid.UUID(user_context.user_id),
+                    extra_bindings=sensitive_bindings,
                     subject_context={
                         "api_key_id": user_context.api_key_id,
                         "flow_id": getattr(user_context, "flow_id", None),
@@ -1908,6 +2023,33 @@ async def {internal_name}({params_str}):
                         "account. Configure an approval workflow "
                         "(or mark one as default) and retry."
                     )
+            elif args_outcome is not None and args_outcome.action == "require_approval":
+                # Access rules allowed the call but a sensitive-data rule
+                # wants a human. Same plumbing as an access rule: the tool's
+                # own require_approval() picks the workflow and the rule
+                # context up from the context vars.
+                workflow_id = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    _resolve_approval_workflow_id,
+                    user_context.account_id,
+                    args_outcome.approval_workflow,
+                )
+                if not workflow_id:
+                    _rule_workflow_id_var.set(None)
+                    _rule_context_var.set(None)
+                    logger.error(
+                        f"Tool '{name}' matched sensitive data rule "
+                        f"'{args_outcome.rule_id}' (require_approval) but no "
+                        "approval workflow is configured. Blocking the call."
+                    )
+                    return await _refuse(
+                        f"Tool '{name}' requires approval but no "
+                        "approval workflow is configured for this "
+                        "account. Configure an approval workflow "
+                        "(or mark one as default) and retry."
+                    )
+                _rule_workflow_id_var.set(str(workflow_id))
+                _rule_context_var.set(args_outcome.rule_context())
             else:
                 _rule_workflow_id_var.set(None)
                 _rule_context_var.set(None)
@@ -1965,6 +2107,17 @@ async def {internal_name}({params_str}):
                 run_middleware=run_middleware,
                 task_meta=task_meta,
             )
+            if sensitive_config is not None:
+                result = await self._enforce_sensitive_result_policy(
+                    user_context,
+                    config=sensitive_config,
+                    detector_config=sensitive_detectors,
+                    client_tool_name=client_tool_name,
+                    server_name=scope_server_name,
+                    managed_agent_id=scope_agent_id,
+                    result=result,
+                    correlation_id=correlation_id,
+                )
         except Exception as e:
             exec_status = "failed"
             exec_error = str(e)
@@ -2107,6 +2260,96 @@ async def {internal_name}({params_str}):
                 logger.debug("OTLP tool export failed", exc_info=True)
 
         return result
+
+    async def _enforce_sensitive_result_policy(
+        self,
+        user_context: UserContext,
+        *,
+        config: Any,
+        detector_config: Any,
+        client_tool_name: str,
+        server_name: str,
+        managed_agent_id: Optional[str],
+        result: Any,
+        correlation_id: Optional[str],
+    ) -> Any:
+        """Apply ``tool.result`` sensitive-data rules to an executed result.
+
+        deny replaces the result with a refusal; require_approval holds the
+        result on the approval workflow and releases it only when approved;
+        notify records a notice and returns the result unchanged. A result
+        that is already an error is not scanned.
+        """
+        if result is None or getattr(result, "is_error", False):
+            return result
+        outcome = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: sensitive_tool_policy.evaluate_tool_target(
+                config=config,
+                detector_config=detector_config,
+                target="tool.result",
+                payload=result,
+                tool_name=client_tool_name,
+                server_name=server_name,
+                managed_agent_id=managed_agent_id,
+                account_id=user_context.account_id,
+                user_id=user_context.user_id,
+                correlation_id=correlation_id,
+            ),
+        )
+        if outcome.action in ("allow", "notify"):
+            return result
+        if outcome.action == "deny":
+            return _wrapper_tool_error(
+                _sensitive_denial_text(outcome, where="the tool result"),
+                status=TOOL_CALL_STATUS_REFUSED,
+            )
+        # require_approval: hold the result until a human decides.
+        workflow_id = await asyncio.get_event_loop().run_in_executor(
+            None,
+            _resolve_approval_workflow_id,
+            user_context.account_id,
+            outcome.approval_workflow,
+        )
+        if not workflow_id:
+            logger.error(
+                f"Tool '{client_tool_name}' result matched sensitive data rule "
+                f"'{outcome.rule_id}' (require_approval) but no approval "
+                "workflow is configured. Withholding the result."
+            )
+            return _wrapper_tool_error(
+                f"Result withheld: tool '{client_tool_name}' requires approval "
+                "but no approval workflow is configured for this account.",
+                status=TOOL_CALL_STATUS_REFUSED,
+            )
+        from preloop.services.approval_helper import require_approval
+
+        summary = outcome.detector_summary()
+        approved, error = await require_approval(
+            tool_name=client_tool_name,
+            tool_source="mcp"
+            if client_tool_name in self._proxied_tool_servers
+            else "builtin",
+            account_id=user_context.account_id,
+            # Hash and detector summary only: the approval row never holds
+            # the result text.
+            arguments={
+                "target": "tool.result",
+                "rule_id": outcome.rule_id,
+                "detector_summary": summary,
+                "text_sha256": summary
+                and (outcome.summary or outcome.scan).text_sha256,
+            },
+            workflow_id=str(workflow_id),
+            correlation_id=correlation_id,
+            rule_context=outcome.rule_context(),
+        )
+        if approved:
+            return result
+        return _wrapper_tool_error(
+            error or "Result withheld: approval was not granted.",
+            status=TOOL_CALL_STATUS_REFUSED,
+        )
 
     def _persist_tool_call_activity(
         self,

@@ -699,22 +699,217 @@ class SensitiveDataDetectorsConfig(BaseModel):
         )
 
 
+class SensitiveDataTarget(str, Enum):
+    """Payloads a sensitive-data rule can watch."""
+
+    TOOL_ARGS = "tool.args"
+    TOOL_RESULT = "tool.result"
+    MODEL_REQUEST = "model.request"
+    MODEL_RESPONSE = "model.response"
+
+
+#: Targets evaluated on the MCP tool path.
+TOOL_TARGETS = frozenset(
+    {SensitiveDataTarget.TOOL_ARGS.value, SensitiveDataTarget.TOOL_RESULT.value}
+)
+#: Targets compiled into model I/O rules.
+MODEL_TARGETS = frozenset(
+    {SensitiveDataTarget.MODEL_REQUEST.value, SensitiveDataTarget.MODEL_RESPONSE.value}
+)
+
+#: Actions a sensitive-data rule may take. ``allow`` is not one of them: a
+#: rule exists to react to a match, and ``redact`` arrives with #1123.
+SENSITIVE_DATA_RULE_ACTIONS = frozenset(
+    {
+        ConditionAction.NOTIFY.value,
+        ConditionAction.DENY.value,
+        ConditionAction.REQUIRE_APPROVAL.value,
+    }
+)
+
+
+class SensitiveDataScope(BaseModel):
+    """Where a rule applies. Empty lists mean every agent, tool or server.
+
+    ``agents`` holds managed agent ids. ``tools`` holds client-visible tool
+    names. ``servers`` holds MCP server names; builtin tools belong to the
+    ``preloop-mcp`` pseudo server. Scopes only narrow tool targets; model
+    targets honour ``agents`` and ignore the other two.
+    """
+
+    agents: List[str] = Field(default_factory=list, description="Managed agent ids")
+    tools: List[str] = Field(default_factory=list, description="Tool names")
+    servers: List[str] = Field(default_factory=list, description="MCP server names")
+
+    def is_empty(self) -> bool:
+        """True when the rule applies everywhere."""
+        return not (self.agents or self.tools or self.servers)
+
+    def matches(
+        self,
+        *,
+        tool_name: Optional[str] = None,
+        server_name: Optional[str] = None,
+        managed_agent_id: Optional[str] = None,
+    ) -> bool:
+        """Scope check for one call. Each non-empty list must match."""
+        if self.agents and (
+            managed_agent_id is None or str(managed_agent_id) not in self.agents
+        ):
+            return False
+        if self.tools and (tool_name is None or tool_name not in self.tools):
+            return False
+        if self.servers and (
+            server_name is None
+            or server_name.lower() not in {item.lower() for item in self.servers}
+        ):
+            return False
+        return True
+
+
+class SensitiveDataRule(BaseModel):
+    """One rule: which payloads to scan, for which types, and what to do.
+
+    Model targets compile to ordinary model I/O rules so there is one
+    evaluator per path. Tool targets run on MCP tool arguments before the
+    call and on the result after it.
+    """
+
+    id: str = Field(..., min_length=1, description="Stable rule identifier")
+    enabled: bool = Field(True, description="Whether this rule is evaluated")
+    description: Optional[str] = Field(None, description="Human-readable description")
+    on: List[SensitiveDataTarget] = Field(
+        ..., min_length=1, description="Targets: tool.args, tool.result, model.*"
+    )
+    scope: SensitiveDataScope = Field(
+        default_factory=SensitiveDataScope, description="Agents, tools, servers"
+    )
+    types: Optional[List[str]] = Field(
+        None,
+        description="Types to scan; default the detectors block types or every type",
+    )
+    action: ConditionAction = Field(..., description="notify, deny or require_approval")
+    approval_workflow: Optional[str] = Field(
+        None, description="Approval workflow name for require_approval"
+    )
+    detector_timeout_ms: int = Field(
+        500, ge=50, le=30000, description="Hard timeout for detectors on this rule"
+    )
+    on_detector_timeout: DetectorTimeoutFailMode = Field(
+        DetectorTimeoutFailMode.DENY,
+        description="Fail mode when detectors time out (default deny)",
+    )
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        """Rule ids appear in audit rows and approval tickets."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("sensitive_data rule id cannot be empty")
+        return stripped
+
+    @field_validator("on")
+    @classmethod
+    def validate_targets(cls, value: List[Any]) -> List[Any]:
+        """Deduplicate targets, keeping order."""
+        return list(dict.fromkeys(value))
+
+    @field_validator("types")
+    @classmethod
+    def validate_types(cls, value: Optional[List[str]]) -> Optional[List[str]]:
+        """Shape check; names are cross-checked by ``SensitiveDataConfig``."""
+        if value is None:
+            return None
+        return _validate_type_names(value, label="sensitive_data.rules[].types")
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, value: Any) -> Any:
+        """Only reactions to a match are meaningful here."""
+        action = getattr(value, "value", value)
+        if action not in SENSITIVE_DATA_RULE_ACTIONS:
+            raise ValueError(
+                f"sensitive_data rules do not support action '{action}'. "
+                f"Supported: {sorted(SENSITIVE_DATA_RULE_ACTIONS)}"
+            )
+        return value
+
+    def target_values(self) -> List[str]:
+        """Targets as plain strings."""
+        return [getattr(item, "value", item) for item in self.on]
+
+    def has_tool_target(self) -> bool:
+        """True when the rule watches tool arguments or results."""
+        return any(item in TOOL_TARGETS for item in self.target_values())
+
+    def has_model_target(self) -> bool:
+        """True when the rule watches model requests or responses."""
+        return any(item in MODEL_TARGETS for item in self.target_values())
+
+    def action_value(self) -> str:
+        """Action as a plain string."""
+        return str(getattr(self.action, "value", self.action))
+
+
 class SensitiveDataConfig(BaseModel):
     """Top-level ``sensitive_data`` block.
 
-    ``detectors`` is shared configuration. Rules (#1122), the redact action
-    (#1123) and reference-only logging (#1124) extend this block.
+    ``detectors`` is shared configuration; ``rules`` react to matches on
+    tool and model payloads. The redact action (#1123) and reference-only
+    logging (#1124) extend this block.
     """
 
     detectors: Optional[SensitiveDataDetectorsConfig] = Field(
         None, description="Types, locales, custom patterns and keyword lists"
     )
+    rules: List[SensitiveDataRule] = Field(
+        default_factory=list, description="Rules over tool and model payloads"
+    )
+
+    @model_validator(mode="after")
+    def validate_rules(self) -> "SensitiveDataConfig":
+        """Rule ids are unique and rule types are declared."""
+        known = self.known_types()
+        seen: set[str] = set()
+        for rule in self.rules:
+            if rule.id in seen:
+                raise ValueError(f"Duplicate sensitive_data rule id: '{rule.id}'")
+            seen.add(rule.id)
+            unknown = [item for item in (rule.types or []) if item not in known]
+            if unknown:
+                raise ValueError(
+                    f"sensitive_data rule '{rule.id}' scans unknown types {unknown}. "
+                    "Define them under sensitive_data.detectors.custom_patterns "
+                    "or keywords."
+                )
+        return self
 
     def known_types(self) -> List[str]:
         """Built-in ids, registered detector names and configured custom names."""
         if self.detectors is None:
             return list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
         return self.detectors.known_types()
+
+    def default_types(self) -> List[str]:
+        """Types a rule without its own list scans."""
+        if self.detectors is not None and self.detectors.types:
+            return list(self.detectors.types)
+        return self.known_types()
+
+    def types_for_rule(self, rule: SensitiveDataRule) -> List[str]:
+        """Resolved type list for ``rule``."""
+        return list(rule.types) if rule.types else self.default_types()
+
+    def enabled_rules(self) -> List[SensitiveDataRule]:
+        """Rules that are switched on, in document order."""
+        return [rule for rule in self.rules if rule.enabled]
+
+    def has_tool_rules(self) -> bool:
+        """True when any enabled rule watches a tool target."""
+        return any(rule.has_tool_target() for rule in self.enabled_rules())
 
 
 class ModerationDetectorConfig(BaseModel):

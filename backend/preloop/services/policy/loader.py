@@ -950,6 +950,21 @@ class PolicyApplier:
                             f"not defined. {suggestion}"
                         )
 
+        if policy.sensitive_data is not None:
+            for sensitive_rule in policy.sensitive_data.rules:
+                if (
+                    sensitive_rule.approval_workflow
+                    and sensitive_rule.approval_workflow not in all_available_workflows
+                ):
+                    suggestion = self._get_workflow_suggestion(
+                        sensitive_rule.approval_workflow, all_available_workflows
+                    )
+                    errors.append(
+                        f"sensitive_data rule '{sensitive_rule.id}' references "
+                        f"approval workflow '{sensitive_rule.approval_workflow}' "
+                        f"which is not defined. {suggestion}"
+                    )
+
         if policy.sensitive_data is not None and policy.model_io is None:
             # The block replaces the stored one while the stored model_io
             # rules stay. A rule that scans a custom type the new block no
@@ -1745,7 +1760,9 @@ def export_current_policy(
     sensitive_data = parse_sensitive_data_config(
         account_meta.get(SENSITIVE_DATA_META_KEY)
     )
-    has_sensitive_data = bool(sensitive_data.model_dump(exclude_none=True))
+    has_sensitive_data = bool(
+        sensitive_data.model_dump(exclude_none=True, exclude_defaults=True)
+    )
 
     document_fields = dict(
         version=PolicyVersion.V1_0,

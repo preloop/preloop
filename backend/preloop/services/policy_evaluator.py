@@ -943,11 +943,32 @@ def _evaluate_rule_condition(
         return True
 
     if condition_type == "simple":
+        bindings = _extra_bindings(context)
+        if bindings and _references_binding(expression, bindings):
+            return _evaluate_simple_condition_on_bindings(
+                expression, {**bindings, "args": tool_args}
+            )
         return _evaluate_simple_condition(expression, tool_args)
     elif condition_type == "cel":
         return _evaluate_cel_condition(expression, tool_args, context)
     else:
         raise ValueError(f"Unknown condition type: {condition_type}")
+
+
+#: Context key under which detector bindings (``pii.*``) travel with a tool
+#: evaluation so conditions can read them next to ``args``.
+EXTRA_BINDINGS_KEY = "_bindings"
+
+
+def _extra_bindings(context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    bindings = (context or {}).get(EXTRA_BINDINGS_KEY)
+    return bindings if isinstance(bindings, dict) else {}
+
+
+def _references_binding(expression: str, bindings: Dict[str, Any]) -> bool:
+    """True when a simple expression starts with a bound root such as ``pii.``."""
+    stripped = expression.strip()
+    return any(stripped.startswith(f"{root}.") for root in bindings)
 
 
 def _evaluate_simple_condition(expression: str, tool_args: Dict[str, Any]) -> bool:
@@ -1296,8 +1317,9 @@ def _evaluate_cel_condition(
         ast = env.compile(expression)
         program = env.program(ast)
 
-        # Evaluate with tool arguments (convert to CEL types)
-        activation = celpy.json_to_cel({"args": tool_args})
+        # Evaluate with tool arguments (convert to CEL types). Detector
+        # bindings (pii.*) sit next to args when the caller supplied them.
+        activation = celpy.json_to_cel({**_extra_bindings(context), "args": tool_args})
         result = program.evaluate(activation)
 
         return bool(result)
@@ -1358,10 +1380,13 @@ async def evaluate_policy_async(
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
+    extra_bindings: Optional[Dict[str, Any]] = None,
 ) -> PolicyDecision:
     """Async version of evaluate_policy.
 
-    See evaluate_policy for full documentation.
+    See evaluate_policy for full documentation. ``extra_bindings`` adds
+    roots next to ``args`` for conditions (``pii.found``, ``pii.types_found``,
+    ``pii.paths`` from the sensitive-data scan).
     """
     denial = _account_authorizer_denial(
         db,
@@ -1426,6 +1451,8 @@ async def evaluate_policy_async(
         "runtime_principal_id": (subject_context or {}).get("runtime_principal_id"),
         "runtime_principal_name": (subject_context or {}).get("runtime_principal_name"),
     }
+    if extra_bindings:
+        context[EXTRA_BINDINGS_KEY] = dict(extra_bindings)
     scoped_decision = _evaluate_rule_candidates(
         rules=scoped_rules,
         tool_name=tool_name,
