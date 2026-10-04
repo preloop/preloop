@@ -221,8 +221,10 @@ async def generate_approval_summary(
         return None
 
     if model is None:
-        logger.debug(
-            "No default LLM for account %s; skipping approval summary", account_id
+        logger.info(
+            "No default LLM for account %s; approval summary will use the "
+            "deterministic fallback",
+            account_id,
         )
         return None
 
@@ -269,5 +271,10 @@ async def generate_approval_summary(
         return None
 
     if not summary:
+        logger.warning(
+            "Approval summary model returned empty output for tool %s; "
+            "caller will use the deterministic fallback",
+            tool_name,
+        )
         return None
     return summary

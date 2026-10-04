@@ -2178,7 +2178,10 @@ class ApprovalService:
         try:
             from preloop.api.loop_safety import run_db_off_loop
             from preloop.models.db.session import get_session_factory
-            from preloop.services.approval_summary import generate_approval_summary
+            from preloop.services.approval_summary import (
+                fallback_approval_summary,
+                generate_approval_summary,
+            )
 
             sync_db = await run_db_off_loop(lambda: get_session_factory()())
             try:
@@ -2196,11 +2199,25 @@ class ApprovalService:
                 # Rollback during close is database I/O too. The summary's
                 # worker has drained before returning, including cancellation.
                 await run_db_off_loop(sync_db.close)
-            if summary:
-                approval_request = await self.update_approval_request(
+            # Every stored request must carry a summary. The model summary is
+            # unavailable on several paths (no default model, timeout, empty
+            # output, or a fragment/truncation rejection); store the same
+            # deterministic fallback the webhook uses so the console,
+            # notifications, mobile and webhook never disagree or show null.
+            if not summary:
+                logger.warning(
+                    "Approval summary model produced no usable summary for "
+                    "request %s (tool %s); storing deterministic fallback",
                     approval_request.id,
-                    ApprovalRequestUpdate(summary=summary),
+                    tool_name,
                 )
+                summary = fallback_approval_summary(
+                    tool_name, approval_request.tool_args or {}
+                )
+            approval_request = await self.update_approval_request(
+                approval_request.id,
+                ApprovalRequestUpdate(summary=summary),
+            )
         except Exception as summary_error:
             logger.warning(
                 "Failed to attach approval summary for %s: %s",
