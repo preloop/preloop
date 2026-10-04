@@ -280,6 +280,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert managed_oauth.down_revision == "20261003_resume_root_idx"
     chat_connections = script.get_revision("20261002_chat_connections")
     assert chat_connections.down_revision == "20261002_managed_oauth"
+    issue_extid = script.get_revision("20261003_issue_extid_unique")
+    assert issue_extid.down_revision == "20261002_chat_connections"
     audit_lookup = script.get_revision("20261004_audit_lookup_idx")
-    assert audit_lookup.down_revision == "20261002_chat_connections"
+    assert audit_lookup.down_revision == "20261003_issue_extid_unique"
     assert script.get_heads() == ["20261004_audit_lookup_idx"]

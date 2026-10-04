@@ -1823,3 +1823,129 @@ def test_ai_status_reports_model_name(mocker: MockerFixture) -> None:
 
     assert result.configured is True
     assert result.model_name == "Account default"
+
+
+def test_check_or_create_duplicate_entra_model_needs_no_api_key(
+    mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An Entra Azure default model classifies duplicates without a static key.
+
+    The raw OpenAI client used to read only api_key and fall back to
+    OPENAI_API_KEY, which is unset on an Entra deployment.
+    """
+    from preloop.models.models.ai_model import AIModel
+    from preloop.services.azure_entra import reset_token_cache
+    from preloop.services.model_credentials import resolve_model_call_credentials
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_AD_TOKEN", raising=False)
+    reset_token_cache()
+    monkeypatch.setattr(
+        "preloop.services.azure_entra.get_azure_ad_token",
+        lambda client_id=None: "entra-token",
+    )
+
+    issue_a = MagicMock()
+    issue_a.id = uuid4()
+    issue_a.title = "Title A"
+    issue_a.description = "Description A"
+    issue_b = MagicMock()
+    issue_b.id = uuid4()
+    issue_b.title = "Title B"
+    issue_b.description = "Description B"
+    model = AIModel(
+        id=uuid4(),
+        provider_name="azure",
+        model_identifier="chat-deployment",
+        api_endpoint=(
+            "https://example-resource.openai.azure.com/openai/deployments/"
+            "chat-deployment/chat/completions?api-version=2024-10-21"
+        ),
+        api_key=None,
+        meta_data={
+            "provider_runtime": {
+                "azure_auth": "entra",
+                "api_version": "2024-10-21",
+            }
+        },
+    )
+
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate",
+        new_callable=MagicMock,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate.get_by_issue_ids",
+        return_value=None,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue.get",
+        side_effect=[issue_a, issue_b],
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
+        return_value=model,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.load_duplicates_prompts_config",
+        return_value={
+            "duplicate_classification_v1": {
+                "system": "You classify duplicate issues.",
+                "user": "Compare {issue1_title} with {issue2_title}.",
+            }
+        },
+    )
+    mocker.patch(
+        "preloop.services.model_credentials.get_secret_service",
+        return_value=MagicMock(
+            resolve_ai_model_credentials=MagicMock(return_value=None)
+        ),
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.resolve_model_call_credentials",
+        side_effect=resolve_model_call_credentials,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.get_aux_openai_sdk_extra_kwargs",
+        return_value={},
+    )
+    mock_openai = mocker.patch("preloop.api.endpoints.issue_duplicates.openai.OpenAI")
+    mock_azure = mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.openai.AzureOpenAI"
+    )
+    mock_azure.return_value.chat.completions.create.return_value = MagicMock(
+        choices=[
+            MagicMock(
+                message=MagicMock(
+                    content=(
+                        '{"classification": "DUPLICATE", "reason": "same",'
+                        ' "suggestion": "merge"}'
+                    )
+                )
+            )
+        ]
+    )
+    created = SimpleNamespace(id=uuid4(), decision="duplicate")
+    mocker.patch(
+        "preloop.api.endpoints.issue_duplicates.crud_issue_duplicate.create",
+        return_value=created,
+    )
+
+    result = check_or_create_issue_duplicate(
+        db=MagicMock(),
+        issue1_id=str(issue_a.id),
+        issue2_id=str(issue_b.id),
+        current_user=MagicMock(account_id=uuid4()),
+        settings=MagicMock(PROMPTS_FILE="prompts.yaml"),
+    )
+
+    assert result is created
+    mock_openai.assert_not_called()
+    mock_azure.assert_called_once()
+    kwargs = mock_azure.call_args.kwargs
+    assert kwargs["azure_endpoint"] == "https://example-resource.openai.azure.com"
+    assert kwargs["api_version"] == "2024-10-21"
+    assert kwargs["azure_ad_token_provider"]() == "entra-token"
+    assert "api_key" not in kwargs
+    reset_token_cache()

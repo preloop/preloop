@@ -12,6 +12,11 @@ Forwarding that verbatim doubles the path and the first request fails with a
 404, so the endpoint is reduced to the resource root here and any version it
 carried is kept as a fallback. An explicit ``meta_data.provider_runtime``
 ``api_version`` always wins.
+
+Authentication is a resource key by default. ``provider_runtime.azure_auth =
+"entra"`` switches the model to Microsoft Entra ID bearer tokens (see
+``azure_entra``); ``provider_runtime.azure_client_id`` optionally selects a
+user-assigned identity.
 """
 
 from __future__ import annotations
@@ -19,7 +24,14 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
+from preloop.services.azure_entra import AZURE_OPENAI_ROLE, AzureEntraTokenError
+from preloop.services.model_gateway_errors import GatewayProvider, ModelGatewayAPIError
+
 AZURE_PROVIDERS = frozenset({"azure"})
+
+AZURE_AUTH_KEY = "key"
+AZURE_AUTH_ENTRA = "entra"
+AZURE_AUTH_MODES = frozenset({AZURE_AUTH_KEY, AZURE_AUTH_ENTRA})
 
 # Path segments that follow ``/openai`` in an Azure OpenAI URL. Only an
 # ``openai`` segment followed by one of these (or ending the path) marks where
@@ -137,15 +149,168 @@ def azure_api_version(ai_model: Any) -> Optional[str]:
     return hint
 
 
+def _provider_runtime(ai_model: Any) -> Dict[str, Any]:
+    raw_meta = getattr(ai_model, "meta_data", None)
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    runtime = meta.get("provider_runtime")
+    return runtime if isinstance(runtime, dict) else {}
+
+
+def azure_auth_mode(ai_model: Any) -> str:
+    """Return how an Azure model authenticates: ``key`` or ``entra``.
+
+    Args:
+        ai_model: An ``AIModel`` row or a gateway snapshot.
+
+    Returns:
+        ``entra`` only for an Azure model whose ``provider_runtime.azure_auth``
+        is ``entra``; ``key`` otherwise (the default, and every row written
+        before Entra ID support existed).
+    """
+    if not is_azure_model(ai_model):
+        return AZURE_AUTH_KEY
+    mode = _provider_runtime(ai_model).get("azure_auth")
+    if isinstance(mode, str) and mode.strip().lower() == AZURE_AUTH_ENTRA:
+        return AZURE_AUTH_ENTRA
+    return AZURE_AUTH_KEY
+
+
+def uses_azure_entra(ai_model: Any) -> bool:
+    """Whether the model authenticates to Azure with Entra ID tokens."""
+    return azure_auth_mode(ai_model) == AZURE_AUTH_ENTRA
+
+
+def azure_client_id(ai_model: Any) -> Optional[str]:
+    """Return the user-assigned identity client id configured on the model."""
+    value = _provider_runtime(ai_model).get("azure_client_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def normalize_azure_auth_meta(
+    meta_data: Optional[Dict[str, Any]],
+    *,
+    provider_name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Validate and normalize the Azure auth keys in model metadata.
+
+    ``azure_auth`` must be ``key`` or ``entra``. On an Azure model, ``entra``
+    also sets ``ambient_credentials`` so the model counts as configured
+    without a key; ``key`` clears that flag again. A blank
+    ``azure_client_id`` is removed.
+
+    Non-Azure models do not keep that metadata. ``azure_auth`` and
+    ``azure_client_id`` are dropped, and ``ambient_credentials`` is cleared
+    when it arrived with ``azure_auth``, so a stale Entra flag cannot mark an
+    unrelated model as configured. A provider that sets
+    ``ambient_credentials`` on its own (Bedrock) keeps the flag when no Azure
+    auth key is present.
+
+    When ``provider_name`` is omitted, the mode is still validated but
+    ``ambient_credentials`` is not set. Callers that learn the provider later
+    (a partial update) run this again with the stored provider.
+
+    Args:
+        meta_data: The ``meta_data`` a create or update request carries.
+        provider_name: The model's provider, when known.
+
+    Returns:
+        The same mapping, normalized in place.
+
+    Raises:
+        ValueError: ``azure_auth`` or ``azure_client_id`` has an invalid value
+            on an Azure model, or when the provider is not yet known.
+    """
+    if not isinstance(meta_data, dict):
+        return meta_data
+    runtime = meta_data.get("provider_runtime")
+    if not isinstance(runtime, dict):
+        return meta_data
+    provider = (provider_name or "").strip().lower()
+    if provider and provider not in AZURE_PROVIDERS:
+        # Only drop ambient credentials that this Entra flag would have set.
+        # Bedrock uses the same key without azure_auth.
+        had_azure_auth = "azure_auth" in runtime
+        runtime.pop("azure_auth", None)
+        runtime.pop("azure_client_id", None)
+        if had_azure_auth:
+            runtime.pop("ambient_credentials", None)
+        return meta_data
+    if "azure_client_id" in runtime:
+        client_id = runtime["azure_client_id"]
+        if client_id is None or (isinstance(client_id, str) and not client_id.strip()):
+            runtime.pop("azure_client_id")
+        elif not isinstance(client_id, str):
+            raise ValueError("provider_runtime.azure_client_id must be a string")
+        else:
+            runtime["azure_client_id"] = client_id.strip()
+    if "azure_auth" not in runtime:
+        return meta_data
+    mode = runtime["azure_auth"]
+    normalized = mode.strip().lower() if isinstance(mode, str) else None
+    if normalized not in AZURE_AUTH_MODES:
+        raise ValueError("provider_runtime.azure_auth must be 'key' or 'entra'")
+    runtime["azure_auth"] = normalized
+    if normalized == AZURE_AUTH_ENTRA:
+        # Unknown provider: do not mark the row configured. The CRUD layer
+        # re-runs this once the stored provider is known.
+        if provider in AZURE_PROVIDERS:
+            runtime["ambient_credentials"] = True
+    else:
+        runtime.pop("ambient_credentials", None)
+        runtime.pop("azure_client_id", None)
+    return meta_data
+
+
+def azure_entra_auth_error(
+    exc: AzureEntraTokenError, *, provider: GatewayProvider
+) -> ModelGatewayAPIError:
+    """Map a failed Entra ID token acquisition to a provider 401.
+
+    The same envelope the gateway uses for a rejected key, so server-side
+    generation and gateway requests fail the same way.
+
+    Args:
+        exc: The token error. Its message names the failure class, not the
+            raw credential-chain exception text.
+        provider: Gateway response dialect. Auxiliary callers use ``openai``.
+
+    Returns:
+        A ``ModelGatewayAPIError`` with status 401 and code
+        ``azure_entra_token_error``.
+    """
+    return ModelGatewayAPIError(
+        provider=provider,
+        status_code=401,
+        message=(
+            f"{exc} The identity needs the {AZURE_OPENAI_ROLE} role on the "
+            "Azure OpenAI resource."
+        ),
+        code="azure_entra_token_error",
+    )
+
+
 def azure_request_kwargs(ai_model: Any) -> Dict[str, Any]:
     """Build the Azure-specific LiteLLM kwargs for one request.
+
+    For an Entra ID model the token is acquired here, before the request is
+    sent, so a credential failure surfaces as ``AzureEntraTokenError`` rather
+    than as an opaque upstream error. ``api_key`` is set to None so a stored
+    key is never sent alongside the bearer token, and the token provider is
+    passed on (LiteLLM sends it as
+    ``Authorization: Bearer``) so a reused client keeps refreshing.
 
     Args:
         ai_model: An Azure ``AIModel`` row or gateway snapshot.
 
     Returns:
         A mapping with ``api_base`` (the resource root) and ``api_version``
-        when each is known. Empty for non-Azure models.
+        when each is known, plus the Entra ID token kwargs in ``entra`` mode.
+        Empty for non-Azure models.
+
+    Raises:
+        AzureEntraTokenError: Entra mode and no token could be acquired.
     """
     if not is_azure_model(ai_model):
         return {}
@@ -156,4 +321,16 @@ def azure_request_kwargs(ai_model: Any) -> Dict[str, Any]:
     version = azure_api_version(ai_model)
     if version:
         kwargs["api_version"] = version
+    if uses_azure_entra(ai_model):
+        from preloop.services import azure_entra
+
+        client_id = azure_client_id(ai_model)
+        kwargs["api_key"] = None
+        # Acquire (and cache) now so a failure maps to a provider auth
+        # error here; LiteLLM then reads the same cached token through the
+        # provider on each call and gets a refreshed one near expiry.
+        azure_entra.get_azure_ad_token(client_id)
+        kwargs["azure_ad_token_provider"] = azure_entra.azure_ad_token_provider(
+            client_id
+        )
     return kwargs

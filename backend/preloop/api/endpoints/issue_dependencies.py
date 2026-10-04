@@ -18,6 +18,7 @@ from preloop.models.crud import (
 )
 from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.model_credentials import (
+    build_aux_openai_client,
     get_aux_openai_sdk_extra_kwargs,
     resolve_model_call_credentials,
 )
@@ -171,8 +172,14 @@ def detect_issue_dependencies(
     # 5. Call the AI model
     try:
         creds_kwargs = resolve_model_call_credentials(ai_model, db=db)
-        api_key = creds_kwargs.get("api_key") or openai.api_key
-        client = openai.OpenAI(api_key=api_key, base_url=creds_kwargs.get("api_base"))
+        client = build_aux_openai_client(
+            openai,
+            ai_model,
+            creds_kwargs,
+            include_api_base=True,
+            static_key_fallback=openai.api_key,
+            require_api_key=False,
+        )
         dep_messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -484,8 +491,13 @@ def extend_dependency_scan(
 
     try:
         creds_kwargs = resolve_model_call_credentials(ai_model, db=db)
-        api_key = creds_kwargs.get("api_key") or openai.api_key
-        client = openai.OpenAI(api_key=api_key)
+        client = build_aux_openai_client(
+            openai,
+            ai_model,
+            creds_kwargs,
+            static_key_fallback=openai.api_key,
+            require_api_key=False,
+        )
         dep_messages2 = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
