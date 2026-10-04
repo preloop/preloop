@@ -157,6 +157,28 @@ export const MODEL_IO_PRESETS = [
   },
 ];
 
+/** Entity types the PII detector scans when the form enables it. */
+const DEFAULT_PII_TYPES = ['email', 'phone', 'credit_card'];
+
+/**
+ * Start the PII switch from the types the stored detector actually uses.
+ * A rule authored as `pii: { types: [email] }` keeps its narrower scan when
+ * it is opened and saved again, instead of quietly widening to every type.
+ */
+function piiTypesFor(
+  pii: boolean | { types?: string[] } | null | undefined
+): string[] {
+  if (
+    pii &&
+    typeof pii === 'object' &&
+    Array.isArray(pii.types) &&
+    pii.types.length > 0
+  ) {
+    return [...pii.types];
+  }
+  return [...DEFAULT_PII_TYPES];
+}
+
 /** CEL when the expression uses CEL functions or operators. */
 export function conditionTypeFor(expr: string): 'cel' | 'simple' {
   if (!expr) return 'simple';
@@ -249,6 +271,18 @@ export class PoliciesView extends LitElement {
     conditionMode: 'preset' as 'preset' | 'custom',
     presetId: MODEL_IO_PRESETS[0].id,
     idTouched: false,
+    piiTypes: [...DEFAULT_PII_TYPES] as string[],
+    // Fields the form does not surface but must write back unchanged: a PUT
+    // replaces the whole rule, so dropping them would reset a YAML-authored
+    // value such as `detector_timeout_ms: 30000` on every save.
+    description: '',
+    conditionDescription: '',
+    conditionType: 'auto' as 'auto' | 'simple' | 'cel',
+    detectorTimeoutMs: 500,
+    moderationBackend: '',
+    // Model rules can carry several conditions; the form edits the first and
+    // carries the rest through untouched so an edit never drops them.
+    extraConditions: [] as ModelIORule['conditions'],
   };
 
   // Policy files state
@@ -1007,6 +1041,13 @@ export class PoliciesView extends LitElement {
       conditionMode: 'preset' as 'preset' | 'custom',
       presetId: preset.id,
       idTouched: false,
+      piiTypes: [...DEFAULT_PII_TYPES],
+      description: '',
+      conditionDescription: '',
+      conditionType: 'auto' as 'auto' | 'simple' | 'cel',
+      detectorTimeoutMs: 500,
+      moderationBackend: '',
+      extraConditions: [] as ModelIORule['conditions'],
     };
   }
 
@@ -1039,8 +1080,9 @@ export class PoliciesView extends LitElement {
         idTouched: true,
       };
     } else if (rule) {
-      const condition = rule.conditions?.[0];
+      const [condition, ...extraConditions] = rule.conditions ?? [];
       const action = (condition?.action || 'deny') as ModelIOFormAction;
+      const moderation = rule.detectors?.moderation;
       this._editingModelIOId = rule.id;
       this._modelIOForm = {
         id: rule.id,
@@ -1050,6 +1092,23 @@ export class PoliciesView extends LitElement {
         enabled: rule.enabled !== false,
         action,
         expression: condition?.expression || '',
+        // Carry fields this form does not edit so the whole-rule PUT keeps
+        // them instead of nulling or resetting them.
+        description: rule.description || '',
+        conditionDescription: condition?.description || '',
+        // A rule stored as `simple` before the backend guard existed may hold
+        // a CEL expression. Seed "auto" so an untouched legacy rule heals to
+        // CEL on save instead of being rejected with a 422.
+        conditionType:
+          condition?.condition_type === 'simple' &&
+          conditionTypeFor(condition?.expression || '') === 'cel'
+            ? 'auto'
+            : condition?.condition_type || 'auto',
+        detectorTimeoutMs: rule.detector_timeout_ms ?? 500,
+        moderationBackend:
+          moderation && typeof moderation === 'object'
+            ? moderation.backend || ''
+            : '',
         approvalWorkflow: rule.approval_workflow || '',
         detectPii: Boolean(rule.detectors?.pii),
         detectInjection: Boolean(rule.detectors?.injection),
@@ -1059,6 +1118,8 @@ export class PoliciesView extends LitElement {
         conditionMode: 'custom',
         presetId: '',
         idTouched: true,
+        piiTypes: piiTypesFor(rule.detectors?.pii),
+        extraConditions,
       };
     } else {
       this._editingModelIOId = null;
@@ -1112,6 +1173,10 @@ export class PoliciesView extends LitElement {
       detectPii: preset.detectPii,
       detectInjection: preset.detectInjection,
       detectModeration: preset.detectModeration,
+      piiTypes: [...DEFAULT_PII_TYPES],
+      conditionDescription: '',
+      conditionType: 'auto',
+      extraConditions: [],
       id:
         this._modelIOForm.idTouched && this._modelIOForm.id.trim()
           ? this._modelIOForm.id
@@ -1179,29 +1244,62 @@ export class PoliciesView extends LitElement {
     const form = this._modelIOForm;
     const detectors: ModelIORule['detectors'] = {};
     if (form.detectPii) {
-      detectors.pii = { types: ['email', 'phone', 'credit_card'] };
+      detectors.pii = {
+        types:
+          form.piiTypes.length > 0
+            ? [...form.piiTypes]
+            : [...DEFAULT_PII_TYPES],
+      };
     }
     if (form.detectInjection) {
       detectors.injection = true;
     }
     if (form.detectModeration) {
-      detectors.moderation = true;
+      detectors.moderation = form.moderationBackend
+        ? { backend: form.moderationBackend }
+        : true;
     }
+    // The backend defaults a condition to `simple`, so a CEL expression saved
+    // without its type would be evaluated by the wrong engine. Send the type
+    // the same way tool rules do. Only an allow rule may fall back to
+    // "always": saveModelIORule rejects an empty deny condition first.
+    const expression = form.expression.trim() || 'true';
+    const primaryCondition = {
+      expression,
+      action: form.action,
+      condition_type:
+        form.conditionType === 'auto'
+          ? conditionTypeFor(form.expression)
+          : form.conditionType,
+      description: form.conditionDescription.trim() || null,
+    };
+    // Conditions after the first are edited elsewhere (or imported as YAML);
+    // keep them, with a type, so an edit does not delete them. A condition
+    // stored as `simple` but written in CEL has to be healed here too: this
+    // form edits only the first condition, and the backend guard rejects a
+    // `simple` CEL expression with 422. The primary condition is seeded to
+    // "auto" when the rule is opened, so this mirrors that heal.
+    const extraConditions = form.extraConditions.map((condition) => {
+      const detected = conditionTypeFor(condition.expression);
+      const stored = condition.condition_type;
+      return {
+        ...condition,
+        condition_type:
+          stored === 'simple' && detected === 'cel'
+            ? 'cel'
+            : stored || detected,
+      };
+    });
     return {
       id: form.id.trim(),
       target: form.target,
       enabled: form.enabled,
+      description: form.description.trim() || null,
       approval_workflow: form.approvalWorkflow || null,
       detectors,
+      detector_timeout_ms: form.detectorTimeoutMs,
       on_detector_timeout: form.onDetectorTimeout,
-      conditions: [
-        {
-          // Only an allow rule may fall back to "always": defaulting a deny
-          // rule to true would block every scanned request.
-          expression: form.expression.trim() || 'true',
-          action: form.action,
-        },
-      ],
+      conditions: [primaryCondition, ...extraConditions],
     };
   }
 
@@ -2444,6 +2542,28 @@ export class PoliciesView extends LitElement {
                   <code>session.id != ''</code>.
                 </p>
               </div>
+              <div class="form-group">
+                <label>Condition language</label>
+                <sl-select
+                  data-testid="condition-type"
+                  .value=${form.conditionType}
+                  @sl-change=${(e: any) =>
+                    this._patchModelIOForm({ conditionType: e.target.value })}
+                >
+                  <sl-option value="auto">
+                    Detect automatically (recommended)
+                  </sl-option>
+                  <sl-option value="simple">Simple comparison</sl-option>
+                  <sl-option value="cel">CEL expression</sl-option>
+                </sl-select>
+                <p class="model-io-hint">
+                  Simple reads comparisons such as
+                  <code>pii.found == true</code>. Pick CEL when the expression
+                  uses <code>contains(...)</code>, <code>in</code>, indexing, or
+                  anything the automatic check reads as simple but the server
+                  rejects.
+                </p>
+              </div>
             `
       }
 
@@ -2483,6 +2603,17 @@ export class PoliciesView extends LitElement {
             `
           )}
         </ul>
+        ${
+          form.extraConditions.length > 0
+            ? html`
+                <p class="model-io-hint" data-testid="extra-conditions-hint">
+                  This rule keeps ${form.extraConditions.length} more
+                  condition${form.extraConditions.length === 1 ? '' : 's'} with
+                  their own actions; this form edits only the first one.
+                </p>
+              `
+            : nothing
+        }
       </div>
     `;
   }

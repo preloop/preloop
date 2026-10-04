@@ -271,3 +271,285 @@ async def test_crud_runs_off_loop_and_async_provider_runs_on_loop(
     assert all(thread != loop_thread for thread in query_threads)
     assert len(lazy_load_threads) == 1
     assert lazy_load_threads[0] != loop_thread
+
+
+# ---------------------------------------------------------------------------
+# Managed Bitbucket Cloud dispatch (issue #1065): the same execution-bound
+# capability reacquires a fresh access token from the provider resolver.
+# ---------------------------------------------------------------------------
+
+
+def _managed_tracker(workspace: str = "ws", repository: str | None = "repo"):
+    return SimpleNamespace(
+        tracker_type="bitbucket",
+        auth_type="managed_oauth",
+        connection_details={"workspace": workspace, "repository": repository},
+    )
+
+
+def _bitbucket_claims() -> dict[str, Any]:
+    context = claims()
+    context["repository_url"] = "https://bitbucket.org/ws/repo.git"
+    return context
+
+
+class _Resolver:
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, Any]] = []
+
+    async def resolve(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+def _fresh(token: str, seconds: int = 3600) -> SimpleNamespace:
+    return SimpleNamespace(
+        access_token=token,
+        expires_at=datetime.now(UTC) + timedelta(seconds=seconds),
+        rotation_version=2,
+        git_username="x-token-auth",
+    )
+
+
+@pytest.fixture
+def running(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        endpoint.crud_flow_execution,
+        "get",
+        Mock(return_value=SimpleNamespace(status="RUNNING", stop_requested_at=None)),
+    )
+    mint = AsyncMock()
+    monkeypatch.setattr(endpoint, "mint_repository_lease", mint)
+    return mint
+
+
+@pytest.fixture
+def bitbucket_resolver(monkeypatch: pytest.MonkeyPatch):
+    from preloop.services import managed_credentials as mc
+
+    resolver = _Resolver([])
+    mc.register_managed_resolver("bitbucket", resolver)
+    yield resolver
+    mc.register_managed_resolver("bitbucket", None)
+
+
+@pytest.mark.asyncio
+async def test_managed_bitbucket_reacquires_fresh_token_bound_to_destination(
+    monkeypatch: pytest.MonkeyPatch, running: AsyncMock, bitbucket_resolver: _Resolver
+) -> None:
+    context = _bitbucket_claims()
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    bitbucket_resolver.outcomes = [_fresh("fresh-bitbucket-token-b")]
+    response = Response()
+    result = await _refresh(context["execution_id"], response, context, Mock())
+    assert result["token"] == "fresh-bitbucket-token-b"
+    assert result["username"] == "x-token-auth"
+    assert response.headers["cache-control"] == "no-store"
+    running.assert_not_called()  # no GitHub App path for a managed grant
+    call = bitbucket_resolver.calls[0]
+    assert call["account_id"] == context["account_id"]
+    assert call["tracker_id"] == context["tracker_id"]
+    assert call["provider"] == "bitbucket"
+    assert call["repository"] == "repo"
+    assert call["force_refresh"] is False
+
+
+@pytest.mark.asyncio
+async def test_managed_bitbucket_near_expiry_forces_one_rotation(
+    monkeypatch: pytest.MonkeyPatch, running: AsyncMock, bitbucket_resolver: _Resolver
+) -> None:
+    context = _bitbucket_claims()
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    bitbucket_resolver.outcomes = [_fresh("almost-dead", 5), _fresh("rotated-b")]
+    result = await _refresh(context["execution_id"], Response(), context, Mock())
+    assert result["token"] == "rotated-b"
+    assert [c["force_refresh"] for c in bitbucket_resolver.calls] == [False, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "repository_url",
+    [
+        "https://bitbucket.org/other-ws/repo.git",
+        "https://bitbucket.org/ws/other-repo.git",
+        "https://github.com/ws/repo.git",
+        "http://bitbucket.org/ws/repo.git",
+        "https://user:pw@bitbucket.org/ws/repo.git",
+        "https://bitbucket.org/ws/repo/extra.git",
+        "https://bitbucket.org:8443/ws/repo.git",
+        "https://bitbucket.org/ws/repo.git?x=1",
+    ],
+)
+async def test_managed_bitbucket_wrong_destination_denied_before_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+    running: AsyncMock,
+    bitbucket_resolver: _Resolver,
+    repository_url: str,
+) -> None:
+    context = _bitbucket_claims()
+    context["repository_url"] = repository_url
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    with pytest.raises(HTTPException) as error:
+        await _refresh(context["execution_id"], Response(), context, Mock())
+    assert error.value.status_code == 403
+    assert error.value.detail == "publication_destination_mismatch"
+    assert bitbucket_resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_managed_bitbucket_default_port_is_the_same_destination(
+    monkeypatch: pytest.MonkeyPatch, running: AsyncMock, bitbucket_resolver: _Resolver
+) -> None:
+    context = _bitbucket_claims()
+    context["repository_url"] = "https://bitbucket.org:443/ws/repo.git"
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    bitbucket_resolver.outcomes = [_fresh("token-b")]
+    result = await _refresh(context["execution_id"], Response(), context, Mock())
+    assert result["token"] == "token-b"
+
+
+@pytest.mark.asyncio
+async def test_managed_bitbucket_workspace_only_binding_accepts_any_repository(
+    monkeypatch: pytest.MonkeyPatch, running: AsyncMock, bitbucket_resolver: _Resolver
+) -> None:
+    context = _bitbucket_claims()
+    monkeypatch.setattr(
+        endpoint.crud_tracker,
+        "get",
+        Mock(return_value=_managed_tracker(repository=None)),
+    )
+    bitbucket_resolver.outcomes = [_fresh("token-b")]
+    result = await _refresh(context["execution_id"], Response(), context, Mock())
+    assert result["token"] == "token-b"
+    assert bitbucket_resolver.calls[0]["repository"] == "repo"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "status", "detail"),
+    [
+        ("reconnect", 409, "publication_reconnect_required"),
+        ("permission", 403, "publication_destination_forbidden"),
+        ("unavailable", 502, "publication_credential_unavailable"),
+        ("missing", 502, "publication_credential_unavailable"),
+    ],
+)
+async def test_managed_bitbucket_failures_are_typed_and_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    running: AsyncMock,
+    bitbucket_resolver: _Resolver,
+    failure: str,
+    status: int,
+    detail: str,
+) -> None:
+    from preloop.services import managed_credentials as mc
+
+    context = _bitbucket_claims()
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    outcomes = {
+        "reconnect": mc.ManagedReconnectRequiredError("invalid_grant"),
+        "permission": mc.ManagedCredentialPermissionError("forbidden"),
+        "unavailable": RuntimeError("provider body: secret-refresh-token"),
+    }
+    if failure == "missing":
+        mc.register_managed_resolver("bitbucket", None)
+    else:
+        bitbucket_resolver.outcomes = [outcomes[failure]]
+    with pytest.raises(HTTPException) as error:
+        await _refresh(context["execution_id"], Response(), context, Mock())
+    assert error.value.status_code == status
+    assert error.value.detail == detail
+    assert "secret-refresh-token" not in str(error.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "CANCELLED", "PENDING"])
+async def test_managed_bitbucket_terminal_execution_cannot_reacquire(
+    monkeypatch: pytest.MonkeyPatch, bitbucket_resolver: _Resolver, status: str
+) -> None:
+    context = _bitbucket_claims()
+    monkeypatch.setattr(
+        endpoint.crud_flow_execution,
+        "get",
+        Mock(return_value=SimpleNamespace(status=status, stop_requested_at=None)),
+    )
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    with pytest.raises(HTTPException) as error:
+        await _refresh(context["execution_id"], Response(), context, Mock())
+    assert error.value.status_code == 409
+    assert bitbucket_resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_managed_bitbucket_stop_during_resolution_withholds_token(
+    monkeypatch: pytest.MonkeyPatch, bitbucket_resolver: _Resolver
+) -> None:
+    context = _bitbucket_claims()
+    running_state = SimpleNamespace(status="RUNNING", stop_requested_at=None)
+    stopped = SimpleNamespace(status="RUNNING", stop_requested_at=datetime.now(UTC))
+    monkeypatch.setattr(
+        endpoint.crud_flow_execution, "get", Mock(side_effect=[running_state, stopped])
+    )
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    bitbucket_resolver.outcomes = [_fresh("token-b")]
+    with pytest.raises(HTTPException) as error:
+        await _refresh(context["execution_id"], Response(), context, Mock())
+    assert error.value.status_code == 409
+    assert len(bitbucket_resolver.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_managed_bitbucket_wrong_tenant_tracker_is_missing(
+    monkeypatch: pytest.MonkeyPatch, running: AsyncMock, bitbucket_resolver: _Resolver
+) -> None:
+    context = _bitbucket_claims()
+    tracker_get = Mock(return_value=None)
+    monkeypatch.setattr(endpoint.crud_tracker, "get", tracker_get)
+    with pytest.raises(HTTPException) as error:
+        await _refresh(context["execution_id"], Response(), context, Mock())
+    assert error.value.status_code == 404
+    assert tracker_get.call_args.kwargs["account_id"] == str(context["account_id"])
+    assert bitbucket_resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_pasted_bitbucket_token_is_not_dispatched_to_resolver(
+    monkeypatch: pytest.MonkeyPatch, bitbucket_resolver: _Resolver
+) -> None:
+    """A pasted token keeps its legacy semantics: no managed reacquisition."""
+    context = _bitbucket_claims()
+    monkeypatch.setattr(
+        endpoint.crud_flow_execution,
+        "get",
+        Mock(return_value=SimpleNamespace(status="RUNNING", stop_requested_at=None)),
+    )
+    tracker = SimpleNamespace(
+        tracker_type="bitbucket",
+        auth_type="oauth_token",
+        connection_details={"workspace": "ws"},
+        oauth_installation=None,
+    )
+    monkeypatch.setattr(endpoint.crud_tracker, "get", Mock(return_value=tracker))
+    bitbucket_resolver.outcomes = [_fresh("must-not-be-used")]
+    with pytest.raises(HTTPException) as error:
+        await _refresh(context["execution_id"], Response(), context, Mock())
+    assert error.value.status_code == 502
+    assert bitbucket_resolver.calls == []

@@ -3,6 +3,11 @@
 import logging
 from typing import Any, Dict, Optional, Type
 
+from preloop.services.managed_credentials import (
+    CredentialSource,
+    is_managed_auth_type,
+)
+
 from .base import BaseTracker
 from .bitbucket import BitbucketTracker
 from .bitbucket_dc import BitbucketDCTracker
@@ -71,6 +76,8 @@ async def create_tracker_client(
     tracker_id: str,
     api_key: str,
     connection_details: Dict[str, Any],
+    *,
+    credential_source: Optional[CredentialSource] = None,
 ) -> Optional[BaseTracker]:
     """Create a tracker client.
 
@@ -82,11 +89,29 @@ async def create_tracker_client(
             For GitHub App OAuth, include:
             - auth_type: "github_app" or "oauth_app"
             - github_installation_id: The GitHub App installation ID
+            For a managed grant, ``auth_type`` is ``managed_oauth`` and
+            ``credential_source`` is required.
+        credential_source: Managed grants only: the bound resolver built by
+            ``preloop.services.managed_credentials.tracker_credential_source``.
 
     Returns:
-        A tracker client or None if the tracker type is not supported.
+        A tracker client or None if the tracker type is not supported, or when
+        a managed tracker was requested without a credential source (a managed
+        tracker never degrades to an anonymous or stale-token client).
     """
     try:
+        managed = credential_source is not None or is_managed_auth_type(
+            (connection_details or {}).get("auth_type")
+        )
+        if managed and credential_source is None:
+            raise ValueError(
+                "A managed tracker requires a provider credential resolver; "
+                "refusing to build an unauthenticated client."
+            )
+        if managed and tracker_type != "bitbucket":
+            raise ValueError(
+                f"Managed grants are not supported for tracker type {tracker_type}"
+            )
         if tracker_type == "github":
             # Check if this is a GitHub App OAuth tracker
             auth_type = connection_details.get("auth_type", "api_token")
@@ -136,7 +161,12 @@ async def create_tracker_client(
         elif tracker_type == "bitbucket_dc":
             return BitbucketDCTracker(tracker_id, api_key, connection_details)
         elif tracker_type == "bitbucket":
-            return BitbucketTracker(tracker_id, api_key, connection_details)
+            return BitbucketTracker(
+                tracker_id,
+                "" if credential_source is not None else api_key,
+                connection_details,
+                credential_source=credential_source,
+            )
         else:
             logger.warning(f"Unsupported tracker type: {tracker_type}")
             return None

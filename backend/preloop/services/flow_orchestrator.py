@@ -137,6 +137,9 @@ from preloop.services.tracker_git_token import (
     resolve_tracker_git_token,
     resolve_tracker_git_username,
 )
+from preloop.services.managed_credentials import (
+    ManagedCredentialError,
+)
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.trackers.base import BaseTracker
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
@@ -2679,7 +2682,17 @@ class FlowExecutionOrchestrator:
             # the raw column left App-installed repositories with no git
             # credential at all, so the post-execution push failed with
             # "could not read Username for 'https://github.com'".
-            token = await resolve_tracker_git_token(tracker)
+            #
+            # A managed grant (auth_type managed_oauth) also stores no key and
+            # additionally never degrades: when the provider resolver is
+            # missing or the grant needs reconnect, the execution fails here
+            # with that reason instead of cloning anonymously.
+            try:
+                token = await resolve_tracker_git_token(tracker)
+            except ManagedCredentialError as exc:
+                raise RuntimeError(
+                    f"Tracker {tracker.name or tracker_id}: {exc.actionable_message()}"
+                ) from exc
             if not token:
                 logger.warning(
                     "Tracker %s has no usable git token (auth_type=%s)",
@@ -2712,6 +2725,8 @@ class FlowExecutionOrchestrator:
                     credentials["email"] = str(email)
             return credentials
 
+        except RuntimeError:
+            raise
         except Exception as e:
             logger.error(
                 f"Error getting tracker credentials for {tracker_id}: {e}",

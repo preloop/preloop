@@ -101,6 +101,39 @@ def _detect_condition_type(expression: str) -> str:
     return "simple"
 
 
+def _model_io_condition_type(condition: ToolCondition) -> str:
+    """Return the condition type to persist for a model I/O condition.
+
+    Model I/O conditions default to ``simple`` when the YAML omits
+    ``condition_type``. The simple evaluator raises on CEL syntax, and a
+    mis-typed deny rule then fails closed, so upgrade such a condition to
+    ``cel`` instead of storing one that can never evaluate. This mirrors
+    :meth:`PolicyApplier._apply_tool_conditions`; it also catches forms the
+    simple parser rejects that ``_detect_condition_type`` does not know, such
+    as a parenthesised comparison or a bare fact.
+
+    Args:
+        condition: Condition parsed from the policy document.
+
+    Returns:
+        ``"cel"`` or ``"simple"``.
+    """
+    from preloop.services.policy_evaluator import is_simple_expression
+
+    explicit_raw: Any = condition.condition_type
+    if hasattr(explicit_raw, "value"):
+        explicit_raw = explicit_raw.value
+    explicit = str(explicit_raw or "simple")
+
+    if explicit == "cel":
+        return "cel"
+    if _detect_condition_type(condition.expression) == "cel":
+        return "cel"
+    if not is_simple_expression(condition.expression):
+        return "cel"
+    return explicit
+
+
 def _get_cel_validation_service():
     """Get the CEL validation service if available (lazy import to avoid circular deps).
 
@@ -1546,15 +1579,36 @@ class PolicyApplier:
         rules: List[ModelIORule],
         dry_run: bool,
     ) -> None:
-        """Persist model I/O rules onto account.meta_data."""
+        """Persist model I/O rules onto account.meta_data.
+
+        Conditions are normalised first so a YAML rule written in CEL but left
+        with the default ``simple`` type is upgraded rather than stored in a
+        form the evaluator cannot read.
+        """
         from preloop.services.model_content_policy import replace_model_io_rules
 
+        upgraded = [
+            rule.model_copy(
+                update={
+                    "conditions": [
+                        condition.model_copy(
+                            update={
+                                "condition_type": _model_io_condition_type(condition)
+                            }
+                        )
+                        for condition in rule.conditions
+                    ]
+                }
+            )
+            for rule in rules
+        ]
+
         if dry_run:
-            self._result.model_io_rules_applied = len(rules)
+            self._result.model_io_rules_applied = len(upgraded)
             return
-        replace_model_io_rules(self.db, self.account_id, rules)
-        self._result.model_io_rules_applied = len(rules)
-        logger.info("Applied %s model I/O content rules", len(rules))
+        replace_model_io_rules(self.db, self.account_id, upgraded)
+        self._result.model_io_rules_applied = len(upgraded)
+        logger.info("Applied %s model I/O content rules", len(upgraded))
 
     def _apply_sensitive_data(
         self,

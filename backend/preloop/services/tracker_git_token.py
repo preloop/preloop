@@ -7,6 +7,12 @@ A tracker authenticates in one of two ways:
 * ``github_app`` / ``oauth_app``: no token is stored at all. The credential is
   a short-lived installation access token minted on demand from the GitHub App
   installation attached to the tracker.
+* ``managed_oauth``: no token is stored either. A provider plugin resolves a
+  fresh access token from the tenant-bound grant (see
+  ``preloop.services.managed_credentials``). Unlike the other modes this one
+  never degrades to "no credential": an unavailable resolver or a grant that
+  needs reconnect raises, so the flow fails with an actionable message
+  instead of cloning anonymously or pushing with a stale token.
 
 Every git path (clone inside the agent container, the post-execution push,
 PR/MR creation) needs the second case too. Reading ``resolved_api_key``
@@ -23,11 +29,41 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from preloop.services.managed_credentials import (
+    ManagedCredential,
+    is_managed_tracker,
+    tracker_credential_source,
+)
+
 logger = logging.getLogger(__name__)
 
 # Tracker auth types whose credential is an installation access token rather
 # than a stored secret.
 APP_AUTH_TYPES = {"github_app", "oauth_app"}
+
+
+async def resolve_managed_tracker_credential(
+    tracker: Any, *, repository: Optional[str] = None, force_refresh: bool = False
+) -> ManagedCredential:
+    """Resolve the fresh credential of a managed tracker, or raise.
+
+    Args:
+        tracker: A managed ``Tracker`` ORM instance.
+        repository: Repository slug the caller is about to touch.
+        force_refresh: Rotate even if the stored credential is fresh.
+
+    Returns:
+        The ephemeral credential (token, UTC expiry, rotation version, git
+        username ``x-token-auth``).
+
+    Raises:
+        ManagedCredentialError: Typed resolver failure (unavailable,
+            reconnect required, permission). Never swallowed here.
+    """
+    source = tracker_credential_source(tracker, repository=repository)
+    if source is None:
+        raise ValueError("tracker is not a managed grant")
+    return await source(force_refresh=force_refresh)
 
 
 async def resolve_tracker_git_token(tracker: Any) -> Optional[str]:
@@ -39,12 +75,26 @@ async def resolve_tracker_git_token(tracker: Any) -> Optional[str]:
 
     Returns:
         The token, or None when the tracker has neither a stored key nor a
-        usable App installation. Never raises: a failure to mint the App token
-        degrades to "no credential", exactly as a missing PAT does today.
+        usable App installation. A failure to mint the App token degrades to
+        "no credential", exactly as a missing PAT does today.
+
+    Raises:
+        ManagedCredentialError: A managed grant could not provide a fresh
+            credential. Managed trackers never degrade to anonymous git.
     """
 
     if tracker is None:
         return None
+
+    if is_managed_tracker(tracker):
+        credential = await resolve_managed_tracker_credential(tracker)
+        logger.info(
+            "Resolved a managed %s credential for tracker %s (rotation %s)",
+            tracker.tracker_type,
+            getattr(tracker, "id", "unknown"),
+            credential.rotation_version,
+        )
+        return credential.access_token
 
     stored = getattr(tracker, "resolved_api_key", None)
     if stored:

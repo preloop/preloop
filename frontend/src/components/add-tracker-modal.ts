@@ -145,6 +145,15 @@ export class AddTrackerModal extends LitElement {
    */
   _api = api;
 
+  /**
+   * Full-page navigation to the provider consent URL. Overridable so tests
+   * can observe the redirect without leaving the test page.
+   * @internal
+   */
+  _navigate = (url: string): void => {
+    window.location.href = url;
+  };
+
   @property({ type: Boolean })
   opened = true;
 
@@ -198,6 +207,56 @@ export class AddTrackerModal extends LitElement {
   /** Set once the /features lookup has settled, so the gate is not applied on a stale default. */
   @state()
   private bitbucketDcFeatureLoaded = false;
+
+  /**
+   * Whether a managed Bitbucket Cloud provider is configured
+   * (`features.bitbucket_cloud_oauth`). Off by default: the Connect button,
+   * connection status and reconnect/disconnect stay hidden, and pasted-token
+   * onboarding keeps working unchanged.
+   */
+  @state()
+  private bitbucketCloudOAuthEnabled = false;
+
+  /**
+   * Opaque completion handle recovered from the consent callback
+   * (`?bitbucket_connect=`). Only the handle is ever seen by the browser; it
+   * is exchanged once and never stored.
+   */
+  @property({ type: String })
+  bitbucketConnectHandle: string | null = null;
+
+  /** Reconnect completion: the managed tracker the handle belongs to. */
+  @property({ type: String })
+  bitbucketReconnectTrackerId: string | null = null;
+
+  /** Sanitized managed-connection status, never tokens. */
+  @state()
+  private managedStatus: api.BitbucketConnectionStatus | null = null;
+
+  /** Accessible workspaces/repositories for the authorizing actor. */
+  @state()
+  private managedDiscovery: api.BitbucketDiscovery | null = null;
+
+  @state()
+  private managedWorkspace = '';
+
+  @state()
+  private managedRepository = '';
+
+  @state()
+  private managedBusy = false;
+
+  /** Tracker created by the managed completion (before any scope is saved). */
+  @state()
+  private managedTrackerId: string | null = null;
+
+  /**
+   * Managed tracker edited while its provider is unavailable: the stored
+   * scope rules are shown read-only and left untouched on save, because the
+   * project list needed to rebuild them cannot be read.
+   */
+  @state()
+  private managedOfflineEdit = false;
 
   /** Bitbucket Data Center: instance URL as typed (canonicalised on submit). */
   @state()
@@ -310,7 +369,16 @@ export class AddTrackerModal extends LitElement {
         this.bitbucketWorkspace = details.workspace ?? '';
         this.bitbucketRepository = details.repository ?? '';
         this.bitbucketEmail = details.email ?? '';
-        this.tokenExpiresAt = details.token_expires_at ?? '';
+        // A managed grant reports its real expiry through the provider
+        // status; the manual date never applies to it.
+        this.tokenExpiresAt = this.isManagedTracker(this.tracker)
+          ? ''
+          : (details.token_expires_at ?? '');
+        if (this.isManagedTracker(this.tracker)) {
+          this.managedTrackerId = this.tracker.id;
+          this.managedWorkspace = details.workspace ?? '';
+          this.managedRepository = details.repository ?? '';
+        }
       }
       if (this.tracker.tracker_type === 'bitbucket_dc') {
         // instance_url is the canonical origin plus context path; it is the
@@ -364,8 +432,17 @@ export class AddTrackerModal extends LitElement {
     }
     // Check if GitHub App OAuth is available
     this.checkGitHubAppAvailability();
-    // Check whether this deployment opted in to Bitbucket Data Center
+    // Check whether this deployment opted in to Bitbucket Data Center and
+    // whether a managed Bitbucket Cloud provider is configured
     this.checkBitbucketDcAvailability();
+
+    // Returning from Bitbucket consent: the modal opens straight into the
+    // managed completion for a new tracker, or finishes a reconnect.
+    if (this.bitbucketConnectHandle && !this.tracker) {
+      this.trackerType = 'bitbucket';
+      this.trackerUrl = BITBUCKET_WEB_URL;
+      this.step = 1;
+    }
 
     // If we have a GitHub installation ID from OAuth callback (not editing), set up for GitHub App flow
     // Only apply these defaults for new trackers, not when editing existing ones
@@ -411,14 +488,260 @@ export class AddTrackerModal extends LitElement {
     try {
       const response = await this._api.getFeatures();
       this.bitbucketDcEnabled = response.features?.['bitbucket_dc'] === true;
+      this.bitbucketCloudOAuthEnabled =
+        response.features?.[api.BITBUCKET_CLOUD_OAUTH_FEATURE] === true;
     } catch (error) {
       console.error(
         'Failed to check Bitbucket Data Center availability:',
         error
       );
       this.bitbucketDcEnabled = false;
+      this.bitbucketCloudOAuthEnabled = false;
     } finally {
       this.bitbucketDcFeatureLoaded = true;
+    }
+  }
+
+  private isManagedTracker(tracker: Tracker | null | undefined): boolean {
+    return !!tracker && tracker.auth_type === 'managed_oauth';
+  }
+
+  /** The tracker on screen authenticates through a managed Bitbucket grant. */
+  private get isManagedBitbucket(): boolean {
+    return (
+      this.trackerType === 'bitbucket' &&
+      (this.isManagedTracker(this.tracker) || !!this.managedTrackerId)
+    );
+  }
+
+  /** Start browser consent. Only an opaque handle comes back to the console. */
+  async startBitbucketConnect() {
+    this.isLoading = true;
+    this.managedBusy = true;
+    this.errorMessage = '';
+    try {
+      const start = await this._api.startBitbucketConnect('/console/trackers');
+      sessionStorage.setItem(
+        'bitbucket_connect_tracker_name',
+        this.trackerName.trim()
+      );
+      this._navigate(start.authorization_url);
+    } catch (error: any) {
+      this.errorMessage =
+        error?.message || 'Failed to start the Bitbucket connection';
+    } finally {
+      this.isLoading = false;
+      this.managedBusy = false;
+    }
+  }
+
+  /**
+   * Exchange the callback handle once. A new connection creates the tracker
+   * server-side and then lists the actor's workspaces; a reconnect replaces
+   * the grant of the existing tracker.
+   */
+  async completeBitbucketConnect() {
+    const handle = this.bitbucketConnectHandle;
+    if (!handle) {
+      return;
+    }
+    this.bitbucketConnectHandle = null;
+    this.isLoading = true;
+    this.managedBusy = true;
+    this.errorMessage = '';
+    try {
+      const rememberedName =
+        sessionStorage.getItem('bitbucket_connect_tracker_name') ?? '';
+      sessionStorage.removeItem('bitbucket_connect_tracker_name');
+      if (this.bitbucketReconnectTrackerId) {
+        this.managedStatus = await this._api.completeBitbucketReconnect(
+          this.bitbucketReconnectTrackerId,
+          handle
+        );
+        this.managedTrackerId = this.managedStatus.tracker_id;
+        this.dispatchEvent(
+          new CustomEvent('tracker-updated', {
+            detail: { tracker: { id: this.managedTrackerId } },
+          })
+        );
+        this.closeModal(true);
+        return;
+      }
+      const name = this.trackerName.trim() || rememberedName;
+      this.managedStatus = await this._api.completeBitbucketConnect({
+        handle,
+        ...(name ? { name } : {}),
+      });
+      this.managedTrackerId = this.managedStatus.tracker_id;
+      this.trackerName = this.managedStatus.name;
+      this.managedWorkspace = this.managedStatus.workspace ?? '';
+      this.managedRepository = this.managedStatus.repository ?? '';
+      this.managedDiscovery = await this._api.getBitbucketDiscovery(
+        this.managedTrackerId
+      );
+      if (
+        !this.managedWorkspace &&
+        this.managedDiscovery.workspaces.length === 1
+      ) {
+        this.managedWorkspace = this.managedDiscovery.workspaces[0].slug;
+      }
+    } catch (error: any) {
+      this.errorMessage =
+        error?.message || 'Failed to complete the Bitbucket connection';
+    } finally {
+      this.isLoading = false;
+      this.managedBusy = false;
+    }
+  }
+
+  private async loadManagedRepositories(workspace: string) {
+    if (!this.managedTrackerId || !workspace) {
+      return;
+    }
+    this.managedBusy = true;
+    try {
+      this.managedDiscovery = await this._api.getBitbucketDiscovery(
+        this.managedTrackerId,
+        workspace
+      );
+    } catch (error: any) {
+      this.errorMessage =
+        error?.message || 'Failed to list accessible Bitbucket repositories';
+    } finally {
+      this.managedBusy = false;
+    }
+  }
+
+  /** Bind the selected workspace/repository, then reuse the scope preview. */
+  private async bindManagedSelectionAndPreview(): Promise<boolean> {
+    if (!this.managedTrackerId) {
+      return false;
+    }
+    const workspace = this.managedWorkspace.trim();
+    if (!workspace) {
+      this.errorMessage = 'Select the Bitbucket workspace Preloop may act on.';
+      return false;
+    }
+    this.managedStatus = await this._api.bindBitbucketRepository(
+      this.managedTrackerId,
+      {
+        workspace,
+        ...(this.managedRepository.trim()
+          ? { repository: this.managedRepository.trim() }
+          : {}),
+      }
+    );
+    this.bitbucketWorkspace = workspace;
+    this.bitbucketRepository = this.managedRepository.trim();
+    const response = await this._api.validateTrackerToken(
+      'bitbucket',
+      'unchanged',
+      BITBUCKET_WEB_URL,
+      undefined,
+      this.managedTrackerId,
+      { connectionDetails: this.bitbucketConnectionDetails() }
+    );
+    if (!response.success) {
+      this.errorMessage = response.message.split('\n')[0];
+      return false;
+    }
+    this.orgs = response.orgs;
+    this.selectedOrgs = {};
+    for (const org of this.orgs) {
+      this.selectedOrgs[org.id] = true;
+    }
+    this.step = 2;
+    return true;
+  }
+
+  /**
+   * Scope step from the tracker's stored INCLUDE organization rules, for a
+   * managed tracker whose provider is not configured here. The tree is shown
+   * for orientation only: without the provider the repositories cannot be
+   * listed, so the stored scope rules (including project exclusions) are not
+   * rebuilt and handleSave leaves them untouched.
+   */
+  private seedScopeFromExistingRules() {
+    const rules = this.tracker?.scope_rules ?? [];
+    const included: string[] = rules
+      .filter(
+        (rule: any) =>
+          rule.rule_type === 'INCLUDE' && rule.scope_type === 'ORGANIZATION'
+      )
+      .map((rule: any) => String(rule.identifier));
+    const workspace = (this.managedWorkspace || this.bitbucketWorkspace).trim();
+    const ids: string[] =
+      included.length > 0 ? included : workspace ? [workspace] : [];
+    if (ids.length === 0) {
+      this.errorMessage =
+        'This managed tracker has no workspace to scope; enable the managed provider to select one.';
+      return;
+    }
+    this.orgs = ids.map((id) => ({ id, name: id }));
+    this.projects = {};
+    this.selectedOrgs = {};
+    for (const id of ids) {
+      this.selectedOrgs[id] = true;
+    }
+    this.includeFutureProjects = true;
+    this.managedOfflineEdit = true;
+    this.step = 2;
+  }
+
+  async startBitbucketReconnect() {
+    if (!this.managedTrackerId) {
+      return;
+    }
+    this.managedBusy = true;
+    this.errorMessage = '';
+    try {
+      const start = await this._api.startBitbucketReconnect(
+        this.managedTrackerId,
+        '/console/trackers'
+      );
+      this._navigate(start.authorization_url);
+    } catch (error: any) {
+      this.errorMessage =
+        error?.message || 'Failed to start the Bitbucket reconnect';
+    } finally {
+      this.managedBusy = false;
+    }
+  }
+
+  async disconnectBitbucket() {
+    if (!this.managedTrackerId) {
+      return;
+    }
+    this.managedBusy = true;
+    this.errorMessage = '';
+    try {
+      await this._api.disconnectBitbucket(this.managedTrackerId);
+      this.managedStatus = await this._api.getBitbucketConnectionStatus(
+        this.managedTrackerId
+      );
+      this.dispatchEvent(
+        new CustomEvent('tracker-updated', {
+          detail: { tracker: { id: this.managedTrackerId } },
+        })
+      );
+    } catch (error: any) {
+      this.errorMessage =
+        error?.message || 'Failed to disconnect the Bitbucket connection';
+    } finally {
+      this.managedBusy = false;
+    }
+  }
+
+  private async loadManagedStatus() {
+    if (!this.managedTrackerId || !this.bitbucketCloudOAuthEnabled) {
+      return;
+    }
+    try {
+      this.managedStatus = await this._api.getBitbucketConnectionStatus(
+        this.managedTrackerId
+      );
+    } catch (error) {
+      console.error('Failed to read the Bitbucket connection status:', error);
     }
   }
 
@@ -489,6 +812,12 @@ export class AddTrackerModal extends LitElement {
     if (this.githubInstallationId && !this.tracker) {
       // Small delay to let the dialog render, then auto-save
       setTimeout(() => this.testConnection(), 200);
+    } else if (this.bitbucketConnectHandle) {
+      void this.completeBitbucketConnect();
+    } else if (this.isManagedTracker(this.tracker)) {
+      void this.checkBitbucketDcAvailability().then(() =>
+        this.loadManagedStatus()
+      );
     } else {
       setTimeout(() => {
         const input = this.shadowRoot?.querySelector<SlInput>('sl-input');
@@ -775,7 +1104,7 @@ export class AddTrackerModal extends LitElement {
                     ></sl-input>
                   </details>
                 `
-              : this.isBitbucketDc
+              : this.isBitbucketDc || this.hidesPastedTokenInput
                 ? ''
                 : html`
                     <sl-input
@@ -790,6 +1119,22 @@ export class AddTrackerModal extends LitElement {
                   `
       }
     `;
+  }
+
+  /**
+   * The pasted-token input is withheld for managed Bitbucket grants (there is
+   * no token to paste or replace) and while the Connect button is offered for
+   * a new Bitbucket tracker, where the manual fields carry their own input.
+   */
+  private get hidesPastedTokenInput(): boolean {
+    if (this.trackerType !== 'bitbucket') {
+      return false;
+    }
+    return (
+      this.isManagedBitbucket ||
+      !!this.bitbucketConnectHandle ||
+      (this.bitbucketCloudOAuthEnabled && !this.tracker)
+    );
   }
 
   /**
@@ -934,8 +1279,266 @@ export class AddTrackerModal extends LitElement {
     return details;
   }
 
+  /** Capability label: true granted, false missing, null unknown (untested). */
+  private capabilityLabel(value: boolean | null | undefined): string {
+    if (value === true) return 'granted';
+    if (value === false) return 'missing';
+    return 'unknown';
+  }
+
+  private managedStateLabel(state: api.BitbucketConnectionState | undefined) {
+    switch (state) {
+      case 'connected':
+        return { text: 'Connected', variant: 'success' };
+      case 'workspace_required':
+        return { text: 'Workspace required', variant: 'warning' };
+      case 'reconnect_required':
+        return { text: 'Reconnect required', variant: 'danger' };
+      case 'disconnected':
+        return { text: 'Disconnected', variant: 'neutral' };
+      case 'unavailable':
+        return { text: 'Provider unavailable', variant: 'warning' };
+      default:
+        return { text: 'Not managed', variant: 'neutral' };
+    }
+  }
+
+  /** Sanitized managed status: actor, selection, expiry and capabilities. */
+  renderManagedStatus() {
+    const status = this.managedStatus;
+    if (!status) {
+      return html`<p class="managed-status-pending">
+        Reading the Bitbucket connection status...
+      </p>`;
+    }
+    const state = this.managedStateLabel(status.state);
+    const actor =
+      status.actor?.display_name || status.actor?.nickname || 'unknown actor';
+    const expiry = status.expires_at
+      ? new Date(status.expires_at).toLocaleString()
+      : 'reported by the provider when connected';
+    return html`
+      <sl-alert
+        variant=${state.variant as any}
+        open
+        class="bitbucket-managed-status"
+        data-state=${status.state}
+      >
+        <sl-icon slot="icon" name="shield-lock"></sl-icon>
+        <strong>${state.text}.</strong>
+        Managed Bitbucket Cloud connection authorized by
+        <strong class="managed-actor">${actor}</strong>.
+        ${
+          status.reconnect_reason
+            ? html`<span class="managed-reason">
+                (${status.reconnect_reason})</span
+              >`
+            : ''
+        }
+        <div class="managed-expiry">
+          Access token expiry: <span>${expiry}</span>. Renewed automatically by
+          the provider service; there is no date to enter.
+        </div>
+        <ul class="managed-capabilities">
+          ${Object.entries(status.capabilities ?? {}).map(
+            ([name, value]) => html`
+              <li
+                data-capability=${name}
+                data-value=${this.capabilityLabel(value)}
+              >
+                ${name.replace(/_/g, ' ')}: ${this.capabilityLabel(value)}
+              </li>
+            `
+          )}
+        </ul>
+        <p class="managed-capability-note">
+          Discovery succeeded; push, approval and webhook capability are not
+          tested until first use.
+        </p>
+      </sl-alert>
+    `;
+  }
+
+  /** Managed tracker edit: status plus reconnect/disconnect, no token fields. */
+  renderManagedBitbucketEdit() {
+    if (!this.bitbucketCloudOAuthEnabled) {
+      return html`
+        <sl-alert variant="warning" open class="bitbucket-managed-disabled">
+          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+          <strong>Managed Bitbucket connections are unavailable here.</strong>
+          This tracker was connected through a managed provider that is not
+          configured on this deployment. Its name and workspace scope can still
+          be saved from the stored rules; it cannot test the connection, be
+          reconnected, or be converted to a pasted token.
+        </sl-alert>
+        ${this.renderManagedBitbucketSelection()}
+      `;
+    }
+    const busy = this.managedBusy;
+    return html`
+      ${this.renderManagedStatus()}
+      <div
+        class="managed-actions"
+        style="display:flex; gap:0.5rem; margin-bottom:1rem;"
+      >
+        <sl-button
+          size="small"
+          name="bitbucket-reconnect"
+          .loading=${busy}
+          ?disabled=${busy}
+          @click=${this.startBitbucketReconnect}
+        >
+          <sl-icon slot="prefix" name="arrow-repeat"></sl-icon>
+          Reconnect
+        </sl-button>
+        <sl-button
+          size="small"
+          variant="danger"
+          outline
+          name="bitbucket-disconnect"
+          .loading=${busy}
+          ?disabled=${busy || this.managedStatus?.state === 'disconnected'}
+          @click=${this.disconnectBitbucket}
+        >
+          <sl-icon slot="prefix" name="plug"></sl-icon>
+          Disconnect
+        </sl-button>
+      </div>
+      ${this.renderManagedBitbucketSelection()}
+    `;
+  }
+
+  /** Workspace/repository selection from discovery, or plain inputs. */
+  renderManagedBitbucketSelection() {
+    const workspaces = this.managedDiscovery?.workspaces ?? [];
+    const repositories = this.managedDiscovery?.repositories ?? null;
+    return html`
+      ${
+        workspaces.length > 0
+          ? html`
+              <sl-select
+                label="Workspace"
+                name="bitbucket_managed_workspace"
+                .value=${this.managedWorkspace}
+                help-text="Accessible to the authorizing actor. Selection limits Preloop, not the token."
+                @sl-change=${(e: any) => {
+                  this.managedWorkspace = e.target.value;
+                  this.managedRepository = '';
+                  void this.loadManagedRepositories(e.target.value);
+                }}
+              >
+                ${workspaces.map(
+                  (ws) => html`
+                    <sl-option value=${ws.slug}
+                      >${ws.name || ws.slug}</sl-option
+                    >
+                  `
+                )}
+              </sl-select>
+            `
+          : html`
+              <sl-input
+                label="Workspace"
+                name="bitbucket_managed_workspace"
+                .value=${this.managedWorkspace}
+                @sl-input=${(e: any) => (this.managedWorkspace = e.target.value)}
+                help-text="The workspace ID from bitbucket.org/<workspace>."
+                required
+              ></sl-input>
+            `
+      }
+      ${
+        repositories && repositories.length > 0
+          ? html`
+              <sl-select
+                label="Repository"
+                name="bitbucket_managed_repository"
+                .value=${this.managedRepository}
+                clearable
+                help-text="Optional: limit the tracker to one accessible repository."
+                @sl-change=${(e: any) =>
+                  (this.managedRepository = e.target.value ?? '')}
+              >
+                ${repositories.map(
+                  (repo) => html`
+                    <sl-option value=${repo.slug}
+                      >${repo.full_name || repo.slug}</sl-option
+                    >
+                  `
+                )}
+              </sl-select>
+            `
+          : html`
+              <sl-input
+                label="Repository"
+                name="bitbucket_managed_repository"
+                .value=${this.managedRepository}
+                @sl-input=${(e: any) => (this.managedRepository = e.target.value)}
+                help-text="Optional: limit the tracker to one repository slug."
+              ></sl-input>
+            `
+      }
+    `;
+  }
+
+  /** Managed completion for a new tracker: actor, selection, no token. */
+  renderManagedBitbucketCompletion() {
+    return html`
+      ${this.renderManagedStatus()} ${this.renderManagedBitbucketSelection()}
+    `;
+  }
+
   /** Bitbucket Cloud settings: workspace, token kind and git identity. */
   renderBitbucketFields() {
+    if (this.isManagedBitbucket && this.tracker) {
+      return this.renderManagedBitbucketEdit();
+    }
+    if (this.isManagedBitbucket || this.bitbucketConnectHandle) {
+      return this.renderManagedBitbucketCompletion();
+    }
+    const manualFields = this.renderBitbucketManualFields();
+    if (!this.bitbucketCloudOAuthEnabled || this.tracker) {
+      return manualFields;
+    }
+    return html`
+      <div style="margin-bottom: 1rem;">
+        <sl-button
+          variant="primary"
+          size="large"
+          name="bitbucket-connect"
+          style="width: 100%;"
+          .loading=${this.managedBusy}
+          @click=${this.startBitbucketConnect}
+        >
+          <sl-icon slot="prefix" name="shield-lock"></sl-icon>
+          Connect Bitbucket
+        </sl-button>
+        <p
+          style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
+        >
+          Recommended: browser consent with automatic token renewal
+        </p>
+      </div>
+      <details class="bitbucket-manual-fallback" style="margin-bottom: 1rem;">
+        <summary
+          style="cursor: pointer; color: var(--sl-color-neutral-600); font-size: var(--sl-font-size-small);"
+        >
+          Or paste a token instead (not renewed automatically)
+        </summary>
+        ${manualFields}
+        <sl-input
+          type="password"
+          label="API Key"
+          name="api_key"
+          .value=${this.trackerToken}
+          @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
+        ></sl-input>
+      </details>
+    `;
+  }
+
+  /** Pasted-token Bitbucket Cloud fields (unmanaged). */
+  renderBitbucketManualFields() {
     const isAccessToken =
       this.bitbucketAuthType === 'api_token' &&
       this.bitbucketTokenKind === 'access_token';
@@ -1023,6 +1626,20 @@ export class AddTrackerModal extends LitElement {
 
   /** Connection details sent for a Bitbucket tracker. */
   bitbucketConnectionDetails(): Record<string, string> {
+    if (this.isManagedBitbucket) {
+      // Managed grants carry no token kind, email or manual expiry; the
+      // provider service owns the rest of the connection metadata.
+      const managed: Record<string, string> = {
+        workspace: (this.managedWorkspace || this.bitbucketWorkspace).trim(),
+      };
+      const repository = (
+        this.managedRepository || this.bitbucketRepository
+      ).trim();
+      if (repository) {
+        managed.repository = repository;
+      }
+      return managed;
+    }
     const details: Record<string, string> = {
       workspace: this.bitbucketWorkspace.trim(),
     };
@@ -1121,6 +1738,29 @@ export class AddTrackerModal extends LitElement {
   }
 
   renderStep2() {
+    if (this.managedOfflineEdit) {
+      const rules = this.tracker?.scope_rules ?? [];
+      return html`
+        <h2>Configure Project Scope</h2>
+        <sl-alert variant="neutral" open class="managed-offline-scope">
+          <sl-icon slot="icon" name="lock"></sl-icon>
+          <strong>Scope is kept as stored.</strong> The managed provider is not
+          configured on this deployment, so repositories cannot be listed and
+          the ${rules.length} stored scope rule${rules.length === 1 ? '' : 's'}
+          below are left unchanged by Save. Enable the provider to change them.
+        </sl-alert>
+        <ul class="managed-offline-rules">
+          ${rules.map(
+            (rule: any) => html`
+              <li>
+                ${rule.rule_type} ${rule.scope_type}
+                <code>${rule.identifier}</code>
+              </li>
+            `
+          )}
+        </ul>
+      `;
+    }
     return html`
       <h2>Configure Project Scope</h2>
       <div>
@@ -1214,7 +1854,38 @@ export class AddTrackerModal extends LitElement {
       return;
     }
 
+    // A pasted token is never required for a managed Bitbucket grant.
+    if (
+      this.trackerType === 'bitbucket' &&
+      !this.isManagedBitbucket &&
+      this.bitbucketCloudOAuthEnabled &&
+      !this.tracker &&
+      !this.trackerToken
+    ) {
+      this.isLoading = false;
+      this.errorMessage =
+        'Connect Bitbucket, or expand the pasted-token option and enter a token.';
+      return;
+    }
+
     try {
+      if (
+        this.isManagedBitbucket &&
+        this.tracker &&
+        !this.bitbucketCloudOAuthEnabled
+      ) {
+        // Provider unavailable on this deployment: the binding and preview
+        // endpoints cannot answer, so the existing scope is edited offline
+        // from the tracker's own rules. Nothing is bound or resolved.
+        this.seedScopeFromExistingRules();
+        return;
+      }
+      if (this.isManagedBitbucket) {
+        // Managed grant: bind the selection (or keep it on edit) and reuse
+        // the scope preview through the tracker id. No token leaves the row.
+        await this.bindManagedSelectionAndPreview();
+        return;
+      }
       if (this.isEditingAppTracker) {
         // Editing an App tracker: the backend resolves the tracker's own
         // installation from the tracker id and lists the owners it can see,
@@ -1529,6 +2200,13 @@ export class AddTrackerModal extends LitElement {
       config: connectionDetails,
       connection_details: connectionDetails,
     };
+    if (this.managedOfflineEdit) {
+      // The project list behind the stored EXCLUDE/PROJECT rules could not
+      // be read, so the rules cannot be rebuilt. Omitting the key keeps the
+      // server from replacing them (update_tracker only touches scope_rules
+      // when present).
+      delete trackerData.scope_rules;
+    }
 
     // Add auth-specific fields
     if (this.authMethod === 'github_app') {
@@ -1546,6 +2224,13 @@ export class AddTrackerModal extends LitElement {
       trackerData.url = BITBUCKET_WEB_URL;
       trackerData.auth_type = this.bitbucketAuthType;
     }
+    if (this.isManagedBitbucket) {
+      // The managed tracker already exists (created by the consent
+      // completion). Only name, scope and selection are saved; the grant and
+      // its auth mode are never touched from here.
+      trackerData.auth_type = 'managed_oauth';
+      trackerData.api_key = 'unchanged';
+    }
     if (bitbucketDcDetails) {
       // The tracker URL is the canonical instance URL (origin plus context
       // path); it must match connection_details.instance_url on the backend.
@@ -1558,8 +2243,9 @@ export class AddTrackerModal extends LitElement {
 
     try {
       let response;
-      if (this.tracker) {
-        response = await this._api.updateTracker(this.tracker.id, trackerData);
+      const existingId = this.tracker?.id ?? this.managedTrackerId;
+      if (existingId) {
+        response = await this._api.updateTracker(existingId, trackerData);
       } else {
         response = await this._api.addTracker(trackerData);
       }

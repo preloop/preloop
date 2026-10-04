@@ -94,3 +94,94 @@ class TestResolveTrackerGitToken:
 
     async def test_missing_tracker_returns_none(self):
         assert await resolve_tracker_git_token(None) is None
+
+
+class TestManagedTrackerGitToken:
+    """Managed grants (issue #1065) resolve per call and never degrade."""
+
+    @staticmethod
+    def _managed(repository: str | None = "repo"):
+        from uuid import uuid4
+
+        tracker = MagicMock()
+        tracker.id = uuid4()
+        tracker.account_id = uuid4()
+        tracker.tracker_type = "bitbucket"
+        tracker.auth_type = "managed_oauth"
+        tracker.resolved_api_key = ""
+        tracker.connection_details = {"workspace": "ws", "repository": repository}
+        return tracker
+
+    @pytest.fixture
+    def resolver(self):
+        from datetime import datetime, timedelta, timezone
+        from types import SimpleNamespace
+
+        from preloop.services import managed_credentials as mc
+
+        calls: list[dict] = []
+
+        class Resolver:
+            outcome: object = SimpleNamespace(
+                access_token="managed-token-a",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                rotation_version=4,
+                git_username="x-token-auth",
+            )
+
+            async def resolve(self, **kwargs):
+                calls.append(kwargs)
+                if isinstance(self.outcome, BaseException):
+                    raise self.outcome
+                return self.outcome
+
+        instance = Resolver()
+        instance.calls = calls
+        mc.register_managed_resolver("bitbucket", instance)
+        yield instance
+        mc.register_managed_resolver("bitbucket", None)
+
+    async def test_resolves_fresh_token_bound_to_tenant_tracker_and_repository(
+        self, resolver
+    ) -> None:
+        tracker = self._managed()
+        assert await resolve_tracker_git_token(tracker) == "managed-token-a"
+        call = resolver.calls[0]
+        assert call["account_id"] == tracker.account_id
+        assert call["tracker_id"] == tracker.id
+        assert call["provider"] == "bitbucket"
+        assert call["repository"] == "repo"
+        assert call["force_refresh"] is False
+
+    async def test_reconnect_required_raises_instead_of_degrading(
+        self, resolver
+    ) -> None:
+        from preloop.services.managed_credentials import (
+            ManagedReconnectRequiredError,
+        )
+
+        resolver.outcome = ManagedReconnectRequiredError("invalid_grant")
+        with pytest.raises(ManagedReconnectRequiredError) as error:
+            await resolve_tracker_git_token(self._managed())
+        assert "Reconnect" in error.value.actionable_message()
+
+    async def test_missing_resolver_raises_instead_of_anonymous(self) -> None:
+        from preloop.services.managed_credentials import (
+            ManagedCredentialUnavailableError,
+        )
+
+        with pytest.raises(ManagedCredentialUnavailableError) as error:
+            await resolve_tracker_git_token(self._managed())
+        assert error.value.code == "resolver_missing"
+
+    async def test_stale_resolved_api_key_is_never_used(self, resolver) -> None:
+        tracker = self._managed()
+        tracker.resolved_api_key = "stale-pasted-token"
+        assert await resolve_tracker_git_token(tracker) == "managed-token-a"
+
+    def test_git_username_is_literal_x_token_auth(self) -> None:
+        from preloop.services.tracker_git_token import resolve_tracker_git_username
+
+        tracker = self._managed()
+        tracker.connection_details = {"workspace": "ws", "username": "jane"}
+        assert resolve_tracker_git_username(tracker) == "x-token-auth"

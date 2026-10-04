@@ -389,3 +389,122 @@ class TestBitbucketCredentialEmail:
             auth_type="oauth_token",
         )
         assert "email" not in creds
+
+
+class TestManagedCloudCredentials:
+    """Managed grants (issue #1065) in clone credentials and feedback reads."""
+
+    @staticmethod
+    def _managed_tracker():
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            account_id=uuid.uuid4(),
+            name="Bitbucket (managed)",
+            tracker_type="bitbucket",
+            auth_type="managed_oauth",
+            resolved_api_key="",
+            url="https://bitbucket.org",
+            oauth_installation_id=None,
+            connection_details={
+                "workspace": "ws",
+                "repository": "repo",
+                "auth_type": "oauth_token",
+                "token_kind": "access_token",
+                "managed_oauth": True,
+            },
+        )
+
+    async def test_clone_credentials_carry_fresh_managed_token(
+        self, orchestrator: FlowExecutionOrchestrator
+    ) -> None:
+        tracker = self._managed_tracker()
+        with (
+            patch("preloop.models.crud.crud_tracker.get", return_value=tracker),
+            patch(
+                "preloop.services.flow_orchestrator.resolve_tracker_git_token",
+                new=AsyncMock(return_value="managed-token-a"),
+            ),
+        ):
+            creds = await orchestrator._get_tracker_credentials_by_id(str(tracker.id))
+        assert creds["token"] == "managed-token-a"
+        assert creds["auth_type"] == "managed_oauth"
+        assert creds["username"] == "x-token-auth"
+        assert "email" not in creds
+        credential = orchestrator._build_clone_credential(
+            "https://bitbucket.org/ws/repo.git", creds
+        )
+        assert credential.username == "x-token-auth"
+        assert "managed-token-a" not in credential.repo_url
+
+    async def test_reconnect_required_fails_the_run_instead_of_anonymous_clone(
+        self, orchestrator: FlowExecutionOrchestrator
+    ) -> None:
+        from preloop.services.managed_credentials import (
+            ManagedReconnectRequiredError,
+        )
+
+        tracker = self._managed_tracker()
+        with (
+            patch("preloop.models.crud.crud_tracker.get", return_value=tracker),
+            patch(
+                "preloop.services.flow_orchestrator.resolve_tracker_git_token",
+                new=AsyncMock(
+                    side_effect=ManagedReconnectRequiredError(
+                        "invalid_grant", provider="bitbucket"
+                    )
+                ),
+            ),
+        ):
+            with pytest.raises(RuntimeError) as error:
+                await orchestrator._get_tracker_credentials_by_id(str(tracker.id))
+            assert "requires reconnect" in str(error.value)
+            assert "invalid_grant" in str(error.value)
+            # The same failure through the attach path propagates too: no
+            # silent "no credentials" warning for a managed grant.
+            context = {"git_credentials_map": {}}
+            orchestrator.trigger_event_data["tracker_id"] = str(tracker.id)
+            with patch.object(
+                orchestrator, "_resolve_project_tracker_id", return_value=None
+            ):
+                with pytest.raises(RuntimeError):
+                    await orchestrator._attach_trigger_tracker_credentials(context)
+            assert context["git_credentials_map"] == {}
+
+    async def test_feedback_provider_binds_the_grant_for_late_reads(self) -> None:
+        from preloop.services.flow_feedback_provider import FeedbackProvider
+
+        tracker = self._managed_tracker()
+        thread = SimpleNamespace(
+            tracker_id=tracker.id,
+            account_id=tracker.account_id,
+            provider="bitbucket",
+            repository_id="{repo-uuid}",
+            pr_number=7,
+            policy={},
+        )
+        db = MagicMock(spec=Session)
+        create = AsyncMock(return_value=MagicMock())
+        with (
+            patch(
+                "preloop.services.flow_feedback_provider.crud_tracker.get",
+                return_value=tracker,
+            ),
+            patch(
+                "preloop.services.flow_feedback_provider.crud_flow_feedback.release_read"
+            ),
+            patch(
+                "preloop.services.flow_feedback_provider.create_tracker_client",
+                new=create,
+            ),
+        ):
+            await FeedbackProvider.for_thread(db, thread)
+        args, kwargs = create.await_args
+        assert args[0] == "bitbucket"
+        assert args[2] == ""  # never a stored key for a managed grant
+        assert args[3]["auth_type"] == "managed_oauth"
+        source = kwargs["credential_source"]
+        assert (source.account_id, source.tracker_id) == (
+            tracker.account_id,
+            tracker.id,
+        )
+        assert source.repository == "repo"

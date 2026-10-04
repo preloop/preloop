@@ -151,13 +151,22 @@ class TrackerClient:
                 tracker.id, tracker.resolved_api_key, connection_details
             )
         elif self.tracker_type == "bitbucket":
+            from preloop.services.managed_credentials import (
+                tracker_credential_source,
+            )
+
             from ..trackers.bitbucket import BitbucketTracker
 
             connection_details["auth_type"] = (
                 getattr(tracker, "auth_type", None) or "api_token"
             )
+            # A managed grant resolves a fresh credential before each request
+            # for the lifetime of this scanner client; there is no stored key.
             self.client = BitbucketTracker(
-                tracker.id, tracker.resolved_api_key, connection_details
+                tracker.id,
+                tracker.resolved_api_key,
+                connection_details,
+                credential_source=tracker_credential_source(tracker),
             )
         else:
             raise ValueError(f"Unsupported tracker type: {self.tracker_type}")

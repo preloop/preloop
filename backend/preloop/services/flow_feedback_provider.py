@@ -16,6 +16,7 @@ from urllib.parse import quote
 from preloop.models import models
 from preloop.models.crud import crud_tracker, crud_flow_feedback
 from preloop.models.crud.oauth_app_installation import crud_oauth_app_installation
+from preloop.services.managed_credentials import tracker_credential_source
 from preloop.sync.trackers import create_tracker_client
 from preloop.sync.exceptions import TrackerPermissionError, TrackerResponseError
 from sqlalchemy.orm import Session
@@ -445,6 +446,10 @@ def feedback_tracker_options(db: Session, tracker: Any) -> dict[str, Any]:
     """Materialize authoritative tracker authentication before network I/O."""
     options = deepcopy({"url": tracker.url, **(tracker.connection_details or {})})
     auth_type = getattr(tracker, "auth_type", None) or "api_token"
+    if tracker.tracker_type == "bitbucket":
+        # The row's auth_type is authoritative: provider metadata may record
+        # oauth_token for git-username purposes while the grant is managed.
+        options["auth_type"] = auth_type
     if tracker.tracker_type == "github":
         options["auth_type"] = auth_type
         options.pop("github_installation_id", None)
@@ -483,6 +488,9 @@ class FeedbackProvider:
             tracker.resolved_api_key,
             feedback_tracker_options(db, tracker),
         )
+        # Feedback reads happen long after launch; a managed grant resolves a
+        # fresh credential per request instead of reusing a launch token.
+        credential_source = tracker_credential_source(tracker)
         snapshot = SimpleNamespace(
             provider=thread.provider,
             repository_id=thread.repository_id,
@@ -490,7 +498,9 @@ class FeedbackProvider:
             policy=deepcopy(thread.policy),
         )
         crud_flow_feedback.release_read(db)
-        client = await create_tracker_client(*tracker_args)
+        client = await create_tracker_client(
+            *tracker_args, credential_source=credential_source
+        )
         if client is None:
             raise ValueError("feedback provider unavailable")
         return cls(client, snapshot)

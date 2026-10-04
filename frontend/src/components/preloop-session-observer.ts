@@ -1986,6 +1986,18 @@ export class PreloopSessionObserver extends LitElement {
     await this.scrollToArtifact(id);
   }
 
+  /**
+   * Open a session picked in the list; an artifact icon also applies the
+   * header kind filter, after selection has reset it.
+   */
+  private async openFromList(
+    sessionId: string,
+    artifactKind: ArtifactKindGroup | null
+  ): Promise<void> {
+    await this.selectSession(sessionId, { userInitiated: true });
+    if (artifactKind) this.setArtifactKindFilter(artifactKind);
+  }
+
   private setArtifactKindFilter(kind: ArtifactKindGroup | null): void {
     this.artifactKindFilter = kind;
     if (!kind) return;
@@ -2889,9 +2901,10 @@ export class PreloopSessionObserver extends LitElement {
                         this.observedSessions.length === 0 ? this.emptyText : ''
                       }
                       @session-selected=${(event: CustomEvent) =>
-                        this.selectSession(event.detail.sessionId, {
-                          userInitiated: true,
-                        })}
+                        this.openFromList(
+                          event.detail.sessionId,
+                          event.detail.artifactKind ?? null
+                        )}
                     ></session-list-panel>
                   </div>
                 `

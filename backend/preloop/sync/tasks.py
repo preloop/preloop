@@ -692,6 +692,10 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
         if should_delete_external and webhooks:
             try:
                 # Create a tracker client to delete webhooks
+                from preloop.services.managed_credentials import (
+                    tracker_credential_source,
+                )
+
                 client = await create_tracker_client(
                     tracker_type=tracker.tracker_type,
                     tracker_id=tracker_id,
@@ -699,7 +703,13 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
                     connection_details={
                         "url": tracker.url,
                         **(tracker.connection_details or {}),
+                        **(
+                            {"auth_type": tracker.auth_type}
+                            if tracker.tracker_type == "bitbucket"
+                            else {}
+                        ),
                     },
+                    credential_source=tracker_credential_source(tracker),
                 )
 
                 for webhook in webhooks:

@@ -41,6 +41,11 @@ from preloop.models.crud import (
 )
 
 from preloop.services.dynamic_mcp_server import get_tracker_types, has_tracker
+from preloop.services.managed_credentials import (
+    MANAGED_AUTH_TYPE,
+    is_managed_tracker,
+    tracker_credential_source,
+)
 from preloop.services.tracker_tool_unlock import (
     enabled_map_from_configs,
     unlocked_tool_names_after_tracker,
@@ -64,6 +69,15 @@ router = APIRouter()
 # Auth types that authenticate through an OAuth App installation instead of a
 # stored API token.
 OAUTH_AUTH_TYPES = ("github_app", "oauth_app")
+
+MANAGED_TRACKER_CREATE_DETAIL = (
+    "Managed Bitbucket Cloud connections are created through the browser "
+    "consent flow (Connect Bitbucket), not by pasting a token."
+)
+MANAGED_TRACKER_TOKEN_DETAIL = (
+    "This tracker authenticates through a managed Bitbucket Cloud connection. "
+    "It has no pasted token to replace: reconnect or disconnect it instead."
+)
 
 # OAuthAppInstallation.external_id is a BigInteger, so an id outside the signed
 # 64-bit range can never match a stored installation.
@@ -191,6 +205,11 @@ def _apply_tracker_auth(
                 status_code=400,
                 detail="Stored credentials are bound to the Data Center instance",
             )
+    if is_managed_tracker(tracker):
+        # No token exists for a managed grant; the client resolves one per
+        # request through the provider plugin bound to this tracker.
+        request_data.api_key = ""
+        return {"auth_type": MANAGED_AUTH_TYPE}
     if tracker.auth_type in OAUTH_AUTH_TYPES:
         installation = tracker.oauth_installation
         if installation is None:
@@ -283,6 +302,20 @@ def _bitbucket_auth_details(
         if tracker is not None
         else (request_data.auth_type or "api_token")
     )
+    if tracker is None and auth_type == MANAGED_AUTH_TYPE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=MANAGED_TRACKER_CREATE_DETAIL,
+        )
+    if tracker is not None and is_managed_tracker(tracker):
+        if not str(
+            (request_data.connection_details or {}).get("workspace") or ""
+        ).strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Bitbucket tracker requires 'workspace' in connection_details.",
+            )
+        return {"auth_type": MANAGED_AUTH_TYPE}
     try:
         validate_bitbucket_config(
             api_key=request_data.api_key,
@@ -360,6 +393,15 @@ async def register_tracker(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Missing required fields: name, type",
+            )
+
+        # A managed grant is created by the provider's consent completion
+        # endpoint; registering one here would need a token that must never be
+        # pasted, and a pasted token is never silently converted either.
+        if auth_type == MANAGED_AUTH_TYPE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=MANAGED_TRACKER_CREATE_DETAIL,
             )
 
         # For github_app auth, api_key is not required
@@ -895,7 +937,51 @@ async def update_tracker(
     if update_data.get("api_key") == "unchanged":
         del update_data["api_key"]
 
-    if tracker.tracker_type == TrackerType.BITBUCKET.value and (
+    if is_managed_tracker(tracker):
+        # A managed grant has no pasted token and keeps its managed identity:
+        # editing scope or metadata never converts it, and a token cannot be
+        # pasted over it. Reconnect/disconnect belong to the provider endpoints.
+        if update_data.get("api_key"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=MANAGED_TRACKER_TOKEN_DETAIL,
+            )
+        details = update_data.get("connection_details")
+        if details is not None:
+            previous = dict(tracker.connection_details or {})
+            merged = dict(details)
+            # Managed metadata (actor, state, token kind) is owned by the
+            # provider service; keep it across console edits of other fields.
+            for key in (
+                "managed_oauth",
+                "managed_state",
+                "reconnect_reason",
+                "actor",
+                "token_kind",
+                "provider",
+            ):
+                if key in previous and key not in merged:
+                    merged[key] = previous[key]
+            merged["auth_type"] = (
+                previous.get("auth_type") or merged.get("auth_type") or "oauth_token"
+            )
+            merged.pop("token_expires_at", None)
+            merged.pop("email", None)
+            if (merged.get("api_url") or "").rstrip("/") not in (
+                "",
+                "https://api.bitbucket.org/2.0",
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Managed Bitbucket connections are pinned to the Bitbucket Cloud API origin.",
+                )
+            if not str(merged.get("workspace") or "").strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Bitbucket tracker requires 'workspace' in connection_details.",
+                )
+            update_data["connection_details"] = merged
+    elif tracker.tracker_type == TrackerType.BITBUCKET.value and (
         "api_key" in update_data or "connection_details" in update_data
     ):
         try:
@@ -1114,6 +1200,9 @@ async def test_connection_and_list_orgs(
                 **(test_data.connection_details or {}),
                 **auth_details,
             },
+            credential_source=(
+                tracker_credential_source(tracker) if test_data.tracker_id else None
+            ),
         )
         if not client:
             raise ValueError(
@@ -1214,6 +1303,9 @@ async def list_projects_for_org(
                 **(project_data.connection_details or {}),
                 **auth_details,
             },
+            credential_source=(
+                tracker_credential_source(tracker) if project_data.tracker_id else None
+            ),
         )
         if not client:
             raise HTTPException(
