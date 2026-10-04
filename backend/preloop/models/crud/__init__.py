@@ -41,6 +41,7 @@ from .account import CRUDAccount
 from .account_halt import CRUDAccountHalt, crud_account_halt
 from .agent_control_command import CRUDAgentControlCommand
 from .api_key import CRUDApiKey
+from .ci_principal import CiAuthorizationContext, CRUDCiPrincipal, crud_ci_principal
 from .api_usage import CRUDApiUsage
 from .audit_log import CRUDAuditLog
 from .base import CRUDBase
@@ -265,6 +266,9 @@ __all__ = [
     "CRUDEmbeddingModel",
     "CRUDIssueEmbedding",
     "CRUDApiKey",
+    "CiAuthorizationContext",
+    "CRUDCiPrincipal",
+    "crud_ci_principal",
     "CRUDApiUsage",
     "CRUDAuditLog",
     "CRUDComment",

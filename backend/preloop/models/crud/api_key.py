@@ -119,7 +119,12 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         return db_obj, token_value
 
     def get_by_key(
-        self, db: Session, *, key: str, account_id: Optional[str] = None
+        self,
+        db: Session,
+        *,
+        key: str,
+        account_id: Optional[str] = None,
+        include_restricted: bool = False,
     ) -> Optional[ApiKey]:
         """Get API key by key string."""
         key_hash = self.build_key_hash(key)
@@ -131,7 +136,16 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         )
         if account_id:
             query = query.filter(ApiKey.account_id == account_id)
-        return query.first()
+        key_obj = query.first()
+        # Custom MCP/gateway/session auth also uses this lookup. Until a caller
+        # explicitly opts into machine authorization, never return a CI key.
+        if (
+            key_obj
+            and key_obj.requires_machine_authorization is True
+            and not include_restricted
+        ):
+            return None
+        return key_obj
 
     def get_active_by_user(
         self,
@@ -147,6 +161,13 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             db.query(ApiKey)
             .join(User, ApiKey.user_id == User.id)
             .filter(User.username == username, ApiKey.is_active.is_(True))
+        )
+        # Human key administration must use the CI lifecycle seam for CI keys.
+        query = query.filter(
+            ApiKey.credential_type == "legacy",
+            ApiKey.credential_version.is_(None),
+            ApiKey.ci_principal_id.is_(None),
+            ApiKey.ci_actions.is_(None),
         )
         if account_id:
             query = query.filter(User.account_id == account_id)
@@ -530,6 +551,13 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             .join(User, ApiKey.user_id == User.id)
             .filter(User.username == username)
         )
+        # Human key administration must use the CI lifecycle seam for CI keys.
+        query = query.filter(
+            ApiKey.credential_type == "legacy",
+            ApiKey.credential_version.is_(None),
+            ApiKey.ci_principal_id.is_(None),
+            ApiKey.ci_actions.is_(None),
+        )
         if account_id:
             query = query.filter(User.account_id == account_id)
         return query.order_by(ApiKey.created_at.desc()).all()
@@ -547,6 +575,13 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             db.query(ApiKey)
             .join(User, ApiKey.user_id == User.id)
             .filter(ApiKey.id == key_id, User.username == username)
+        )
+        # Human key administration must use the CI lifecycle seam for CI keys.
+        query = query.filter(
+            ApiKey.credential_type == "legacy",
+            ApiKey.credential_version.is_(None),
+            ApiKey.ci_principal_id.is_(None),
+            ApiKey.ci_actions.is_(None),
         )
         if account_id:
             query = query.filter(User.account_id == account_id)

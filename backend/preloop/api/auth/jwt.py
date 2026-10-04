@@ -178,6 +178,18 @@ def _authenticate_with_api_key(
     check, so a browser adapter can flush steps after the run; a missing
     session is still rejected.
     """
+    if (
+        api_key is not None
+        and getattr(api_key, "requires_machine_authorization", False) is True
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "ci_credential_denied",
+                "message": "Machine authorization required",
+            },
+        )
+
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

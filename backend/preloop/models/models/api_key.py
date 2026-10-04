@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.types import JSON, Boolean, DateTime, String
+from sqlalchemy.types import JSON, Boolean, DateTime, Integer, String
 
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -80,6 +80,32 @@ class ApiKey(Base):
     context_data: Mapped[Optional[dict]] = mapped_column(
         JSON, nullable=True, default=None
     )
+
+    # Explicit mode marker. Null grants or malformed versions must never make
+    # this credential look like a legacy account key.
+    credential_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="legacy", server_default="legacy"
+    )
+    credential_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ci_principal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ci_principal.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    ci_actions: Mapped[Optional[List[str]]] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+
+    @property
+    def requires_machine_authorization(self) -> bool:
+        """Explicit machine markers cannot fall back to owner authentication."""
+        return (
+            self.credential_type not in (None, "legacy")
+            or self.credential_version is not None
+            or self.ci_principal_id is not None
+            or self.ci_actions is not None
+        )
 
     # Relationships
     account: Mapped["Account"] = relationship("Account")
