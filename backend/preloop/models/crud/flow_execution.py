@@ -1172,6 +1172,54 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .all()
         )
 
+    def get_recent_for_pull_request(
+        self,
+        db: Session,
+        *,
+        flow_id: uuid.UUID,
+        tracker_object_key: str,
+        account_id: Optional[uuid.UUID] = None,
+        limit: int = TRACKER_OBJECT_LOOKUP_LIMIT,
+    ) -> List[FlowExecution]:
+        """This flow's most recent executions on one pull request, any status.
+
+        Used to recognise a late provider delivery: a pull request state that
+        is older than one a run has already seen, whether that run is still
+        active or has finished.
+
+        Args:
+            db: Database session.
+            flow_id: Flow to look in.
+            tracker_object_key: ``source:repo:pr:id`` key of the request.
+            account_id: Optional owning account.
+            limit: Maximum rows, newest first.
+
+        Returns:
+            Executions with ``id``, ``status`` and ``trigger_event_details``
+            loaded. Empty when the key has no payload filter.
+        """
+        payload_match = pull_request_payload_match(tracker_object_key)
+        if payload_match is None:
+            return []
+        query = (
+            db.query(FlowExecution)
+            .options(
+                load_only(
+                    FlowExecution.id,
+                    FlowExecution.status,
+                    FlowExecution.trigger_event_details,
+                )
+            )
+            .filter(FlowExecution.flow_id == flow_id, payload_match)
+        )
+        if account_id:
+            query = query.join(Flow).filter(Flow.account_id == account_id)
+        return (
+            query.order_by(FlowExecution.start_time.desc())
+            .limit(max(1, int(limit)))
+            .all()
+        )
+
     def get_running_by_flow(
         self,
         db: Session,

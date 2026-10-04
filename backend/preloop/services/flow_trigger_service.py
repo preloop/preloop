@@ -1042,12 +1042,13 @@ class FlowTriggerService:
         return version
 
     def _is_out_of_order_head(self, flow: Flow, event_data: Dict[str, Any]) -> bool:
-        """True when a Data Center PR update is older than an active run's.
+        """True when a Data Center PR update is older than one already seen.
 
         Data Center increments the pull request ``version`` on every change,
-        and deliveries are not ordered. A late delivery for an older head
+        and deliveries are not ordered. A late delivery for an older state
         must neither supersede the run on the newer head nor start a review
-        of the stale one.
+        of the stale one, whether the newer run is still active or has
+        already finished.
         """
         version = self._pull_request_version(event_data)
         if version is None:
@@ -1055,14 +1056,13 @@ class FlowTriggerService:
         object_key = self._extract_pr_object_key(event_data)
         if not object_key:
             return False
-        actives = crud_flow_execution.get_running_by_flow(
+        recent = crud_flow_execution.get_recent_for_pull_request(
             self.db,
             flow_id=flow.id,
             account_id=flow.account_id,
-            running_statuses=list(TRACKER_OBJECT_ACTIVE_STATUSES),
             tracker_object_key=object_key,
         )
-        for execution in actives:
+        for execution in recent:
             exec_event = self._execution_event_data(execution)
             if self._extract_pr_object_key(exec_event) != object_key:
                 continue

@@ -189,6 +189,41 @@ async def test_out_of_order_head_does_not_supersede_the_newer_run(
 
 
 @pytest.mark.asyncio
+async def test_late_older_head_after_the_newer_run_finished_is_skipped(
+    db_session: Session, flow, test_user, test_tracker
+) -> None:
+    service = FlowTriggerService(db_session)
+    older, newer = "a" * 40, "b" * 40
+    await deliver(
+        service,
+        flow,
+        dc_event(
+            "pr:from_ref_updated",
+            account_id=test_user.account_id,
+            tracker_id=test_tracker.id,
+            delivery_id="req-new",
+            mutate=lambda raw: set_head(raw, newer, 6, older),
+        ),
+    )
+    finished = executions_for(db_session, flow.id)
+    assert len(finished) == 1
+    finished[0].status = "SUCCEEDED"
+    db_session.flush()
+    await deliver(
+        service,
+        flow,
+        dc_event(
+            "pr:from_ref_updated",
+            account_id=test_user.account_id,
+            tracker_id=test_tracker.id,
+            delivery_id="req-old",
+            mutate=lambda raw: set_head(raw, older, 5, "c" * 40),
+        ),
+    )
+    assert [e.id for e in executions_for(db_session, flow.id)] == [finished[0].id]
+
+
+@pytest.mark.asyncio
 async def test_new_head_in_order_supersedes_the_older_run(
     db_session: Session, flow, test_user, test_tracker
 ) -> None:
