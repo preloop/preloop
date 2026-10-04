@@ -646,6 +646,39 @@ export class AddTrackerModal extends LitElement {
     return true;
   }
 
+  /**
+   * Scope step from the tracker's stored INCLUDE organization rules, for a
+   * managed tracker whose provider is not configured here. The workspace is
+   * the only organization a Bitbucket tracker has, so the tree is complete
+   * without a provider call; project exclusions are kept by handleSave only
+   * when their projects are loaded, which they are not in this mode.
+   */
+  private seedScopeFromExistingRules() {
+    const rules = this.tracker?.scope_rules ?? [];
+    const included: string[] = rules
+      .filter(
+        (rule: any) =>
+          rule.rule_type === 'INCLUDE' && rule.scope_type === 'ORGANIZATION'
+      )
+      .map((rule: any) => String(rule.identifier));
+    const workspace = (this.managedWorkspace || this.bitbucketWorkspace).trim();
+    const ids: string[] =
+      included.length > 0 ? included : workspace ? [workspace] : [];
+    if (ids.length === 0) {
+      this.errorMessage =
+        'This managed tracker has no workspace to scope; enable the managed provider to select one.';
+      return;
+    }
+    this.orgs = ids.map((id) => ({ id, name: id }));
+    this.projects = {};
+    this.selectedOrgs = {};
+    for (const id of ids) {
+      this.selectedOrgs[id] = true;
+    }
+    this.includeFutureProjects = true;
+    this.step = 2;
+  }
+
   async startBitbucketReconnect() {
     if (!this.managedTrackerId) {
       return;
@@ -1325,8 +1358,9 @@ export class AddTrackerModal extends LitElement {
           <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
           <strong>Managed Bitbucket connections are unavailable here.</strong>
           This tracker was connected through a managed provider that is not
-          configured on this deployment. Its scope can still be edited; it
-          cannot be reconnected or converted to a pasted token.
+          configured on this deployment. Its name and workspace scope can still
+          be saved from the stored rules; it cannot test the connection, be
+          reconnected, or be converted to a pasted token.
         </sl-alert>
         ${this.renderManagedBitbucketSelection()}
       `;
@@ -1803,6 +1837,17 @@ export class AddTrackerModal extends LitElement {
     }
 
     try {
+      if (
+        this.isManagedBitbucket &&
+        this.tracker &&
+        !this.bitbucketCloudOAuthEnabled
+      ) {
+        // Provider unavailable on this deployment: the binding and preview
+        // endpoints cannot answer, so the existing scope is edited offline
+        // from the tracker's own rules. Nothing is bound or resolved.
+        this.seedScopeFromExistingRules();
+        return;
+      }
       if (this.isManagedBitbucket) {
         // Managed grant: bind the selection (or keep it on edit) and reuse
         // the scope preview through the tracker id. No token leaves the row.

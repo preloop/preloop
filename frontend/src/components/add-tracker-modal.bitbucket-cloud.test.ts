@@ -546,8 +546,15 @@ describe('AddTrackerModal managed Bitbucket Cloud', () => {
       );
     });
 
-    it('keeps managed scope editing available when the flag is off', async () => {
+    it('keeps managed scope editing available when the flag is off, without provider calls', async () => {
       const { stubs, api: stubbedApi } = buildApi(sandbox, {});
+      // The provider routes are absent on this deployment: any call fails.
+      stubs.bindBitbucketRepository.rejects(new Error('not_configured'));
+      stubs.validateTrackerToken.resolves({
+        success: false,
+        message: 'no managed-provider plugin',
+        orgs: [],
+      });
       element = await fixture(
         html`<add-tracker-modal
           ._api=${stubbedApi}
@@ -562,12 +569,26 @@ describe('AddTrackerModal managed Bitbucket Cloud', () => {
         .exist;
       expect(root.querySelector('sl-input[name="api_key"]')).to.not.exist;
       expect(stubs.getBitbucketConnectionStatus).to.not.have.been.called;
+      (element as any).trackerName = 'Renamed';
       await element.testConnection();
-      expect(stubs.bindBitbucketRepository).to.have.been.calledOnceWith(
-        'managed-1',
-        { workspace: 'ws', repository: 'repo' }
-      );
+      expect(stubs.bindBitbucketRepository).to.not.have.been.called;
+      expect(stubs.validateTrackerToken).to.not.have.been.called;
+      expect((element as any).errorMessage).to.equal('');
       expect((element as any).step).to.equal(2);
+      expect((element as any).orgs).to.deep.equal([{ id: 'ws', name: 'ws' }]);
+      await element.handleSave();
+      expect(stubs.updateTracker).to.have.been.calledOnce;
+      const [savedId, payload] = stubs.updateTracker.firstCall.args;
+      expect(savedId).to.equal('managed-1');
+      expect(payload.name).to.equal('Renamed');
+      expect(payload.api_key).to.equal('unchanged');
+      expect(payload.connection_details).to.deep.equal({
+        workspace: 'ws',
+        repository: 'repo',
+      });
+      expect(payload.scope_rules).to.deep.equal([
+        { rule_type: 'INCLUDE', scope_type: 'ORGANIZATION', identifier: 'ws' },
+      ]);
     });
 
     it('edits a pasted OAuth token without converting it', async () => {
