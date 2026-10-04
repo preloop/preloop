@@ -38,3 +38,8 @@ Packages:
 - `nanobot-preloop`: standalone pinned Nanobot SDK process, owned bounded
   conversations, gateway model/MCP routing and enforced native approvals.
   See [setup and limits](nanobot-preloop/README.md).
+
+- `skyvern-preloop`: `preloop-skyvern` (pip install from this path),
+  `preloop-skyvern-import` CLI and a webhook handler that import a Skyvern
+  task's steps, screenshots, HAR, trace and recording into a runtime
+  session. See [the README](skyvern-preloop/README.md).
