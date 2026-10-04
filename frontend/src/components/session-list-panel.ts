@@ -90,6 +90,25 @@ export class SessionListPanel extends LitElement {
         width: 100%;
       }
 
+      .session-select {
+        appearance: none;
+        background: transparent;
+        border: 0;
+        color: inherit;
+        cursor: pointer;
+        display: block;
+        font: inherit;
+        padding: 0;
+        text-align: left;
+        width: 100%;
+      }
+
+      .session-select:focus-visible {
+        border-radius: var(--sl-border-radius-small);
+        outline: 2px solid var(--sl-color-primary-500);
+        outline-offset: 2px;
+      }
+
       .session-card:hover,
       .session-card.active {
         background: var(--sl-color-primary-50);
@@ -380,50 +399,60 @@ export class SessionListPanel extends LitElement {
           this.sessions,
           (session) => session.id,
           (session) => html`
-            <!-- A div with the button role, not a <button>: the artifact
-                 icons inside are buttons of their own, and buttons do not
-                 nest. -->
+            <!-- The card is a plain container. Selection is the real
+                 <button> below and the artifact icons are sibling buttons,
+                 so assistive technology reaches both (a role="button" card
+                 would flatten the icons away). A click anywhere else on the
+                 card still selects, for the mouse. -->
             <div
               class="session-card ${
                 this.activeSessionId === session.id ? 'active' : ''
               }"
-              role="button"
-              tabindex="0"
               @click=${() => this.selectSession(session)}
-              @keydown=${(event: KeyboardEvent) => {
-                if (event.target !== event.currentTarget) return;
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                event.preventDefault();
-                this.selectSession(session);
-              }}
             >
-              <div class="title-row">
-                <div class="title">${session.title}</div>
-                <sl-badge class="chip" variant=${this.getVariant(session)} pill>
-                  ${this.getLabel(session)}
-                </sl-badge>
-              </div>
-              ${
-                session.subtitle
-                  ? html`<div class="meta">${session.subtitle}</div>`
-                  : ''
-              }
-              <div class="meta">
-                Last activity ${this.formatDate(session.lastActivityAt)}
-              </div>
-              <div class="metric-row">
-                <div class="metric">
-                  ${formatNumber(session.totalRequests)} requests
+              <button
+                type="button"
+                class="session-select"
+                aria-current=${
+                  this.activeSessionId === session.id ? 'true' : 'false'
+                }
+                @click=${(event: Event) => {
+                  event.stopPropagation();
+                  this.selectSession(session);
+                }}
+              >
+                <div class="title-row">
+                  <div class="title">${session.title}</div>
+                  <sl-badge
+                    class="chip"
+                    variant=${this.getVariant(session)}
+                    pill
+                  >
+                    ${this.getLabel(session)}
+                  </sl-badge>
                 </div>
-                <!-- Tokens before cost: the split says whether a session is
+                ${
+                  session.subtitle
+                    ? html`<div class="meta">${session.subtitle}</div>`
+                    : ''
+                }
+                <div class="meta">
+                  Last activity ${this.formatDate(session.lastActivityAt)}
+                </div>
+                <div class="metric-row">
+                  <div class="metric">
+                    ${formatNumber(session.totalRequests)} requests
+                  </div>
+                  <!-- Tokens before cost: the split says whether a session is
                      expensive because it reads a lot or writes a lot. -->
-                <div class="metric">
-                  <token-figures .usage=${session.tokenUsage}></token-figures>
-                  · ${formatCost(session.estimatedCost)}
+                  <div class="metric">
+                    <token-figures .usage=${session.tokenUsage}></token-figures>
+                    · ${formatCost(session.estimatedCost)}
+                  </div>
                 </div>
-              </div>
-              ${this.renderWasteBadge(session)}
-              ${this.renderNoteIndicator(session)}
+                ${this.renderWasteBadge(session)}
+                ${this.renderNoteIndicator(session)}
+              </button>
               ${this.renderArtifactCell(session)}
             </div>
           `
