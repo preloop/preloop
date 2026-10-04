@@ -71,6 +71,42 @@ def test_default_pii_types_are_unchanged_for_old_rules() -> None:
     assert decision.action == "allow"
 
 
+def test_implicit_rule_honours_the_account_default_types() -> None:
+    """sensitive_data.detectors.types drives rules that list no types."""
+    rule = _rule(detectors={"pii": True})
+    account_default = DetectorConfig(types=("iban",))
+    decision = evaluate_model_io(
+        rules=[rule],
+        target="model.request",
+        text="IBAN DE89 3704 0044 0532 0130 00 and alice@example.com",
+        detector_config=account_default,
+    )
+    assert decision.action == "deny"
+    assert decision.detector_summary["pii.types_found"] == ["iban"]
+
+
+def test_custom_pattern_timeout_is_a_detector_timeout() -> None:
+    """An account regex interrupted by the engine follows on_detector_timeout."""
+    rule = _rule(detectors={"pii": {"types": ["evil"]}})
+    config = DetectorConfig(custom_patterns=(CustomPattern("evil", r"(a|aa)+$"),))
+    denied = evaluate_model_io(
+        rules=[rule],
+        target="model.request",
+        text="a" * 40 + "!",
+        detector_config=config,
+    )
+    assert denied.action == "deny"
+    assert denied.detector_summary.get("detector_timeout") is True
+    lenient = _rule(detectors={"pii": {"types": ["evil"]}}, on_detector_timeout="allow")
+    allowed = evaluate_model_io(
+        rules=[lenient],
+        target="model.request",
+        text="a" * 40 + "!",
+        detector_config=config,
+    )
+    assert allowed.action == "allow"
+
+
 def test_custom_pattern_from_detector_config_reaches_the_rule() -> None:
     rule = _rule(detectors={"pii": {"types": ["employee_id"]}})
     config = DetectorConfig(

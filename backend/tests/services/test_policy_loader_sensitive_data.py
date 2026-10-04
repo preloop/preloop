@@ -67,6 +67,81 @@ def test_export_includes_stored_block(mocker) -> None:
     assert exported.sensitive_data.detectors.custom_patterns[0].name == "employee_id"
 
 
+def _stored_rule(types):
+    from preloop.services.policy.schema import ModelIORule
+
+    return ModelIORule.model_validate(
+        {
+            "id": "uses-custom",
+            "target": "model.request",
+            "detectors": {"pii": {"types": types}},
+            "conditions": [{"expression": "pii.found == true", "action": "deny"}],
+        }
+    )
+
+
+def test_apply_rejects_a_block_that_drops_a_type_a_stored_rule_uses(mocker) -> None:
+    mocker.patch(
+        "preloop.models.crud.crud_mcp_server.get_active_by_account", return_value=[]
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_approval_workflow.get_multi_by_account",
+        return_value=[],
+    )
+    mocker.patch(
+        "preloop.services.model_content_policy.load_model_io_rules",
+        return_value=[_stored_rule(["employee_id"])],
+    )
+    replace = mocker.patch(
+        "preloop.services.sensitive_data.policy_store.replace_sensitive_data_config"
+    )
+    applier = PolicyApplier(MagicMock(), uuid.uuid4())
+    policy = PolicyDocument.model_validate(
+        {
+            "version": "1.0",
+            "metadata": {"name": "p"},
+            "sensitive_data": {"detectors": {}},
+        }
+    )
+    result = applier.apply(policy, dry_run=False)
+    assert result.success is False
+    assert any(
+        "uses-custom" in error and "employee_id" in error for error in result.errors
+    )
+    replace.assert_not_called()
+    # Declaring the type again (or importing the rules too) is accepted.
+    ok = PolicyApplier(MagicMock(), uuid.uuid4()).apply(
+        PolicyDocument.model_validate(
+            {"version": "1.0", "metadata": {"name": "p"}, "sensitive_data": BLOCK}
+        ),
+        dry_run=True,
+    )
+    assert ok.success, ok.errors
+
+
+def test_export_tolerates_a_stored_mismatch(mocker) -> None:
+    account = MagicMock()
+    account.meta_data = {
+        "sensitive_data": {"detectors": {"locales": ["de"]}},
+        "model_io_rules": [_stored_rule(["employee_id"]).model_dump(mode="json")],
+    }
+    mocker.patch("preloop.models.crud.crud_account.get", return_value=account)
+    mocker.patch(
+        "preloop.models.crud.crud_mcp_server.get_multi_by_account", return_value=[]
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_approval_workflow.get_multi_by_account",
+        return_value=[],
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_tool_configuration.get_multi_by_account",
+        return_value=[],
+    )
+    exported = export_current_policy(MagicMock(), str(uuid.uuid4()))
+    assert exported.model_io[0].id == "uses-custom"
+    assert exported.sensitive_data.detectors.locales == ["de"]
+
+
 def test_export_omits_block_when_absent(mocker) -> None:
     account = MagicMock()
     account.meta_data = {}

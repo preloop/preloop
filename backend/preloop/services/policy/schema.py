@@ -73,6 +73,7 @@ from preloop.services.sensitive_data.detectors import (
     UnsafePatternError,
     compile_keyword_pattern,
     compile_safe_regex,
+    registered_type_ids,
 )
 
 
@@ -669,10 +670,13 @@ class SensitiveDataDetectorsConfig(BaseModel):
                 raise ValueError(f"Duplicate sensitive_data detector name: '{name}'")
             seen.add(name)
         if self.types:
+            registered = set(registered_type_ids())
             unknown = [
                 item
                 for item in self.types
-                if item not in BUILTIN_SENSITIVE_TYPES and item not in seen
+                if item not in BUILTIN_SENSITIVE_TYPES
+                and item not in seen
+                and item not in registered
             ]
             if unknown:
                 raise ValueError(
@@ -688,8 +692,10 @@ class SensitiveDataDetectorsConfig(BaseModel):
         ]
 
     def known_types(self) -> List[str]:
-        """Built-in ids plus this block's custom names."""
-        return list(BUILTIN_SENSITIVE_TYPES) + self.custom_names()
+        """Built-in ids, registered detector names and this block's custom names."""
+        return (
+            list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids() + self.custom_names()
+        )
 
 
 class SensitiveDataTarget(str, Enum):
@@ -904,9 +910,9 @@ class SensitiveDataConfig(BaseModel):
         return self
 
     def known_types(self) -> List[str]:
-        """Built-in ids plus configured custom names."""
+        """Built-in ids, registered detector names and configured custom names."""
         if self.detectors is None:
-            return list(BUILTIN_SENSITIVE_TYPES)
+            return list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
         return self.detectors.known_types()
 
     def default_types(self) -> List[str]:
@@ -1144,7 +1150,7 @@ class PolicyDocument(BaseModel):
         known_sensitive_types = (
             self.sensitive_data.known_types()
             if self.sensitive_data is not None
-            else list(BUILTIN_SENSITIVE_TYPES)
+            else list(BUILTIN_SENSITIVE_TYPES) + registered_type_ids()
         )
 
         if self.model_io:

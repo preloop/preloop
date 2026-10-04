@@ -411,7 +411,12 @@ BUILTIN_SERVER_NAME = "preloop-mcp"
 
 
 def _load_sensitive_data_policy(account_id: str):
-    """Load the account's ``sensitive_data`` block and detector config (sync)."""
+    """Load the account's ``sensitive_data`` block and detector config (sync).
+
+    Strict read: a database error or a malformed stored block raises, and
+    the caller refuses the call. "No rules" must mean the operator wrote
+    none, never that the policy could not be read.
+    """
     from preloop.services.sensitive_data.policy_store import (
         detector_config_from,
         load_sensitive_data_config,
@@ -419,7 +424,7 @@ def _load_sensitive_data_policy(account_id: str):
 
     db = next(get_db())
     try:
-        config = load_sensitive_data_config(db, account_id)
+        config = load_sensitive_data_config(db, account_id, strict=True)
     finally:
         db.close()
     if not config.has_tool_rules():

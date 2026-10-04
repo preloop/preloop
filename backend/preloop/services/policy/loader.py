@@ -951,6 +951,12 @@ class PolicyApplier:
                             f"not defined. {suggestion}"
                         )
 
+        if policy.sensitive_data is not None and policy.model_io is None:
+            # The block replaces the stored one while the stored model_io
+            # rules stay. A rule that scans a custom type the new block no
+            # longer declares would silently stop detecting and break export.
+            errors.extend(self._stored_model_io_type_conflicts(policy.sensitive_data))
+
         # Validate defaults.default_approval_workflow
         if policy.defaults and policy.defaults.default_approval_workflow:
             if policy.defaults.default_approval_workflow not in all_available_workflows:
@@ -963,6 +969,27 @@ class PolicyApplier:
                 )
 
         return errors
+
+    def _stored_model_io_type_conflicts(self, block: SensitiveDataConfig) -> List[str]:
+        """Stored model_io rules whose PII types the new block does not declare."""
+        from preloop.services.model_content_policy import load_model_io_rules
+        from preloop.services.policy.schema import PIIDetectorConfig
+
+        known = set(block.known_types())
+        conflicts: List[str] = []
+        for rule in load_model_io_rules(self.db, self.account_id):
+            detectors = rule.detectors
+            if detectors is None or not isinstance(detectors.pii, PIIDetectorConfig):
+                continue
+            missing = [item for item in detectors.pii.types if item not in known]
+            if missing:
+                conflicts.append(
+                    f"Stored model_io rule '{rule.id}' scans types {missing} that "
+                    "the new sensitive_data block does not declare. Keep those "
+                    "custom patterns or keyword lists, or import the model_io "
+                    "rules in the same policy."
+                )
+        return conflicts
 
     def _get_server_suggestion(self, server_name: str, available_servers: set) -> str:
         """Generate a helpful suggestion for missing server references.
@@ -1708,7 +1735,7 @@ def export_current_policy(
         sensitive_data.model_dump(exclude_none=True, exclude_defaults=True)
     )
 
-    return PolicyDocument(
+    document_fields = dict(
         version=PolicyVersion.V1_0,
         metadata=PolicyMetadata(
             name=policy_name,
@@ -1722,3 +1749,11 @@ def export_current_policy(
         sensitive_data=sensitive_data if has_sensitive_data else None,
         defaults=DefaultsDefinition(),  # Default settings
     )
+    try:
+        return PolicyDocument(**document_fields)
+    except ValidationError as exc:
+        # Stored state that no longer validates as one document (for example
+        # a model_io rule naming a custom type the block has lost). Export
+        # must still show the operator what is stored so it can be fixed.
+        logger.warning("Exported policy does not validate as a whole: %s", exc)
+        return PolicyDocument.model_construct(**document_fields)
