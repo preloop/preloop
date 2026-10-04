@@ -125,6 +125,7 @@ func newCICommand(operation string) *cobra.Command {
 			client, err := api.NewClient("", FlagURL)
 			if err != nil {
 				if destination != nil {
+					_ = destination.Close()
 					_ = os.Remove(secretPath)
 				}
 				return fmt.Errorf("cannot load human authentication")
@@ -133,6 +134,7 @@ func newCICommand(operation string) *cobra.Command {
 			var result interface{}
 			if err = client.CIAdminRequest(method, suffix, payload, &result); err != nil {
 				if destination != nil {
+					_ = destination.Close()
 					_ = os.Remove(secretPath)
 				}
 				return err

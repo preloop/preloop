@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,9 @@ func TestCISecretFileAndSafeMetadata(t *testing.T) {
 		t.Fatal("secret was not stored exactly once in the private file")
 	}
 	info, _ := os.Stat(destination)
-	if info.Mode().Perm() != 0600 {
+	// Windows exposes writable POSIX mode as 0666; access is controlled by
+	// the private directory ACL, as documented for the CLI storage path.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("secret mode: %v", info.Mode())
 	}
 	if strings.Contains(output.String(), secret) || strings.Contains(output.String(), "hidden") || !strings.Contains(output.String(), "synthetic-key") {
@@ -69,10 +72,16 @@ func TestCIRejectsSymlinkAndMissingDestinationBeforeIssuance(t *testing.T) {
 	target := filepath.Join(directory, "target")
 	_ = os.WriteFile(target, []byte("preserve"), 0600)
 	link := filepath.Join(directory, "link")
+	destinations := []string{"", "-"}
 	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
+		if runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+		t.Log("Symlink case unavailable without Windows symlink privilege")
+	} else {
+		destinations = append(destinations, link)
 	}
-	for _, destination := range []string{"", "-", link} {
+	for _, destination := range destinations {
 		command := newCICommand("create")
 		command.SetArgs([]string{"--input", input, "--secret-file", destination})
 		if err := command.Execute(); err == nil {
