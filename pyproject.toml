@@ -92,7 +92,7 @@ dependencies = [
     # register_model semantics the gateway accounting relies on, plus Bedrock
     # bearer authentication without ambient IAM lookup (verified on 1.101.x).
     # The ceiling guards those internals; bump with gateway streaming tests.
-    "litellm>=1.101.0,<1.103",
+    "litellm>=1.101.0,<1.104",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
     "azure-identity>=1.17.0",  # Entra ID / managed identity for Azure OpenAI
     "webauthn>=2.0.0",  # WebAuthn passkey registration/authentication ceremonies
