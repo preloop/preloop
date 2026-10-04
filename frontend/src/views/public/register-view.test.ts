@@ -92,6 +92,8 @@ describe('RegisterView', () => {
     const errorMessage = element.shadowRoot?.querySelector('.error-message');
     expect(errorMessage).to.exist;
     expect(errorMessage?.textContent).to.contain('Email already registered');
+    // Announced, so a screen-reader user hears that sign-up failed.
+    expect(errorMessage?.getAttribute('role')).to.equal('alert');
     expect(fetchStub).to.have.been.calledOnce;
   });
 
@@ -180,8 +182,16 @@ describe('RegisterView', () => {
     const loginLink = element.shadowRoot?.querySelector('a[href="/login"]');
     expect(loginLink).to.exist;
     expect(loginLink?.textContent).to.contain(
-      'Already have an account? Sign In'
+      'Already have an account? Sign in'
     );
+  });
+
+  it('gives password managers the fields they look for', () => {
+    const attr = (id: string) =>
+      element.shadowRoot?.querySelector(`#${id}`)?.getAttribute('autocomplete');
+    expect(attr('username')).to.equal('username');
+    expect(attr('email')).to.equal('email');
+    expect(attr('password')).to.equal('new-password');
   });
 
   it('shows a persistent password rule under the password field', () => {

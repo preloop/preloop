@@ -463,7 +463,9 @@ export class RegisterView extends LitElement {
           ${this._renderBootstrapNotice()}
           ${
             this.error
-              ? html`<div class="error-message">${this.error}</div>`
+              ? html`<div class="error-message" role="alert">
+                  ${this.error}
+                </div>`
               : ''
           }
           ${this._renderOAuthButtons()}
@@ -481,6 +483,7 @@ export class RegisterView extends LitElement {
                 label="Username"
                 id="username"
                 name="username"
+                autocomplete="username"
                 required
               ></sl-input>
             </div>
@@ -490,6 +493,7 @@ export class RegisterView extends LitElement {
                 label="Email"
                 id="email"
                 name="email"
+                autocomplete="email"
                 required
               ></sl-input>
             </div>
@@ -499,6 +503,7 @@ export class RegisterView extends LitElement {
                 label="Password"
                 id="password"
                 name="password"
+                autocomplete="new-password"
                 minlength="8"
                 required
                 password-toggle
@@ -514,7 +519,7 @@ export class RegisterView extends LitElement {
               >
             </div>
             <div class="form-links">
-              <a href="/login">Already have an account? Sign In</a>
+              <a href="/login">Already have an account? Sign in</a>
             </div>
           </form>
         </div>

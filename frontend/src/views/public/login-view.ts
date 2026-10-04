@@ -54,6 +54,10 @@ export class LoginView extends LitElement {
   @state()
   private resending = false;
 
+  /** True while the username/password request is in flight. */
+  @state()
+  private submitting = false;
+
   /** Capability `multi_account` from /features (off in OSS). */
   private multiAccount = false;
 
@@ -224,11 +228,15 @@ export class LoginView extends LitElement {
 
   private async handleLogin(event: SubmitEvent) {
     event.preventDefault();
+    // Enter in a field submits too, so the button's loading state alone does
+    // not stop a second request on a slow server.
+    if (this.submitting) return;
     const form = event.target as HTMLFormElement;
     const formData = new FormData(form);
     const username = formData.get('username') as string;
     const password = formData.get('password') as string;
 
+    this.submitting = true;
     try {
       const data = await post('/api/v1/auth/token/json', {
         username,
@@ -264,6 +272,8 @@ export class LoginView extends LitElement {
         this.unverifiedEmail = '';
       }
       console.error('Sign in failed', error);
+    } finally {
+      this.submitting = false;
     }
   }
 
@@ -340,7 +350,9 @@ export class LoginView extends LitElement {
           `;
         })}
       </div>
-      <div class="divider">or sign in with email</div>
+      <!-- The backend signs in by username only, so the divider must not
+           promise an email sign-in that would then fail as a bad password. -->
+      <div class="divider">or sign in with your username</div>
     `;
   }
 
@@ -376,7 +388,7 @@ export class LoginView extends LitElement {
       }
       ${
         this.error
-          ? html`<div class="error-message">
+          ? html`<div class="error-message" role="alert">
               ${this.error}
               ${
                 this.unverifiedEmail
@@ -403,6 +415,7 @@ export class LoginView extends LitElement {
             label="Username"
             id="username"
             name="username"
+            autocomplete="username"
             required
           ></sl-input>
         </div>
@@ -412,20 +425,25 @@ export class LoginView extends LitElement {
             label="Password"
             id="password"
             name="password"
+            autocomplete="current-password"
             required
             password-toggle
           ></sl-input>
         </div>
         <div class="form-actions">
-          <sl-button type="submit" variant="primary" style="width: 100%;"
+          <sl-button
+            type="submit"
+            variant="primary"
+            style="width: 100%;"
+            ?loading=${this.submitting}
             >Sign in</sl-button
           >
         </div>
         <div class="form-links">
-          <a href="/forgot-password">Forgot Password?</a>
+          <a href="/forgot-password">Forgot password?</a>
           ${
             this.registrationEnabled
-              ? html` &middot; <a href="/register">Create Account</a>`
+              ? html` &middot; <a href="/register">Create account</a>`
               : nothing
           }
         </div>

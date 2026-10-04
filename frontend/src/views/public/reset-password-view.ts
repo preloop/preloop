@@ -1,12 +1,31 @@
 import { LitElement, html } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { formStyles } from '../../styles/form-styles';
-import { post } from '../../api';
+import { ApiError, post } from '../../api';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/logo-component';
+
+/** Shown when the link itself is the problem: expired, used, or unknown. */
+export const RESET_TOKEN_ERROR = 'Invalid or expired reset token.';
+
+/**
+ * The sentence for a failed reset. Only a refusal of the token (400 from the
+ * token check, 404 for an account that no longer exists) blames the link; a
+ * password the server rejects (422) or a server fault says what it was, so
+ * nobody throws away a good link over a too-short password.
+ */
+export function resetErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 400 || error.status === 404) return RESET_TOKEN_ERROR;
+    if (error.message && !error.message.startsWith('HTTP error!')) {
+      return error.message;
+    }
+  }
+  return 'Could not reset your password. Try again in a moment.';
+}
 
 @customElement('reset-password-view')
 export class ResetPasswordView extends LitElement {
@@ -47,10 +66,10 @@ export class ResetPasswordView extends LitElement {
         new_password: password,
       });
       this.message =
-        'Your password has been reset successfully. You can now log in.';
+        'Your password has been reset successfully. You can now sign in.';
       this.error = '';
     } catch (error) {
-      this.error = 'Invalid or expired reset token.';
+      this.error = resetErrorMessage(error);
       console.error('Password reset failed', error);
     }
   }
@@ -64,7 +83,7 @@ export class ResetPasswordView extends LitElement {
           </a>
         </div>
         <div class="form-container">
-          <h2>Reset Password</h2>
+          <h2>Reset password</h2>
           ${
             this.message
               ? html`<sl-alert
@@ -94,21 +113,26 @@ export class ResetPasswordView extends LitElement {
           <form @submit=${this.handleResetPassword}>
             <sl-input
               type="password"
-              label="New Password"
+              label="New password"
               name="password"
+              autocomplete="new-password"
+              minlength="8"
               required
               password-toggle
+              help-text="At least 8 characters."
             ></sl-input>
             <sl-input
               type="password"
-              label="Confirm New Password"
+              label="Confirm new password"
               name="confirmPassword"
+              autocomplete="new-password"
+              minlength="8"
               required
               password-toggle
             ></sl-input>
             <div class="form-actions">
               <sl-button type="submit" variant="primary"
-                >Reset Password</sl-button
+                >Reset password</sl-button
               >
             </div>
             <div class="form-links">

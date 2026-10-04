@@ -252,6 +252,79 @@ describe('LoginView', () => {
     ).to.contain('Too many verification emails');
   });
 
+  it('announces a failed sign-in to screen readers', async () => {
+    fetchStub.resolves(
+      new Response(JSON.stringify({ detail: 'Invalid credentials' }), {
+        status: 401,
+      })
+    );
+    await submitLogin('bob', 'wrong');
+    expect(
+      element.shadowRoot?.querySelector('.error-message')?.getAttribute('role')
+    ).to.equal('alert');
+  });
+
+  it('gives password managers the fields they look for', () => {
+    expect(
+      element.shadowRoot
+        ?.querySelector('#username')
+        ?.getAttribute('autocomplete')
+    ).to.equal('username');
+    expect(
+      element.shadowRoot
+        ?.querySelector('#password')
+        ?.getAttribute('autocomplete')
+    ).to.equal('current-password');
+  });
+
+  it('shows the request in flight and sends it only once', async () => {
+    let release: (response: Response) => void = () => {};
+    fetchStub.callsFake(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        })
+    );
+    const usernameInput = element.shadowRoot?.querySelector<any>('#username');
+    const passwordInput = element.shadowRoot?.querySelector<any>('#password');
+    usernameInput.value = 'bob';
+    passwordInput.value = 'correct';
+    const form = element.shadowRoot?.querySelector('form') as HTMLFormElement;
+    form.dispatchEvent(
+      new SubmitEvent('submit', { bubbles: true, cancelable: true })
+    );
+    await element.updateComplete;
+    const button = element.shadowRoot?.querySelector(
+      'sl-button[type="submit"]'
+    );
+    expect(button?.hasAttribute('loading')).to.be.true;
+
+    // A second Enter on a slow server must not send a second request.
+    form.dispatchEvent(
+      new SubmitEvent('submit', { bubbles: true, cancelable: true })
+    );
+    expect(fetchStub).to.have.been.calledOnce;
+
+    release(
+      new Response(JSON.stringify({ detail: 'Invalid credentials' }), {
+        status: 401,
+      })
+    );
+    await waitUntil(() => !button?.hasAttribute('loading'));
+  });
+
+  it('never promises an email sign-in the backend does not accept', async () => {
+    // The divider only renders next to passkey or OAuth buttons.
+    (element as any).oauthProviders = ['github'];
+    element.requestUpdate();
+    await element.updateComplete;
+    const divider = element.shadowRoot?.querySelector('.divider');
+    expect(divider?.textContent).to.equal('or sign in with your username');
+    expect(
+      element.shadowRoot?.querySelector('#username')?.getAttribute('label')
+    ).to.equal('Username');
+  });
+
   it('should have links for password reset and registration', () => {
     const forgotPasswordLink = element.shadowRoot?.querySelector(
       'a[href="/forgot-password"]'
