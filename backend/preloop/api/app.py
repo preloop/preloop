@@ -885,6 +885,7 @@ def _register_control_plane_routes(
         pull_requests,
         retention,
         roles,
+        artifact_search,
         runtime_session_artifacts,
         runtime_session_browser_steps,
         search as search_router,
@@ -1232,6 +1233,11 @@ def _register_control_plane_routes(
         runtime_session_artifacts.router,
         prefix="/api/v1",
         tags=["Runtime Sessions"],
+    )
+    app.include_router(
+        artifact_search.router,
+        prefix="/api/v1",
+        tags=["Artifacts"],
     )
     # Saved searches for that endpoint. They sit under the search path, not
     # beside it, because a two segment sibling of /runtime-sessions would be

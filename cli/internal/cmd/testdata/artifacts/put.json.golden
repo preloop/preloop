@@ -1,0 +1,43 @@
+{
+  "id": "9f1c2b3a-0000-4000-8000-000000000002",
+  "runtime_session_id": "5a3e0c1d-0000-4000-8000-000000000001",
+  "activity_id": "a1",
+  "kind": "transcript",
+  "name": "standup.vtt",
+  "content_type": "text/vtt",
+  "size_bytes": 2048,
+  "sha256": "abababababababababababababababababababababababababababababababab",
+  "labels": {
+    "site": "nord",
+    "tags": [
+      "dock",
+      "night"
+    ]
+  },
+  "producer": "deposit_api",
+  "agent_id": null,
+  "tool_name": null,
+  "parent_artifact_id": null,
+  "text_status": "extracted",
+  "availability": "available",
+  "legal_hold": false,
+  "created_at": "2026-10-04T11:59:00Z",
+  "content_block": {
+    "type": "resource_link",
+    "uri": "/api/v1/runtime-sessions/5a3e0c1d-0000-4000-8000-000000000001/artifacts/9f1c2b3a-0000-4000-8000-000000000002",
+    "name": "standup.vtt",
+    "mimeType": "text/vtt",
+    "size": 2048,
+    "_meta": {
+      "preloop.dev/artifact": {
+        "artifact_id": "9f1c2b3a-0000-4000-8000-000000000002",
+        "kind": "transcript",
+        "labels": {
+          "site": "nord"
+        },
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "producer": "deposit_api"
+      }
+    }
+  }
+}

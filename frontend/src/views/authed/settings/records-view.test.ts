@@ -399,6 +399,60 @@ describe('RecordsView', () => {
     click.restore();
   });
 
+  it('opens the export pre-filtered to a session from the session toolbar', async () => {
+    install({});
+    const click = sinon.stub(HTMLAnchorElement.prototype, 'click');
+    const restore = window.location.pathname + window.location.search;
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}?runtime_session_id=sess-1&start=2026-03-09&end=2026-03-10`
+    );
+    try {
+      const el = await mount();
+      const filter = el.shadowRoot!.querySelector(
+        '[data-testid="export-session-filter"]'
+      );
+      expect(filter).to.exist;
+      expect(filter!.textContent).to.contain('Artifacts limited to session');
+      expect(
+        (
+          el.shadowRoot!.querySelector(
+            '[data-testid="export-start"]'
+          ) as HTMLInputElement
+        ).value
+      ).to.equal('2026-03-09');
+      (
+        el.shadowRoot!.querySelector(
+          '[data-testid="export-period"]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => calls.some((call) => call.url.includes('/retention/exports')),
+        'export was not requested'
+      );
+      const sent = calls.find((call) =>
+        call.url.includes('/retention/exports')
+      )!;
+      expect(sent.url).to.contain('runtime_session_id=sess-1');
+      expect(sent.url).to.contain('start=2026-03-09');
+      expect(sent.url).to.contain('end=2026-03-10');
+
+      (
+        el.shadowRoot!.querySelector(
+          '[data-testid="export-session-clear"]'
+        ) as HTMLElement
+      ).click();
+      await el.updateComplete;
+      expect(
+        el.shadowRoot!.querySelector('[data-testid="export-session-filter"]')
+      ).to.not.exist;
+    } finally {
+      window.history.replaceState(null, '', restore);
+      click.restore();
+    }
+  });
+
   it('scrolls an incoming hash after the sections render', async () => {
     install({});
     const scrolled: string[] = [];

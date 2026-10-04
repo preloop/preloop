@@ -84,6 +84,14 @@ class Issue(Base):
     )
     last_synced: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    __table_args__ = (
+        # One row per provider issue in a project. Concurrent webhook
+        # deliveries upsert against this constraint (#1194).
+        UniqueConstraint(
+            "project_id", "external_id", name="uq_issue_project_external_id"
+        ),
+    )
+
 
 class EmbeddingModel(Base):
     """Model to track different embedding models used in the system."""

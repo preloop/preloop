@@ -93,6 +93,7 @@ dependencies = [
     # deliberately with the gateway streaming tests.
     "litellm>=1.81.13,<1.103",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
+    "azure-identity>=1.17.0",  # Entra ID / managed identity for Azure OpenAI
     "webauthn>=2.0.0",  # WebAuthn passkey registration/authentication ceremonies
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",

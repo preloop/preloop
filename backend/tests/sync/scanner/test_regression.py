@@ -103,7 +103,7 @@ async def test_scan_issues_handles_string_casting_and_identifier(
         client.client = mock_internal_client
 
         mock_crud_issue.get_by_external_id.return_value = None
-        mock_crud_issue.create.return_value = Issue(id=1)
+        mock_crud_issue.upsert.return_value = (Issue(id=1), True)
 
         # Act
         await client.scan_issues(mock_db_session, mock_organization, mock_project)
@@ -115,7 +115,7 @@ async def test_scan_issues_handles_string_casting_and_identifier(
             project_id="test-project",
             since=None,
         )
-        mock_crud_issue.create.assert_called_once()
+        mock_crud_issue.upsert.assert_called_once()
 
 
 @pytest.mark.asyncio

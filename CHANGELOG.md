@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Scheduled runs know their time window.** A schedule-triggered run's
+  `trigger_event.payload` now carries `previous_scheduled_at` (the previous
+  fire time, computed from the schedule definition in its timezone),
+  `window: {from, to}` and `last_successful_scheduled_at` (from execution
+  history, `null` until a run succeeds). All three are prompt template
+  variables, e.g. `{{trigger_event.payload.window.from}}` (#1105).
 - **Per-user budgets count API-key traffic.** A call made with an API key a
   user owns now counts toward that user's `user` budget and is blocked by its
   hard limit. Agent traffic keeps counting against the agent's owner only, so
@@ -417,6 +423,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Schedule-triggered flows created after the scheduler started now fire.**
+  The reconcile job's id shares the per-flow job prefix, so its first pass
+  removed itself and later flows never got a job until a restart.
 - A Jira-triggered flow bound to a code-host repository now clones that
   repository on Copilot and Cursor host execution profiles too, with the
   code-host tracker's credential only. Before, the host checkout ignored the

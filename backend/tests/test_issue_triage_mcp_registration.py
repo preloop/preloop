@@ -21,6 +21,8 @@ TRIAGE_WRITE = {
     "issue": "example/project#17",
     "expected_revision": "a" * 64,
     "complexity_label": "complexity:low",
+    "risk_label": "risk:low",
+    "readiness_label": "readiness:ready",
     "assessment": "Remaining behavior: reject empty input. Acceptance: HTTP 400.",
     "title": "Reject empty input",
 }
@@ -43,6 +45,8 @@ TOOL_ARGUMENTS = {
         "expected_revision": TRIAGE_WRITE["expected_revision"],
         "assessment": TRIAGE_WRITE["assessment"],
         "complexity_label": TRIAGE_WRITE["complexity_label"],
+        "risk_label": TRIAGE_WRITE["risk_label"],
+        "readiness_label": TRIAGE_WRITE["readiness_label"],
     },
 }
 
@@ -110,6 +114,8 @@ def test_catalog_documents_the_triage_parameters() -> None:
     assert update_issue["expected_revision"]["pattern"] == "^[0-9a-f]{64}$"
     assert update_issue["assessment"]["maxLength"] == 16000
     assert update_issue["complexity_label"]["default"] is None
+    assert update_issue["risk_label"]["default"] is None
+    assert update_issue["readiness_label"]["default"] is None
     assert "expected_revision" not in catalog["update_issue"]["schema"]["required"]
 
 

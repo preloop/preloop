@@ -38,10 +38,12 @@ note and a decision, and a note is read at the agent's next tool or model
 call. A hook-governed agent such as `claude -p` has no terminal to type into,
 so there is no "send a keystroke to the agent" and there will not be.
 
-**Managed agents: commands.** An agent connected over Agent Control can be
-given a new turn, not only a note at the next one. Sending such commands from
-attach is the follow-up to this command (preloop#1150); until it lands, use
-the console or `POST /api/v1/agents/{agent_id}/control/commands`.
+**Managed agents: commands.** An agent connected over Agent Control (Hermes,
+a Claude workspace, the Codex sidecar, any kind listed under Agent Control)
+can be given a new turn, not only a note at the next one. When the attached
+session belongs to such an agent and its control connection is live, attach
+switches the input to command mode: a typed line starts a new turn. See
+[Command mode](#command-mode-for-managed-agents).
 
 ## What you see
 
@@ -51,6 +53,8 @@ the console or `POST /api/v1/agents/{agent_id}/control/commands`.
 | `tool` | `server/tool`, outcome (`allowed`, `denied`, `approved`, `declined`, `timed_out`, or the MCP outcome), argument key names with their sizes, decision time |
 | `approval` | `pending` with the tool and its redacted arguments or summary, then the outcome |
 | `note` | author, `delivered`, the note text |
+| `command` | an operator command that started a new turn: who sent it and the text |
+| `reply` | the agent's reply to a command, with its result status |
 | `end` | the session ended; attach exits |
 
 Argument values are never shown for tool calls: the server keeps only key
@@ -77,6 +81,72 @@ returns them (they carry `activity_type`), and pending approvals as
 - `--read-only` sends nothing: typed lines are answered with `read-only: not
   sent`, and no decision prompt is shown.
 
+## Command mode for managed agents
+
+On attach the CLI asks the server which mode applies
+(`GET /api/v1/runtime-sessions/{id}/control`) and prints it:
+
+```text
+-- attached to 31aeec9d-001e-4bb5-8d17-7bc5156cc5e9 (Hermes warehouse, hermes 2026-10-04 00:11:46Z)
+-- mode: command. A line starts a new turn for Hermes warehouse through Agent Control; /note <text> sends a note instead
+-- Ctrl-C detaches; the session keeps running
+list the goods-receipt workflows for nord
+-- command 8f579255 delivered
+02:13:14 command  from admin: list the goods-receipt workflows for nord
+-- command 8f579255 started
+02:13:15 model    preloop-fake  200  tokens in=11 out=9  $0.0000  0.0s
+02:13:15 tool     warehouse/list_workflows  succeeded
+02:13:15 tool     warehouse/get_transcript  succeeded
+-- command 8f579255 finished
+/note after this one, wait for my review
+-- note 9817bd7a queued; notes are delivered at the agent's next tool or model call
+```
+
+- A line and Enter is sent as an operator message to the agent, addressed to
+  the attached session. It is the console's command box request
+  (`POST /api/v1/agents/{agent_id}/control/prompts` with `target_session_id`),
+  so it needs the same `control_managed_agent` permission and is stored with
+  you as its author and `cli_attach` as its source. It appears on the session
+  timeline (a `command` line here, an operator message in the console) as
+  soon as it is sent, and the agent's reply, when it sends one, as a `reply`
+  line.
+- Its delivery is shown inline, in the states the command row goes through:
+  `queued` (stored, not yet on the agent's connection), `delivered` (sent on
+  the connection), `started` (the agent acknowledged it), then `finished`,
+  `failed`, `expired` or `cancelled`. The model and tool events of the new
+  turn stream into the same terminal like any other event.
+- `/note <text>` sends a plain note instead, read at the agent's next tool or
+  model call. `/mode` asks the server again and prints the current mode.
+- Approvals work as before: `a` and `d` decide while something is pending.
+
+Command mode needs all of: the session is open, it belongs to a managed agent
+(by its source or its runtime principal), the agent kind takes Agent Control
+commands, the agent is active, its Agent Control plugin is verified, and the
+agent sent a control heartbeat recently. Otherwise the mode is `note` and the
+reason is printed, for example for a hook-governed `claude -p` session:
+
+```text
+-- mode: note (claude -p (local) is governed through hooks or the gateway and has no verified Agent Control plugin; a line is a note read at its next tool or model call ('preloop agents install-plugin' adds command mode))
+```
+
+A session no managed agent owns says so the same way ("this session is
+governed through hooks or the gateway, not run by an Agent Control agent").
+
+If a command is refused because the agent went offline, attach says so,
+re-reads the mode and does not resend the line as a note; the next line
+follows the new mode. A server without the mode endpoint leaves attach in note
+mode.
+
+### Attaching by agent
+
+`preloop agents attach <agent-id|name>` attaches to the agent's most recently
+active open session, or waits for its next one (`--no-wait` exits instead).
+It takes `--read-only`, `--since` and `--json` like `sessions attach`.
+
+```bash
+preloop agents attach "Hermes main"
+```
+
 ## Replay, reconnects and the end
 
 On attach, the last `--since` of the timeline (default `10m`) is replayed,
@@ -99,6 +169,7 @@ own events, and finds the session when you do not name one.
 | attach | session read (`view_runtime_sessions`) on a session in your account |
 | see approvals | approval read (`view_approvals`); without it approvals are withheld from the stream |
 | send a note | `control_managed_agent`, the same as `notes send` |
+| send a command (command mode) | `control_managed_agent`, the same as the console's command box |
 | decide | `decide_approvals`, the same as a console decision |
 
 A refused note or decision is printed as the server's sentence and attach
@@ -114,7 +185,10 @@ Attach uses `GET /api/v1/runtime-sessions/{id}/activity` and
 websocket `/api/v1/ws/runtime-sessions/{id}` for live events. The socket
 authenticates `Authorization: Bearer`, checks session read, filters the
 account's realtime events down to that session (or execution), and is
-receive-only: notes and decisions go through their REST endpoints.
+receive-only: notes, commands and decisions go through their REST endpoints.
+Command delivery is read from
+`GET /api/v1/agents/{agent_id}/control/commands/{command_id}`, which returns
+the `delivery_state` described above.
 
 A hook-governed agent whose credential names the agent but no session (the
 durable credential `preloop agents onboard` writes) is attributed to the

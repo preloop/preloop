@@ -284,7 +284,7 @@ async def test_tracker_client_scan_issues_new_issue(
         client = TrackerClient(mock_tracker)
         client.client = mock_internal_client
         mock_crud_issue.get_by_external_id.return_value = None  # New issue
-        mock_crud_issue.create.return_value = Issue(id=1)
+        mock_crud_issue.upsert.return_value = (Issue(id=1), True)
 
         # Act
         issues, embeddings = await client.scan_issues(
@@ -292,7 +292,7 @@ async def test_tracker_client_scan_issues_new_issue(
         )
 
         # Assert
-        mock_crud_issue.create.assert_called_once()
+        mock_crud_issue.upsert.assert_called_once()
         mock_crud_embedding.create_embeddings.assert_called_once()
         assert len(issues) == 1
         assert embeddings == 1

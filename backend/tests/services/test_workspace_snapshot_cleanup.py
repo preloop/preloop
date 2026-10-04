@@ -139,11 +139,14 @@ class TestCleanupPass:
         monkeypatch.setattr(
             cleanup, "purge_expired_docker_volumes", AsyncMock(return_value=3)
         )
+        expire_audio = MagicMock(return_value=0)
+        monkeypatch.setattr(cleanup, "expire_audio", expire_audio)
         db = _FakeSession([SimpleNamespace(workspace_snapshot=b"old")])
 
         report = await cleanup.cleanup_workspace_artifacts(db)
 
         assert report == {"snapshots_purged": 1, "volumes_removed": 3}
+        expire_audio.assert_called_once()
 
 
 def test_purge_clears_orphaned_null_end_time_snapshots(db_session, test_user):

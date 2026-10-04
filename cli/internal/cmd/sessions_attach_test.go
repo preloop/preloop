@@ -64,6 +64,9 @@ type attachFake struct {
 	// attachedEndedAt is put on the "attached" frame, as the server does for
 	// a session that ended before the socket opened.
 	attachedEndedAt string
+	// extra serves endpoints a test adds; it runs first, with mu held, and
+	// returns true when it answered.
+	extra func(w http.ResponseWriter, r *http.Request) bool
 }
 
 type attachConnScript struct {
@@ -83,6 +86,9 @@ func newAttachFake(t *testing.T) *attachFake {
 		defer fake.mu.Unlock()
 		path := r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
+		if fake.extra != nil && fake.extra(w, r) {
+			return
+		}
 		switch {
 		case strings.HasPrefix(path, "/api/v1/ws/runtime-sessions/"):
 			fake.dialed = append(fake.dialed, r.URL.String())
@@ -548,7 +554,7 @@ func TestParseAttachInput(t *testing.T) {
 		{line: "d zzzz", pending: pending, want: attachInput{kind: "note", text: "d zzzz"}},
 	}
 	for _, c := range cases {
-		got, err := parseAttachInput(c.line, c.pending)
+		got, err := parseAttachInput(c.line, c.pending, false)
 		if (err != nil) != c.err || (!c.err && got != c.want) {
 			t.Errorf("parseAttachInput(%q) = %+v, %v; want %+v (err %v)", c.line, got, err, c.want, c.err)
 		}

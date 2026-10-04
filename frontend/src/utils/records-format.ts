@@ -197,6 +197,33 @@ export function periodDefaultRange(now = new Date()): {
   return { start: isoDate(start), end: isoDate(end) };
 }
 
+/**
+ * Link to the period export pre-filtered to one runtime session (#1088).
+ *
+ * The period runs from the UTC day the session started to the day after its
+ * last activity (end is exclusive), so every artifact it deposited falls in.
+ */
+export function sessionExportHref(session: {
+  id: string;
+  started_at?: string | null;
+  last_activity_at?: string | null;
+  ended_at?: string | null;
+}): string {
+  const params = new URLSearchParams({ runtime_session_id: session.id });
+  const first = Date.parse(session.started_at || '');
+  const last = Date.parse(
+    session.ended_at || session.last_activity_at || session.started_at || ''
+  );
+  if (!Number.isNaN(first) && !Number.isNaN(last)) {
+    const start = new Date(first);
+    const end = new Date(Math.max(first, last));
+    end.setUTCDate(end.getUTCDate() + 1);
+    params.set('start', isoDate(start));
+    params.set('end', isoDate(end));
+  }
+  return `/console/settings/records?${params.toString()}#period-exports`;
+}
+
 export function filenameFromDisposition(
   header: string | null,
   fallback: string
