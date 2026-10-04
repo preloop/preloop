@@ -223,6 +223,26 @@ describe('LitApp routing', () => {
     expect(customElements.get('agents-view')).to.equal(undefined);
   });
 
+  it('puts the served title back when the reader leaves the console', async () => {
+    const original = document.title;
+    try {
+      const el = await fixture<HTMLElement>(html`<lit-app></lit-app>`);
+      await waitUntil(() =>
+        Boolean(el.shadowRoot?.querySelector('landing-view'))
+      );
+      // A console page retitled the tab (view-header does this).
+      document.title = 'Agents · Preloop';
+      Router.go('/login');
+      await waitUntil(
+        () => Boolean(el.shadowRoot?.querySelector('login-view')),
+        'Expected /login to render'
+      );
+      expect(document.title).to.equal(original);
+    } finally {
+      document.title = original;
+    }
+  });
+
   it('registers a nested console view on navigation and handles OAuth tokens', async () => {
     window.history.replaceState(
       {},

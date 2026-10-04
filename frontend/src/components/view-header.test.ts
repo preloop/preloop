@@ -141,4 +141,43 @@ describe('ViewHeader', () => {
 
     expect(el.shadowRoot?.querySelector('.description')).to.equal(null);
   });
+
+  describe('document title', () => {
+    let originalTitle: string;
+
+    beforeEach(() => {
+      originalTitle = document.title;
+    });
+
+    afterEach(() => {
+      document.title = originalTitle;
+      delete (window as any).BRAND_CONFIG;
+    });
+
+    it('names the tab after the page and the brand', async () => {
+      // White-label brands get their own name in the tab, not Preloop's.
+      (window as any).BRAND_CONFIG = { name: 'Acme Console' };
+      const el = (await fixture(
+        html`<view-header headerText="Approvals"></view-header>`
+      )) as ViewHeader;
+      expect(document.title).to.equal('Approvals · Acme Console');
+
+      // A page that learns its own name later (a detail view) retitles.
+      el.headerText = 'Agent: build-bot';
+      await el.updateComplete;
+      expect(document.title).to.equal('Agent: build-bot · Acme Console');
+    });
+
+    it('uses the page name alone where no brand config is loaded', async () => {
+      delete (window as any).BRAND_CONFIG;
+      await fixture(html`<view-header headerText="Cost"></view-header>`);
+      expect(document.title).to.equal('Cost');
+    });
+
+    it('leaves the title alone while the page has no name yet', async () => {
+      document.title = 'Before';
+      await fixture(html`<view-header headerText=""></view-header>`);
+      expect(document.title).to.equal('Before');
+    });
+  });
 });

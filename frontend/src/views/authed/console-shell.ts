@@ -34,6 +34,7 @@ import {
   type UserProfile,
 } from '../../api';
 import '../../components/permission-denied';
+import '../../components/route-loading';
 import { showToast } from '../../components/confirm-dialog';
 import '../../components/plan-choice-screen';
 import { consoleDialogStyles } from '../../styles/console-dialog';
@@ -158,6 +159,12 @@ export class ConsoleShell extends LitElement {
 
   @state()
   private _windowMode = isWindowChromeRequested(window.location.search);
+
+  /** The path the content area was last scrolled for (see below). */
+  private _scrolledPath = window.location.pathname;
+
+  /** Set by a back/forward popstate until the router announces it. */
+  private _historyTraversal = false;
 
   private _mediaQuery?: MediaQueryList;
   private _mediaQueryHandler?: (e: MediaQueryListEvent) => void;
@@ -295,6 +302,67 @@ export class ConsoleShell extends LitElement {
       .main-content.full-bleed {
         padding: 0;
         overflow: hidden;
+      }
+
+      /* The skip target takes focus programmatically only; a ring around the
+         whole page would be noise. */
+      .main-content:focus {
+        outline: none;
+      }
+
+      /* Visually hidden until focused, then pinned over the top-left corner
+         as the first thing a keyboard user reaches. */
+      .skip-link {
+        position: absolute;
+        left: var(--sl-spacing-small);
+        top: var(--sl-spacing-small);
+        z-index: 1000;
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+        border-radius: var(--sl-border-radius-medium);
+        background: var(--console-surface-raised, var(--sl-color-neutral-0));
+        color: var(--console-link-color, var(--sl-color-primary-600));
+        box-shadow: var(--sl-shadow-medium);
+        font-weight: 600;
+        transform: translateY(calc(-100% - var(--sl-spacing-large)));
+      }
+
+      .skip-link:focus {
+        transform: none;
+        outline: var(--sl-focus-ring);
+        outline-offset: var(--sl-focus-ring-offset);
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .skip-link {
+          transition: transform 0.15s ease;
+        }
+      }
+
+      /* A native button, not sl-icon-button, so aria-expanded and
+         aria-controls sit on the element that actually takes focus. Matches
+         sl-icon-button's look. */
+      .nav-toggle-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: var(--sl-spacing-x-small);
+        border: 0;
+        border-radius: var(--sl-border-radius-medium);
+        background: none;
+        color: var(--sl-color-neutral-600);
+        font-size: 1.5rem;
+        line-height: 1;
+        cursor: pointer;
+        transition: color var(--sl-transition-x-fast) ease;
+      }
+
+      .nav-toggle-button:hover {
+        color: var(--sl-color-primary-600);
+      }
+
+      .nav-toggle-button:focus-visible {
+        outline: var(--sl-focus-ring);
+        outline-offset: var(--sl-focus-ring-offset);
       }
 
       .main-content > ::slotted(*) {
@@ -482,6 +550,7 @@ export class ConsoleShell extends LitElement {
     super.connectedCallback();
     window.addEventListener('show-upgrade-modal', this._handleShowUpgradeModal);
     window.addEventListener('show-toast', this._handleShowToast);
+    this.addEventListener('keydown', this._handleKeydown);
     window.addEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     this._mediaQuery = window.matchMedia(
       `(max-width: ${SIDEBAR_BREAKPOINT}px)`
@@ -620,8 +689,14 @@ export class ConsoleShell extends LitElement {
     return null;
   }
 
-  private _handleSidebarToggle = () => {
+  private _handleSidebarToggle = async () => {
     this._sidebarOpen = !this._sidebarOpen;
+    // The mobile drawer overlays the page, so opening it moves focus in;
+    // otherwise the next Tab lands behind the backdrop.
+    if (this._sidebarOpen && this._isMobile) {
+      await this.updateComplete;
+      this.renderRoot.querySelector<HTMLElement>('.sidebar a[href]')?.focus();
+    }
   };
 
   private _closeSidebar = () => {
@@ -630,11 +705,54 @@ export class ConsoleShell extends LitElement {
     }
   };
 
-  private _handleLocationChanged = () => {
+  /** Close the mobile drawer and hand focus back to the toggle. */
+  private _dismissDrawer = async () => {
+    if (!this._isMobile || !this._sidebarOpen) return;
+    this._sidebarOpen = false;
+    await this.updateComplete;
+    this.renderRoot.querySelector<HTMLElement>('#console-nav-toggle')?.focus();
+  };
+
+  private _handleKeydown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape' && this._isMobile && this._sidebarOpen) {
+      event.preventDefault();
+      void this._dismissDrawer();
+    }
+  };
+
+  /**
+   * "Skip to content": move focus to the content area. The target lives in
+   * this shadow root, which a fragment link cannot reach, so the click is
+   * handled here instead of by the browser.
+   */
+  private _skipToContent = (event: Event) => {
+    event.preventDefault();
+    const main = this.renderRoot.querySelector<HTMLElement>('#console-main');
+    main?.focus();
+  };
+
+  private _handleLocationChanged = (event?: Event) => {
     this._fullBleed = false;
     this._currentPath = window.location.pathname;
     this._windowMode = isWindowChromeRequested(window.location.search);
     this._publishMainOffset();
+    if (event?.type === 'popstate') {
+      this._historyTraversal = true;
+      return;
+    }
+    // The shell is reused across child routes and `.main-content` is the
+    // scroll port, so the router's window.scrollTo does nothing here: a new
+    // page opened at the scroll offset of the last one. Back and forward
+    // keep their place, like the router does for the window.
+    const path = window.location.pathname;
+    if (path !== this._scrolledPath) {
+      if (!this._historyTraversal) {
+        const main = this.renderRoot?.querySelector('.main-content');
+        if (main) main.scrollTop = 0;
+      }
+      this._scrolledPath = path;
+    }
+    this._historyTraversal = false;
   };
 
   private _handleNavClick = (e: Event) => {
@@ -746,6 +864,7 @@ export class ConsoleShell extends LitElement {
       this._handleShowUpgradeModal
     );
     window.removeEventListener('show-toast', this._handleShowToast);
+    this.removeEventListener('keydown', this._handleKeydown);
     window.removeEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     window.removeEventListener('popstate', this._handleLocationChanged);
     this._mediaQuery?.removeEventListener('change', this._mediaQueryHandler!);
@@ -798,6 +917,18 @@ export class ConsoleShell extends LitElement {
 
       <global-notice></global-notice>
 
+      ${
+        this._windowMode
+          ? nothing
+          : html`<a
+              class="skip-link"
+              href="#console-main"
+              router-ignore
+              @click=${this._skipToContent}
+              >Skip to content</a
+            >`
+      }
+
       <div class="console-container">
         ${
           this._windowMode
@@ -805,13 +936,18 @@ export class ConsoleShell extends LitElement {
             : html`<div class="sidebar-wrapper">
                 <div
                   class="sidebar-backdrop ${this._sidebarOpen ? 'visible' : ''}"
-                  @click=${this._closeSidebar}
+                  @click=${this._dismissDrawer}
                   aria-hidden="true"
                 ></div>
+                <!-- Hidden means out of the tab order too: a collapsed
+                     sidebar (desktop) or a closed drawer (mobile) is inert,
+                     so focus never lands on a link nobody can see. -->
                 <div
+                  id="console-nav"
                   class="sidebar ${this._sidebarOpen ? 'open' : 'closed'}"
                   role="navigation"
                   aria-label="Console navigation"
+                  ?inert=${!this._sidebarOpen}
                 >
                   <div class="logo">
                     <a href="/console" @click=${this._closeSidebar}
@@ -1094,12 +1230,22 @@ export class ConsoleShell extends LitElement {
             this._windowMode
               ? nothing
               : html`<console-header>
-                    <sl-icon-button
+                    <button
+                      id="console-nav-toggle"
+                      class="nav-toggle-button"
                       slot="nav-toggle"
-                      name="list"
-                      label="Open menu"
+                      type="button"
+                      aria-controls="console-nav"
+                      aria-expanded=${this._sidebarOpen ? 'true' : 'false'}
+                      aria-label=${
+                        this._sidebarOpen
+                          ? 'Hide navigation'
+                          : 'Show navigation'
+                      }
                       @click=${this._handleSidebarToggle}
-                    ></sl-icon-button>
+                    >
+                      <sl-icon name="list" aria-hidden="true"></sl-icon>
+                    </button>
                     ${
                       hasCapability(this.features, 'multi_account')
                         ? html`<capability-extension
@@ -1122,7 +1268,12 @@ export class ConsoleShell extends LitElement {
                        all on OSS, where the endpoint does not exist. -->
                   <usage-nudge-banner></usage-nudge-banner>`
           }
+          <!-- The skip-link target. Not a <main>: lit-app's router outlet
+               is already the document's <main>, and this shell renders
+               inside it, so a second one would nest main in main. -->
           <div
+            id="console-main"
+            tabindex="-1"
             class="main-content ${
               this._fullBleed || this._windowMode ? 'full-bleed' : ''
             }"
@@ -1137,7 +1288,7 @@ export class ConsoleShell extends LitElement {
               // A routed view is a light-DOM child, so dropping the slot only
               // hides it: views that carry data also check before fetching.
               if (!this._featuresLoaded || !this._permissionsLoaded) {
-                return nothing;
+                return html`<route-loading></route-loading>`;
               }
               const denied = this._deniedPermissionForPath(this._currentPath);
               return denied

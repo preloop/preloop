@@ -2,7 +2,7 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../api';
-import { Router } from '../../router';
+import { LOCATION_CHANGED, Router } from '../../router';
 import './console-shell';
 import type { ConsoleShell } from './console-shell';
 
@@ -1089,7 +1089,7 @@ describe('ConsoleShell', () => {
       );
 
       const hamburger = el.shadowRoot?.querySelector(
-        'sl-icon-button[name="list"]'
+        '#console-nav-toggle'
       ) as HTMLElement;
       expect(hamburger).to.exist;
 
@@ -1161,7 +1161,7 @@ describe('ConsoleShell', () => {
 
       const sidebar = el.shadowRoot?.querySelector('.sidebar');
       const hamburger = el.shadowRoot?.querySelector(
-        'sl-icon-button[name="list"]'
+        '#console-nav-toggle'
       ) as HTMLElement;
       const toolsLink = el.shadowRoot?.querySelector(
         'a[href="/console/tools"]'
@@ -1180,6 +1180,161 @@ describe('ConsoleShell', () => {
       expect(sidebar?.classList.contains('closed')).to.be.true;
     });
   });
+  describe('keyboard and landmarks', () => {
+    function useMobile() {
+      const mockMediaQuery = createMatchMediaStub(true);
+      matchMediaStub.restore();
+      matchMediaStub = sinon
+        .stub(window, 'matchMedia')
+        .callsFake((query: string) => {
+          if (query.includes(`${SIDEBAR_BREAKPOINT}`)) {
+            return mockMediaQuery as unknown as MediaQueryList;
+          }
+          return {
+            matches: false,
+            addEventListener: () => {},
+            removeEventListener: () => {},
+          } as unknown as MediaQueryList;
+        });
+    }
+
+    async function mount(): Promise<ConsoleShell> {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('a[href="/console/tools"]') !== null,
+        'Sidebar menu did not render'
+      );
+      return el;
+    }
+
+    const toggle = (el: ConsoleShell) =>
+      el.shadowRoot!.querySelector('#console-nav-toggle') as HTMLButtonElement;
+    const sidebar = (el: ConsoleShell) =>
+      el.shadowRoot!.querySelector('#console-nav') as HTMLElement;
+
+    it('offers "Skip to content" first, landing focus on the content area', async () => {
+      const el = await mount();
+      const first = el.shadowRoot!.querySelector('a, button') as HTMLElement;
+      expect(first.textContent?.trim()).to.equal('Skip to content');
+      expect(first.getAttribute('href')).to.equal('#console-main');
+
+      first.click();
+      const main = el.shadowRoot!.querySelector('#console-main') as HTMLElement;
+      expect(main.getAttribute('tabindex')).to.equal('-1');
+      expect(el.shadowRoot!.activeElement).to.equal(main);
+      // The click is handled, not followed: no stray fragment in the URL.
+      expect(window.location.hash).to.equal('');
+    });
+
+    it('never nests a second <main> inside the app outlet', async () => {
+      const el = await mount();
+      expect(el.shadowRoot!.querySelector('main')).to.not.exist;
+    });
+
+    it('states the sidebar state on the toggle and keeps a hidden sidebar inert', async () => {
+      const el = await mount();
+      expect(toggle(el).getAttribute('aria-controls')).to.equal('console-nav');
+      expect(toggle(el).getAttribute('aria-expanded')).to.equal('true');
+      expect(toggle(el).getAttribute('aria-label')).to.equal('Hide navigation');
+      expect(sidebar(el).hasAttribute('inert')).to.be.false;
+
+      toggle(el).click();
+      await el.updateComplete;
+
+      expect(toggle(el).getAttribute('aria-expanded')).to.equal('false');
+      expect(toggle(el).getAttribute('aria-label')).to.equal('Show navigation');
+      // Collapsed to zero width, so its links must leave the tab order.
+      expect(sidebar(el).hasAttribute('inert')).to.be.true;
+    });
+
+    it('keeps the closed mobile drawer inert', async () => {
+      useMobile();
+      const el = await mount();
+      expect(sidebar(el).hasAttribute('inert')).to.be.true;
+      expect(toggle(el).getAttribute('aria-expanded')).to.equal('false');
+    });
+
+    it('moves focus into the mobile drawer, and Escape closes it back to the toggle', async () => {
+      useMobile();
+      const el = await mount();
+      toggle(el).click();
+      await waitUntil(
+        () =>
+          (el.shadowRoot!.activeElement as HTMLElement | null)?.closest?.(
+            '#console-nav'
+          ),
+        'focus did not move into the drawer'
+      );
+
+      el.shadowRoot!.activeElement!.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await waitUntil(
+        () => sidebar(el).classList.contains('closed'),
+        'Escape did not close the drawer'
+      );
+      await el.updateComplete;
+      expect(el.shadowRoot!.activeElement).to.equal(toggle(el));
+    });
+
+    it('ignores Escape on desktop, where the sidebar is not a drawer', async () => {
+      const el = await mount();
+      el.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      );
+      await el.updateComplete;
+      expect(sidebar(el).classList.contains('open')).to.be.true;
+    });
+
+    it('starts a newly opened page at the top of the content area', async () => {
+      const originalPath = window.location.pathname;
+      const el = await mount();
+      await waitUntil(
+        () => el.shadowRoot!.querySelector('.main-content slot'),
+        'outlet did not render'
+      );
+      const main = el.shadowRoot!.querySelector('.main-content') as HTMLElement;
+      // A tall routed child, so the content area really scrolls.
+      const filler = document.createElement('div');
+      filler.style.minHeight = '5000px';
+      el.appendChild(filler);
+      await el.updateComplete;
+      main.scrollTop = 500;
+      expect(main.scrollTop).to.be.greaterThan(0);
+
+      window.history.pushState({}, '', '/console/agents');
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(main.scrollTop).to.equal(0);
+
+      // Back keeps the place it had, like the router does for the window.
+      main.scrollTop = 400;
+      window.history.pushState({}, '', '/console/tools');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+      window.dispatchEvent(new CustomEvent(LOCATION_CHANGED));
+      expect(main.scrollTop).to.equal(400);
+
+      window.history.replaceState({}, '', originalPath);
+    });
+
+    it('shows the loading line, not a blank page, while features load', async () => {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      (el as unknown as { _featuresLoaded: boolean })._featuresLoaded = false;
+      el.requestUpdate();
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('.main-content route-loading')).to
+        .exist;
+      expect(el.shadowRoot!.querySelector('.main-content slot')).to.not.exist;
+    });
+  });
+
   describe('toasts', () => {
     afterEach(() => {
       document.body.querySelectorAll('sl-alert').forEach((a) => a.remove());

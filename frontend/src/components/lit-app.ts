@@ -43,8 +43,22 @@ export class LitApp extends LitElement {
   private websocketStarted = false;
   private resumeRouteInstallation?: () => void;
 
+  /**
+   * The document title the page was served with. Console pages retitle the
+   * tab after themselves (view-header); leaving the console puts this back,
+   * so the sign-in page never keeps the name of the last console page.
+   */
+  private readonly publicTitle = document.title;
+
+  private restorePublicTitle = () => {
+    if (!window.location.pathname.startsWith('/console')) {
+      document.title = this.publicTitle;
+    }
+  };
+
   connectedCallback() {
     super.connectedCallback();
+    window.addEventListener(LOCATION_CHANGED, this.restorePublicTitle);
     if (this.syncInConsole) {
       window.addEventListener(LOCATION_CHANGED, this.syncInConsole);
     }
@@ -79,6 +93,7 @@ export class LitApp extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener(LOCATION_CHANGED, this.restorePublicTitle);
     if (this.syncInConsole) {
       window.removeEventListener(LOCATION_CHANGED, this.syncInConsole);
     }

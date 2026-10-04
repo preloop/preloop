@@ -1,6 +1,18 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { LitElement, html, css, unsafeCSS, type PropertyValues } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
+import { getBrandConfig } from '../brand-config';
 import consoleStyles from '../styles/console-styles.css?inline';
+
+/** `<page> · <brand>`, or just the page where no brand config is loaded. */
+export function pageTitle(headerText: string): string {
+  let brand = '';
+  try {
+    brand = getBrandConfig().name;
+  } catch {
+    // Unit tests and other hosts without the Vite brand plugin.
+  }
+  return brand ? `${headerText} · ${brand}` : headerText;
+}
 
 @customElement('view-header')
 export class ViewHeader extends LitElement {
@@ -66,6 +78,18 @@ export class ViewHeader extends LitElement {
       }
     `,
   ];
+
+  /**
+   * Every console page renders one view-header, so it is the one place that
+   * can name the browser tab after the page. Without it every tab, history
+   * entry and bookmark carried the marketing tagline.
+   */
+  protected updated(changed: PropertyValues<this>): void {
+    super.updated(changed);
+    if (changed.has('headerText') && this.headerText) {
+      document.title = pageTitle(this.headerText);
+    }
+  }
 
   render() {
     return html`
