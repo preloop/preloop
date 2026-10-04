@@ -149,6 +149,45 @@ class TestGenerateApprovalSummary:
 
         assert summary is None
 
+    async def test_empty_model_output_returns_none_and_logs(self, mock_db, caplog):
+        """An empty completion is a failure and the reason is logged."""
+        import logging
+        from unittest.mock import AsyncMock
+
+        model = SimpleNamespace(
+            id="model-1",
+            provider_name="openai",
+            model_identifier="gpt-4o-mini",
+            api_key="sk-test",
+            api_endpoint=None,
+            credentials_secret=None,
+        )
+
+        with (
+            patch(
+                "preloop.services.approval_summary.crud_ai_model.get_default_active_model",
+                return_value=model,
+            ),
+            patch(
+                "preloop.services.approval_summary.call_with_default_model_fallback",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            summary = await generate_approval_summary(
+                mock_db,
+                account_id="acct-1",
+                tool_name="force_push",
+                tool_args={"branch": "main"},
+            )
+
+        assert summary is None
+        assert any(
+            record.levelname == "WARNING" and "empty output" in record.getMessage()
+            for record in caplog.records
+        )
+
     async def test_credentials_secret_id_resolves(self, mock_db):
         """Model with credentials_secret_id (no plaintext api_key) resolves via secret service."""
         from types import SimpleNamespace

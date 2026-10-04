@@ -2175,16 +2175,28 @@ class ApprovalService:
         )
 
         # Generate user-facing summary before any notifications fire.
+        # Every stored request must carry a summary. The model summary is
+        # unavailable on several paths (no default model, timeout, empty
+        # output, or a fragment/truncation rejection), and the summary
+        # machinery can raise (session setup, generation, or teardown). The
+        # deterministic fallback needs no database, so put it in place before
+        # the model path runs: that way an exception below still leaves the
+        # request with the same non-null fallback the webhook uses.
+        from preloop.services.approval_summary import (
+            fallback_approval_summary,
+            generate_approval_summary,
+        )
+
+        summary = fallback_approval_summary(tool_name, approval_request.tool_args or {})
         try:
             from preloop.api.loop_safety import run_db_off_loop
             from preloop.models.db.session import get_session_factory
-            from preloop.services.approval_summary import generate_approval_summary
 
             sync_db = await run_db_off_loop(lambda: get_session_factory()())
             try:
                 # The summary is stored on the request and shown on every
                 # surface: generate it from the stored (redacted) arguments.
-                summary = await generate_approval_summary(
+                generated = await generate_approval_summary(
                     sync_db,
                     account_id=account_id,
                     tool_name=tool_name,
@@ -2196,16 +2208,38 @@ class ApprovalService:
                 # Rollback during close is database I/O too. The summary's
                 # worker has drained before returning, including cancellation.
                 await run_db_off_loop(sync_db.close)
-            if summary:
-                approval_request = await self.update_approval_request(
+            if generated:
+                # Prefer the model's user-facing ask; otherwise the fallback
+                # computed above is already in place.
+                summary = generated
+            else:
+                logger.warning(
+                    "Approval summary model produced no usable summary for "
+                    "request %s (tool %s); storing deterministic fallback",
                     approval_request.id,
-                    ApprovalRequestUpdate(summary=summary),
+                    tool_name,
                 )
         except Exception as summary_error:
             logger.warning(
-                "Failed to attach approval summary for %s: %s",
+                "Failed to generate approval summary for %s: %s; storing "
+                "deterministic fallback",
                 approval_request.id,
                 summary_error,
+                exc_info=True,
+            )
+
+        # Persist the summary outside the generation try/except so a failure
+        # above cannot skip it and leave the stored request null.
+        try:
+            approval_request = await self.update_approval_request(
+                approval_request.id,
+                ApprovalRequestUpdate(summary=summary),
+            )
+        except Exception as persist_error:
+            logger.warning(
+                "Failed to persist approval summary for %s: %s",
+                approval_request.id,
+                persist_error,
                 exc_info=True,
             )
 
