@@ -447,6 +447,33 @@ describe('IssueCostView', () => {
     ).to.equal(null);
   });
 
+  it('labels cycle time as run-started and approval as recorded, not mergeable', async () => {
+    const el = await fixture<IssueCostView>(
+      html`<issue-cost-view></issue-cost-view>`
+    );
+    await waitUntil(() => el.report !== null, 'report loaded');
+    await el.updateComplete;
+    const root = el.shadowRoot!;
+    const headers = [
+      ...root.querySelectorAll('table[aria-label="Cost per issue"] th'),
+    ];
+    const byText = (text: string) =>
+      headers.find((th) => th.textContent!.trim() === text) as HTMLElement;
+    expect(byText('Run to PR').title).to.contain(
+      'earliest attributed execution start (not ticket creation)'
+    );
+    expect(byText('To recorded approval').title).to.contain(
+      'not verified mergeability'
+    );
+    expect(byText('To merge').title).to.contain('recorded approval event');
+    expect(headers.some((th) => /mergeable/i.test(th.textContent!))).to.be
+      .false;
+    const note = root.querySelector('.cycle-time-note')!.textContent!;
+    expect(note).to.contain('not when the ticket was created');
+    expect(note).to.contain('start inclusive, end exclusive');
+    expect(note).to.contain('not verified mergeability');
+  });
+
   it('exports with the current filter', async () => {
     const el = await fixture<IssueCostView>(
       html`<issue-cost-view></issue-cost-view>`
