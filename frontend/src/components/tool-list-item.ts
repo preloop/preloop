@@ -18,6 +18,7 @@ import type { Tool, ApprovalWorkflow } from './tool-card';
 import type { AccessRuleSummary } from './governance-rule-set-editor';
 import type { GatewayUsageByTool } from '../types';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import { ruleActionMeta } from '../utils/rule-actions';
 
 @customElement('tool-list-item')
 export class ToolListItem extends LitElement {
@@ -162,17 +163,18 @@ export class ToolListItem extends LitElement {
         font-weight: 500;
       }
 
-      .rule-count.deny {
+      /* Classes are the shared rule-action variants (utils/rule-actions.ts). */
+      .rule-count.danger {
         background: var(--sl-color-danger-100);
         color: var(--sl-color-danger-700);
       }
 
-      .rule-count.approval {
-        background: var(--sl-color-primary-100);
-        color: var(--sl-color-primary-700);
+      .rule-count.warning {
+        background: var(--sl-color-warning-100);
+        color: var(--sl-color-warning-700);
       }
 
-      .rule-count.allow {
+      .rule-count.success {
         background: var(--sl-color-success-100);
         color: var(--sl-color-success-700);
       }
@@ -383,41 +385,29 @@ export class ToolListItem extends LitElement {
       return html`<span class="no-rules">No rules</span>`;
     }
 
-    return html`
-      ${
-        summary.deny > 0
-          ? html`<span class="rule-count deny"
-              ><sl-icon
-                name="x-octagon-fill"
-                style="font-size: 0.8em;"
-              ></sl-icon>
-              ${summary.deny} deny</span
-            >`
-          : ''
-      }
-      ${
-        summary.approval > 0
-          ? html`<span class="rule-count approval"
-              ><sl-icon
-                name="shield-lock-fill"
-                style="font-size: 0.8em;"
-              ></sl-icon>
-              ${summary.approval} approval</span
-            >`
-          : ''
-      }
-      ${
-        summary.allow > 0
-          ? html`<span class="rule-count allow"
-              ><sl-icon
-                name="check-circle-fill"
-                style="font-size: 0.8em;"
-              ></sl-icon>
-              ${summary.allow} allow</span
-            >`
-          : ''
-      }
-    `;
+    // Same order, words, icons and colours as the rule list and Policies
+    // (utils/rule-actions.ts): require approval is amber everywhere.
+    const counts: Array<[string, number]> = [
+      ['deny', summary.deny],
+      ['require_approval', summary.approval],
+      ['allow', summary.allow],
+    ];
+    return html`${counts.map(([action, count]) => {
+      if (count === 0) return '';
+      const meta = ruleActionMeta(action);
+      const rulesWord = count === 1 ? 'rule' : 'rules';
+      return html`<span
+        class="rule-count ${meta.variant}"
+        data-action=${action}
+        title=${`${count} ${meta.label.toLowerCase()} ${rulesWord}`}
+        ><sl-icon
+          name=${meta.icon}
+          style="font-size: 0.8em;"
+          aria-hidden="true"
+        ></sl-icon>
+        ${count} ${meta.label.toLowerCase()}</span
+      >`;
+    })}`;
   }
 
   private _openJustificationDialog() {

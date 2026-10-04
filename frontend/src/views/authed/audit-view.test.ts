@@ -699,7 +699,7 @@ describe('AuditView', () => {
     );
 
     expect(gatewayRow).to.exist;
-    expect(element.shadowRoot?.textContent || '').to.contain('Budget Denied');
+    expect(element.shadowRoot?.textContent || '').to.contain('Budget denied');
 
     gatewayRow?.click();
     await element.updateComplete;
@@ -733,7 +733,7 @@ describe('AuditView', () => {
     await element.updateComplete;
 
     const expanded = element.shadowRoot?.textContent || '';
-    expect(expanded).to.contain('Policy: Require Approval');
+    expect(expanded).to.contain('Policy: require approval');
     expect(expanded).to.contain('Default Rule');
     expect(expanded).to.contain('Approval requested for pay');
     expect(expanded).to.contain('Notified via Email');
@@ -1176,7 +1176,7 @@ describe('AuditView', () => {
         element.shadowRoot?.querySelectorAll('.primary-label') || []
       ).map((el) => (el.textContent || '').trim());
       expect(labels).to.deep.equal([
-        'Denied by policy: delete_repo',
+        'Blocked by policy: delete_repo',
         'Approval required: delete_repo',
       ]);
 

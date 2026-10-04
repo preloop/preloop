@@ -2061,7 +2061,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           >
             <sl-option value="with_rules">With rules</sl-option>
             <sl-option value="no_rules">No rules</sl-option>
-            <sl-option value="require_approval">Requires approval</sl-option>
+            <sl-option value="require_approval">Require approval</sl-option>
           </sl-select>
           <sl-select
             class="workflow-filter"
@@ -2227,7 +2227,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           >
             <sl-option value="with_rules">With rules</sl-option>
             <sl-option value="no_rules">No rules</sl-option>
-            <sl-option value="require_approval">Requires approval</sl-option>
+            <sl-option value="require_approval">Require approval</sl-option>
             <sl-option value="allowed">Allowed</sl-option>
             <sl-option value="blocked">Blocked</sl-option>
           </sl-select>

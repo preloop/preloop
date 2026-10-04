@@ -32,6 +32,10 @@ import '../../components/view-header.ts';
 import '../../components/audit-integrity-strip';
 import '../../components/permission-denied';
 import { showToast } from '../../components/confirm-dialog';
+import {
+  approvalStatusLabel,
+  approvalStatusVariant,
+} from '../../utils/approvals';
 
 // Types
 interface AuditLog {
@@ -131,18 +135,20 @@ const DEEP_LINK_PAGES = 4;
 /** The fixed console header, which a scrolled-to row must clear. */
 const HEADER_OFFSET_PX = 60;
 
-// Outcome filter options
+// Outcome filter options. Approval outcomes use the Approvals page words
+// (utils/approvals.ts), so a request reads the same on both pages; a policy
+// `deny` is "Blocked by policy" so it never reads as a reviewer's denial.
 const OUTCOME_OPTIONS = [
   { value: 'allow', label: 'Allowed' },
-  { value: 'deny', label: 'Denied' },
-  { value: 'require_approval', label: 'Approval Required' },
-  { value: 'approved', label: 'Approved' },
-  { value: 'declined', label: 'Declined' },
+  { value: 'deny', label: 'Blocked by policy' },
+  { value: 'require_approval', label: 'Approval required' },
+  { value: 'approved', label: approvalStatusLabel('approved') },
+  { value: 'declined', label: approvalStatusLabel('declined') },
   { value: 'executed', label: 'Executed' },
   { value: 'failed', label: 'Failed' },
-  { value: 'upstream_error', label: 'Upstream Error' },
-  { value: 'budget_denied', label: 'Budget Denied' },
-  { value: 'expired', label: 'Expired' },
+  { value: 'upstream_error', label: 'Upstream error' },
+  { value: 'budget_denied', label: 'Budget denied' },
+  { value: 'expired', label: approvalStatusLabel('expired') },
 ];
 
 @customElement('audit-view')
@@ -913,15 +919,17 @@ export class AuditView extends AuthedElement {
       case 'executed':
         return { variant: 'success', label: 'Allowed' };
       case 'approved':
-        return { variant: 'success', label: 'Approved' };
-      case 'deny':
-        return { variant: 'danger', label: 'Denied' };
       case 'declined':
-        return { variant: 'danger', label: 'Declined' };
-      case 'require_approval':
-        return { variant: 'warning', label: 'Approval Required' };
       case 'expired':
-        return { variant: 'neutral', label: 'Expired' };
+        // The Approvals page's words and colours for the same outcomes.
+        return {
+          variant: approvalStatusVariant(outcome),
+          label: approvalStatusLabel(outcome),
+        };
+      case 'deny':
+        return { variant: 'danger', label: 'Blocked by policy' };
+      case 'require_approval':
+        return { variant: 'warning', label: 'Approval required' };
       case 'created':
         return { variant: 'success', label: 'Created' };
       case 'updated':
@@ -930,15 +938,15 @@ export class AuditView extends AuthedElement {
       case 'failure':
         return { variant: 'danger', label: 'Failed' };
       case 'upstream_error':
-        return { variant: 'danger', label: 'Upstream Error' };
+        return { variant: 'danger', label: 'Upstream error' };
       case 'pending_approval':
-        return { variant: 'warning', label: 'Approval Pending' };
+        return { variant: 'warning', label: 'Approval pending' };
       case 'budget_denied':
-        return { variant: 'danger', label: 'Budget Denied' };
+        return { variant: 'danger', label: 'Budget denied' };
       case 'success':
         return { variant: 'success', label: 'Success' };
       case 'denied':
-        return { variant: 'danger', label: 'Denied' };
+        return { variant: 'danger', label: 'Blocked' };
       case 'sent':
         return { variant: 'success', label: 'Sent' };
       case 'partial':
@@ -999,7 +1007,7 @@ export class AuditView extends AuthedElement {
         const desc = d.rule_description?.includes('Rule matched: None')
           ? 'Default Rule'
           : d.rule_description;
-        return `Policy: Require Approval${desc ? ` — ${desc}` : ''}`;
+        return `Policy: require approval${desc ? ` — ${desc}` : ''}`;
       }
       case 'approval_created': {
         const timeout = d.timeout_seconds
@@ -1010,9 +1018,9 @@ export class AuditView extends AuthedElement {
       case 'approval_approved':
         return `Approved${d.approver_id ? ` by ${this._getUserDisplay(d.approver_id)}` : ''}${d.reason ? ` — ${d.reason}` : ''}`;
       case 'approval_denied':
-        return `Declined${d.approver_id ? ` by ${this._getUserDisplay(d.approver_id)}` : ''}${d.reason ? ` — ${d.reason}` : ''}`;
+        return `Denied${d.approver_id ? ` by ${this._getUserDisplay(d.approver_id)}` : ''}${d.reason ? ` — ${d.reason}` : ''}`;
       case 'approval_expired':
-        return 'Approval expired (timed out)';
+        return 'Approval timed out';
       case 'approval_escalated':
         return `Escalated${d.escalation_reason ? ` — ${d.escalation_reason}` : ''}`;
       case 'approval_notification_sent': {
@@ -1062,7 +1070,7 @@ export class AuditView extends AuthedElement {
       case 'tool_call':
         return event.resource_id || event.details?.tool_name || 'Unknown tool';
       case 'policy_deny':
-        return `Denied by policy: ${this._policyToolName(event)}`;
+        return `Blocked by policy: ${this._policyToolName(event)}`;
       case 'policy_require_approval':
         return `Approval required: ${this._policyToolName(event)}`;
       case 'policy_allow':
@@ -1806,7 +1814,7 @@ export class AuditView extends AuthedElement {
       return `The upstream server returned an error${code}${reason}.`;
     }
     if (group.outcome === 'declined') {
-      return `The call was declined and nothing was forwarded${reason}.`;
+      return `The call was denied and nothing was forwarded${reason}.`;
     }
     return `The tool call failed${code}${reason}.`;
   }

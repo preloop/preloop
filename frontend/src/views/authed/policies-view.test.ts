@@ -567,7 +567,12 @@ describe('PoliciesView', () => {
       'require_approval'
     );
     expect(element.shadowRoot?.textContent).to.contain('approve-flagged');
-    expect(element.shadowRoot?.textContent).to.contain('require_approval');
+    const badge = element.shadowRoot?.querySelector(
+      '[data-rule-id="approve-flagged"] sl-badge[data-action]'
+    );
+    // Sentence case and amber, never raw snake_case.
+    expect(badge?.textContent?.trim()).to.equal('Require approval');
+    expect(badge?.getAttribute('variant')).to.equal('warning');
   });
 
   it('shows a unified YAML diff from Describe a change and Save applies', async () => {

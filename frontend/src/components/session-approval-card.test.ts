@@ -200,6 +200,14 @@ describe('inline session decisions', () => {
     expect(expired.shadowRoot!.textContent).to.include('Bypass');
     expect(fetchStub.called).to.equal(false);
   });
+  it('colours a denied request as danger, as Approvals does', async () => {
+    const card = await mount(
+      request({ status: 'declined', resolved_at: '2026-10-02T10:00:01Z' })
+    );
+    const badge = card.shadowRoot!.querySelector('header sl-badge');
+    expect(badge?.textContent?.trim()).to.equal('Denied');
+    expect(badge?.getAttribute('variant')).to.equal('danger');
+  });
   it('does not submit a confirmation after the session card is disposed', async () => {
     fetchStub.resolves(json(request({ status: 'declined' })));
     const element = await mount();

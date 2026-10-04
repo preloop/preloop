@@ -116,6 +116,26 @@ export function partitionApprovalRequests(
   return { waiting, history };
 }
 
+/**
+ * Shoelace badge variant for an approval status. One map, so a denied
+ * request is red on Approvals, the detail page, Audit and in a session.
+ */
+export function approvalStatusVariant(
+  status: string
+): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' {
+  switch (status) {
+    case 'pending':
+      return 'warning';
+    case 'approved':
+      return 'success';
+    case 'declined':
+      return 'danger';
+    default:
+      // expired, cancelled and anything unknown.
+      return 'neutral';
+  }
+}
+
 /** Sentence-case label for a status, with `declined` read as denied. */
 export function approvalStatusLabel(status: string): string {
   switch (status) {

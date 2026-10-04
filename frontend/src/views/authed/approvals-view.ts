@@ -22,6 +22,7 @@ import '../../components/repository-chip';
 import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
+  approvalStatusVariant,
   isExpiringSoon,
   isUnexpiredPendingRequest,
   normalizeApprovalRequest,
@@ -958,20 +959,7 @@ export class ApprovalsView extends AuthedElement {
   private getStatusVariant(
     status: string
   ): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' {
-    switch (status) {
-      case 'pending':
-        return 'warning';
-      case 'approved':
-        return 'success';
-      case 'declined':
-        return 'danger';
-      case 'expired':
-        return 'neutral';
-      case 'cancelled':
-        return 'neutral';
-      default:
-        return 'neutral';
-    }
+    return approvalStatusVariant(status);
   }
 
   private getStatusIcon(status: string): string {

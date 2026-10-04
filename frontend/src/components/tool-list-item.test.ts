@@ -296,6 +296,44 @@ describe('ToolListItem – justification settings', () => {
     expect(ruleSummaryText(el)).to.equal('No rules · blocked');
   });
 
+  it('counts rules with the shared action words and colours', async () => {
+    stubApi();
+    const rule = (id: string, action: string) => ({
+      id,
+      action,
+      condition_expression: null,
+      condition_type: 'cel',
+      priority: 1,
+      description: null,
+      is_enabled: true,
+      approval_workflow_id: null,
+    });
+    const el = (await fixture(
+      html`<tool-list-item
+        .tool=${{ ...baseTool, source: 'mcp', source_name: 'Example MCP' }}
+        .accessRules=${[
+          rule('r1', 'require_approval'),
+          rule('r2', 'require_approval'),
+          rule('r3', 'deny'),
+        ]}
+        .policies=${[]}
+        .features=${{}}
+      ></tool-list-item>`
+    )) as ToolListItem;
+    await el.updateComplete;
+
+    const counts = Array.from(
+      el.shadowRoot?.querySelectorAll('.rule-count') ?? []
+    );
+    expect(
+      counts.map((c) => c.textContent?.replace(/\s+/g, ' ').trim())
+    ).to.deep.equal(['1 deny', '2 require approval']);
+    expect(counts[1].classList.contains('warning')).to.equal(true);
+    expect(counts[1].getAttribute('title')).to.equal(
+      '2 require approval rules'
+    );
+  });
+
   it('labels the native switch with the verb Block', async () => {
     stubApi();
     const el = await createNativeItem();

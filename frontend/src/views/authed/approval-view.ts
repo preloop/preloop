@@ -27,6 +27,7 @@ import {
 import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
+  approvalStatusVariant,
   formatNextWaitingLabel,
   isExpiringSoon,
   isUnexpiredPendingRequest,
@@ -1073,20 +1074,7 @@ export class ApprovalView extends AuthedElement {
   private getStatusVariant(
     status: string
   ): 'primary' | 'success' | 'warning' | 'danger' | 'neutral' {
-    switch (status) {
-      case 'pending':
-        return 'warning';
-      case 'approved':
-        return 'success';
-      case 'declined':
-        return 'danger';
-      case 'expired':
-        return 'neutral';
-      case 'cancelled':
-        return 'neutral';
-      default:
-        return 'neutral';
-    }
+    return approvalStatusVariant(status);
   }
 
   /** "expires in 4m 12s" while it matters, coarser once it is hours away. */
@@ -1345,7 +1333,7 @@ export class ApprovalView extends AuthedElement {
           ? html`
               <sl-alert variant="warning" open class="expired-banner">
                 <sl-icon slot="icon" name="clock-history"></sl-icon>
-                <strong>Expired:</strong> no response within the window
+                <strong>Timed out:</strong> no response within the window
               </sl-alert>
             `
           : ''

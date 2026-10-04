@@ -70,6 +70,7 @@ import '@shoelace-style/shoelace/dist/components/menu/menu.js';
 import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../styles/console-dialog';
+import { ruleActionLabel, ruleActionMeta } from '../../utils/rule-actions';
 
 /**
  * Actions the rule dialog offers. `notify` (#959) is for model text rules
@@ -1213,7 +1214,7 @@ export class PoliciesView extends LitElement {
     }
     if (!form.expression.trim() && form.action !== 'allow') {
       this._ruleDialogError =
-        `A ${form.action} rule needs a condition. An empty condition would ` +
+        `A ${ruleActionLabel(form.action).toLowerCase()} rule needs a condition. An empty condition would ` +
         'match every scanned request.';
       return;
     }
@@ -2073,17 +2074,10 @@ export class PoliciesView extends LitElement {
                                     ? 'action-notify'
                                     : 'action-approval'
                             }
-                            variant=${
-                              rule.action === 'allow'
-                                ? 'success'
-                                : rule.action === 'deny'
-                                  ? 'danger'
-                                  : rule.action === 'notify'
-                                    ? 'primary'
-                                    : 'warning'
-                            }
+                            variant=${ruleActionMeta(rule.action).variant}
+                            data-action=${rule.action}
                           >
-                            ${rule.action}
+                            ${ruleActionLabel(rule.action)}
                           </sl-badge>
                           ${rule.detectors.map(
                             (chip) =>
@@ -2414,7 +2408,8 @@ export class PoliciesView extends LitElement {
                       <span class="preset-label">${preset.label}</span>
                       <span class="preset-summary">${preset.summary}</span>
                       <span class="preset-meta">
-                        ${preset.target} &middot; ${preset.action} &middot;
+                        ${preset.target} &middot;
+                        ${ruleActionLabel(preset.action)} &middot;
                         <code>${preset.expression}</code>
                       </span>
                     </button>

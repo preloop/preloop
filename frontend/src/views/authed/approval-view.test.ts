@@ -1042,7 +1042,11 @@ describe('ApprovalView', () => {
     expect(element.shadowRoot?.textContent).to.contain(
       'no response within the window'
     );
-    expect(element.shadowRoot?.querySelector('.expired-banner')).to.exist;
+    const banner = element.shadowRoot?.querySelector('.expired-banner');
+    expect(banner).to.exist;
+    // Same word as the status badge above it, not "Expired".
+    expect(banner?.textContent).to.contain('Timed out');
+    expect(banner?.textContent).to.not.contain('Expired');
     expect(element.shadowRoot?.querySelector('.actions')).to.not.exist;
   });
 

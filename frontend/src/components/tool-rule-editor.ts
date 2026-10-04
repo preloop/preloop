@@ -205,9 +205,15 @@ export class ToolRuleEditor extends LitElement {
         background: var(--sl-color-danger-50);
       }
 
+      /* Require approval is amber on every surface (utils/rule-actions.ts). */
       .action-card.approval.selected {
-        border-color: var(--sl-color-primary-600);
-        background: var(--sl-color-primary-50);
+        border-color: var(--sl-color-warning-600);
+        background: var(--sl-color-warning-50);
+      }
+
+      .action-card.allow.selected {
+        border-color: var(--sl-color-success-600);
+        background: var(--sl-color-success-50);
       }
 
       .action-card .action-icon {
@@ -1288,14 +1294,16 @@ export class ToolRuleEditor extends LitElement {
               <div class="action-icon">
                 <sl-icon
                   name="shield-lock-fill"
-                  style="font-size: 1.5rem; color: var(--sl-color-primary-500);"
+                  style="font-size: 1.5rem; color: var(--sl-color-warning-600);"
                 ></sl-icon>
               </div>
               <div class="action-label">Require approval</div>
               <div class="action-desc">Human or AI review</div>
             </div>
             <div
-              class="action-card ${this._action === 'allow' ? 'selected' : ''}"
+              class="action-card allow ${
+                this._action === 'allow' ? 'selected' : ''
+              }"
               @click=${() => (this._action = 'allow')}
             >
               <div class="action-icon">
