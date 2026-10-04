@@ -48,4 +48,5 @@ RUN apt-get update \
 LABEL org.opencontainers.image.title="preloop-codex-perl" \
       org.opencontainers.image.description="Opt-in Codex-compatible image with a distro Perl toolchain" \
       org.opencontainers.image.base.name="${CODEX_BASE_IMAGE}"
-USER ${BASE_USER}
+# An empty BASE_USER (a base with no USER) means root.
+USER ${BASE_USER:-root}

@@ -48,6 +48,7 @@ build, so a missing tool fails the build. The image sets no `WORKDIR`,
 and then switches back to `BASE_USER` (default `root`, which is what
 codex-universal uses). If your base has another default user, pass it:
 `--build-arg BASE_USER="$(docker image inspect --format '{{.Config.User}}' "$BASE")"`.
+An empty value (a base with no `USER`) also means root.
 
 Which user the agent runs as depends on the executor. Hosted Codex on
 Docker and the private Docker runner pass no user, so they use the image
