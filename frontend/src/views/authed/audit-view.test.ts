@@ -1280,9 +1280,27 @@ describe('AuditView', () => {
 
     it('drops a live answer for filters the reader has already left', async function () {
       this.timeout(10000);
-      slowGrouped(600, (url) =>
-        url.includes('tool_name=') ? 'filtered' : 'unfiltered'
-      );
+      // The stale unfiltered answer must land AFTER the filtered one.
+      // Equal delays finish in start order, so the filtered row would win
+      // even without the generation guard.
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          const filtered = url.includes('tool_name=');
+          await sleep(filtered ? 40 : 900);
+          return new Response(
+            JSON.stringify(groupsFor(filtered ? 'filtered' : 'unfiltered')),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }
+          );
+        }
+        return new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
       const element = document.createElement('audit-view') as AuditView;
       document.body.appendChild(element);
       await waitUntil(() => !(element as any)._loading, 'first load');
@@ -1306,7 +1324,7 @@ describe('AuditView', () => {
         'both settle',
         { timeout: 3000 }
       );
-      await sleep(700);
+      await sleep(1100);
       expect(rowIds(element)).to.deep.equal(['filtered']);
       element.remove();
     });

@@ -410,6 +410,10 @@ export class AuditView extends AuthedElement {
       if (res.ok) {
         const data: GroupedResponse = await res.json();
         if (generation !== this._timelineGeneration) return;
+        // A live refresh used to be a foreground load, which cleared a
+        // stale permission error. A successful background answer has to
+        // do the same, or the denial stays up next to the new rows.
+        this._permissionError = null;
         this._groups = data.groups;
         this._total = data.total;
       }
