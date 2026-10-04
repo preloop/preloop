@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { getAccountRuntimeSessionActivityTimeline } from '../../../api';
 
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
 import '../../../setup-tests';
@@ -1570,12 +1571,13 @@ describe('AIModelDetailView', () => {
     // The search field promises a list, so the list is on the page.
     expect(element.shadowRoot?.textContent).to.contain('Captured interactions');
 
-    // Icons are fetched too; only the API calls are counted here.
+    // Count this model's API reads. The embedded observer loads its own
+    // session detail/timeline independently of a model-page reload.
     const apiCalls = () =>
       fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
-        .filter((url) => url.startsWith('/api/'));
+        .filter((url) => url.startsWith('/api/v1/ai-models/model-1/'));
     const callsAfterLoad = apiCalls().length;
 
     const search = element.shadowRoot?.querySelector(
@@ -1583,6 +1585,28 @@ describe('AIModelDetailView', () => {
     ) as HTMLInputElement;
     search.value = 'timeout';
     search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+
+    // Release a concurrent observer timeline read after the request baseline.
+    // It must not be mistaken for a reload of the model's sessions list.
+    let releaseObserverRead!: () => void;
+    const observerRead = new Promise<void>((resolve) => {
+      releaseObserverRead = resolve;
+    }).then(() =>
+      getAccountRuntimeSessionActivityTimeline('runtime-session-1').catch(
+        () => undefined
+      )
+    );
+    releaseObserverRead();
+    await observerRead;
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).startsWith(
+            '/api/v1/runtime-sessions/runtime-session-1/activity'
+          )
+        )
+    ).to.equal(true);
 
     await waitUntil(
       // A late price read can happen before the debounce fires. Wait for
