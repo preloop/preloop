@@ -125,6 +125,23 @@ describe('NotificationPreferencesView', () => {
     );
   });
 
+  it('labels each switch with its own text', async () => {
+    fetchStub = stubPrefs({ ...PREFS, enable_mobile_push: true });
+    const el = (await fixture(
+      html`<notification-preferences-view></notification-preferences-view>`
+    )) as NotificationPreferencesView;
+    await tick();
+    await el.updateComplete;
+    const labels = [...el.shadowRoot!.querySelectorAll('sl-switch')].map(
+      (toggle) => toggle.textContent?.trim()
+    );
+    expect(labels).to.deep.equal([
+      'Email notifications',
+      'Mobile push notifications',
+      'Quiet duplicate alerts',
+    ]);
+  });
+
   it('hides the quiet-alerts toggle unless both channels are enabled', async () => {
     fetchStub = stubPrefs(PREFS);
     const el = (await fixture(
@@ -423,6 +440,47 @@ describe('NotificationPreferencesView', () => {
       await el.updateComplete;
 
       expect((el as any).successMessage).to.contain('iOS');
+    });
+
+    it('treats an untimestamped registration as history on a fresh page load', async () => {
+      fetchStub = stubPrefs({ ...PREFS, mobile_device_tokens: [] });
+      const el = await mount();
+      const prefsReads = () =>
+        fetchStub
+          .getCalls()
+          .filter((call) =>
+            String(call.args[0]).endsWith('/api/v1/notification-preferences/me')
+          ).length;
+      const before = prefsReads();
+
+      handler!({ type: 'device_registered', platform: 'ios' });
+      await tick();
+      await el.updateComplete;
+
+      expect((el as any).successMessage).to.equal('');
+      expect(el.shadowRoot?.querySelector('sl-alert[variant="success"]')).to.not
+        .exist;
+      // The device list still refreshes, without the full-page spinner.
+      expect(prefsReads()).to.equal(before + 1);
+      expect(el.shadowRoot?.querySelector('.loading')).to.not.exist;
+    });
+
+    it('reads a zone-less timestamp as UTC, so an old one stays history', async () => {
+      fetchStub = stubPrefs(PREFS);
+      const el = await mount();
+      // Ten minutes before the page opened, without a "Z". Parsed as local
+      // time it would land hours in the future west of UTC.
+      const stamp = new Date(Date.now() - 10 * 60 * 1000)
+        .toISOString()
+        .replace('Z', '');
+      handler!({
+        type: 'device_registered',
+        platform: 'android',
+        registered_at: stamp,
+      });
+      await tick();
+      await el.updateComplete;
+      expect((el as any).successMessage).to.equal('');
     });
 
     it('announces a registration this page asked for even without a timestamp', async () => {
