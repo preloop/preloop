@@ -728,15 +728,16 @@ export class ApprovalView extends AuthedElement {
         await this.loadHistory();
         return;
       }
-      const forbidden = response.status === 403;
-      const missing = response.ok || response.status === 404;
-      // Authenticated read failed (not a member of the account, no access, or
-      // request gone). Fall back to the public token payload when the link
-      // carried one, so escalation recipients can still see the request
-      // (issue #335).
-      if ((forbidden || missing) && (await this.loadPublicRequest())) {
+      // Authenticated read failed, whatever the reason: not a member of the
+      // account, no access, request gone, an expired session or a server
+      // blip. Fall back to the public token payload when the link carried
+      // one, so escalation recipients can still see the request (issue
+      // #335). The status only picks the message when no path worked.
+      if (await this.loadPublicRequest()) {
         return;
       }
+      const forbidden = response.status === 403;
+      const missing = response.ok || response.status === 404;
       if (forbidden) {
         this.loadFailure = {
           kind: 'forbidden',
@@ -751,11 +752,15 @@ export class ApprovalView extends AuthedElement {
         };
       }
     } catch (err: any) {
+      console.error('Error loading approval request:', err);
+      // A network error is a failed read too: try the token link first.
+      if (!this.approvalRequest && (await this.loadPublicRequest())) {
+        return;
+      }
       this.loadFailure = {
         kind: 'error',
         message: err?.message || '',
       };
-      console.error('Error loading approval request:', err);
     } finally {
       this.loading = false;
     }

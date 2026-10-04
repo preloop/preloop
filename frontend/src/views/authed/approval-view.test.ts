@@ -82,6 +82,8 @@ describe('ApprovalView', () => {
     opts: {
       request?: Record<string, unknown> | null;
       getFails?: boolean;
+      getStatus?: number;
+      getThrows?: boolean;
       history?: Array<Record<string, unknown>> | null;
       publicData?: Record<string, unknown> | null;
       decideHistory?: Array<Record<string, unknown>>;
@@ -100,6 +102,12 @@ describe('ApprovalView', () => {
           /\/api\/v1\/approval-requests\/req-1$/.test(url) &&
           method === 'GET'
         ) {
+          if (opts.getThrows) {
+            throw new TypeError('Failed to fetch');
+          }
+          if (opts.getStatus) {
+            return json({ detail: 'boom' }, opts.getStatus);
+          }
           if (opts.getFails) {
             return json({ detail: 'boom' }, 500);
           }
@@ -1134,6 +1142,70 @@ describe('ApprovalView', () => {
       'Expired: no response within the approval window'
     );
     window.history.replaceState({}, '', '/');
+  });
+
+  describe('with a token link and a failed account read', () => {
+    async function mountWithToken(opts: Parameters<typeof createFetchStub>[0]) {
+      window.history.replaceState(
+        {},
+        '',
+        '/console/approval/req-1?token=tok-123'
+      );
+      fetchStub = createFetchStub(opts);
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+      return element;
+    }
+
+    const publicReads = () =>
+      fetchStub
+        .getCalls()
+        .filter((c) =>
+          /\/approval\/req-1\/data\?token=/.test(String(c.args[0]))
+        );
+
+    afterEach(() => {
+      window.history.replaceState({}, '', '/');
+    });
+
+    // Issue #335: an escalation recipient holding a valid link sees the
+    // request whatever went wrong with the signed-in read.
+    for (const status of [401, 500, 502]) {
+      it(`loads the public payload after an HTTP ${status}`, async () => {
+        const element = await mountWithToken({ getStatus: status });
+
+        expect(publicReads()).to.have.length(1);
+        expect((element as any).publicOnly).to.be.true;
+        expect((element as any).loadFailure).to.equal(null);
+        expect(element.shadowRoot?.textContent).to.not.contain(
+          "Couldn't load this approval request"
+        );
+      });
+    }
+
+    it('loads the public payload when the account read throws', async () => {
+      const element = await mountWithToken({ getThrows: true });
+
+      expect(publicReads()).to.have.length(1);
+      expect((element as any).publicOnly).to.be.true;
+      expect((element as any).loadFailure).to.equal(null);
+    });
+
+    it('still reports the server error when the token read fails too', async () => {
+      const element = await mountWithToken({
+        getStatus: 500,
+        publicData: null,
+      });
+
+      expect(publicReads()).to.have.length(1);
+      expect((element as any).loadFailure?.kind).to.equal('error');
+      expect(element.shadowRoot?.textContent).to.contain(
+        "Couldn't load this approval request"
+      );
+    });
   });
 
   it('submits public decisions through the token endpoint', async () => {
