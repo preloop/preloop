@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from preloop.models.models.mcp_server import MCPServer
+from preloop.models.models.mcp_tool import MCPTool
 
 
 @pytest.fixture(autouse=True)
@@ -211,6 +212,53 @@ def test_get_mcp_server_not_found(client: TestClient, db_session, test_user):
     fake_id = uuid.uuid4()
     response = client.get(f"/api/v1/mcp-servers/{fake_id}")
     assert response.status_code == 404
+
+
+def test_list_mcp_server_tools_returns_discovered_tools(
+    client: TestClient, db_session, test_user
+):
+    """Regression test: listing discovered tools must not 500.
+
+    ``GET /api/v1/mcp-servers/{id}/tools`` validates ORM ``MCPTool`` rows whose
+    ``id`` and ``mcp_server_id`` are UUIDs. The response schema must accept
+    those UUIDs and serialize them to strings instead of raising a validation
+    error, which the endpoint previously surfaced as a 500.
+    """
+    server = MCPServer(
+        name="Tools Server",
+        url="http://localhost:8080/mcp",
+        transport="http-streaming",
+        auth_type="none",
+        account_id=test_user.account_id,
+        status="active",
+    )
+    db_session.add(server)
+    db_session.commit()
+    db_session.refresh(server)
+
+    tool = MCPTool(
+        mcp_server_id=server.id,
+        name="create_issue",
+        description="Create an issue",
+        input_schema={"type": "object", "properties": {}},
+        discovered_at="2026-01-01T00:00:00Z",
+    )
+    db_session.add(tool)
+    db_session.commit()
+    db_session.refresh(tool)
+
+    response = client.get(f"/api/v1/mcp-servers/{server.id}/tools")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["name"] == "create_issue"
+    assert payload[0]["input_schema"] == {"type": "object", "properties": {}}
+    # UUID fields must round-trip as strings, not raw UUIDs.
+    assert isinstance(payload[0]["id"], str)
+    assert isinstance(payload[0]["mcp_server_id"], str)
+    assert payload[0]["id"] == str(tool.id)
+    assert payload[0]["mcp_server_id"] == str(server.id)
 
 
 def _oauth_server(db_session, test_user):
