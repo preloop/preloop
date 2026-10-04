@@ -510,6 +510,7 @@ PRESET_COMPLETION_MARKERS = {
     "015-weekly-model-price-review.yaml": '"status": "success" | "failure"',
     "016-docs-currency-review.yaml": '"status": "success" | "error"',
     "017-portfolio-review.yaml": '"status": "success" | "error"',
+    "020-audio-transcription-agent.yaml": '"status": "success" | "error"',
 }
 
 # Presets that run no agent, so there is no result.json to confirm. Their
