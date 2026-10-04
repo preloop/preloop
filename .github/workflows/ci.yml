@@ -73,6 +73,8 @@ jobs:
           filters: |
             backend:
               - 'backend/**'
+              # backend/tests/test_perl_agent_image.py pins this recipe.
+              - 'environments/perl/**'
               - 'pyproject.toml'
               - 'requirements/**'
               - '.github/requirements/app-dev.txt'

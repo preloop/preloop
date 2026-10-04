@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Opt-in Perl toolchain image for Codex.** `environments/perl/Dockerfile`
+  extends a digest-pinned Codex-compatible base with `perl`, `cpanm`,
+  `perlver`, `perlcritic` and `prove`, and `run-smoke.sh` checks it offline as
+  the agent user. Select it with `CODEX_IMAGE` (hosted) or
+  `agent_config.image` (private runner). Defaults are unchanged. The project
+  fixture image now runs the same shared smoke, which also names a missing
+  tool, separates a 5.10 fixture from a newer one and proves `prove` fails on
+  a failing test (#1058).
 - **Scheduled runs know their time window.** A schedule-triggered run's
   `trigger_event.payload` now carries `previous_scheduled_at` (the previous
   fire time, computed from the schedule definition in its timezone),
