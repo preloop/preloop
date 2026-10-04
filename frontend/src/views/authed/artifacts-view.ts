@@ -156,6 +156,15 @@ export function effectiveKinds(filters: ArtifactFilters): string[] {
   return filters.kinds.filter((kind) => IMAGE_KINDS.includes(kind));
 }
 
+/** Gallery with kinds chosen, none of them images: nothing to show. */
+export function galleryHasNoImageKind(filters: ArtifactFilters): boolean {
+  return (
+    filters.layout === 'gallery' &&
+    filters.kinds.length > 0 &&
+    !effectiveKinds(filters).length
+  );
+}
+
 function isoFromDateInput(value: string, endOfDay: boolean): string | null {
   if (!value) return null;
   const date = new Date(`${value}T00:00:00`);
@@ -242,6 +251,8 @@ export class ArtifactsView extends AuthedElement {
   @state() private loading = true;
   @state() private loadingMore = false;
   @state() private error = '';
+  /** A failed Load more; the loaded rows stay on screen. */
+  @state() private moreError = '';
   @state() private permissionError: PermissionError | null = null;
   @state() private agents: Array<{ id: string; name: string }> = [];
   @state() private labelDraft = '';
@@ -294,6 +305,31 @@ export class ArtifactsView extends AuthedElement {
         color: var(--sl-color-neutral-500);
         font-variant-numeric: tabular-nums;
         margin-left: 0.25rem;
+      }
+      .label-suggestions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-2x-small);
+        margin-bottom: var(--sl-spacing-small);
+      }
+      .label-suggestions .filter-label {
+        margin: 0 var(--sl-spacing-2x-small) 0 0;
+      }
+      button.suggestion {
+        font: inherit;
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-primary-700);
+        background: var(--sl-color-neutral-0);
+        border: 1px dashed var(--sl-color-neutral-300);
+        border-radius: var(--sl-border-radius-pill);
+        padding: 0.1rem 0.6rem;
+        cursor: pointer;
+      }
+      button.suggestion:hover,
+      button.suggestion:focus-visible {
+        border-color: var(--sl-color-primary-500);
+        outline: none;
       }
       .active-labels {
         display: flex;
@@ -425,6 +461,8 @@ export class ArtifactsView extends AuthedElement {
       }
       .more {
         display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
         justify-content: center;
         margin-top: var(--sl-spacing-medium);
       }
@@ -464,8 +502,16 @@ export class ArtifactsView extends AuthedElement {
 
   async load(): Promise<void> {
     const seq = ++this.requestSeq;
-    this.loading = true;
     this.error = '';
+    this.moreError = '';
+    if (galleryHasNoImageKind(this.filters)) {
+      // Nothing the gallery could show; do not fetch every kind instead.
+      this.result = null;
+      this.items = [];
+      this.loading = false;
+      return;
+    }
+    this.loading = true;
     try {
       const page = await searchAccountArtifacts(searchParamsFor(this.filters));
       if (seq !== this.requestSeq) return;
@@ -492,6 +538,7 @@ export class ArtifactsView extends AuthedElement {
     if (!cursor || this.loadingMore) return;
     const seq = this.requestSeq;
     this.loadingMore = true;
+    this.moreError = '';
     try {
       const page = await searchAccountArtifacts(
         searchParamsFor(this.filters, { cursor })
@@ -500,7 +547,8 @@ export class ArtifactsView extends AuthedElement {
       this.items = [...this.items, ...(page.items ?? [])];
       this.result = { ...page, facets: this.result!.facets };
     } catch (error) {
-      this.error =
+      if (seq !== this.requestSeq) return;
+      this.moreError =
         error instanceof Error ? error.message : 'Could not load more.';
     } finally {
       this.loadingMore = false;
@@ -580,12 +628,32 @@ export class ArtifactsView extends AuthedElement {
     return [...out].filter((value) => !this.filters.labels.includes(value));
   }
 
-  private toolSuggestions(): string[] {
-    return [
-      ...new Set(
-        this.items.map((item) => item.tool_name).filter(Boolean) as string[]
-      ),
-    ];
+  /**
+   * Labels one click away: facet sites first, then labels on this page.
+   * Buttons rather than a datalist, which `sl-input` does not forward.
+   */
+  private renderLabelSuggestions(): TemplateResult | typeof nothing {
+    const suggestions = this.labelSuggestions().slice(0, 8);
+    if (!suggestions.length) return nothing;
+    return html`<div
+      class="label-suggestions"
+      role="group"
+      aria-label="Suggested labels"
+      data-testid="label-suggestions"
+    >
+      <span class="filter-label">Add label:</span>
+      ${suggestions.map(
+        (label) =>
+          html`<button
+            type="button"
+            class="suggestion"
+            data-label=${label}
+            @click=${() => this.addLabel(label)}
+          >
+            ${label}
+          </button>`
+      )}
+    </div>`;
   }
 
   private renderFilters(): TemplateResult {
@@ -653,7 +721,6 @@ export class ArtifactsView extends AuthedElement {
           label="Tool"
           placeholder="Any tool"
           clearable
-          list="artifact-tools"
           .value=${this.filters.tool}
           @sl-change=${(e: Event) =>
             this.applyFilters({
@@ -661,9 +728,6 @@ export class ArtifactsView extends AuthedElement {
             })}
           data-testid="tool-filter"
         ></sl-input>
-        <datalist id="artifact-tools">
-          ${this.toolSuggestions().map((v) => html`<option value=${v}></option>`)}
-        </datalist>
         <sl-select
           label="Created"
           .value=${this.filters.range || 'any'}
@@ -713,7 +777,6 @@ export class ArtifactsView extends AuthedElement {
           class="narrow"
           label="Label"
           placeholder="key:value, then Enter"
-          list="artifact-labels"
           .value=${this.labelDraft}
           @sl-input=${(e: Event) =>
             (this.labelDraft = (e.target as HTMLInputElement).value)}
@@ -728,11 +791,6 @@ export class ArtifactsView extends AuthedElement {
           title="All labels must match"
           data-testid="label-filter"
         ></sl-input>
-        <datalist id="artifact-labels">
-          ${this.labelSuggestions().map(
-            (v) => html`<option value=${v}></option>`
-          )}
-        </datalist>
         <sl-checkbox
           ?checked=${this.filters.held}
           @sl-change=${(e: Event) =>
@@ -768,6 +826,7 @@ export class ArtifactsView extends AuthedElement {
           </div>
         </fieldset>
       </form>
+      ${this.renderLabelSuggestions()}
       ${
         this.filters.labels.length
           ? html`<div class="active-labels" aria-label="Active label filters">
@@ -960,9 +1019,7 @@ export class ArtifactsView extends AuthedElement {
       </div>`;
     }
     const filtered = hasActiveFilters(this.filters);
-    const galleryEmpty =
-      this.filters.layout === 'gallery' && !effectiveKinds(this.filters).length;
-    if (!this.items.length || galleryEmpty) {
+    if (!this.items.length || galleryHasNoImageKind(this.filters)) {
       if (!filtered && this.filters.layout === 'list')
         return this.renderIntro();
       return this.renderNoMatch();
@@ -982,8 +1039,19 @@ export class ArtifactsView extends AuthedElement {
                 size="small"
                 ?loading=${this.loadingMore}
                 @click=${() => this.loadMore()}
+                data-testid="load-more"
                 >Load more</sl-button
               >
+              ${
+                this.moreError
+                  ? html`<span
+                      class="error"
+                      role="alert"
+                      data-testid="more-error"
+                      >${this.moreError}</span
+                    >`
+                  : nothing
+              }
             </div>`
           : nothing
       }

@@ -240,7 +240,11 @@ describe('artifacts-view', () => {
   it('gallery explains itself when only non-image kinds are selected', async () => {
     const el = await mount('?view=gallery&kind=transcript');
 
-    expect(apiCalls()).to.have.length(1);
+    // Nothing to show, so nothing is fetched and no count is claimed.
+    expect(apiCalls()).to.have.length(0);
+    expect(
+      $(el, '[data-testid="artifact-count"]')?.textContent?.trim()
+    ).to.equal('');
     expect($(el, '[data-testid="artifacts-no-match"]')?.textContent).to.contain(
       'The gallery shows images'
     );
@@ -297,6 +301,95 @@ describe('artifacts-view', () => {
     );
     expect(window.location.search).to.equal('');
     expect([...lastQuery().keys()]).to.deep.equal(['limit']);
+  });
+
+  it('Load more appends the next page and keeps rows when it fails', async () => {
+    let failMore = false;
+    respond = (url) => {
+      if (url.searchParams.get('cursor') === 'c1') {
+        if (failMore) return json({ detail: 'boom' }, 500);
+        return json({
+          items: [item('a4', 'document')],
+          next_cursor: null,
+          facets: { kind: {}, site: {} },
+          facets_truncated: false,
+        });
+      }
+      return json({
+        items: ITEMS,
+        next_cursor: 'c1',
+        facets: {
+          kind: { transcript: 1, document: 2, screenshot: 1 },
+          site: {},
+        },
+        facets_truncated: false,
+      });
+    };
+    const el = await mount();
+
+    failMore = true;
+    ($(el, '[data-testid="load-more"]') as HTMLElement).click();
+    await waitUntil(() => $(el, '[data-testid="more-error"]'), 'no error');
+    expect(el.shadowRoot!.querySelectorAll('a.row').length).to.equal(3);
+    expect($(el, '[data-testid="load-more"]')).to.exist;
+
+    failMore = false;
+    ($(el, '[data-testid="load-more"]') as HTMLElement).click();
+    await waitUntil(
+      () => el.shadowRoot!.querySelectorAll('a.row').length === 4
+    );
+    expect(lastQuery().get('cursor')).to.equal('c1');
+    expect($(el, '[data-testid="load-more"]')).to.not.exist;
+    expect($(el, '[data-testid="more-error"]')).to.not.exist;
+    // Facets describe the whole filter, not the last page.
+    expect($(el, '[data-facet="document"]')?.textContent?.trim()).to.equal('2');
+  });
+
+  it('shows an error when the search fails', async () => {
+    respond = () => json({ detail: 'boom' }, 500);
+    const el = await mount();
+
+    expect($(el, '.error[role="alert"]')?.textContent).to.contain('boom');
+  });
+
+  it('shows permission-denied without view_runtime_sessions', async () => {
+    respond = () =>
+      json(
+        {
+          detail: {
+            code: 'permission_denied',
+            message: 'You need view_runtime_sessions.',
+            required_permission: 'view_runtime_sessions',
+          },
+        },
+        403
+      );
+    const el = await mount();
+
+    const denied = $(el, 'permission-denied');
+    expect(denied).to.exist;
+    expect(denied?.getAttribute('required-permission')).to.equal(
+      'view_runtime_sessions'
+    );
+    expect($(el, '[data-testid="artifact-list"]')).to.not.exist;
+  });
+
+  it('suggests labels from the site facets and adds one on click', async () => {
+    const el = await mount();
+
+    const buttons = Array.from(
+      el.shadowRoot!.querySelectorAll(
+        '[data-testid="label-suggestions"] button'
+      )
+    ) as HTMLButtonElement[];
+    const labels = buttons.map((b) => b.dataset.label);
+    expect(labels.slice(0, 2)).to.deep.equal(['site:nord', 'site:sued']);
+    buttons[0].click();
+    await waitUntil(() => apiCalls().length === 2);
+    expect(lastQuery().getAll('label')).to.deep.equal(['site:nord']);
+    expect(
+      new URLSearchParams(window.location.search).getAll('label')
+    ).to.deep.equal(['site:nord']);
   });
 
   it('labels every filter control and keeps them keyboard reachable', async () => {
