@@ -5115,6 +5115,11 @@ true
             creds = git_credentials_map.get(tracker_id) or {}
             if not (creds.get("token") and creds.get("email")):
                 continue
+            if str(creds.get("auth_type") or "").lower() == MANAGED_AUTH_TYPE:
+                # A managed access token is Bearer-only. Mirror the client's
+                # rule here so the generated shell never retries with Basic,
+                # whatever metadata the credential entry happens to carry.
+                return ""
             email = str(creds["email"])
             if re.fullmatch(r"[A-Za-z0-9._%+@-]+", email):
                 return email

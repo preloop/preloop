@@ -318,6 +318,26 @@ def test_managed_bitbucket_publication_refreshes_and_hides_the_launch_token(
     assert str(claims["account_id"]) == data["account_id"]
 
 
+def test_managed_bitbucket_shell_never_retries_with_basic_even_with_email(
+    executor: ContainerAgentExecutor,
+) -> None:
+    """Provider metadata or a stale email must not turn the token into a password."""
+    data = _managed_context()
+    entry = next(iter(data["git_credentials_map"].values()))
+    entry["email"] = "jane@example.com"
+    entry["token_kind"] = "api_token"
+    assert (
+        executor._resolve_bitbucket_api_email(
+            data["git_clone_config"]["repositories"][0], data
+        )
+        == ""
+    )
+    commands = executor._prepare_git_post_execution_commands(data)
+    assert "Authorization: Basic" not in commands
+    assert "jane@example.com" not in commands
+    assert 'if [ "$HTTP_CODE" = "401" ]; then' not in commands
+
+
 @pytest.mark.parametrize("auth_type", ["api_token", "oauth_token"])
 def test_pasted_bitbucket_tokens_keep_legacy_publication(
     executor: ContainerAgentExecutor, auth_type: str

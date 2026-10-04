@@ -384,6 +384,8 @@ async def test_managed_bitbucket_near_expiry_forces_one_rotation(
         "http://bitbucket.org/ws/repo.git",
         "https://user:pw@bitbucket.org/ws/repo.git",
         "https://bitbucket.org/ws/repo/extra.git",
+        "https://bitbucket.org:8443/ws/repo.git",
+        "https://bitbucket.org/ws/repo.git?x=1",
     ],
 )
 async def test_managed_bitbucket_wrong_destination_denied_before_resolver(
@@ -402,6 +404,20 @@ async def test_managed_bitbucket_wrong_destination_denied_before_resolver(
     assert error.value.status_code == 403
     assert error.value.detail == "publication_destination_mismatch"
     assert bitbucket_resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_managed_bitbucket_default_port_is_the_same_destination(
+    monkeypatch: pytest.MonkeyPatch, running: AsyncMock, bitbucket_resolver: _Resolver
+) -> None:
+    context = _bitbucket_claims()
+    context["repository_url"] = "https://bitbucket.org:443/ws/repo.git"
+    monkeypatch.setattr(
+        endpoint.crud_tracker, "get", Mock(return_value=_managed_tracker())
+    )
+    bitbucket_resolver.outcomes = [_fresh("token-b")]
+    result = await _refresh(context["execution_id"], Response(), context, Mock())
+    assert result["token"] == "token-b"
 
 
 @pytest.mark.asyncio

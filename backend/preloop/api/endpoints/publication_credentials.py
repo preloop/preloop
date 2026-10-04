@@ -57,6 +57,9 @@ def managed_repository_binding(tracker: Any, repository_url: str) -> str:
     if (
         parsed.scheme != "https"
         or (parsed.hostname or "").lower() != BITBUCKET_HOST
+        # hostname drops the port; the runner keys its store by netloc, so a
+        # non-default port would release the token for a different endpoint.
+        or parsed.port not in (None, 443)
         or parsed.username
         or parsed.password
         or parsed.query
