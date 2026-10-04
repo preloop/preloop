@@ -632,6 +632,21 @@ describe('ApprovalView', () => {
     expect(element.shadowRoot?.textContent).to.contain('Looks safe');
     // No decision bar once resolved.
     expect(element.shadowRoot?.querySelector('.decision-bar')).to.not.exist;
+    // Nor the "requires human review" line: the review already happened.
+    expect(element.shadowRoot?.textContent).to.not.contain(
+      'requires human review'
+    );
+  });
+
+  it('says the request needs a human only while it is pending', async () => {
+    fetchStub = createFetchStub();
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.textContent).to.contain('requires human review');
   });
 
   it('lists frozen publication destinations for a scoped request_approval', async () => {

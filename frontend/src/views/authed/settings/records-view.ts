@@ -640,6 +640,35 @@ export class RecordsView extends LitElement {
       <dd>${value ?? 'None'}</dd>`;
   }
 
+  /**
+   * A failure on this page is a compliance fact (an export or a legal hold
+   * that did not happen), so it is a danger alert that screen readers
+   * announce, not a grey footnote.
+   */
+  private renderError(message: string) {
+    return html`<sl-alert
+      variant="danger"
+      open
+      class="records-error"
+      data-testid="records-error"
+    >
+      <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+      ${message}
+    </sl-alert>`;
+  }
+
+  /** The sections this viewer can see, in page order, for the jump links. */
+  private visibleSections(): Array<{ id: string; label: string }> {
+    const sections: Array<{ id: string; label: string; show: boolean }> = [
+      { id: 'audit-integrity', label: 'Audit integrity', show: this.canAudit },
+      { id: 'signing-keys', label: 'Signing keys', show: this.canAudit },
+      { id: 'retention', label: 'Retention', show: this.canPolicies },
+      { id: 'legal-holds', label: 'Legal holds', show: this.canPolicies },
+      { id: 'period-exports', label: 'Period exports', show: this.canAudit },
+    ];
+    return sections.filter((section) => section.show);
+  }
+
   private renderIntegrity() {
     if (!this.canAudit) {
       return html`<p class="note">
@@ -655,7 +684,7 @@ export class RecordsView extends LitElement {
         <p class="honesty" data-testid="chain-honesty">${CHAIN_HONESTY}</p>
         ${
           this.statusError
-            ? html`<p class="note">${this.statusError}</p>`
+            ? this.renderError(this.statusError)
             : !status
               ? html`<sl-spinner></sl-spinner>`
               : html`<dl class="facts" data-testid="chain-status">
@@ -747,11 +776,7 @@ export class RecordsView extends LitElement {
           Server-side verification. It asks this deployment what it believes.
           The offline walk below is the one an auditor trusts.
         </p>
-        ${
-          this.verifyError
-            ? html`<p class="note">${this.verifyError}</p>`
-            : nothing
-        }
+        ${this.verifyError ? this.renderError(this.verifyError) : nothing}
         ${
           this.verdict
             ? html`<div data-testid="verify-result">
@@ -869,7 +894,7 @@ ${offlineAuditCommand(range)}</pre>
     return html`
       <section id="signing-keys" class="section content-card">
         <h2>Signing keys</h2>
-        ${this.keysError ? html`<p class="note">${this.keysError}</p>` : nothing}
+        ${this.keysError ? this.renderError(this.keysError) : nothing}
         ${
           keys.length === 0
             ? html`<div class="empty-state">
@@ -946,7 +971,7 @@ ${offlineAuditCommand(range)}</pre>
         <h2>Retention</h2>
         ${
           this.retentionError
-            ? html`<p class="note">${this.retentionError}</p>`
+            ? this.renderError(this.retentionError)
             : !settings
               ? html`<sl-spinner></sl-spinner>`
               : html`
@@ -1116,7 +1141,7 @@ ${offlineAuditCommand(range)}</pre>
             >Show released</sl-checkbox
           >
         </div>
-        ${this.holdsError ? html`<p class="note">${this.holdsError}</p>` : nothing}
+        ${this.holdsError ? this.renderError(this.holdsError) : nothing}
         ${
           this.holds.length === 0
             ? html`<div class="empty-state" data-testid="holds-empty">
@@ -1246,7 +1271,7 @@ ${offlineAuditCommand(range)}</pre>
               this.placeReason = (event.target as HTMLInputElement).value;
             }}
           ></sl-textarea>
-          ${this.placeError ? html`<p class="note">${this.placeError}</p>` : nothing}
+          ${this.placeError ? this.renderError(this.placeError) : nothing}
           <sl-button slot="footer" @click=${() => (this.placeOpen = false)}
             >Cancel</sl-button
           >
@@ -1280,7 +1305,7 @@ ${offlineAuditCommand(range)}</pre>
               this.releaseReason = (event.target as HTMLInputElement).value;
             }}
           ></sl-textarea>
-          ${this.releaseError ? html`<p class="note">${this.releaseError}</p>` : nothing}
+          ${this.releaseError ? this.renderError(this.releaseError) : nothing}
           <sl-button slot="footer" @click=${() => (this.releaseTarget = null)}
             >Cancel</sl-button
           >
@@ -1366,7 +1391,7 @@ ${offlineAuditCommand(range)}</pre>
             >Export</sl-button
           >
         </div>
-        ${this.exportError ? html`<p class="note">${this.exportError}</p>` : nothing}
+        ${this.exportError ? this.renderError(this.exportError) : nothing}
         ${
           result
             ? html`<div data-testid="export-result">
@@ -1400,13 +1425,20 @@ ${evidenceVerifyCommand(result.filename, result.keyId)}</pre>
       ></view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          <nav class="jump">
-            <a href="#audit-integrity" @click=${this.onJump}>Audit integrity</a>
-            <a href="#signing-keys" @click=${this.onJump}>Signing keys</a>
-            <a href="#retention" @click=${this.onJump}>Retention</a>
-            <a href="#legal-holds" @click=${this.onJump}>Legal holds</a>
-            <a href="#period-exports" @click=${this.onJump}>Period exports</a>
-          </nav>
+          ${
+            // Only sections this viewer can see: a link to a section that is
+            // not rendered does nothing.
+            this.visibleSections().length > 1
+              ? html`<nav class="jump" aria-label="Sections">
+                  ${this.visibleSections().map(
+                    (section) =>
+                      html`<a href="#${section.id}" @click=${this.onJump}
+                        >${section.label}</a
+                      >`
+                  )}
+                </nav>`
+              : nothing
+          }
           ${this.renderIntegrity()} ${this.renderKeys()}
           ${this.renderRetention()} ${this.renderHolds()}
           ${this.renderExports()}

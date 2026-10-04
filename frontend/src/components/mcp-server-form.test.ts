@@ -157,6 +157,19 @@ describe('MCPServerForm', () => {
 
       expect((el as any).errorMessage).to.equal('Server name is required');
       expect(fetchStub).not.to.have.been.called;
+      // Announced to screen readers, not only painted red.
+      const error = el.shadowRoot?.querySelector('.error');
+      expect(error?.getAttribute('role')).to.equal('alert');
+    });
+
+    it('explains the transport in plain words, without roadmap jargon', async () => {
+      const el = await createForm(null);
+      const text = el.shadowRoot?.textContent ?? '';
+      expect(text).to.not.contain('Phase 1B');
+      expect(text).to.contain('Streamable HTTP');
+      // No disabled field that cannot be changed.
+      expect(el.shadowRoot?.querySelector('sl-input[name="transport"]')).to.not
+        .exist;
     });
 
     it('shows error when server URL is empty on submit', async () => {
