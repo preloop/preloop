@@ -12,6 +12,7 @@ import {
   formToBlock,
   isValidJsonPath,
   readSensitiveData,
+  rekeyType,
   storedForm,
   summarize,
   withSensitiveData,
@@ -227,6 +228,15 @@ describe('sensitive-data-policy', () => {
         'Email address matches in tool inputs are stored as [REDACTED:email]. ' +
         'Calls to get_patient_record keep only consent_id and a fingerprint.'
     );
+  });
+
+  it('re-keys a renamed type and drops a cleared one', () => {
+    const form = emptyForm();
+    form.types.emp = 'redact';
+    rekeyType(form, 'emp', 'employee_id');
+    expect(form.types).to.deep.equal({ employee_id: 'redact' });
+    rekeyType(form, 'employee_id', '  ');
+    expect(form.types).to.deep.equal({});
   });
 
   it('computes the stored form from spans and actions', () => {

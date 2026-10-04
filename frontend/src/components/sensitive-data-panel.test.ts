@@ -255,6 +255,36 @@ describe('sensitive-data-panel', () => {
     ).to.contain('Unknown PII types');
   });
 
+  it('moves the action when a selected custom pattern is renamed', async () => {
+    const el = await mount();
+    const buttons = Array.from(
+      el.shadowRoot!.querySelectorAll<HTMLButtonElement>('button')
+    );
+    buttons.find((b) => b.textContent!.trim() === 'Add pattern')!.click();
+    await el.updateComplete;
+    const nameInput = () =>
+      $<HTMLInputElement>(el, 'input[placeholder="employee_id"]');
+    nameInput().value = 'emp';
+    nameInput().dispatchEvent(new Event('input'));
+    const regex = el.shadowRoot!.querySelectorAll<HTMLInputElement>(
+      '.entry input[type="text"]'
+    )[1];
+    regex.value = 'E\\d+';
+    regex.dispatchEvent(new Event('input'));
+    await el.updateComplete;
+    $<HTMLInputElement>(el, '#type-emp').click();
+    await el.updateComplete;
+    nameInput().value = 'employee_code';
+    nameInput().dispatchEvent(new Event('input'));
+    await el.updateComplete;
+    const block = generated(el).sensitive_data;
+    expect(block.rules[0].types).to.deep.equal(['employee_code']);
+    expect(el.shadowRoot!.querySelector('#type-emp')).to.equal(null);
+    expect($<HTMLInputElement>(el, '#type-employee_code').checked).to.equal(
+      true
+    );
+  });
+
   it('labels every form control', async () => {
     const el = await mount(POLICY);
     $<HTMLInputElement>(el, '#type-email').click();

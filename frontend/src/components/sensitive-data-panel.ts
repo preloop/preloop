@@ -30,6 +30,7 @@ import {
   formErrors,
   formToBlock,
   readSensitiveData,
+  rekeyType,
   segments,
   storedForm,
   summarize,
@@ -568,6 +569,7 @@ export class SensitiveDataPanel extends LitElement {
                 @input=${(e: Event) =>
                   this._update((form) => {
                     const value = (e.target as HTMLInputElement).value;
+                    rekeyType(form, form.customPatterns[index].name, value);
                     form.customPatterns[index].name = value;
                   })}
             /></label>
@@ -619,6 +621,7 @@ export class SensitiveDataPanel extends LitElement {
                 @input=${(e: Event) =>
                   this._update((form) => {
                     const value = (e.target as HTMLInputElement).value;
+                    rekeyType(form, form.keywords[index].name, value);
                     form.keywords[index].name = value;
                   })}
             /></label>

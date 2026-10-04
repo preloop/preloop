@@ -311,6 +311,24 @@ export function formToBlock(
   return Object.keys(block).length ? block : null;
 }
 
+/**
+ * A custom pattern or keyword list was renamed: move its action to the new
+ * name so the console rule never lists a type the document no longer
+ * defines. A cleared name drops the action.
+ */
+export function rekeyType(
+  form: SensitiveDataForm,
+  previous: string,
+  next: string
+) {
+  const from = previous.trim();
+  const to = next.trim();
+  if (from === to) return;
+  const action = form.types[from];
+  delete form.types[from];
+  if (action && to) form.types[to] = action;
+}
+
 /** Read the `sensitive_data` block out of a full policy document. */
 export function readSensitiveData(policyYaml: string): unknown {
   if (!policyYaml.trim()) return undefined;
