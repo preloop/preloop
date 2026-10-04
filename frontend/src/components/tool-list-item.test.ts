@@ -338,10 +338,52 @@ describe('ToolListItem – justification settings', () => {
     stubApi();
     const el = await createNativeItem();
 
-    const label = el.shadowRoot
-      ?.querySelector('.tool-toggle sl-switch')
-      ?.textContent?.trim();
-    expect(label).to.equal('Block');
+    const toggle = el.shadowRoot?.querySelector('.tool-toggle sl-switch');
+    expect(
+      toggle?.querySelector('.switch-label')?.textContent?.trim()
+    ).to.equal('Block');
+    // The accessible name says which tool it blocks.
+    expect(toggle?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      'Block Bash'
+    );
+  });
+
+  it('labels the MCP switch Enabled instead of leaving it blank', async () => {
+    stubApi();
+    const el = await createItem({
+      source: 'mcp',
+      source_name: 'Example',
+    } as any);
+
+    const toggle = el.shadowRoot?.querySelector('.tool-toggle sl-switch');
+    expect(
+      toggle?.querySelector('.switch-label')?.textContent?.trim()
+    ).to.equal('Enabled');
+    expect(toggle?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      'Enabled bash'
+    );
+  });
+
+  it('opens the rules from a keyboard-reachable button with aria-expanded', async () => {
+    stubApi();
+    const el = await createItem();
+    let toggles = 0;
+    el.addEventListener('toggle-expand', () => toggles++);
+
+    const button = el.shadowRoot?.querySelector(
+      '.tool-header button.expand-toggle'
+    ) as HTMLButtonElement;
+    expect(button).to.exist;
+    expect(button.getAttribute('aria-expanded')).to.equal('false');
+    expect(button.getAttribute('aria-label')).to.equal('Rules for bash');
+
+    button.click();
+    // One toggle, not two: the row's own click handler must not also fire.
+    expect(toggles).to.equal(1);
+
+    el.expanded = true;
+    await el.updateComplete;
+    expect(button.getAttribute('aria-expanded')).to.equal('true');
   });
 
   it('keeps the tool name in the row header at 390px', async () => {

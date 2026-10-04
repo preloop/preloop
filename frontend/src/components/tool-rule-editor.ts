@@ -16,6 +16,22 @@ import './approval-workflow-dialog';
 import type { ApprovalWorkflow } from './tool-card';
 import type { AccessRule } from '../api';
 import { consoleDialogStyles } from '../styles/console-dialog';
+import { ruleActionMeta } from '../utils/rule-actions';
+
+/** The actions a tool rule can take, in card order, with the card's help. */
+const TOOL_RULE_ACTIONS: ReadonlyArray<{
+  action: 'allow' | 'deny' | 'require_approval';
+  cardClass: string;
+  desc: string;
+}> = [
+  { action: 'deny', cardClass: 'deny', desc: 'Block execution' },
+  {
+    action: 'require_approval',
+    cardClass: 'approval',
+    desc: 'Human or AI review',
+  },
+  { action: 'allow', cardClass: 'allow', desc: 'Execute freely' },
+];
 
 export interface RuleFormData {
   action: 'allow' | 'deny' | 'require_approval';
@@ -287,8 +303,11 @@ export class ToolRuleEditor extends LitElement {
       .join-toggle {
         cursor: pointer;
         padding: 2px 8px;
+        border: 0;
         border-radius: var(--sl-border-radius-pill);
         background: var(--sl-color-neutral-200);
+        color: inherit;
+        font: inherit;
         font-weight: var(--sl-font-weight-semibold);
         user-select: none;
         transition: background 0.1s ease;
@@ -296,6 +315,12 @@ export class ToolRuleEditor extends LitElement {
 
       .join-toggle:hover {
         background: var(--sl-color-neutral-300);
+      }
+
+      .join-toggle:focus-visible,
+      .action-card:focus-visible {
+        outline: var(--sl-focus-ring);
+        outline-offset: var(--sl-focus-ring-offset);
       }
 
       .condition-actions {
@@ -708,6 +733,94 @@ export class ToolRuleEditor extends LitElement {
     );
   }
 
+  /**
+   * Deny / Require approval / Allow as a radio group styled as cards.
+   *
+   * One tab stop on the chosen card (roving tabindex); arrow keys move and
+   * choose, as in any radio group, and Enter or Space chooses the focused
+   * card. Labels, icons and colours come from utils/rule-actions.ts.
+   */
+  private _renderActionCards() {
+    return html`
+      <div
+        class="action-cards"
+        role="radiogroup"
+        aria-labelledby="rule-action-label"
+        @keydown=${this._handleActionKeydown}
+      >
+        ${TOOL_RULE_ACTIONS.map(({ action, cardClass, desc }) => {
+          const meta = ruleActionMeta(action);
+          const selected = this._action === action;
+          return html`
+            <div
+              class="action-card ${cardClass} ${selected ? 'selected' : ''}"
+              role="radio"
+              aria-checked=${selected ? 'true' : 'false'}
+              tabindex=${selected ? 0 : -1}
+              data-action=${action}
+              @click=${() => (this._action = action)}
+            >
+              <div class="action-icon">
+                <sl-icon
+                  name=${meta.icon}
+                  aria-hidden="true"
+                  style="font-size: 1.5rem; color: var(--sl-color-${meta.variant}-600);"
+                ></sl-icon>
+              </div>
+              <div class="action-label">${meta.label}</div>
+              <div class="action-desc">${desc}</div>
+            </div>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  private _handleActionKeydown = (event: KeyboardEvent) => {
+    const actions = TOOL_RULE_ACTIONS.map((entry) => entry.action);
+    const current = actions.indexOf(this._action);
+    let next = current;
+    switch (event.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        next = (current + 1) % actions.length;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        next = (current - 1 + actions.length) % actions.length;
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = actions.length - 1;
+        break;
+      case 'Enter':
+      case ' ': {
+        const card = (event.target as HTMLElement | null)?.closest?.(
+          '.action-card'
+        ) as HTMLElement | null;
+        const action = card?.dataset.action as RuleFormData['action'];
+        if (action) {
+          event.preventDefault();
+          this._action = action;
+        }
+        return;
+      }
+      default:
+        return;
+    }
+    event.preventDefault();
+    this._action = actions[next];
+    void this.updateComplete.then(() => {
+      this.renderRoot
+        .querySelector<HTMLElement>(
+          `.action-card[data-action="${actions[next]}"]`
+        )
+        ?.focus();
+    });
+  };
+
   private _toggleJoinOperator() {
     this._conditionOperator = this._conditionOperator === 'AND' ? 'OR' : 'AND';
   }
@@ -972,11 +1085,16 @@ export class ToolRuleEditor extends LitElement {
                 ? html`
                     <div class="condition-join">
                       <span class="join-line"></span>
-                      <span
+                      <button
+                        type="button"
                         class="join-toggle"
+                        aria-label=${`Conditions joined with ${this._conditionOperator}. Switch to ${
+                          this._conditionOperator === 'AND' ? 'OR' : 'AND'
+                        }`}
                         @click=${() => this._toggleJoinOperator()}
-                        >${this._conditionOperator}</span
                       >
+                        ${this._conditionOperator}
+                      </button>
                       <span class="join-line"></span>
                     </div>
                   `
@@ -1268,54 +1386,8 @@ export class ToolRuleEditor extends LitElement {
         }
 
         <div class="form-group">
-          <label>Action</label>
-          <div class="action-cards">
-            <div
-              class="action-card deny ${
-                this._action === 'deny' ? 'selected' : ''
-              }"
-              @click=${() => (this._action = 'deny')}
-            >
-              <div class="action-icon">
-                <sl-icon
-                  name="x-octagon-fill"
-                  style="font-size: 1.5rem; color: var(--sl-color-danger-500);"
-                ></sl-icon>
-              </div>
-              <div class="action-label">Deny</div>
-              <div class="action-desc">Block execution</div>
-            </div>
-            <div
-              class="action-card approval ${
-                this._action === 'require_approval' ? 'selected' : ''
-              }"
-              @click=${() => (this._action = 'require_approval')}
-            >
-              <div class="action-icon">
-                <sl-icon
-                  name="shield-lock-fill"
-                  style="font-size: 1.5rem; color: var(--sl-color-warning-600);"
-                ></sl-icon>
-              </div>
-              <div class="action-label">Require approval</div>
-              <div class="action-desc">Human or AI review</div>
-            </div>
-            <div
-              class="action-card allow ${
-                this._action === 'allow' ? 'selected' : ''
-              }"
-              @click=${() => (this._action = 'allow')}
-            >
-              <div class="action-icon">
-                <sl-icon
-                  name="check-circle-fill"
-                  style="font-size: 1.5rem; color: var(--sl-color-success-500);"
-                ></sl-icon>
-              </div>
-              <div class="action-label">Allow</div>
-              <div class="action-desc">Execute freely</div>
-            </div>
-          </div>
+          <label id="rule-action-label">Action</label>
+          ${this._renderActionCards()}
         </div>
 
         ${

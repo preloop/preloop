@@ -432,6 +432,57 @@ describe('AuditView', () => {
     document.body.removeChild(element);
   });
 
+  it('opens an event from a keyboard-reachable button with aria-expanded', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const toggle = element.shadowRoot?.querySelector(
+      '.primary-row button.expand-toggle'
+    ) as HTMLButtonElement;
+    expect(toggle, 'expected an expand button on the row').to.exist;
+    expect(toggle.getAttribute('aria-expanded')).to.equal('false');
+    expect(toggle.getAttribute('aria-label')).to.contain('Details for');
+
+    toggle.click();
+    await element.updateComplete;
+    // One click opens once: the row's own click handler must not undo it.
+    expect(toggle.getAttribute('aria-expanded')).to.equal('true');
+    expect(element.shadowRoot?.textContent).to.contain('claude-session-42');
+
+    element.remove();
+  });
+
+  it('names every filter, so From and To can be told apart', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const labels = Array.from(
+      element.shadowRoot?.querySelectorAll(
+        '.filter-bar sl-input, .filter-bar sl-select'
+      ) ?? []
+    ).map((control) => control.getAttribute('label'));
+    expect(labels).to.deep.equal([
+      'Tool',
+      'Event type',
+      'Outcome',
+      'From date',
+      'To date',
+      'Min cost ($)',
+      'Max cost ($)',
+    ]);
+    element.remove();
+  });
+
   it('shortens the ids in an expanded event and links the ones with a page', async () => {
     const sessionId = '11111111-2222-4333-8444-555555555555';
     const executionId = '99999999-8888-4777-8666-555555555555';

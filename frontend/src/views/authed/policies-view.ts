@@ -2007,6 +2007,7 @@ export class PoliciesView extends LitElement {
             <sl-button
               size="small"
               variant=${this._ruleFilter === filter ? 'primary' : 'default'}
+              aria-pressed=${this._ruleFilter === filter ? 'true' : 'false'}
               @click=${() => (this._ruleFilter = filter)}
             >
               ${
@@ -2766,6 +2767,7 @@ defaults:
             <sl-tooltip content="View diff">
               <sl-icon-button
                 name="file-diff"
+                label=${`View diff for v${version.version_number}`}
                 @click=${() => this.openRollbackPreview(version, false)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
@@ -2773,6 +2775,7 @@ defaults:
             <sl-tooltip content="Roll back to this version">
               <sl-icon-button
                 name="arrow-counterclockwise"
+                label=${`Roll back to v${version.version_number}`}
                 @click=${() => this.openRollbackPreview(version, true)}
                 ?disabled=${version.is_active}
               ></sl-icon-button>
@@ -2780,12 +2783,14 @@ defaults:
             <sl-tooltip content="Edit tag">
               <sl-icon-button
                 name="tag"
+                label=${`Edit tag for v${version.version_number}`}
                 @click=${() => this.openTagDialog(version)}
               ></sl-icon-button>
             </sl-tooltip>
             <sl-tooltip content="Delete">
               <sl-icon-button
                 name="trash"
+                label=${`Delete v${version.version_number}`}
                 @click=${() => this.deleteVersion(version)}
                 ?disabled=${version.is_active || this._deletingVersion}
               ></sl-icon-button>

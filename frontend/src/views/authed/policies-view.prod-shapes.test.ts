@@ -209,6 +209,40 @@ describe('Policies page against real API shapes', () => {
     expect(text).to.contain('4 policies');
   });
 
+  it('names each version action for screen readers', async () => {
+    const m = await mount();
+    stub = m.stub;
+
+    const names = Array.from(
+      m.element.shadowRoot!.querySelectorAll('.version-actions sl-icon-button')
+    ).map((button) => button.getAttribute('label'));
+    expect(names).to.deep.equal([
+      'View diff for v3',
+      'Roll back to v3',
+      'Edit tag for v3',
+      'Delete v3',
+    ]);
+  });
+
+  it('says which rule filter is on with aria-pressed', async () => {
+    const m = await mount();
+    stub = m.stub;
+
+    const pressed = () =>
+      Array.from(
+        m.element.shadowRoot!.querySelectorAll('.rule-filters sl-button')
+      ).map((button) => button.getAttribute('aria-pressed'));
+    expect(pressed()).to.deep.equal(['true', 'false', 'false', 'false']);
+
+    (
+      m.element.shadowRoot!.querySelectorAll(
+        '.rule-filters sl-button'
+      )[1] as HTMLElement
+    ).click();
+    await m.element.updateComplete;
+    expect(pressed()).to.deep.equal(['false', 'true', 'false', 'false']);
+  });
+
   it('P3 groups the flat diff list in the import preview dialog', async () => {
     const m = await mount();
     stub = m.stub;

@@ -1394,6 +1394,7 @@ export class AuditView extends AuthedElement {
     return html`
       <div class="filter-bar">
         <sl-input
+          label="Tool"
           placeholder="Search tool name…"
           size="small"
           clearable
@@ -1412,7 +1413,8 @@ export class AuditView extends AuthedElement {
         </sl-input>
 
         <sl-select
-          placeholder="Event Type"
+          label="Event type"
+          placeholder="Any event type"
           size="small"
           clearable
           multiple
@@ -1436,7 +1438,8 @@ export class AuditView extends AuthedElement {
         </sl-select>
 
         <sl-select
-          placeholder="Outcomes"
+          label="Outcome"
+          placeholder="Any outcome"
           size="small"
           clearable
           multiple
@@ -1462,7 +1465,7 @@ export class AuditView extends AuthedElement {
         <sl-input
           type="date"
           size="small"
-          placeholder="From"
+          label="From date"
           .value=${this._startDate}
           @sl-change=${(e: Event) => {
             this._startDate = (e.target as HTMLInputElement).value;
@@ -1473,7 +1476,7 @@ export class AuditView extends AuthedElement {
         <sl-input
           type="date"
           size="small"
-          placeholder="To"
+          label="To date"
           .value=${this._endDate}
           @sl-change=${(e: Event) => {
             this._endDate = (e.target as HTMLInputElement).value;
@@ -1484,7 +1487,8 @@ export class AuditView extends AuthedElement {
         <sl-input
           type="number"
           size="small"
-          placeholder="Min $"
+          label="Min cost ($)"
+          placeholder="0.00"
           min="0"
           step="0.0001"
           .value=${this._minCost}
@@ -1499,7 +1503,8 @@ export class AuditView extends AuthedElement {
         <sl-input
           type="number"
           size="small"
-          placeholder="Max $"
+          label="Max cost ($)"
+          placeholder="Any"
           min="0"
           step="0.0001"
           .value=${this._maxCost}
@@ -1608,11 +1613,26 @@ export class AuditView extends AuthedElement {
               </button>
             </sl-tooltip>
             ${
+              // The row stays clickable for the mouse. This button is the
+              // keyboard and screen-reader way in: a whole-row role=button
+              // would nest the copy-link button inside another button.
               canExpand
-                ? html`<sl-icon
-                    name=${expanded ? 'chevron-up' : 'chevron-down'}
-                    class="expand-icon"
-                  ></sl-icon>`
+                ? html`<button
+                    type="button"
+                    class="expand-toggle"
+                    aria-expanded=${expanded ? 'true' : 'false'}
+                    aria-label=${`Details for ${this._getPrimaryLabel(event)}`}
+                    @click=${(e: Event) => {
+                      e.stopPropagation();
+                      this._toggleGroup(key);
+                    }}
+                  >
+                    <sl-icon
+                      name=${expanded ? 'chevron-up' : 'chevron-down'}
+                      class="expand-icon"
+                      aria-hidden="true"
+                    ></sl-icon>
+                  </button>`
                 : html`<span class="expand-spacer"></span>`
             }
           </div>
@@ -2003,6 +2023,14 @@ export class AuditView extends AuthedElement {
       .filter-bar sl-select {
         min-width: 0;
       }
+      /* Every filter is named (a native date box shows no placeholder, so
+         From and To looked identical); keep the names small. */
+      .filter-bar sl-input::part(form-control-label),
+      .filter-bar sl-select::part(form-control-label) {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+        margin-bottom: 2px;
+      }
       /* Clear takes its own row rather than an eighth column. */
       .filter-bar sl-button {
         grid-column: 1 / -1;
@@ -2164,6 +2192,20 @@ export class AuditView extends AuthedElement {
       .expand-icon {
         font-size: 0.9rem;
         color: var(--sl-color-neutral-400);
+      }
+      .expand-toggle {
+        background: none;
+        border: none;
+        cursor: pointer;
+        display: inline-flex;
+        padding: 0;
+        color: inherit;
+        border-radius: var(--sl-border-radius-small);
+      }
+      .expand-toggle:focus-visible,
+      .copy-link:focus-visible {
+        outline: var(--sl-focus-ring);
+        outline-offset: var(--sl-focus-ring-offset);
       }
       .expand-spacer {
         width: 0.9rem;

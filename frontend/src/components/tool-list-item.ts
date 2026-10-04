@@ -77,6 +77,38 @@ export class ToolListItem extends LitElement {
         background: var(--sl-color-neutral-50);
       }
 
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      .expand-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        padding: 2px;
+        margin: -2px;
+        border: 0;
+        border-radius: var(--sl-border-radius-small);
+        background: none;
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .expand-toggle:focus-visible {
+        outline: var(--sl-focus-ring);
+        outline-offset: var(--sl-focus-ring-offset);
+      }
+
       .expand-icon {
         color: var(--sl-color-neutral-500);
         transition: transform 0.2s ease;
@@ -214,7 +246,7 @@ export class ToolListItem extends LitElement {
           flex-wrap: wrap;
           row-gap: var(--sl-spacing-2x-small);
         }
-        .expand-icon {
+        .expand-toggle {
           order: 0;
         }
         .tool-name {
@@ -543,10 +575,25 @@ export class ToolListItem extends LitElement {
         }"
       >
         <div class="tool-header" @click=${this._toggleExpanded}>
-          <sl-icon
-            class="expand-icon ${this.expanded ? 'open' : ''}"
-            name="chevron-right"
-          ></sl-icon>
+          <!-- The row stays clickable for the mouse; this button is how a
+               keyboard or screen-reader user opens the rules. It stops the
+               click so the row does not toggle twice. -->
+          <button
+            type="button"
+            class="expand-toggle"
+            aria-expanded=${this.expanded ? 'true' : 'false'}
+            aria-label=${`Rules for ${this.tool.name}`}
+            @click=${(e: Event) => {
+              e.stopPropagation();
+              this._toggleExpanded();
+            }}
+          >
+            <sl-icon
+              class="expand-icon ${this.expanded ? 'open' : ''}"
+              name="chevron-right"
+              aria-hidden="true"
+            ></sl-icon>
+          </button>
 
           <span class="tool-name">${this.tool.name}</span>
 
@@ -627,7 +674,14 @@ export class ToolListItem extends LitElement {
               }
               ?disabled=${isUnsupported}
               @sl-change=${this._handleToggleEnabled}
-              >${this._isNativeTool() ? 'Block' : ''}</sl-switch
+              ><span class="switch-label"
+                >${
+                  // The two tabs keep their own polarity (native rows switch
+                  // a block on, MCP rows switch the tool on), so each switch
+                  // says what "on" means rather than leaving one unlabelled.
+                  this._isNativeTool() ? 'Block' : 'Enabled'
+                }</span
+              ><span class="sr-only"> ${this.tool.name}</span></sl-switch
             >
           </div>
 

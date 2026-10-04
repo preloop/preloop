@@ -152,6 +152,24 @@ export class ToolsEditorComponent extends LitElement {
       gap: var(--sl-spacing-small);
       position: relative;
     }
+    .section-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--sl-spacing-small);
+      min-width: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      font: inherit;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .section-toggle:focus-visible {
+      outline: var(--sl-focus-ring);
+      outline-offset: var(--sl-focus-ring-offset);
+      border-radius: var(--sl-border-radius-small);
+    }
     .section-icon {
       transition: transform 0.2s ease;
       color: var(--sl-color-neutral-500);
@@ -365,18 +383,32 @@ export class ToolsEditorComponent extends LitElement {
     return html`
       <div class="tool-group">
         <div class="section-header" @click=${() => this._toggleGroup(group.id)}>
-          <sl-icon
-            class="section-icon ${!group.collapsed ? 'open' : ''}"
-            name="chevron-right"
-          ></sl-icon>
-          <span class="section-title">${group.name}</span>
-          <span class="section-meta">
-            ${
-              group.type === 'agent'
-                ? `${enabledCount}/${totalCount}`
-                : `${enabledCount}/${totalCount} enabled`
-            }
-          </span>
+          <!-- The whole header stays clickable for the mouse; this button is
+               the keyboard and screen-reader way to open or close the group.
+               It stops the click so the header does not toggle twice. -->
+          <button
+            type="button"
+            class="section-toggle"
+            aria-expanded=${group.collapsed ? 'false' : 'true'}
+            @click=${(e: Event) => {
+              e.stopPropagation();
+              this._toggleGroup(group.id);
+            }}
+          >
+            <sl-icon
+              class="section-icon ${!group.collapsed ? 'open' : ''}"
+              name="chevron-right"
+              aria-hidden="true"
+            ></sl-icon>
+            <span class="section-title">${group.name}</span>
+            <span class="section-meta">
+              ${
+                group.type === 'agent'
+                  ? `${enabledCount}/${totalCount}`
+                  : `${enabledCount}/${totalCount} enabled`
+              }
+            </span>
+          </button>
           <div class="section-line"></div>
           ${
             group.type === 'mcp' && group.server && this.mode === 'global'
@@ -418,6 +450,7 @@ export class ToolsEditorComponent extends LitElement {
                     <sl-tooltip content="Edit server">
                       <sl-icon-button
                         name="pencil"
+                        label=${`Edit server ${group.name}`}
                         @click=${() =>
                           this.dispatchEvent(
                             new CustomEvent('edit-server', {
@@ -429,6 +462,7 @@ export class ToolsEditorComponent extends LitElement {
                     <sl-tooltip content="Delete server">
                       <sl-icon-button
                         name="trash"
+                        label=${`Delete server ${group.name}`}
                         @click=${() => {
                           if (
                             confirm(

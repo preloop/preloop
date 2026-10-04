@@ -1738,7 +1738,9 @@ describe('ToolsView – tabs and toolbar', () => {
     expect(blockedSwitch).to.exist;
     // B-T1: the switch is labelled with the verb, not with a state that read
     // as "this tool is blocked" beside an off switch.
-    expect(blockedSwitch!.textContent?.trim()).to.equal('Block');
+    expect(
+      blockedSwitch!.querySelector('.switch-label')?.textContent?.trim()
+    ).to.equal('Block');
     expect(blockedSwitch!.checked).to.equal(false);
 
     blockedSwitch!.checked = true;

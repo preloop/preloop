@@ -63,5 +63,18 @@ describe('GovernanceRuleSetEditor', () => {
     ]);
     // Require approval is amber here, as on Policies, Approvals and Audit.
     expect(labels[1].classList.contains('warning')).to.equal(true);
+
+    // Screen readers hear which rule a button acts on, not just "button".
+    const names = Array.from(
+      el.shadowRoot!.querySelectorAll('.rule-actions sl-icon-button')
+    ).map((button) => button.getAttribute('label'));
+    expect(names).to.deep.equal([
+      'Edit rule 1',
+      'Delete rule 1',
+      'Edit rule 2',
+      'Delete rule 2',
+      'Edit rule 3',
+      'Delete rule 3',
+    ]);
   });
 });

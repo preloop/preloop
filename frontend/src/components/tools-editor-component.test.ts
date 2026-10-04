@@ -62,6 +62,59 @@ describe('ToolsEditorComponent – MCP server actions', () => {
     expect(events).to.deep.equal(['scan-server']);
     expect(scannedId).to.equal('srv-1');
   });
+
+  it('names the edit and delete server buttons', async () => {
+    const el = (await fixture(html`
+      <tools-editor-component
+        mode="global"
+        .mcpServers=${[server]}
+        .tools=${[tool]}
+      ></tools-editor-component>
+    `)) as ToolsEditorComponent;
+    await el.updateComplete;
+
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-icon-button[name="pencil"]')
+        ?.getAttribute('label')
+    ).to.equal('Edit server Example MCP Server');
+    expect(
+      el.shadowRoot
+        ?.querySelector('sl-icon-button[name="trash"]')
+        ?.getAttribute('label')
+    ).to.equal('Delete server Example MCP Server');
+  });
+
+  it('opens and closes a server group from a real button with aria-expanded', async () => {
+    sessionStorage.removeItem('preloopCollapsedGroups');
+    const el = (await fixture(html`
+      <tools-editor-component
+        mode="global"
+        .mcpServers=${[server]}
+        .tools=${[tool]}
+      ></tools-editor-component>
+    `)) as ToolsEditorComponent;
+    await el.updateComplete;
+
+    const toggle = () =>
+      el.shadowRoot?.querySelector(
+        '.section-header button.section-toggle'
+      ) as HTMLButtonElement;
+    expect(toggle()).to.exist;
+    expect(toggle().textContent).to.contain('Example MCP Server');
+    const before = toggle().getAttribute('aria-expanded');
+    expect(before === 'true' || before === 'false').to.equal(true);
+
+    toggle().click();
+    await el.updateComplete;
+    // One click toggles once: the header's own click handler must not undo it.
+    const after = toggle().getAttribute('aria-expanded');
+    expect(after).to.equal(before === 'true' ? 'false' : 'true');
+    expect(!!el.shadowRoot?.querySelector('.tool-list')).to.equal(
+      after === 'true'
+    );
+    sessionStorage.removeItem('preloopCollapsedGroups');
+  });
 });
 
 function makeTool(

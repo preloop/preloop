@@ -387,12 +387,14 @@ export class GovernanceRuleSetEditor extends LitElement {
           <sl-tooltip content="Edit rule">
             <sl-icon-button
               name="pencil"
+              label=${`Edit rule ${index + 1}`}
               @click=${() => this._openRuleEditor(rule)}
             ></sl-icon-button>
           </sl-tooltip>
           <sl-tooltip content="Delete rule">
             <sl-icon-button
               name="trash"
+              label=${`Delete rule ${index + 1}`}
               @click=${() => this._handleDeleteRule(rule)}
             ></sl-icon-button>
           </sl-tooltip>
