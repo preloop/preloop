@@ -70,9 +70,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from preloop.services.sensitive_data.detectors import (
     BUILTIN_TYPE_IDS,
+    MAX_CUSTOM_PATTERNS,
+    MAX_KEYWORD_LISTS,
     TYPE_NAME_RE,
     UnsafePatternError,
     compile_keyword_pattern,
+    compile_mrn_pattern,
     compile_safe_regex,
     registered_type_ids,
 )
@@ -620,8 +623,12 @@ class SensitiveDataDetectorsConfig(BaseModel):
         default_factory=list,
         description="national_id locales (us, de, uk, fr, nl); empty means all",
     )
-    custom_patterns: List[CustomPatternDefinition] = Field(default_factory=list)
-    keywords: List[KeywordListDefinition] = Field(default_factory=list)
+    custom_patterns: List[CustomPatternDefinition] = Field(
+        default_factory=list, max_length=MAX_CUSTOM_PATTERNS
+    )
+    keywords: List[KeywordListDefinition] = Field(
+        default_factory=list, max_length=MAX_KEYWORD_LISTS
+    )
     medical_record_number_pattern: Optional[str] = Field(
         None,
         description="Identifier regex that follows an MRN keyword (default digits)",
@@ -653,11 +660,11 @@ class SensitiveDataDetectorsConfig(BaseModel):
     @field_validator("medical_record_number_pattern")
     @classmethod
     def validate_mrn_pattern(cls, value: Optional[str]) -> Optional[str]:
-        """Same safety gate as custom patterns."""
+        """Same safety gate as custom patterns, plus the composed form."""
         if value is None:
             return None
         try:
-            compile_safe_regex(value)
+            compile_mrn_pattern(value)
         except UnsafePatternError as exc:
             raise ValueError(f"medical_record_number_pattern: {exc}") from exc
         return value

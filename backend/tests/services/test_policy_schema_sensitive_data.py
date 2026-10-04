@@ -166,6 +166,25 @@ def test_detector_block_validation_errors(block: dict, message: str) -> None:
         SensitiveDataDetectorsConfig.model_validate(block)
 
 
+def test_custom_entry_lists_are_capped() -> None:
+    from preloop.services.sensitive_data.detectors import MAX_CUSTOM_PATTERNS
+
+    too_many = [{"name": f"p{i}", "regex": "x"} for i in range(MAX_CUSTOM_PATTERNS + 1)]
+    with pytest.raises(ValidationError, match="at most"):
+        SensitiveDataDetectorsConfig(custom_patterns=too_many)
+    assert (
+        len(SensitiveDataDetectorsConfig(custom_patterns=too_many[:-1]).custom_patterns)
+        == MAX_CUSTOM_PATTERNS
+    )
+
+
+def test_mrn_pattern_with_inline_flag_is_accepted() -> None:
+    config = SensitiveDataDetectorsConfig(medical_record_number_pattern="(?i)abc")
+    assert config.medical_record_number_pattern == "(?i)abc"
+    with pytest.raises(ValidationError, match="medical_record_number_pattern"):
+        SensitiveDataDetectorsConfig(medical_record_number_pattern="abc(")
+
+
 def test_locales_are_normalised() -> None:
     config = SensitiveDataDetectorsConfig(locales=["DE", "nl", "de"])
     assert config.locales == ["de", "nl"]
