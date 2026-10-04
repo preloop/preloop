@@ -49,6 +49,7 @@ import '../../components/list-bar-swap';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '../../components/approval-rule-context-block';
 import '../../components/attribution-line';
+import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -141,6 +142,14 @@ export class ApprovalsView extends AuthedElement {
   private answerError: string | null = null;
 
   /**
+   * Why the list could not be loaded, if it could not. An outage must never
+   * read as "nothing is waiting", so while this is set the empty state is not
+   * shown.
+   */
+  @state()
+  private loadError: string | null = null;
+
+  /**
    * Ticks once a second while anything in "Waiting for you" can still expire,
    * so a request that times out with the list open leaves that group and
    * loses its Approve/Deny buttons instead of offering a dead decision.
@@ -199,6 +208,18 @@ export class ApprovalsView extends AuthedElement {
   static styles = [
     unsafeCSS(consoleStyles),
     css`
+      .load-error {
+        margin-bottom: var(--sl-spacing-medium);
+      }
+
+      .load-error-body {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sl-spacing-small) var(--sl-spacing-medium);
+        justify-content: space-between;
+      }
+
       /* One hairline strip, not six boxes: these are counts, not cards. */
       .stat-strip {
         display: flex;
@@ -772,11 +793,15 @@ export class ApprovalsView extends AuthedElement {
 
   private async loadApprovalRequests() {
     this.loading = true;
+    this.loadError = null;
     try {
       const data = await this.fetchData(
         `/api/v1/approval-requests?limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
       );
-      if (data && Array.isArray(data)) {
+      if (!Array.isArray(data)) {
+        // fetchData resolves null on a failed request rather than throwing.
+        this.loadError = "Couldn't load approval requests.";
+      } else {
         // Sort by requested_at descending (most recent first)
         this.approvalRequests = (data as ApprovalRequest[])
           .map((request) => normalizeApprovalRequest(request))
@@ -791,6 +816,10 @@ export class ApprovalsView extends AuthedElement {
       }
     } catch (error) {
       console.error('Failed to load approval requests:', error);
+      const detail = error instanceof Error ? error.message : '';
+      this.loadError = detail
+        ? `Couldn't load approval requests. ${detail}`
+        : "Couldn't load approval requests.";
     } finally {
       this.loading = false;
     }
@@ -1357,43 +1386,69 @@ export class ApprovalsView extends AuthedElement {
             ${this.approvalRequests.length} requests
           </div>
 
+          ${
+            this.loadError
+              ? html`<sl-alert
+                  variant="danger"
+                  open
+                  class="load-error"
+                  data-testid="approvals-load-error"
+                >
+                  <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
+                  <div class="load-error-body">
+                    <span
+                      >${this.loadError} What is waiting for you is unknown
+                      until this loads.</span
+                    >
+                    <sl-button
+                      size="small"
+                      @click=${() => void this.loadApprovalRequests()}
+                      >Retry</sl-button
+                    >
+                  </div>
+                </sl-alert>`
+              : nothing
+          }
+
           <!-- Approval Requests List -->
           ${
-            this.filteredRequests.length === 0
-              ? html`
-                  <div class="empty-state">
-                    <sl-icon name="inbox"></sl-icon>
-                    <p>
+            this.loadError && this.filteredRequests.length === 0
+              ? nothing
+              : this.filteredRequests.length === 0
+                ? html`
+                    <div class="empty-state">
+                      <sl-icon name="inbox"></sl-icon>
+                      <p>
+                        ${
+                          this.approvalRequests.length === 0
+                            ? 'No approval requests yet. Configure tools to require approval in the Tools section.'
+                            : 'No requests match your filters.'
+                        }
+                      </p>
                       ${
                         this.approvalRequests.length === 0
-                          ? 'No approval requests yet. Configure tools to require approval in the Tools section.'
-                          : 'No requests match your filters.'
+                          ? html`<sl-button href="/console/tools">
+                              <sl-icon slot="prefix" name="gear"></sl-icon>
+                              Configure tools
+                            </sl-button>`
+                          : ''
                       }
-                    </p>
-                    ${
-                      this.approvalRequests.length === 0
-                        ? html`<sl-button href="/console/tools">
-                            <sl-icon slot="prefix" name="gear"></sl-icon>
-                            Configure tools
-                          </sl-button>`
-                        : ''
-                    }
-                  </div>
-                `
-              : html`
-                  ${this.renderGroup(
-                    'Waiting for you',
-                    this.waitingRequests,
-                    true,
-                    0
-                  )}
-                  ${this.renderGroup(
-                    'History',
-                    this.historyRequests,
-                    false,
-                    this.waitingRequests.length
-                  )}
-                `
+                    </div>
+                  `
+                : html`
+                    ${this.renderGroup(
+                      'Waiting for you',
+                      this.waitingRequests,
+                      true,
+                      0
+                    )}
+                    ${this.renderGroup(
+                      'History',
+                      this.historyRequests,
+                      false,
+                      this.waitingRequests.length
+                    )}
+                  `
           }
         </div>
       </div>

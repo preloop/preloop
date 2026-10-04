@@ -1284,9 +1284,7 @@ describe('ApprovalView', () => {
     expect(element.shadowRoot?.textContent).to.contain('not found');
   });
 
-  it('renders an error alert when loading fails with not found', async () => {
-    // fetchData swallows the HTTP error and returns null, so the view falls
-    // back to the "not found" branch rather than the error branch.
+  it('renders an error alert when loading fails', async () => {
     fetchStub = createFetchStub({ getFails: true });
     const element = (await fixture(
       html`<approval-view .requestId=${'req-1'}></approval-view>`
@@ -1297,6 +1295,90 @@ describe('ApprovalView', () => {
 
     const alert = element.shadowRoot?.querySelector('sl-alert');
     expect(alert).to.exist;
+    expect(alert?.getAttribute('variant')).to.equal('danger');
+    expect(alert?.textContent).to.contain(
+      "Couldn't load this approval request"
+    );
+  });
+
+  describe('when the request cannot be shown', () => {
+    function stubStatus(status: number) {
+      return sinon
+        .stub(window, 'fetch')
+        .callsFake(async () =>
+          json(
+            status === 403
+              ? { detail: 'Permission denied. Required: view_approvals' }
+              : { detail: 'Approval request not found' },
+            status
+          )
+        );
+    }
+
+    async function mount() {
+      const element = (await fixture(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      )) as ApprovalView;
+      await waitUntil(() => !(element as any).loading, 'still loading');
+      await element.updateComplete;
+      return element;
+    }
+
+    function actionLabels(element: ApprovalView) {
+      return Array.from(
+        element.shadowRoot?.querySelectorAll(
+          '.load-failure-actions sl-button'
+        ) ?? []
+      ).map((button) => button.textContent?.trim());
+    }
+
+    it('offers a way back and a retry when the request is not found', async () => {
+      fetchStub = stubStatus(404);
+      const element = await mount();
+
+      const text = element.shadowRoot?.textContent ?? '';
+      expect(text).to.contain('Approval request not found');
+      expect(text).to.contain('a different account');
+      expect(actionLabels(element)).to.deep.equal([
+        'Back to approvals',
+        'Retry',
+      ]);
+      const back = element.shadowRoot?.querySelector(
+        '.load-failure-actions sl-button[href]'
+      );
+      expect(back?.getAttribute('href')).to.equal('/console/approvals');
+    });
+
+    it('blames access, not the request, on a 403', async () => {
+      fetchStub = stubStatus(403);
+      const element = await mount();
+
+      const text = element.shadowRoot?.textContent ?? '';
+      expect(text).to.contain("You can't see this request");
+      expect(text).to.not.contain('Approval request not found');
+      expect(actionLabels(element)).to.deep.equal([
+        'Back to approvals',
+        'Retry',
+      ]);
+    });
+
+    it('loads again on Retry', async () => {
+      fetchStub = createFetchStub({ getFails: true });
+      const element = await mount();
+      fetchStub.restore();
+      fetchStub = createFetchStub();
+
+      const retry = Array.from(
+        element.shadowRoot?.querySelectorAll(
+          '.load-failure-actions sl-button'
+        ) ?? []
+      ).find((button) => button.textContent?.trim() === 'Retry') as HTMLElement;
+      retry.click();
+      await waitUntil(
+        () => !!(element as any).approvalRequest,
+        'Retry did not load the request'
+      );
+    });
   });
 
   it('approves a pending request', async () => {

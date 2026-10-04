@@ -2,9 +2,11 @@ import { html, css, unsafeCSS } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import {
   AuthedElement,
+  fetchWithAuth,
   getAgentGovernance,
   getUserProfile,
   hasPermission,
+  permissionErrorFromResponse,
   updateAgentGovernance,
 } from '../../api';
 import type {
@@ -85,8 +87,17 @@ export class ApprovalView extends AuthedElement {
   @state()
   private loading = true;
 
+  /**
+   * Why the request could not be shown. "forbidden" (HTTP 403) blames the
+   * viewer's access, "not_found" covers a missing request and one that lives
+   * in another account (the API answers 404 for both), "error" is anything
+   * else, such as an outage.
+   */
   @state()
-  private error: string | null = null;
+  private loadFailure: {
+    kind: 'forbidden' | 'not_found' | 'error';
+    message: string;
+  } | null = null;
 
   /**
    * True when the request is rendered from the public token payload instead
@@ -168,6 +179,16 @@ export class ApprovalView extends AuthedElement {
   static styles = [
     unsafeCSS(consoleStyles),
     css`
+      .load-failure-body {
+        margin: var(--sl-spacing-2x-small) 0 var(--sl-spacing-small);
+      }
+
+      .load-failure-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+      }
+
       /* No page geometry here: the shell owns the width and the side inset
          (styles/console-styles.css, "The page box"). */
       :host {
@@ -686,13 +707,18 @@ export class ApprovalView extends AuthedElement {
 
   private async loadApprovalRequest() {
     this.loading = true;
-    this.error = null;
     this.publicOnly = false;
+    this.loadFailure = null;
+    this.approvalRequest = null;
 
     try {
-      const data = await this.fetchData(
+      // Read the status directly (not through fetchData, which folds every
+      // failure into null) so the page can tell "you can't see this" from
+      // "this does not exist" from "the server is down".
+      const response = await fetchWithAuth(
         `/api/v1/approval-requests/${this.requestId}`
       );
+      const data = response.ok ? await response.json() : null;
       if (data) {
         // A request the sweeper has not caught up with yet is still `pending`
         // in the database long after its expiry. Read the clock here so the
@@ -701,15 +727,33 @@ export class ApprovalView extends AuthedElement {
         await this.loadHistory();
         return;
       }
-      // Authenticated read failed (not a member of the account or request
-      // gone). Fall back to the public token payload when the link carried
-      // one, so escalation recipients can still see the request (issue #335).
-      if (await this.loadPublicRequest()) {
+      const forbidden = response.status === 403;
+      const missing = response.ok || response.status === 404;
+      // Authenticated read failed (not a member of the account, no access, or
+      // request gone). Fall back to the public token payload when the link
+      // carried one, so escalation recipients can still see the request
+      // (issue #335).
+      if ((forbidden || missing) && (await this.loadPublicRequest())) {
         return;
       }
-      this.error = 'Approval request not found';
+      if (forbidden) {
+        this.loadFailure = {
+          kind: 'forbidden',
+          message: (await permissionErrorFromResponse(response)).message,
+        };
+      } else if (missing) {
+        this.loadFailure = { kind: 'not_found', message: '' };
+      } else {
+        this.loadFailure = {
+          kind: 'error',
+          message: `The server answered HTTP ${response.status}.`,
+        };
+      }
     } catch (err: any) {
-      this.error = err.message || 'Failed to load approval request';
+      this.loadFailure = {
+        kind: 'error',
+        message: err?.message || '',
+      };
       console.error('Error loading approval request:', err);
     } finally {
       this.loading = false;
@@ -1166,6 +1210,59 @@ export class ApprovalView extends AuthedElement {
     }
   }
 
+  /**
+   * The page a deep link lands on when the request cannot be shown. People
+   * reach it from a push, email or Slack notification, so it always says why
+   * in terms of their access and offers a way back and a retry.
+   */
+  private renderLoadFailure(failure: {
+    kind: 'forbidden' | 'not_found' | 'error';
+    message: string;
+  }) {
+    const copy = {
+      forbidden: {
+        variant: 'warning',
+        icon: 'shield-lock',
+        title: "You can't see this request from this account",
+        body: "Your role in the account you're signed into doesn't include viewing approval requests. Ask an account admin for access, or sign in to the account that sent you the link.",
+      },
+      not_found: {
+        variant: 'warning',
+        icon: 'exclamation-triangle',
+        title: 'Approval request not found',
+        body: "It may have been removed, or it belongs to a different account than the one you're signed into.",
+      },
+      error: {
+        variant: 'danger',
+        icon: 'exclamation-octagon',
+        title: "Couldn't load this approval request",
+        body: failure.message || 'Check your connection and try again.',
+      },
+    }[failure.kind];
+    return html`
+      <sl-alert
+        variant=${copy.variant}
+        open
+        class="load-failure"
+        data-kind=${failure.kind}
+      >
+        <sl-icon slot="icon" name=${copy.icon}></sl-icon>
+        <strong>${copy.title}</strong>
+        <p class="load-failure-body">${copy.body}</p>
+        <div class="load-failure-actions">
+          <sl-button size="small" href="/console/approvals">
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon>
+            Back to approvals
+          </sl-button>
+          <sl-button size="small" @click=${() => this.loadApprovalRequest()}>
+            <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+            Retry
+          </sl-button>
+        </div>
+      </sl-alert>
+    `;
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -1175,22 +1272,10 @@ export class ApprovalView extends AuthedElement {
       `;
     }
 
-    if (this.error) {
-      return html`
-        <sl-alert variant="danger" open>
-          <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
-          <strong>Error:</strong> ${this.error}
-        </sl-alert>
-      `;
-    }
-
-    if (!this.approvalRequest) {
-      return html`
-        <sl-alert variant="warning" open>
-          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-          <strong>Not found:</strong> Approval request not found
-        </sl-alert>
-      `;
+    if (this.loadFailure || !this.approvalRequest) {
+      return this.renderLoadFailure(
+        this.loadFailure ?? { kind: 'not_found', message: '' }
+      );
     }
 
     // A request whose expiry passed is timed out, whatever the record says:

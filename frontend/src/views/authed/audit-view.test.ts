@@ -314,6 +314,90 @@ describe('AuditView', () => {
     element.remove();
   });
 
+  describe('when the timeline cannot be shown', () => {
+    function groupedResponse(status: number, body: unknown) {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    async function mount() {
+      const element = document.createElement('audit-view') as AuditView;
+      document.body.appendChild(element);
+      await waitUntil(
+        () => !(element as any)._loading,
+        'Audit view did not finish loading'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('shows a danger alert with Retry, not the empty state, when loading fails', async () => {
+      let fail = true;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          return fail
+            ? groupedResponse(500, { detail: 'boom' })
+            : groupedResponse(200, { groups: [], total: 0 });
+        }
+        return groupedResponse(200, []);
+      });
+
+      const element = await mount();
+      const alert = element.shadowRoot?.querySelector(
+        'sl-alert[variant="danger"]'
+      );
+      expect(alert, 'expected a danger alert').to.exist;
+      expect(alert?.textContent).to.contain("Couldn't load audit events");
+      expect(element.shadowRoot?.textContent).to.not.contain(
+        'No audit events yet'
+      );
+
+      fail = false;
+      const retry = alert?.querySelector('sl-button') as HTMLElement;
+      expect(retry.textContent?.trim()).to.equal('Retry');
+      retry.click();
+      await waitUntil(
+        () =>
+          !(element as any)._loading &&
+          !element.shadowRoot?.querySelector('sl-alert[variant="danger"]'),
+        'Retry did not reload'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot?.textContent).to.contain('No audit events yet');
+      element.remove();
+    });
+
+    it('says no events match, with Clear filters, when a filter is active', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+          return groupedResponse(200, { groups: [], total: 0 });
+        }
+        return groupedResponse(200, []);
+      });
+
+      const element = await mount();
+      (element as any)._outcomeFilters = ['denied'];
+      await (element as any)._loadTimeline();
+      await element.updateComplete;
+
+      const empty = element.shadowRoot?.querySelector('.empty-state');
+      expect(empty?.textContent).to.contain('No events match these filters.');
+      expect(empty?.textContent).to.not.contain('No audit events yet');
+      const clear = empty?.querySelector('sl-button') as HTMLElement;
+      expect(clear.textContent?.trim()).to.equal('Clear filters');
+      clear.click();
+      await waitUntil(() => !(element as any)._loading);
+      await element.updateComplete;
+      expect((element as any)._outcomeFilters).to.deep.equal([]);
+      expect(element.shadowRoot?.textContent).to.contain('No audit events yet');
+      element.remove();
+    });
+  });
+
   it('renders expandable runtime session events and API token attribution', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

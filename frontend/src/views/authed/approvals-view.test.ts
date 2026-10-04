@@ -320,6 +320,40 @@ describe('ApprovalsView', () => {
     expect(emptyState?.textContent).to.include('No approval requests yet');
   });
 
+  it('shows a danger alert with Retry instead of the empty state when loading fails', async () => {
+    let fail = true;
+    fetchStub = sinon.stub(window, 'fetch').callsFake(
+      async () =>
+        new Response(JSON.stringify(fail ? { detail: 'boom' } : []), {
+          status: fail ? 500 : 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    const element = (await fixture(
+      html`<approvals-view></approvals-view>`
+    )) as ApprovalsView;
+    await waitUntil(() => !(element as any).loading);
+    await element.updateComplete;
+
+    const alert = element.shadowRoot?.querySelector(
+      'sl-alert[variant="danger"]'
+    );
+    expect(alert, 'expected a danger alert').to.exist;
+    expect(alert?.textContent).to.contain("Couldn't load approval requests");
+    expect(element.shadowRoot?.querySelector('.empty-state')).to.not.exist;
+
+    fail = false;
+    (alert?.querySelector('sl-button') as HTMLElement).click();
+    await waitUntil(
+      () =>
+        !(element as any).loading &&
+        !element.shadowRoot?.querySelector('sl-alert[variant="danger"]'),
+      'Retry did not reload'
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector('.empty-state')).to.exist;
+  });
+
   it('shows approval list when requests exist', async () => {
     const mockRequests = [
       {
