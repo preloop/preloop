@@ -121,8 +121,10 @@ describe('PreloopInviteDialog', () => {
       'john@example.com: User is already a member'
     );
     expect((element as any).emailsText).to.equal('john@example.com');
-    // The list behind the dialog refreshes for the two that went out.
+    // The list behind the dialog refreshes for the two that went out,
+    // and the dialog stays open because the send was only partial.
     expect(sent.calledOnce).to.equal(true);
+    expect(sent.firstCall.args[0].detail.partial).to.equal(true);
     expect((element as any).successMessage).to.equal(null);
   });
 

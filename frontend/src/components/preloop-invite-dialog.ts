@@ -197,6 +197,7 @@ export class PreloopInviteDialog extends LitElement {
           new CustomEvent('invitations-sent', {
             bubbles: true,
             composed: true,
+            detail: { partial: failed.length > 0 },
           })
         );
       }

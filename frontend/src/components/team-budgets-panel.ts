@@ -177,7 +177,10 @@ export class TeamBudgetsPanel extends AuthedElement {
     const confirmed = await confirmDialog({
       title: 'Remove team budget?',
       message: `Remove the ${periodLabel(budget.period).toLowerCase()} budget for ${budget.team_name}?`,
-      detail: `Spending by the team's members will no longer be capped at ${this.money(budget.hard_limit_usd)}.`,
+      detail:
+        budget.hard_limit_usd == null
+          ? "Spending by the team's members will no longer be capped."
+          : `Spending by the team's members will no longer be capped at ${this.money(budget.hard_limit_usd)}.`,
       confirmLabel: 'Remove budget',
       variant: 'danger',
     });

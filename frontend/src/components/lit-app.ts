@@ -51,7 +51,9 @@ export class LitApp extends LitElement {
   private readonly publicTitle = document.title;
 
   private restorePublicTitle = () => {
-    if (!window.location.pathname.startsWith('/console')) {
+    const path = window.location.pathname;
+    const inConsole = path === '/console' || path.startsWith('/console/');
+    if (!inConsole) {
       document.title = this.publicTitle;
     }
   };

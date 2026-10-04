@@ -345,8 +345,10 @@ export class InvitationManagementView extends LitElement {
         @close=${() => {
           this.isCreateModalOpen = false;
         }}
-        @invitations-sent=${() => {
-          this.isCreateModalOpen = false;
+        @invitations-sent=${(e: CustomEvent) => {
+          if (!e.detail?.partial) {
+            this.isCreateModalOpen = false;
+          }
           this.fetchInvitations();
         }}
       ></preloop-invite-dialog>
