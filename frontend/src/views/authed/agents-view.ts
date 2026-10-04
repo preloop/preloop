@@ -1594,7 +1594,7 @@ export class AgentsView extends LitElement {
       if (
         !this.hasAutoOpenedOnboarding &&
         !this.agentFiltersActive &&
-        agentsData.total === 0 &&
+        (agentsData.total ?? 0) === 0 &&
         this.previousAgentCount === 0
       ) {
         this.showOnboardingDialog = true;
