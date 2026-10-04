@@ -879,9 +879,40 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   private handleRuntimeSessionActivity(message: any): void {
-    if (!this.matchesScope(message?.payload ?? {})) return;
+    const payload = message?.payload ?? {};
+    if (!this.matchesScope(payload)) return;
     this.pulseLive();
+    // An operator message (a note, or a command that starts a new turn) is a
+    // timeline row with no gateway twin, so nothing else would put it on the
+    // open session until the agent's next call. Re-read that session's
+    // timeline now: the person who typed it is usually watching.
+    if (
+      payload.activity_type === 'agent_control_message' &&
+      payload.runtime_session_id &&
+      payload.runtime_session_id === this.activeSessionId
+    ) {
+      void this.refreshActivity(payload.runtime_session_id);
+    }
     this.scheduleScopeRefresh();
+  }
+
+  /** Re-read one loaded session's activity timeline in place. */
+  private async refreshActivity(sessionId: string): Promise<void> {
+    if (!this.loadedActivity[sessionId]) return;
+    try {
+      const activity =
+        await getAccountRuntimeSessionActivityTimeline(sessionId);
+      // The selection may have moved while the read was in flight.
+      if (!this.loadedActivity[sessionId]) return;
+      this.loadedActivity = {
+        ...this.loadedActivity,
+        [sessionId]: activity.items || [],
+      };
+    } catch (error) {
+      // The scheduled scope refresh still runs; a failed read here only
+      // means the row shows up a little later.
+      console.error('Failed to refresh session activity:', error);
+    }
   }
 
   private handleGatewayActivity(message: any): void {

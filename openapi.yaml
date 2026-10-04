@@ -12991,6 +12991,88 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/agents/{agent_id}/control/commands/{command_id}:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Managed Agent Command Status
+      description: 'Delivery state of one operator command, for clients that follow
+        it.
+
+
+        The same permission as sending: whoever may send a command may watch
+
+        it land. Another agent''s command id is a 404, not a leak. A sync
+
+        handler: FastAPI runs it in the threadpool, off the event loop.'
+      operationId: get_managed_agent_command_status_api_v1_agents__agent_id__control_commands__command_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      - name: command_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Command Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentControlCommandStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/runtime-sessions/{runtime_session_id}/control:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Runtime Session Control Mode
+      description: 'Say whether a line typed on this session can start a new agent
+        turn.
+
+
+        ``preloop sessions attach`` reads this once on attach and again when a
+
+        command is refused. Sending still goes through the command endpoint and
+
+        its ``control_managed_agent`` check; this only picks the input mode. A
+
+        sync handler: FastAPI runs it in the threadpool, off the event loop.'
+      operationId: get_runtime_session_control_mode_api_v1_runtime_sessions__runtime_session_id__control_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionControlResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/{agent_id}/control/voice-transcripts:
     post:
       tags:
@@ -15928,6 +16010,84 @@ components:
       - command_envelope
       title: AgentControlCommandResponse
       description: Result of routing an operator command to a managed agent.
+    AgentControlCommandStatusResponse:
+      properties:
+        command_id:
+          type: string
+          title: Command Id
+        managed_agent_id:
+          type: string
+          format: uuid
+          title: Managed Agent Id
+        status:
+          type: string
+          title: Status
+        delivery_state:
+          type: string
+          enum:
+          - queued
+          - delivered
+          - started
+          - finished
+          - failed
+          - expired
+          - cancelled
+          title: Delivery State
+        terminal:
+          type: boolean
+          title: Terminal
+        result_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Result Status
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        acked_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Acked At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - command_id
+      - managed_agent_id
+      - status
+      - delivery_state
+      - terminal
+      title: AgentControlCommandStatusResponse
+      description: 'Delivery state of one operator command (#1150).
+
+
+        ``delivery_state`` is what an operator sees: queued (persisted, not yet
+
+        on the agent''s connection), delivered (sent on the connection), started
+
+        (the agent acknowledged it), then finished, failed, expired or
+
+        cancelled. ``status`` is the stored row status it is derived from.'
     AgentControlEnvelope:
       properties:
         type:
@@ -29757,6 +29917,71 @@ components:
         lower bound covering only the priced models. When no contributing model is
 
         priced the figure is ``None`` and ``savings_omitted_reason`` says why.'
+    RuntimeSessionControlResponse:
+      properties:
+        runtime_session_id:
+          type: string
+          format: uuid
+          title: Runtime Session Id
+        mode:
+          type: string
+          enum:
+          - command
+          - note
+          title: Mode
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - session_ended
+            - not_managed
+            - unsupported_kind
+            - agent_inactive
+            - no_control_plugin
+            - control_offline
+          - type: 'null'
+          title: Reason Code
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        managed_agent_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Managed Agent Id
+        agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Name
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+      type: object
+      required:
+      - runtime_session_id
+      - mode
+      title: RuntimeSessionControlResponse
+      description: 'Whether a line typed on an attached session starts a new turn
+        (#1150).
+
+
+        ``mode`` is ``command`` when the session is run by an active managed
+
+        agent with a verified Agent Control plugin and a live control
+
+        connection: send the line with POST
+
+        ``/agents/{managed_agent_id}/control/prompts`` and ``target_session_id``
+
+        set to this session. Otherwise ``mode`` is ``note`` and ``reason`` says
+
+        why, in words fit to show the operator.'
     RuntimeSessionInteractionSummary:
       properties:
         event_id:
