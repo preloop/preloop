@@ -1001,6 +1001,56 @@ paths:
                 $ref: '#/components/schemas/SessionArtifactUsageResponse'
       security:
       - bearerAuth: []
+  /api/v1/account/session-artifacts/settings:
+    get:
+      tags:
+      - Account
+      summary: Get Session Artifact Settings
+      description: Return whether raw audio is stored, and for how long.
+      operationId: get_session_artifact_settings_api_v1_account_session_artifacts_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Account
+      summary: Update Session Artifact Settings
+      description: 'Opt the account in or out of raw audio storage; admin only, audited.
+
+
+        Uses ``manage_policies`` like the retention settings: it governs what
+
+        the account keeps. Every change writes an ``artifact_settings_updated``
+
+        audit row with the before and after value of each changed field; a
+
+        request that changes nothing writes no row.'
+      operationId: update_session_artifact_settings_api_v1_account_session_artifacts_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionArtifactSettingsUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+        '403':
+          description: Caller may not manage account policies
+        '422':
+          description: audio_retention_days_invalid
+      security:
+      - bearerAuth: []
   /api/v1/account/gateway-usage/summary:
     get:
       tags:
@@ -30983,6 +31033,54 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionArtifactSettingsResponse:
+      properties:
+        audio_storage_enabled:
+          type: boolean
+          title: Audio Storage Enabled
+          description: Store raw audio deposited by agents. Off by default.
+        audio_retention_days:
+          type: integer
+          title: Audio Retention Days
+          description: Days raw audio is kept before its bytes expire.
+        audio_retention_max_days:
+          type: integer
+          title: Audio Retention Max Days
+          description: Longest allowed audio retention (the session retention).
+        updated_by_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated By User Id
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - audio_storage_enabled
+      - audio_retention_days
+      - audio_retention_max_days
+      title: SessionArtifactSettingsResponse
+      description: Account artifact storage settings (#1102).
+    SessionArtifactSettingsUpdate:
+      properties:
+        audio_storage_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Audio Storage Enabled
+        audio_retention_days:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Audio Retention Days
+      type: object
+      title: SessionArtifactSettingsUpdate
+      description: Change artifact storage settings; omitted fields are left as they
+        are.
     SessionArtifactUsageByKind:
       properties:
         screenshot:

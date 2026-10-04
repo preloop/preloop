@@ -1473,6 +1473,15 @@ export interface SessionArtifactUsage {
   evicted_count_30d: number;
 }
 
+/** Raw audio storage opt-in (#1102). Off by default; admin only to change. */
+export interface SessionArtifactSettings {
+  audio_storage_enabled: boolean;
+  audio_retention_days: number;
+  audio_retention_max_days: number;
+  updated_by_user_id?: string | null;
+  updated_at?: string | null;
+}
+
 export interface AccountGatewayUsageSummaryResponse {
   period_start: string;
   period_end: string;
