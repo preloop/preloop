@@ -276,6 +276,15 @@ fallback. Generic test-send, replay, delivery-history and dead-letter routes
 remain denied to machine credentials; generic administrator replay excludes
 machine subscriptions.
 
+Human operators see a read-only restricted-CI marker and the fixed completion
+filter. Synthetic test sends are explicitly rejected for these endpoints;
+ordinary pause, receiver and deletion controls remain available. Permanent
+authorization or private-target denials terminate a queued delivery without
+POST. Transient DNS resolution and preparation/database failures consume a
+failed attempt, release the claim and use normal backoff, circuit breaking and
+dead-letter limits. Preparation logs contain delivery IDs and exception classes,
+never exception contents or signing material.
+
 The signed v1 envelope contains only execution/flow/project/repository, PR/MR
 number/provider identity, exact head SHA, terminal status and result readiness.
 Caller event data, runtime prompts, logs and report bodies never enter the

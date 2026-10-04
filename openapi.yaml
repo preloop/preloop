@@ -39943,6 +39943,10 @@ components:
         source:
           type: string
           title: Source
+        restricted_ci:
+          type: boolean
+          title: Restricted Ci
+          default: false
         secret_hint:
           anyOf:
           - type: string
@@ -40030,6 +40034,10 @@ components:
         source:
           type: string
           title: Source
+        restricted_ci:
+          type: boolean
+          title: Restricted Ci
+          default: false
         secret_hint:
           anyOf:
           - type: string

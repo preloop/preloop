@@ -304,24 +304,49 @@ def revalidate_ci_delivery(
     prepared: PreparedDelivery,
 ) -> Optional[PreparedDelivery]:
     """Own a separate short-lived session per send, after semaphore acquisition."""
-    db = db_factory()
+    db = None
     try:
+        db = db_factory()
         rows = crud.crud_ci_subscription.prepare_delivery(
             db, delivery_id=prepared.delivery_id
         )
         if rows is None or not outbox.endpoint_is_deliverable(
             rows[1], outbox._utcnow()
         ):
+            crud.crud_ci_subscription.record_preparation_failure(
+                db, delivery_id=prepared.delivery_id
+            )
             return None
-        return prepare_claimed(*rows)
+        refreshed = prepare_claimed(*rows)
+        if refreshed is None:
+            crud.crud_ci_subscription.record_preparation_failure(
+                db, delivery_id=prepared.delivery_id
+            )
+        return refreshed
     except Exception as error:
         logger.warning(
-            "Restricted CI callback preparation blocked",
-            extra={"ci_error_type": type(error).__name__},
+            "Restricted CI callback %s preparation failed (%s)",
+            prepared.delivery_id,
+            type(error).__name__,
         )
+        try:
+            if db is not None:
+                db.rollback()
+            else:
+                db = db_factory()
+            crud.crud_ci_subscription.record_preparation_failure(
+                db, delivery_id=prepared.delivery_id
+            )
+        except Exception as accounting_error:
+            logger.warning(
+                "Restricted CI callback %s failure accounting unavailable (%s)",
+                prepared.delivery_id,
+                type(accounting_error).__name__,
+            )
         return None
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 async def run_once(db_factory=_open_worker_session) -> int:
