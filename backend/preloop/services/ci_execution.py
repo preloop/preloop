@@ -422,7 +422,12 @@ _PRIVATE_RESULT_SUFFIXES = tuple(
         "refresh_token",
         "password",
         "secret",
+        "secrets",
+        "token",
+        "credential",
         "credentials",
+        "authorization",
+        "headers",
     )
 )
 
