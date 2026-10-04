@@ -151,7 +151,7 @@ class TriggerSubject:
         pr_number: Pull request number (used to drop self references).
         repo_path: Repository path (``org/repo``), when known.
         host: Web host of the repository, when known.
-        platform: ``github``, ``gitlab`` or ``jira``.
+        platform: ``github``, ``gitlab``, ``bitbucket`` or ``jira``.
         fields: Raw issue fields, for reading the tracker estimate.
         labels: Issue label names, for reading the tracker estimate.
     """
