@@ -701,6 +701,7 @@ def test_persisted_result_projection_omits_runtime_prompt_and_mcp_column_names()
         "nested": [
             {
                 "resolved_prompt": "synthetic-private-prompt",
+                "resolved_input_prompt": "synthetic-private-input-prompt",
                 "mcp_usage_logs": [{"authorization": "synthetic-provider-secret"}],
                 "score": 1,
             }
