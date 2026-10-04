@@ -79,6 +79,11 @@ PRESET_UNMANAGED_FIELDS = frozenset(
         "prompt_customized",
         "tools_customized",
         "preset_update_available",
+        # Per-run limit fields, not columns: FlowCreate folds them into
+        # agent_config.limits (max_usd / max_turns), and agent_config is a
+        # managed row field, so a preset that sets them still syncs them.
+        "max_budget",
+        "max_iterations",
     }
 )
 
