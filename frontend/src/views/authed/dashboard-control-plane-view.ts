@@ -1718,10 +1718,14 @@ export class DashboardView extends AuthedElement {
   }
 
   private loadDismissedState(): void {
-    this.welcomeCardDismissed =
-      localStorage.getItem('dashboard_welcome_dismissed') === 'true';
-    this.nextStepsDismissed =
-      localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
+    try {
+      this.welcomeCardDismissed =
+        localStorage.getItem('dashboard_welcome_dismissed') === 'true';
+      this.nextStepsDismissed =
+        localStorage.getItem(NEXT_STEPS_DISMISSED_KEY) === 'true';
+    } catch {
+      // Blocked storage: nothing was remembered, so nothing is dismissed.
+    }
   }
 
   /**
@@ -1791,11 +1795,14 @@ export class DashboardView extends AuthedElement {
 
   private dismissWelcomeCard(): void {
     this.welcomeCardDismissed = true;
-    // Only persist the dismissal once at least one agent is onboarded, so a
-    // stray click can't permanently erase onboarding guidance for a user who
-    // still has zero agents (session-only dismissal until then).
-    if (this.managedAgents.length > 0) {
+    // Always remembered. The takeover replaces the whole Overview, so a
+    // dismissal that only lasted the visit brought it back full-screen on
+    // every return for an admin who starts with policies, models or teams
+    // and onboards agents later. The Next steps card still tracks progress.
+    try {
       localStorage.setItem('dashboard_welcome_dismissed', 'true');
+    } catch {
+      // Private mode: dismissed for this visit only.
     }
   }
 
@@ -3300,6 +3307,7 @@ export class DashboardView extends AuthedElement {
 
         <img
           src="/assets/preloop-badge.svg"
+          alt=""
           style="width: 56px; height: 56px; margin-bottom: var(--sl-spacing-small); margin-top: var(--sl-spacing-small); border-radius: var(--sl-border-radius-medium);"
         />
 
