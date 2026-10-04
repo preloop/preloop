@@ -918,6 +918,7 @@ def _register_control_plane_routes(
         spend_outliers,
         tools,
         trackers,
+        bitbucket_dc_webhooks,
         usage_import,
         embedding as embedding_router,
         webhooks,
@@ -992,6 +993,12 @@ def _register_control_plane_routes(
     )  # No auth required
     app.include_router(
         trackers.router,
+        prefix="/api/v1",
+        tags=["Trackers"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        bitbucket_dc_webhooks.router,
         prefix="/api/v1",
         tags=["Trackers"],
         dependencies=[Depends(get_current_active_user)],

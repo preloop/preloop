@@ -3,7 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import {
   AuthedElement,
   exportIssueCosts,
-  getFlows,
+  getFlowSummaries,
   getIssueCostExecutions,
   getIssueCosts,
   getUnassignedIssueCostExecutions,
@@ -111,6 +111,22 @@ function estimateTitle(row: IssueCostRow): string {
     .map((source) => `From ${source}`)
     .join('; ');
 }
+
+/**
+ * Exact definitions of the three cycle-time columns (#1064). They start at
+ * the first attributed run, not at ticket creation, and end at a recorded
+ * approval, which is not verified mergeability.
+ */
+export const INTERVAL_TITLES = {
+  toPr: 'Hours from the earliest attributed execution start (not ticket creation) to PR opened',
+  toApproval:
+    'Hours from PR opened to the first recorded approval event (not verified mergeability)',
+  toMerge: 'Hours from the first recorded approval event to the recorded merge',
+} as const;
+
+/** The note under the toolbar that states what the intervals measure. */
+export const CYCLE_TIME_NOTE =
+  'Cycle time starts at the earliest attributed execution start, not when the ticket was created, and the period selects issues by that start (start inclusive, end exclusive). Approval is a recorded approval event, not verified mergeability: required checks and branch rules are not evaluated. A flow filter narrows cost and runs to that flow; the times stay those of the whole issue.';
 
 const OPENED_SOURCE_TITLES: Record<string, string> = {
   forge: 'PR opened: the pull request creation time from the forge',
@@ -233,7 +249,7 @@ export class IssueCostView extends AuthedElement {
     try {
       const [projects, flows] = await Promise.all([
         listProjects(),
-        getFlows({ limit: 500 }),
+        getFlowSummaries({ limit: 500, includeStats: false }),
       ]);
       this.projects = projects.map((project) => ({
         id: String(project.id),
@@ -411,9 +427,11 @@ export class IssueCostView extends AuthedElement {
           <th class="num">Cost</th>
           <th class="num">Tokens</th>
           <th class="num">Runs</th>
-          <th class="num" title="First event to PR opened">To PR</th>
-          <th class="num" title="PR opened to approved">To approval</th>
-          <th class="num" title="Approved to merged">To merge</th>
+          <th class="num" title=${INTERVAL_TITLES.toPr}>Run to PR</th>
+          <th class="num" title=${INTERVAL_TITLES.toApproval}>
+            To recorded approval
+          </th>
+          <th class="num" title=${INTERVAL_TITLES.toMerge}>To merge</th>
           <th class="num" title="The tracker's own estimate">Estimate</th>
           <th>PR</th>
         </tr>
@@ -606,6 +624,7 @@ export class IssueCostView extends AuthedElement {
         (account level, never attributed to a ticket), and gateway-priced
         estimates, which is what this page sums.
       </p>
+      <p class="muted cycle-time-note">${CYCLE_TIME_NOTE}</p>
       ${
         this.error
           ? html`<sl-alert variant="danger" open role="alert"

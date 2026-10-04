@@ -231,6 +231,8 @@ describe('IssueCostView', () => {
           headers: { 'Content-Type': 'text/csv' },
         });
       } else if (url.includes('/cost/by-issue')) body = report;
+      else if (url.includes('/flows/summary'))
+        body = [{ id: 'flow-1', name: 'Issue triage' }];
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -241,6 +243,28 @@ describe('IssueCostView', () => {
   afterEach(() => {
     fetchStub.restore();
     localStorage.removeItem('accessToken');
+  });
+
+  it('uses flow summaries without execution statistics for the filter', async () => {
+    const element = await fixture<IssueCostView>(
+      html`<issue-cost-view></issue-cost-view>`
+    );
+    await waitUntil(() => requested.some((url) => url.includes('/flows')));
+    const url = new URL(
+      requested.find((url) => url.includes('/flows'))!,
+      location.origin
+    );
+    expect(url.pathname).to.equal('/api/v1/flows/summary');
+    expect(url.searchParams.get('include_stats')).to.equal('false');
+    expect(url.searchParams.get('limit')).to.equal('500');
+    await waitUntil(() => element.flows.length === 1);
+    expect(element.flows).to.deep.equal([
+      { id: 'flow-1', name: 'Issue triage' },
+    ]);
+    expect(requested.filter((url) => url.includes('/flows')).length).to.equal(
+      1
+    );
+    element.remove();
   });
 
   it('formats cost and leaves missing intervals blank', () => {
@@ -445,6 +469,33 @@ describe('IssueCostView', () => {
     expect(
       el.shadowRoot!.querySelector('tr[data-execution="exec-9"]')
     ).to.equal(null);
+  });
+
+  it('labels cycle time as run-started and approval as recorded, not mergeable', async () => {
+    const el = await fixture<IssueCostView>(
+      html`<issue-cost-view></issue-cost-view>`
+    );
+    await waitUntil(() => el.report !== null, 'report loaded');
+    await el.updateComplete;
+    const root = el.shadowRoot!;
+    const headers = [
+      ...root.querySelectorAll('table[aria-label="Cost per issue"] th'),
+    ];
+    const byText = (text: string) =>
+      headers.find((th) => th.textContent!.trim() === text) as HTMLElement;
+    expect(byText('Run to PR').title).to.contain(
+      'earliest attributed execution start (not ticket creation)'
+    );
+    expect(byText('To recorded approval').title).to.contain(
+      'not verified mergeability'
+    );
+    expect(byText('To merge').title).to.contain('recorded approval event');
+    expect(headers.some((th) => /mergeable/i.test(th.textContent!))).to.be
+      .false;
+    const note = root.querySelector('.cycle-time-note')!.textContent!;
+    expect(note).to.contain('not when the ticket was created');
+    expect(note).to.contain('start inclusive, end exclusive');
+    expect(note).to.contain('not verified mergeability');
   });
 
   it('exports with the current filter', async () => {

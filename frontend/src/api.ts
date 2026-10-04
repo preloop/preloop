@@ -53,6 +53,7 @@ import type {
   RuntimeSessionSummary,
   RuntimeSessionUpdateRequest,
   RuntimeSessionActivityListResponse,
+  ArtifactSearchResponse,
   RuntimeSessionArtifactDescriptor,
   RuntimeSessionArtifactListResponse,
   RuntimeSessionRequestListResponse,
@@ -1178,10 +1179,18 @@ function buildManagedAgentListQuery(
 }
 
 export async function getAccountGatewayUsageSummary(
-  params: GatewayUsageSummaryParams = {}
+  params: GatewayUsageSummaryParams & {
+    breakdowns?: ('models' | 'flows' | 'sessions' | 'tools' | 'days')[];
+  } = {}
 ): Promise<AccountGatewayUsageSummaryResponse> {
+  const query = new URLSearchParams(
+    buildGatewayUsageQuery(params).replace(/^\?/, '')
+  );
+  for (const section of params.breakdowns || [])
+    query.append('breakdown', section);
+  const queryString = query.size ? `?${query.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/account/gateway-usage/summary${buildGatewayUsageQuery(params)}`
+    `/api/v1/account/gateway-usage/summary${queryString}`
   );
   if (!response.ok) {
     // A period outside the plan's analytics window is a plan fact, not a
@@ -2510,6 +2519,30 @@ export async function getAccountRuntimeSessionActivityTimeline(
     const refused = await historyUnavailableError(response);
     if (refused) throw refused;
     throw new Error('Failed to fetch session activity timeline');
+  }
+  return response.json();
+}
+
+/**
+ * Search the account's artifacts across sessions (`GET /api/v1/artifacts`,
+ * #1086). `params` is passed through as is, so repeated keys (`kind`,
+ * `label`) stay repeated.
+ */
+export async function searchAccountArtifacts(
+  params: URLSearchParams
+): Promise<ArtifactSearchResponse> {
+  const query = params.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/artifacts${query ? `?${query}` : ''}`
+  );
+  if (response.status === 403) {
+    throw await permissionErrorFromResponse(response);
+  }
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to search artifacts')
+    );
   }
   return response.json();
 }
@@ -3968,6 +4001,58 @@ export function uniqueFlowsById<T extends { id?: unknown }>(flows: T[]): T[] {
   return unique;
 }
 
+export interface FlowSummary {
+  id: string;
+  account_id: string | null;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  created_at: string;
+  updated_at: string;
+  trigger_event_source: string | null;
+  trigger_event_types: string[] | null;
+  ai_model_id: string | null;
+  ai_model_name: string | null;
+  agent_type: string;
+  is_enabled: boolean;
+  is_preset: boolean;
+  source_preset_id: string | null;
+  prompt_customized: boolean;
+  tools_customized: boolean;
+  preset_update_available: boolean;
+  schedule_state: {
+    active: boolean;
+    type: string;
+    description: string;
+    timezone: string;
+    next_run_at: string | null;
+    cron?: string;
+  } | null;
+  execution_stats: Record<string, any> | null;
+}
+
+/** List presentation metadata; statistics are opt-in, configurations omitted. */
+export async function getFlowSummaries(
+  options: {
+    includeStats?: boolean;
+    statsSince?: string;
+    skip?: number;
+    limit?: number;
+  } = {}
+): Promise<FlowSummary[]> {
+  const params = new URLSearchParams();
+  if (options.includeStats !== undefined) {
+    params.set('include_stats', String(options.includeStats));
+  }
+  if (options.statsSince) params.set('stats_since', options.statsSince);
+  if (options.skip !== undefined) params.set('skip', String(options.skip));
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  const query = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetchWithAuth(`/api/v1/flows/summary${query}`);
+  if (!response.ok) throw new Error('Failed to fetch flow summaries');
+  return response.json();
+}
+
 /**
  * The account's flows.
  *
@@ -5161,6 +5246,37 @@ export async function getCurrentSubscription() {
 }
 
 // Tools API
+export interface ToolSummary {
+  name: string;
+  description: string;
+  source: 'builtin' | 'mcp' | 'agent';
+  source_id: string | null;
+  source_name: string;
+  is_enabled: boolean;
+  requires_tracker: boolean;
+  required_tracker_types: string[];
+  is_supported: boolean;
+  unsupported_reason: string | null;
+  approval_workflow_id: string | null;
+  config_id: string | null;
+  has_approval_condition: boolean;
+  access_rules: Omit<AccessRule, 'account_id' | 'tool_configuration_id'>[];
+  justification_mode: string | null;
+  enabled_for_agents: string[];
+  schema_tokens_estimate: number;
+  adapters: string[];
+  has_condition: boolean;
+}
+
+/** List metadata and policy state; input definitions stay on the full route. */
+export async function getToolsSummary(): Promise<ToolSummary[]> {
+  const response = await fetchWithAuth('/api/v1/tools/summary');
+  if (!response.ok) {
+    throw new Error('Failed to fetch tool summaries');
+  }
+  return response.json();
+}
+
 export async function getTools(): Promise<any[]> {
   const response = await fetchWithAuth('/api/v1/tools');
   if (!response.ok) {
