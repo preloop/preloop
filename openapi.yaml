@@ -32022,11 +32022,13 @@ components:
           items:
             $ref: '#/components/schemas/CustomPatternDefinition'
           type: array
+          maxItems: 50
           title: Custom Patterns
         keywords:
           items:
             $ref: '#/components/schemas/KeywordListDefinition'
           type: array
+          maxItems: 50
           title: Keywords
         medical_record_number_pattern:
           anyOf:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -51,6 +52,12 @@ class DetectorTimeoutError(TimeoutError):
 #: though CPython holds the GIL while matching; a thread-pool timeout cannot
 #: do that.
 CUSTOM_PATTERN_TIMEOUT_SECONDS = 0.25
+#: Budget for all account patterns in one ``detect`` call, so many slow
+#: patterns cannot add up to minutes.
+CUSTOM_PATTERNS_TOTAL_BUDGET_SECONDS = 1.0
+#: Most custom patterns and keyword lists an account may configure.
+MAX_CUSTOM_PATTERNS = 50
+MAX_KEYWORD_LISTS = 50
 
 
 @dataclass(frozen=True)
@@ -706,16 +713,37 @@ def _detect_medical_record_number(text: str, config: DetectorConfig) -> Iterable
         for found in _MRN_RE.finditer(text):
             yield Match("medical_record_number", found.start(1), found.end(1), 0.85)
         return
-    # The account part went through the gate; the keyword prefix is a fixed,
-    # reviewed pattern (it has an optional group with a quantifier inside,
-    # which the coarse gate would flag). The timeout covers the whole scan.
-    inner = compile_safe_regex(custom).pattern
-    compiled = timeout_regex.compile(
-        rf"{_MRN_KEYWORD}({inner})(?![A-Za-z0-9])",
-        timeout_regex.IGNORECASE | timeout_regex.VERSION0,
-    )
+    compiled = compile_mrn_pattern(custom)
     for found in finditer_with_timeout(compiled, text):
         yield Match("medical_record_number", found.start(1), found.end(1), 0.85)
+
+
+def compile_mrn_pattern(identifier_pattern: str) -> Any:
+    """Compile the keyword-anchored MRN pattern around an account identifier shape.
+
+    The account part goes through the gate; the keyword prefix is a fixed,
+    reviewed pattern (it has an optional group with a quantifier inside,
+    which the coarse gate would flag). Composition is checked too: a
+    leading global inline flag such as ``(?i)`` is valid alone but not
+    once embedded, so that fails here with a clear message instead of at
+    scan time.
+
+    Raises:
+        UnsafePatternError: The identifier pattern fails the gate or cannot
+            be embedded after the keyword prefix.
+    """
+    inner = compile_safe_regex(identifier_pattern).pattern
+    try:
+        return timeout_regex.compile(
+            rf"{_MRN_KEYWORD}({inner})(?![A-Za-z0-9])",
+            timeout_regex.IGNORECASE | timeout_regex.VERSION0,
+        )
+    except (timeout_regex.error, ValueError, OverflowError) as exc:
+        raise UnsafePatternError(
+            "medical_record_number_pattern cannot follow the MRN keyword: "
+            f"{exc}. Write the identifier shape without global inline flags "
+            "such as (?i); matching is already case-insensitive."
+        ) from exc
 
 
 def _detect_person_name(text: str, _config: DetectorConfig) -> Iterable[Match]:
@@ -922,6 +950,9 @@ def detect(text: str, config: Optional[DetectorConfig] = None) -> List[Match]:
     custom_by_name = {item.name: item for item in config.custom_patterns}
     keywords_by_name = {item.name: item for item in config.keywords}
     found: List[Match] = []
+    # One budget for every account pattern in this call, on top of the
+    # per-pattern timeout: hundreds of slow patterns cannot add up.
+    deadline = time.monotonic() + CUSTOM_PATTERNS_TOTAL_BUDGET_SECONDS
     for type_id in _selected_types(config):
         detector = _BUILTIN_DETECTORS.get(type_id)
         if detector is not None:
@@ -936,10 +967,18 @@ def detect(text: str, config: Optional[DetectorConfig] = None) -> List[Match]:
             continue
         custom = custom_by_name.get(type_id)
         if custom is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DetectorTimeoutError(
+                    "account patterns exceeded the total budget of "
+                    f"{CUSTOM_PATTERNS_TOTAL_BUDGET_SECONDS:.2f}s on one text"
+                )
             compiled = custom.compiled()
             found.extend(
                 Match(type_id, m.start(), m.end(), 0.8)
-                for m in finditer_with_timeout(compiled, text)
+                for m in finditer_with_timeout(
+                    compiled, text, min(CUSTOM_PATTERN_TIMEOUT_SECONDS, remaining)
+                )
                 if m.end() > m.start()
             )
             continue
