@@ -405,8 +405,18 @@ export function isValidJsonPath(path: string): boolean {
   return JSON_PATH_RE.test(path.trim());
 }
 
+/**
+ * Server TYPE_NAME_RE: one leading letter, then up to 63 more, so 1-64
+ * characters. Custom pattern and keyword names cannot shadow a built-in.
+ */
+const TYPE_NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
+
 /** Problems the user must fix before Save, keyed for inline display. */
-export function formErrors(form: SensitiveDataForm): Record<string, string> {
+export function formErrors(
+  form: SensitiveDataForm,
+  builtinIds: Iterable<string> = []
+): Record<string, string> {
+  const reserved = new Set(builtinIds);
   const errors: Record<string, string> = {};
   form.referenceOnly.forEach((entry, index) => {
     if (!entry.id.trim()) {
@@ -435,9 +445,12 @@ export function formErrors(form: SensitiveDataForm): Record<string, string> {
   [...form.customPatterns, ...form.keywords].forEach((item, index) => {
     const name = item.name.trim();
     if (!name) return;
-    if (!/^[a-z][a-z0-9_]*$/.test(name)) {
+    if (!TYPE_NAME_RE.test(name)) {
       errors[`name-${index}-${name}`] =
-        `"${name}" must be lower case letters, digits and underscores.`;
+        `"${name}" must be 1-64 lower case letters, digits and underscores.`;
+    } else if (reserved.has(name)) {
+      errors[`name-${index}-${name}`] =
+        `"${name}" is a built-in type; pick another name.`;
     } else if (names.has(name)) {
       errors[`name-${index}-${name}`] = `"${name}" is used twice.`;
     }

@@ -306,7 +306,10 @@ export class SensitiveDataPanel extends LitElement {
   }
 
   private get _errors() {
-    return formErrors(this._form);
+    return formErrors(
+      this._form,
+      this._types.filter((type) => type.builtin).map((type) => type.id)
+    );
   }
 
   private get _labels(): Record<string, string> {

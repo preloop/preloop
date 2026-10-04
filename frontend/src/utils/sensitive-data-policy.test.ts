@@ -232,6 +232,39 @@ describe('sensitive-data-policy', () => {
     });
   });
 
+  it('rejects custom names the server would reject', () => {
+    const form = emptyForm();
+    const tooLong = `a${'b'.repeat(64)}`;
+    const atCap = `a${'b'.repeat(63)}`;
+    form.customPatterns = [
+      { name: tooLong, regex: 'x' },
+      { name: 'email', regex: 'x' },
+      { name: 'Email', regex: 'x' },
+      { name: atCap, regex: 'x' },
+      { name: 'codename', regex: 'x' },
+    ];
+    form.keywords = [
+      { name: 'email', terms: ['x'] },
+      { name: 'codename', terms: ['y'] },
+    ];
+    const errors = formErrors(form, ['email', 'credit_card']);
+    expect(errors[`name-0-${tooLong}`]).to.equal(
+      `"${tooLong}" must be 1-64 lower case letters, digits and underscores.`
+    );
+    expect(errors['name-1-email']).to.equal(
+      '"email" is a built-in type; pick another name.'
+    );
+    expect(errors['name-2-Email']).to.equal(
+      '"Email" must be 1-64 lower case letters, digits and underscores.'
+    );
+    expect(errors[`name-3-${atCap}`]).to.equal(undefined);
+    expect(errors['name-4-codename']).to.equal(undefined);
+    expect(errors['name-5-email']).to.equal(
+      '"email" is a built-in type; pick another name.'
+    );
+    expect(errors['name-6-codename']).to.equal('"codename" is used twice.');
+  });
+
   it('describes the form in plain language', () => {
     const form = emptyForm();
     form.types.credit_card = 'deny';
