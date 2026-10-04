@@ -102,6 +102,7 @@ class TestListAllTools:
             "run_flow",
             "get_execution",
             "search_sessions",
+            "list_sessions",
             "deposit_artifact",
             "search_artifacts",
             "get_artifact",

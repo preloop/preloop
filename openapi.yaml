@@ -13217,6 +13217,53 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/agents/session-start:
+    post:
+      tags:
+      - Agent Permissions
+      - Agent Permissions
+      summary: Agent Session Start
+      description: 'Register a hook-governed harness session and its parent (#1045).
+
+
+        Returns the runtime session id the spawner can record, which is the id
+
+        ``send_note`` and ``list_sessions`` take. The session is keyed exactly as
+
+        the gateway keys the same conversation, so it is one row whichever of
+
+        the two sees it first.'
+      operationId: agent_session_start_api_v1_agents_session_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentSessionStartRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentSessionStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - bearerAuth: []
   /api/v1/chat/connections:
     get:
       tags:
@@ -16518,6 +16565,81 @@ components:
         bounded: the object travels into approval ``tool_args`` and onto the
 
         session timeline, and this is untrusted network input.'
+    AgentSessionStartRequest:
+      properties:
+        session_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Session Id
+          description: The harness's own session id
+        source:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source
+          description: Agent adapter, e.g. 'claude_code'
+        cwd:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+          title: Cwd
+          description: Working directory
+        parent_session_id:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Parent Session Id
+          description: Runtime session id of the session that spawned this one, as
+            the hook read it from PRELOOP_PARENT_SESSION_ID. Must be in the caller's
+            account; ignored otherwise. Write-once.
+        first_prompt:
+          anyOf:
+          - type: string
+            maxLength: 20000
+          - type: 'null'
+          title: First Prompt
+          description: The first user prompt. Only a redacted 120 character title
+            is kept.
+      type: object
+      required:
+      - session_id
+      title: AgentSessionStartRequest
+      description: 'A harness session starting (or taking its first prompt) under
+        a hook.
+
+
+        Sent by the SessionStart and UserPromptSubmit hooks (#1045). Every field
+
+        but ``session_id`` is optional, and the call is idempotent: the hook may
+
+        repeat it, and a repeat only fills what is still empty.'
+    AgentSessionStartResponse:
+      properties:
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        parent_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Session Id
+        started_at:
+          type: string
+          title: Started At
+        created:
+          type: boolean
+          title: Created
+      type: object
+      required:
+      - runtime_session_id
+      - started_at
+      - created
+      title: AgentSessionStartResponse
+      description: The runtime session the hook's harness session maps to.
     ApiKeyCreate:
       properties:
         name:
