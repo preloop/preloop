@@ -1204,6 +1204,54 @@ describe('PoliciesView', () => {
       expect(body.conditions[1].condition_type).to.equal('cel');
     });
 
+    it('heals a legacy simple rule whose expression needs CEL on save', async () => {
+      // Before the backend guard existed, a CEL expression could be stored
+      // with condition_type 'simple'. Opening and saving the rule untouched
+      // must not 422: the selector defaults to auto and the save sends cel.
+      const stored = {
+        id: 'legacy-cel',
+        target: 'model.request',
+        enabled: true,
+        detectors: { pii: { types: ['email'] } },
+        conditions: [
+          {
+            expression: "'credit_card' in pii.types_found",
+            action: 'deny',
+            condition_type: 'simple',
+          },
+        ],
+      };
+      fetchStub = createFetchStub({
+        tools: [sampleTool],
+        modelIORules: [stored],
+      });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any).openModelIODialog(stored);
+      await element.updateComplete;
+
+      expect((element as any)._modelIOForm.conditionType).to.equal('auto');
+      await (element as any).saveModelIORule();
+
+      const put = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).includes(
+              '/api/v1/policies/model-io-rules/legacy-cel'
+            ) && (c.args[1] as RequestInit | undefined)?.method === 'PUT'
+        );
+      expect(put, 'model rule PUT').to.exist;
+      const body = JSON.parse(
+        String((put!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.conditions[0].condition_type).to.equal('cel');
+      expect(body.detectors.pii.types).to.deep.equal(['email']);
+    });
+
     it('lets the author force CEL when automatic detection would pick simple', async () => {
       const element = await mountWithDialog();
 

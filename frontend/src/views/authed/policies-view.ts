@@ -1084,7 +1084,14 @@ export class PoliciesView extends LitElement {
         // them instead of nulling or resetting them.
         description: rule.description || '',
         conditionDescription: condition?.description || '',
-        conditionType: condition?.condition_type || 'auto',
+        // A rule stored as `simple` before the backend guard existed may hold
+        // a CEL expression. Seed "auto" so an untouched legacy rule heals to
+        // CEL on save instead of being rejected with a 422.
+        conditionType:
+          condition?.condition_type === 'simple' &&
+          conditionTypeFor(condition?.expression || '') === 'cel'
+            ? 'auto'
+            : condition?.condition_type || 'auto',
         detectorTimeoutMs: rule.detector_timeout_ms ?? 500,
         moderationBackend:
           moderation && typeof moderation === 'object'
