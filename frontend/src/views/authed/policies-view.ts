@@ -1262,12 +1262,22 @@ export class PoliciesView extends LitElement {
       description: form.conditionDescription.trim() || null,
     };
     // Conditions after the first are edited elsewhere (or imported as YAML);
-    // keep them, with a type, so an edit does not delete them.
-    const extraConditions = form.extraConditions.map((condition) => ({
-      ...condition,
-      condition_type:
-        condition.condition_type || conditionTypeFor(condition.expression),
-    }));
+    // keep them, with a type, so an edit does not delete them. A condition
+    // stored as `simple` but written in CEL has to be healed here too: this
+    // form edits only the first condition, and the backend guard rejects a
+    // `simple` CEL expression with 422. The primary condition is seeded to
+    // "auto" when the rule is opened, so this mirrors that heal.
+    const extraConditions = form.extraConditions.map((condition) => {
+      const detected = conditionTypeFor(condition.expression);
+      const stored = condition.condition_type;
+      return {
+        ...condition,
+        condition_type:
+          stored === 'simple' && detected === 'cel'
+            ? 'cel'
+            : stored || detected,
+      };
+    });
     return {
       id: form.id.trim(),
       target: form.target,

@@ -1252,6 +1252,57 @@ describe('PoliciesView', () => {
       expect(body.detectors.pii.types).to.deep.equal(['email']);
     });
 
+    it('heals a legacy simple extra condition whose expression needs CEL', async () => {
+      // The form edits only the first condition, so a CEL-shaped second
+      // condition stored as `simple` has no selector to correct it. Saving
+      // the untouched rule must still send `cel` for it, or the backend
+      // rejects the whole-rule PUT with 422.
+      const stored = {
+        id: 'legacy-multi',
+        target: 'model.request',
+        enabled: true,
+        detectors: { pii: true },
+        conditions: [
+          {
+            expression: 'pii.found == true',
+            action: 'deny',
+            condition_type: 'simple',
+          },
+          {
+            expression: "'ssn' in pii.types_found",
+            action: 'require_approval',
+            condition_type: 'simple',
+          },
+        ],
+      };
+      fetchStub = createFetchStub({
+        tools: [sampleTool],
+        modelIORules: [stored],
+      });
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(() => !(element as any)._loading, 'still loading');
+
+      (element as any).openModelIODialog(stored);
+      await element.updateComplete;
+      await (element as any).saveModelIORule();
+
+      const put = fetchStub
+        .getCalls()
+        .find(
+          (c) =>
+            String(c.args[0]).includes(
+              '/api/v1/policies/model-io-rules/legacy-multi'
+            ) && (c.args[1] as RequestInit | undefined)?.method === 'PUT'
+        );
+      expect(put, 'model rule PUT').to.exist;
+      const body = JSON.parse(
+        String((put!.args[1] as RequestInit | undefined)?.body)
+      );
+      expect(body.conditions[1].condition_type).to.equal('cel');
+    });
+
     it('lets the author force CEL when automatic detection would pick simple', async () => {
       const element = await mountWithDialog();
 
