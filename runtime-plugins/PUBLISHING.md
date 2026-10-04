@@ -377,9 +377,12 @@ the main pipeline, after the submodule bump). It needs CI/CD variable
 `NANOBOT_PYPI_TOKEN` (masked and protected). PyPI project-scoped tokens
 cannot exist before the first release, so the first publish needs an
 account-scoped token. Re-scope that token to the `preloop-nanobot-plugin`
-project afterwards. Nanobot tests run in `test:unit:runtime-plugins` (with
-`PYTHONPATH=backend:runtime-plugins/nanobot-preloop/src`); this job needs
-that job and does not repeat the suite.
+project afterwards. Nanobot tests run in the preloop-ee job
+`test:unit:runtime-plugins` (with
+`PYTHONPATH=backend:runtime-plugins/nanobot-preloop/src`).
+`publish:nanobot-plugin` needs that job and does not repeat the suite.
+This repo's `.gitlab-ci.yml` job of the same name, and the GitHub Actions
+job `test-runtime-plugins`, run the same suite.
 
 Local fallback:
 
@@ -388,20 +391,26 @@ python -m twine upload dist/*
 ```
 
 Install verification from PyPI, then the `preloop-nanobot-plugin` entry
-point:
+point. `verify` and `run` read `~/.nanobot/preloop.json`, so enroll first.
+Put `PRELOOP_ACCESS_TOKEN` in the environment. Do not pass it on the
+command line. `verify` also checks that the installed SDK is
+`nanobot-ai==0.1.4.post3` (the pin in `pyproject.toml` and
+`preloop-plugin.json`).
 
 ```bash
 pip install preloop-nanobot-plugin
+preloop-nanobot-plugin enroll --base-url https://app.preloop.ai
 preloop-nanobot-plugin verify
 preloop-nanobot-plugin run
 ```
 
 The package README documents a pinned virtualenv install from a checkout
-instead of PyPI:
+instead of PyPI. Enrollment is the same step:
 
 ```bash
 python3 -m venv ~/.local/share/preloop-nanobot/venv
 ~/.local/share/preloop-nanobot/venv/bin/pip install ./runtime-plugins/nanobot-preloop
+preloop-nanobot-plugin enroll --base-url https://app.preloop.ai
 preloop-nanobot-plugin verify
 preloop-nanobot-plugin run
 ```
