@@ -746,12 +746,13 @@ jobs:
       - name: Run runtime-plugin pytest
         env:
           PRELOOP_DISABLE_TELEMETRY: "true"
-          PYTHONPATH: backend:runtime-plugins/nanobot-preloop/src
+          PYTHONPATH: backend:runtime-plugins/nanobot-preloop/src:runtime-plugins/browser-use-preloop/src
         run: |
           pytest -v \
             runtime-plugins/tests \
             runtime-plugins/hermes-preloop/tests \
-            runtime-plugins/nanobot-preloop/tests
+            runtime-plugins/nanobot-preloop/tests \
+            runtime-plugins/browser-use-preloop/tests
 
       - name: Test Pi and DeepSeek Harness plugins
         working-directory: runtime-plugins/harness-preloop
