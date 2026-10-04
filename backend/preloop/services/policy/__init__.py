@@ -26,6 +26,7 @@ from preloop.services.policy.schema import (
     PolicyValidationError,
     PolicyValidationResult,
     PolicyVersion,
+    ReferenceOnlyRule,
     SensitiveDataConfig,
     SensitiveDataDetectorsConfig,
     SensitiveDataRule,
@@ -72,6 +73,7 @@ __all__ = [
     "ModelIODetectors",
     "DetectorTimeoutFailMode",
     # Sensitive data
+    "ReferenceOnlyRule",
     "SensitiveDataConfig",
     "SensitiveDataDetectorsConfig",
     "SensitiveDataRule",

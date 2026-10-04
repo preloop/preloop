@@ -5,6 +5,7 @@ is executed, based on tool access rules. It supports allow/deny/require_approval
 actions with priority-based rule evaluation.
 """
 
+import contextvars
 import functools
 import logging
 import re
@@ -272,6 +273,28 @@ def _matched_rule_context(
     )
 
 
+#: Server and agent for the policy-decision row currently being written.
+#: ``evaluate_policy`` / ``evaluate_policy_async`` set this so every log on
+#: that call, including ones buried in helpers, stores arguments under the
+#: same scope the operator named. A reference-only rule scoped only by
+#: servers or only by agents never matches a scope that drops those fields,
+#: and the raw arguments would be sealed into the chain.
+_policy_storage_scope: contextvars.ContextVar[tuple[Optional[str], Optional[str]]] = (
+    contextvars.ContextVar("policy_storage_scope", default=(None, None))
+)
+
+
+def _storage_scope_identity(
+    subject_context: Optional[Dict[str, Any]], server_name: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """``(server_name, managed_agent_id)`` for one evaluation."""
+    agent = (subject_context or {}).get("managed_agent_id")
+    return (
+        str(server_name) if server_name else None,
+        str(agent) if agent else None,
+    )
+
+
 def _get_audit_service():
     """Get the audit service instance (lazy import to avoid circular deps)."""
     try:
@@ -309,6 +332,8 @@ def _log_policy_decision_async(
     execution_id: Optional[uuid.UUID] = None,
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
+    server_name: Optional[str] = None,
+    managed_agent_id: Optional[str] = None,
 ) -> None:
     """Log a policy decision asynchronously (fire-and-forget).
 
@@ -373,7 +398,15 @@ def _log_policy_decision_async(
             has_cached_config,
         )
 
-        scope = StorageScope(target="tool.args", tool_name=tool_name)
+        bound_server, bound_agent = _policy_storage_scope.get()
+        scope = StorageScope(
+            target="tool.args",
+            tool_name=tool_name,
+            server_name=server_name if server_name is not None else bound_server,
+            managed_agent_id=(
+                str(managed_agent_id) if managed_agent_id else bound_agent
+            ),
+        )
 
         def _write(args: Optional[Dict[str, Any]]) -> None:
             # Stored copy of the arguments: the account's redact rules apply
@@ -785,6 +818,7 @@ def evaluate_policy(
     execution_id: Optional[uuid.UUID] = None,
     trigger_event: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
+    server_name: Optional[str] = None,
 ) -> PolicyDecision:
     """Evaluate tool access policy and determine the action to take.
 
@@ -816,129 +850,142 @@ def evaluate_policy(
           decisions, else None. Persisted on the approval request so the
           approver can see WHICH rule fired and what its expression was.
     """
-    denial = _account_authorizer_denial(
-        db,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        account_id=account_id,
-        tool_configuration_id=tool_configuration_id,
-        user_id=user_id,
-        execution_id=execution_id,
-        subject_context=subject_context,
+    scope_token = _policy_storage_scope.set(
+        _storage_scope_identity(subject_context, server_name)
     )
-    if denial is not None:
-        return denial
-
-    account = crud_account.get(db, id=account_id)
-    account_meta = (account.meta_data or {}) if account else {}
-
-    if not is_tool_enabled_for_subject(
-        account_meta, tool_name=tool_name, subject_context=subject_context or {}
-    ):
-        return PolicyDecision(
-            "deny", None, "Tool disabled by agent or API key configuration"
-        )
-
-    scoped_rules = get_scoped_tool_rules(
-        account_meta,
-        tool_name=tool_name,
-        subject_context=subject_context or {},
-    )
-
-    # Get tool configuration
-    if tool_configuration_id:
-        tool_config = crud_tool_configuration.get(
-            db, id=tool_configuration_id, account_id=account_id
-        )
-    else:
-        tool_config = crud_tool_configuration.get_by_tool_name(
-            db, account_id=account_id, tool_name=tool_name
-        )
-
-    # Resolve the account's default approval workflow (if any) up front so it
-    # can serve as the implicit fallback for ``require_approval`` rules that
-    # don't pin a specific workflow.
-    default_workflow = crud_approval_workflow.get_default(db, account_id=account_id)
-    default_workflow_id_for_account = default_workflow.id if default_workflow else None
-
-    context = {
-        "tool_name": tool_name,
-        "args": tool_args,
-        "user_id": str(user_id) if user_id else None,
-        "account_id": str(account_id),
-        "execution_id": str(execution_id) if execution_id else None,
-        "trigger_event": trigger_event or {},
-        "api_key_id": (subject_context or {}).get("api_key_id"),
-        "managed_agent_id": (subject_context or {}).get("managed_agent_id"),
-        "flow_id": (subject_context or {}).get("flow_id"),
-        "runtime_session_id": (subject_context or {}).get("runtime_session_id"),
-        "runtime_principal_type": (subject_context or {}).get("runtime_principal_type"),
-        "runtime_principal_id": (subject_context or {}).get("runtime_principal_id"),
-        "runtime_principal_name": (subject_context or {}).get("runtime_principal_name"),
-    }
-    scoped_decision = _evaluate_rule_candidates(
-        rules=scoped_rules,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        context=context,
-        account_id=account_id,
-        user_id=user_id,
-        execution_id=execution_id,
-        default_approval_workflow_id=(
-            (tool_config.approval_workflow_id if tool_config else None)
-            or default_workflow_id_for_account
-        ),
-    )
-    if scoped_decision is not None:
-        return scoped_decision
-
-    if scoped_rules:
-        _log_policy_decision_async(
-            account_id=account_id,
+    try:
+        denial = _account_authorizer_denial(
+            db,
             tool_name=tool_name,
-            action="allow",
-            rule_description="No scoped rules matched (default allow for subject)",
             tool_args=tool_args,
+            account_id=account_id,
+            tool_configuration_id=tool_configuration_id,
             user_id=user_id,
             execution_id=execution_id,
+            subject_context=subject_context,
         )
-        return PolicyDecision(
-            "allow", None, "No scoped rules matched (default allow for subject)"
+        if denial is not None:
+            return denial
+
+        account = crud_account.get(db, id=account_id)
+        account_meta = (account.meta_data or {}) if account else {}
+
+        if not is_tool_enabled_for_subject(
+            account_meta, tool_name=tool_name, subject_context=subject_context or {}
+        ):
+            return PolicyDecision(
+                "deny", None, "Tool disabled by agent or API key configuration"
+            )
+
+        scoped_rules = get_scoped_tool_rules(
+            account_meta,
+            tool_name=tool_name,
+            subject_context=subject_context or {},
         )
 
-    if not tool_config:
-        # No configuration found, default allow
-        # Log the policy decision (fire-and-forget)
-        _log_policy_decision_async(
-            account_id=account_id,
+        # Get tool configuration
+        if tool_configuration_id:
+            tool_config = crud_tool_configuration.get(
+                db, id=tool_configuration_id, account_id=account_id
+            )
+        else:
+            tool_config = crud_tool_configuration.get_by_tool_name(
+                db, account_id=account_id, tool_name=tool_name
+            )
+
+        # Resolve the account's default approval workflow (if any) up front so it
+        # can serve as the implicit fallback for ``require_approval`` rules that
+        # don't pin a specific workflow.
+        default_workflow = crud_approval_workflow.get_default(db, account_id=account_id)
+        default_workflow_id_for_account = (
+            default_workflow.id if default_workflow else None
+        )
+
+        context = {
+            "tool_name": tool_name,
+            "args": tool_args,
+            "user_id": str(user_id) if user_id else None,
+            "account_id": str(account_id),
+            "execution_id": str(execution_id) if execution_id else None,
+            "trigger_event": trigger_event or {},
+            "api_key_id": (subject_context or {}).get("api_key_id"),
+            "managed_agent_id": (subject_context or {}).get("managed_agent_id"),
+            "flow_id": (subject_context or {}).get("flow_id"),
+            "runtime_session_id": (subject_context or {}).get("runtime_session_id"),
+            "runtime_principal_type": (subject_context or {}).get(
+                "runtime_principal_type"
+            ),
+            "runtime_principal_id": (subject_context or {}).get("runtime_principal_id"),
+            "runtime_principal_name": (subject_context or {}).get(
+                "runtime_principal_name"
+            ),
+        }
+        scoped_decision = _evaluate_rule_candidates(
+            rules=scoped_rules,
             tool_name=tool_name,
-            action="allow",
-            rule_description="No tool configuration found",
             tool_args=tool_args,
+            context=context,
+            account_id=account_id,
             user_id=user_id,
             execution_id=execution_id,
+            default_approval_workflow_id=(
+                (tool_config.approval_workflow_id if tool_config else None)
+                or default_workflow_id_for_account
+            ),
         )
-        return PolicyDecision("allow", None, "No tool configuration found")
+        if scoped_decision is not None:
+            return scoped_decision
 
-    # Load all access rules for this tool, ordered by priority (lower first)
-    rules = crud_tool_access_rule.get_multi_by_config(
-        db,
-        config_id=tool_config.id,
-        account_id=account_id,
-        enabled_only=True,
-    )
+        if scoped_rules:
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="allow",
+                rule_description="No scoped rules matched (default allow for subject)",
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+            )
+            return PolicyDecision(
+                "allow", None, "No scoped rules matched (default allow for subject)"
+            )
 
-    return _evaluate_loaded_access_rules(
-        rules=rules,
-        tool_config=tool_config,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        context=context,
-        account_id=account_id,
-        user_id=user_id,
-        execution_id=execution_id,
-        default_workflow_id_for_account=default_workflow_id_for_account,
-    )
+        if not tool_config:
+            # No configuration found, default allow
+            # Log the policy decision (fire-and-forget)
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="allow",
+                rule_description="No tool configuration found",
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+            )
+            return PolicyDecision("allow", None, "No tool configuration found")
+
+        # Load all access rules for this tool, ordered by priority (lower first)
+        rules = crud_tool_access_rule.get_multi_by_config(
+            db,
+            config_id=tool_config.id,
+            account_id=account_id,
+            enabled_only=True,
+        )
+
+        return _evaluate_loaded_access_rules(
+            rules=rules,
+            tool_config=tool_config,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            context=context,
+            account_id=account_id,
+            user_id=user_id,
+            execution_id=execution_id,
+            default_workflow_id_for_account=default_workflow_id_for_account,
+        )
+
+    finally:
+        _policy_storage_scope.reset(scope_token)
 
 
 def _evaluate_rule_condition(
@@ -1401,6 +1448,7 @@ async def evaluate_policy_async(
     extra_details: Optional[Dict[str, Any]] = None,
     subject_context: Optional[Dict[str, Any]] = None,
     extra_bindings: Optional[Dict[str, Any]] = None,
+    server_name: Optional[str] = None,
 ) -> PolicyDecision:
     """Async version of evaluate_policy.
 
@@ -1408,138 +1456,152 @@ async def evaluate_policy_async(
     roots next to ``args`` for conditions (``pii.found``, ``pii.types_found``,
     ``pii.paths`` from the sensitive-data scan).
     """
-    denial = _account_authorizer_denial(
-        db,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        account_id=account_id,
-        tool_configuration_id=tool_configuration_id,
-        user_id=user_id,
-        execution_id=execution_id,
-        subject_context=subject_context,
-        correlation_id=correlation_id,
+    scope_token = _policy_storage_scope.set(
+        _storage_scope_identity(subject_context, server_name)
     )
-    if denial is not None:
-        return denial
-
-    account_meta_data = await get_meta_data_async(db, account_id=str(account_id))
-
-    if not is_tool_enabled_for_subject(
-        account_meta_data, tool_name=tool_name, subject_context=subject_context or {}
-    ):
-        return PolicyDecision(
-            "deny", None, "Tool disabled by agent or API key configuration"
-        )
-
-    scoped_rules = get_scoped_tool_rules(
-        account_meta_data,
-        tool_name=tool_name,
-        subject_context=subject_context or {},
-    )
-
-    # Get tool configuration
-    if tool_configuration_id:
-        tool_config = await get_tool_config_by_id_async(
-            db, id=tool_configuration_id, account_id=account_id
-        )
-    else:
-        tool_config = await get_tool_config_by_tool_name_async(
-            db, account_id=account_id, tool_name=tool_name
-        )
-
-    # Resolve the account's default approval workflow (if any) up front so it
-    # can serve as the implicit fallback for ``require_approval`` rules that
-    # don't pin a specific workflow. Without this fallback the system would
-    # silently auto-approve, which is the opposite of the user's intent.
-    default_workflow = await get_default_approval_workflow_async(
-        db, account_id=account_id
-    )
-    default_workflow_id_for_account = default_workflow.id if default_workflow else None
-
-    context = {
-        "tool_name": tool_name,
-        "args": tool_args,
-        "user_id": str(user_id) if user_id else None,
-        "account_id": str(account_id),
-        "execution_id": str(execution_id) if execution_id else None,
-        "trigger_event": trigger_event or {},
-        "api_key_id": (subject_context or {}).get("api_key_id"),
-        "managed_agent_id": (subject_context or {}).get("managed_agent_id"),
-        "flow_id": (subject_context or {}).get("flow_id"),
-        "runtime_session_id": (subject_context or {}).get("runtime_session_id"),
-        "runtime_principal_type": (subject_context or {}).get("runtime_principal_type"),
-        "runtime_principal_id": (subject_context or {}).get("runtime_principal_id"),
-        "runtime_principal_name": (subject_context or {}).get("runtime_principal_name"),
-    }
-    if extra_bindings:
-        context[EXTRA_BINDINGS_KEY] = dict(extra_bindings)
-    scoped_decision = _evaluate_rule_candidates(
-        rules=scoped_rules,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        context=context,
-        account_id=account_id,
-        user_id=user_id,
-        execution_id=execution_id,
-        correlation_id=correlation_id,
-        extra_details=extra_details,
-        default_approval_workflow_id=(
-            (tool_config.approval_workflow_id if tool_config else None)
-            or default_workflow_id_for_account
-        ),
-    )
-    if scoped_decision is not None:
-        return scoped_decision
-
-    if scoped_rules:
-        _log_policy_decision_async(
-            account_id=account_id,
+    try:
+        denial = _account_authorizer_denial(
+            db,
             tool_name=tool_name,
-            action="allow",
-            rule_description="No scoped rules matched (default allow for subject)",
             tool_args=tool_args,
+            account_id=account_id,
+            tool_configuration_id=tool_configuration_id,
+            user_id=user_id,
+            execution_id=execution_id,
+            subject_context=subject_context,
+            correlation_id=correlation_id,
+        )
+        if denial is not None:
+            return denial
+
+        account_meta_data = await get_meta_data_async(db, account_id=str(account_id))
+
+        if not is_tool_enabled_for_subject(
+            account_meta_data,
+            tool_name=tool_name,
+            subject_context=subject_context or {},
+        ):
+            return PolicyDecision(
+                "deny", None, "Tool disabled by agent or API key configuration"
+            )
+
+        scoped_rules = get_scoped_tool_rules(
+            account_meta_data,
+            tool_name=tool_name,
+            subject_context=subject_context or {},
+        )
+
+        # Get tool configuration
+        if tool_configuration_id:
+            tool_config = await get_tool_config_by_id_async(
+                db, id=tool_configuration_id, account_id=account_id
+            )
+        else:
+            tool_config = await get_tool_config_by_tool_name_async(
+                db, account_id=account_id, tool_name=tool_name
+            )
+
+        # Resolve the account's default approval workflow (if any) up front so it
+        # can serve as the implicit fallback for ``require_approval`` rules that
+        # don't pin a specific workflow. Without this fallback the system would
+        # silently auto-approve, which is the opposite of the user's intent.
+        default_workflow = await get_default_approval_workflow_async(
+            db, account_id=account_id
+        )
+        default_workflow_id_for_account = (
+            default_workflow.id if default_workflow else None
+        )
+
+        context = {
+            "tool_name": tool_name,
+            "args": tool_args,
+            "user_id": str(user_id) if user_id else None,
+            "account_id": str(account_id),
+            "execution_id": str(execution_id) if execution_id else None,
+            "trigger_event": trigger_event or {},
+            "api_key_id": (subject_context or {}).get("api_key_id"),
+            "managed_agent_id": (subject_context or {}).get("managed_agent_id"),
+            "flow_id": (subject_context or {}).get("flow_id"),
+            "runtime_session_id": (subject_context or {}).get("runtime_session_id"),
+            "runtime_principal_type": (subject_context or {}).get(
+                "runtime_principal_type"
+            ),
+            "runtime_principal_id": (subject_context or {}).get("runtime_principal_id"),
+            "runtime_principal_name": (subject_context or {}).get(
+                "runtime_principal_name"
+            ),
+        }
+        if extra_bindings:
+            context[EXTRA_BINDINGS_KEY] = dict(extra_bindings)
+        scoped_decision = _evaluate_rule_candidates(
+            rules=scoped_rules,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            context=context,
+            account_id=account_id,
             user_id=user_id,
             execution_id=execution_id,
             correlation_id=correlation_id,
             extra_details=extra_details,
+            default_approval_workflow_id=(
+                (tool_config.approval_workflow_id if tool_config else None)
+                or default_workflow_id_for_account
+            ),
         )
-        return PolicyDecision(
-            "allow", None, "No scoped rules matched (default allow for subject)"
+        if scoped_decision is not None:
+            return scoped_decision
+
+        if scoped_rules:
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="allow",
+                rule_description="No scoped rules matched (default allow for subject)",
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+            return PolicyDecision(
+                "allow", None, "No scoped rules matched (default allow for subject)"
+            )
+
+        if not tool_config:
+            # Log the policy decision (fire-and-forget)
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="allow",
+                rule_description="No tool configuration found",
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
+            return PolicyDecision("allow", None, "No tool configuration found")
+
+        # Load all access rules for this tool, ordered by priority (lower first)
+        rules = await get_multi_by_config_async(
+            db,
+            config_id=tool_config.id,
+            account_id=account_id,
+            enabled_only=True,
         )
 
-    if not tool_config:
-        # Log the policy decision (fire-and-forget)
-        _log_policy_decision_async(
-            account_id=account_id,
+        return _evaluate_loaded_access_rules(
+            rules=rules,
+            tool_config=tool_config,
             tool_name=tool_name,
-            action="allow",
-            rule_description="No tool configuration found",
             tool_args=tool_args,
+            context=context,
+            account_id=account_id,
             user_id=user_id,
             execution_id=execution_id,
+            default_workflow_id_for_account=default_workflow_id_for_account,
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
-        return PolicyDecision("allow", None, "No tool configuration found")
-
-    # Load all access rules for this tool, ordered by priority (lower first)
-    rules = await get_multi_by_config_async(
-        db,
-        config_id=tool_config.id,
-        account_id=account_id,
-        enabled_only=True,
-    )
-
-    return _evaluate_loaded_access_rules(
-        rules=rules,
-        tool_config=tool_config,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        context=context,
-        account_id=account_id,
-        user_id=user_id,
-        execution_id=execution_id,
-        default_workflow_id_for_account=default_workflow_id_for_account,
-        correlation_id=correlation_id,
-        extra_details=extra_details,
-    )
+    finally:
+        _policy_storage_scope.reset(scope_token)

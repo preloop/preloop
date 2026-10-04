@@ -1436,6 +1436,7 @@ async def {internal_name}({params_str}):
         workflow_id=rule_workflow_id,
         correlation_id=corr_id,
         justification=justification,
+        server_name=self._proxied_tool_server_names.get(tool_name),
     )
 
     if not approved:
@@ -1987,6 +1988,7 @@ async def {internal_name}({params_str}):
                     tool_args=arguments,
                     account_id=uuid.UUID(user_context.account_id),
                     user_id=uuid.UUID(user_context.user_id),
+                    server_name=scope_server_name,
                     extra_bindings=sensitive_bindings,
                     subject_context={
                         "api_key_id": user_context.api_key_id,

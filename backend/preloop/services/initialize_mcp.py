@@ -2116,6 +2116,15 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         # release the FOR UPDATE lock immediately.
                         tool_name = approval_request.tool_name
                         tool_args = approval_request.tool_args or {}
+                        # A reference-only approval holds a reference record,
+                        # not arguments. The sealed original (deleted at
+                        # decision) is used when still present; otherwise the
+                        # replay cannot reconstruct the call and fails below.
+                        from preloop.services.sensitive_data.reference import (
+                            tool_args_for_replay,
+                        )
+
+                        tool_args = tool_args_for_replay(tool_args)
                         req_id = approval_request.id
                         # ask_user replay: the approver's comment IS the
                         # human's answer — capture it before releasing the
