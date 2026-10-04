@@ -26,6 +26,7 @@ from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud import (
+    crud_discovered_agent_candidate,
     crud_account,
     crud_ai_model,
     crud_api_key,
@@ -2333,6 +2334,50 @@ async def create_account_managed_agent_enrollment(
 ENROLLMENT_STATUS_VALIDATED = "validated"
 
 
+def _link_discovery_candidates(
+    db: Session,
+    *,
+    account: Account,
+    agent_id: str,
+    payload: ManagedAgentEnrollmentValidateRequest,
+) -> None:
+    """Mark reported discovery candidates from this workstation onboarded.
+
+    Runs only for a successful validation that carries the salted
+    workstation fingerprint. Linking is best effort: a failure here must not
+    fail the enrollment it decorates. Call it after the enrollment transaction
+    commits so a link failure cannot roll back ``agent.onboarded``.
+    """
+    if (
+        payload.status != ENROLLMENT_STATUS_VALIDATED
+        or not payload.workstation_fingerprint
+    ):
+        return
+    agent = crud_managed_agent.get_for_account(
+        db, account_id=str(account.id), agent_id=agent_id
+    )
+    if agent is None:
+        return
+    try:
+        linked = crud_discovered_agent_candidate.link_onboarded(
+            db,
+            account_id=account.id,
+            workstation_fingerprint=payload.workstation_fingerprint,
+            agent_kind=agent.agent_kind,
+            managed_agent_id=agent.id,
+            config_path_hash=payload.config_path_hash,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Linking discovery candidates failed for agent %s", agent_id, exc_info=True
+        )
+        return
+    if linked:
+        logger.info("Linked %s discovery candidate(s) to agent %s", linked, agent_id)
+
+
 def _emit_agent_onboarded(
     db: Session,
     *,
@@ -2427,6 +2472,7 @@ async def validate_account_managed_agent_enrollment(
         )
     db.commit()
     db.refresh(enrollment)
+    _link_discovery_candidates(db, account=account, agent_id=agent_id, payload=payload)
     emit_account_event(
         build_account_event(
             account_id=str(account.id),

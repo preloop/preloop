@@ -27,6 +27,9 @@ EVENT_AGENT_NOTE_DELIVERED = "agent.note_delivered"
 # own evidence says affects the product. One event per candidate, because
 # each one carries its own clock.
 EVENT_CRA_REPORTABLE_VULNERABILITY = "cra.reportable_vulnerability"
+# Opt-in workstation discovery reported an agent tool not seen before. One
+# event per new candidate row; re-reports of the same tool emit nothing.
+EVENT_AGENT_DISCOVERED = "agent.discovered"
 # A managed-agent enrollment reached a validated state: the agent is now
 # governed. One event per enrollment, never on row creation.
 EVENT_AGENT_ONBOARDED = "agent.onboarded"
@@ -43,6 +46,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     EVENT_AGENT_NOTE_SENT,
     EVENT_AGENT_NOTE_DELIVERED,
     EVENT_CRA_REPORTABLE_VULNERABILITY,
+    EVENT_AGENT_DISCOVERED,
     EVENT_AGENT_ONBOARDED,
 )
 
@@ -74,6 +78,10 @@ EVENT_TYPE_DESCRIPTIONS: dict[str, str] = {
         "A CRA audit found an actively exploited vulnerability affecting the "
         "product, with the Article 14 24h/72h/14d deadlines. Preloop does "
         "not file the report."
+    ),
+    EVENT_AGENT_DISCOVERED: (
+        "Opt-in workstation discovery reported an agent tool that is not "
+        "governed yet. Identifiers are salted hashes only."
     ),
     EVENT_AGENT_ONBOARDED: (
         "An agent enrollment was validated and the agent came under "

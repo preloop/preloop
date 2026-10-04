@@ -17,6 +17,7 @@ from starlette.authentication import AuthCredentials, AuthenticationBackend
 from starlette.requests import HTTPConnection
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid
+from preloop.api.auth.key_scopes import is_device_scoped_api_key
 from preloop.services.dynamic_mcp_server import (
     DynamicMCPServer,
     has_tracker,
@@ -162,7 +163,20 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
 
     @staticmethod
     def _build_auth_result(token: str, current_user, api_key_obj=None):
-        """Build the Starlette auth result tuple from a validated user."""
+        """Build the Starlette auth result tuple from a validated user.
+
+        A device-scoped key (scopes exactly ``report_discovery``) is refused
+        here. This backend never calls ``enforce_api_key_route_scope``, so
+        without this check the key would receive the account's MCP tools.
+        """
+        key = api_key_obj or getattr(current_user, "_auth_api_key", None)
+        if is_device_scoped_api_key(key):
+            logger.info(
+                "Denied device-scoped API key %s on /mcp",
+                getattr(key, "id", None),
+            )
+            return None
+
         # Create MCP AccessToken with user info stored for later retrieval
         # Store account ID in the AccessToken so we can retrieve the user later
         access_token = AccessToken(

@@ -624,7 +624,12 @@ describe('AgentsView', () => {
             ? call.args[0]
             : call.args[0].toString()
         )
-        .filter((url: string) => url.startsWith('/api/v1/agents'));
+        .filter(
+          (url: string) =>
+            url.startsWith('/api/v1/agents') &&
+            // The "Not yet governed" panel has its own call.
+            !url.startsWith('/api/v1/agents/discovery-')
+        );
 
     const before = agentUrls();
     expect(before.some((url: string) => url.includes('query='))).to.be.false;
@@ -686,7 +691,12 @@ describe('AgentsView', () => {
           ? call.args[0]
           : call.args[0].toString()
       )
-      .filter((url: string) => url.startsWith('/api/v1/agents'));
+      .filter(
+        (url: string) =>
+          url.startsWith('/api/v1/agents') &&
+          // The "Not yet governed" panel has its own call.
+          !url.startsWith('/api/v1/agents/discovery-')
+      );
     expect(agentUrls.length).to.be.greaterThan(0);
     for (const url of agentUrls) {
       expect(url).to.not.contain('agent_kind');
@@ -729,7 +739,12 @@ describe('AgentsView', () => {
           ? call.args[0]
           : call.args[0].toString()
       )
-      .filter((url: string) => url.startsWith('/api/v1/agents'));
+      .filter(
+        (url: string) =>
+          url.startsWith('/api/v1/agents') &&
+          // The "Not yet governed" panel has its own call.
+          !url.startsWith('/api/v1/agents/discovery-')
+      );
     expect(agentUrls).to.have.length(0);
 
     const agentNodes = el.shadowRoot?.querySelectorAll('.agent-node');
@@ -762,7 +777,12 @@ describe('AgentsView', () => {
           ? call.args[0]
           : call.args[0].toString()
       )
-      .filter((url: string) => url.startsWith('/api/v1/agents'));
+      .filter(
+        (url: string) =>
+          url.startsWith('/api/v1/agents') &&
+          // The "Not yet governed" panel has its own call.
+          !url.startsWith('/api/v1/agents/discovery-')
+      );
     expect(agentUrls.length).to.be.greaterThan(0);
     for (const url of agentUrls) {
       expect(decodeURIComponent(url)).to.contain('claude_desktop');

@@ -7105,3 +7105,60 @@ export type {
   SigningKey,
   SigningKeyList,
 } from './records-api';
+
+/** One agent tool reported by opt-in workstation discovery. */
+export interface DiscoveredAgentCandidate {
+  id: string;
+  agent_kind: string;
+  agent_version: string | null;
+  workstation_fingerprint: string;
+  config_path_hash: string;
+  mcp_server_count: number;
+  enrolled: boolean;
+  os_family: string | null;
+  status: 'new' | 'onboarded' | 'ignored';
+  managed_agent_id: string | null;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+/**
+ * List candidates reported by `preloop agents discover --report`.
+ * GET /api/v1/agents/discovery-candidates
+ */
+export async function getDiscoveryCandidates(
+  statuses: Array<DiscoveredAgentCandidate['status']> = []
+): Promise<DiscoveredAgentCandidate[]> {
+  const params = new URLSearchParams();
+  statuses.forEach((status) => params.append('status', status));
+  const query = params.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/agents/discovery-candidates${query ? `?${query}` : ''}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to load discovered agents');
+  }
+  return response.json();
+}
+
+/**
+ * Mark a discovery candidate ignored, or put it back to new.
+ * PATCH /api/v1/agents/discovery-candidates/{id}
+ */
+export async function updateDiscoveryCandidate(
+  candidateId: string,
+  status: 'new' | 'ignored'
+): Promise<DiscoveredAgentCandidate> {
+  const response = await fetchWithAuth(
+    `/api/v1/agents/discovery-candidates/${encodeURIComponent(candidateId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }
+  );
+  if (!response.ok) {
+    throw new Error('Failed to update discovered agent');
+  }
+  return response.json();
+}
