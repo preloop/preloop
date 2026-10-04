@@ -140,6 +140,11 @@ interface FlowExecution {
   token_usage?: GatewayTokenUsage | null;
   estimated_cost?: number;
   /**
+   * When the usage rows behind `estimated_cost` were last priced or
+   * repriced. Absent when the run has no attributed gateway usage.
+   */
+  cost_priced_at?: string | null;
+  /**
    * Publishing execution this repair resumes. Absent on a first publication.
    * Distinct from parent_execution_id (delegation tree).
    */
@@ -1924,7 +1929,9 @@ export class FlowExecutionView extends LitElement {
       const metrics = await getFlowExecutionMetrics(executionId);
       if (!current()) return;
       this.toolCalls = Math.max(this.toolCalls, metrics.tool_calls);
-      this.budgetUsed = Math.max(this.budgetUsed, metrics.estimated_cost);
+      const settled = this.settledServerCost();
+      this.budgetUsed =
+        settled ?? Math.max(this.budgetUsed, metrics.estimated_cost);
       this.totalTokens = Math.max(
         this.totalTokens,
         metrics.token_usage.total_tokens
@@ -2118,12 +2125,35 @@ export class FlowExecutionView extends LitElement {
         this.totalTokens = Math.max(this.totalTokens, summary.totalTokens);
         this.budgetUsed = Math.max(this.budgetUsed, summary.estimatedCost);
         this.hasPricing = this.hasPricing || summary.hasPricing;
+        this.applySettledServerCost();
         return;
       }
       this.totalTokens = summary.totalTokens;
       this.budgetUsed = summary.estimatedCost;
       this.hasPricing = summary.hasPricing;
     }
+    this.applySettledServerCost();
+  }
+
+  private applySettledServerCost() {
+    const settled = this.settledServerCost();
+    if (settled === null) return;
+    this.budgetUsed = settled;
+    if (settled > 0) this.hasPricing = true;
+  }
+
+  /**
+   * The server's cost for a finished run: the same figure the executions
+   * list and the chain total read. Summing the per-call event snapshots gave
+   * a different number (issue #1275), so once the run is over the header
+   * shows this one. Null while the run is live or the server has no figure.
+   */
+  private settledServerCost(): number | null {
+    const execution = this.execution;
+    if (!execution || RUNNING_STATUSES.has(execution.status)) return null;
+    return typeof execution.estimated_cost === 'number'
+      ? execution.estimated_cost
+      : null;
   }
 
   private getGatewayMetricNumber(value: number | null | undefined): number {
@@ -2169,6 +2199,23 @@ export class FlowExecutionView extends LitElement {
         }
       }
     }
+    this.applySettledServerCost();
+  }
+
+  /**
+   * Usage priced after the run ended moves the figure, so say when it was
+   * last priced instead of letting it change silently (issue #1275).
+   */
+  private renderRepricedNote(execution: FlowExecution) {
+    const pricedAt = execution.cost_priced_at;
+    const endedAt = execution.end_time;
+    if (!pricedAt || !endedAt) return nothing;
+    const priced = new Date(pricedAt);
+    if (Number.isNaN(priced.getTime())) return nothing;
+    if (priced.getTime() <= new Date(endedAt).getTime()) return nothing;
+    return html`<span class="strip-note" data-testid="strip-cost-priced-at"
+      >priced ${priced.toLocaleString()}</span
+    >`;
   }
 
   /** True when the run has a direction split worth showing in the strip. */
@@ -3495,8 +3542,17 @@ ${execution.resolved_input_prompt}</pre>
         </div>
         <div class="strip-item">
           <span class="strip-label">$ est.</span>
-          <span class="strip-value" data-testid="strip-cost"
-            >${costText}${costCeiling}</span
+          <span
+            class="strip-value"
+            data-testid="strip-cost"
+            title=${
+              execution.cost_priced_at
+                ? `Priced at ${new Date(execution.cost_priced_at).toLocaleString()}`
+                : nothing
+            }
+            >${costText}${costCeiling}${this.renderRepricedNote(
+              execution
+            )}</span
           >
         </div>
         <div class="strip-item">

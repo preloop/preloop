@@ -97,6 +97,38 @@ def sync_execution_cost_rollup(db: Session, execution_id: str) -> bool:
     return True
 
 
+def sync_finished_execution_cost_rollup(db: Session, execution_id: Any) -> bool:
+    """Refresh a finished run's stored rollup after a late usage row lands.
+
+    The orchestrator writes ``flow_execution.estimated_cost`` once, when the
+    run finishes. A gateway usage row recorded after that (a trailing call, or
+    a row committed after the completion snapshot) left the stored rollup
+    behind the live figure, so ``/cost/by-issue`` disagreed with the
+    execution page (issue #1275). Runs still in flight are skipped: the
+    orchestrator writes their rollup at completion.
+
+    Args:
+        db: Database session.
+        execution_id: Execution the new usage row is attributed to.
+
+    Returns:
+        True when the execution is finished and its rollup was recomputed.
+    """
+    from preloop.models.crud import crud_flow_execution
+
+    if not execution_id:
+        return False
+    execution = crud_flow_execution.get(db, id=execution_id)
+    if execution is None:
+        return False
+    if execution.status not in crud_flow_execution.TERMINAL_EXECUTION_STATUSES:
+        return False
+    if not sync_execution_cost_rollup(db, str(execution_id)):
+        return False
+    db.commit()
+    return True
+
+
 def get_execution_totals(
     db: Session, execution_ids: Sequence[Any]
 ) -> Dict[str, Dict[str, Any]]:
@@ -215,6 +247,7 @@ def get_execution_totals(
                 "completion_tokens"
             ),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.max(ApiUsage.updated_at).label("priced_at"),
             *cache_split_columns(),
         )
         .filter(
@@ -259,6 +292,9 @@ def get_execution_totals(
                 None if raw_cost is None else round(float(raw_cost), _ROLLUP_DECIMALS)
             )
             has_gateway_usage = True
+            # Usage rows are priced (and repriced) after the run, so the
+            # newest write behind the sum is when this figure was last priced.
+            cost_priced_at = cost_row.priced_at
             # Tokens before cost on every list, so the row carries the same
             # in/out/cache split the execution page shows.
             token_usage = {
@@ -272,12 +308,14 @@ def get_execution_totals(
             estimated_cost = None if stored_cost is None else float(stored_cost)
             has_gateway_usage = False
             token_usage = None
+            cost_priced_at = None
 
         totals[execution_id] = {
             "tool_calls": tool_calls,
             "estimated_cost": estimated_cost,
             "has_gateway_usage": has_gateway_usage,
             "token_usage": token_usage,
+            "cost_priced_at": cost_priced_at,
         }
     return totals
 
@@ -309,6 +347,7 @@ def project_execution_totals(db: Session, executions: List[Any]) -> None:
             # the response schema picks up, never an edit to a mapped column.
             execution.token_usage = token_usage
             set_committed_value(execution, "total_tokens", token_usage["total_tokens"])
+        execution.cost_priced_at = total.get("cost_priced_at")
 
 
 def _resume_root_of(execution: Any) -> uuid.UUID | None:
@@ -364,7 +403,10 @@ def project_resume_lineage(
     root_texts = [str(root) for root in roots]
     from preloop.models.crud import crud_flow_execution
 
-    rows = crud_flow_execution.get_resume_chain_totals(
+    # The chain total is the sum of the member runs' displayed figures: the
+    # same per-run definition the list and the header read, not the stored
+    # rollup, which lags usage priced after the run (issue #1275).
+    rows = crud_flow_execution.get_resume_chain_cost_totals(
         db, account_id=account_id, roots=list(roots), root_texts=root_texts
     )
     by_root: Dict[str, Dict[str, Any]] = {}
@@ -373,7 +415,7 @@ def project_resume_lineage(
             continue
         by_root[str(chain_root)] = {
             "total_tokens": int(tokens or 0),
-            "estimated_cost": float(cost or 0),
+            "estimated_cost": round(float(cost or 0), _ROLLUP_DECIMALS),
         }
     for execution in executions:
         resume_of = getattr(execution, "resume_of", None)

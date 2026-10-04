@@ -69,6 +69,13 @@ class ExecutionModelProjection(BaseModel):
             "attributable gateway usage, which is not the same as zero."
         ),
     )
+    cost_priced_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "When the usage rows behind ``estimated_cost`` were last priced "
+            "or repriced. Null when the run has no attributable gateway usage."
+        ),
+    )
     resume_of: Optional[uuid.UUID] = Field(
         None,
         description=(
