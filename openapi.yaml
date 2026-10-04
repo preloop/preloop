@@ -2344,6 +2344,18 @@ paths:
           description: Only open sessions with activity in the last N minutes
           title: Active Within Minutes
         description: Only open sessions with activity in the last N minutes
+      - name: has_artifacts
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Only sessions holding an available artifact: ''any'', or an
+            artifact kind such as transcript, screenshot, document or audio'
+          title: Has Artifacts
+        description: 'Only sessions holding an available artifact: ''any'', or an
+          artifact kind such as transcript, screenshot, document or audio'
       responses:
         '200':
           description: Successful Response
@@ -30865,6 +30877,13 @@ components:
           title: Pending Approval Count
           description: Approval requests for this session still awaiting a decision
           default: 0
+        artifact_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Artifact Counts
+          description: Available artifacts on this session by kind (screenshot, transcript,
+            ...); evicted and expired artifacts are not counted
       type: object
       required:
       - id

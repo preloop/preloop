@@ -221,3 +221,50 @@ describe('session-list-panel note indicator', () => {
     );
   });
 });
+
+describe('session-list-panel artifact cell (#1084)', () => {
+  it('renders nothing for a session without artifacts', async () => {
+    const el = await renderPanel([makeSession({ artifactCounts: {} })]);
+    expect(el.shadowRoot?.querySelector('.artifact-row')).to.equal(null);
+  });
+
+  it('folds kinds into header groups and keeps the icons outside the select button', async () => {
+    const el = await renderPanel([
+      makeSession({
+        artifactCounts: { recording: 1, screencast: 2, screenshot: 1 },
+      }),
+    ]);
+    const buttons = Array.from(
+      el.shadowRoot!.querySelectorAll('.artifact-kind')
+    ).map((node) => node.getAttribute('data-kind'));
+    expect(buttons).to.deep.equal(['other', 'screenshot']);
+
+    // Selection is a real button and the icons are its siblings, not its
+    // children, so a screen reader reaches both.
+    const select = el.shadowRoot!.querySelector(
+      '.session-card > button.session-select'
+    ) as HTMLButtonElement;
+    expect(select).to.exist;
+    expect(select.querySelector('.artifact-kind')).to.equal(null);
+    expect(
+      el.shadowRoot!.querySelectorAll('.session-card > .artifact-row button')
+    ).to.have.length(2);
+    expect(
+      el.shadowRoot!.querySelector('.session-card')!.getAttribute('role')
+    ).to.equal(null);
+    const events: CustomEvent[] = [];
+    el.addEventListener('session-selected', (event) =>
+      events.push(event as CustomEvent)
+    );
+    select.click();
+    (
+      el.shadowRoot!.querySelector(
+        '.artifact-kind[data-kind="screenshot"]'
+      ) as HTMLButtonElement
+    ).click();
+    expect(events.map((event) => event.detail)).to.deep.equal([
+      { sessionId: 'session-1', artifactKind: null },
+      { sessionId: 'session-1', artifactKind: 'screenshot' },
+    ]);
+  });
+});

@@ -10,7 +10,40 @@ import {
   noteAuthorKind,
   noteAuthorLabel,
 } from '../utils/note-author';
+import {
+  ARTIFACT_KIND_GROUPS,
+  ARTIFACT_KIND_ICONS,
+  ARTIFACT_KIND_LABELS,
+  artifactKindGroup,
+  type ArtifactKindGroup,
+} from '../utils/session-artifacts';
 import consoleStyles from '../styles/console-styles.css?inline';
+
+/** Kind icons shown on a row before the rest fold into "+N". */
+const MAX_ARTIFACT_ICONS = 3;
+
+/**
+ * Fold a row's per-kind counts into the header's kind groups, largest first.
+ *
+ * The groups are the ones the session header filters by (#1083), so an icon
+ * here always has a filter to open.
+ */
+export function artifactGroupCounts(
+  counts: Record<string, number> | undefined
+): Array<[ArtifactKindGroup, number]> {
+  const totals = new Map<ArtifactKindGroup, number>();
+  for (const [kind, count] of Object.entries(counts ?? {})) {
+    if (!count) continue;
+    const group = artifactKindGroup(kind);
+    totals.set(group, (totals.get(group) ?? 0) + count);
+  }
+  return Array.from(totals.entries()).sort(
+    (left, right) =>
+      right[1] - left[1] ||
+      ARTIFACT_KIND_GROUPS.indexOf(left[0]) -
+        ARTIFACT_KIND_GROUPS.indexOf(right[0])
+  );
+}
 import './token-figures.ts';
 
 @customElement('session-list-panel')
@@ -45,6 +78,7 @@ export class SessionListPanel extends LitElement {
         border: 1px solid var(--sl-color-neutral-200);
         border-radius: var(--sl-border-radius-medium);
         background: var(--sl-color-neutral-0);
+        box-sizing: border-box;
         color: inherit;
         cursor: pointer;
         padding: var(--sl-spacing-small) var(--sl-spacing-medium);
@@ -54,6 +88,25 @@ export class SessionListPanel extends LitElement {
           background 0.15s ease,
           box-shadow 0.15s ease;
         width: 100%;
+      }
+
+      .session-select {
+        appearance: none;
+        background: transparent;
+        border: 0;
+        color: inherit;
+        cursor: pointer;
+        display: block;
+        font: inherit;
+        padding: 0;
+        text-align: left;
+        width: 100%;
+      }
+
+      .session-select:focus-visible {
+        border-radius: var(--sl-border-radius-small);
+        outline: 2px solid var(--sl-color-primary-500);
+        outline-offset: 2px;
       }
 
       .session-card:hover,
@@ -136,6 +189,35 @@ export class SessionListPanel extends LitElement {
       .note-author.unknown {
         color: var(--console-meta-color, var(--sl-color-neutral-600));
       }
+
+      .artifact-row {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-2x-small);
+        margin-top: var(--sl-spacing-2x-small);
+      }
+
+      .artifact-kind {
+        align-items: center;
+        appearance: none;
+        background: var(--sl-color-neutral-0);
+        border: 1px solid var(--sl-color-neutral-300);
+        border-radius: 999px;
+        color: var(--sl-color-neutral-700);
+        cursor: pointer;
+        display: inline-flex;
+        font: inherit;
+        font-size: var(--sl-font-size-x-small);
+        gap: 0.2rem;
+        padding: 0.05rem 0.45rem;
+      }
+
+      .artifact-kind:hover,
+      .artifact-kind:focus-visible {
+        border-color: var(--sl-color-primary-500);
+        color: var(--sl-color-primary-700);
+      }
     `,
   ];
 
@@ -168,6 +250,65 @@ export class SessionListPanel extends LitElement {
           ${count} note${count === 1 ? '' : 's'}
         </sl-badge>
         <span class="note-author ${kind}">Last from ${author}</span>
+      </div>
+    `;
+  }
+
+  /**
+   * Kind icons with counts for the session's artifacts, at most three, then
+   * "+N". Each icon opens the session with the header filter set to that
+   * kind; "+N" opens it unfiltered. The tooltip names every stored kind. A
+   * session without artifacts renders nothing.
+   */
+  private renderArtifactCell(session: ObservedSession) {
+    const groups = artifactGroupCounts(session.artifactCounts);
+    if (!groups.length) return '';
+    const shown = groups.slice(0, MAX_ARTIFACT_ICONS);
+    const hidden = groups.slice(MAX_ARTIFACT_ICONS);
+    const tooltip = Object.entries(session.artifactCounts ?? {})
+      .filter(([, count]) => count > 0)
+      .map(([kind, count]) => `${kind.replace(/_/g, ' ')}: ${count}`)
+      .join(', ');
+    const hiddenCount = hidden.reduce((sum, [, count]) => sum + count, 0);
+    return html`
+      <div
+        class="artifact-row"
+        data-testid="session-artifacts-${session.id}"
+        title="Artifacts: ${tooltip}"
+      >
+        ${shown.map(
+          ([group, count]) =>
+            html`<button
+              type="button"
+              class="artifact-kind"
+              data-kind=${group}
+              aria-label="Open ${count} ${ARTIFACT_KIND_LABELS[
+                group
+              ].toLowerCase()}"
+              @click=${(event: Event) => {
+                event.stopPropagation();
+                this.selectSession(session, group);
+              }}
+            >
+              <sl-icon name=${ARTIFACT_KIND_ICONS[group]}></sl-icon>${count}
+            </button>`
+        )}
+        ${
+          hidden.length
+            ? html`<button
+                type="button"
+                class="artifact-kind more"
+                data-kind="more"
+                aria-label="Open all artifacts: ${tooltip}"
+                @click=${(event: Event) => {
+                  event.stopPropagation();
+                  this.selectSession(session);
+                }}
+              >
+                +${hiddenCount}
+              </button>`
+            : ''
+        }
       </div>
     `;
   }
@@ -228,10 +369,17 @@ export class SessionListPanel extends LitElement {
     return parsed.toLocaleString();
   }
 
-  private selectSession(session: ObservedSession): void {
+  /**
+   * Ask the host to open a session. `artifactKind` is the header kind filter
+   * to apply once it is open, set when an artifact icon was clicked.
+   */
+  private selectSession(
+    session: ObservedSession,
+    artifactKind: ArtifactKindGroup | null = null
+  ): void {
     this.dispatchEvent(
       new CustomEvent('session-selected', {
-        detail: { sessionId: session.id },
+        detail: { sessionId: session.id, artifactKind },
         bubbles: true,
         composed: true,
       })
@@ -251,40 +399,62 @@ export class SessionListPanel extends LitElement {
           this.sessions,
           (session) => session.id,
           (session) => html`
-            <button
+            <!-- The card is a plain container. Selection is the real
+                 <button> below and the artifact icons are sibling buttons,
+                 so assistive technology reaches both (a role="button" card
+                 would flatten the icons away). A click anywhere else on the
+                 card still selects, for the mouse. -->
+            <div
               class="session-card ${
                 this.activeSessionId === session.id ? 'active' : ''
               }"
               @click=${() => this.selectSession(session)}
             >
-              <div class="title-row">
-                <div class="title">${session.title}</div>
-                <sl-badge class="chip" variant=${this.getVariant(session)} pill>
-                  ${this.getLabel(session)}
-                </sl-badge>
-              </div>
-              ${
-                session.subtitle
-                  ? html`<div class="meta">${session.subtitle}</div>`
-                  : ''
-              }
-              <div class="meta">
-                Last activity ${this.formatDate(session.lastActivityAt)}
-              </div>
-              <div class="metric-row">
-                <div class="metric">
-                  ${formatNumber(session.totalRequests)} requests
+              <button
+                type="button"
+                class="session-select"
+                aria-current=${
+                  this.activeSessionId === session.id ? 'true' : 'false'
+                }
+                @click=${(event: Event) => {
+                  event.stopPropagation();
+                  this.selectSession(session);
+                }}
+              >
+                <div class="title-row">
+                  <div class="title">${session.title}</div>
+                  <sl-badge
+                    class="chip"
+                    variant=${this.getVariant(session)}
+                    pill
+                  >
+                    ${this.getLabel(session)}
+                  </sl-badge>
                 </div>
-                <!-- Tokens before cost: the split says whether a session is
+                ${
+                  session.subtitle
+                    ? html`<div class="meta">${session.subtitle}</div>`
+                    : ''
+                }
+                <div class="meta">
+                  Last activity ${this.formatDate(session.lastActivityAt)}
+                </div>
+                <div class="metric-row">
+                  <div class="metric">
+                    ${formatNumber(session.totalRequests)} requests
+                  </div>
+                  <!-- Tokens before cost: the split says whether a session is
                      expensive because it reads a lot or writes a lot. -->
-                <div class="metric">
-                  <token-figures .usage=${session.tokenUsage}></token-figures>
-                  · ${formatCost(session.estimatedCost)}
+                  <div class="metric">
+                    <token-figures .usage=${session.tokenUsage}></token-figures>
+                    · ${formatCost(session.estimatedCost)}
+                  </div>
                 </div>
-              </div>
-              ${this.renderWasteBadge(session)}
-              ${this.renderNoteIndicator(session)}
-            </button>
+                ${this.renderWasteBadge(session)}
+                ${this.renderNoteIndicator(session)}
+              </button>
+              ${this.renderArtifactCell(session)}
+            </div>
           `
         )}
       </div>

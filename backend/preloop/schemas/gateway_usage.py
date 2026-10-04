@@ -421,6 +421,13 @@ class RuntimeSessionSummary(BaseModel):
     pending_approval_count: int = Field(
         0, description="Approval requests for this session still awaiting a decision"
     )
+    artifact_counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Available artifacts on this session by kind (screenshot, "
+            "transcript, ...); evicted and expired artifacts are not counted"
+        ),
+    )
 
 
 class AccountRuntimeSessionListResponse(BaseModel):
