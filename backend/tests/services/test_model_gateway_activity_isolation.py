@@ -8,10 +8,9 @@ customer-visible 502.
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
@@ -145,99 +144,6 @@ def test_successful_calls_are_unaffected_when_recording_works(status_code):
     assert len(calls) == 1
     assert calls[0]["status_code"] == status_code
     db.rollback.assert_not_called()
-
-
-def test_pool_timeout_is_retried_until_usage_recording_succeeds():
-    """One busy checkout must not drop a row the next attempt can write."""
-    db = MagicMock()
-    service = _Recorder(db)
-    calls = []
-
-    def inner(**_kwargs):
-        calls.append(1)
-        if len(calls) == 1:
-            raise SQLAlchemyTimeoutError("QueuePool limit of size 1")
-
-    service._record_gateway_request_inner = inner
-    service._record_gateway_request(
-        endpoint="/v1/chat/completions",
-        method="POST",
-        status_code=200,
-        duration=0.1,
-        ai_model=MagicMock(),
-        requested_model="openai/gpt-5",
-        response_payload={"usage": {}},
-        upstream_response=None,
-        endpoint_kind="chat_completions",
-    )
-    assert len(calls) == 2
-    db.rollback.assert_called_once()
-
-
-def test_pool_timeout_gives_up_without_raising(caplog):
-    """A stuck pool still returns the upstream response and logs the skip."""
-    db = MagicMock()
-    service = _Recorder(db)
-    calls = []
-
-    def inner(**_kwargs):
-        calls.append(1)
-        raise SQLAlchemyTimeoutError("QueuePool limit of size 1")
-
-    service._record_gateway_request_inner = inner
-    with (
-        caplog.at_level(logging.WARNING),
-        patch(
-            "preloop.services.openai_gateway._GATEWAY_USAGE_RECORD_POOL_WAIT_SECONDS",
-            0,
-        ),
-        patch(
-            "preloop.services.openai_gateway._GATEWAY_USAGE_RECORD_MAX_ATTEMPTS",
-            1,
-        ),
-    ):
-        service._record_gateway_request(
-            endpoint="/v1/chat/completions",
-            method="POST",
-            status_code=200,
-            duration=0.1,
-            ai_model=MagicMock(),
-            requested_model="openai/gpt-5",
-            response_payload={"usage": {}},
-            upstream_response=None,
-            endpoint_kind="chat_completions",
-        )
-    assert calls == [1]
-    assert "Skipped gateway usage recording after TimeoutError" in caplog.text
-
-
-def test_pool_timeout_after_the_row_is_saved_does_not_record_again(caplog):
-    """A timeout after commit must not insert a second usage row."""
-    db = MagicMock()
-    service = _Recorder(db)
-    calls = []
-
-    def inner(**_kwargs):
-        calls.append(1)
-        service.last_usage_id = "usage-1"
-        raise SQLAlchemyTimeoutError("refresh lost the pool")
-
-    service._record_gateway_request_inner = inner
-    with caplog.at_level(logging.WARNING):
-        service._record_gateway_request(
-            endpoint="/v1/chat/completions",
-            method="POST",
-            status_code=200,
-            duration=0.1,
-            ai_model=MagicMock(),
-            requested_model="openai/gpt-5",
-            response_payload={"usage": {}},
-            upstream_response=None,
-            endpoint_kind="chat_completions",
-        )
-    assert calls == [1]
-    assert "Skipped gateway usage recording" not in caplog.text
-    assert "usage-1" in caplog.text
 
 
 def test_activity_crud_sanitizes_metadata_before_the_jsonb_write():

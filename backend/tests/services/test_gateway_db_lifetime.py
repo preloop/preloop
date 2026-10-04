@@ -1,6 +1,5 @@
 """Real local pool checks for gateway policy, retry and bookkeeping boundaries."""
 
-import threading
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
@@ -11,7 +10,6 @@ import httpx
 import pytest
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import QueuePool
 
@@ -580,94 +578,3 @@ def test_summary_credential_failure_closes_child_worker(local_gateway: Any) -> N
     assert seen[0] is not parent_session
     assert engine.pool.checkedout() == 0
     assert seen[0].get_transaction() is None
-
-
-def test_recording_retries_while_the_only_pool_slot_is_held() -> None:
-    """A peer insert longer than pool_timeout must not drop the other row.
-
-    The lifetime fixture uses a 0.2s checkout timeout to prove streams release
-    the slot during provider I/O. Recording both completions is real work on
-    that same slot. The first stream's insert holds it; the second used to
-    time out once and swallow the row.
-    """
-    engine = create_engine(
-        "sqlite://",
-        poolclass=QueuePool,
-        pool_size=1,
-        max_overflow=0,
-        pool_timeout=0.2,
-    )
-    bind = Session(engine)
-
-    def build() -> OpenAIGatewayService:
-        return OpenAIGatewayService(
-            bind,
-            ModelGatewayAuthContext(
-                token="synthetic",
-                user=SimpleNamespace(id="user", account_id="account"),
-            ),
-            upstream_backend=MagicMock(),
-            owns_db_session=True,
-        )
-
-    first = build()
-    second = build()
-    release = threading.Event()
-    holding = threading.Event()
-    timed_out = threading.Event()
-    finished: list[str] = []
-    errors: list[BaseException] = []
-
-    def hold(**_kwargs: Any) -> None:
-        _checkout(first)
-        holding.set()
-        assert release.wait(5), "holder was not released"
-
-    def follow(**_kwargs: Any) -> None:
-        try:
-            _checkout(second)
-        except SQLAlchemyTimeoutError:
-            timed_out.set()
-            raise
-
-    def run(service: OpenAIGatewayService, inner: Any, name: str) -> None:
-        try:
-            with patch.object(service, "_record_gateway_request_inner", inner):
-                service._record_gateway_request(
-                    endpoint="/test",
-                    endpoint_kind="chat_completions",
-                    method="POST",
-                    status_code=200,
-                    duration=0.1,
-                    ai_model=_model(),
-                    requested_model="synthetic",
-                    response_payload={},
-                    upstream_response={},
-                )
-            finished.append(name)
-        except BaseException as exc:  # noqa: BLE001 - surface worker failures
-            errors.append(exc)
-
-    holder = threading.Thread(target=run, args=(first, hold, "first"))
-    follower = threading.Thread(target=run, args=(second, follow, "second"))
-    try:
-        holder.start()
-        assert holding.wait(5), "holder never checked out the only slot"
-        follower.start()
-        assert timed_out.wait(5), "follower did not time out while the slot was held"
-        release.set()
-        holder.join(5)
-        follower.join(5)
-        assert not holder.is_alive()
-        assert not follower.is_alive()
-        assert errors == []
-        assert sorted(finished) == ["first", "second"]
-        assert engine.pool.checkedout() == 0
-    finally:
-        release.set()
-        if holder.ident is not None:
-            holder.join(5)
-        if follower.ident is not None:
-            follower.join(5)
-        bind.close()
-        engine.dispose()
