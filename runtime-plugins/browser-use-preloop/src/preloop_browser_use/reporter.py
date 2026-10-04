@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from preloop_browser_use.client import BatchResult, PreloopTarget, StepPoster
-from preloop_browser_use.convert import history_item_to_step
+from preloop_browser_use.convert import history_item_to_step, resolve_screenshot_path
 
 logger = logging.getLogger("preloop_browser_use")
 
@@ -97,7 +97,9 @@ class PreloopBrowserUseReporter:
             items = self._history_items(agent)
             for index in range(self._seen, len(items)):
                 self._queue.append(
-                    history_item_to_step(items[index], run_id=run_id, index=index)
+                    history_item_to_step(
+                        items[index], run_id=run_id, index=index, read_files=False
+                    )
                 )
             self._seen = len(items)
         except Exception:  # noqa: BLE001 - never break the agent
@@ -116,9 +118,20 @@ class PreloopBrowserUseReporter:
             return
         async with self._lock:
             try:
-                self.results.extend(await asyncio.to_thread(self._poster.post, batch))
+                self.results.extend(await asyncio.to_thread(self._post_batch, batch))
             except Exception:  # noqa: BLE001 - never break the agent
                 logger.warning("Preloop browser step batch dropped", exc_info=True)
+
+    def _post_batch(self, batch: list[dict[str, Any]]) -> list[BatchResult]:
+        """Worker thread: read deferred screenshot files, then post."""
+        if self._poster is None:
+            return []
+        return self._poster.post([resolve_screenshot_path(step) for step in batch])
+
+    def close(self) -> None:
+        """Close the HTTP client the reporter created (not one passed in)."""
+        if self._poster is not None:
+            self._poster.close()
 
     async def flush(self) -> list[BatchResult]:
         """Post whatever is queued and wait for in-flight batches."""
@@ -129,9 +142,10 @@ class PreloopBrowserUseReporter:
         return self.results
 
     async def run(self, agent: Any, **run_kwargs: Any) -> Any:
-        """Run ``agent`` with this reporter as ``on_step_end`` and flush.
+        """Run ``agent`` with this reporter as ``on_step_end``, flush, close.
 
         A caller-supplied ``on_step_end`` still runs, after the reporter.
+        Use one reporter per run; build a new one for the next run.
         """
         user_hook = run_kwargs.pop("on_step_end", None)
 
@@ -146,3 +160,4 @@ class PreloopBrowserUseReporter:
             if self.enabled:
                 self._catch_up(agent)
             await self.flush()
+            self.close()

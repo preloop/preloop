@@ -30,6 +30,7 @@ If you call `agent.run` yourself, pass the hook and flush afterwards:
 ```python
 history = await agent.run(on_step_end=reporter.on_step_end)
 await reporter.flush()
+reporter.close()
 ```
 
 ## Configuration
@@ -53,8 +54,13 @@ Each history item becomes one step with `source="browser_use"`:
   `extra.browser_use_actions`.
 - `url`, `target` (the interacted element's label, name or XPath),
   `reasoning` (`thinking` and `next_goal`), `status` (`failed` when a result
-  carries an error), `occurred_at` (step end time).
-- `screenshot`: the PNG, JPEG or WebP Browser Use captured.
+  carries an error, with `extra.error: "action_failed"`; the error text is
+  not sent because it can quote the action's input), `occurred_at` (step
+  end time).
+- `screenshot`: the PNG, JPEG or WebP Browser Use captured, inline or read
+  from `screenshot_path` in the worker thread. If Preloop refuses the image
+  (`screenshot_too_large`, `screenshot_invalid`) the step is sent again
+  without it and `extra.screenshot_omitted` names the reason.
 - `source_step_id`: `<agent id>:<step number>`, so posting the same run
   again is counted as duplicates.
 

@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 SOURCE = "browser_use"
+#: Internal key for a screenshot file read later, off the event loop.
+DEFERRED_SCREENSHOT_PATH = "_screenshot_path"
 
 #: Browser Use action names (0.5 to 0.7) mapped to Preloop step actions.
 ACTION_MAP = {
@@ -88,21 +90,8 @@ def _target(element: Any) -> str | None:
     return str(xpath)[:1024] if xpath else None
 
 
-def _screenshot(state: Any) -> dict[str, str] | None:
-    """Return a ``BrowserScreenshotIn`` dict, or ``None`` when absent."""
-    encoded = None
-    getter = getattr(state, "get_screenshot", None)
-    if callable(getter):
-        try:
-            encoded = getter()
-        except Exception:  # noqa: BLE001 - a missing file is just no image
-            encoded = None
-    if not encoded:
-        encoded = _get(state, "screenshot")
-    if not encoded:
-        path = _get(state, "screenshot_path")
-        if path and Path(path).is_file():
-            encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+def _encoded_screenshot(encoded: Any) -> dict[str, str] | None:
+    """Wrap base64 image text as ``BrowserScreenshotIn`` after sniffing it."""
     if not encoded or not isinstance(encoded, str):
         return None
     try:
@@ -117,6 +106,32 @@ def _screenshot(state: Any) -> dict[str, str] | None:
     return None
 
 
+def resolve_screenshot_path(step: dict[str, Any]) -> dict[str, Any]:
+    """Read a deferred ``screenshot_path`` into the step's ``screenshot``.
+
+    Called from the worker thread so file I/O never runs on the agent's
+    event loop. Steps without a deferred path are returned unchanged.
+    """
+    path = step.pop(DEFERRED_SCREENSHOT_PATH, None)
+    if path and Path(path).is_file():
+        shot = _encoded_screenshot(
+            base64.b64encode(Path(path).read_bytes()).decode("ascii")
+        )
+        if shot:
+            step["screenshot"] = shot
+    return step
+
+
+def _screenshot(state: Any) -> dict[str, str] | None:
+    """Return an inline screenshot as ``BrowserScreenshotIn``, else ``None``.
+
+    Browser Use 0.5+ keeps screenshots on disk (``screenshot_path``;
+    ``get_screenshot()`` just reads that file). Those are deferred to the
+    worker thread by the caller, so nothing here touches the disk.
+    """
+    return _encoded_screenshot(_get(state, "screenshot"))
+
+
 def _occurred_at(metadata: Any) -> str | None:
     stamp = _get(metadata, "step_end_time") or _get(metadata, "step_start_time")
     if not isinstance(stamp, (int, float)):
@@ -124,7 +139,9 @@ def _occurred_at(metadata: Any) -> str | None:
     return datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat()
 
 
-def history_item_to_step(item: Any, *, run_id: str, index: int) -> dict[str, Any]:
+def history_item_to_step(
+    item: Any, *, run_id: str, index: int, read_files: bool = True
+) -> dict[str, Any]:
     """Map one ``AgentHistory`` item to a ``BrowserStepIn`` JSON object.
 
     Args:
@@ -133,6 +150,8 @@ def history_item_to_step(item: Any, *, run_id: str, index: int) -> dict[str, Any
             ``source_step_id`` so a re-post is a duplicate, not a new row.
         index: Zero-based position in the run, used when metadata has no
             step number.
+        read_files: Read a ``screenshot_path`` file now. The reporter passes
+            ``False`` and reads it in its worker thread instead.
     """
     model_output = _get(item, "model_output")
     state = _get(item, "state")
@@ -166,7 +185,8 @@ def history_item_to_step(item: Any, *, run_id: str, index: int) -> dict[str, Any
     if isinstance(step_number, int):
         extra["browser_use_step_number"] = step_number
     if errors:
-        extra["error"] = str(errors[0])[:500]
+        # Error text can quote the action's input, so only a flag is sent.
+        extra["error"] = "action_failed"
 
     step: dict[str, Any] = {
         "source": SOURCE,
@@ -188,6 +208,10 @@ def history_item_to_step(item: Any, *, run_id: str, index: int) -> dict[str, Any
     shot = _screenshot(state)
     if shot:
         step["screenshot"] = shot
+    elif _get(state, "screenshot_path"):
+        step[DEFERRED_SCREENSHOT_PATH] = str(_get(state, "screenshot_path"))
+        if read_files:
+            resolve_screenshot_path(step)
     return step
 
 

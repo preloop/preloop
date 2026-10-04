@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pydantic
 import pytest
 
 from preloop_browser_use import (
     PreloopBrowserUseReporter,
     PreloopTarget,
     StepPoster,
+    history_item_to_step,
     history_to_steps,
 )
 
@@ -133,12 +137,142 @@ def test_live_objects_and_dict_dumps_convert_the_same():
     assert history_to_steps(objects, run_id="r") == history_to_steps(hist, run_id="r")
 
 
-def test_failed_result_marks_step_failed_with_error():
+def test_failed_result_marks_step_failed_without_error_text():
     hist = _history()
-    hist["history"][2]["result"][0]["error"] = "Element not found"
+    hist["history"][2]["result"][0]["error"] = "Could not type hunter2 into #pw"
     step = history_to_steps(hist, run_id="r")[2]
     assert step["status"] == "failed"
-    assert step["extra"]["error"] == "Element not found"
+    assert step["extra"]["error"] == "action_failed"
+    assert "hunter2" not in json.dumps(step)
+
+
+class _Action(pydantic.BaseModel):
+    """Stand-in for Browser Use's dynamic ``ActionModel``: one field set."""
+
+    go_to_url: dict | None = None
+    input_text: dict | None = None
+    click_element_by_index: dict | None = None
+    scroll_down: dict | None = None
+    extract_content: dict | None = None
+    select_dropdown_option: dict | None = None
+    wait: dict | None = None
+    done: dict | None = None
+
+
+def test_pydantic_action_models_convert_like_the_dump():
+    hist = _history()
+    items = []
+    for raw in hist["history"]:
+        item = _as_objects(raw)
+        item.model_output.action = [_Action(**a) for a in raw["model_output"]["action"]]
+        items.append(item)
+    live = history_to_steps(SimpleNamespace(history=items), run_id="r")
+    assert live == history_to_steps(hist, run_id="r")
+    assert live[1]["extra"]["browser_use_actions"] == ["input_text"]
+
+
+def _path_history(tmp_path):
+    hist = _history()
+    for i, item in enumerate(hist["history"]):
+        png = base64.b64decode(item["state"].pop("screenshot"))
+        path = tmp_path / f"step_{i}.png"
+        path.write_bytes(png)
+        item["state"]["screenshot_path"] = str(path)
+    return hist
+
+
+def test_screenshot_path_is_read_in_the_worker_thread(tmp_path, monkeypatch):
+    hist = _path_history(tmp_path)
+    deferred = history_item_to_step(
+        hist["history"][0], run_id="r", index=0, read_files=False
+    )
+    assert "screenshot" not in deferred and deferred["_screenshot_path"]
+
+    loop_thread = threading.get_ident()
+    reads = []
+    real = Path.read_bytes
+
+    def tracking(self):
+        reads.append(threading.get_ident())
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", tracking)
+    rec = Recorder()
+    reporter = PreloopBrowserUseReporter(TARGET, batch_size=5, client=_client(rec))
+    asyncio.run(reporter.run(FakeAgent(hist["history"])))
+
+    posted = [s for b in rec.bodies for s in b["steps"]]
+    assert len(posted) == 12 and all(
+        s["screenshot"]["content_type"] == "image/png" for s in posted
+    )
+    assert all("_screenshot_path" not in s for s in posted)
+    assert len(reads) == 12 and loop_thread not in reads
+
+
+def test_image_rejected_rows_are_resent_without_the_image(caplog):
+    rec = Recorder(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "accepted": 1,
+                    "duplicates": 0,
+                    "rejected": [{"index": 1, "error": "screenshot_too_large"}],
+                },
+            ),
+        ]
+    )
+    steps = history_to_steps(_history(), run_id="r")[:2]
+    with caplog.at_level(logging.WARNING, logger="preloop_browser_use"):
+        [result] = StepPoster(TARGET, client=_client(rec)).post(steps)
+    assert len(rec.bodies) == 2
+    resent = rec.bodies[1]["steps"]
+    assert [s["source_step_id"] for s in resent] == ["r:2"]
+    assert "screenshot" not in resent[0]
+    assert resent[0]["extra"]["screenshot_omitted"] == "screenshot_too_large"
+    assert result.accepted == 2 and result.rejected == []
+    assert "without them" in caplog.text
+
+
+def test_other_rejections_are_logged_as_warnings(caplog):
+    rec = Recorder(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "accepted": 0,
+                    "duplicates": 0,
+                    "rejected": [{"index": 0, "error": "extra_too_large"}],
+                },
+            )
+        ]
+    )
+    with caplog.at_level(logging.WARNING, logger="preloop_browser_use"):
+        [result] = StepPoster(TARGET, client=_client(rec)).post(
+            [{"source_step_id": "x"}]
+        )
+    assert result.rejected == [{"index": 0, "error": "extra_too_large"}]
+    assert "extra_too_large" in caplog.text and len(rec.bodies) == 1
+
+
+def test_run_closes_the_client_it_created_but_not_one_passed_in(monkeypatch):
+    created = []
+    real = httpx.Client
+
+    def factory(*args, **kwargs):
+        client = real(transport=httpx.MockTransport(Recorder()))
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    owned = PreloopBrowserUseReporter(TARGET)
+    asyncio.run(owned.run(FakeAgent(_history()["history"][:2])))
+    assert created and created[0].is_closed
+
+    mine = real(transport=httpx.MockTransport(Recorder()))
+    passed = PreloopBrowserUseReporter(TARGET, client=mine)
+    asyncio.run(passed.run(FakeAgent(_history()["history"][:2])))
+    assert not mine.is_closed
 
 
 def test_reporter_posts_twelve_steps_in_batches_with_the_agent_key():

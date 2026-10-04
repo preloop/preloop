@@ -25,6 +25,8 @@ ENV_SESSION_ID = "PRELOOP_RUNTIME_SESSION_ID"
 MAX_BATCH = 200
 #: Status codes worth retrying; anything else in 4xx is a caller error.
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+#: Per-row errors caused by the image alone; the step is re-sent without it.
+IMAGE_ERRORS = frozenset({"screenshot_too_large", "screenshot_invalid"})
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,52 @@ class StepPoster:
             results.append(self._post_one(list(steps[start : start + MAX_BATCH])))
         return results
 
-    def _post_one(self, steps: list[dict[str, Any]]) -> BatchResult:
+    def _settle(
+        self, steps: list[dict[str, Any]], body: dict[str, Any], *, retry_images: bool
+    ) -> BatchResult:
+        """Count a 200 response; re-post image-rejected rows without images.
+
+        The ingest route refuses the whole row when its screenshot is too
+        large or invalid. Those steps are sent again once without the image
+        so the step itself still reaches the timeline.
+        """
+        result = BatchResult(
+            ok=True,
+            accepted=int(body.get("accepted", 0)),
+            duplicates=int(body.get("duplicates", 0)),
+            rejected=[],
+        )
+        retry = []
+        for row in body.get("rejected") or []:
+            index, error = row.get("index"), row.get("error")
+            if (
+                retry_images
+                and error in IMAGE_ERRORS
+                and isinstance(index, int)
+                and 0 <= index < len(steps)
+                and steps[index].get("screenshot")
+            ):
+                step = {k: v for k, v in steps[index].items() if k != "screenshot"}
+                step["extra"] = {**step.get("extra", {}), "screenshot_omitted": error}
+                retry.append(step)
+                continue
+            logger.warning("Preloop refused browser step %s", row)
+            result.rejected.append(row)
+        if retry:
+            logger.warning(
+                "Preloop refused %d screenshot(s); sending those steps without them",
+                len(retry),
+            )
+            again = self._post_one(retry, retry_images=False)
+            result.ok = result.ok and again.ok
+            result.accepted += again.accepted
+            result.duplicates += again.duplicates
+            result.rejected.extend(again.rejected or [])
+        return result
+
+    def _post_one(
+        self, steps: list[dict[str, Any]], *, retry_images: bool = True
+    ) -> BatchResult:
         headers = {"Authorization": f"Bearer {self.target.agent_key}"}
         last_error = "unknown error"
         for attempt in range(self.attempts):
@@ -121,15 +168,7 @@ class StepPoster:
                 last_error = f"{type(exc).__name__}: {exc}"
                 continue
             if response.status_code == 200:
-                body = response.json()
-                for row in body.get("rejected") or []:
-                    logger.info("Preloop refused browser step %s", row)
-                return BatchResult(
-                    ok=True,
-                    accepted=int(body.get("accepted", 0)),
-                    duplicates=int(body.get("duplicates", 0)),
-                    rejected=list(body.get("rejected") or []),
-                )
+                return self._settle(steps, response.json(), retry_images=retry_images)
             last_error = f"HTTP {response.status_code}"
             if response.status_code not in RETRYABLE_STATUS:
                 break
