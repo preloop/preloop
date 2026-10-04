@@ -519,7 +519,7 @@ async def test_http_failure_closes_every_owned_database_phase(
     worker_pool: tuple[GatewayPoolFixture, list[Session]], failure: str
 ) -> None:
     """Failures before streaming starts close fresh workers and preserve capacity."""
-    from preloop.services.model_content_policy import load_model_io_rules
+    from preloop.services.model_content_policy import load_gateway_policy_blocks
 
     rig, request_sessions = worker_pool
     observed: set[Session] = set()
@@ -545,11 +545,11 @@ async def test_http_failure_closes_every_owned_database_phase(
 
     def policy(db: Session, account_id: Any) -> Any:
         policy_sessions.append(db)
-        rules = load_model_io_rules(db, account_id)
+        blocks = load_gateway_policy_blocks(db, account_id)
         if failure == "initial_policy":
             assert db.in_transaction()
             raise SQLAlchemyError("synthetic policy store unavailable")
-        return rules
+        return blocks
 
     def timeout(**kwargs: Any) -> Any:
         assert rig.engine.pool.checkedout() == 0
@@ -564,7 +564,7 @@ async def test_http_failure_closes_every_owned_database_phase(
             patch.object(Session, "close", close),
             patch("preloop.services.openai_gateway.enqueue_gateway_5xx_alert"),
             patch(
-                "preloop.services.model_content_policy.load_model_io_rules",
+                "preloop.services.model_content_policy.load_gateway_policy_blocks",
                 side_effect=policy,
             ),
             patch(
