@@ -9,7 +9,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from cryptography.fernet import InvalidToken
-from sqlalchemy import String, func, select
+from sqlalchemy import String, func, literal_column, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -493,9 +493,12 @@ def sessions_with_available_artifacts(
         A ``SELECT runtime_session_id`` query usable in ``IN (...)``.
     """
     table = models.RuntimeSessionArtifact
+    # Literal, not a bind parameter. The partial index predicate is
+    # ``availability = 'available'``; a generic plan cannot prove that a
+    # parameter implies it, and the list request would scan the table again.
     query = db.query(table.runtime_session_id).filter(
         table.account_id == account_id,
-        table.availability == "available",
+        table.availability == literal_column("'available'"),
     )
     if kind is not None:
         query = query.filter(table.kind == kind)
