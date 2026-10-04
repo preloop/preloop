@@ -237,7 +237,32 @@ and lives outside this repository.
 
 **Imported spend.** Spend that does not pass through the gateway enters
 through `register_imported_spend_source`. Cards and digest entries that
-include such dollars say they are not metered by the gateway.
+include such dollars say they are not metered by the gateway. The one
+production source is `preloop.services.copilot_spend_source`, registered by
+the `evaluate_spend_outliers` task before each pass (idempotent, no HTTP
+router imported, no GitHub call). It reads stored Copilot premium-request
+rows for the connection's current organization, keeps daily per-user rows in
+USD whose login has a row in `copilot_user_mapping` (operator-written, one
+active same-account user per login, several logins per user allowed), nets
+signed amounts per user, day and model, and returns the positive nets as
+`source='copilot'`. Seat rows, usage metrics, organization totals, the
+unattributed residual, unmapped logins and rows without an amount are left
+out and reported as counts by `GET /api/v1/cost/copilot/spend-coverage`.
+Nothing is written back to `api_usage`, budgets or issue rollups.
+
+**Replay and supersession.** Imported days arrive three days late and can be
+corrected, so for accounts with an active Copilot connection the daily pass
+evaluates the 28 most recent completed UTC days (`REPLAY_WINDOW_DAYS`) rather
+than yesterday alone. `evaluate_days` loads the span once, judges each day
+against its own 28-day history, and reconciles the stored findings for
+exactly the two daily rules and those days: an unchanged finding is left
+alone (dismissals and snoozes keep applying), changed evidence is written
+onto the existing row with `detected_at` kept, and a day that no longer
+qualifies gets `superseded_at` and `superseded_reason` and is filtered out of
+the open list and the digest while its row remains. `superseded_at` and
+`dismissed_at` are independent. When an imported source raises, nothing is
+reconciled and only yesterday is judged from gateway spend; the pass reports
+the account as `incomplete`.
 
 ## Reviewed price publication
 
