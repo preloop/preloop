@@ -6,7 +6,7 @@ import {
   fetchWithAuth,
   getFeatures,
   listCliSessions,
-  performLocalSignOut,
+  signOut,
   revokeCliSession,
 } from '../../../api';
 import { confirmDialog } from '../../../components/confirm-dialog';
@@ -252,7 +252,7 @@ export class SecurityView extends LitElement {
       // Local sign-out still proceeds. Other sessions stay valid if the
       // server was unreachable, matching the CLI offline path.
     }
-    performLocalSignOut((url) => this._navigate(url));
+    await signOut({ navigate: (url) => this._navigate(url) });
   }
 
   private _navigate(url: string): void {

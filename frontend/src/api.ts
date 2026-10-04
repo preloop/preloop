@@ -261,25 +261,14 @@ async function attemptRefresh(refreshTokenValue: string): Promise<Response> {
 }
 
 function endSessionAndRedirect(): void {
-  localStorage.removeItem('accessToken');
-  localStorage.removeItem('refreshToken');
-
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent('auth-change', { bubbles: true, composed: true })
-    );
-    if (
-      !window.location.pathname.startsWith('/login') &&
-      !window.location.pathname.startsWith('/register')
-    ) {
-      localStorage.setItem(
-        'loginRedirect',
-        window.location.pathname + window.location.search + window.location.hash
-      );
-    }
-  }
-
-  Router.go('/login');
+  // The session is already dead (refresh rejected or missing), so there is
+  // nothing to sign out on the server.
+  void signOut({
+    destination: '/login',
+    rememberLocation: true,
+    serverSignOut: false,
+    navigate: (url) => Router.go(url),
+  });
 }
 
 async function refreshToken(): Promise<RefreshResult> {
@@ -412,26 +401,119 @@ export function coalesceKey(url: string, passive?: boolean): string {
   return passive === true ? `passive|${url}` : url;
 }
 
+/** How long sign out waits for the server before clearing local state. */
+export const SIGN_OUT_SERVER_TIMEOUT_MS = 5000;
+
 /**
- * Clear local JWT credentials and return to the marketing page.
- *
- * Shared by the header Sign out control and Security "Sign out everywhere"
- * so those two paths cannot drift (tokens, auth-change, navigation, /logout).
+ * Whether `url` is a path on this origin (`/x`, never `//x` or a scheme).
+ * Server-provided redirects are followed only when this holds.
  */
-export function performLocalSignOut(
-  navigate: (url: string) => void = (url) => {
-    window.location.assign(url);
+export function isSameOriginPath(url: unknown): url is string {
+  if (typeof url !== 'string' || !url.startsWith('/')) return false;
+  if (url.startsWith('//') || url.startsWith('/\\')) return false;
+  return !/[\\\r\n\t]/.test(url);
+}
+
+export interface SignOutOptions {
+  /** Where to go when the server names no next step. Defaults to `/`. */
+  destination?: string;
+  /** Remember the current location so login can return to it. */
+  rememberLocation?: boolean;
+  /**
+   * Ask the server to end the session first. Skipped when the session is
+   * already known to be dead (refresh rejected).
+   */
+  serverSignOut?: boolean;
+  /** Navigation for the default destination (tests, SPA routing). */
+  navigate?: (url: string) => void;
+  /**
+   * Full page load for a server-named next page, which may belong to
+   * another app on this origin. Defaults to `window.location.assign`.
+   */
+  assign?: (url: string) => void;
+}
+
+async function requestServerSignOut(token: string): Promise<string | null> {
+  const controller =
+    typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(), SIGN_OUT_SERVER_TIMEOUT_MS)
+    : null;
+  try {
+    const response = await Promise.resolve(
+      fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller?.signal,
+      })
+    );
+    if (!response || !response.ok) return null;
+    const body = (await response.json()) as { redirect_url?: unknown };
+    return isSameOriginPath(body?.redirect_url) ? body.redirect_url : null;
+  } catch {
+    // Offline or timed out: local sign out still proceeds.
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-): void {
+}
+
+/**
+ * The one sign out path of the console.
+ *
+ * Asks the server to end the current session (it may name a same-origin
+ * page to go to next), clears the local JWT credentials, tells listeners
+ * through `auth-change`, and navigates. Used by the header Sign out
+ * controls, Security "Sign out everywhere" and expired-session handling so
+ * those paths cannot drift.
+ *
+ * @returns The URL navigated to.
+ */
+export async function signOut(options: SignOutOptions = {}): Promise<string> {
+  const {
+    destination = '/',
+    rememberLocation = false,
+    serverSignOut = true,
+    navigate = (url: string) => {
+      window.location.assign(url);
+    },
+    assign = (url: string) => {
+      window.location.assign(url);
+    },
+  } = options;
+
+  const token = localStorage.getItem('accessToken');
+  const serverRedirect =
+    serverSignOut && token ? await requestServerSignOut(token) : null;
+
   localStorage.removeItem('accessToken');
   localStorage.removeItem('refreshToken');
+  invalidateApiCaches();
   window.dispatchEvent(
     new CustomEvent('auth-change', { bubbles: true, composed: true })
   );
-  navigate('/');
+
+  if (
+    rememberLocation &&
+    !window.location.pathname.startsWith('/login') &&
+    !window.location.pathname.startsWith('/register')
+  ) {
+    localStorage.setItem(
+      'loginRedirect',
+      window.location.pathname + window.location.search + window.location.hash
+    );
+  }
+
   void Promise.resolve(fetch('/logout', { method: 'GET' })).catch(() => {
     // Best effort: local credentials are already gone.
   });
+
+  if (serverRedirect) {
+    assign(serverRedirect);
+    return serverRedirect;
+  }
+  navigate(destination);
+  return destination;
 }
 
 export async function fetchWithAuth(
