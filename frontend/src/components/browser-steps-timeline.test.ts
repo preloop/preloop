@@ -370,6 +370,39 @@ describe('browser steps in the session timeline', () => {
     expect(overflow?.textContent?.trim()).to.equal('+5');
   });
 
+  it('names the overflow button for the chunk it reveals, not the total hidden', async () => {
+    const many = Array.from({ length: 600 }, (_, index) =>
+      step(
+        index,
+        `2026-10-01T10:00:${String(index % 60).padStart(2, '0')}Z`,
+        'navigate'
+      )
+    );
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${many}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    const overflow = strip.shadowRoot!.querySelector(
+      '[data-testid="browser-step-overflow"]'
+    ) as HTMLButtonElement;
+    expect(overflow.textContent?.trim()).to.equal('+400');
+    // hidden (400) exceeds one chunk, so the accessible name must describe the
+    // 200 a click reveals rather than promising all 400.
+    expect(overflow.getAttribute('aria-label')).to.equal(
+      'Reveal earlier steps (400 hidden)'
+    );
+    expect(overflow.getAttribute('title')).to.equal(
+      'Reveal the previous 200 of 400 hidden steps'
+    );
+    overflow.click();
+    await strip.updateComplete;
+    expect(
+      strip.shadowRoot!.querySelectorAll('button[data-step-key]')
+    ).to.have.length(400);
+  });
+
   it('omits the overflow marker when the strip is exactly at the cap', async () => {
     const many = Array.from({ length: 200 }, (_, index) =>
       step(
@@ -413,6 +446,12 @@ describe('browser steps in the session timeline', () => {
       '[data-testid="browser-step-overflow"]'
     ) as HTMLButtonElement;
     expect(overflow.textContent?.trim()).to.equal('+1');
+    expect(overflow.getAttribute('aria-label')).to.equal(
+      'Reveal earlier steps (1 hidden)'
+    );
+    expect(overflow.getAttribute('title')).to.equal(
+      'Reveal the previous 1 of 1 hidden step'
+    );
     overflow.click();
     await strip.updateComplete;
     expect(stepButtons()).to.have.length(201);

@@ -154,6 +154,9 @@ export class BrowserStepStrip extends LitElement {
     // falls back to it for steps that do not report a `step_index`.
     const offset = this.steps.length - shown.length;
     const hidden = offset;
+    // One click grows the window by a chunk; name the button for what the
+    // click does, not the total still hidden behind it.
+    const revealCount = Math.min(hidden, BROWSER_STEP_STRIP_MAX);
     return html`
       <div class="wrap" data-testid="browser-step-strip">
         <span class="label">
@@ -193,12 +196,10 @@ export class BrowserStepStrip extends LitElement {
                   type="button"
                   class="more"
                   data-testid="browser-step-overflow"
-                  aria-label=${`Show ${hidden} earlier step${
+                  aria-label=${`Reveal earlier steps (${hidden} hidden)`}
+                  title=${`Reveal the previous ${revealCount} of ${hidden} hidden step${
                     hidden === 1 ? '' : 's'
                   }`}
-                  title=${`${hidden} earlier step${
-                    hidden === 1 ? '' : 's'
-                  } not shown; click to reveal`}
                   @click=${() => this.revealEarlier()}
                 >
                   +${hidden}
