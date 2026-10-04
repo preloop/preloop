@@ -262,11 +262,13 @@ page or list them in a flow's `allowed_mcp_tools`.
   `trigger_event.payload.window.from` / `.to`.
 - `limit` is at most 50; pass `next_cursor` back as `cursor` for the next page.
 
-The answer is one `resource_link` block per artifact and
-`structuredContent.items`: each artifact's descriptor plus `excerpt`, a short
-fragment of its text with matches in `**bold**`.
+The answer is `structuredContent.items` (each artifact's descriptor plus
+`excerpt`, a short fragment of its text with matches in `**bold**`), the same
+JSON as the first `text` block (MCP clients that show only text, such as
+OpenCode, read that), then one `resource_link` block per artifact.
 
-`get_artifact {artifact_id, max_bytes?}` returns the content: an
+`get_artifact {artifact_id, max_bytes?}` returns the descriptor as a leading
+`text` block, then the content: an
 `EmbeddedResource` with `text` for text kinds (the first `max_bytes`, default
 64 KiB, with `_meta["preloop.dev/artifact"].truncated` set when cut), inline
 bytes for binaries up to 1 MiB, and a `resource_link` beyond that.
