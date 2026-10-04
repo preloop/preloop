@@ -682,7 +682,8 @@ GET_ISSUE_DESCRIPTION = (
     "Get detailed information about an issue by its identifier (URL, key, or "
     "ID). Returns the synchronized snapshot. Pass include to add blocks read "
     "live from the tracker: label_catalog for the complete project label "
-    "catalogue and the recognized complexity scheme, revision for the "
+    "catalogue and the recognized complexity, risk and readiness schemes, "
+    "revision for the "
     "authoritative provider content and the expected_revision that a triage "
     "update_issue call must quote."
 )
@@ -711,10 +712,11 @@ UPDATE_ISSUE_DESCRIPTION = (
     "and/or manage GitHub issue reactions. To add or remove a reaction only, "
     "pass add_reaction or remove_reaction without other fields. To record a "
     "triage assessment, pass expected_revision (from get_issue with "
-    'include=["revision"]) and assessment, optionally complexity_label and '
-    "title: that path preserves issue content outside the managed section, "
-    "moves only labels in the recognized complexity family, creates standard "
-    "complexity labels only when the project has no scheme, and returns a "
+    'include=["revision"]) and assessment, optionally complexity_label, '
+    "risk_label, readiness_label and title: that path preserves issue content "
+    "outside the managed section, moves only labels in each recognized "
+    "family, creates a standard family only when the project has none, and "
+    "returns a "
     "truthful conflict or partial-write receipt instead of the plain update "
     "response. It cannot be combined with the other metadata fields."
 )
@@ -767,6 +769,28 @@ UPDATE_ISSUE_SCHEMA: Dict[str, Any] = {
             "description": (
                 "Exact name from the complexity scheme returned by get_issue "
                 "include=label_catalog. Null leaves complexity unset."
+            ),
+        },
+        "risk_label": {
+            "anyOf": [
+                {"type": "string", "minLength": 1, "maxLength": 255},
+                {"type": "null"},
+            ],
+            "default": None,
+            "description": (
+                "Exact name from the risk scheme returned by get_issue "
+                "include=label_catalog. Null leaves risk unset."
+            ),
+        },
+        "readiness_label": {
+            "anyOf": [
+                {"type": "string", "minLength": 1, "maxLength": 255},
+                {"type": "null"},
+            ],
+            "default": None,
+            "description": (
+                "Exact name from the readiness scheme returned by get_issue "
+                "include=label_catalog. Null leaves readiness unset."
             ),
         },
     },

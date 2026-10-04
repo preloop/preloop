@@ -224,6 +224,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         expected_revision: str | None = None,
         assessment: str | None = None,
         complexity_label: str | None = None,
+        risk_label: str | None = None,
+        readiness_label: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Apply the configured approval policy before updating an issue."""
@@ -248,6 +250,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             "expected_revision": expected_revision,
             "assessment": assessment,
             "complexity_label": complexity_label,
+            "risk_label": risk_label,
+            "readiness_label": readiness_label,
         }
 
         # Check approval with streaming

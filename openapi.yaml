@@ -1001,6 +1001,56 @@ paths:
                 $ref: '#/components/schemas/SessionArtifactUsageResponse'
       security:
       - bearerAuth: []
+  /api/v1/account/session-artifacts/settings:
+    get:
+      tags:
+      - Account
+      summary: Get Session Artifact Settings
+      description: Return whether raw audio is stored, and for how long.
+      operationId: get_session_artifact_settings_api_v1_account_session_artifacts_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - Account
+      summary: Update Session Artifact Settings
+      description: 'Opt the account in or out of raw audio storage; admin only, audited.
+
+
+        Uses ``manage_policies`` like the retention settings: it governs what
+
+        the account keeps. Every change writes an ``artifact_settings_updated``
+
+        audit row with the before and after value of each changed field; a
+
+        request that changes nothing writes no row.'
+      operationId: update_session_artifact_settings_api_v1_account_session_artifacts_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionArtifactSettingsUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+        '403':
+          description: Caller may not manage account policies
+        '422':
+          description: audio_retention_days_invalid
+      security:
+      - bearerAuth: []
   /api/v1/account/gateway-usage/summary:
     get:
       tags:
@@ -1680,6 +1730,102 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - bearerAuth: []
+  /api/v1/account/governance/flows/{flow_id}:
+    get:
+      tags:
+      - Account
+      summary: Get Account Flow Governance
+      description: 'Per-flow governance override for every execution of one flow.
+
+
+        Sync on purpose: FastAPI runs it in the threadpool, so the sync DB
+
+        session never blocks the event loop.'
+      operationId: get_account_flow_governance_api_v1_account_governance_flows__flow_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Account
+      summary: Update Account Flow Governance
+      description: Store a governance override for one flow's executions.
+      operationId: update_account_flow_governance_api_v1_account_governance_flows__flow_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubjectGovernanceConfig'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Account
+      summary: Reset Account Flow Governance
+      description: Drop the flow's override so it inherits the account policy again.
+      operationId: reset_account_flow_governance_api_v1_account_governance_flows__flow_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowGovernanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/agents/{agent_id}/governance:
     get:
       tags:
@@ -5469,6 +5615,17 @@ paths:
         holds.
 
 
+        Session artifacts created in the period are included as
+
+        ``artifacts/<session_id>/<artifact_id>-<name>`` members with
+
+        ``artifacts/manifest.json``, a list of A2A ``Artifact`` objects. Above
+
+        ``RETENTION_EXPORT_MAX_ARTIFACT_BYTES`` the export is refused with 413
+
+        ``export_too_large``.
+
+
         The archive carries ``manifest.json`` with a sha256 per member and a
 
         digest over the member list, in the same shape an evidence pack manifest
@@ -5498,6 +5655,19 @@ paths:
           description: Period end, exclusive (YYYY-MM-DD)
           title: End
         description: Period end, exclusive (YYYY-MM-DD)
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Limit the artifact members to one runtime session. Audit rows,
+            approvals, receipts and holds still cover the whole period.
+          title: Runtime Session Id
+        description: Limit the artifact members to one runtime session. Audit rows,
+          approvals, receipts and holds still cover the whole period.
       responses:
         '200':
           description: Successful Response
@@ -13744,6 +13914,159 @@ paths:
           description: Bad kind, label, limit or cursor
       security:
       - bearerAuth: []
+  /api/v1/artifacts:
+    get:
+      tags:
+      - Artifacts
+      summary: Search Artifacts
+      description: 'Search artifacts across sessions, newest first, with facets.
+
+
+        Ordered by ``created_at`` then id (also with ``q``) so the cursor is
+
+        stable while artifacts arrive. Facets count kinds and ``labels.site``
+
+        over the whole filter, up to 10000 rows (``facets_truncated``).'
+      operationId: search_artifacts_api_v1_artifacts_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Full text over artifact text chunks, plus name.
+          title: Q
+        description: Full text over artifact text chunks, plus name.
+      - name: kind
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: Repeatable.
+          title: Kind
+        description: Repeatable.
+      - name: label
+        in: query
+        required: false
+        schema:
+          type: array
+          items:
+            type: string
+          description: Repeatable `key:value`; all must match.
+          title: Label
+        description: Repeatable `key:value`; all must match.
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+      - name: tool_name
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Tool Name
+      - name: producer
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Producer
+      - name: runtime_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+      - name: from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: ISO 8601; `created_at >= from`.
+          title: From
+        description: ISO 8601; `created_at >= from`.
+      - name: to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: ISO 8601; `created_at < to`.
+          title: To
+        description: ISO 8601; `created_at < to`.
+      - name: held
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          description: Legal hold state.
+          title: Held
+        description: Legal hold state.
+      - name: availability
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: available, evicted or expired.
+          title: Availability
+        description: available, evicted or expired.
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: 1 to 200.
+          default: 50
+          title: Limit
+        description: 1 to 200.
+      - name: cursor
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cursor
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtifactSearchOut'
+        '401':
+          description: Missing or invalid credentials
+        '403':
+          description: User lacks view_runtime_sessions
+        '422':
+          description: Bad kind, label, id, date, limit or cursor
   /api/v1/runtime-sessions/search/saved:
     post:
       tags:
@@ -15343,26 +15666,28 @@ components:
             - 'off'
           - type: 'null'
           title: Native Tool Approvals
-          description: Account default for native tool-call approvals. Agents without
-            an explicit per-agent setting inherit this; absent/None means "enforce".
+          description: Account default for native tool-call approvals. Agents and
+            flow executions without an explicit per-subject setting inherit this;
+            absent/None means "enforce".
         approval_workflow_id:
           anyOf:
           - type: string
           - type: 'null'
           title: Approval Workflow Id
           description: Account default approval workflow for native tool-call approvals.
-            Agents without a per-agent pin inherit this; absent falls back to the
-            account's default workflow.
+            Agents and flows without their own pin inherit this; absent falls back
+            to the account's default workflow.
       type: object
       title: AccountGovernanceDefaults
-      description: 'Account-wide governance defaults inherited by every managed agent.
+      description: 'Account-wide governance defaults inherited by managed agents and
+        flows.
 
 
-        A per-agent subject-governance config with an explicit value overrides
+        A per-agent or per-flow subject-governance config with an explicit value
 
-        these; an absent/None per-agent value inherits. The final fallback when
+        overrides these; an absent/None per-subject value inherits. The final
 
-        both are unset is "enforce" (fail safe).'
+        fallback when both are unset is "enforce" (fail safe).'
     AccountGovernanceDefaultsResponse:
       properties:
         defaults:
@@ -17493,6 +17818,176 @@ components:
       type: object
       title: ApprovalWorkflowUpdate
       description: Schema for updating approval workflow.
+    ArtifactExcerpt:
+      properties:
+        text:
+          type: string
+          title: Text
+        highlights:
+          items:
+            prefixItems:
+            - type: integer
+            - type: integer
+            type: array
+            maxItems: 2
+            minItems: 2
+          type: array
+          title: Highlights
+          description: '`[start, end)` character offsets of query hits in `text`.'
+      type: object
+      required:
+      - text
+      title: ArtifactExcerpt
+      description: Redacted text of the best matching chunk, with hit offsets.
+    ArtifactSearchFacets:
+      properties:
+        kind:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Kind
+        site:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Site
+          description: Counts by `labels.site`.
+      type: object
+      title: ArtifactSearchFacets
+      description: Counts for the current filter, cursor excluded.
+    ArtifactSearchItem:
+      properties:
+        id:
+          type: string
+          title: Id
+        runtime_session_id:
+          type: string
+          title: Runtime Session Id
+        activity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Activity Id
+        kind:
+          type: string
+          title: Kind
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        content_type:
+          type: string
+          title: Content Type
+        size_bytes:
+          type: integer
+          title: Size Bytes
+        sha256:
+          type: string
+          title: Sha256
+        labels:
+          additionalProperties: true
+          type: object
+          title: Labels
+        producer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Producer
+        agent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Id
+        tool_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Name
+        parent_artifact_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Artifact Id
+        text_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text Status
+        availability:
+          type: string
+          title: Availability
+        legal_hold:
+          type: boolean
+          title: Legal Hold
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        content_block:
+          $ref: '#/components/schemas/McpResourceLink'
+        session_title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Title
+        agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Name
+        excerpt:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactExcerpt'
+          - type: 'null'
+          description: Set when `q` is given and a text chunk matched.
+        cue_start:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cue Start
+          description: 'Transcript only: start in seconds of the cue the excerpt is
+            in.'
+      type: object
+      required:
+      - id
+      - runtime_session_id
+      - kind
+      - content_type
+      - size_bytes
+      - sha256
+      - availability
+      - legal_hold
+      - created_at
+      - content_block
+      title: ArtifactSearchItem
+      description: The session artifact descriptor plus its session and agent names.
+    ArtifactSearchOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ArtifactSearchItem'
+          type: array
+          title: Items
+        next_cursor:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Cursor
+          description: Pass as `cursor` for the next page; null on the last page.
+        facets:
+          $ref: '#/components/schemas/ArtifactSearchFacets'
+        facets_truncated:
+          type: boolean
+          title: Facets Truncated
+          description: More than 10000 rows matched; facets count the newest 10000.
+          default: false
+      type: object
+      required:
+      - items
+      - facets
+      title: ArtifactSearchOut
+      description: One page of account-wide artifact search, newest first.
     AttentionDismissalListResponse:
       properties:
         items:
@@ -21659,6 +22154,36 @@ components:
       - budget
       title: FlowGatewayUsageSummaryResponse
       description: Flow-scoped gateway usage summary.
+    FlowGovernanceResponse:
+      properties:
+        subject_type:
+          type: string
+          title: Subject Type
+        subject_id:
+          type: string
+          title: Subject Id
+        config:
+          $ref: '#/components/schemas/SubjectGovernanceConfig'
+        has_override:
+          type: boolean
+          title: Has Override
+          default: false
+        account_defaults:
+          $ref: '#/components/schemas/AccountGovernanceDefaults'
+      type: object
+      required:
+      - subject_type
+      - subject_id
+      - config
+      title: FlowGovernanceResponse
+      description: 'Per-flow governance override plus the account defaults it inherits.
+
+
+        ``has_override`` is False when the flow stores no override, in which case
+
+        ``config`` is empty and every execution of the flow is governed by the
+
+        account-wide policy (tool rules, enabled tools) and ``account_defaults``.'
     FlowNotifications:
       properties:
         on_failure:
@@ -30532,6 +31057,54 @@ components:
         \    threshold: Finite threshold in [0, 1] this deployment screens at.\n \
         \   primary_outcome: Optional lowercase label naming the dominant rule\n \
         \       category; omitted for benign content."
+    SessionArtifactSettingsResponse:
+      properties:
+        audio_storage_enabled:
+          type: boolean
+          title: Audio Storage Enabled
+          description: Store raw audio deposited by agents. Off by default.
+        audio_retention_days:
+          type: integer
+          title: Audio Retention Days
+          description: Days raw audio is kept before its bytes expire.
+        audio_retention_max_days:
+          type: integer
+          title: Audio Retention Max Days
+          description: Longest allowed audio retention (the session retention).
+        updated_by_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated By User Id
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - audio_storage_enabled
+      - audio_retention_days
+      - audio_retention_max_days
+      title: SessionArtifactSettingsResponse
+      description: Account artifact storage settings (#1102).
+    SessionArtifactSettingsUpdate:
+      properties:
+        audio_storage_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Audio Storage Enabled
+        audio_retention_days:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Audio Retention Days
+      type: object
+      title: SessionArtifactSettingsUpdate
+      description: Change artifact storage settings; omitted fields are left as they
+        are.
     SessionArtifactUsageByKind:
       properties:
         screenshot:

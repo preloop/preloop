@@ -463,3 +463,83 @@ def test_a_period_over_the_row_cap_is_refused(client, db_session, account, monke
     )
 
     assert response.status_code == 413
+
+
+def test_the_export_refuses_too_many_artifact_bytes_with_413(
+    client, db_session, account, monkeypatch
+):
+    from preloop.models.crud import crud_runtime_session
+    from preloop.models.crud import runtime_session_artifact as artifact_crud
+
+    when = datetime(2026, 4, 15, tzinfo=UTC)
+    session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=account.id,
+        session_source_type="custom",
+        session_source_id="big-run",
+        session_reference="big-run",
+        runtime_principal_type="agent",
+        runtime_principal_id="agent-1",
+        runtime_principal_name="Agent",
+        started_at=when,
+        last_activity_at=when,
+    )
+    row = artifact_crud.store(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=session.id,
+        kind="document",
+        source="test",
+        source_ref=None,
+        content_type="text/plain",
+        plaintext=b"x" * 64,
+        manifest={},
+        name="big.txt",
+        commit=False,
+    )
+    row.created_at = when
+    db_session.flush()
+    monkeypatch.setattr(settings, "retention_export_max_artifact_bytes", 10)
+
+    response = client.post(
+        f"{BASE}/exports",
+        params={
+            "start": "2026-04-01",
+            "end": "2026-05-01",
+            "runtime_session_id": str(session.id),
+        },
+    )
+
+    assert response.status_code == 413
+    assert "export_too_large" in response.json()["detail"]
+    assert "1 artifacts totalling 64 bytes" in response.json()["detail"]
+
+    monkeypatch.setattr(settings, "retention_export_max_artifact_bytes", 1000)
+    ok = client.post(
+        f"{BASE}/exports",
+        params={
+            "start": "2026-04-01",
+            "end": "2026-05-01",
+            "runtime_session_id": str(session.id),
+        },
+    )
+    assert ok.status_code == 200
+    with tarfile.open(fileobj=io.BytesIO(ok.content), mode="r:gz") as tar:
+        names = tar.getnames()
+    assert f"artifacts/{session.id}/{row.id}-big.txt" in names
+
+
+def test_an_unreadable_artifact_is_a_500_naming_the_code(client, mocker):
+    from preloop.services.retention_export import PeriodExportError
+
+    mocker.patch(
+        "preloop.api.endpoints.retention.build_period_export",
+        side_effect=PeriodExportError(
+            "artifact_integrity", "artifact x does not match its stored digest"
+        ),
+    )
+    response = client.post(
+        f"{BASE}/exports", params={"start": "2026-04-01", "end": "2026-05-01"}
+    )
+    assert response.status_code == 500
+    assert "stored digest" in response.json()["detail"]

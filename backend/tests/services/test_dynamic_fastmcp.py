@@ -1974,6 +1974,7 @@ class TestHelperFunctions:
         mock_api_key = MagicMock()
         mock_api_key.context_data = {
             "flow_execution_id": "flow-exec-1",
+            "flow_id": "flow-1",
             "allowed_mcp_tools": [],
             "runtime_principal": {
                 "type": "flow_execution",
@@ -2007,6 +2008,8 @@ class TestHelperFunctions:
         assert result.runtime_principal_type == "flow_execution"
         assert result.runtime_principal_id == "flow-exec-1"
         assert result.runtime_principal_name == "Test Flow"
+        # The flow id selects the per-flow governance override.
+        assert result.flow_id == "flow-1"
 
 
 class TestSendNoteToolExposure:

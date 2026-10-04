@@ -392,38 +392,13 @@ func (c *Client) executeRequest(
 	contentType string,
 	extraHeaders map[string]string,
 ) (int, []byte, http.Header, error) {
-	url := strings.TrimRight(c.baseURL, "/") + path
-
 	var bodyReader io.Reader
 	if bodyBytes != nil {
 		bodyReader = bytes.NewReader(bodyBytes)
 	}
-
-	req, err := http.NewRequest(method, url, bodyReader)
+	req, err := c.newRequest(method, path, bodyReader, contentType, extraHeaders)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Apply extra headers FIRST so the canonical headers below win on
-	// conflict. This is what protects callers from accidentally
-	// overriding Content-Type / Authorization with stale values passed in
-	// from upstream code paths. Accept is the one exception: an endpoint
-	// that serves a file needs to ask for that file's media type, so a
-	// caller-supplied Accept stands.
-	for key, value := range extraHeaders {
-		req.Header.Set(key, value)
-	}
-
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
-	version.SetClientIdentityHeaders(req.Header)
-
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		return 0, nil, nil, err
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -438,6 +413,42 @@ func (c *Client) executeRequest(
 	}
 
 	return resp.StatusCode, responseBody, resp.Header, nil
+}
+
+// newRequest builds one authenticated API request. Every path (the JSON
+// helpers, GetFile and Stream) goes through it, so the header rules live in
+// one place.
+//
+// Extra headers are applied FIRST so the canonical headers below win on
+// conflict. This is what protects callers from accidentally overriding
+// Content-Type / Authorization with stale values passed in from upstream
+// code paths. Accept is the one exception: an endpoint that serves a file
+// needs to ask for that file's media type, so a caller-supplied Accept
+// stands.
+func (c *Client) newRequest(
+	method, path string,
+	body io.Reader,
+	contentType string,
+	extraHeaders map[string]string,
+) (*http.Request, error) {
+	req, err := http.NewRequest(method, strings.TrimRight(c.baseURL, "/")+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if req.Header.Get("Accept") == "" {
+		req.Header.Set("Accept", "application/json")
+	}
+	version.SetClientIdentityHeaders(req.Header)
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return req, nil
 }
 
 // GetFile performs a GET and hands back the body and the response headers

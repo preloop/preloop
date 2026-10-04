@@ -13,7 +13,9 @@ from preloop.schemas.subject_governance import (
 SUBJECT_GOVERNANCE_KEY = "subject_governance"
 SUBJECT_TYPE_MANAGED_AGENTS = "managed_agents"
 SUBJECT_TYPE_API_KEYS = "api_keys"
-SUBJECT_TYPES = (SUBJECT_TYPE_MANAGED_AGENTS, SUBJECT_TYPE_API_KEYS)
+# Per-flow overrides: govern the traffic of every execution of one flow.
+SUBJECT_TYPE_FLOWS = "flows"
+SUBJECT_TYPES = (SUBJECT_TYPE_MANAGED_AGENTS, SUBJECT_TYPE_API_KEYS, SUBJECT_TYPE_FLOWS)
 
 # Account-wide governance defaults that per-subject configs inherit from.
 # Lives beside the per-subject buckets inside the same store so one JSON
@@ -25,6 +27,7 @@ def empty_subject_governance_store() -> dict[str, Any]:
     return {
         SUBJECT_TYPE_MANAGED_AGENTS: {},
         SUBJECT_TYPE_API_KEYS: {},
+        SUBJECT_TYPE_FLOWS: {},
         ACCOUNT_DEFAULTS_KEY: {},
     }
 
@@ -186,6 +189,13 @@ def build_subject_context_from_api_key(api_key: Any) -> dict[str, Optional[str]]
             if context_data.get("runtime_session_id")
             else None
         ),
+        # Only execution-scoped flow tokens carry a flow id; it selects the
+        # per-flow governance override for that execution's traffic.
+        "flow_id": (
+            str(context_data.get("flow_id"))
+            if context_data.get("flow_execution_id") and context_data.get("flow_id")
+            else None
+        ),
         "runtime_principal_type": runtime_principal.get("type"),
         "runtime_principal_id": runtime_principal.get("id"),
         "runtime_principal_name": runtime_principal.get("name"),
@@ -195,11 +205,20 @@ def build_subject_context_from_api_key(api_key: Any) -> dict[str, Optional[str]]
 def subject_scope_chain(
     subject_context: dict[str, Optional[str]],
 ) -> list[tuple[str, str]]:
+    """Return governance scopes, most specific first.
+
+    Order: API key, flow (only for a flow execution's credential), managed
+    agent. Account defaults are resolved separately by the callers that
+    support them (native tool approvals and approval workflow).
+    """
     scopes: list[tuple[str, str]] = []
     api_key_id = subject_context.get("api_key_id")
+    flow_id = subject_context.get("flow_id")
     managed_agent_id = subject_context.get("managed_agent_id")
     if api_key_id:
         scopes.append((SUBJECT_TYPE_API_KEYS, api_key_id))
+    if flow_id:
+        scopes.append((SUBJECT_TYPE_FLOWS, str(flow_id)))
     if managed_agent_id:
         scopes.append((SUBJECT_TYPE_MANAGED_AGENTS, managed_agent_id))
     return scopes

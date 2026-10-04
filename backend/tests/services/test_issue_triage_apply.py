@@ -48,7 +48,8 @@ class FakeProvider:
         self.rows.append(
             {
                 "name": name,
-                "description": "Preloop issue complexity: " + name.split(":")[-1],
+                "description": f"Preloop issue {name.split(':')[0]}: "
+                + name.split(":")[-1],
             }
         )
         self.operations.append(("create", name))

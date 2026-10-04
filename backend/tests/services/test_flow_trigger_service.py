@@ -1813,3 +1813,67 @@ class TestFindDuplicateExecutionResourceKey:
         )
         assert duplicate is None
         mock_crud.get_running_by_flow.assert_not_called()
+
+
+class TestTriageDispatchHandOff:
+    """Labels from one triage write start the implementation flow exactly once."""
+
+    @staticmethod
+    def _labeled(label: str, account_id: str) -> dict:
+        return {
+            "source": "github",
+            "type": "issue_labeled",
+            "account_id": account_id,
+            "payload": {
+                "action": "labeled",
+                "sender": {"login": "preloop[bot]"},
+                "label": {"name": label},
+                "issue": {
+                    "number": 17,
+                    "title": "Improve first render performance",
+                    "labels": [{"name": label}],
+                },
+                "repository": {"full_name": "example/widgets"},
+            },
+        }
+
+    @patch("preloop.services.flow_trigger_service.asyncio.create_task")
+    @patch("preloop.services.flow_trigger_service.get_nats_client")
+    @patch("preloop.services.flow_trigger_service.crud_flow")
+    async def test_bot_dispatch_label_starts_implementation_once(
+        self, mock_crud, mock_nats, mock_create_task, flow_trigger_service
+    ):
+        mock_nats.return_value = AsyncMock()
+        implementation = MagicMock()
+        implementation.id = uuid.uuid4()
+        implementation.name = "Automated Issue Implementation"
+        implementation.is_enabled = True
+        implementation.is_preset = False
+        implementation.source_preset_id = None
+        implementation.git_clone_config = None
+        implementation.trigger_config = {"labels": ["agent-ready"]}
+        triage = MagicMock()
+        triage.id = uuid.uuid4()
+        triage.name = "Issue Triage Assistant"
+        triage.is_enabled = True
+        triage.git_clone_config = None
+        triage.trigger_config = None
+        subscribed = {"issue_labeled": [implementation], "issue_updated": [triage]}
+        mock_crud.get_by_trigger.side_effect = lambda db, event_type, **kwargs: list(
+            subscribed.get(event_type, [])
+        )
+        account_id = str(uuid.uuid4())
+        start = AsyncMock()
+        with patch.object(flow_trigger_service, "_start_flow_execution", new=start):
+            # GitHub reports one labeled delivery per label in the delta.
+            for label in (
+                "complexity:low",
+                "risk:low",
+                "readiness:ready",
+                "agent-ready",
+            ):
+                await flow_trigger_service.process_event(
+                    self._labeled(label, account_id)
+                )
+        started = [call.kwargs["flow"] for call in start.await_args_list]
+        assert started == [implementation]

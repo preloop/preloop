@@ -389,7 +389,38 @@ approvals/approval_request.jsonl
 audit/audit_log.jsonl
 evidence/receipts.jsonl          receipts, not payloads: artifact id and digest
 holds/legal_hold.jsonl
+artifacts/manifest.json          A2A Artifact list, one per session artifact
+artifacts/<session_id>/<artifact_id>-<name>   decrypted artifact bytes
 ```
+
+Session artifacts created in the period (transcripts, screenshots, documents,
+generated files) are exported with their bytes. Add
+`&runtime_session_id=<id>` to limit the artifact members to one session; the
+other record classes still cover the whole period. In the console, the
+session toolbar's **Add to evidence export** opens this export on
+Settings > Records with the session and its dates filled in.
+
+`artifacts/manifest.json` is a JSON list of A2A v1 `Artifact` objects built
+with the same mapping the rest of the artifact surface uses
+(`artifact_shapes.to_a2a_artifact`): `artifact_id`, `name`, one `Part`
+`{url: "artifact:<member path>", filename, media_type}`, and `metadata`
+`{kind, labels, sha256, size_bytes, producer, runtime_session_id, created_at,
+legal_hold, availability}`. Each member's sha256 is the one stored when the
+artifact was deposited and is also listed in `manifest.json`, so
+`preloop evidence verify` checks it like any other member. An artifact whose
+bytes are gone (`evicted` or `expired`) is listed with that `availability`
+and has no member. A held artifact keeps its bytes past retention and is
+exported.
+
+Artifact bytes are streamed into the archive one at a time. Above
+`RETENTION_EXPORT_MAX_ARTIFACT_BYTES` (2 GiB) the export is refused with 413
+`export_too_large`, naming the artifact count and bytes; narrow the dates or
+export one session.
+`preloop evidence verify` streams a period export from disk and digests each
+member as it passes, so it checks a bundle up to that cap without holding it
+in memory. `manifest.json` records `artifact_scope.runtime_session_id` (null
+for the whole period) under the signature, and the export's audit row repeats
+it, so a session-limited bundle cannot pass for a complete one.
 
 `manifest.json` carries `members` with a `sha256` and `size_bytes` per member
 and a `members_digest` over that list, the same shape and the same computation

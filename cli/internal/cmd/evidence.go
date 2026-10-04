@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -114,17 +115,28 @@ func init() {
 }
 
 func runEvidenceVerify(cmd *cobra.Command, args []string) error {
-	archive, err := os.ReadFile(args[0])
-	if err != nil {
-		return fmt.Errorf("could not read %s: %w", args[0], err)
-	}
-	report := evidenceVerifyReport{File: args[0], Sha256: verify.DigestOfBytes(archive)}
+	report := evidenceVerifyReport{File: args[0]}
+	var err error
 	if evidenceExecutionID != "" {
+		var archive []byte
+		archive, err = os.ReadFile(args[0])
+		if err != nil {
+			return fmt.Errorf("could not read %s: %w", args[0], err)
+		}
+		report.Sha256 = verify.DigestOfBytes(archive)
 		report.Kind = "evidence_pack"
 		err = verifyEvidencePack(cmd, archive, &report)
 	} else {
+		// A period export can carry session artifacts (#1088), so it is
+		// streamed from disk rather than read whole.
+		var file *os.File
+		file, err = os.Open(args[0])
+		if err != nil {
+			return fmt.Errorf("could not read %s: %w", args[0], err)
+		}
+		defer func() { _ = file.Close() }()
 		report.Kind = "period_export"
-		err = verifyPeriodExport(cmd, archive, &report)
+		err = verifyPeriodExport(cmd, file, &report)
 	}
 	if err != nil {
 		return err
@@ -144,8 +156,9 @@ func runEvidenceVerify(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func verifyPeriodExport(cmd *cobra.Command, archive []byte, report *evidenceVerifyReport) error {
-	result, err := verify.ReadExport(archive)
+func verifyPeriodExport(cmd *cobra.Command, archive io.Reader, report *evidenceVerifyReport) error {
+	result, err := verify.ReadExportFrom(archive)
+	report.Sha256 = result.ArchiveSha256
 	if err != nil {
 		return err
 	}
