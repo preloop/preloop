@@ -13,6 +13,7 @@ from preloop.models.models.account import Account
 from preloop.models.models.policy_snapshot import PolicySnapshot
 from preloop.models.models.user import User
 from preloop.services.policy import (
+    ModelIORule,
     PolicyDiffResult,
     PolicyDocument,
     PolicyImportResult,
@@ -1283,3 +1284,84 @@ class TestModelIORulesPermissionDeps:
             db=mock_db,
         )
         assert result.rules == []
+
+
+class TestModelIORuleSimpleConditionGuard:
+    """A CEL-shaped expression declared ``simple`` is rejected on write."""
+
+    @staticmethod
+    def _rule(expression: str, condition_type: str) -> ModelIORule:
+        return ModelIORule(
+            id="deny-pii",
+            target="model.request",
+            detectors={"pii": True},
+            conditions=[
+                {
+                    "expression": expression,
+                    "action": "deny",
+                    "condition_type": condition_type,
+                }
+            ],
+        )
+
+    async def test_create_rejects_simple_condition_the_simple_parser_cannot_read(
+        self, mock_db, mock_account, mock_user
+    ):
+        rule = self._rule("'credit_card' in pii.types_found", "simple")
+        with pytest.raises(HTTPException) as exc_info:
+            policies.create_model_io_rule(
+                rule=rule,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
+        assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "condition_type" in exc_info.value.detail
+
+    async def test_create_accepts_the_same_expression_as_cel(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
+        rule = self._rule("'credit_card' in pii.types_found", "cel")
+        upsert = mocker.patch(
+            "preloop.api.endpoints.policies.upsert_model_io_rule",
+            return_value=rule,
+        )
+        result = policies.create_model_io_rule(
+            rule=rule,
+            account=mock_account,
+            current_user=mock_user,
+            db=mock_db,
+        )
+        upsert.assert_called_once()
+        assert result["conditions"][0]["condition_type"] == "cel"
+
+    async def test_create_accepts_a_simple_comparison(
+        self, mock_db, mock_account, mock_user, mocker
+    ):
+        rule = self._rule("pii.found == true", "simple")
+        mocker.patch(
+            "preloop.api.endpoints.policies.upsert_model_io_rule",
+            return_value=rule,
+        )
+        result = policies.create_model_io_rule(
+            rule=rule,
+            account=mock_account,
+            current_user=mock_user,
+            db=mock_db,
+        )
+        assert result["conditions"][0]["condition_type"] == "simple"
+
+    async def test_update_rejects_simple_condition_the_simple_parser_cannot_read(
+        self, mock_db, mock_account, mock_user
+    ):
+        rule = self._rule("'credit_card' in pii.types_found", "simple")
+        with pytest.raises(HTTPException) as exc_info:
+            policies.update_model_io_rule(
+                rule_id="deny-pii",
+                rule=rule,
+                account=mock_account,
+                current_user=mock_user,
+                db=mock_db,
+            )
+        assert exc_info.value.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+        assert "condition_type" in exc_info.value.detail

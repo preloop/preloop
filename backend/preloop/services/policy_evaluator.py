@@ -1206,6 +1206,29 @@ def evaluate_condition_against_bindings(
     raise ValueError(f"Unknown condition type: {condition_type}")
 
 
+def is_simple_expression(expression: str) -> bool:
+    """Return whether the simple evaluator can read ``expression``.
+
+    This checks syntax only: the expression is evaluated against empty
+    bindings, so no stored value can change the answer. Callers that guard a
+    write use it to reject an expression declared ``simple`` but written in
+    CEL syntax (``in``, ``&&``, ``||``, indexing, CEL functions); the simple
+    evaluator raises on those at request time, and a mis-typed deny rule then
+    fails closed.
+
+    Args:
+        expression: Condition expression to check.
+
+    Returns:
+        True when the simple evaluator recognizes the expression form.
+    """
+    try:
+        evaluate_condition_against_bindings(expression, "simple", {})
+    except ValueError:
+        return False
+    return True
+
+
 def _evaluate_simple_condition_on_bindings(
     expression: str, bindings: Dict[str, Any]
 ) -> bool:

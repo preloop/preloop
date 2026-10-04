@@ -1107,7 +1107,7 @@ describe('PoliciesView', () => {
         id: 'deny-cel',
         conditionMode: 'custom',
         action: 'deny',
-        expression: 'pii.types_found.contains("email")',
+        expression: "'credit_card' in pii.types_found",
       });
       await element.updateComplete;
       const rule = (element as any).buildModelIORuleFromForm();
@@ -1127,7 +1127,7 @@ describe('PoliciesView', () => {
         id: 'deny-cel',
         conditionMode: 'custom',
         action: 'deny',
-        expression: 'pii.types_found.contains("email")',
+        expression: "'credit_card' in pii.types_found",
       });
       await element.updateComplete;
       await (element as any).saveModelIORule();
