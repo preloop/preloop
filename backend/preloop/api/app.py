@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketState
@@ -1516,6 +1517,17 @@ def create_app() -> FastAPI:
 
     app.add_middleware(RestrictedCiAuthMiddleware)
 
+    # --- Local API docs assets ---
+    # Serve the pinned Swagger UI and ReDoc bundles from the API origin so the
+    # documentation pages render on air-gapped installs and under a strict CSP
+    # that blocks third-party CDNs. The files live in ``preloop/static/vendor``
+    # with their provenance and SHA-256 hashes; see the README next to them.
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(base_dir / "preloop" / "static")),
+        name="static",
+    )
+
     # --- Custom API Docs Routes (Moved to /docs/api and /docs/redoc) ---
     # FastAPI caches route callables. Resolve the serving app from the request
     # so those caches cannot retain each application created by tests or reloads.
@@ -1525,8 +1537,10 @@ def create_app() -> FastAPI:
             openapi_url=request.app.openapi_url,
             title=f"{request.app.title} - Swagger UI",
             oauth2_redirect_url=request.app.swagger_ui_oauth2_redirect_url,
-            swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
-            swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
+            swagger_js_url="/static/vendor/swagger-ui-bundle.js",
+            swagger_css_url="/static/vendor/swagger-ui.css",
+            # FastAPI's default favicon points at fastapi.tiangolo.com.
+            swagger_favicon_url="/static/vendor/favicon.png",
         )
 
     @app.get("/api/v1/openapi.yaml", include_in_schema=False)
@@ -1544,7 +1558,11 @@ def create_app() -> FastAPI:
         return get_redoc_html(
             openapi_url=request.app.openapi_url,
             title=f"{request.app.title} - ReDoc",
-            redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@2.0.0/bundles/redoc.standalone.js",
+            redoc_js_url="/static/vendor/redoc.standalone.js",
+            redoc_favicon_url="/static/vendor/favicon.png",
+            # ReDoc injects a fonts.googleapis.com stylesheet by default; the
+            # self-hosted bundle renders with system fonts instead.
+            with_google_fonts=False,
         )
 
     # Add custom OpenAPI schema

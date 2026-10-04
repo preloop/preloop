@@ -8,11 +8,15 @@ repos:
     rev: v5.0.0
     hooks:
     -   id: trailing-whitespace
+        # Vendored bundles are byte-exact upstream copies; rewriting their
+        # whitespace would break the recorded SHA-256 hashes.
+        exclude: ^backend/preloop/static/vendor/
     -   id: end-of-file-fixer
+        exclude: ^backend/preloop/static/vendor/
     -   id: check-yaml
         exclude: ^(helm/|scripts/examples/helm|mkdocs\.yml$|docs/scripts/screenshot-stack/compose\.(screenshots|ee)\.yml$)
     -   id: check-added-large-files
-        exclude: ^(frontend/public/assets/screenshots/quickstart/dark/agents-onboarding\.webp|docs/assets/animations/quickstart/dark/agents-onboarding\.webp)$
+        exclude: ^(frontend/public/assets/screenshots/quickstart/dark/agents-onboarding\.webp|docs/assets/animations/quickstart/dark/agents-onboarding\.webp|backend/preloop/static/vendor/)
     -   id: debug-statements
     -   id: check-toml
 
