@@ -3,6 +3,6 @@
   "private": true,
   "description": "Pinned Pi coding agent for the harness image. Installed with npm ci.",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1"
+    "@earendil-works/pi-coding-agent": "1.0.0"
   }
 }
