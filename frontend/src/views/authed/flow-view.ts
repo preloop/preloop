@@ -71,6 +71,52 @@ import '../../components/view-header';
  * fall back to the shared agent-kind table, then to the id itself, which is
  * still more use than an empty chip.
  */
+/**
+ * The reference lists the detail page loads next to the flow, in the order
+ * the warning names them. Each is fetched (and retried) on its own, so one
+ * list that is down does not blank the others or force a full reload.
+ */
+const REFERENCE_LISTS = [
+  'trackers',
+  'models',
+  'tools',
+  'mcpServers',
+  'organizations',
+  'projects',
+] as const;
+
+type ReferenceList = (typeof REFERENCE_LISTS)[number];
+
+const REFERENCE_LIST_LABELS: Record<ReferenceList, string> = {
+  trackers: 'trackers',
+  models: 'models',
+  tools: 'tools',
+  mcpServers: 'MCP servers',
+  organizations: 'organizations',
+  projects: 'projects',
+};
+
+const REFERENCE_LIST_FETCHERS: Record<ReferenceList, () => Promise<any[]>> = {
+  trackers: () => getTrackers(),
+  models: () => getAIModels(),
+  tools: () => getAllTools(),
+  mcpServers: () => getMCPServers(),
+  organizations: () => listOrganizations(),
+  projects: () => listProjects(),
+};
+
+/** "Trackers", "Trackers and projects", "Trackers, models and projects". */
+export function referenceListsSentence(
+  lists: readonly ReferenceList[]
+): string {
+  const labels = lists.map((list) => REFERENCE_LIST_LABELS[list]);
+  const joined =
+    labels.length <= 1
+      ? labels.join('')
+      : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+  return joined.charAt(0).toUpperCase() + joined.slice(1);
+}
+
 const FLOW_RUNTIME_LABELS: Record<string, string> = {
   codex: 'Codex CLI',
   gemini: 'Gemini CLI',
@@ -283,9 +329,12 @@ export class FlowView extends LitElement {
   @state()
   private loadError: string | null = null;
 
-  /** True when trackers or models failed to load for the detail page. */
+  /** The reference lists that failed to load for the detail page. */
   @state()
-  private referenceDataError = false;
+  private referenceListsFailed: ReferenceList[] = [];
+
+  @state()
+  private retryingReferenceLists = false;
 
   @state() private governanceOpened = false;
 
@@ -385,7 +434,7 @@ export class FlowView extends LitElement {
     const generation = ++this.flowLoadGeneration;
     this.flowReady = false;
     this.loadError = null;
-    this.referenceDataError = false;
+    this.referenceListsFailed = [];
     this.governanceOpened = false;
     this._formInstanceId += 1;
 
@@ -437,33 +486,20 @@ export class FlowView extends LitElement {
 
       this._loadingReferenceData = true;
       try {
-        const [
-          trackers,
-          models,
-          tools,
-          servers,
-          allOrganizations,
-          allProjects,
-        ] = await Promise.all([
-          getTrackers(),
-          getAIModels(),
-          this.isEditing ? getAllTools() : Promise.resolve([]),
-          this.isEditing ? getMCPServers() : Promise.resolve([]),
-          listOrganizations(),
-          listProjects(),
-        ]);
-        if (generation !== this.flowLoadGeneration) return;
-        this.trackers = trackers;
-        this.models = models;
-        this.availableTools = tools;
-        this.mcpServers = servers;
-        this.organizations = allOrganizations;
-        this.projects = allProjects;
-      } catch (error) {
-        console.error('Failed to load reference data:', error);
-        if (generation === this.flowLoadGeneration) {
-          this.referenceDataError = true;
+        // Tools and MCP servers only feed the editor.
+        if (!this.isEditing) {
+          this.availableTools = [];
+          this.mcpServers = [];
         }
+        const failed = await this.loadReferenceLists(
+          REFERENCE_LISTS.filter(
+            (list) =>
+              this.isEditing || (list !== 'tools' && list !== 'mcpServers')
+          ),
+          generation
+        );
+        if (generation !== this.flowLoadGeneration) return;
+        this.referenceListsFailed = failed;
       } finally {
         this._loadingReferenceData = false;
       }
@@ -715,6 +751,79 @@ export class FlowView extends LitElement {
     `;
   }
 
+  /**
+   * Fetch the given reference lists side by side, keeping each list that
+   * loads. Returns the lists that failed, in warning order. Nothing is
+   * assigned once a newer load has started.
+   */
+  private async loadReferenceLists(
+    lists: readonly ReferenceList[],
+    generation: number
+  ): Promise<ReferenceList[]> {
+    const failed = new Set<ReferenceList>();
+    await Promise.all(
+      lists.map(async (list) => {
+        try {
+          const items = await REFERENCE_LIST_FETCHERS[list]();
+          if (generation === this.flowLoadGeneration) {
+            this.assignReferenceList(list, items);
+          }
+        } catch (error) {
+          console.error(
+            `Failed to load ${REFERENCE_LIST_LABELS[list]} for the flow page:`,
+            error
+          );
+          failed.add(list);
+        }
+      })
+    );
+    return REFERENCE_LISTS.filter((list) => failed.has(list));
+  }
+
+  private assignReferenceList(list: ReferenceList, items: any[]): void {
+    switch (list) {
+      case 'trackers':
+        this.trackers = items;
+        break;
+      case 'models':
+        this.models = items;
+        break;
+      case 'tools':
+        this.availableTools = items;
+        break;
+      case 'mcpServers':
+        this.mcpServers = items;
+        break;
+      case 'organizations':
+        this.organizations = items;
+        break;
+      case 'projects':
+        this.projects = items;
+        break;
+    }
+  }
+
+  /**
+   * Retry only the reference lists that failed. Reloading the whole page
+   * would refetch the flow and every list that already loaded.
+   */
+  private async retryReferenceLists(): Promise<void> {
+    if (this.retryingReferenceLists) return;
+    const generation = this.flowLoadGeneration;
+    this.retryingReferenceLists = true;
+    try {
+      const failed = await this.loadReferenceLists(
+        this.referenceListsFailed,
+        generation
+      );
+      if (generation === this.flowLoadGeneration) {
+        this.referenceListsFailed = failed;
+      }
+    } finally {
+      this.retryingReferenceLists = false;
+    }
+  }
+
   /** Reloads the flow and its reference data after a failed load. */
   private retryLoad = () => {
     void this.loadFlowData(new URLSearchParams(window.location.search));
@@ -753,18 +862,20 @@ export class FlowView extends LitElement {
     `;
   }
 
-  /** Inline warning when trackers or models could not be loaded. */
+  /** Inline warning naming the reference lists that could not be loaded. */
   private renderReferenceDataWarning() {
-    if (!this.referenceDataError) return nothing;
+    if (this.referenceListsFailed.length === 0) return nothing;
+    const lists = referenceListsSentence(this.referenceListsFailed);
     return html`
       <sl-alert variant="warning" open data-reference-data-warning>
         <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-        Trackers and models could not be loaded, so some trigger and model names
-        may be missing.
+        ${`${lists} could not be loaded.`} Some names on this page may be
+        missing.
         <sl-button
           variant="text"
           size="small"
-          @click=${this.retryLoad}
+          ?loading=${this.retryingReferenceLists}
+          @click=${() => this.retryReferenceLists()}
           style="margin-left: var(--sl-spacing-2x-small);"
           >Try again</sl-button
         >

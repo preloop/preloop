@@ -3,7 +3,19 @@ import sinon from 'sinon';
 
 import './flow-view';
 import type { FlowView } from './flow-view';
-import { flowRuntimeLabel } from './flow-view';
+import { flowRuntimeLabel, referenceListsSentence } from './flow-view';
+
+describe('FlowView reference list names', () => {
+  it('names one, two or more failed lists as a sentence start', () => {
+    expect(referenceListsSentence(['projects'])).to.equal('Projects');
+    expect(referenceListsSentence(['trackers', 'projects'])).to.equal(
+      'Trackers and projects'
+    );
+    expect(
+      referenceListsSentence(['models', 'mcpServers', 'organizations'])
+    ).to.equal('Models, MCP servers and organizations');
+  });
+});
 
 describe('FlowView model selection', () => {
   function createElement(): FlowView {
@@ -767,7 +779,7 @@ describe('FlowView load failure', () => {
     element.isNew = false;
     element.isEditing = false;
     element.initialized = true;
-    element.referenceDataError = true;
+    element.referenceListsFailed = ['trackers', 'models'];
     element.flow = {
       id: 'flow-1',
       name: 'PR Reviewer',
@@ -785,6 +797,93 @@ describe('FlowView load failure', () => {
       );
     } finally {
       element.remove();
+    }
+  });
+
+  it('names the lists that failed and retries only those', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    const failing = new Set(['/api/v1/trackers', '/api/v1/projects']);
+    const requested: string[] = [];
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    const fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        requested.push(url);
+        if (url.startsWith('/api/v1/flows/flow-1/executions')) {
+          return json([]);
+        }
+        if (url.startsWith('/api/v1/flows/flow-1')) {
+          return json({
+            id: 'flow-1',
+            name: 'Nightly sweep',
+            agent_type: 'codex',
+            trigger_event_source: 'webhook',
+            allowed_mcp_servers: [],
+            allowed_mcp_tools: [],
+          });
+        }
+        const path = url.split('?')[0];
+        if (failing.has(path)) {
+          return json({ detail: 'Unavailable' }, 503);
+        }
+        if (path === '/api/v1/trackers') {
+          return json([{ id: 'tracker-1', name: 'Example tracker' }]);
+        }
+        return json([]);
+      });
+    try {
+      const el = await fixture<FlowView>(
+        html`<flow-view flowId="flow-1"></flow-view>`
+      );
+      const view = el as any;
+      await waitUntil(() => view.flowReady && !view._loadingReferenceData);
+      await el.updateComplete;
+      const warning = () =>
+        el.shadowRoot!.querySelector('[data-reference-data-warning]');
+      expect(warning()?.textContent).to.include(
+        'Trackers and projects could not be loaded.'
+      );
+      expect(warning()?.textContent).not.to.include('models');
+
+      // Trackers come back; projects are still down.
+      failing.delete('/api/v1/trackers');
+      requested.length = 0;
+      const retry = () =>
+        [...warning()!.querySelectorAll('sl-button')].find((b) =>
+          b.textContent?.includes('Try again')
+        ) as HTMLElement;
+      retry().click();
+      await waitUntil(
+        () => requested.length > 0 && !view.retryingReferenceLists
+      );
+      await el.updateComplete;
+      expect(requested.map((url) => url.split('?')[0]).sort()).to.deep.equal([
+        '/api/v1/projects',
+        '/api/v1/trackers',
+      ]);
+      expect(view.trackers.map((t: any) => t.id)).to.deep.equal(['tracker-1']);
+      expect(warning()?.textContent).to.include(
+        'Projects could not be loaded.'
+      );
+
+      failing.clear();
+      requested.length = 0;
+      retry().click();
+      await waitUntil(
+        () => requested.length > 0 && !view.retryingReferenceLists
+      );
+      await el.updateComplete;
+      expect(requested.map((url) => url.split('?')[0])).to.deep.equal([
+        '/api/v1/projects',
+      ]);
+      expect(warning()).to.equal(null);
+    } finally {
+      fetchStub.restore();
     }
   });
 });
