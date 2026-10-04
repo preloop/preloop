@@ -1610,6 +1610,10 @@ def create_app() -> FastAPI:
 
         from preloop.api.middleware.ci_auth import CI_ROUTE_POLICIES
         from preloop.schemas.ci_execution import CiReviewRequest, CiStopRequest
+        from preloop.schemas.ci_subscription import (
+            CiSubscriptionCreate,
+            CiSubscriptionUpdate,
+        )
 
         for path, operations in openapi_schema["paths"].items():
             for method, operation in operations.items():
@@ -1639,6 +1643,30 @@ def create_app() -> FastAPI:
                     operation["x-restricted-ci-request-schema"] = (
                         CiStopRequest.model_json_schema()
                     )
+                if (
+                    path == "/api/v1/event-webhooks/endpoints"
+                    and method.upper() == "POST"
+                ):
+                    operation["x-restricted-ci-request-schema"] = (
+                        CiSubscriptionCreate.model_json_schema()
+                    )
+                elif (
+                    path == "/api/v1/event-webhooks/endpoints/{endpoint_id}"
+                    and method.upper() == "PATCH"
+                ):
+                    operation["x-restricted-ci-request-schema"] = (
+                        CiSubscriptionUpdate.model_json_schema()
+                    )
+                elif (
+                    path
+                    == "/api/v1/event-webhooks/endpoints/{endpoint_id}/secret/rotate"
+                    and method.upper() == "POST"
+                ):
+                    operation["x-restricted-ci-request-schema"] = {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    }
                 responses = operation.setdefault("responses", {})
                 responses.setdefault(
                     "401", {"description": "Invalid or expired credential"}

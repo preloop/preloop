@@ -72,6 +72,7 @@ from .budget import (
 from .chat import crud_chat
 from .ci_execution import CRUDCiExecution, crud_ci_execution
 from .ci_principal import CiAuthorizationContext, CRUDCiPrincipal, crud_ci_principal
+from .ci_subscription import CRUDCiSubscription, crud_ci_subscription
 from .cli_client import CRUDCliClient, crud_cli_client
 from .cli_session import CRUDCliSession, crud_cli_session
 from .comment import CRUDComment, crud_comment
@@ -280,6 +281,8 @@ __all__ = [
     "CiAuthorizationContext",
     "CRUDCiExecution",
     "crud_ci_execution",
+    "CRUDCiSubscription",
+    "crud_ci_subscription",
     "CRUDCiPrincipal",
     "crud_ci_principal",
     "CRUDApiUsage",
