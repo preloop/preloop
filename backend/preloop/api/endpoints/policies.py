@@ -60,6 +60,7 @@ from preloop.services.policy.schema import (
 from preloop.services.sensitive_data.detectors import (
     DetectorConfig,
     DetectorTimeoutError,
+    UnsafePatternError,
     detect,
     list_types,
     types_found,
@@ -570,7 +571,9 @@ def list_sensitive_data_types(
     config = detector_config_from(load_sensitive_data_config(db, account.id))
     return SensitiveDataTypesResponse(
         types=[SensitiveDataTypeInfo(**info.as_dict()) for info in list_types(config)],
-        default_types=list(SUPPORTED_PII_TYPES),
+        # What a rule without its own list scans: the account default when
+        # set, else the legacy three.
+        default_types=list(config.types) if config.types else list(SUPPORTED_PII_TYPES),
     )
 
 
@@ -611,6 +614,10 @@ def test_sensitive_data_detectors(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"A custom pattern exceeded its match budget: {exc}",
+        ) from exc
+    except UnsafePatternError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
     return SensitiveDataTestResponse(
         matches=[

@@ -66,6 +66,41 @@ def test_types_endpoint_lists_builtins_and_account_custom_entries(
     assert response.default_types == ["email", "phone", "credit_card"]
 
 
+def test_types_endpoint_reports_the_account_default_types(
+    account, user, mocker
+) -> None:
+    mocker.patch.object(
+        policies,
+        "load_sensitive_data_config",
+        return_value=SensitiveDataConfig.model_validate(
+            {"detectors": {"types": ["iban", "national_id"]}}
+        ),
+    )
+    response = policies.list_sensitive_data_types(
+        account=account, current_user=user, db=MagicMock()
+    )
+    assert response.default_types == ["iban", "national_id"]
+
+
+def test_test_endpoint_accepts_an_inline_flag_mrn_pattern(
+    account, user, mocker
+) -> None:
+    mocker.patch.object(
+        policies, "load_sensitive_data_config", return_value=SensitiveDataConfig()
+    )
+    response = policies.test_sensitive_data_detectors(
+        policies.SensitiveDataTestRequest(
+            text="mrn: abc",
+            types=["medical_record_number"],
+            config={"medical_record_number_pattern": "(?i)abc"},
+        ),
+        account=account,
+        current_user=user,
+        db=MagicMock(),
+    )
+    assert response.types_found == ["medical_record_number"]
+
+
 def test_test_endpoint_returns_spans_and_never_logs_the_input(
     account, user, mocker, caplog
 ) -> None:
