@@ -755,6 +755,9 @@ type localEnrollmentState struct {
 	RestoredAt          *time.Time             `json:"restored_at,omitempty"`
 	DiscoveredConfig    map[string]interface{} `json:"discovered_config,omitempty"`
 	ManagedConfig       map[string]interface{} `json:"managed_config,omitempty"`
+	// OffboardArchived checkpoints completed recovery/config restore/archive so
+	// cleanup can be retried even after its model credential has been deleted.
+	OffboardArchived bool `json:"offboard_archived,omitempty"`
 	// CodexOAuthSyncedLastRefresh is the auth.json or Keychain last_refresh
 	// value last pushed for this enrollment. The Codex permission hook
 	// compares the local ChatGPT login against it.
@@ -2474,55 +2477,51 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 
-	// Strip the gateway key's pre-approval from ~/.claude.json while the
-	// managed settings (and therefore the key) are still readable.
-	if err := removeClaudeAPIKeyApproval(agent); err != nil {
-		fmt.Printf("  Warning: could not remove the gateway key approval from Claude Code's user config: %v\n", err)
+	if state != nil && state.OffboardArchived && detail == nil {
+		return fmt.Errorf("offboard partially completed; cannot resolve managed record for remaining cleanup; enrollment retry state retained")
 	}
-	if state != nil {
-		if _, err := restoreAgentFromBackup(agent, state); err != nil {
-			return err
-		}
-	} else {
-		fmt.Printf("Skipped restoring config: no local backup found.\n")
-		if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
-			return err
-		}
-		if err := removeApprovalHooks(agent, nil); err != nil {
-			return err
-		}
+	recovery := subscriptionRestoreNotApplicable
+	partial := func(err error) error {
+		return fmt.Errorf("offboard partially completed; enrollment retry state retained: %w", err)
 	}
+	if state == nil || !state.OffboardArchived {
+		var recoveryErr error
+		recovery, recoveryErr = restoreSubscriptionLoginOnOffboard(client, agent, detail, os.Stdout)
+		if recoveryErr != nil {
+			return recoveryErr
+		}
+		// Strip the gateway key's pre-approval from ~/.claude.json while the
+		// managed settings (and therefore the key) are still readable. A
+		// malformed or read-only user config must not strand offboarding
+		// after credentials were recovered.
+		if err := removeClaudeAPIKeyApproval(agent); err != nil {
+			fmt.Printf("  Warning: could not remove the gateway key approval from Claude Code's user config: %v\n", err)
+		}
+		if state != nil {
+			if _, err := restoreAgentFromBackup(agent, state); err != nil {
+				return partial(err)
+			}
+		} else {
+			fmt.Printf("Skipped restoring config: no local backup found.\n")
+			if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
+				return partial(err)
+			}
+			if err := removeApprovalHooks(agent, nil); err != nil {
+				return partial(err)
+			}
+		}
 
-	if detail != nil {
-		if err := archiveManagedAgentRecord(client, detail.Agent.ID); err != nil {
-			return err
-		}
-	}
-
-	if state != nil {
-		if err := removeLocalEnrollmentState(agent); err != nil {
-			return err
-		}
-	}
-
-	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
-	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
-	restartHermesGatewayAfterReconfig(agent, os.Stdout)
-	printMutatingCommandUndo(
-		os.Stdout,
-		fmt.Sprintf(
-			"preloop agents onboard %s",
-			shellQuoteAgentName(resolveAgentDisplayName(agent)),
-		),
-	)
-	if isClaudeCodeAgent(agent) || isCodexCLIAgent(agent) {
-		// Subscription refresh tokens rotate server-side while onboarded, so
-		// write the live Preloop-held bundle back to the local credential
-		// store before cleanup can delete it. The note is the fallback when
-		// no bundle could be restored.
-		if !restoreSubscriptionLoginOnOffboard(client, agent, detail, os.Stdout) &&
-			isClaudeCodeAgent(agent) {
-			printClaudeCodeOAuthOffboardNote(os.Stdout)
+		if detail != nil {
+			if err := archiveManagedAgentRecord(client, detail.Agent.ID); err != nil {
+				return partial(err)
+			}
+			if state == nil {
+				state = &localEnrollmentState{AgentName: agent.Name, ConfigPath: agent.ConfigPath, RuntimePrincipalID: runtimePrincipalIDForAgent(agent)}
+			}
+			state.OffboardArchived = true
+			if err := saveLocalEnrollmentState(state); err != nil {
+				return partial(err)
+			}
 		}
 	}
 	if detail != nil {
@@ -2533,7 +2532,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		)
 		candidates, err := collectOffboardCleanupCandidates(client, detail.Agent)
 		if err != nil {
-			return err
+			return partial(err)
 		}
 		if err := promptOffboardCleanup(
 			os.Stdin,
@@ -2544,8 +2543,21 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 			client,
 			candidates,
 		); err != nil {
-			return err
+			return partial(err)
 		}
+	}
+
+	if state != nil {
+		if err := removeLocalEnrollmentState(agent); err != nil {
+			return partial(err)
+		}
+	}
+	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
+	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
+	restartHermesGatewayAfterReconfig(agent, os.Stdout)
+	printMutatingCommandUndo(os.Stdout, fmt.Sprintf("preloop agents onboard %s", shellQuoteAgentName(resolveAgentDisplayName(agent))))
+	if recovery == subscriptionRestoreNotApplicable && isClaudeCodeAgent(agent) {
+		printClaudeCodeOAuthOffboardNote(os.Stdout)
 	}
 
 	return nil

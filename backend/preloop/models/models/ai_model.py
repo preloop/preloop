@@ -89,7 +89,16 @@ class AIModel(Base):
             if isinstance(meta_data.get("provider_runtime"), dict)
             else {}
         )
-        return bool(provider_runtime.get("ambient_credentials"))
+        if provider_runtime.get("ambient_credentials"):
+            return True
+        # Azure OpenAI with Entra ID authenticates from the server's identity.
+        provider = (self.provider_name or "").strip().lower()
+        azure_auth = provider_runtime.get("azure_auth")
+        return (
+            provider == "azure"
+            and isinstance(azure_auth, str)
+            and azure_auth.strip().lower() == "entra"
+        )
 
     @property
     def has_api_key(self) -> bool:
