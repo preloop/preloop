@@ -1976,4 +1976,156 @@ describe('RuntimeSessionsView', () => {
       );
     });
   });
+
+  describe('paging', () => {
+    function sessionItem(id: string) {
+      return {
+        id,
+        session_source_type: 'flow_execution',
+        session_source_id: id,
+        session_reference: id,
+        started_at: '2026-03-09T18:00:00Z',
+        last_activity_at: '2026-03-09T20:00:00Z',
+        ended_at: null,
+        activity_status: 'ended',
+      };
+    }
+
+    function listPage(total: number, offset: number, limit: number) {
+      const items = Array.from({ length: Math.max(0, total - offset) })
+        .slice(0, limit)
+        .map((_unused, index) =>
+          sessionItem(`runtime-session-${offset + index}`)
+        );
+      return new Response(
+        JSON.stringify({
+          period_start: '2026-02-08T00:00:00Z',
+          period_end: '2026-03-09T23:59:59Z',
+          query: null,
+          session_source_type: null,
+          status: 'all',
+          total,
+          limit,
+          offset,
+          items,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    function stubPagedSessions(total: number) {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/runtime-sessions?')) {
+          const params = new URL(url, window.location.origin).searchParams;
+          const offset = Number(params.get('offset') ?? 0);
+          const limit = Number(params.get('limit') ?? 50);
+          return listPage(total, offset, limit);
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    }
+
+    function countLabel(element: RuntimeSessionsView): string {
+      return element
+        .shadowRoot!.querySelector('list-toolbar')!
+        .querySelector('[slot="count"]')!
+        .textContent!.trim();
+    }
+
+    function loadMoreButton(element: RuntimeSessionsView): HTMLElement | null {
+      return element.shadowRoot!.querySelector(
+        '[data-testid="load-more-sessions"]'
+      );
+    }
+
+    it('pages the list with Load more and keeps the count label honest', async () => {
+      stubPagedSessions(120);
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      expect(countLabel(element)).to.equal('Showing 50 of 120');
+      expect(loadMoreButton(element)).to.not.equal(null);
+
+      loadMoreButton(element)!.click();
+      await waitUntil(
+        () => (element as any).sessions.items.length === 100,
+        'Second page did not append'
+      );
+      await element.updateComplete;
+      expect(countLabel(element)).to.equal('Showing 100 of 120');
+
+      loadMoreButton(element)!.click();
+      await waitUntil(
+        () => (element as any).sessions.items.length === 120,
+        'Final page did not append'
+      );
+      await element.updateComplete;
+      expect(countLabel(element)).to.equal('120 sessions');
+      expect(loadMoreButton(element)).to.equal(null);
+    });
+
+    it('keeps the loaded rows when loading more fails', async () => {
+      let failMore = false;
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/runtime-sessions?')) {
+          const params = new URL(url, window.location.origin).searchParams;
+          const offset = Number(params.get('offset') ?? 0);
+          if (offset > 0 && failMore) {
+            return new Response(JSON.stringify({ detail: 'boom' }), {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return listPage(60, offset, 50);
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      failMore = true;
+      loadMoreButton(element)!.click();
+      await waitUntil(
+        () => element.shadowRoot!.querySelector('[data-testid="more-error"]'),
+        'No load-more error rendered'
+      );
+      await element.updateComplete;
+      expect((element as any).sessions.items.length).to.equal(50);
+      expect(loadMoreButton(element)).to.not.equal(null);
+
+      failMore = false;
+      loadMoreButton(element)!.click();
+      await waitUntil(
+        () => (element as any).sessions.items.length === 60,
+        'Rows did not append after the error cleared'
+      );
+      await element.updateComplete;
+      expect(loadMoreButton(element)).to.equal(null);
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="more-error"]')
+      ).to.equal(null);
+    });
+  });
 });
