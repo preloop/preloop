@@ -611,6 +611,22 @@ class TestScheduleJobSync:
         scheduler.remove_job.assert_called_once_with(existing_job.id)
         scheduler.add_job.assert_not_called()
 
+    def test_sync_never_removes_the_reconcile_job_itself(self, db_session: Session):
+        """The reconcile job's own id starts with the per-flow prefix
+        ("flow_schedule_sync_job"). Treating it as a flow job removed it on
+        the first pass, so flows created after scheduler start never got a
+        job."""
+        sync_job = MagicMock()
+        sync_job.id = "flow_schedule_sync_job"
+        scheduler = MagicMock()
+        scheduler.get_jobs.return_value = [sync_job]
+
+        with self._patch_db(db_session), patch.object(db_session, "close"):
+            sync_flow_schedule_jobs(scheduler)
+
+        removed = [c.args[0] for c in scheduler.remove_job.call_args_list]
+        assert "flow_schedule_sync_job" not in removed
+
     def test_sync_ignores_preset_flows(
         self, db_session: Session, test_account: Account
     ):

@@ -423,6 +423,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Schedule-triggered flows created after the scheduler started now fire.**
+  The reconcile job's id shares the per-flow job prefix, so its first pass
+  removed itself and later flows never got a job until a restart.
 - A Jira-triggered flow bound to a code-host repository now clones that
   repository on Copilot and Cursor host execution profiles too, with the
   code-host tracker's credential only. Before, the host checkout ignored the
