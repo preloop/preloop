@@ -35,6 +35,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/verify-email:
     post:
       tags:
@@ -72,6 +79,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/resend-verification:
     post:
       tags:
@@ -115,6 +129,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/forgot-password:
     post:
       tags:
@@ -154,6 +175,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/reset-password:
     post:
       tags:
@@ -186,6 +214,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/token:
     post:
       tags:
@@ -217,6 +252,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/token/json:
     post:
       tags:
@@ -248,6 +290,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/refresh:
     post:
       tags:
@@ -276,6 +325,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/sessions/revoke-all:
     post:
       tags:
@@ -305,8 +361,15 @@ paths:
                 type: object
                 title: Response Revoke All Sessions Api V1 Auth Sessions Revoke All
                   Post
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/logout:
     post:
       tags:
@@ -330,8 +393,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LogoutResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/sessions/cli:
     get:
       tags:
@@ -352,8 +422,15 @@ paths:
                   $ref: '#/components/schemas/CliSessionResponse'
                 type: array
                 title: Response List Cli Sessions Api V1 Auth Sessions Cli Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/sessions/cli/{session_id}:
     delete:
       tags:
@@ -383,6 +460,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/users/me:
     get:
       tags:
@@ -400,8 +484,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthUserResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
     put:
       tags:
       - Auth
@@ -427,8 +518,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/users/me/password:
     put:
       tags:
@@ -451,8 +549,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/api-keys:
     get:
       tags:
@@ -471,8 +576,15 @@ paths:
                   $ref: '#/components/schemas/ApiKeySummary'
                 type: array
                 title: Response List Api Keys Api V1 Auth Api Keys Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
     post:
       tags:
       - Auth
@@ -500,8 +612,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/runtime-sessions/token:
     post:
       tags:
@@ -528,8 +647,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/api-keys/{key_id}:
     get:
       tags:
@@ -562,6 +688,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Auth
@@ -589,6 +722,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/api-keys/{key_id}/activity:
     get:
       tags:
@@ -626,6 +766,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/api-keys/{key_id}/gateway-usage/summary:
     get:
       tags:
@@ -675,6 +822,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/api-keys/{key_id}/governance:
     get:
       tags:
@@ -704,6 +858,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Auth
@@ -738,6 +899,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/api-usage:
     get:
       tags:
@@ -784,6 +952,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/complete-onboarding:
     post:
       tags:
@@ -825,6 +1000,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/register/options:
     post:
       tags:
@@ -840,8 +1022,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RegistrationOptionsResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/register/verify:
     post:
       tags:
@@ -869,8 +1058,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/authenticate/options:
     post:
       tags:
@@ -886,6 +1082,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthenticationOptionsResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/authenticate/verify:
     post:
       tags:
@@ -916,6 +1119,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/credentials:
     get:
       tags:
@@ -935,8 +1145,15 @@ paths:
                 type: array
                 title: Response List Credentials Api V1 Auth Webauthn Credentials
                   Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
   /api/v1/auth/webauthn/credentials/{credential_id}:
     delete:
       tags:
@@ -964,6 +1181,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/details:
     get:
       tags:
@@ -979,8 +1203,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountDetailsResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     patch:
       tags:
       - Account
@@ -1008,8 +1239,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/session-artifacts/usage:
     get:
       tags:
@@ -1024,8 +1262,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionArtifactUsageResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/session-artifacts/settings:
     get:
       tags:
@@ -1040,8 +1285,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionArtifactSettingsResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     put:
       tags:
       - Account
@@ -1074,8 +1326,13 @@ paths:
           description: Caller may not manage account policies
         '422':
           description: audio_retention_days_invalid
+        '401':
+          description: Invalid or expired credential
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/gateway-usage/summary:
     get:
       tags:
@@ -1160,6 +1417,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/gateway-usage/search:
     get:
       tags:
@@ -1283,6 +1547,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/gateway-usage/rate-limits:
     get:
       tags:
@@ -1339,6 +1610,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents:
     get:
       tags:
@@ -1429,6 +1707,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Account
@@ -1472,6 +1757,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/control:
     get:
       tags:
@@ -1519,6 +1811,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/extract-name:
     post:
       tags:
@@ -1550,8 +1849,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}:
     get:
       tags:
@@ -1599,6 +1905,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     patch:
       tags:
       - Account
@@ -1633,6 +1946,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Account
@@ -1661,6 +1981,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/model-bindings:
     get:
       tags:
@@ -1694,6 +2021,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Account
@@ -1732,6 +2066,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/governance-defaults:
     get:
       tags:
@@ -1746,8 +2087,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccountGovernanceDefaultsResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     put:
       tags:
       - Account
@@ -1773,8 +2121,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/governance/flows/{flow_id}:
     get:
       tags:
@@ -1809,6 +2164,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Account
@@ -1843,6 +2205,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Account
@@ -1871,6 +2240,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/governance:
     get:
       tags:
@@ -1899,6 +2275,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Account
@@ -1932,6 +2315,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/credentials:
     get:
       tags:
@@ -1965,6 +2355,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Account
@@ -1999,6 +2396,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/credentials/{credential_id}:
     delete:
       tags:
@@ -2034,6 +2438,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/enrollments:
     get:
       tags:
@@ -2067,6 +2478,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Account
@@ -2101,6 +2519,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate:
     post:
       tags:
@@ -2147,6 +2572,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/enrollments/{enrollment_id}/restore:
     post:
       tags:
@@ -2188,6 +2620,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/rekey:
     post:
       tags:
@@ -2224,6 +2663,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{survivor_id}/merge:
     post:
       tags:
@@ -2259,6 +2705,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions:
     get:
       tags:
@@ -2402,6 +2855,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}:
     get:
       tags:
@@ -2449,6 +2909,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     patch:
       tags:
       - Account
@@ -2483,6 +2950,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/interactions:
     get:
       tags:
@@ -2556,6 +3030,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/activity:
     get:
       tags:
@@ -2585,6 +3066,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}:
     get:
       tags:
@@ -2627,6 +3115,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/requests:
     get:
       tags:
@@ -2699,6 +3194,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/summaries:
     post:
       tags:
@@ -2728,6 +3230,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/gateway-events:
     get:
       tags:
@@ -2793,6 +3302,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/gateway-events/{activity_id}:
     get:
       tags:
@@ -2833,6 +3349,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/gateway-events/{activity_id}/summary:
     post:
       tags:
@@ -2869,6 +3392,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/telemetry/dashboard:
     get:
       tags:
@@ -2883,8 +3413,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DashboardTelemetryResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/users/me/avatar:
     put:
       tags:
@@ -2920,8 +3457,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     delete:
       tags:
       - Account
@@ -2935,8 +3479,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AvatarResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/attention/dismissals:
     get:
       tags:
@@ -2963,8 +3514,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AttentionDismissalListResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/attention/dismissals/{item_id}:
     put:
       tags:
@@ -3016,6 +3574,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Account
@@ -3042,6 +3607,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -3071,8 +3643,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/trackers:
     get:
       tags:
@@ -3090,8 +3669,15 @@ paths:
                   $ref: '#/components/schemas/TrackerResponse'
                 type: array
                 title: Response List Trackers Api V1 Trackers Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - Trackers
@@ -3108,8 +3694,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TrackerCreateResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/trackers/{tracker_id}:
     get:
       tags:
@@ -3141,6 +3734,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Trackers
@@ -3176,6 +3776,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Trackers
@@ -3216,6 +3823,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/trackers/{tracker_id}/sync:
     post:
       tags:
@@ -3249,6 +3863,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/trackers/test-and-list-orgs:
     post:
       tags:
@@ -3277,8 +3898,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/trackers/list-projects-for-org:
     post:
       tags:
@@ -3309,8 +3937,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook:
     get:
       tags:
@@ -3348,6 +3983,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook/secret:
     post:
       tags:
@@ -3384,6 +4026,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/trackers/{tracker_id}/bitbucket-dc/webhook/register:
     post:
       tags:
@@ -3427,6 +4076,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers:
     get:
       tags:
@@ -3446,8 +4102,15 @@ paths:
                   $ref: '#/components/schemas/MCPServerResponse'
                 type: array
                 title: Response List Mcp Servers Api V1 Mcp Servers Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - MCP Servers
@@ -3476,8 +4139,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/mcp-servers/{server_id}:
     get:
       tags:
@@ -3511,6 +4181,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - MCP Servers
@@ -3550,6 +4227,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - MCP Servers
@@ -3585,6 +4269,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers/{server_id}/scan:
     post:
       tags:
@@ -3622,6 +4313,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers/{server_id}/tools:
     get:
       tags:
@@ -3659,6 +4357,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers/{server_id}/oauth/authorize-token:
     post:
       tags:
@@ -3707,6 +4412,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers/{server_id}/oauth/authorize:
     get:
       tags:
@@ -3759,8 +4471,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/mcp-servers/oauth/callback:
     get:
       tags:
@@ -3798,8 +4517,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/tools/stats:
     get:
       tags:
@@ -3842,6 +4568,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/tools:
     get:
       tags:
@@ -3860,8 +4593,15 @@ paths:
                   type: object
                 type: array
                 title: Response List All Tools Api V1 Tools Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/tools/summary:
     get:
       tags:
@@ -3884,8 +4624,15 @@ paths:
                   $ref: '#/components/schemas/ToolSummaryResponse'
                 type: array
                 title: Response List Tool Summaries Api V1 Tools Summary Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/tool-configurations:
     post:
       tags:
@@ -3915,8 +4662,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/tool-configurations/{config_id}:
     get:
       tags:
@@ -3950,6 +4704,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Tools
@@ -3989,6 +4750,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Tools
@@ -4025,6 +4793,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/tool-configurations/{config_id}/condition:
     put:
       tags:
@@ -4069,6 +4844,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-workflows:
     get:
       tags:
@@ -4089,8 +4871,15 @@ paths:
                 type: array
                 title: Response List Approval Workflows Api V1 Approval Workflows
                   Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - Tools
@@ -4120,8 +4909,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/approval-workflows/{workflow_id}:
     get:
       tags:
@@ -4155,6 +4951,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Tools
@@ -4194,6 +4997,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Tools
@@ -4232,6 +5042,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-workflows/{workflow_id}/webhook-secret/rotate:
     post:
       tags:
@@ -4267,6 +5084,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/tool-configurations/{config_id}/approval-condition:
     get:
       tags:
@@ -4303,6 +5127,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Tools
@@ -4345,6 +5176,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Tools
@@ -4384,6 +5222,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/tool-configurations/{config_id}/approval-condition/test:
     post:
       tags:
@@ -4426,6 +5271,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/tool-configurations/{config_id}/access-rules:
     get:
       tags:
@@ -4460,6 +5312,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Tools
@@ -4495,6 +5354,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/access-rules/{rule_id}:
     put:
       tags:
@@ -4531,6 +5397,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Tools
@@ -4556,6 +5429,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests/{request_id}:
     get:
       tags:
@@ -4590,6 +5470,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests/{request_id}/history:
     get:
       tags:
@@ -4631,6 +5518,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests:
     get:
       tags:
@@ -4719,6 +5613,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests/{request_id}/approve:
     post:
       tags:
@@ -4762,6 +5663,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests/{request_id}/decline:
     post:
       tags:
@@ -4805,6 +5713,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests/{request_id}/decide:
     post:
       tags:
@@ -4848,6 +5763,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests/decide-batch:
     post:
       tags:
@@ -4887,8 +5809,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/approval-bypasses/status:
     get:
       tags:
@@ -4910,8 +5839,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApprovalBypassStatus'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/approval-bypasses:
     get:
       tags:
@@ -4934,8 +5870,15 @@ paths:
                   $ref: '#/components/schemas/ApprovalBypassResponse'
                 type: array
                 title: Response List Bypasses Api V1 Approval Bypasses Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - Approval Bypasses
@@ -4969,8 +5912,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/approval-bypasses/{bypass_id}:
     delete:
       tags:
@@ -5007,6 +5957,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-bypasses/revoke-all:
     post:
       tags:
@@ -5030,8 +5987,15 @@ paths:
                 type: array
                 title: Response Revoke All Bypasses Api V1 Approval Bypasses Revoke
                   All Post
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agent-deployments/capabilities:
     get:
       tags:
@@ -5050,8 +6014,15 @@ paths:
                 type: object
                 title: Response Capabilities Api V1 Agent Deployments Capabilities
                   Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agent-deployments:
     post:
       tags:
@@ -5085,8 +6056,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/kill-switch/status:
     get:
       tags:
@@ -5108,8 +6086,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/KillSwitchStatus'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/kill-switch/activate:
     post:
       tags:
@@ -5145,8 +6130,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/kill-switch/deactivate:
     post:
       tags:
@@ -5182,8 +6174,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/exports/asset-register:
     get:
       tags:
@@ -5224,6 +6223,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/exports/incident-candidates:
     get:
       tags:
@@ -5289,6 +6295,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/event-webhooks/catalogue:
     get:
       tags:
@@ -5303,8 +6316,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WebhookCatalogue'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/event-webhooks/endpoints:
     get:
       tags:
@@ -5328,8 +6348,15 @@ paths:
                 type: array
                 title: Response List Webhook Endpoints Api V1 Event Webhooks Endpoints
                   Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - Outbound Webhooks
@@ -5355,8 +6382,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/event-webhooks/endpoints/{endpoint_id}:
     patch:
       tags:
@@ -5393,6 +6427,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Outbound Webhooks
@@ -5418,6 +6459,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/event-webhooks/endpoints/{endpoint_id}/test:
     post:
       tags:
@@ -5457,6 +6505,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/event-webhooks/deliveries/dead-letter:
     get:
       tags:
@@ -5493,6 +6548,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/event-webhooks/deliveries:
     get:
       tags:
@@ -5553,6 +6615,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/event-webhooks/deliveries/{event_id}/replay:
     post:
       tags:
@@ -5589,6 +6658,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/retention/settings:
     get:
       tags:
@@ -5603,8 +6679,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RetentionSettingsRead'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     put:
       tags:
       - Retention
@@ -5635,8 +6718,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/retention/purge-preview:
     get:
       tags:
@@ -5658,8 +6748,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RetentionPurgePreview'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/retention/holds:
     get:
       tags:
@@ -5722,6 +6819,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Retention
@@ -5749,6 +6853,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/retention/holds/{hold_id}/release:
     post:
       tags:
@@ -5785,6 +6896,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/retention/exports:
     post:
       tags:
@@ -5856,6 +6974,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/audit/chain/status:
     get:
       tags:
@@ -5870,8 +6995,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ChainStatusRead'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/audit/chain/verify:
     get:
       tags:
@@ -5940,6 +7072,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/audit/chain/segment:
     get:
       tags:
@@ -5982,6 +7121,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/audit/chain/checkpoints:
     get:
       tags:
@@ -6031,6 +7177,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/signing/keys:
     get:
       tags:
@@ -6050,8 +7203,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SigningKeyListRead'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/signing/keys/rotate:
     post:
       tags:
@@ -6073,8 +7233,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SigningKeyRotateRead'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/notification-preferences/me:
     get:
       tags:
@@ -6090,8 +7257,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/NotificationPreferencesResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     put:
       tags:
       - Notification Preferences
@@ -6119,8 +7293,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/notification-preferences/me/register-device:
     post:
       tags:
@@ -6149,8 +7330,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/notification-preferences/me/device/{token}:
     delete:
       tags:
@@ -6182,6 +7370,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/notification-preferences/me/test-push:
     post:
       tags:
@@ -6217,8 +7412,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/notification-preferences/me/qr-code:
     get:
       tags:
@@ -6234,8 +7436,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QRCodeResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/notification-preferences/register-via-token:
     post:
       tags:
@@ -6275,8 +7484,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/organizations:
     post:
       tags:
@@ -6306,6 +7522,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Organizations
@@ -6344,6 +7567,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/organizations/{organization_id}:
     get:
       tags:
@@ -6373,6 +7603,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Organizations
@@ -6407,6 +7644,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Organizations
@@ -6431,6 +7675,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/organizations/by-identifier/{identifier}:
     get:
       tags:
@@ -6460,6 +7711,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/projects:
     post:
       tags:
@@ -6495,6 +7753,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Projects
@@ -6546,6 +7811,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/organizations/{organization_id}/projects:
     get:
       tags:
@@ -6592,6 +7864,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/projects/{project_id}:
     get:
       tags:
@@ -6621,6 +7900,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Projects
@@ -6655,6 +7941,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Projects
@@ -6679,6 +7972,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/organizations/{organization_id}/projects/{identifier}:
     get:
       tags:
@@ -6715,6 +8015,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/projects/test-connection:
     post:
       tags:
@@ -6742,8 +8049,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/projects/{project_id}/transfer:
     post:
       tags:
@@ -6809,6 +8123,11 @@ paths:
           description: Repository type or host cannot be transferred
         '502':
           description: Destination integration could not be queried
+        '401':
+          description: Invalid or expired credential
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/projects/{project_id}/pull-requests:
     get:
       tags:
@@ -6871,6 +8190,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/search:
     get:
       tags:
@@ -7036,6 +8362,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues:
     post:
       tags:
@@ -7074,6 +8407,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Issues
@@ -7172,6 +8512,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}:
     get:
       tags:
@@ -7217,6 +8564,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Issues
@@ -7251,6 +8605,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues-count:
     get:
       tags:
@@ -7268,8 +8629,15 @@ paths:
                   type: integer
                 type: object
                 title: Response Get Issue Count Api V1 Issues Count Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}/lifecycle:
     get:
       tags:
@@ -7303,6 +8671,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}/lifecycle/refine:
     post:
       tags:
@@ -7342,6 +8717,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}/lifecycle/ready:
     post:
       tags:
@@ -7381,6 +8763,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}/lifecycle/pickup/reconcile:
     post:
       tags:
@@ -7421,6 +8810,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}/lifecycle/audit/reconcile:
     post:
       tags:
@@ -7455,6 +8851,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}/lifecycle/deployment/verify:
     post:
       tags:
@@ -7494,6 +8897,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/releases:
     get:
       tags:
@@ -7513,8 +8923,15 @@ paths:
                 type: array
                 title: Response List Releases Api V1 Security Maintenance Releases
                   Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - Security Maintenance
@@ -7543,8 +8960,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/security-maintenance/releases/{release_id}:
     get:
       tags:
@@ -7578,6 +9002,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     patch:
       tags:
       - Security Maintenance
@@ -7616,6 +9047,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/releases/{release_id}/baseline/audit:
     post:
       tags:
@@ -7655,6 +9093,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/releases/{release_id}/baseline:
     post:
       tags:
@@ -7694,6 +9139,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/scans:
     post:
       tags:
@@ -7722,8 +9174,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items:
     get:
       tags:
@@ -7768,6 +9227,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items/{item_id}:
     get:
       tags:
@@ -7801,6 +9267,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items/{item_id}/decisions:
     get:
       tags:
@@ -7836,6 +9309,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items/{item_id}/approve:
     post:
       tags:
@@ -7875,6 +9355,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items/{item_id}/deny:
     post:
       tags:
@@ -7914,6 +9401,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items/{item_id}/escalate:
     post:
       tags:
@@ -7953,6 +9447,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items/{item_id}/resume:
     post:
       tags:
@@ -7992,6 +9493,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-maintenance/items/{item_id}/build:
     post:
       tags:
@@ -8032,6 +9540,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/issues/{issue_id}/comments:
     get:
       tags:
@@ -8098,6 +9613,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Comments
@@ -8148,6 +9670,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/comments/search:
     get:
       tags:
@@ -8246,6 +9775,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/search:
     get:
       tags:
@@ -8412,6 +9948,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/embeddings:
     get:
       tags:
@@ -8511,6 +10054,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models:
     get:
       tags:
@@ -8529,8 +10079,15 @@ paths:
                   $ref: '#/components/schemas/AIModelRead'
                 type: array
                 title: Response List Ai Models Api V1 Ai Models Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - AI Models
@@ -8557,8 +10114,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/ai-models/overview:
     get:
       tags:
@@ -8621,6 +10185,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}:
     get:
       tags:
@@ -8652,6 +10223,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - AI Models
@@ -8688,6 +10266,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - AI Models
@@ -8714,6 +10299,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/summary:
     get:
       tags:
@@ -8776,6 +10368,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/runtime-sessions:
     get:
       tags:
@@ -8867,6 +10466,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/interactions:
     get:
       tags:
@@ -8958,6 +10564,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/pricing:
     get:
       tags:
@@ -8989,6 +10602,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/pricing/fetch:
     post:
       tags:
@@ -9028,6 +10648,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/sync:
     post:
       tags:
@@ -9077,8 +10704,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/credentials/marker:
     get:
       tags:
@@ -9140,6 +10774,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/{model_id}/credentials/export:
     post:
       tags:
@@ -9196,6 +10837,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/ai-models/providers/{provider}/available-models:
     post:
       tags:
@@ -9257,6 +10905,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - AI Models
@@ -9345,6 +11000,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/audio/transcriptions:
     post:
       tags:
@@ -9373,8 +11035,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/audio/speech:
     post:
       tags:
@@ -9401,8 +11070,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/budget/policies:
     post:
       tags:
@@ -9432,6 +11108,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Budget
@@ -9474,6 +11157,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/budget/policies/{policy_id}:
     put:
       tags:
@@ -9511,6 +11201,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Budget
@@ -9542,6 +11239,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/attention/spend-outliers:
     get:
       tags:
@@ -9563,8 +11267,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SpendOutlierListResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/attention/spend-outliers/settings:
     get:
       tags:
@@ -9580,8 +11291,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SpendOutlierSettingsResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     put:
       tags:
       - Attention
@@ -9623,8 +11341,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/cost/summary:
     get:
       tags:
@@ -9718,6 +11443,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/health:
     get:
       tags:
@@ -9762,6 +11494,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/reprice:
     post:
       tags:
@@ -9805,8 +11544,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/cost/ledger-backfill/csv:
     post:
       tags:
@@ -9855,8 +11601,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/cost/by-issue:
     get:
       tags:
@@ -9922,6 +11675,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/by-issue/export:
     get:
       tags:
@@ -9996,6 +11756,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/by-issue/unassigned/executions:
     get:
       tags:
@@ -10064,6 +11831,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/by-issue/{rollup_id}/executions:
     get:
       tags:
@@ -10108,6 +11882,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/by-issue/rebuild:
     post:
       tags:
@@ -10143,8 +11924,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/cost/copilot:
     get:
       tags:
@@ -10188,6 +11976,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/copilot/connection:
     put:
       tags:
@@ -10215,8 +12010,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     delete:
       tags:
       - Cost Analytics
@@ -10227,8 +12029,15 @@ paths:
       responses:
         '204':
           description: Successful Response
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/cost/copilot/connection/sync:
     post:
       tags:
@@ -10250,8 +12059,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CopilotSyncResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/cost/copilot/mappings:
     get:
       tags:
@@ -10267,8 +12083,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CopilotUserMappingListResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     put:
       tags:
       - Cost Analytics
@@ -10303,8 +12126,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/cost/copilot/mappings/{github_login}:
     delete:
       tags:
@@ -10331,6 +12161,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/copilot/spend-coverage:
     get:
       tags:
@@ -10378,6 +12215,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/usage/import:
     post:
       tags:
@@ -10414,8 +12258,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/usage/ingest:
     post:
       tags:
@@ -10476,8 +12327,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/usage/import/csv:
     post:
       tags:
@@ -10518,8 +12376,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/billing/cost/runtime-sessions/example/optimization:
     get:
       tags:
@@ -10544,8 +12409,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RuntimeSessionOptimizationResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations:
     post:
       tags:
@@ -10591,6 +12463,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/jobs:
     post:
       tags:
@@ -10637,6 +12516,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/jobs/{job_id}:
     get:
       tags:
@@ -10676,6 +12562,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/apply:
     post:
       tags:
@@ -10717,6 +12610,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/replay:
     post:
       tags:
@@ -10761,6 +12661,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations/actions:
     get:
       tags:
@@ -10791,6 +12698,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/private/webhooks/{tracker_type}/{organization_id}:
     post:
       tags:
@@ -10833,8 +12747,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/employee-events/{flow_id}:
     post:
       tags:
@@ -10880,6 +12801,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows:
     post:
       tags:
@@ -10908,6 +12836,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Flows
@@ -10964,6 +12899,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/summary:
     get:
       tags:
@@ -11029,6 +12971,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/schedule/preview:
     post:
       tags:
@@ -11062,8 +13011,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/flows/presets:
     get:
       tags:
@@ -11090,8 +13046,15 @@ paths:
                   $ref: '#/components/schemas/FlowResponse'
                 type: array
                 title: Response Read Presets Api V1 Flows Presets Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/flows/presets/{flow_id}/clone:
     post:
       tags:
@@ -11129,6 +13092,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/run-preset:
     post:
       tags:
@@ -11166,8 +13136,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/flows/executions:
     get:
       tags:
@@ -11249,6 +13226,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/batches/{batch_id}/executions:
     get:
       tags:
@@ -11284,6 +13268,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/tree:
     get:
       tags:
@@ -11334,6 +13325,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}:
     get:
       tags:
@@ -11364,6 +13362,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/continuation:
     get:
       tags:
@@ -11411,6 +13416,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Flows
@@ -11446,6 +13458,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/result:
     get:
       tags:
@@ -11493,6 +13512,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/evidence-status:
     get:
       tags:
@@ -11548,6 +13574,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/evidence:
     get:
       tags:
@@ -11588,6 +13621,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/evidence/members:
     get:
       tags:
@@ -11661,6 +13701,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/workspace:
     get:
       tags:
@@ -11703,6 +13750,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/logs:
     get:
       tags:
@@ -11771,6 +13825,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/host-sessions:
     get:
       tags:
@@ -11804,6 +13865,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/gateway-events:
     get:
       tags:
@@ -11868,6 +13936,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/gateway-events/{event_id}:
     get:
       tags:
@@ -11908,6 +13983,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/metrics:
     get:
       tags:
@@ -11952,6 +14034,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}/gateway-usage/summary:
     get:
       tags:
@@ -12000,6 +14089,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/command:
     post:
       tags:
@@ -12044,6 +14140,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}/trigger:
     post:
       tags:
@@ -12091,6 +14194,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/retry:
     post:
       tags:
@@ -12123,6 +14233,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}:
     get:
       tags:
@@ -12153,6 +14270,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     put:
       tags:
       - Flows
@@ -12188,6 +14312,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Flows
@@ -12217,6 +14348,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}/apply-preset-update:
     post:
       tags:
@@ -12255,6 +14393,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/{flow_id}/dismiss-preset-update:
     post:
       tags:
@@ -12291,6 +14436,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/webhooks/flows/{flow_id}/{webhook_secret}:
     post:
       tags:
@@ -12357,6 +14509,13 @@ paths:
             was created. Also returned for invalid request input (e.g. malformed flow_id).
         '500':
           description: No execution could be created (failure at/before the insert).
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runners/register:
     post:
       tags:
@@ -12383,8 +14542,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runners:
     get:
       tags:
@@ -12424,6 +14590,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runners/fleet-summary:
     get:
       tags:
@@ -12437,8 +14610,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunnerFleetSummary'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runners/{runner_id}/concurrency:
     patch:
       tags:
@@ -12482,6 +14662,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runners/{runner_id}:
     delete:
       tags:
@@ -12534,6 +14721,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Runners
@@ -12562,6 +14756,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runners/{runner_id}/token:
     post:
       tags:
@@ -12599,6 +14800,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/validate:
     post:
       tags:
@@ -12625,8 +14833,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/upload:
     post:
       tags:
@@ -12653,8 +14868,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/sensitive-data/types:
     get:
       tags:
@@ -12674,8 +14896,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SensitiveDataTypesResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/sensitive-data/test:
     post:
       tags:
@@ -12708,8 +14937,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/model-io-rules:
     get:
       tags:
@@ -12724,8 +14960,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ModelIORuleListResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - Policies
@@ -12754,8 +14997,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/model-io-rules/{rule_id}:
     put:
       tags:
@@ -12794,6 +15044,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     patch:
       tags:
       - Policies
@@ -12831,6 +15088,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Policies
@@ -12855,6 +15119,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/export:
     get:
       tags:
@@ -12909,6 +15180,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/diff:
     post:
       tags:
@@ -12936,8 +15214,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/schema:
     get:
       tags:
@@ -12954,8 +15239,15 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Get Policy Schema Api V1 Policies Schema Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/versions:
     get:
       tags:
@@ -13009,6 +15301,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     post:
       tags:
       - Policies
@@ -13036,6 +15335,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/versions/{version_id}:
     get:
       tags:
@@ -13066,6 +15372,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Policies
@@ -13091,6 +15404,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/versions/{version_id}/tag:
     put:
       tags:
@@ -13127,6 +15447,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Policies
@@ -13156,6 +15483,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/versions/{version_id}/rollback:
     post:
       tags:
@@ -13192,6 +15526,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/versions/prune:
     post:
       tags:
@@ -13218,8 +15559,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/generate:
     post:
       tags:
@@ -13248,8 +15596,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/generate-from-audit:
     post:
       tags:
@@ -13278,8 +15633,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/notices/summary:
     get:
       tags:
@@ -13315,6 +15677,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/security-screen/score:
     post:
       tags:
@@ -13361,8 +15730,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/commands:
     post:
       tags:
@@ -13398,6 +15774,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/prompts:
     post:
       tags:
@@ -13433,6 +15816,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/commands/{command_id}:
     get:
       tags:
@@ -13476,6 +15866,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/control:
     get:
       tags:
@@ -13515,6 +15912,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/voice-transcripts:
     post:
       tags:
@@ -13550,6 +15954,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/takeover:
     post:
       tags:
@@ -13585,6 +15996,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/release:
     post:
       tags:
@@ -13621,6 +16039,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/permission-check:
     post:
       tags:
@@ -13657,8 +16082,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/session-start:
     post:
       tags:
@@ -13704,8 +16136,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/chat/connections:
     get:
       tags:
@@ -13721,8 +16160,15 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response List Connections Api V1 Chat Connections Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     post:
       tags:
       - Chat
@@ -13749,8 +16195,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/chat/connections/{connection_id}:
     patch:
       tags:
@@ -13789,6 +16242,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/chat/connections/{connection_id}/link-code:
     post:
       tags:
@@ -13822,6 +16282,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/chat/connections/{connection_id}/identity:
     delete:
       tags:
@@ -13847,6 +16314,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/chat/connections/{connection_id}/deliveries:
     get:
       tags:
@@ -13879,6 +16353,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/chat/ingress/{connection_id}:
     post:
       tags:
@@ -13914,6 +16395,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/operator-notes:
     post:
       tags:
@@ -13943,6 +16431,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Operator Notes
@@ -14002,6 +16497,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/operator-notes/{note_id}/cancel:
     post:
       tags:
@@ -14037,6 +16539,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/notes/pending:
     post:
       tags:
@@ -14080,8 +16589,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/search:
     post:
       tags:
@@ -14126,8 +16642,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/similar:
     get:
       tags:
@@ -14217,6 +16740,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/browser-steps:
     post:
       tags:
@@ -14270,8 +16800,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/artifacts:
     post:
       tags:
@@ -14334,6 +16867,8 @@ paths:
           description: artifact_labels_invalid and other request errors
         '507':
           description: storage_budget_exhausted
+        '503':
+          description: Credential verification unavailable
       requestBody:
         required: true
         content:
@@ -14409,6 +16944,7 @@ paths:
                     tool_name'
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     get:
       tags:
       - Runtime Sessions
@@ -14483,8 +17019,11 @@ paths:
           description: Runtime session not found in this account
         '422':
           description: Bad kind, label, limit or cursor
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/artifacts:
     get:
       tags:
@@ -14638,6 +17177,9 @@ paths:
           description: User lacks view_runtime_sessions
         '422':
           description: Bad kind, label, id, date, limit or cursor
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/search/saved:
     post:
       tags:
@@ -14671,6 +17213,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     get:
       tags:
       - Runtime Sessions
@@ -14716,6 +17265,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/search/saved/{saved_search_id}:
     get:
       tags:
@@ -14746,6 +17302,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     patch:
       tags:
       - Runtime Sessions
@@ -14788,6 +17351,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
     delete:
       tags:
       - Runtime Sessions
@@ -14813,6 +17383,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/search/saved/{saved_search_id}/run:
     post:
       tags:
@@ -14867,6 +17444,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/settings/embedding:
     get:
       tags:
@@ -14889,8 +17473,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionEmbeddingSettingResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
     put:
       tags:
       - Runtime Sessions
@@ -14927,8 +17518,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/roles:
     get:
       tags:
@@ -14944,8 +17542,15 @@ paths:
           content:
             application/json:
               schema: {}
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
 components:
   schemas:
     AIModelAliasFailure:

@@ -12,7 +12,9 @@ import asyncio
 import functools
 import inspect
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
+
+from preloop.schemas.ci_principal import CiAction
 
 from fastapi import HTTPException, status
 
@@ -136,7 +138,7 @@ def _with_authorizer(func, permission_name: str):
     return authorized_sync
 
 
-def require_permission(permission_name: str):
+def _require_human_permission(permission_name: str):
     """Return a decorator that preserves sync/async behavior.
 
     Without the RBAC plugin the endpoint is only wrapped for the account
@@ -175,6 +177,79 @@ def require_permission(permission_name: str):
             return result
 
         return sync_wrapper
+
+    return decorator
+
+
+def require_permission(
+    permission_name: str, *, ci_action: CiAction | None = None
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Check human permissions or an explicit independent machine operation.
+
+    Restricted actors never enter the human plugin/owner path. Unmarked
+    handlers deny machines even with RBAC disabled or an extension permitting
+    everything. A marked handler still needs fresh core and EE machine checks.
+    """
+    from sqlalchemy.orm import Session
+    from preloop.models import crud
+    from preloop.models.crud.ci_principal import CiAuthorizationContext
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        human_handler = _require_human_permission(permission_name)(func)
+        signature = inspect.signature(func)
+
+        def machine_call(
+            args: tuple[Any, ...], kwargs: dict[str, Any]
+        ) -> inspect.BoundArguments | None:
+            bound = signature.bind_partial(*args, **kwargs)
+            actor = bound.arguments.get("current_user", kwargs.get("current_user"))
+            if not isinstance(actor, CiAuthorizationContext):
+                return None
+            db = bound.arguments.get("db", kwargs.get("db"))
+            if not isinstance(ci_action, CiAction) or not isinstance(db, Session):
+                raise HTTPException(403, "Restricted CI authorization denied")
+            try:
+                fresh = crud.crud_ci_principal.authorize(
+                    db, context=actor, action=ci_action
+                )
+                if "current_user" in bound.arguments:
+                    bound.arguments["current_user"] = fresh
+                else:
+                    for name, parameter in signature.parameters.items():
+                        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                            bound.arguments[name]["current_user"] = fresh
+            except PermissionError:
+                raise HTTPException(403, "Restricted CI authorization denied") from None
+            return bound
+
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def wrapped(*args: Any, **kwargs: Any) -> Any:
+                from preloop.api.loop_safety import run_db_off_loop
+
+                bound = signature.bind_partial(*args, **kwargs)
+                checked = None
+                if isinstance(
+                    bound.arguments.get("current_user", kwargs.get("current_user")),
+                    CiAuthorizationContext,
+                ):
+                    checked = await run_db_off_loop(lambda: machine_call(args, kwargs))
+                if checked is not None:
+                    return await func(*checked.args, **checked.kwargs)
+                return await human_handler(*args, **kwargs)
+        else:
+
+            @functools.wraps(func)
+            def wrapped(*args: Any, **kwargs: Any) -> Any:
+                checked = machine_call(args, kwargs)
+                if checked is not None:
+                    return func(*checked.args, **checked.kwargs)
+                return human_handler(*args, **kwargs)
+
+        # Inventory only enables policies on handlers that explicitly opt in.
+        wrapped._ci_action = ci_action
+        return wrapped
 
     return decorator
 
