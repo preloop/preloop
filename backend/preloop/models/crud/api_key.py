@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from ..models.api_key import ApiKey
 from ..models.managed_agent_credential import ManagedAgentCredential
@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 
 class CRUDApiKey(CRUDBase[ApiKey]):
     """CRUD operations for API key."""
+
+    @staticmethod
+    def _legacy_only(query: Query[ApiKey]) -> Query[ApiKey]:
+        """Keep every machine marker out of human key administration."""
+        return query.filter(
+            ApiKey.credential_type == "legacy",
+            ApiKey.credential_version.is_(None),
+            ApiKey.ci_principal_id.is_(None),
+            ApiKey.ci_actions.is_(None),
+        )
 
     @staticmethod
     def build_key_hash(key_value: str) -> str:
@@ -163,12 +173,7 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             .filter(User.username == username, ApiKey.is_active.is_(True))
         )
         # Human key administration must use the CI lifecycle seam for CI keys.
-        query = query.filter(
-            ApiKey.credential_type == "legacy",
-            ApiKey.credential_version.is_(None),
-            ApiKey.ci_principal_id.is_(None),
-            ApiKey.ci_actions.is_(None),
-        )
+        query = self._legacy_only(query)
         if account_id:
             query = query.filter(User.account_id == account_id)
         return query.offset(skip).limit(limit).all()
@@ -552,12 +557,7 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             .filter(User.username == username)
         )
         # Human key administration must use the CI lifecycle seam for CI keys.
-        query = query.filter(
-            ApiKey.credential_type == "legacy",
-            ApiKey.credential_version.is_(None),
-            ApiKey.ci_principal_id.is_(None),
-            ApiKey.ci_actions.is_(None),
-        )
+        query = self._legacy_only(query)
         if account_id:
             query = query.filter(User.account_id == account_id)
         return query.order_by(ApiKey.created_at.desc()).all()
@@ -577,12 +577,7 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             .filter(ApiKey.id == key_id, User.username == username)
         )
         # Human key administration must use the CI lifecycle seam for CI keys.
-        query = query.filter(
-            ApiKey.credential_type == "legacy",
-            ApiKey.credential_version.is_(None),
-            ApiKey.ci_principal_id.is_(None),
-            ApiKey.ci_actions.is_(None),
-        )
+        query = self._legacy_only(query)
         if account_id:
             query = query.filter(User.account_id == account_id)
         return query.first()

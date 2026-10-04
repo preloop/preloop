@@ -400,7 +400,7 @@ class CRUDCiPrincipal:
                 actor=actor,
                 principal=principal,
                 actions=ceiling,
-                expires_at=expires_at,
+                expires_at=expires_at if expires_at is not None else old.expires_at,
             )
             old.is_active = False
             self._audit(

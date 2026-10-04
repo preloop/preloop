@@ -218,6 +218,7 @@ def test_rotation_preserves_ownership_and_revokes_old_key(
     "mutation",
     [
         "version",
+        "principal_version",
         "type",
         "scope",
         "actions",
@@ -235,6 +236,8 @@ def test_fresh_state_and_malformed_markers_deny(
     assert crud.crud_ci_principal.authenticate(db_session, token=token)
     if mutation == "version":
         key.credential_version = 2
+    elif mutation == "principal_version":
+        principal.credential_version = 2
     elif mutation == "type":
         key.credential_type = "unknown"
     elif mutation == "scope":
@@ -322,16 +325,17 @@ def test_unauthorized_provision_has_no_mutation(
         flow.trigger_project_ids = [str(uuid4())]
     elif mutation == "repository_override":
         flow.git_clone_config = {
+            "enabled": True,
             "repositories": [
                 {
                     "project_id": str(project.id),
                     "tracker_id": str(project.organization.tracker_id),
                     "repository_url": "https://example.com/other.git",
                 }
-            ]
+            ],
         }
     elif mutation == "multiple_repositories":
-        flow.git_clone_config = {"repositories": [{}, {}]}
+        flow.git_clone_config = {"enabled": True, "repositories": [{}, {}]}
     elif mutation == "member":
         account.primary_user_id = None
     elif mutation == "plugin_denial":
@@ -342,7 +346,12 @@ def test_unauthorized_provision_has_no_mutation(
         db_session.query(models.ApiKey).count(),
         db_session.query(models.CiPrincipal).count(),
     )
-    with pytest.raises((PermissionError, ValueError)):
+    message = (
+        "bind exactly"
+        if mutation in {"repository_override", "multiple_repositories"}
+        else None
+    )
+    with pytest.raises((PermissionError, ValueError), match=message):
         crud.crud_ci_principal.provision(
             db_session, actor=owner, name="Denied CI", grant=grant, **kwargs
         )
@@ -590,3 +599,24 @@ def test_restricted_key_cannot_invoke_new_human_logout_hook(
     )
     assert response.status_code in (401, 403)
     assert calls == []
+
+
+def test_rotation_preserves_expiry_when_an_administrator_omits_it(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    owner, _, _, grant = ci_resources
+    principal, old, _ = crud.crud_ci_principal.provision(
+        db_session,
+        actor=owner,
+        name="Expiring CI",
+        grant=grant,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    expiry = old.expires_at
+    rotated, _ = crud.crud_ci_principal.rotate(
+        db_session,
+        actor=owner,
+        principal_id=principal.id,
+        key_id=old.id,
+    )
+    assert rotated.expires_at == expiry and rotated.expires_at is not None
