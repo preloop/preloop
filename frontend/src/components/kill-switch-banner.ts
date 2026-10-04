@@ -28,6 +28,10 @@ export class KillSwitchBanner extends LitElement {
   @state()
   private error: string | null = null;
 
+  /** True when the last poll failed and `status` is the last known one. */
+  @state()
+  private stale = false;
+
   private pollTimer?: number;
 
   private static readonly SCOPE_LABELS: Record<
@@ -149,6 +153,12 @@ export class KillSwitchBanner extends LitElement {
       color: var(--sl-color-neutral-0);
     }
 
+    .stale {
+      color: var(--sl-color-neutral-600);
+      font-size: 13px;
+      margin-top: 8px;
+    }
+
     .error {
       color: var(--sl-color-danger-700);
       font-size: 13px;
@@ -169,12 +179,17 @@ export class KillSwitchBanner extends LitElement {
     if (this.pollTimer) window.clearInterval(this.pollTimer);
   }
 
-  /** Reload halt status, failing silently (the banner is advisory chrome). */
+  /**
+   * Reload halt status. A failed read keeps the last known status: this
+   * banner is the account's only persistent halted signal, so a transient
+   * poll failure must not make it vanish. Only a successful read clears it.
+   */
   private async refresh() {
     try {
       this.status = await getKillSwitchStatus();
+      this.stale = false;
     } catch {
-      this.status = null;
+      this.stale = this.status !== null;
     }
   }
 
@@ -190,6 +205,7 @@ export class KillSwitchBanner extends LitElement {
         scopes,
         reason: 'Staged recovery from console banner',
       });
+      this.stale = false;
       this.dispatchEvent(
         new CustomEvent('kill-switch-changed', {
           bubbles: true,
@@ -266,6 +282,14 @@ export class KillSwitchBanner extends LitElement {
               `
             )}
           </div>
+          ${
+            this.stale
+              ? html`<div class="stale">
+                  Couldn't refresh the halt status. Showing the last known
+                  state.
+                </div>`
+              : ''
+          }
           ${this.error ? html`<div class="error">${this.error}</div>` : ''}
         </div>
         <div class="actions">

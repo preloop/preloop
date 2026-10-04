@@ -225,6 +225,70 @@ describe('kill-switch-banner', () => {
     });
   });
 
+  /** Answer the status poll with `status` from now on (a 500 when null). */
+  function answerPollWith(status: KillSwitchStatus | null): void {
+    const previous = window.fetch;
+    const restorePrevious = restoreFetch;
+    window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/account/kill-switch/status')) {
+        return status
+          ? new Response(JSON.stringify(status), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          : new Response(JSON.stringify({ detail: 'unavailable' }), {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            });
+      }
+      return previous(input, init);
+    }) as typeof window.fetch;
+    restoreFetch = () => {
+      window.fetch = previous;
+      restorePrevious?.();
+    };
+  }
+
+  it('keeps the halt banner up when a status poll fails', async () => {
+    await mount([FULL_HALT]);
+    answerPollWith(null);
+
+    await (el as any).refresh();
+    await el.updateComplete;
+
+    // A transient failure is not news that the halt was lifted.
+    const text = el.shadowRoot!.textContent ?? '';
+    expect(text).to.contain('Agent requests are halted');
+    expect(text).to.contain('Model requests blocked');
+    expect(text).to.contain("Couldn't refresh the halt status");
+
+    // Only a successful read clears it.
+    restoreFetch();
+    await mount([FULL_HALT]);
+    answerPollWith(INACTIVE);
+    await (el as any).refresh();
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent?.trim()).to.equal('');
+  });
+
+  it('drops the stale note once a poll succeeds again', async () => {
+    await mount([PARTIAL_HALT]);
+    answerPollWith(null);
+    await (el as any).refresh();
+    await el.updateComplete;
+    expect(el.shadowRoot!.textContent).to.contain(
+      "Couldn't refresh the halt status"
+    );
+
+    answerPollWith(PARTIAL_HALT);
+    await (el as any).refresh();
+    await el.updateComplete;
+    const text = el.shadowRoot!.textContent ?? '';
+    expect(text).to.contain('Agent requests are partially halted');
+    expect(text).to.not.contain("Couldn't refresh the halt status");
+  });
+
   it('keeps the banner up with an inline error when the lift fails', async () => {
     const original = window.fetch;
     window.fetch = (async (input: RequestInfo | URL) => {
