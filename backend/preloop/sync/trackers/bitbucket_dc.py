@@ -55,6 +55,10 @@ from preloop.schemas.tracker_models import (
     ProjectMetadata,
     TrackerConnection,
 )
+from preloop.utils.bitbucket_dc_webhooks import (
+    BITBUCKET_DC_WEBHOOK_EVENTS,
+    BITBUCKET_DC_WEBHOOK_NAME,
+)
 from preloop.utils.bitbucket_dc import (
     BITBUCKET_DC_AUTH_API_TOKEN,
     BITBUCKET_DC_DEFAULT_VERSION,
@@ -119,8 +123,8 @@ _ISSUES_UNSUPPORTED = (
     "Keep issues in Jira and bind the Jira project to the repository."
 )
 _WEBHOOKS_UNSUPPORTED = (
-    "Bitbucket Data Center webhook ingestion is not part of this adapter; "
-    "repository webhooks are managed by a separate integration."
+    "Preloop does not delete Bitbucket Data Center webhooks; a repository "
+    "administrator removes the hook in the repository settings."
 )
 
 # Operations the adapter supports against a 10.2 instance and those it
@@ -145,7 +149,7 @@ CAPABILITIES: Dict[str, bool] = {
     "pull_request_decline": False,
     "pull_request_delete": False,
     "issues": False,
-    "webhooks": False,
+    "webhooks": True,
     "oauth": False,
 }
 UNSUPPORTED_OPERATIONS: Tuple[str, ...] = tuple(
@@ -1854,45 +1858,157 @@ class BitbucketDCTracker(BaseTracker):
         return user_name(user)
 
     # ------------------------------------------------------------------
-    # Webhooks: explicitly unsupported in this adapter
+    # Webhooks: repository hooks for the 10.2 intake
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _project_repo(project: Any) -> Optional[str]:
+        meta = getattr(project, "meta_data", None) or {}
+        return getattr(project, "slug", None) or meta.get("full_name") or None
+
+    async def list_repository_webhooks(
+        self, repo_full_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return the repository's hooks (needs repository admin rights).
+
+        Raises:
+            TrackerPermissionError: When the token cannot administer the
+                repository (403).
+            TrackerAuthenticationError: When the token is rejected (401).
+        """
+        return await self._paginate(f"{self._repo_path(repo_full_name)}/webhooks")
+
+    async def ensure_repository_webhook(
+        self,
+        webhook_url: str,
+        secret: str,
+        repo_full_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create or update Preloop's hook on one repository, idempotently.
+
+        Only hooks whose URL is exactly ``webhook_url`` are touched; every
+        other hook on the repository is left as it is. Re-running after a
+        secret rotation updates the existing hook in place instead of adding
+        a second one.
+
+        Returns:
+            ``{"id": <hook id>, "created": bool, "updated": int}``.
+
+        Raises:
+            TrackerPermissionError: When the token lacks repository admin.
+            TrackerAuthenticationError: When the token is rejected.
+        """
+        base = f"{self._repo_path(repo_full_name)}/webhooks"
+        body = {
+            "name": BITBUCKET_DC_WEBHOOK_NAME,
+            "url": webhook_url,
+            "active": True,
+            "events": list(BITBUCKET_DC_WEBHOOK_EVENTS),
+            "configuration": {"secret": secret},
+        }
+        matching = [
+            hook
+            for hook in await self.list_repository_webhooks(repo_full_name)
+            if hook.get("url") == webhook_url and isinstance(hook.get("id"), int)
+        ]
+        if not matching:
+            response = await self._request("POST", base, json=body)
+            created = response.json() if response.content else {}
+            return {"id": created.get("id"), "created": True, "updated": 0}
+        for hook in matching:
+            await self._request("PUT", f"{base}/{int(hook['id'])}", json=body)
+        return {"id": matching[0]["id"], "created": False, "updated": len(matching)}
+
+    async def inspect_repository_webhook(
+        self, webhook_url: str, repo_full_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Report the registration state of Preloop's hook on a repository.
+
+        Separate from :meth:`test_connection`: a token can read pull requests
+        while lacking the admin right needed to see or manage hooks.
+
+        Returns:
+            ``status`` is one of ``registered``, ``inactive``,
+            ``events_missing``, ``missing``, ``permission_denied`` or
+            ``unauthorized``; ``missing_events`` lists absent subscriptions.
+        """
+        try:
+            hooks = await self.list_repository_webhooks(repo_full_name)
+        except TrackerPermissionError:
+            return {"status": "permission_denied", "missing_events": []}
+        except TrackerAuthenticationError:
+            return {"status": "unauthorized", "missing_events": []}
+        hook = next((h for h in hooks if h.get("url") == webhook_url), None)
+        if hook is None:
+            return {"status": "missing", "missing_events": []}
+        events = set(hook.get("events") or [])
+        missing = [e for e in BITBUCKET_DC_WEBHOOK_EVENTS if e not in events]
+        if not hook.get("active", True):
+            status = "inactive"
+        elif missing:
+            status = "events_missing"
+        else:
+            status = "registered"
+        return {"status": status, "id": hook.get("id"), "missing_events": missing}
+
     async def register_webhook(self, **kwargs: Any) -> bool:
-        """Unsupported: webhook ingestion is a separate integration."""
-        raise BitbucketDCUnsupportedOperationError(_WEBHOOKS_UNSUPPORTED)
+        """Register the hook for a project's repository.
+
+        Keyword Args:
+            project: The Preloop project (``PROJECT/slug``).
+            webhook_url: Callback URL.
+            secret: The tracker's webhook secret.
+
+        Returns:
+            True when the hook exists afterwards.
+        """
+        repo = self._project_repo(kwargs.get("project"))
+        await self.ensure_repository_webhook(
+            kwargs["webhook_url"], kwargs["secret"], repo_full_name=repo
+        )
+        return True
 
     async def unregister_webhook(self, **kwargs: Any) -> bool:
-        """Unsupported: webhook ingestion is a separate integration."""
+        """Unsupported: removing hooks is left to the repository administrator."""
         raise BitbucketDCUnsupportedOperationError(_WEBHOOKS_UNSUPPORTED)
 
     async def is_webhook_registered(self, webhook: Webhook) -> bool:
-        """Always False: this adapter manages no webhooks."""
-        return False
+        """Whether a stored hook still exists with the full event list."""
+        project = getattr(webhook, "project", None)
+        state = await self.inspect_repository_webhook(
+            webhook.url, repo_full_name=self._project_repo(project)
+        )
+        return state["status"] == "registered"
 
     async def get_webhooks(self) -> List[Dict[str, Any]]:
-        """Always empty: this adapter manages no webhooks."""
-        return []
+        """Hooks on the bound repository; empty when the tracker is unbound."""
+        if not self.repo_full_name:
+            return []
+        return await self.list_repository_webhooks()
 
     async def delete_webhook(self, webhook: Dict[str, Any]) -> bool:
-        """Unsupported: webhook ingestion is a separate integration."""
+        """Unsupported: removing hooks is left to the repository administrator."""
         raise BitbucketDCUnsupportedOperationError(_WEBHOOKS_UNSUPPORTED)
 
     async def unregister_all_webhooks(
         self, db: Session, webhook_url_pattern: Optional[str] = None
     ) -> Dict[str, int]:
-        """Nothing to do: this adapter manages no webhooks."""
+        """Nothing to do: Preloop never deletes Data Center hooks."""
         return {"unregistered": 0, "failed": 0, "not_found": 0}
 
     async def is_webhook_registered_for_project(
         self, project: Project, webhook_url: str
     ) -> bool:
-        """Always False: this adapter manages no webhooks."""
-        return False
+        """Whether the project's repository has the complete Preloop hook."""
+        state = await self.inspect_repository_webhook(
+            webhook_url, repo_full_name=self._project_repo(project)
+        )
+        return state["status"] == "registered"
 
     async def is_webhook_registered_for_organization(
         self, organization: Organization, webhook_url: str
     ) -> bool:
-        """Always False: this adapter manages no webhooks."""
+        """Always False: Data Center hooks are per repository."""
         return False
 
 

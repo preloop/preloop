@@ -105,18 +105,63 @@ class IssueCostRow(BaseModel):
     total_tokens: int
     run_count: int
     failed_run_count: int
-    first_event_at: Optional[datetime] = None
-    pr_opened_at: Optional[datetime] = None
-    approved_at: Optional[datetime] = None
-    merged_at: Optional[datetime] = None
+    first_event_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "The earliest attributed execution start of this issue, "
+            "over all flows. It is not the ticket creation time: work queued "
+            "before the first run is not measured. The period filter selects "
+            "issues by this value."
+        ),
+    )
+    pr_opened_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "When the linked pull request was opened. The forge's own "
+            "created time wins; otherwise the time Preloop bound it to a run, "
+            "otherwise the publishing run's end. pr_opened_at_source says "
+            "which."
+        ),
+    )
+    approved_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "Earliest recorded approval event on the linked pull request, at "
+            "the time the forge reported for it. It is not verified "
+            "mergeability: required checks, approval counts and branch "
+            "restrictions are not evaluated."
+        ),
+    )
+    merged_at: Optional[datetime] = Field(
+        None,
+        description=(
+            "Earliest recorded merge event on the linked pull request, at the "
+            "time the forge reported for it."
+        ),
+    )
     first_event_to_pr_opened_hours: Optional[float] = Field(
-        None, description="Blank when the pull request was not opened yet."
+        None,
+        description=(
+            "Elapsed hours from first_event_at to pr_opened_at. Blank when "
+            "the pull request was not opened yet or the times are out of "
+            "order."
+        ),
     )
     pr_opened_to_approved_hours: Optional[float] = Field(
-        None, description="Blank when the pull request was not approved yet."
+        None,
+        description=(
+            "Elapsed hours from pr_opened_at to approved_at. Blank when the "
+            "pull request was not approved yet or the times are out of order. "
+            "Ends at a recorded approval, so it is not a ticket-to-mergeable "
+            "duration."
+        ),
     )
     approved_to_merged_hours: Optional[float] = Field(
-        None, description="Blank when the pull request was not merged yet."
+        None,
+        description=(
+            "Elapsed hours from approved_at to merged_at. Blank when the pull "
+            "request was not merged yet or the times are out of order."
+        ),
     )
     pr_opened_at_source: Optional[str] = Field(
         None,
@@ -215,10 +260,27 @@ class IssueCostUnassigned(BaseModel):
 class IssueCostReport(BaseModel):
     """Issue rows, per-project and per-flow sums and the unassigned bucket."""
 
-    start: Optional[datetime] = None
-    end: Optional[datetime] = None
+    start: Optional[datetime] = Field(
+        None,
+        description=(
+            "Inclusive lower bound on first_event_at. An issue whose first "
+            "execution started earlier is excluded even when later events "
+            "fall in the period."
+        ),
+    )
+    end: Optional[datetime] = Field(
+        None, description="Exclusive upper bound on first_event_at."
+    )
     project_id: Optional[UUID] = None
-    flow_id: Optional[UUID] = None
+    flow_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "When set, cost, token and run figures count only this flow's "
+            "executions. Selected issues still report lifetime totals of that "
+            "flow, and their milestones and intervals stay those of the whole "
+            "issue."
+        ),
+    )
     issues: List[IssueCostRow]
     by_project: List[IssueCostSummary]
     by_flow: List[IssueCostSummary]

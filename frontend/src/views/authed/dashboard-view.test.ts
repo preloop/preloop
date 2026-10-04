@@ -665,8 +665,8 @@ describe('DashboardView', () => {
       .be.true;
     expect(urls).to.include('/api/v1/trackers');
     expect(urls).to.include('/api/v1/mcp-servers');
-    expect(urls).to.include('/api/v1/tools');
-    expect(urls).to.include('/api/v1/flows');
+    expect(urls).to.include('/api/v1/tools/summary');
+    expect(urls).to.include('/api/v1/flows/summary');
     // Raised from 10 in wave 6: the Inventory Flows tab counts runs and
     // failures per flow across the range, not the last five runs.
     expect(urls).to.include('/api/v1/flows/executions?limit=100');
@@ -2255,12 +2255,16 @@ describe('DashboardView', () => {
           url.startsWith('/api/v1/attention/spend-outliers')
         ).length
       ).to.equal(1);
-      expect(pageUrls.filter((url) => url === '/api/v1/flows').length).to.equal(
-        1
-      );
-      expect(pageUrls.filter((url) => url === '/api/v1/tools').length).to.equal(
-        1
-      );
+      expect(
+        pageUrls.filter(
+          (url) => url === '/api/v1/flows' || url === '/api/v1/flows/summary'
+        ).length
+      ).to.equal(1);
+      expect(
+        pageUrls.filter(
+          (url) => url === '/api/v1/tools' || url === '/api/v1/tools/summary'
+        ).length
+      ).to.equal(1);
       expect(
         pageUrls.filter((url) => url === '/api/v1/ai-models').length
       ).to.equal(1);
@@ -2360,8 +2364,16 @@ describe('DashboardView', () => {
       const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
       // The flows, the people and the tool catalogue read the same at any
       // range, so a range change does not ask for them again.
-      expect(urls.some((url) => url === '/api/v1/flows')).to.be.false;
-      expect(urls.some((url) => url === '/api/v1/tools')).to.be.false;
+      expect(
+        urls.some(
+          (url) => url === '/api/v1/flows' || url === '/api/v1/flows/summary'
+        )
+      ).to.be.false;
+      expect(
+        urls.some(
+          (url) => url === '/api/v1/tools' || url === '/api/v1/tools/summary'
+        )
+      ).to.be.false;
       expect(urls.some((url) => url.startsWith('/api/v1/users'))).to.be.false;
       // The gateway call log is scoped to the range, so it does.
       expect(
@@ -2554,6 +2566,53 @@ describe('DashboardView', () => {
       expect(element['pendingTopicRefreshes'].has('gateway')).to.be.false;
     });
 
+    it('ignores the first-wave response after disconnect and skips deferred work', async () => {
+      let release!: () => void;
+      summaryGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const el = await mountDashboard();
+      await waitUntil(() => !el['fetchingAgents']);
+      const summaryBefore = el['gatewaySummary'];
+      const deferred = sinon.spy(el as any, 'fetchDeferredData');
+      el.remove();
+      summaryGate = null;
+      release();
+      await waitUntil(() => !el['refreshInFlight']);
+      expect(el['gatewaySummary']).to.equal(summaryBefore);
+      expect(deferred.called).to.equal(false);
+      deferred.restore();
+    });
+
+    it('renders agents and approvals while gateway totals are still pending', async () => {
+      let release!: () => void;
+      summaryGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const el = await mountDashboard();
+      try {
+        await waitUntil(
+          () => !el['fetchingAgents'] && !el['fetchingApprovals']
+        );
+        await el.updateComplete;
+        expect(el['managedAgents']).to.have.length(agentsResponse.items.length);
+        const inventory = el.shadowRoot!.querySelector('inventory-card') as any;
+        expect(inventory.agentRows).to.have.length(agentsResponse.items.length);
+        expect(el['fetchingGatewaySummary']).to.equal(true);
+        const urls = fetchStub
+          .getCalls()
+          .map((call) => call.args[0].toString());
+        expect(urls).to.include('/api/v1/flows/summary');
+        expect(urls).to.include('/api/v1/tools/summary');
+        expect(urls).not.to.include('/api/v1/flows');
+        expect(urls).not.to.include('/api/v1/tools');
+      } finally {
+        summaryGate = null;
+        release();
+      }
+      await waitUntil(() => !el['refreshInFlight']);
+    });
+
     it('loads the fold without asking for the same thing twice', async () => {
       // Hold the deferred pass so what is counted is exactly what the reader
       // waits for before the page is usable.
@@ -2581,7 +2640,9 @@ describe('DashboardView', () => {
             !url.startsWith('/api/v1/roles') &&
             !url.startsWith('/api/v1/ai-models') &&
             // Identity lists start with the fold but do not block it.
+            !url.startsWith('/api/v1/flows/summary') &&
             url !== '/api/v1/flows' &&
+            url !== '/api/v1/tools/summary' &&
             url !== '/api/v1/tools'
         );
       const duplicates = foldUrls.filter(

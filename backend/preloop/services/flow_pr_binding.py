@@ -669,7 +669,7 @@ def is_bound_implementation_comment(
     source = execution.trigger_event_details or {}
     provider = source.get("source")
     if (
-        provider not in {"github", "gitlab", "bitbucket"}
+        provider not in {"github", "gitlab", "bitbucket", "bitbucket_dc"}
         or provider != event.get("source")
         or str(source.get("account_id")) != str(account_id)
         or str(source.get("tracker_id")) != str(tracker_id)

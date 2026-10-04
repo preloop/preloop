@@ -270,18 +270,17 @@ PERMISSION_PROMPT_TOOL: Dict[str, Any] = {
 SEND_NOTE_TOOL: Dict[str, Any] = {
     "name": "send_note",
     "description": (
-        "Leave an operator note for exactly one other target: another managed "
-        "agent, a runtime session, or a flow execution. The note is delivered "
-        "into the target's next turn by the same rail that carries a human's "
-        "note, and is recorded with you as the author, so a hand off between "
-        "agents leaves a record instead of a file nobody sweeps. Name exactly "
-        "one of agent_id, runtime_session_id or execution_id; naming none or "
-        "two is refused and writes nothing. Targets outside your account do "
-        "not exist. You can reach the runs you started, at any depth, and "
-        "nothing else unless an access rule grants more: a sibling run, the "
-        "run that started you, and an agent running nothing of yours are all "
-        "refused, naming the scope required. Rate limited per author, per "
-        "target, per hour."
+        "Steer a running agent you started (worker, subagent, flow run) "
+        "without restarting it. Target its runtime_session_id (from "
+        "list_sessions, or the id printed at spawn), its external session id "
+        "(the harness's own session id, e.g. the Claude Code session_id), or "
+        "children='latest' / 'all' for the live runs your session started. "
+        "Delivered at its next turn boundary, recorded with you as author. "
+        "Name exactly one target; none or two is refused and writes nothing. "
+        "Scope: the runs you started, at any depth. A sibling, the run that "
+        "started you, and anything outside your account are refused unless "
+        "an access rule grants more. Rate limited per author, per target, "
+        "per hour."
     ),
     "source": "builtin",
     # Default-off: most agents never need to talk to a sibling, and every
@@ -314,7 +313,29 @@ SEND_NOTE_TOOL: Dict[str, Any] = {
             },
             "runtime_session_id": {
                 "type": "string",
-                "description": "Target runtime session, and only that session.",
+                "description": (
+                    "Target runtime session, and only that session. "
+                    "list_sessions returns it, and the SessionStart hook "
+                    "prints it at spawn."
+                ),
+            },
+            "external_session_id": {
+                "type": "string",
+                "description": (
+                    "Target named by the harness's own session id (the Claude "
+                    "Code session_id, also its transcript file name). "
+                    "Resolved to the runtime session carrying it; refused "
+                    "when more than one does."
+                ),
+                "maxLength": 200,
+            },
+            "children": {
+                "type": "string",
+                "enum": ["latest", "all"],
+                "description": (
+                    "The live runs your session started: 'latest' is the "
+                    "newest one, 'all' writes one note to each (at most 20)."
+                ),
             },
             "execution_id": {
                 "type": "string",
@@ -557,6 +578,78 @@ SEARCH_SESSIONS_SCOPES = (
     SEARCH_SESSIONS_SCOPE_OWN,
     SEARCH_SESSIONS_SCOPE_ACCOUNT,
 )
+
+
+#: Sessions one ``list_sessions`` call returns by default, and at most.
+LIST_SESSIONS_DEFAULT_LIMIT = 10
+LIST_SESSIONS_MAX_LIMIT = 50
+
+
+LIST_SESSIONS_TOOL: Dict[str, Any] = {
+    "name": "list_sessions",
+    "description": (
+        "Find the runtime_session_id of a run you started, to steer it with "
+        "send_note. With no arguments it returns your session's live "
+        "children, newest first: id, started_at, agent_kind, cwd, "
+        "parent_session_id, title and is_active_now. Filter by "
+        "started_since, external_session_id, agent_kind, cwd or "
+        "active_only=false to include ended runs. Listing another session's "
+        "children, or every session in the account (parent_session_id "
+        "'any'), needs the operator's account grant, the same one "
+        "search_sessions scope 'account' needs, and is refused by name "
+        "(account_scope_not_granted) without it. Compact and capped."
+    ),
+    "source": "builtin",
+    # Default-off like search_sessions: only a conductor that spawns runs
+    # needs it, and every other agent would pay the tools/list context tax.
+    "default_enabled": False,
+    "requires_tracker": False,
+    "required_tracker_types": [],
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "parent_session_id": {
+                "type": "string",
+                "description": (
+                    "Whose children to list. Defaults to your own session. "
+                    "'any' lists every session in the account (grant "
+                    "required), as does another session's id."
+                ),
+            },
+            "started_since": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Only runs started at or after this instant (ISO 8601).",
+            },
+            "external_session_id": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Only the run carrying this harness session id.",
+            },
+            "agent_kind": {
+                "type": "string",
+                "description": "Only runs of this agent kind, e.g. claude_code.",
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Only runs whose working directory starts with this path.",
+            },
+            "active_only": {
+                "type": "boolean",
+                "description": "Only runs that have not ended. Default true.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": LIST_SESSIONS_MAX_LIMIT,
+                "description": (
+                    f"Runs to return, {LIST_SESSIONS_DEFAULT_LIMIT} by default."
+                ),
+            },
+        },
+    },
+}
 
 
 SEARCH_SESSIONS_TOOL: Dict[str, Any] = {
