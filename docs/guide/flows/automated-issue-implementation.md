@@ -157,6 +157,11 @@ and GitLab `labels[].title`, so the example works on raw tracker payloads.
 Without a filter, every labeling event qualifies, which is rarely what
 you want on a busy repository.
 
+To split issues between flows (and models) by tag, add `labels_all`, for
+example `labels_all: ["complexity:low"]` on one flow and
+`["complexity:medium"]` on another. See
+[Route by tags](issue-triage.md#route-by-tags).
+
 ## Resume on pull request comments
 
 `comment_created` is only a trigger when the comment lands on a pull request

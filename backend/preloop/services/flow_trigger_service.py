@@ -1848,12 +1848,23 @@ class FlowTriggerService:
             f"Payload keys: {list(payload.keys())}"
         )
 
-        for key, expected_value in flattened_config.items():
-            if key == "labels_all":
+        bound_cache: List[bool] = []
+
+        def _bound_comment() -> bool:
+            # Shared by both label conditions so the bound-execution lookup
+            # runs at most once per event.
+            if not bound_cache:
                 from preloop.services.flow_pr_binding import (
                     is_bound_implementation_comment,
                 )
 
+                bound_cache.append(
+                    bool(is_bound_implementation_comment(self.db, flow, event_data))
+                )
+            return bound_cache[0]
+
+        for key, expected_value in flattened_config.items():
+            if key == "labels_all":
                 required = (
                     expected_value
                     if isinstance(expected_value, list)
@@ -1862,7 +1873,7 @@ class FlowTriggerService:
                 required = [r for r in required if isinstance(r, str) and r]
                 if not required:
                     continue
-                if is_bound_implementation_comment(self.db, flow, event_data):
+                if _bound_comment():
                     continue
                 present = _object_label_names(payload)
                 missing = [r for r in required if r not in present]
@@ -1874,11 +1885,7 @@ class FlowTriggerService:
                     return False
                 continue
             if key == "labels":
-                from preloop.services.flow_pr_binding import (
-                    is_bound_implementation_comment,
-                )
-
-                if is_bound_implementation_comment(self.db, flow, event_data):
+                if _bound_comment():
                     # The issue qualified at intake; its PR need not duplicate
                     # that label. Every other configured condition still applies.
                     continue

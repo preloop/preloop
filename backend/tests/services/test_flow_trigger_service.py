@@ -2004,3 +2004,40 @@ class TestLabelsAll:
         cfg = {"labels_all": ["complexity:low"]}
         ev = {"payload": {"issue": {"fields": {"labels": ["complexity:low"]}}}}
         assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+
+    def test_github_pull_request_labels(self, flow_trigger_service, sample_flow):
+        cfg = {"labels_all": ["complexity:low", "risk:low"]}
+        ev = {
+            "type": "pull_request_labeled",
+            "payload": {
+                "action": "labeled",
+                "label": {"name": "risk:low"},
+                "pull_request": {
+                    "number": 9,
+                    "labels": [{"name": "complexity:low"}, {"name": "risk:low"}],
+                },
+            },
+        }
+        assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+        ev["payload"]["pull_request"]["labels"] = [{"name": "risk:low"}]
+        assert not self._match(flow_trigger_service, sample_flow, cfg, ev)
+
+    def test_bound_comment_bypasses_both_with_one_lookup(
+        self, flow_trigger_service, sample_flow
+    ):
+        cfg = {"labels": ["agent-ready"], "labels_all": ["complexity:low"]}
+        ev = {
+            "type": "comment_created",
+            "payload": {"issue": {"number": 700, "labels": []}},
+        }
+        with patch(
+            "preloop.services.flow_pr_binding.is_bound_implementation_comment",
+            return_value=True,
+        ) as bound:
+            assert self._match(flow_trigger_service, sample_flow, cfg, ev)
+        assert bound.call_count == 1
+        with patch(
+            "preloop.services.flow_pr_binding.is_bound_implementation_comment",
+            return_value=False,
+        ):
+            assert not self._match(flow_trigger_service, sample_flow, cfg, ev)
