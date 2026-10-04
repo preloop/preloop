@@ -713,7 +713,7 @@ tools:
         assert row.user_id == test_user.id
         assert row.details["action"] == "applied"
         value = row.details["new_value"]
-        assert value["policy_name"] == "Audited Policy"
+        assert value["name"] == value["policy_name"] == "Audited Policy"
         assert value["filename"] == "audited.yaml"
         assert value["counts"]["policies_created"] == 1
         assert value["counts"]["tools_created"] == 1
@@ -756,12 +756,76 @@ tools:
         by_action = {r.details["action"]: r.details for r in audit_rows()}
         assert set(by_action) == {"applied", "rolled_back", "version_deleted"}
         rolled = by_action["rolled_back"]["new_value"]
-        assert rolled["version"]["version_id"] == str(first.id)
-        assert rolled["version"]["version_number"] == first.version_number
+        assert rolled["version_id"] == str(first.id)
+        assert rolled["version_number"] == first.version_number
+        assert rolled["name"] == f"v{first.version_number}"
         assert rolled["diff"] is not None
         deleted = by_action["version_deleted"]["old_value"]
         assert deleted["version_id"] == str(second.id)
         assert deleted["version_number"] == second.version_number
+        assert deleted["name"] == f"v{second.version_number}"
+
+    async def test_preview_rollback_is_not_audited(
+        self, db_session, test_user, audit_rows
+    ):
+        service = policies.PolicyVersionService(db_session, str(test_user.account_id))
+        snap = service.create_snapshot(description="only", user_id=test_user.id)
+        db_session.flush()
+        result = await policies.rollback_to_version(
+            version_id=snap.id,
+            request=policies.RollbackRequest(preview_only=True),
+            account=test_user.account,
+            current_user=test_user,
+            db=db_session,
+        )
+        assert result.success is True
+        assert audit_rows() == []
+
+    async def test_prune_is_audited_only_when_versions_are_deleted(
+        self, db_session, test_user, audit_rows
+    ):
+        service = policies.PolicyVersionService(db_session, str(test_user.account_id))
+        for i in range(3):
+            service.create_snapshot(description=f"s{i}", user_id=test_user.id)
+            db_session.flush()
+
+        request = policies.PruneRequest(older_than_days=0, keep_count=1)
+        pruned = await policies.prune_policy_versions(
+            request=request,
+            account=test_user.account,
+            current_user=test_user,
+            db=db_session,
+        )
+        assert pruned.deleted_count == 2
+        rows = audit_rows()
+        assert [r.details["action"] for r in rows] == ["versions_pruned"]
+        assert rows[0].details["new_value"] == {
+            "deleted_count": 2,
+            "older_than_days": 0,
+            "keep_tagged": True,
+            "keep_count": 1,
+        }
+
+        again = await policies.prune_policy_versions(
+            request=request,
+            account=test_user.account,
+            current_user=test_user,
+            db=db_session,
+        )
+        assert again.deleted_count == 0
+        assert len(audit_rows()) == 1
+
+    async def test_audit_failure_does_not_fail_a_committed_apply(
+        self, db_session, test_user, mock_upload_file, audit_rows, mocker
+    ):
+        mocker.patch.object(
+            policies.PolicyVersionService,
+            "get_active_snapshot",
+            side_effect=RuntimeError("snapshot read failed"),
+        )
+        result = await self._upload(db_session, test_user, mock_upload_file)
+        assert result.success is True
+        assert audit_rows() == []
 
 
 # ============================================================================
