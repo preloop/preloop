@@ -10,6 +10,7 @@ from preloop.services.sensitive_data.detectors import (
     BUILTIN_TYPE_IDS,
     BUILTIN_TYPES,
     DetectorConfig,
+    DetectorTimeoutError,
     Match,
     SensitiveTypeInfo,
     UnsafePatternError,
@@ -17,6 +18,7 @@ from preloop.services.sensitive_data.detectors import (
     detect,
     list_types,
     register_detector,
+    registered_type_ids,
     reset_detectors,
 )
 
@@ -24,6 +26,7 @@ __all__ = [
     "BUILTIN_TYPE_IDS",
     "BUILTIN_TYPES",
     "DetectorConfig",
+    "DetectorTimeoutError",
     "Match",
     "SensitiveTypeInfo",
     "UnsafePatternError",
@@ -31,5 +34,6 @@ __all__ = [
     "detect",
     "list_types",
     "register_detector",
+    "registered_type_ids",
     "reset_detectors",
 ]

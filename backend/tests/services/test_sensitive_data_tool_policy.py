@@ -171,13 +171,30 @@ def test_flatten_keeps_key_paths_and_skips_markers() -> None:
             "customer": {"emails": ["x", "y"]},
             "_preloop_origin": "z",
             "n": 3,
+            "ok": True,
+            "none": None,
         }
     )
     assert leaves == [
         ("note", "a"),
         ("customer.emails[0]", "x"),
         ("customer.emails[1]", "y"),
+        ("n", "3"),
     ]
+
+
+def test_numeric_card_argument_is_scanned() -> None:
+    outcome = evaluate_tool_target(
+        config=_config(_rule()),
+        detector_config=None,
+        target="tool.args",
+        payload={"card": 4111111111111111},
+        tool_name="pay",
+        server_name="billing",
+        managed_agent_id=None,
+    )
+    assert outcome.action == "deny"
+    assert outcome.summary.paths == ["card"]
 
 
 def test_result_text_covers_strings_tool_results_and_blocks() -> None:
@@ -281,6 +298,9 @@ def test_first_blocking_rule_wins_after_notify(mocker) -> None:
     assert outcome.action == "require_approval"
     assert outcome.rule_id == "ask"
     assert len(outcome.notices) == 1
+    # The notify hit is still recorded even though a later rule blocked.
+    assert tool_policy.schedule_policy_notice.call_count == 1
+    assert tool_policy.schedule_policy_notice.call_args.args[0].rule_id == "watch"
     context = outcome.rule_context()
     assert context["source"] == SOURCE_SENSITIVE_DATA_RULE
     assert context["detector_summary"]["pii.types_found"] == ["credit_card"]
@@ -392,6 +412,19 @@ def test_compiled_rules_honour_agent_scope() -> None:
     assert compile_model_io_rules(config, managed_agent_id="a1")
     assert compile_model_io_rules(config, managed_agent_id="a2") == []
     assert compile_model_io_rules(config) == []
+
+
+def test_compiled_rules_ignore_tool_and_server_scope() -> None:
+    config = _config(
+        _rule(
+            id="cards",
+            on=["model.request"],
+            scope={"agents": ["a1"], "tools": ["search"], "servers": ["crm"]},
+        )
+    )
+    assert [r.id for r in compile_model_io_rules(config, managed_agent_id="a1")] == [
+        "sensitive-data:cards:model.request"
+    ]
 
 
 def test_compiled_rules_evaluate_on_the_model_path(mocker) -> None:
@@ -763,6 +796,36 @@ async def test_policy_load_failure_fails_closed(proxied, monkeypatch) -> None:
     result = await mcp.call_tool("save_note", {"note": "x"})
     assert result.is_error
     client.call_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_malformed_stored_block_fails_closed(
+    proxied, monkeypatch, mocker
+) -> None:
+    """A block that cannot be parsed must refuse the call, not run unscanned."""
+    from preloop.services import dynamic_fastmcp
+
+    account = MagicMock()
+    account.meta_data = {"sensitive_data": {"rules": [{"id": "r", "on": ["nowhere"]}]}}
+    mocker.patch("preloop.models.crud.crud_account.get", return_value=account)
+    monkeypatch.setattr(dynamic_fastmcp, "get_db", lambda: iter([MagicMock()]))
+    mcp, client, _evaluate, _approval = proxied
+    result = await mcp.call_tool("save_note", {"note": "x"})
+    assert result.is_error
+    assert "could not be loaded" in result.content[0].text
+    client.call_tool.assert_not_called()
+
+
+def test_db_error_reading_the_block_fails_closed(mocker) -> None:
+    from preloop.services import dynamic_fastmcp
+    from preloop.services.sensitive_data.policy_store import SensitiveDataPolicyError
+
+    mocker.patch.object(dynamic_fastmcp, "get_db", lambda: iter([MagicMock()]))
+    mocker.patch(
+        "preloop.models.crud.crud_account.get", side_effect=RuntimeError("down")
+    )
+    with pytest.raises(SensitiveDataPolicyError):
+        dynamic_fastmcp._load_sensitive_data_policy("acc")
 
 
 def test_load_sensitive_data_policy_returns_none_without_tool_rules(mocker) -> None:

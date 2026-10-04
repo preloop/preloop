@@ -61,7 +61,10 @@ from preloop.services.policy_evaluator import (
     _log_policy_decision_async,
     evaluate_condition_against_bindings,
 )
-from preloop.services.sensitive_data.detectors import DetectorConfig
+from preloop.services.sensitive_data.detectors import (
+    DetectorConfig,
+    DetectorTimeoutError,
+)
 from preloop.services.sensitive_data.policy_store import (
     detector_config_from,
     load_sensitive_data_config,
@@ -458,10 +461,11 @@ def _rule_enables_detector(rule: ModelIORule, name: str) -> bool:
     )
 
 
-def _pii_types_for_rule(rule: ModelIORule) -> List[str]:
+def _pii_types_for_rule(rule: ModelIORule) -> Optional[List[str]]:
+    """Explicit type list of a rule, or ``None`` for the account default."""
     detectors = rule.detectors
     if detectors is None or detectors.pii in (None, False, True):
-        return ["email", "phone", "credit_card"]
+        return None
     return list(detectors.pii.types)
 
 
@@ -511,7 +515,10 @@ def _run_detectors_with_timeout(
     future = _DETECTOR_POOL.submit(_run_detectors, rule, text, detector_config)
     try:
         return future.result(timeout=timeout_s)
-    except concurrent.futures.TimeoutError:
+    except (concurrent.futures.TimeoutError, DetectorTimeoutError):
+        # The pool timeout covers slow detectors that yield the GIL; an
+        # account regex that does not is interrupted by the regex engine
+        # itself and surfaces as DetectorTimeoutError. Both are a timeout.
         logger.warning(
             "Model I/O detector timeout rule_id=%s timeout_ms=%s",
             rule.id,
@@ -873,6 +880,16 @@ def redact_request_upstream(
         for name, count in counts.items():
             totals[name] = totals.get(name, 0) + count
 
+    # Mirror canonical_request_text / _content_to_text: bare-string messages
+    # and bare-string content items are scanned there, so they are rewritten
+    # here too.
+    if isinstance(messages, list):
+        for index, message in enumerate(messages):
+            if isinstance(message, str):
+                redacted, counts = redact_text(message, config)
+                if counts:
+                    messages[index] = redacted
+                    add(counts)
     for message in messages or []:
         if not isinstance(message, dict):
             continue
@@ -883,8 +900,13 @@ def redact_request_upstream(
                 message["content"] = redacted
                 add(counts)
         elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
+            for position, block in enumerate(content):
+                if isinstance(block, str):
+                    redacted, counts = redact_text(block, config)
+                    if counts:
+                        content[position] = redacted
+                        add(counts)
+                elif isinstance(block, dict):
                     for key in ("text", "content"):
                         value = block.get(key)
                         if isinstance(value, str):

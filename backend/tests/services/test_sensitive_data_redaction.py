@@ -248,16 +248,41 @@ def test_credential_scrub_and_pii_redaction_compose(redact_policy) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_policy_decision_rows_store_redacted_args(redact_policy, mocker) -> None:
+def test_policy_decision_rows_store_redacted_args(mocker) -> None:
     audit = MagicMock()
     mocker.patch.object(policy_evaluator, "_get_audit_service", return_value=audit)
     mocker.patch.object(policy_evaluator, "_get_db_factory", return_value=lambda: None)
+    account = uuid.uuid4()
+    storage.invalidate_cache()
+    storage.prime_cache(account, _config(_redact_rule()))
+    policy_evaluator._log_policy_decision_async(
+        account_id=account,
+        tool_name="save_note",
+        action="allow",
+        tool_args={"note": SAMPLE},
+    )
+    row = audit.log_policy_decision_async.call_args.kwargs
+    _assert_redacted(json.dumps(row["tool_args"]))
+    storage.invalidate_cache()
+
+
+def test_policy_decision_row_write_moves_off_loop_on_a_cache_miss(mocker) -> None:
+    """A policy read must not run on the async evaluator's loop."""
+    audit = MagicMock()
+    mocker.patch.object(policy_evaluator, "_get_audit_service", return_value=audit)
+    mocker.patch.object(policy_evaluator, "_get_db_factory", return_value=lambda: None)
+    off_loop = mocker.patch.object(policy_evaluator, "submit_off_loop")
+    mocker.patch.object(storage, "resolve_config", return_value=_config(_redact_rule()))
+    storage.invalidate_cache()
     policy_evaluator._log_policy_decision_async(
         account_id=uuid.uuid4(),
         tool_name="save_note",
         action="allow",
         tool_args={"note": SAMPLE},
     )
+    audit.log_policy_decision_async.assert_not_called()
+    off_loop.assert_called_once()
+    off_loop.call_args.args[0]()  # run the deferred write
     row = audit.log_policy_decision_async.call_args.kwargs
     _assert_redacted(json.dumps(row["tool_args"]))
 
@@ -275,6 +300,22 @@ def test_flow_execution_logs_store_redacted_messages(redact_policy, mocker) -> N
         db, str(uuid.uuid4()), {"type": "log", "message": SAMPLE}, commit=False
     )
     _assert_redacted(row.message)
+
+
+def test_flow_log_account_lookup_never_caches_a_miss(mocker) -> None:
+    from preloop.models.crud import flow_execution_log as module
+
+    module._execution_accounts.clear()
+    execution_id = uuid.uuid4()
+    db = MagicMock()
+    db.execute.return_value.first.return_value = None
+    assert module._account_for_execution(db, execution_id) is None
+    assert str(execution_id) not in module._execution_accounts
+    account = uuid.uuid4()
+    db.execute.return_value.first.return_value = (account,)
+    assert module._account_for_execution(db, execution_id) == str(account)
+    db.execute.side_effect = RuntimeError("down")
+    assert module._account_for_execution(db, execution_id) == str(account)  # cached hit
 
 
 def test_flow_log_without_account_keeps_credential_scrub_only(no_policy) -> None:
@@ -547,10 +588,44 @@ def test_gateway_request_upstream_follows_redact_upstream(
         assert messages[0]["content"] == SAMPLE
 
 
-def test_compiled_model_rule_carries_redact_upstream() -> None:
+def test_compiled_model_rule_carries_redact_upstream_for_requests_only() -> None:
     compiled = compile_model_io_rules(_config(_redact_rule(redact_upstream=True)))
-    assert all(rule.redact_upstream for rule in compiled)
+    by_target = {rule.target: rule for rule in compiled}
+    assert by_target["model.request"].redact_upstream is True
+    assert by_target["model.response"].redact_upstream is False
     assert compiled[0].conditions[0].action == "redact"
+
+
+def test_redact_upstream_rejected_without_a_rewritable_target() -> None:
+    with pytest.raises(ValidationError, match="redacted at rest only"):
+        _config(_redact_rule(on=["model.response"], redact_upstream=True))
+    with pytest.raises(ValidationError, match="not available for model.response"):
+        ModelIORule(
+            id="r",
+            target="model.response",
+            conditions=[ToolCondition(expression="pii.found == true", action="redact")],
+            redact_upstream=True,
+        )
+
+
+def test_redact_request_upstream_rewrites_bare_strings_too() -> None:
+    messages = [
+        SAMPLE,
+        {"role": "user", "content": [f"iban {IBAN}", {"type": "text", "text": "x"}]},
+    ]
+    counts = redact_request_upstream(messages, {}, ["email", "iban"], None)
+    assert counts == {"email": 1, "iban": 2}
+    assert messages[0] == f"mail {R_EMAIL} and iban {R_IBAN}"
+    assert messages[1]["content"][0] == f"iban {R_IBAN}"
+
+
+def test_redact_tool_result_keeps_non_text_blocks_in_raw_lists() -> None:
+    image = MagicMock(spec=[])  # no .text attribute
+    rebuilt = redact_tool_result(
+        [TextContent(type="text", text=SAMPLE), image], DetectorConfig()
+    )
+    assert rebuilt[0].text == f"mail {R_EMAIL} and iban {R_IBAN}"
+    assert rebuilt[1] is image
 
 
 # ---------------------------------------------------------------------------
@@ -756,10 +831,34 @@ async def test_approval_row_stores_redacted_args(redact_policy) -> None:
     _assert_redacted(json.dumps(stored))
 
 
-def test_create_approval_request_uses_storage_redaction(mocker) -> None:
-    """The row is built from the redacted copy, not the caller's dict."""
+@pytest.mark.asyncio
+async def test_create_approval_request_persists_the_redacted_copy(
+    redact_policy, mocker
+) -> None:
+    """The row and the lifecycle audit payload hold the redacted arguments."""
     from preloop.services import approval_service as module
 
-    source = inspect.getsource(module.ApprovalService.create_approval_request)
-    assert "stored_tool_args = await self._storage_redacted_tool_args(" in source
-    assert "tool_args=stored_tool_args," in source
+    service = module.ApprovalService.__new__(module.ApprovalService)
+    service.db = AsyncMock()
+    service.db.add = MagicMock()
+    mocker.patch(
+        "preloop.services.approval_attribution.resolve_managed_agent_name",
+        AsyncMock(return_value=None),
+    )
+    mocker.patch.object(service, "_record_event", AsyncMock())
+    mocker.patch.object(service, "_broadcast_approval_update", AsyncMock())
+    lifecycle = mocker.patch.object(module, "_log_approval_lifecycle_async")
+    request = await service.create_approval_request(
+        account_id=str(uuid.uuid4()),
+        tool_configuration_id=uuid.uuid4(),
+        approval_workflow_id=uuid.uuid4(),
+        tool_name="save_note",
+        tool_args={"note": SAMPLE},
+        timeout_seconds=60,
+    )
+    _assert_redacted(json.dumps(request.tool_args))
+    added = [call.args[0] for call in service.db.add.call_args_list]
+    assert request in added
+    _assert_redacted(
+        json.dumps(lifecycle.call_args.kwargs["extra_details"]["tool_args"])
+    )

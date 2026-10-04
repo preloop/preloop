@@ -98,7 +98,9 @@ def detect_pii(
 
     Args:
         text: Canonical request or response text.
-        types: Type names to scan. Default is email, phone, credit_card.
+        types: Type names to scan. When omitted, the account default
+            (``sensitive_data.detectors.types`` carried by ``config``) is
+            used, and without one the legacy email, phone, credit_card set.
         config: Account detector configuration (custom patterns, keyword
             lists, locales). ``types`` narrows it when both are given.
 
@@ -106,8 +108,13 @@ def detect_pii(
         ``PIIResult`` with ``found``, the matched type names and the match
         count.
     """
-    selected = list(types) if types else list(LEGACY_PII_TYPES)
     base = config or DetectorConfig()
+    if types:
+        selected = list(types)
+    elif base.types:
+        selected = list(base.types)
+    else:
+        selected = list(LEGACY_PII_TYPES)
     matches = detect(text, base.with_types(selected))
     names = types_found(matches)
     return PIIResult(found=bool(names), types_found=names, count=len(matches))

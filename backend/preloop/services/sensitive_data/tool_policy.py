@@ -199,16 +199,25 @@ class ToolPolicyOutcome:
 
 
 def flatten_string_leaves(value: Any, prefix: str = "") -> List[tuple[str, str]]:
-    """``(path, text)`` for every string leaf; keys are kept as the path."""
+    """``(path, text)`` for every scalar leaf; keys are kept as the path.
+
+    Numbers are scanned as their decimal text so a card or national id
+    supplied as a JSON number (``{"card": 4111111111111111}``) is not
+    missed. Booleans and ``None`` carry nothing.
+    """
     leaves: List[tuple[str, str]] = []
     _collect_leaves(value, prefix, leaves)
     return leaves
 
 
 def _collect_leaves(value: Any, path: str, out: List[tuple[str, str]]) -> None:
+    if isinstance(value, bool) or value is None:
+        return
     if isinstance(value, str):
         if value:
             out.append((path or "$", value))
+    elif isinstance(value, (int, float)):
+        out.append((path or "$", str(value)))
     elif isinstance(value, dict):
         for key, item in value.items():
             key_text = str(key)
@@ -454,7 +463,14 @@ def evaluate_tool_target(
                 outcome.summary = scan
                 outcome.reason = f"detector timeout on rule {rule.id}"
                 _audit(outcome, target, tool_name, account_id, user_id, correlation_id)
-                return _finish(outcome)
+                return _finish(
+                    outcome,
+                    target=target,
+                    tool_name=tool_name,
+                    account_id=account_id,
+                    user_id=user_id,
+                    correlation_id=correlation_id,
+                )
             continue
         view = scan.restricted_to(config.types_for_rule(rule))
         if not view.found:
@@ -470,7 +486,15 @@ def evaluate_tool_target(
         outcome.summary = view
         outcome.reason = label
         _audit(outcome, target, tool_name, account_id, user_id, correlation_id)
-        return _finish(outcome)
+        # Notices gathered before this blocking rule are still emitted.
+        return _finish(
+            outcome,
+            target=target,
+            tool_name=tool_name,
+            account_id=account_id,
+            user_id=user_id,
+            correlation_id=correlation_id,
+        )
     if outcome.notices:
         outcome.action = NOTIFY
         outcome.rule, outcome.summary = outcome.notices[0]
@@ -674,8 +698,10 @@ def compile_model_io_rules(
     for rule in config.enabled_rules():
         if not rule.has_model_target():
             continue
-        if rule.scope.agents and not rule.scope.matches(
-            managed_agent_id=managed_agent_id
+        # Only the agent list applies on the gateway; tool and server lists
+        # describe MCP calls and are ignored here.
+        if rule.scope.agents and (
+            managed_agent_id is None or str(managed_agent_id) not in rule.scope.agents
         ):
             continue
         types = config.types_for_rule(rule)
@@ -695,7 +721,10 @@ def compile_model_io_rules(
                     detectors=ModelIODetectors(pii=PIIDetectorConfig(types=types)),
                     detector_timeout_ms=rule.detector_timeout_ms,
                     on_detector_timeout=rule.on_detector_timeout,
-                    redact_upstream=bool(getattr(rule, "redact_upstream", False)),
+                    # Only requests are rewritten upstream; a compiled
+                    # response rule redacts stored copies only.
+                    redact_upstream=bool(getattr(rule, "redact_upstream", False))
+                    and target == SensitiveDataTarget.MODEL_REQUEST.value,
                     conditions=[
                         ToolCondition(
                             expression="pii.found == true",
@@ -751,10 +780,14 @@ def redact_tool_result(result: Any, detector_config: DetectorConfig) -> Any:
             is_error=bool(getattr(result, "is_error", False)),
         )
     if isinstance(result, (list, tuple)):
-        return [
-            TextContent(
-                type="text", text=redact_text(_block_text(item), detector_config)[0]
-            )
-            for item in result
-        ]
+        rebuilt = []
+        for item in result:
+            text = _block_text(item)
+            if text:
+                rebuilt.append(
+                    TextContent(type="text", text=redact_text(text, detector_config)[0])
+                )
+            else:
+                rebuilt.append(item)  # images, resources: kept unchanged
+        return rebuilt
     return redact_text(str(result), detector_config)[0]
