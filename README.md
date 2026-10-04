@@ -91,6 +91,8 @@ Connect GitHub, GitLab, Bitbucket Cloud, or Jira as flow triggers and issue tool
 
 CI can trigger a flow too: the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md) (`.github/actions/run-flow`) starts a flow from a workflow job, streams the execution log, and fails the job on the execution's verdict. Where the agent container runs is your choice. [Private runners](docs/guide/runners/quickstart-linux.md) run it on your own machines over an outbound WebSocket, with no inbound ports: `preloop runner fg` holds several executions at once (default 2), and `--once --ephemeral` is a one-shot runner that exists for a single CI job.
 
+[Native restricted CI setup](docs/guide/flows/restricted-ci.md) provides OSS console and `preloop ci` commands for a separate machine identity bound to one project and dedicated hosted flow. Its rotating keys can access only that principal's executions, results and completion subscriptions. Human administration uses safe metadata and one-time secrets; the operator-run Actions example verifies the current approved PR head and persisted completion before separately confirming review publication. The legacy action uses broader account credentials and rejects restricted CI tokens.
+
 ### Policy-as-code
 
 ```yaml

@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import './console-shell';
 import type { ConsoleShell } from './console-shell';
 import { mockApi, type MockApi } from '../../test-helpers/capability-api';
+import { CI_ACTIONS } from '../../ci-administration-api';
 import type { Capability } from '../../capabilities';
 
 const GATED_LINKS = [
@@ -111,6 +112,79 @@ describe('ConsoleShell capability gating', () => {
     expect(slot.getAttribute('slot')).to.equal('account-switcher');
     expect(
       el.shadowRoot!.querySelector(`a[href="${GATED_LINKS[0]}"]`)
+    ).to.equal(null);
+  });
+
+  for (const allowed of [true, false]) {
+    it(`shows restricted CI navigation only with complete capability and view permission: ${allowed}`, async () => {
+      api = mockApi({
+        routes: [
+          {
+            path: '/api/v1/ci-identities/capabilities',
+            body: {
+              available: true,
+              can_view: allowed,
+              can_manage: false,
+              supported_actions: [...CI_ACTIONS],
+            },
+          },
+        ],
+        fallback: { status: 200, body: [] },
+      });
+      const element = await fixture<ConsoleShell>(
+        html`<console-shell></console-shell>`
+      );
+      await waitUntil(
+        () => api!.callsTo('/api/v1/ci-identities/capabilities').length > 0
+      );
+      await waitUntil(
+        () => element.shadowRoot?.querySelector('console-header') !== null
+      );
+      if (allowed)
+        await waitUntil(
+          () =>
+            !!element.shadowRoot?.querySelector(
+              'a[href="/console/settings/ci-identities"]'
+            )
+        );
+      await element.updateComplete;
+      expect(
+        !!element.shadowRoot?.querySelector(
+          'a[href="/console/settings/ci-identities"]'
+        )
+      ).to.equal(allowed);
+    });
+  }
+
+  it('hides restricted CI navigation when the action rollout is incomplete', async () => {
+    api = mockApi({
+      routes: [
+        {
+          path: '/api/v1/ci-identities/capabilities',
+          body: {
+            available: true,
+            can_view: true,
+            can_manage: true,
+            supported_actions: CI_ACTIONS.slice(1),
+          },
+        },
+      ],
+      fallback: { status: 200, body: [] },
+    });
+    const element = await fixture<ConsoleShell>(
+      html`<console-shell></console-shell>`
+    );
+    await waitUntil(
+      () => api!.callsTo('/api/v1/ci-identities/capabilities').length > 0
+    );
+    await waitUntil(
+      () => element.shadowRoot?.querySelector('console-header') !== null
+    );
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector(
+        'a[href="/console/settings/ci-identities"]'
+      )
     ).to.equal(null);
   });
 });

@@ -886,6 +886,7 @@ def _register_control_plane_routes(
         audit_chain,
         bitbucket_dc_webhooks,
         budget,
+        ci_identities,
         comments,
         copilot_usage,
         cost,
@@ -1047,6 +1048,7 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         dependencies=[Depends(get_current_active_user)],
     )
+    app.include_router(ci_identities.router, prefix="/api/v1")
     app.include_router(
         event_webhooks.router,
         prefix="/api/v1",

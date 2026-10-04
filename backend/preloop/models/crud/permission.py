@@ -3,16 +3,18 @@
 import uuid
 from typing import List, Optional
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from ..models.permission import Permission, Role, RolePermission, UserRole, TeamRole
+from preloop.models import models
+
 from .base import CRUDBase
 
 
-class CRUDPermission(CRUDBase[Permission]):
+class CRUDPermission(CRUDBase[models.Permission]):
     """CRUD operations for Permission model."""
 
-    def get_by_name(self, db: Session, *, name: str) -> Optional[Permission]:
+    def get_by_name(self, db: Session, *, name: str) -> Optional[models.Permission]:
         """Get permission by name.
 
         Args:
@@ -22,11 +24,13 @@ class CRUDPermission(CRUDBase[Permission]):
         Returns:
             Permission if found, None otherwise.
         """
-        return db.query(Permission).filter(Permission.name == name).first()
+        return (
+            db.query(models.Permission).filter(models.Permission.name == name).first()
+        )
 
     def get_by_category(
         self, db: Session, *, category: str, skip: int = 0, limit: int = 100
-    ) -> List[Permission]:
+    ) -> List[models.Permission]:
         """Get permissions by category.
 
         Args:
@@ -39,8 +43,8 @@ class CRUDPermission(CRUDBase[Permission]):
             List of permissions.
         """
         return (
-            db.query(Permission)
-            .filter(Permission.category == category, Permission.is_active)
+            db.query(models.Permission)
+            .filter(models.Permission.category == category, models.Permission.is_active)
             .offset(skip)
             .limit(limit)
             .all()
@@ -48,7 +52,7 @@ class CRUDPermission(CRUDBase[Permission]):
 
     def get_active(
         self, db: Session, *, skip: int = 0, limit: int = 1000
-    ) -> List[Permission]:
+    ) -> List[models.Permission]:
         """Get all active permissions.
 
         Args:
@@ -60,20 +64,75 @@ class CRUDPermission(CRUDBase[Permission]):
             List of active permissions.
         """
         return (
-            db.query(Permission)
-            .filter(Permission.is_active)
+            db.query(models.Permission)
+            .filter(models.Permission.is_active)
             .offset(skip)
             .limit(limit)
             .all()
         )
 
 
-class CRUDRole(CRUDBase[Role]):
+class CRUDRole(CRUDBase[models.Role]):
     """CRUD operations for Role model."""
+
+    def get_effective_permissions(
+        self, db: Session, *, user_id: uuid.UUID, account_id: uuid.UUID
+    ) -> set[str]:
+        """Read current active local role permissions, without identity-map caches.
+
+        System roles require null account ownership and the genuine system
+        marker. Custom roles and team membership must belong to this account.
+        Role names never confer implicit permissions.
+        """
+        direct = db.query(models.UserRole.role_id).filter(
+            models.UserRole.user_id == user_id
+        )
+        team = (
+            db.query(models.TeamRole.role_id)
+            .join(models.Team, models.Team.id == models.TeamRole.team_id)
+            .join(
+                models.TeamMembership,
+                models.TeamMembership.team_id == models.Team.id,
+            )
+            .filter(
+                models.Team.account_id == account_id,
+                models.TeamMembership.user_id == user_id,
+            )
+        )
+        permissions = (
+            db.query(models.Permission.name)
+            .join(
+                models.RolePermission,
+                models.RolePermission.permission_id == models.Permission.id,
+            )
+            .join(models.Role, models.Role.id == models.RolePermission.role_id)
+            .join(models.User, models.User.id == user_id)
+            .join(models.Account, models.Account.id == models.User.account_id)
+            .filter(
+                models.User.account_id == account_id,
+                models.User.is_active.is_(True),
+                models.Account.is_active.is_(True),
+                models.Permission.is_active.is_(True),
+                or_(
+                    and_(
+                        models.Role.account_id == account_id,
+                        models.Role.is_system_role.is_(False),
+                    ),
+                    and_(
+                        models.Role.account_id.is_(None),
+                        models.Role.is_system_role.is_(True),
+                    ),
+                ),
+                or_(models.Role.id.in_(direct), models.Role.id.in_(team)),
+            )
+            .distinct()
+            .all()
+        )
+        return {name for (name,) in permissions}
 
     def get_by_name(
         self, db: Session, *, name: str, account_id: Optional[str] = None
-    ) -> Optional[Role]:
+    ) -> Optional[models.Role]:
         """Get role by name.
 
         Args:
@@ -84,16 +143,16 @@ class CRUDRole(CRUDBase[Role]):
         Returns:
             Role if found, None otherwise.
         """
-        query = db.query(Role).filter(Role.name == name)
+        query = db.query(models.Role).filter(models.Role.name == name)
         if account_id is not None:
-            query = query.filter(Role.account_id == account_id)
+            query = query.filter(models.Role.account_id == account_id)
         else:
-            query = query.filter(Role.account_id.is_(None))
+            query = query.filter(models.Role.account_id.is_(None))
         return query.first()
 
     def get_system_roles(
         self, db: Session, *, skip: int = 0, limit: int = 100
-    ) -> List[Role]:
+    ) -> List[models.Role]:
         """Get all system roles.
 
         Args:
@@ -105,12 +164,16 @@ class CRUDRole(CRUDBase[Role]):
             List of system roles.
         """
         return (
-            db.query(Role).filter(Role.is_system_role).offset(skip).limit(limit).all()
+            db.query(models.Role)
+            .filter(models.Role.is_system_role)
+            .offset(skip)
+            .limit(limit)
+            .all()
         )
 
     def get_custom_roles(
         self, db: Session, *, account_id: str, skip: int = 0, limit: int = 100
-    ) -> List[Role]:
+    ) -> List[models.Role]:
         """Get custom roles for an account.
 
         Args:
@@ -123,8 +186,11 @@ class CRUDRole(CRUDBase[Role]):
             List of custom roles.
         """
         return (
-            db.query(Role)
-            .filter(Role.account_id == account_id, not Role.is_system_role)
+            db.query(models.Role)
+            .filter(
+                models.Role.account_id == account_id,
+                models.Role.is_system_role.is_(False),
+            )
             .offset(skip)
             .limit(limit)
             .all()
@@ -132,7 +198,7 @@ class CRUDRole(CRUDBase[Role]):
 
     def get_all_for_account(
         self, db: Session, *, account_id: str, skip: int = 0, limit: int = 100
-    ) -> List[Role]:
+    ) -> List[models.Role]:
         """Get all roles available to an account (system + custom).
 
         Args:
@@ -145,14 +211,18 @@ class CRUDRole(CRUDBase[Role]):
             List of roles (system + account's custom roles).
         """
         return (
-            db.query(Role)
-            .filter((Role.is_system_role) | (Role.account_id == account_id))
+            db.query(models.Role)
+            .filter(
+                (models.Role.is_system_role) | (models.Role.account_id == account_id)
+            )
             .offset(skip)
             .limit(limit)
             .all()
         )
 
-    def get_permissions(self, db: Session, *, role_id: uuid.UUID) -> List[Permission]:
+    def get_permissions(
+        self, db: Session, *, role_id: uuid.UUID
+    ) -> List[models.Permission]:
         """Get all permissions for a role.
 
         Args:
@@ -163,15 +233,15 @@ class CRUDRole(CRUDBase[Role]):
             List of permissions.
         """
         return (
-            db.query(Permission)
-            .join(RolePermission)
-            .filter(RolePermission.role_id == role_id)
+            db.query(models.Permission)
+            .join(models.RolePermission)
+            .filter(models.RolePermission.role_id == role_id)
             .all()
         )
 
     def assign_permission(
         self, db: Session, *, role_id: uuid.UUID, permission_id: uuid.UUID
-    ) -> RolePermission:
+    ) -> models.RolePermission:
         """Assign a permission to a role.
 
         Args:
@@ -182,7 +252,7 @@ class CRUDRole(CRUDBase[Role]):
         Returns:
             Created RolePermission.
         """
-        role_perm = RolePermission(
+        role_perm = models.RolePermission(
             id=uuid.uuid4(), role_id=role_id, permission_id=permission_id
         )
         db.add(role_perm)
@@ -204,10 +274,10 @@ class CRUDRole(CRUDBase[Role]):
             True if removed, False if not found.
         """
         role_perm = (
-            db.query(RolePermission)
+            db.query(models.RolePermission)
             .filter(
-                RolePermission.role_id == role_id,
-                RolePermission.permission_id == permission_id,
+                models.RolePermission.role_id == role_id,
+                models.RolePermission.permission_id == permission_id,
             )
             .first()
         )
@@ -218,10 +288,10 @@ class CRUDRole(CRUDBase[Role]):
         return False
 
 
-class CRUDUserRole(CRUDBase[UserRole]):
+class CRUDUserRole(CRUDBase[models.UserRole]):
     """CRUD operations for UserRole model."""
 
-    def get_by_user(self, db: Session, *, user_id: uuid.UUID) -> List[UserRole]:
+    def get_by_user(self, db: Session, *, user_id: uuid.UUID) -> List[models.UserRole]:
         """Get all user role assignments for a user.
 
         Args:
@@ -231,9 +301,11 @@ class CRUDUserRole(CRUDBase[UserRole]):
         Returns:
             List of UserRole objects.
         """
-        return db.query(UserRole).filter(UserRole.user_id == user_id).all()
+        return (
+            db.query(models.UserRole).filter(models.UserRole.user_id == user_id).all()
+        )
 
-    def get_user_roles(self, db: Session, *, user_id: uuid.UUID) -> List[Role]:
+    def get_user_roles(self, db: Session, *, user_id: uuid.UUID) -> List[models.Role]:
         """Get all roles for a user.
 
         Args:
@@ -243,7 +315,12 @@ class CRUDUserRole(CRUDBase[UserRole]):
         Returns:
             List of roles.
         """
-        return db.query(Role).join(UserRole).filter(UserRole.user_id == user_id).all()
+        return (
+            db.query(models.Role)
+            .join(models.UserRole)
+            .filter(models.UserRole.user_id == user_id)
+            .all()
+        )
 
     def assign_role(
         self,
@@ -252,7 +329,7 @@ class CRUDUserRole(CRUDBase[UserRole]):
         user_id: uuid.UUID,
         role_id: uuid.UUID,
         granted_by: Optional[uuid.UUID] = None,
-    ) -> UserRole:
+    ) -> models.UserRole:
         """Assign a role to a user.
 
         Args:
@@ -264,7 +341,7 @@ class CRUDUserRole(CRUDBase[UserRole]):
         Returns:
             Created UserRole.
         """
-        user_role = UserRole(
+        user_role = models.UserRole(
             id=uuid.uuid4(), user_id=user_id, role_id=role_id, granted_by=granted_by
         )
         db.add(user_role)
@@ -286,8 +363,10 @@ class CRUDUserRole(CRUDBase[UserRole]):
             True if removed, False if not found.
         """
         user_role = (
-            db.query(UserRole)
-            .filter(UserRole.user_id == user_id, UserRole.role_id == role_id)
+            db.query(models.UserRole)
+            .filter(
+                models.UserRole.user_id == user_id, models.UserRole.role_id == role_id
+            )
             .first()
         )
         if user_role:
@@ -297,10 +376,10 @@ class CRUDUserRole(CRUDBase[UserRole]):
         return False
 
 
-class CRUDTeamRole(CRUDBase[TeamRole]):
+class CRUDTeamRole(CRUDBase[models.TeamRole]):
     """CRUD operations for TeamRole model."""
 
-    def get_team_roles(self, db: Session, *, team_id: uuid.UUID) -> List[Role]:
+    def get_team_roles(self, db: Session, *, team_id: uuid.UUID) -> List[models.Role]:
         """Get all roles for a team.
 
         Args:
@@ -310,7 +389,12 @@ class CRUDTeamRole(CRUDBase[TeamRole]):
         Returns:
             List of roles.
         """
-        return db.query(Role).join(TeamRole).filter(TeamRole.team_id == team_id).all()
+        return (
+            db.query(models.Role)
+            .join(models.TeamRole)
+            .filter(models.TeamRole.team_id == team_id)
+            .all()
+        )
 
     def assign_role(
         self,
@@ -319,7 +403,7 @@ class CRUDTeamRole(CRUDBase[TeamRole]):
         team_id: uuid.UUID,
         role_id: uuid.UUID,
         granted_by: Optional[uuid.UUID] = None,
-    ) -> TeamRole:
+    ) -> models.TeamRole:
         """Assign a role to a team.
 
         Args:
@@ -331,7 +415,7 @@ class CRUDTeamRole(CRUDBase[TeamRole]):
         Returns:
             Created TeamRole.
         """
-        team_role = TeamRole(
+        team_role = models.TeamRole(
             id=uuid.uuid4(), team_id=team_id, role_id=role_id, granted_by=granted_by
         )
         db.add(team_role)
@@ -353,8 +437,10 @@ class CRUDTeamRole(CRUDBase[TeamRole]):
             True if removed, False if not found.
         """
         team_role = (
-            db.query(TeamRole)
-            .filter(TeamRole.team_id == team_id, TeamRole.role_id == role_id)
+            db.query(models.TeamRole)
+            .filter(
+                models.TeamRole.team_id == team_id, models.TeamRole.role_id == role_id
+            )
             .first()
         )
         if team_role:
@@ -365,7 +451,7 @@ class CRUDTeamRole(CRUDBase[TeamRole]):
 
 
 # Create instances
-crud_permission = CRUDPermission(Permission)
-crud_role = CRUDRole(Role)
-crud_user_role = CRUDUserRole(UserRole)
-crud_team_role = CRUDTeamRole(TeamRole)
+crud_permission = CRUDPermission(models.Permission)
+crud_role = CRUDRole(models.Role)
+crud_user_role = CRUDUserRole(models.UserRole)
+crud_team_role = CRUDTeamRole(models.TeamRole)

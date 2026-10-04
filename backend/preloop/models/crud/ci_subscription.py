@@ -96,6 +96,21 @@ class CRUDCiSubscription:
         fresh = crud_ci_principal.authorize(
             db, context=context, action=CiAction.CREATE_SUBSCRIPTION
         )
+        return self._persist(
+            db, context=fresh, payload=payload, max_endpoints=max_endpoints
+        )
+
+    def _persist(
+        self,
+        db: Session,
+        *,
+        context: CiAuthorizationContext,
+        payload: CiSubscriptionCreate,
+        max_endpoints: int = 20,
+        commit: bool = True,
+    ) -> tuple[models.WebhookEndpoint, str]:
+        """Persist after explicit machine or human authority has been checked."""
+        fresh = context
         payload = CiSubscriptionCreate.model_validate(payload)
         _validate_url(payload.url)
         if (
@@ -123,8 +138,11 @@ class CRUDCiSubscription:
             secret_hint=secret_hint(secret),
         )
         db.add(endpoint)
-        db.commit()
-        db.refresh(endpoint)
+        if commit:
+            db.commit()
+            db.refresh(endpoint)
+        else:
+            db.flush()
         return endpoint, secret
 
     def list_owned(

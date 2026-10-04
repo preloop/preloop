@@ -18,6 +18,8 @@ export const consoleRouteLoaders = {
   'api-usage-view': () => import('../views/authed/api-usage-view'),
   'cost-view': () => import('../views/authed/cost-view'),
   'issue-cost-view': () => import('../views/authed/issue-cost-view'),
+  'ci-identities-view': () =>
+    import('../views/authed/settings/ci-identities-view'),
   'api-keys-view': () => import('../views/authed/settings/api-keys-view'),
   'api-key-view': () => import('../views/authed/settings/api-key-view'),
   'ai-models-view': () => import('../views/authed/settings/ai-models-view'),

@@ -1,0 +1,76 @@
+# Copy into your disposable repository only after completing local release checks.
+# This example is not enabled as a workflow in the Preloop repository.
+name: Restricted hosted review (operator dispatch)
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Approved same-repository PR number (ci-approved label)
+        required: true
+        type: number
+      head:
+        description: Current exact PR head SHA
+        required: true
+        type: string
+      publish_review:
+        description: Publish and independently verify a COMMENT review receipt
+        default: false
+        type: boolean
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: restricted-ci-${{ inputs.pr }}
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify persisted hosted completion
+        env:
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+          PRELOOP_CI_TOKEN: ${{ secrets.PRELOOP_CI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_URL: ${{ vars.PRELOOP_URL }}
+          CI_PROJECT: ${{ vars.PRELOOP_PROJECT_ID }}
+          CI_FLOW: ${{ vars.PRELOOP_FLOW_ID }}
+          CI_PR: ${{ inputs.pr }}
+          CI_HEAD: ${{ inputs.head }}
+        run: >-
+          python scripts/restricted_ci_review.py
+          --url "$CI_URL" --project "$CI_PROJECT" --flow "$CI_FLOW"
+          --repository "$GITHUB_REPOSITORY" --pr "$CI_PR" --head "$CI_HEAD"
+  publish:
+    needs: verify
+    if: inputs.publish_review
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reverify persisted result and review publication receipt
+        env:
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+          PRELOOP_CI_TOKEN: ${{ secrets.PRELOOP_CI_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_URL: ${{ vars.PRELOOP_URL }}
+          CI_PROJECT: ${{ vars.PRELOOP_PROJECT_ID }}
+          CI_FLOW: ${{ vars.PRELOOP_FLOW_ID }}
+          CI_PR: ${{ inputs.pr }}
+          CI_HEAD: ${{ inputs.head }}
+        run: >-
+          python scripts/restricted_ci_review.py
+          --url "$CI_URL" --project "$CI_PROJECT" --flow "$CI_FLOW"
+          --repository "$GITHUB_REPOSITORY" --pr "$CI_PR" --head "$CI_HEAD"
+          --publish-review

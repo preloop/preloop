@@ -67,8 +67,12 @@ runs:
         MODE: ${{ inputs.mode }}
         LABELS: ${{ inputs.labels }}
         PAYLOAD: ${{ inputs.payload }}
+        PRELOOP_ACTION_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
+        case "$PRELOOP_ACTION_TOKEN" in
+          ci_*) echo "::error::restricted CI tokens require the dedicated hosted CI review example"; exit 1 ;;
+        esac
         case "$MODE" in
           hosted|runner) ;;
           *) echo "::error::mode must be 'hosted' or 'runner', got '$MODE'"; exit 1 ;;

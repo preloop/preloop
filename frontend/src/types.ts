@@ -1,4 +1,6 @@
 export interface GitCloneRepository {
+  /** Dedicated project binding returned by hosted restricted CI flows. */
+  project_id?: string;
   tracker_id: string;
   repository_url?: string;
   clone_path: string;

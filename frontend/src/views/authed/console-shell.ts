@@ -22,6 +22,10 @@ import '../../components/approval-bypass-banner';
 import '../../components/kill-switch-banner';
 import '../../components/usage-nudge-banner';
 import '../../components/capability-extension';
+import {
+  ciAdministration,
+  completeCiCapabilities,
+} from '../../ci-administration-api';
 import { hasCapability } from '../../capabilities';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import {
@@ -131,6 +135,9 @@ export class ConsoleShell extends LitElement {
 
   @state()
   private _featuresLoaded = false;
+
+  @state()
+  private _ciSetupAvailable = false;
 
   @state()
   private _permissions: UserPermissions = undefined;
@@ -603,6 +610,18 @@ export class ConsoleShell extends LitElement {
     this._mediaQuery.addEventListener('change', this._mediaQueryHandler);
     window.addEventListener('popstate', this._handleLocationChanged);
     this._currentPath = window.location.pathname;
+
+    void ciAdministration
+      .capabilities()
+      .then((capabilities) => {
+        if (this.isConnected)
+          this._ciSetupAvailable =
+            completeCiCapabilities(capabilities) &&
+            capabilities.can_view === true;
+      })
+      .catch(() => {
+        this._ciSetupAvailable = false;
+      });
 
     // Fetch enabled features and current-user permissions in parallel
     try {
@@ -1223,6 +1242,12 @@ export class ConsoleShell extends LitElement {
                             : []),
                         ])}
                         ${this._renderNavGroup('Developers', [
+                          this._ciSetupAvailable
+                            ? this._renderNavLink(
+                                '/console/settings/ci-identities',
+                                html`<sl-menu-item>Restricted CI</sl-menu-item>`
+                              )
+                            : nothing,
                           this._renderNavLink(
                             '/console/settings/api-keys',
                             html`<sl-menu-item>API keys</sl-menu-item>`

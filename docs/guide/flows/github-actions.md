@@ -2,6 +2,12 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
+For a machine identity limited to one project and dedicated hosted review flow,
+use [native restricted CI setup](restricted-ci.md). It includes a distinct
+operator-run workflow and persisted exact-head verification. The `run-flow`
+action on this page uses broader account credentials, includes general logs and
+optional runner enrollment, and explicitly rejects restricted `ci_` tokens.
+
 There are two ways to run a Preloop flow from a GitHub Actions job, and
 the only difference between them is where the agent container runs:
 

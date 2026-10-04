@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import ast
+import importlib.util
 from pathlib import Path
 
 
@@ -111,6 +111,15 @@ def test_known_permission_names_are_seeded() -> None:
     }
 
     assert known_required_permissions <= permission_names
+
+
+def test_ci_administration_defaults_are_owner_and_admin_only() -> None:
+    """Upgrades must not give ordinary read roles CI credential access."""
+    ci_permissions = {"view_ci_identities", "manage_ci_identities"}
+    assert ci_permissions <= _permission_names()
+    for role_name in SYSTEM_ROLES:
+        granted = _role_permissions(role_name) & ci_permissions
+        assert granted == (ci_permissions if role_name in {"owner", "admin"} else set())
 
 
 def test_enforced_permission_names_are_seeded() -> None:
