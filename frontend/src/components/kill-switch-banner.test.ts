@@ -112,6 +112,24 @@ describe('kill-switch-banner', () => {
     await el.updateComplete;
   }
 
+  it("takes its colours from the console theme, not the OS's", async () => {
+    // The console theme is a class the reader picks on <html>; it need not
+    // match prefers-color-scheme. Text that followed the OS went near-white
+    // on a pale strip whenever the two disagreed.
+    const cssText = (
+      customElements.get('kill-switch-banner') as unknown as {
+        styles: { cssText: string };
+      }
+    ).styles.cssText;
+    expect(cssText).to.not.contain('prefers-color-scheme');
+    expect(cssText).to.not.match(/#[0-9a-f]{3,6}\b/i);
+
+    await mount([FULL_HALT]);
+    el.style.setProperty('--console-body-color', 'rgb(1, 2, 3)');
+    const banner = el.shadowRoot!.querySelector('.banner')!;
+    expect(getComputedStyle(banner).color).to.equal('rgb(1, 2, 3)');
+  });
+
   it('renders nothing while the account is not halted', async () => {
     await mount([INACTIVE]);
     expect(el.shadowRoot?.textContent?.trim()).to.equal('');

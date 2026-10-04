@@ -53,9 +53,17 @@ export class KillSwitchBanner extends LitElement {
       gap: 12px;
       padding: 12px 16px;
       border-radius: 4px;
-      border-left: 4px solid #ff5d5d;
-      background: rgba(255, 93, 93, 0.14);
-      color: #e6edf3;
+      /* Theme tokens, not hex: the console theme is a class on <html> that
+         the reader picks, and it need not match the OS. Text that followed
+         the OS colour scheme went near-white on a pale strip whenever the
+         two disagreed. */
+      border-left: 4px solid var(--sl-color-danger-600);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-danger-500) 14%,
+        transparent
+      );
+      color: var(--console-body-color, var(--sl-color-neutral-900));
       font-size: 14px;
       line-height: 1.4;
     }
@@ -94,8 +102,13 @@ export class KillSwitchBanner extends LitElement {
       gap: 5px;
       padding: 3px 8px;
       border-radius: 999px;
-      background: rgba(255, 93, 93, 0.18);
-      border: 1px solid rgba(255, 93, 93, 0.4);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-danger-500) 18%,
+        transparent
+      );
+      border: 1px solid
+        color-mix(in srgb, var(--sl-color-danger-500) 40%, transparent);
       font-size: 12px;
       font-weight: 600;
     }
@@ -109,9 +122,10 @@ export class KillSwitchBanner extends LitElement {
     }
 
     button {
-      background: #0f1720;
-      color: #e6edf3;
-      border: 1px solid rgba(255, 93, 93, 0.55);
+      background: var(--console-surface, var(--sl-color-neutral-0));
+      color: var(--console-body-color, var(--sl-color-neutral-900));
+      border: 1px solid
+        color-mix(in srgb, var(--sl-color-danger-500) 55%, transparent);
       border-radius: 4px;
       padding: 8px 12px;
       font-size: 13px;
@@ -130,21 +144,15 @@ export class KillSwitchBanner extends LitElement {
     }
 
     button.resume-all {
-      background: #0284c7;
-      border-color: #0284c7;
-      color: #fff;
+      background: var(--sl-color-primary-600);
+      border-color: var(--sl-color-primary-600);
+      color: var(--sl-color-neutral-0);
     }
 
     .error {
-      color: #ffb4b4;
+      color: var(--sl-color-danger-700);
       font-size: 13px;
       margin-top: 8px;
-    }
-
-    @media (prefers-color-scheme: light) {
-      .banner {
-        color: #1c2128;
-      }
     }
   `;
 

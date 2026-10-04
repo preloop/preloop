@@ -1109,14 +1109,14 @@ export class ConsoleShell extends LitElement {
                         : nothing
                     }
                   </console-header>
-                  <!-- Sits directly under the header so a relaxed governance
-                       state is visible on every console page, not just the
-                       approvals view. -->
-                  <approval-bypass-banner></approval-bypass-banner>
-                  <!-- The kill-switch banner sits above the bypass banner: a
-                       halted account is the most severe state and must be
-                       impossible to miss on any console page (#157). -->
+                  <!-- The kill-switch banner sits directly under the header,
+                       above the bypass banner: a halted account is the most
+                       severe state and must be impossible to miss on any
+                       console page (#157). -->
                   <kill-switch-banner></kill-switch-banner>
+                  <!-- A relaxed governance state is visible on every console
+                       page, not just the approvals view. -->
+                  <approval-bypass-banner></approval-bypass-banner>
                   <!-- Usage sits under both governance banners: it is
                        information, not a fault, and it renders nothing at
                        all on OSS, where the endpoint does not exist. -->

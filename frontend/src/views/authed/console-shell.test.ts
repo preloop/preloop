@@ -202,6 +202,25 @@ describe('ConsoleShell', () => {
     expect(sidebar?.getAttribute('aria-label')).to.equal('Console navigation');
   });
 
+  it('stacks the kill-switch banner above the bypass banner', async () => {
+    // A halted account is the most severe governance state, so it reads
+    // first when both are active.
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await el.updateComplete;
+    const order = Array.from(
+      el.shadowRoot!.querySelectorAll(
+        'kill-switch-banner, approval-bypass-banner, usage-nudge-banner'
+      )
+    ).map((node) => node.localName);
+    expect(order).to.eql([
+      'kill-switch-banner',
+      'approval-bypass-banner',
+      'usage-nudge-banner',
+    ]);
+  });
+
   it('has main view with header and content area', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
