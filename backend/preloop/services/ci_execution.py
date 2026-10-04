@@ -1,6 +1,7 @@
 """Trusted provider admission and narrow projections for CI review executions."""
 
 import asyncio
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import quote
@@ -405,6 +406,27 @@ _PRIVATE_RESULT_FIELDS = frozenset(
 )
 
 
+def _canonical_result_key(key: str) -> str:
+    """Match protected keys regardless of capitalization or separators."""
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+_CANONICAL_PRIVATE_RESULT_FIELDS = frozenset(
+    _canonical_result_key(key) for key in _PRIVATE_RESULT_FIELDS
+)
+_PRIVATE_RESULT_SUFFIXES = tuple(
+    _canonical_result_key(key)
+    for key in (
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "password",
+        "secret",
+        "credentials",
+    )
+)
+
+
 def public_ci_result(value: Any) -> Any:
     """Project persisted report data without private controller fields."""
     if isinstance(value, dict):
@@ -413,19 +435,8 @@ def public_ci_result(value: Any) -> Any:
             for key, item in value.items()
             if isinstance(key, str)
             and not key.startswith("_")
-            and key.lower().replace("-", "_") not in _PRIVATE_RESULT_FIELDS
-            and not key.lower()
-            .replace("-", "_")
-            .endswith(
-                (
-                    "_api_key",
-                    "_access_token",
-                    "_refresh_token",
-                    "_password",
-                    "_secret",
-                    "_credentials",
-                )
-            )
+            and _canonical_result_key(key) not in _CANONICAL_PRIVATE_RESULT_FIELDS
+            and not _canonical_result_key(key).endswith(_PRIVATE_RESULT_SUFFIXES)
         }
     if isinstance(value, list):
         return [public_ci_result(item) for item in value]

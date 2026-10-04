@@ -64,13 +64,28 @@ async def run_existing_execution(
                 orchestrator.db,
                 execution=orchestrator.execution_log,
             )
-        except Exception:
-            await run_db_off_loop(
-                lambda: crud.crud_ci_execution.reject_dispatch(
+        except Exception as error:
+            error_type = type(error).__name__
+
+            def reject_and_log() -> None:
+                # Admission may expire the ORM row. Refresh and read identifiers
+                # in this off-loop callback, never on the async worker's loop.
+                crud.crud_ci_execution.reject_dispatch(
                     orchestrator.db,
                     execution=orchestrator.execution_log,
                 )
-            )
+                logger.warning(
+                    "Restricted CI execution admission blocked",
+                    extra={
+                        "execution_id": str(orchestrator.execution_log.id),
+                        "ci_principal_id": str(
+                            orchestrator.execution_log.ci_principal_id
+                        ),
+                        "ci_error_type": error_type,
+                    },
+                )
+
+            await run_db_off_loop(reject_and_log)
             return
     await orchestrator.run()
 

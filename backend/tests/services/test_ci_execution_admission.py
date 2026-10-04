@@ -760,3 +760,32 @@ async def test_worker_admission_denial_does_not_reload_expired_fields_on_loop(
     orchestrator.run.assert_not_awaited()
     assert query_threads
     assert all(thread != loop_thread for thread in query_threads)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "apiKey",
+        "accessToken",
+        "clientSecret",
+        "resolvedInputPrompt",
+        "mcpUsageLogs",
+        "API-KEY",
+        "access.token",
+        "client secret",
+        "resolved-input-prompt",
+        "MCP.Usage.Logs",
+        "providerApiKey",
+        "provider.accessToken",
+        "provider-clientSecret",
+    ],
+)
+def test_result_projection_denies_alternate_runtime_field_spellings(field: str) -> None:
+    value = {
+        "review": "persisted",
+        "nested": [{field: "synthetic-private-value", "score": 1}],
+    }
+    assert service.public_ci_result(value) == {
+        "review": "persisted",
+        "nested": [{"score": 1}],
+    }
