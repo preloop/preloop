@@ -795,6 +795,8 @@ async def _apply_authorized_issue_triage(
     complexity_label: str | None,
     assessment: str,
     title: str | None = None,
+    risk_label: str | None = None,
+    readiness_label: str | None = None,
 ) -> "IssueTriageResult":
     from preloop.schemas.issue_triage import IssueTriageApply
     from preloop.services.issue_triage_controller import apply_controlled_triage
@@ -805,6 +807,8 @@ async def _apply_authorized_issue_triage(
         request = IssueTriageApply(
             expected_revision=expected_revision,
             complexity_label=complexity_label,
+            risk_label=risk_label,
+            readiness_label=readiness_label,
             assessment=assessment,
             title=title,
         )
@@ -887,6 +891,8 @@ async def get_issue(
         if "label_catalog" in requested:
             triage["label_catalog"] = context.catalogue
             triage["complexity_scheme"] = context.complexity_scheme
+            triage["risk_scheme"] = context.risk_scheme
+            triage["readiness_scheme"] = context.readiness_scheme
         if "revision" in requested:
             triage["expected_revision"] = context.expected_revision
             triage["provider_issue"] = context.issue
@@ -1020,14 +1026,16 @@ async def update_issue(
     expected_revision: Optional[str] = None,
     assessment: Optional[str] = None,
     complexity_label: Optional[str] = None,
+    risk_label: Optional[str] = None,
+    readiness_label: Optional[str] = None,
 ) -> UpdateIssueResponse | IssueTriageResult:
     """
     Handles the 'update_issue' tool call.
 
     ``expected_revision`` plus ``assessment`` switch the call to the managed
     triage write: the assessment replaces one managed section and preserves
-    the human text around it, ``complexity_label`` moves only labels in the
-    recognized complexity family, and the return value is a triage receipt
+    the human text around it, ``complexity_label``, ``risk_label`` and
+    ``readiness_label`` each move only labels in their recognized family, and the return value is a triage receipt
     instead of the plain update response. Take ``expected_revision`` from
     ``get_issue(issue, include=["revision"])``.
     """
@@ -1035,7 +1043,14 @@ async def update_issue(
     current_user = await _tool_user(db)
 
     triage_requested = any(
-        value is not None for value in (expected_revision, assessment, complexity_label)
+        value is not None
+        for value in (
+            expected_revision,
+            assessment,
+            complexity_label,
+            risk_label,
+            readiness_label,
+        )
     )
     if _triage_execution_id(db, current_user) is not None and not triage_requested:
         raise HTTPException(
@@ -1069,7 +1084,7 @@ async def update_issue(
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "A triage write manages issue content and complexity "
+                    "A triage write manages issue content and triage "
                     "labels only. Remove " + ", ".join(conflicting) + " or "
                     "make that change in a separate update_issue call."
                 ),
@@ -1080,6 +1095,8 @@ async def update_issue(
             issue=issue,
             expected_revision=expected_revision,
             complexity_label=complexity_label,
+            risk_label=risk_label,
+            readiness_label=readiness_label,
             assessment=assessment,
             title=title,
         )
