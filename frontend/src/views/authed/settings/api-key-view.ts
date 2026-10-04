@@ -9,6 +9,9 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/format-date/format-date.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
+import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 
 import '../../../components/preloop-session-observer';
 import '../../../components/budget-policy-editor';
@@ -35,6 +38,24 @@ import type {
 } from '../../../types';
 
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import { parseUTCDate } from '../../../utils/date';
+
+type SpendRange = 'day' | 'week' | 'month' | 'year' | 'total';
+
+const SPEND_RANGE_LABELS: Record<SpendRange, string> = {
+  day: 'last 24 hours',
+  week: 'last 7 days',
+  month: 'last 30 days',
+  year: 'last year',
+  total: 'all time',
+};
+
+function splitAllowedModels(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
 
 @customElement('api-key-view')
 export class ApiKeyView extends LitElement {
@@ -146,6 +167,35 @@ export class ApiKeyView extends LitElement {
       .danger-text {
         color: var(--sl-color-danger-600);
       }
+
+      .range-select {
+        background: transparent;
+        border: none;
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-600);
+        cursor: pointer;
+      }
+
+      .range-select:focus-visible {
+        outline: var(--sl-focus-ring);
+        outline-offset: var(--sl-focus-ring-offset);
+      }
+
+      .allowlist-note {
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-neutral-600);
+        margin: var(--sl-spacing-x-small) 0 var(--sl-spacing-small);
+      }
+
+      .allowlist-warning {
+        font-size: var(--sl-font-size-small);
+        color: var(--sl-color-warning-700);
+        margin: 0 0 var(--sl-spacing-small);
+      }
+
+      .retired-alert {
+        margin-bottom: var(--sl-spacing-large);
+      }
     `,
   ];
 
@@ -156,13 +206,20 @@ export class ApiKeyView extends LitElement {
   @state() private usageSummary: ApiKeyGatewayUsageSummaryResponse | null =
     null;
   @state() private aiModels: AIModel[] = [];
-  @state() private budgetTimeRange:
-    'day' | 'week' | 'month' | 'year' | 'total' = 'total';
+  @state() private budgetTimeRange: SpendRange = 'total';
   @state() private loading = true;
   @state() private error: string | null = null;
   @state() private updatingGovernance = false;
 
   @state() private governanceAllowedModels = '';
+  /**
+   * The operator switched "Restrict to selected models" on but has not
+   * picked a model yet. Nothing is saved until they do, because an empty
+   * allowlist means every model is allowed.
+   */
+  @state() private restrictDraft = false;
+  /** Why the last allowlist change was refused, shown under the list. */
+  @state() private allowlistNotice = '';
   @state() private toolCatalog: any[] = [];
   @state() private mcpServers: any[] = [];
   @state() private approvalWorkflows: any[] = [];
@@ -304,22 +361,127 @@ export class ApiKeyView extends LitElement {
     }
   }
 
-  private handleAllowedModelToggle(modelName: string, checked: boolean) {
+  private isRevoked(): boolean {
+    return this.apiKey?.activity_status === 'revoked';
+  }
+
+  private isExpired(): boolean {
+    const expiresAt = this.apiKey?.expires_at;
+    return (
+      Boolean(expiresAt) && parseUTCDate(expiresAt).getTime() <= Date.now()
+    );
+  }
+
+  /** A key that can no longer sign a request: there is nothing to revoke. */
+  private isRetired(): boolean {
+    return this.isRevoked() || this.isExpired();
+  }
+
+  private gatewayAlias(model: AIModel): string {
+    const provider = (model.provider_name || '').trim().toLowerCase();
+    const identifier = (model.model_identifier || '').trim();
+    return provider && identifier ? `${provider}/${identifier}` : identifier;
+  }
+
+  /**
+   * Whether an allowlist entry names this model. A subset of the gateway's
+   * matching (backend/preloop/services/model_allowlist.py): display name
+   * (case-insensitive), model id, alias or provider/identifier, so entries
+   * typed into the manual field still tick their checkbox.
+   */
+  private entryMatchesModel(entry: string, model: AIModel): boolean {
+    const folded = entry.toLowerCase();
+    return (
+      (model.name || '').trim().toLowerCase() === folded ||
+      String(model.id).toLowerCase() === folded ||
+      (Boolean(model.alias) && model.alias === entry) ||
+      this.gatewayAlias(model) === entry
+    );
+  }
+
+  private allowedEntries(): string[] {
+    return splitAllowedModels(this.governanceAllowedModels);
+  }
+
+  private isRestricted(): boolean {
+    return this.allowedEntries().length > 0 || this.restrictDraft;
+  }
+
+  private async confirmAllowAll(): Promise<boolean> {
+    return confirmDialog({
+      title: 'Allow every model?',
+      message: `"${this.apiKey?.name}" will be able to call any model on this account.`,
+      detail:
+        'An empty allowlist means no model restriction. To block a model instead, keep at least one other model selected.',
+      confirmLabel: 'Allow every model',
+      variant: 'danger',
+    });
+  }
+
+  private async handleRestrictToggle(event: Event) {
+    const target = event.target as HTMLInputElement;
+    this.allowlistNotice = '';
+    if (target.checked) {
+      this.restrictDraft = true;
+      return;
+    }
+    if (this.allowedEntries().length === 0) {
+      this.restrictDraft = false;
+      return;
+    }
+    if (!(await this.confirmAllowAll())) {
+      target.checked = true;
+      return;
+    }
+    this.restrictDraft = false;
+    this.governanceAllowedModels = '';
+    await this.handleGovernanceUpdate();
+  }
+
+  private handleAllowedModelToggle(model: AIModel, event: Event) {
     if (!this.governance) return;
+    const target = event.target as HTMLInputElement;
+    const checked = target.checked;
+    const current = this.allowedEntries();
+    this.allowlistNotice = '';
 
-    let currentModels = this.governanceAllowedModels
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    if (checked && !currentModels.includes(modelName)) {
-      currentModels.push(modelName);
-    } else if (!checked && currentModels.includes(modelName)) {
-      currentModels = currentModels.filter((m) => m !== modelName);
+    let next: string[];
+    if (checked) {
+      next = current.some((entry) => this.entryMatchesModel(entry, model))
+        ? current
+        : [...current, model.name];
+    } else {
+      next = current.filter((entry) => !this.entryMatchesModel(entry, model));
+      if (next.length === 0) {
+        // Saving [] would silently widen the key to every model.
+        target.checked = true;
+        this.allowlistNotice =
+          'Keep at least one model selected. To allow every model, turn off "Restrict to selected models".';
+        return;
+      }
     }
 
-    this.governanceAllowedModels = currentModels.join(', ');
-    this.handleGovernanceUpdate();
+    this.restrictDraft = false;
+    this.governanceAllowedModels = next.join(', ');
+    void this.handleGovernanceUpdate();
+  }
+
+  private async handleManualAllowlistChange(event: Event) {
+    const target = event.target as HTMLInputElement;
+    const value = target.value;
+    this.allowlistNotice = '';
+    if (
+      splitAllowedModels(value).length === 0 &&
+      this.allowedEntries().length > 0
+    ) {
+      if (!(await this.confirmAllowAll())) {
+        target.value = this.governanceAllowedModels;
+        return;
+      }
+      this.restrictDraft = false;
+    }
+    this.governanceAllowedModels = value;
+    await this.handleGovernanceUpdate();
   }
 
   private saveScopedToolRule(
@@ -379,6 +541,93 @@ export class ApiKeyView extends LitElement {
     this.handleGovernanceUpdate();
   }
 
+  private renderAllowlist() {
+    const entries = this.allowedEntries();
+    const restricted = this.isRestricted();
+    return html`
+      <sl-switch
+        class="restrict-switch"
+        .checked=${restricted}
+        ?disabled=${this.updatingGovernance}
+        @sl-change=${this.handleRestrictToggle}
+        >Restrict to selected models</sl-switch
+      >
+      <p class="allowlist-note" aria-live="polite">
+        ${
+          !restricted
+            ? 'This key can call any model on the account.'
+            : entries.length === 0
+              ? 'Select the models this key may call. Until you select one, it can still call any model.'
+              : `This key can call ${entries.length} selected model${entries.length === 1 ? '' : 's'}.`
+        }
+        ${this.updatingGovernance ? ' Saving…' : nothing}
+      </p>
+      ${
+        this.allowlistNotice
+          ? html`<p class="allowlist-warning" role="alert">
+              ${this.allowlistNotice}
+            </p>`
+          : nothing
+      }
+      <div
+        style="display: flex; flex-direction: column; gap: var(--sl-spacing-small); max-height: 300px; overflow-y: auto;"
+      >
+        ${this.aiModels.map((model) => {
+          const isAllowed =
+            !restricted ||
+            entries.some((entry) => this.entryMatchesModel(entry, model));
+          const modelUsage = this.usageSummary?.usage_by_model?.find(
+            (u) => u.model_alias === model.name || u.ai_model_id === model.id
+          );
+          return html`
+            <div
+              style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--sl-color-neutral-100); padding-bottom: 4px;"
+            >
+              <sl-checkbox
+                .checked=${isAllowed}
+                ?disabled=${!restricted}
+                @sl-change=${(e: Event) =>
+                  this.handleAllowedModelToggle(model, e)}
+              >
+                ${model.name}
+              </sl-checkbox>
+              ${
+                modelUsage
+                  ? html`
+                      <div
+                        style="font-size: 0.85rem; color: var(--sl-color-neutral-600);"
+                      >
+                        <span
+                          style="color: var(--sl-color-primary-600); font-weight: 500;"
+                          >$${(modelUsage.estimated_cost || 0).toFixed(4)}</span
+                        >
+                      </div>
+                    `
+                  : ''
+              }
+            </div>
+          `;
+        })}
+      </div>
+      <div
+        style="margin-top: var(--sl-spacing-medium); padding-top: var(--sl-spacing-medium); border-top: 1px solid var(--sl-color-neutral-200);"
+      >
+        <sl-input
+          label="Manual override"
+          placeholder="preloop/google/gemini-3.1-pro-preview, ..."
+          .value=${this.governanceAllowedModels}
+          @sl-change=${this.handleManualAllowlistChange}
+        ></sl-input>
+        <div
+          style="font-size: 0.8rem; color: var(--sl-color-neutral-500); margin-top: 4px;"
+        >
+          Comma-separated model names, ids or gateway aliases. Empty allows
+          every model.
+        </div>
+      </div>
+    `;
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -398,7 +647,7 @@ export class ApiKeyView extends LitElement {
           </sl-alert>
           <div style="margin-top: var(--sl-spacing-medium)">
             <sl-button @click=${() => Router.go('/console/settings/api-keys')}>
-              Back to API Keys
+              Back to API keys
             </sl-button>
           </div>
         </div>
@@ -427,13 +676,35 @@ export class ApiKeyView extends LitElement {
               Back to API keys
             </sl-button>
           </div>
-          <div slot="main-column">
-            <sl-button variant="danger" outline @click=${this.handleRevoke}>
-              <sl-icon slot="prefix" name="trash"></sl-icon>
-              Revoke key
-            </sl-button>
-          </div>
+          ${
+            this.isRetired()
+              ? nothing
+              : html`<div slot="main-column">
+                  <sl-button
+                    variant="danger"
+                    outline
+                    @click=${this.handleRevoke}
+                  >
+                    <sl-icon slot="prefix" name="trash"></sl-icon>
+                    Revoke key
+                  </sl-button>
+                </div>`
+          }
         </view-header>
+
+        ${
+          this.isRevoked()
+            ? html`<sl-alert class="retired-alert" variant="neutral" open>
+                <sl-icon slot="icon" name="slash-circle"></sl-icon>
+                This key was revoked. Requests signed with it are rejected.
+              </sl-alert>`
+            : this.isExpired()
+              ? html`<sl-alert class="retired-alert" variant="neutral" open>
+                  <sl-icon slot="icon" name="clock-history"></sl-icon>
+                  This key has expired. Requests signed with it are rejected.
+                </sl-alert>`
+              : nothing
+        }
 
         <div class="layout">
           <div class="main-column">
@@ -442,14 +713,15 @@ export class ApiKeyView extends LitElement {
                 style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--sl-spacing-medium);"
               >
                 <h2 class="section-header" style="margin: 0;">
-                  Key Details & Spend
+                  Key details and spend
                 </h2>
                 <select
-                  style="background: transparent; border: none; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-600); cursor: pointer; outline: none;"
+                  class="range-select"
+                  aria-label="Spend time range"
                   .value=${this.budgetTimeRange}
                   @change=${(e: Event) => {
                     this.budgetTimeRange = (e.target as HTMLSelectElement)
-                      .value as any;
+                      .value as SpendRange;
                     this.loadData();
                   }}
                 >
@@ -467,14 +739,17 @@ export class ApiKeyView extends LitElement {
                 <div class="label">Status</div>
                 <div class="value">
                   ${
-                    this.apiKey.expires_at &&
-                    new Date(this.apiKey.expires_at) < new Date()
-                      ? html`<sl-badge class="chip" pill variant="neutral"
-                          >Expired</sl-badge
+                    this.isRevoked()
+                      ? html`<sl-badge class="chip" pill variant="danger"
+                          >Revoked</sl-badge
                         >`
-                      : html`<sl-badge class="chip" pill variant="success"
-                          >Active</sl-badge
-                        >`
+                      : this.isExpired()
+                        ? html`<sl-badge class="chip" pill variant="neutral"
+                            >Expired</sl-badge
+                          >`
+                        : html`<sl-badge class="chip" pill variant="success"
+                            >Active</sl-badge
+                          >`
                   }
                 </div>
 
@@ -504,7 +779,7 @@ export class ApiKeyView extends LitElement {
                   }
                 </div>
 
-                <div class="label">Last Used</div>
+                <div class="label">Last used</div>
                 <div class="value">
                   ${
                     this.apiKey.last_used_at
@@ -519,7 +794,9 @@ export class ApiKeyView extends LitElement {
                       : html`<i>Never</i>`
                   }
                 </div>
-                <div class="label">Total Spend (${this.budgetTimeRange})</div>
+                <div class="label">
+                  Spend (${SPEND_RANGE_LABELS[this.budgetTimeRange]})
+                </div>
                 <div class="value">
                   <span
                     style="font-size: 1.1em; font-weight: 600; color: var(--sl-color-primary-600);"
@@ -536,7 +813,7 @@ export class ApiKeyView extends LitElement {
             </sl-card>
 
             <sl-card>
-              <h2 class="section-header">Session Observer</h2>
+              <h2 class="section-header">Session observer</h2>
               <preloop-session-observer
                 scope="api_key"
                 .scopeId=${this.keyId || ''}
@@ -555,79 +832,12 @@ export class ApiKeyView extends LitElement {
 
           <div class="sidebar">
             <sl-card>
-              <h2 class="section-header">Allowed Models & Spend</h2>
-              <div
-                style="display: flex; flex-direction: column; gap: var(--sl-spacing-small); max-height: 300px; overflow-y: auto;"
-              >
-                ${this.aiModels.map((model) => {
-                  const allowed = this.governanceAllowedModels
-                    .split(',')
-                    .map((s) => s.trim())
-                    .filter(Boolean);
-                  const isAllowed =
-                    allowed.length === 0 || allowed.includes(model.name);
-                  const modelUsage = this.usageSummary?.usage_by_model?.find(
-                    (u) =>
-                      u.model_alias === model.name || u.ai_model_id === model.id
-                  );
-                  return html`
-                    <div
-                      style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--sl-color-neutral-100); padding-bottom: 4px;"
-                    >
-                      <sl-checkbox
-                        ?checked=${isAllowed}
-                        @sl-change=${(e: Event) =>
-                          this.handleAllowedModelToggle(
-                            model.name,
-                            (e.target as HTMLInputElement).checked
-                          )}
-                      >
-                        ${model.name}
-                      </sl-checkbox>
-                      ${
-                        modelUsage
-                          ? html`
-                              <div
-                                style="font-size: 0.85rem; color: var(--sl-color-neutral-600);"
-                              >
-                                <span
-                                  style="color: var(--sl-color-primary-600); font-weight: 500;"
-                                  >$${(modelUsage.estimated_cost || 0).toFixed(
-                                    4
-                                  )}</span
-                                >
-                              </div>
-                            `
-                          : ''
-                      }
-                    </div>
-                  `;
-                })}
-              </div>
-              <div
-                style="margin-top: var(--sl-spacing-medium); padding-top: var(--sl-spacing-medium); border-top: 1px solid var(--sl-color-neutral-200);"
-              >
-                <sl-input
-                  label="Manual override"
-                  placeholder="preloop/google/gemini-3.1-pro-preview, ..."
-                  .value=${this.governanceAllowedModels}
-                  @sl-change=${(e: Event) => {
-                    this.governanceAllowedModels = (
-                      e.target as HTMLInputElement
-                    ).value;
-                    this.handleGovernanceUpdate();
-                  }}
-                ></sl-input>
-                <div
-                  style="font-size: 0.8rem; color: var(--sl-color-neutral-500); margin-top: 4px;"
-                >
-                  Comma separated list. Leave empty to allow all.
-                </div>
-              </div>
+              <h2 class="section-header">Allowed models and spend</h2>
+              ${this.renderAllowlist()}
             </sl-card>
 
             <sl-card>
-              <h2 class="section-header">Budget Policy</h2>
+              <h2 class="section-header">Budget policy</h2>
               <budget-policy-editor
                 subjectType="api_key"
                 .subjectId=${this.keyId}
@@ -635,7 +845,7 @@ export class ApiKeyView extends LitElement {
             </sl-card>
 
             <sl-card>
-              <h2 class="section-header">Tool Policies</h2>
+              <h2 class="section-header">Tool policies</h2>
               <tools-editor-component
                 mode="scoped"
                 ?collapseByDefault=${true}
