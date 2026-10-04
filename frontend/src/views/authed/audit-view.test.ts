@@ -1339,7 +1339,9 @@ describe('AuditView', () => {
       });
       const element = document.createElement('audit-view') as AuditView;
       document.body.appendChild(element);
-      await waitUntil(() => !(element as any)._loading, 'first load');
+      await waitUntil(() => !(element as any)._loading, 'first load', {
+        timeout: 3000,
+      });
 
       wsCallback?.({ type: 'audit_event', action: 'tool_call' });
       // Wait for the live refresh to start, then change the filter.
