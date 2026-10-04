@@ -48,6 +48,17 @@ Preloop implements authentication and multi-tenancy:
   so one bump also invalidates them. API keys and runner tokens are
   unchanged. `preloop auth logout --all` and the console Sign out everywhere
   control call that endpoint.
+- `POST /auth/logout` is the console's server-side sign out. It runs the
+  registered H9 `SessionHook.on_logout` (from `preloop.plugins.account_hooks`)
+  with the current token's claims and returns `redirect_url`: a same-origin
+  path the console navigates to next, or null for the default.
+  `run_logout_hook` drops any redirect that is not a same-origin path, and
+  the console checks it again. With no hook registered it changes nothing
+  server-side; the console clears its own tokens either way. Sign out
+  everywhere skips this call because revoke-all already ended the session.
+- `SessionHook.is_token_revoked` runs after the generation and CLI session
+  checks in `reject_revoked_token`, so an extension can revoke a single JWT it
+  issued. With no hook registered it is not called.
 - Console refresh tokens (`POST /auth/refresh`) carry `sat` and are capped
   at `MAX_SESSION_DAYS` (default 30). CLI login refresh tokens stay
   long-lived (`CLI_JWT_REFRESH_TOKEN_EXPIRE_DAYS`, default 365); revocation

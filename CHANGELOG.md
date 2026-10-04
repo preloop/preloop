@@ -355,6 +355,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is passed only to `x11vnc -storepasswd` (briefly visible to other local
   users; VNC DES keeps the first 8 characters) and is not written elsewhere.
 
+- **Sandbox runtime and node placement for agent pods.** Helm gains
+  `agentExecution.runtimeClassName`, `agentExecution.nodeSelector` and
+  `agentExecution.tolerations` (all empty by default) so agent Jobs and the
+  hosted publication verifier run under a stronger runtime (Kata
+  Containers, gVisor, Firecracker) and on the node pool that provides it.
+  Malformed or Kubernetes-invalid values are ignored so a typo cannot stop
+  an agent from starting (#1076).
+
 ### Changed
 
 - `webhook_config.webhook_secret` is optional in the flow API, so a flow

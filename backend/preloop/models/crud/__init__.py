@@ -83,8 +83,10 @@ from .provider_billing import (
 from .copilot_import import (
     CRUDCopilotImportConnection,
     CRUDCopilotUsage,
+    CRUDCopilotUserMapping,
     crud_copilot_import_connection,
     crud_copilot_usage,
+    crud_copilot_user_mapping,
 )
 from .tool_configuration import CRUDToolConfiguration
 from .mcp_server import CRUDMCPServer
@@ -345,8 +347,10 @@ __all__ = [
     "crud_provider_billing_snapshot",
     "CRUDCopilotImportConnection",
     "CRUDCopilotUsage",
+    "CRUDCopilotUserMapping",
     "crud_copilot_import_connection",
     "crud_copilot_usage",
+    "crud_copilot_user_mapping",
     "crud_tool_configuration",
     "crud_mcp_server",
     "crud_mcp_tool",

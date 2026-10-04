@@ -1,5 +1,6 @@
 """Credential-free verification adapters and authoritative remote process status."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -121,6 +122,85 @@ async def test_kubernetes_adapter_streams_input_and_deletes_job_before_return():
     assert execute.call_args_list[1].args[3][-1] == policy.base_sha
     remove.assert_awaited_once_with(executor, job.metadata.name, execution)
     network.delete_namespaced_network_policy.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kubernetes_verifier_job_carries_agent_placement(monkeypatch):
+    """The verifier runs repository code, so it shares the agent sandbox."""
+    execution = str(uuid4())
+    batch = SimpleNamespace(create_namespaced_job=AsyncMock())
+    core = SimpleNamespace(
+        api_client=SimpleNamespace(configuration=object()),
+        list_namespaced_pod=AsyncMock(
+            return_value=SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        metadata=SimpleNamespace(name="owned-pod"),
+                        status=SimpleNamespace(phase="Running"),
+                    )
+                ]
+            )
+        ),
+    )
+    executor = SimpleNamespace(
+        _init_kubernetes_clients=AsyncMock(),
+        _k8s_batch_api=batch,
+        _k8s_core_api=core,
+        agent_namespace="isolated",
+        use_kubernetes=True,
+    )
+    policy = SimpleNamespace(
+        execution_id=execution,
+        verification_image="generic@sha256:" + "a" * 64,
+        base_sha="c" * 40,
+    )
+    check = SimpleNamespace(command="pytest tests/unit", timeout_seconds=10)
+    network = SimpleNamespace(
+        list_namespaced_network_policy=AsyncMock(
+            return_value=SimpleNamespace(items=[])
+        ),
+        create_namespaced_network_policy=AsyncMock(),
+        delete_namespaced_network_policy=AsyncMock(),
+    )
+    monkeypatch.setenv("AGENT_RUNTIME_CLASS_NAME", "kata-containers")
+    monkeypatch.setenv("AGENT_NODE_SELECTOR", json.dumps({"runtime": "kata"}))
+    monkeypatch.setenv(
+        "AGENT_TOLERATIONS",
+        json.dumps(
+            [
+                {
+                    "key": "dedicated",
+                    "operator": "Equal",
+                    "value": "agents",
+                    "effect": "NoSchedule",
+                }
+            ]
+        ),
+    )
+    with (
+        patch("kubernetes_asyncio.client.NetworkingV1Api", return_value=network),
+        patch("kubernetes_asyncio.client.CoreV1Api"),
+        patch("kubernetes_asyncio.stream.WsApiClient") as websocket,
+        patch(
+            "preloop.services.publication_hosted_verifier._pod_exec",
+            new=AsyncMock(side_effect=[0, 0]),
+        ),
+        patch(
+            "preloop.services.publication_hosted_verifier.remove_owned_publication_runtime",
+            new=AsyncMock(),
+        ),
+    ):
+        websocket.return_value.__aenter__ = AsyncMock(return_value=object())
+        websocket.return_value.__aexit__ = AsyncMock(return_value=False)
+        await _check_kubernetes(
+            executor, policy, b"frozen-bundle", {"head_sha": "b" * 40}, check
+        )
+    spec = batch.create_namespaced_job.call_args.kwargs["body"].spec.template.spec
+    assert spec.runtime_class_name == "kata-containers"
+    assert spec.node_selector == {"runtime": "kata"}
+    assert len(spec.tolerations) == 1
+    assert spec.tolerations[0].key == "dedicated"
+    assert spec.tolerations[0].effect == "NoSchedule"
 
 
 class Socket:

@@ -1053,7 +1053,7 @@ export class ConsoleHeader extends LitElement {
   }
 
   async signOut() {
-    api.performLocalSignOut();
+    await api.signOut();
   }
 
   private isUnexpiredPendingApproval(approval: ApprovalRequest): boolean {

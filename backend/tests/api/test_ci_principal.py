@@ -567,3 +567,26 @@ def test_aware_expiry_is_persisted_as_utc_without_database_timezone_conversion(
     )
     db_session.refresh(key)
     assert key.expires_at == expiry.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def test_restricted_key_cannot_invoke_new_human_logout_hook(
+    db_session: Session, ci_resources: tuple[Any, ...], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from preloop.api.app import create_app
+    from preloop.models.db.session import get_db_session
+    from preloop.plugins import account_hooks
+
+    _, _, token = provision(db_session, ci_resources)
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    calls = []
+    monkeypatch.setattr(
+        account_hooks, "run_logout_hook", lambda *args: calls.append(args)
+    )
+    response = TestClient(app).post(
+        "/api/v1/auth/logout", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code in (401, 403)
+    assert calls == []

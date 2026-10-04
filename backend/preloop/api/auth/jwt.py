@@ -28,6 +28,7 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.db.session import get_db_session
+from preloop.plugins import account_hooks
 from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.models.user import User
@@ -559,6 +560,7 @@ def decode_token(token: str) -> TokenData:
             gen=gen,
             sid=_optional_claim(payload.get("sid")),
             jti=_optional_claim(payload.get("jti")),
+            claims=dict(payload),
         )
     except PyJWTError:
         raise HTTPException(
@@ -682,13 +684,19 @@ def reject_revoked_cli_session(db: Any, user: User, token_data: TokenData) -> No
 
 
 def reject_revoked_token(db: Any, user: User, token_data: TokenData) -> None:
-    """Apply every JWT revocation check: generation, then CLI session.
+    """Apply every JWT revocation check: generation, CLI session, extension.
 
     Raises:
         HTTPException: 401 when the token was revoked either way.
     """
     reject_stale_token_generation(user, token_data)
     reject_revoked_cli_session(db, user, token_data)
+    if account_hooks.is_token_revoked(db, user, token_data.claims):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=SESSION_REVOKED_DETAIL,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def get_current_user(
