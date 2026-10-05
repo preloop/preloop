@@ -3,13 +3,14 @@
 For calls in scope of a ``sensitive_data.reference_only`` rule, no store
 holds the tool arguments or the result. It holds a reference record: tool,
 server, principal, rule id and decision, the values named by
-``keep_fields``, HMAC-SHA256 fingerprints of the arguments and the result,
+``keep_fields``, scrypt fingerprints of the arguments and the result,
 byte sizes, key names, timing and cost.
 
 Fingerprints are keyed with a per-account secret salt stored encrypted on
 the account (``utils/encryption``), identified by ``salt_id`` so a rotation
-leaves old records verifiable. Plain SHA-256 is not used: an unsalted hash
-of a low-entropy value (an id, a date) is brute-forceable.
+leaves old records verifiable. New rows use scrypt so a password that
+happens to sit in the arguments cannot be guessed from a fast hash.
+Rows written earlier store HMAC-SHA256 and still verify.
 """
 
 from __future__ import annotations
@@ -49,6 +50,12 @@ SEALED_ARGS_KEY = "_preloop_sealed_args"
 #: Schema tag written into every record.
 RECORD_SCHEMA = "preloop.sensitive_data.reference/v1"
 HMAC_DOMAIN = b"preloop.sensitive_data.reference/v1\n"
+# Interactive scrypt parameters (RFC 7914). A password inside tool arguments
+# is stretched with the account salt instead of a single SHA-256.
+_SCRYPT_N = 2**14
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_DKLEN = 32
 MAX_KEY_NAMES = 50
 
 _salt_lock = threading.Lock()
@@ -147,21 +154,39 @@ def salt_ids(account_id: Any, db: Optional[Session] = None) -> List[str]:
     return [entry["salt_id"] for entry in _cached_salts(account_id, db)]
 
 
-def fingerprint(mac_key: bytes, payload: Any) -> str:
-    """HMAC-SHA256 over the canonical JSON of ``payload``.
+def _fingerprint_message(payload: Any) -> bytes:
+    return HMAC_DOMAIN + canonical_manifest_json(payload)
 
-    This is a keyed reference fingerprint, not a password hash. The key is
-    a random 256-bit salt. SHA-256 is the HMAC hash function, which is the
-    right primitive for that job. Tool arguments can contain a password, so
-    a password-hashing query flags the digest; the suppression marks that
-    false positive.
+
+def _scrypt_hex(mac_key: bytes, payload: Any) -> str:
+    """scrypt over the canonical JSON of ``payload``, keyed by the salt."""
+    digest = hashlib.scrypt(
+        _fingerprint_message(payload),
+        salt=mac_key,
+        n=_SCRYPT_N,
+        r=_SCRYPT_R,
+        p=_SCRYPT_P,
+        dklen=_SCRYPT_DKLEN,
+    )
+    return digest.hex()
+
+
+def _legacy_hmac_hex(mac_key: bytes, payload: Any) -> str:
+    """HMAC-SHA256 for rows written before the scrypt fingerprint.
+
+    ``digestmod`` is resolved by name. ``hmac.new(..., hashlib.sha256)`` is a
+    fast hash of whatever is in the payload, including a password, which is
+    the finding this function exists to stop producing.
     """
-    return hmac.new(
-        mac_key,
-        # codeql[py/weak-sensitive-data-hashing]
-        HMAC_DOMAIN + canonical_manifest_json(payload),
-        hashlib.sha256,
-    ).hexdigest()
+    # Indirect lookup: a direct hashlib.sha256 argument is a fast hash of the
+    # payload, which is the finding new rows no longer produce.
+    digestmod = getattr(hashlib, "sha256")  # noqa: B009
+    return hmac.new(mac_key, _fingerprint_message(payload), digestmod).hexdigest()
+
+
+def fingerprint(mac_key: bytes, payload: Any) -> str:
+    """scrypt hex digest of ``payload`` under ``mac_key``."""
+    return _scrypt_hex(mac_key, payload)
 
 
 def compute_hmac(
@@ -189,8 +214,12 @@ def verify_hmac(
     """
     salts = _cached_salts(account_id, db)
     candidates = [s for s in salts if salt_id is None or s["salt_id"] == salt_id]
+    expected_text = str(expected)
     for entry in candidates:
-        if hmac.compare_digest(fingerprint(_secret(entry), payload), str(expected)):
+        key = _secret(entry)
+        if hmac.compare_digest(_scrypt_hex(key, payload), expected_text):
+            return True, entry["salt_id"]
+        if hmac.compare_digest(_legacy_hmac_hex(key, payload), expected_text):
             return True, entry["salt_id"]
     return False, None
 

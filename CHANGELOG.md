@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of 3.0.3 with a nesting cap (GHSA-vfj7-8cjw-p6xm); upstream has no later
   release. The CLI no longer requires `golang.org/x/crypto`: scrypt lives
   in-tree, so GO-2026-5932 (`x/crypto/openpgp`) is not in the module graph.
+  Reference-only fingerprints for new rows are scrypt; older HMAC-SHA256
+  rows still verify.
 - The support period stated in SECURITY.md (security updates without charge
   until 31 December 2031, with the release-line table and the
   never-shortened extension rules) is signed off by the release manager as

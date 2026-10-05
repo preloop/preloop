@@ -184,6 +184,18 @@ def test_same_args_same_hmac_and_accounts_differ(salts) -> None:
     assert EMAIL not in blob and "P-77" not in blob
 
 
+def test_hmac_rows_written_before_scrypt_still_verify(salts) -> None:
+    account = uuid.uuid4()
+    rule = _config().reference_only[0]
+    record = build_reference_record(
+        account_id=account, rule=rule, tool_name="t", arguments=ARGS
+    )
+    entry = reference._cached_salts(account, None)[-1]
+    legacy = reference._legacy_hmac_hex(reference._secret(entry), ARGS)
+    assert legacy != record["args_hmac"]
+    assert verify_hmac(account, ARGS, legacy) == (True, record["salt_id"])
+
+
 def test_salts_are_stored_encrypted_and_never_exported(salts) -> None:
     account = uuid.uuid4()
     build_reference_record(
@@ -484,7 +496,7 @@ async def test_in_scope_proxied_call_leaves_no_payload_in_any_store(
         _allow_and_record,
     )
     monkeypatch.setattr(
-        policy_evaluator, "_get_db_factory", lambda: (lambda: MagicMock())
+        policy_evaluator, "_get_db_factory", lambda: lambda: MagicMock()
     )
     monkeypatch.setattr(storage, "has_cached_config", lambda account_id: True)
     monkeypatch.setattr(
