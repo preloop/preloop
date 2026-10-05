@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/preloop/preloop/cli/internal/api"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
@@ -173,6 +173,10 @@ func runRecoveryOffboard(t *testing.T, f *offboardRecoveryFixture) (string, erro
 		operationErr = executeOffboard(f.agent, true, offboardCleanupYes, offboardCleanupYes)
 		return nil
 	})
+	// A hijacked connection can report its failure to the client before the
+	// handler finishes. Wait for fixture bookkeeping before asserting/retrying.
+	f.mu.Lock()
+	f.mu.Unlock()
 	return out, operationErr
 }
 
@@ -252,7 +256,9 @@ func TestExecuteOffboardRecoveryFaultsAndRetry(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newOffboardRecoveryFixture(t)
+			f.mu.Lock()
 			tc.setup(t, f)
+			f.mu.Unlock()
 			out, err := runRecoveryOffboard(t, f)
 			assertRecoveryUntouched(t, f, out, err)
 			// Clear only the injected fault: the remote live lineage and local

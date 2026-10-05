@@ -112,10 +112,13 @@ describe('NotificationPreferencesView', () => {
     const el = (await fixture(
       html`<notification-preferences-view></notification-preferences-view>`
     )) as NotificationPreferencesView;
-    await tick();
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('sl-switch') !== null,
+      'preferences must render before they can be changed',
+      { timeout: 10000 }
+    );
     await el.updateComplete;
     await (el as any).handleToggleEmail({ target: { checked: false } });
-    await tick();
     const putCall = fetchStub
       .getCalls()
       .find((c) => (c.args[1]?.method || 'GET') === 'PUT');

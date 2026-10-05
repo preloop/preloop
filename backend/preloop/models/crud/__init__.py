@@ -70,6 +70,7 @@ from .budget import (
     crud_budget_spend,
 )
 from .chat import crud_chat
+from .ci_administration import crud_ci_administration
 from .ci_execution import CRUDCiExecution, crud_ci_execution
 from .ci_principal import CiAuthorizationContext, CRUDCiPrincipal, crud_ci_principal
 from .ci_subscription import CRUDCiSubscription, crud_ci_subscription
@@ -254,6 +255,7 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
 
 __all__ = [
+    "crud_ci_administration",
     "crud_chat",
     "CRUDManagedOAuth",
     "crud_managed_oauth",

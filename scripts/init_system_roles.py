@@ -14,10 +14,9 @@ System Roles:
 """
 
 import logging
-import dotenv
-
 from typing import Dict, List
 
+import dotenv
 from sqlalchemy.orm import Session
 
 from preloop.models.models.permission import Permission, Role, RolePermission
@@ -52,6 +51,16 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
         {
             "name": "manage_billing",
             "description": "Manage payment methods and billing settings",
+        },
+    ],
+    "ci_identities": [
+        {
+            "name": "view_ci_identities",
+            "description": "View restricted CI identities and safe grant metadata",
+        },
+        {
+            "name": "manage_ci_identities",
+            "description": "Manage restricted CI identities, keys, and subscriptions",
         },
     ],
     "users": [

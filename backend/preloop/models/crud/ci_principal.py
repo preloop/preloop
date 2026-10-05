@@ -146,22 +146,29 @@ class CRUDCiPrincipal:
         )
 
     def _authorize(
-        self, db: Session, *, actor: models.User, operation: str, grant: CiGrant
+        self, db: Session, *, actor: models.User, operation: str, grant: CiGrant | None
     ) -> None:
         """Require a current human and edition-specific resource authority."""
+        if grant is None and operation not in {"capabilities", "manage_capabilities"}:
+            raise PermissionError("CI administration requires a resource grant")
         key = getattr(actor, "_auth_api_key", None)
         if key is not None and key.requires_machine_authorization is True:
             raise PermissionError("CI credentials cannot administer identities")
+        # populate_existing may refresh actor itself. Preserve the request's
+        # account scope before that refresh so stale objects cannot pivot a
+        # previously selected principal into another account's owner authority.
+        expected_user_id = actor.id
+        expected_account_id = actor.account_id
         human = (
             db.query(models.User)
             .populate_existing()
-            .filter(models.User.id == actor.id)
+            .filter(models.User.id == expected_user_id)
             .first()
         )
         account = (
             db.query(models.Account)
             .populate_existing()
-            .filter(models.Account.id == actor.account_id)
+            .filter(models.Account.id == expected_account_id)
             .first()
         )
         if (
@@ -175,7 +182,12 @@ class CRUDCiPrincipal:
             )
         ):
             raise PermissionError("CI administration denied")
-        if operation not in {"disable", "revoke", "narrow"}:
+        if grant is not None and operation not in {
+            "disable",
+            "revoke",
+            "narrow",
+            "view",
+        }:
             self._binding(db, account_id=account.id, grant=grant)
 
     def _audit(
@@ -265,6 +277,7 @@ class CRUDCiPrincipal:
         grant: CiGrant,
         key_actions: Optional[tuple[CiAction, ...]] = None,
         expires_at: Optional[datetime] = None,
+        commit: bool = True,
     ) -> tuple[models.CiPrincipal, models.ApiKey, str]:
         """Internal provisioning only; no usable public setup during rollout."""
         grant = CiGrant.model_validate(grant)
@@ -307,7 +320,8 @@ class CRUDCiPrincipal:
                 operation="provision",
                 key_id=key.id,
             )
-            db.commit()
+            if commit:
+                db.commit()
             return principal, key, token
         except Exception:
             db.rollback()

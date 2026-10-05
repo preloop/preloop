@@ -94,11 +94,14 @@ never relax this mode. The binding snapshots provider identity, clone path,
 tracker host/type and organization lineage; changing any of these invalidates
 access rather than redirecting an existing grant.
 
-There are no public CI provisioning routes or usable CI setup controls yet. Generic REST, MCP, model gateway, WebSocket and
+Human administrators provision a restricted CI identity through ten
+authenticated `/api/v1/ci-identities` routes: capabilities, preview, list,
+create, show, update, key issue, key rotate, key revoke, and
+completion-subscription create. The console Restricted CI page and `preloop ci`
+use that same lifecycle. Generic REST, MCP, model gateway, WebSocket and
 session exchange authentication cannot treat a restricted key as its issuing
 human. The legacy key management surface excludes these keys; human CI
-administration must use the dedicated lifecycle seam. Completion dispatch filtering and setup controls remain separate prerequisites
-before usable provisioning is exposed.
+administration must use the dedicated lifecycle seam.
 
 The restricted ASGI guard covers every application role before handler work.
 Only one canonical Bearer transport can enter an explicitly classified,

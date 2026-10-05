@@ -154,6 +154,7 @@ func init() {
 	rootCmd.AddCommand(auditCmd)
 	rootCmd.AddCommand(evidenceCmd)
 	rootCmd.AddCommand(accountsCmd)
+	rootCmd.AddCommand(newCICmd())
 
 	// Groups that need a server capability: hidden from help and refused at
 	// run time unless GET /api/v1/features reports it.

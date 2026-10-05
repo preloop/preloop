@@ -236,6 +236,7 @@ nav:
           - "Scanner binaries: decision note": guide/flows/scanner-binaries-decision.md
       - Trigger from CI: guide/flows/ci-trigger.md
       - GitHub Actions: guide/flows/github-actions.md
+      - Restricted CI setup: guide/flows/restricted-ci.md
       - Trackers:
           - Bitbucket Cloud: guide/bitbucket-tracker.md
           - Moving a GitHub repository: guide/github-repository-transfer.md

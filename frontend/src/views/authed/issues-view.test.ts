@@ -159,7 +159,19 @@ describe('IssuesView', () => {
       },
     });
     const el = (await fixture(html`<issues-view></issues-view>`)) as IssuesView;
-    await tick(300);
+    await waitUntil(
+      () => {
+        const state = (
+          el as unknown as { _verdicts: Record<string, { state: string }> }
+        )._verdicts;
+        return (
+          state['i1a-i1b']?.state === 'done' &&
+          state['i2a-i2b']?.state === 'checking'
+        );
+      },
+      'fast verdict should finish while the second response is still pending',
+      { timeout: 10000 }
+    );
     await el.updateComplete;
     const verdicts = (
       el as unknown as { _verdicts: Record<string, { state: string }> }

@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Native restricted CI setup.** An account administrator can bind a machine
+  identity to one project and hosted flow, then issue, rotate and revoke its
+  keys and create its completion subscription. Setup is ten authenticated
+  `/api/v1/ci-identities` routes, the console Restricted CI page, and
+  `preloop ci`. `preloop ci` rejects `--token` and writes a secret only to a
+  new private file. Restricted keys stay outside generic REST, MCP, the model
+  gateway, WebSockets and the legacy key list (#1316).
 - **Managed Bitbucket Cloud connections are consumed end to end.** A tracker
   with `auth_type: managed_oauth` stores no token; the tracker factory,
   scanner, REST and MCP clients, connection and scope testing, feedback reads,

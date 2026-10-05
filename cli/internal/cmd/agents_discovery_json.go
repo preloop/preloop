@@ -69,6 +69,9 @@ func isSafeDiscoveryJSONCommand(cmd *cobra.Command) bool {
 // document. The daily update check writes its prompt to stdout and can block
 // on stdin, which corrupts that document and hangs a redirected run.
 func isPromptFreeJSONCommand(cmd *cobra.Command) bool {
+	if cmd != nil && cmd.Parent() != nil && cmd.Parent().Name() == "ci" {
+		return true
+	}
 	if isSafeDiscoveryJSONCommand(cmd) {
 		return true
 	}

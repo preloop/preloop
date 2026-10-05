@@ -914,6 +914,19 @@ describe('CostView', () => {
       await waitUntil(
         () => (element as unknown as { loading: boolean }).loading === false
       );
+      if (
+        imported &&
+        typeof imported === 'object' &&
+        (imported as { event_count?: number }).event_count
+      ) {
+        await waitUntil(
+          () =>
+            (element as unknown as { sectionStates: Record<string, string> })
+              .sectionStates.imported === 'ready',
+          'the imported breakdown must finish separately from the summary',
+          { timeout: 10000 }
+        );
+      }
       await element.updateComplete;
       return element;
     }

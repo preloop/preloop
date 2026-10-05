@@ -70,11 +70,20 @@ describe('FlowExecutionsView', () => {
     window.history.replaceState({}, '', '/console/flows/executions');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    for (const alert of document.body.querySelectorAll('sl-alert')) {
+      await waitUntil(
+        () => alert.open || !alert.isConnected,
+        'toast did not finish opening or hiding',
+        {
+          timeout: 10000,
+        }
+      );
+      if (alert.isConnected) await alert.hide();
+    }
     sinon.restore();
     fetchStub = undefined as unknown as sinon.SinonStub;
     resetConfirmDialogForTests();
-    document.body.querySelectorAll('sl-alert').forEach((a) => a.remove());
     localStorage.clear();
   });
 
@@ -164,7 +173,11 @@ describe('FlowExecutionsView', () => {
     const el = (await fixture(
       html`<flow-executions-view></flow-executions-view>`
     )) as FlowExecutionsView;
-    await tick();
+    await waitUntil(
+      () => (el.shadowRoot?.querySelectorAll('tbody tr').length ?? 0) > 0,
+      'execution rows did not finish loading',
+      { timeout: 10000 }
+    );
     await el.updateComplete;
 
     const cells = Array.from(
@@ -331,7 +344,11 @@ describe('FlowExecutionsView', () => {
     const el = (await fixture(
       html`<flow-executions-view></flow-executions-view>`
     )) as FlowExecutionsView;
-    await tick();
+    await waitUntil(
+      () => (el.shadowRoot?.querySelectorAll('tbody tr').length ?? 0) > 0,
+      'execution rows did not finish loading',
+      { timeout: 10000 }
+    );
     await el.updateComplete;
 
     const cells = [
@@ -834,7 +851,13 @@ describe('FlowExecutionsView', () => {
       const el = (await fixture(
         html`<flow-executions-view></flow-executions-view>`
       )) as FlowExecutionsView;
-      await tick();
+      await waitUntil(
+        () =>
+          (el.shadowRoot?.querySelectorAll('tbody tr').length ?? 0) ===
+          rows.length,
+        'the requested execution rows did not finish rendering',
+        { timeout: 10000 }
+      );
       await el.updateComplete;
       return el;
     }
@@ -1003,7 +1026,13 @@ describe('FlowExecutionsView', () => {
       const el = (await fixture(
         html`<flow-executions-view></flow-executions-view>`
       )) as FlowExecutionsView;
-      await tick();
+      await waitUntil(
+        () =>
+          (el.shadowRoot?.querySelectorAll('tbody tr').length ?? 0) ===
+          rows.length,
+        'the requested execution rows did not finish rendering',
+        { timeout: 10000 }
+      );
       await el.updateComplete;
       return el;
     }
@@ -1368,7 +1397,13 @@ describe('FlowExecutionsView', () => {
       const el = (await fixture(
         html`<flow-executions-view></flow-executions-view>`
       )) as FlowExecutionsView;
-      await tick();
+      await waitUntil(
+        () =>
+          !!el.shadowRoot?.querySelector('tbody tr') ||
+          (el as unknown as { loadError: string | null }).loadError !== null,
+        'execution rows or the load error did not finish rendering',
+        { timeout: 10000 }
+      );
       await el.updateComplete;
       return el;
     }

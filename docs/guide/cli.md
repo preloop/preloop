@@ -46,6 +46,23 @@ preloop auth logout
 
 `--loopback` forces the local-callback OAuth flow; `--code` resumes a previous headless login. `--loopback` and `--headless` are mutually exclusive.
 
+## Restricted CI
+
+```bash
+preloop ci capabilities
+preloop ci preview --input ci-preview.json
+preloop ci create --input ci-request.json --secret-file /private/new-ci-token
+preloop ci list
+preloop ci show PRINCIPAL_ID
+preloop ci update PRINCIPAL_ID --input change.json
+preloop ci issue PRINCIPAL_ID --secret-file /private/replacement-ci-token
+preloop ci rotate PRINCIPAL_ID KEY_ID --secret-file /private/rotated-ci-token
+preloop ci revoke PRINCIPAL_ID KEY_ID
+preloop ci subscribe PRINCIPAL_ID --input callback.json --secret-file /private/new-signing-secret
+```
+
+These commands use the saved login or `PRELOOP_TOKEN`. `--token` is rejected, so a plaintext token is not placed on the process command line. A secret is written only to a new exclusive file; stdout is safe metadata. See [Native restricted CI setup](flows/restricted-ci.md).
+
 ## Agents
 
 ```bash

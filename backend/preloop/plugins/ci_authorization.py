@@ -15,7 +15,7 @@ from preloop.schemas.ci_principal import CiAction, CiGrant
 if TYPE_CHECKING:
     from preloop.models.crud.ci_principal import CiAuthorizationContext
 
-CiAdministrator = Callable[[models.User, str, CiGrant], bool]
+CiAdministrator = Callable[[models.User, str, CiGrant | None], bool]
 _administrator: Optional[CiAdministrator] = None
 
 
@@ -26,12 +26,18 @@ def register_ci_administrator(administrator: Optional[CiAdministrator]) -> None:
 
 
 def can_administer_ci(
-    actor: models.User, operation: str, grant: CiGrant, *, is_owner: bool
+    actor: models.User, operation: str, grant: CiGrant | None, *, is_owner: bool
 ) -> bool:
     """Evaluate human authority without widening the core machine grant."""
     if _administrator is None:
         return is_owner
-    return _administrator(actor, operation, grant) is True
+    try:
+        return _administrator(actor, operation, grant) is True
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "CI administration policy evaluation failed"
+        )
+        return False
 
 
 CiMachineAuthorizer = Callable[["CiAuthorizationContext", CiAction], bool]

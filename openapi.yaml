@@ -6515,6 +6515,386 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/ci-identities/capabilities:
+    get:
+      tags:
+      - Restricted CI administration
+      summary: Capabilities
+      description: Report rollout readiness and current human view/manage authority.
+      operationId: capabilities_api_v1_ci_identities_capabilities_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiAdminCapabilities'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/ci-identities/preview:
+    post:
+      tags:
+      - Restricted CI administration
+      summary: Preview
+      description: Validate the actual dedicated hosted binding before creating secrets.
+      operationId: preview_api_v1_ci_identities_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminPreview'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Preview Api V1 Ci Identities Preview Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/ci-identities:
+    get:
+      tags:
+      - Restricted CI administration
+      summary: List Identities
+      description: List only safe account-local metadata the human may currently view.
+      operationId: list_identities_api_v1_ci_identities_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/CiAdminIdentityRead'
+                type: array
+                title: Response List Identities Api V1 Ci Identities Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    post:
+      tags:
+      - Restricted CI administration
+      summary: Create Identity
+      description: Create one stable principal and return its initial token exactly
+        once.
+      operationId: create_identity_api_v1_ci_identities_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiAdminIssued'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}:
+    get:
+      tags:
+      - Restricted CI administration
+      summary: Get Identity
+      description: Read safe metadata including revoked/expired key recovery identifiers.
+      operationId: get_identity_api_v1_ci_identities__principal_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiAdminIdentityRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    patch:
+      tags:
+      - Restricted CI administration
+      summary: Update Identity
+      description: Narrow/disable or explicitly change a grant without moving its
+        resources.
+      operationId: update_identity_api_v1_ci_identities__principal_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiAdminIdentityRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}/keys:
+    post:
+      tags:
+      - Restricted CI administration
+      summary: Issue Key
+      description: Issue a replacement key after expiry/revocation without changing
+        ownership.
+      operationId: issue_key_api_v1_ci_identities__principal_id__keys_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminIssue'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiAdminKeyIssued'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}/keys/{key_id}/rotate:
+    post:
+      tags:
+      - Restricted CI administration
+      summary: Rotate Key
+      description: Atomically revoke one valid key and return its replacement token
+        once.
+      operationId: rotate_key_api_v1_ci_identities__principal_id__keys__key_id__rotate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Key Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminRotate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiAdminKeyIssued'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}/keys/{key_id}:
+    delete:
+      tags:
+      - Restricted CI administration
+      summary: Revoke Key
+      description: Revoke authentication without deleting principal-owned resources.
+      operationId: revoke_key_api_v1_ci_identities__principal_id__keys__key_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Key Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/ci-identities/{principal_id}/subscriptions:
+    post:
+      tags:
+      - Restricted CI administration
+      summary: Create Subscription
+      description: Human-authorize a stable principal callback; no machine impersonation
+        token.
+      operationId: create_subscription_api_v1_ci_identities__principal_id__subscriptions_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: principal_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Principal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CiAdminSubscription'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointCreated'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/event-webhooks/catalogue:
     get:
       tags:
@@ -23479,6 +23859,296 @@ components:
       - checkpoints_verified
       title: ChainVerifyRead
       description: Verdict of a server side walk over a range of the chain.
+    CiAction:
+      type: string
+      enum:
+      - flow:trigger
+      - execution:read
+      - execution:result:read
+      - execution:stop
+      - subscription:create
+      - subscription:read
+      - subscription:update
+      - subscription:delete
+      - subscription:secret:rotate
+      title: CiAction
+      description: The complete v1 machine action ceiling.
+    CiAdminCapabilities:
+      properties:
+        available:
+          type: boolean
+          title: Available
+        can_view:
+          type: boolean
+          title: Can View
+        can_manage:
+          type: boolean
+          title: Can Manage
+        supported_actions:
+          items:
+            $ref: '#/components/schemas/CiAction'
+          type: array
+          title: Supported Actions
+        binding:
+          type: string
+          title: Binding
+          default: One account-local project and its dedicated hosted flow
+      type: object
+      required:
+      - available
+      - can_view
+      - can_manage
+      - supported_actions
+      title: CiAdminCapabilities
+      description: Report rollout readiness separately from current human authority.
+    CiAdminCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Name
+        grant:
+          $ref: '#/components/schemas/CiGrant'
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - grant
+      title: CiAdminCreate
+      description: Provision one stable identity and disclose one initial credential.
+    CiAdminIdentityRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        is_active:
+          type: boolean
+          title: Is Active
+        credential_version:
+          type: integer
+          title: Credential Version
+        grant:
+          $ref: '#/components/schemas/CiGrant'
+        repository_identifier:
+          type: string
+          title: Repository Identifier
+        repository_slug:
+          type: string
+          title: Repository Slug
+        tracker_type:
+          type: string
+          title: Tracker Type
+        keys:
+          items:
+            $ref: '#/components/schemas/CiAdminKeyRead'
+          type: array
+          title: Keys
+      type: object
+      required:
+      - id
+      - name
+      - is_active
+      - credential_version
+      - grant
+      - repository_identifier
+      - repository_slug
+      - tracker_type
+      - keys
+      title: CiAdminIdentityRead
+      description: Safe account-local identity and immutable repository metadata.
+    CiAdminIssue:
+      properties:
+        actions:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/CiAction'
+            type: array
+            minItems: 1
+          - type: 'null'
+          title: Actions
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      additionalProperties: false
+      type: object
+      title: CiAdminIssue
+      description: Issue a replacement key with an optional narrower action ceiling.
+    CiAdminIssued:
+      properties:
+        identity:
+          $ref: '#/components/schemas/CiAdminIdentityRead'
+        key_id:
+          type: string
+          format: uuid
+          title: Key Id
+        token:
+          type: string
+          title: Token
+        secret_note:
+          type: string
+          title: Secret Note
+          default: Shown once. Store securely; metadata reads never return this token.
+      type: object
+      required:
+      - identity
+      - key_id
+      - token
+      title: CiAdminIssued
+      description: Return the newly created identity and initial credential exactly
+        once.
+    CiAdminKeyIssued:
+      properties:
+        principal_id:
+          type: string
+          format: uuid
+          title: Principal Id
+        key_id:
+          type: string
+          format: uuid
+          title: Key Id
+        token:
+          type: string
+          title: Token
+        secret_note:
+          type: string
+          title: Secret Note
+          default: Shown once. Store securely; metadata reads never return this token.
+      type: object
+      required:
+      - principal_id
+      - key_id
+      - token
+      title: CiAdminKeyIssued
+      description: Return a replacement token once alongside safe ownership identifiers.
+    CiAdminKeyRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        actions:
+          items:
+            type: string
+          type: array
+          title: Actions
+        is_active:
+          type: boolean
+          title: Is Active
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        last_used_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Used At
+      type: object
+      required:
+      - id
+      - actions
+      - is_active
+      - expires_at
+      - created_at
+      - last_used_at
+      title: CiAdminKeyRead
+      description: Expose recovery identifiers and lifetime metadata without token
+        material.
+    CiAdminPreview:
+      properties:
+        grant:
+          $ref: '#/components/schemas/CiGrant'
+      additionalProperties: false
+      type: object
+      required:
+      - grant
+      title: CiAdminPreview
+      description: Validate a concrete resource grant without issuing a credential.
+    CiAdminRotate:
+      properties:
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      additionalProperties: false
+      type: object
+      title: CiAdminRotate
+      description: Replace one valid key while preserving stable principal ownership.
+    CiAdminSubscription:
+      properties:
+        url:
+          type: string
+          maxLength: 2048
+          title: Url
+        description:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Description
+        event_types:
+          items:
+            type: string
+            const: flow.execution.finished
+          type: array
+          maxItems: 1
+          minItems: 1
+          title: Event Types
+        active:
+          type: boolean
+          title: Active
+          default: true
+        key_id:
+          type: string
+          format: uuid
+          title: Key Id
+      additionalProperties: false
+      type: object
+      required:
+      - url
+      - key_id
+      title: CiAdminSubscription
+      description: A real principal key is an audit anchor, not administrator authentication.
+    CiAdminUpdate:
+      properties:
+        grant:
+          anyOf:
+          - $ref: '#/components/schemas/CiGrant'
+          - type: 'null'
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+      additionalProperties: false
+      type: object
+      title: CiAdminUpdate
+      description: Change grant actions or explicitly enable/disable a stable identity.
     CiExecutionResponse:
       properties:
         id:
@@ -23541,6 +24211,35 @@ components:
       - failure_category
       title: CiExecutionResponse
       description: Owned execution correlation and readiness without runtime internals.
+    CiGrant:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+        project_id:
+          type: string
+          format: uuid
+          title: Project Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        actions:
+          items:
+            $ref: '#/components/schemas/CiAction'
+          type: array
+          minItems: 1
+          title: Actions
+      additionalProperties: false
+      type: object
+      required:
+      - version
+      - project_id
+      - flow_id
+      - actions
+      title: CiGrant
+      description: Exactly one account-local project and its dedicated flow.
     CliSessionResponse:
       properties:
         id:

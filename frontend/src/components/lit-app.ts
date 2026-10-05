@@ -444,6 +444,7 @@ export class LitApp extends LitElement {
           { path: 'settings', redirect: '/console/settings/profile' },
           { path: 'settings/profile', component: 'profile-view' },
           { path: 'settings/security', component: 'security-view' },
+          { path: 'settings/ci-identities', component: 'ci-identities-view' },
           { path: 'settings/api-keys', component: 'api-keys-view' },
           { path: 'settings/runners', component: 'runners-view' },
           { path: 'settings/webhooks', component: 'webhooks-view' },
