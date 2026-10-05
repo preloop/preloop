@@ -181,3 +181,19 @@ def test_non_http_evidence_errors_still_print_only_the_class(
     code, out = run(capsys)
     assert code == 1
     assert out == "PRELOOP_EVIDENCE failed OSError"
+
+
+def test_a_body_that_cannot_be_read_reports_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Broken(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise OSError("connection reset by " + SECRET_URL)
+
+    error = urllib.error.HTTPError(SECRET_URL, 502, "Bad Gateway", {}, Broken())
+    arm(monkeypatch, tmp_path, "capture", error)
+    code, out = run(capsys)
+    assert code == 1
+    assert out == (
+        "PRELOOP_CHECKPOINT failed HTTPError status=502 detail=unreadable op=capture"
+    )
