@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -526,6 +527,57 @@ def request(
         return body
 
 
+HTTP_ERROR_BODY_LIMIT = 4096
+_REASON_PATTERN = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def http_error_reason(exc: urllib.error.HTTPError) -> str:
+    """Extract a short reason code from an HTTP error body, never the body.
+
+    The API answers with ``{"detail": "<code>"}`` or, for the capability
+    check, ``{"detail": {"error": "<code>", ...}}``. Anything else (an HTML
+    page from a proxy in front of the API, an empty body, free text) is
+    reported as a fixed category so the marker still says whether the API
+    itself answered. At most ``HTTP_ERROR_BODY_LIMIT`` bytes are read.
+    """
+    try:
+        raw = exc.read(HTTP_ERROR_BODY_LIMIT + 1) if exc.fp is not None else b""
+    except Exception:
+        return "unreadable"
+    if not raw:
+        return "empty"
+    if len(raw) > HTTP_ERROR_BODY_LIMIT:
+        return "not_json"
+    try:
+        document = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return "not_json"
+    candidates = []
+    if isinstance(document, dict):
+        detail = document.get("detail")
+        if isinstance(detail, dict):
+            candidates.append(detail.get("error"))
+        candidates.extend([detail, document.get("error")])
+    for candidate in candidates:
+        if isinstance(candidate, str) and _REASON_PATTERN.fullmatch(candidate):
+            return candidate
+    return "unrecognized"
+
+
+def http_error_suffix(exc: Exception, operation: str) -> str:
+    """`` status=<code> detail=<reason> op=<operation>`` for HTTP errors, else ''."""
+    if not isinstance(exc, urllib.error.HTTPError):
+        return ""
+    return (
+        " status="
+        + str(int(exc.code))
+        + " detail="
+        + http_error_reason(exc)
+        + " op="
+        + operation
+    )
+
+
 CHECKPOINT_METADATA_NAME = ".preloop-checkpoint.json"
 
 
@@ -668,7 +720,12 @@ def main() -> None:
                 if str(exc) == "evidence_absent":
                     print("PRELOOP_EVIDENCE absent", flush=True)
                     raise SystemExit(2) from None
-                print("PRELOOP_EVIDENCE failed " + type(exc).__name__, flush=True)
+                print(
+                    "PRELOOP_EVIDENCE failed "
+                    + type(exc).__name__
+                    + http_error_suffix(exc, "evidence"),
+                    flush=True,
+                )
                 raise SystemExit(1) from None
             # The cap is a storage limit, not a failed review. The legacy
             # snapshot path prints a skip and returns 0; a direct upload that
@@ -680,8 +737,18 @@ def main() -> None:
                     flush=True,
                 )
                 return
-            reason = str(exc)
-            detail = " " + reason if re.fullmatch(r"[a-z0-9_]+", reason) else ""
+            operation = (
+                "restore"
+                if len(sys.argv) > 1 and sys.argv[1] == "restore"
+                else "capture"
+            )
+            if isinstance(exc, urllib.error.HTTPError):
+                # "HTTP Error 413: ..." never matched the reason pattern, so
+                # the status and the server's reason were both dropped (#1331).
+                detail = http_error_suffix(exc, operation)
+            else:
+                reason = str(exc)
+                detail = " " + reason if re.fullmatch(r"[a-z0-9_]+", reason) else ""
             print(
                 "PRELOOP_CHECKPOINT failed " + type(exc).__name__ + detail,
                 flush=True,

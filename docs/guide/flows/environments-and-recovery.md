@@ -227,6 +227,22 @@ exits 0, and leaves the last completed checkpoint as the resume point. A
 trusted external publisher must make this checkpoint barrier part of its
 handoff as well.
 
+When an upload, restore or evidence transfer is refused over HTTP, the marker
+names the status, a short reason code and the operation, for example
+`PRELOOP_CHECKPOINT failed HTTPError status=409 detail=artifact_execution_closed op=capture`.
+The reason comes from the API's JSON error body. An error page from a proxy in
+front of the API (ingress, console nginx) reports `detail=not_json`, an empty
+body reports `detail=empty`, and any other body reports `detail=unrecognized`;
+the URL, token and body are never printed. Every refusal the API itself makes
+after verifying the capability also writes an audit log row with action
+`flow_artifact_rejected` (status code, reason, execution id). A failed marker
+with no matching audit row therefore points at a proxy, not at the API. The
+proxy body limit (`gateway.proxy.bodySize`, which sets both the ingress
+`proxy-body-size` annotation and the console nginx `client_max_body_size`)
+must stay above `WORKSPACE_SNAPSHOT_MAX_BYTES`. The client sends the archive
+bytes as the request body without further encoding, so the body on the wire
+is never larger than that cap.
+
 Restore occurs before setup or agent startup on Docker and Kubernetes. It logs
 the age of the checkpoint it recovered (`PRELOOP_CHECKPOINT restored
 age_seconds=... created_at=...`), so work lost to node loss is visible rather
