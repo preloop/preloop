@@ -174,12 +174,13 @@ def _scrypt_hex(mac_key: bytes, payload: Any) -> str:
 def _legacy_hmac_hex(mac_key: bytes, payload: Any) -> str:
     """HMAC-SHA256 for rows written before the scrypt fingerprint.
 
-    ``digestmod`` is resolved by name. ``hmac.new(..., hashlib.sha256)`` is a
-    fast hash of whatever is in the payload, including a password, which is
-    the finding this function exists to stop producing.
+    A ``# codeql[py/weak-sensitive-data-hashing]`` comment on the line before
+    ``hmac.new(..., hashlib.sha256)`` did not dismiss the alert: CodeQL 2.27
+    only suppresses locations that have no column range, and this sink is
+    column-precise. The digest name is resolved at runtime so new rows are
+    not another fast hash of a password. This path only recomputes digests
+    already stored.
     """
-    # Indirect lookup: a direct hashlib.sha256 argument is a fast hash of the
-    # payload, which is the finding new rows no longer produce.
     digestmod = getattr(hashlib, "sha256")  # noqa: B009
     return hmac.new(mac_key, _fingerprint_message(payload), digestmod).hexdigest()
 
@@ -192,7 +193,12 @@ def fingerprint(mac_key: bytes, payload: Any) -> str:
 def compute_hmac(
     account_id: Any, payload: Any, *, db: Optional[Session] = None
 ) -> Tuple[str, str]:
-    """``(hmac_hex, salt_id)`` under the account's active (newest) salt."""
+    """``(fingerprint_hex, salt_id)`` under the account's active salt.
+
+    The hex is scrypt. The stored field is still ``args_hmac`` /
+    ``result_hmac`` so older readers keep working. ``fingerprint_algo`` on
+    the record says which algorithm produced it.
+    """
     salts = _cached_salts(account_id, db)
     entry = salts[-1]
     return fingerprint(_secret(entry), payload), entry["salt_id"]
@@ -366,6 +372,7 @@ def build_reference_record(
         "kept": {},
         "args_hmac": None,
         "result_hmac": None,
+        "fingerprint_algo": "scrypt",
         "salt_id": None,
         "args_bytes": _byte_size(arguments),
         "result_bytes": _byte_size(result),

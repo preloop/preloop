@@ -262,7 +262,10 @@ class SensitiveDataHashCheckRequest(BaseModel):
 
     payload: Any = Field(..., description="Candidate arguments or result")
     args_hmac: str = Field(
-        ..., min_length=16, max_length=128, description="Stored HMAC"
+        ...,
+        min_length=16,
+        max_length=128,
+        description="Stored fingerprint (scrypt, or HMAC-SHA256 for older rows)",
     )
     salt_id: Optional[str] = Field(
         None, description="Salt id from the record; omit to try every account salt"

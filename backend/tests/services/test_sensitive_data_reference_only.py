@@ -176,6 +176,7 @@ def test_same_args_same_hmac_and_accounts_differ(salts) -> None:
     assert first["salt_id"] == second["salt_id"]
     assert other["args_hmac"] != first["args_hmac"]
     assert len(first["args_hmac"]) == 64
+    assert first["fingerprint_algo"] == "scrypt"
     assert first["kept"] == {"$.consent_id": "consent-9", "$.call.id": "c-1"}
     assert first["arg_keys"] == ["patient_id", "consent_id", "call", "note"]
     assert first["args_bytes"] > 0 and first["result_bytes"] == 0

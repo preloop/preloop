@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const braces = require('../vendor/braces');
+const braces = require('braces');
+const resolved = require.resolve('braces');
+
+test('micromatch resolves the patched braces package', () => {
+  assert.ok(
+    resolved.includes(`${path.sep}vendor${path.sep}braces${path.sep}`),
+    resolved,
+  );
+});
 
 test('ordinary brace expansion is unchanged', () => {
   assert.deepEqual(braces.expand('{a,b}'), ['a', 'b']);
