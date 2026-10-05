@@ -1144,6 +1144,24 @@ except ImportError:
     )
 
 
+def runtime_deadline_seconds(execution_context: Dict[str, Any]) -> Optional[int]:
+    """``activeDeadlineSeconds`` for an agent Job, or None for no deadline.
+
+    The orchestrator puts the execution's remaining wall-clock budget plus a
+    teardown grace into the context (``runtime_deadline_seconds``). Anything
+    that is not a positive whole number leaves the Job without a deadline,
+    as before.
+    """
+    value = execution_context.get("runtime_deadline_seconds")
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
 class ContainerAgentExecutor(AgentExecutor):
     """
     Execute agents in isolated Docker containers or Kubernetes pods.
@@ -1872,6 +1890,10 @@ class ContainerAgentExecutor(AgentExecutor):
                 template=pod_template,
                 backoff_limit=0,  # Don't retry failed jobs
                 ttl_seconds_after_finished=ttl_seconds,  # Auto-cleanup after completion
+                # Backstop for the execution's wall-clock deadline: the
+                # orchestrator times the run out and stops the Job itself;
+                # this ends it when the orchestrator cannot.
+                active_deadline_seconds=runtime_deadline_seconds(execution_context),
             ),
         )
 
