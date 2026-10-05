@@ -84,8 +84,12 @@ process. No separate gateway is required for local dev.
 
 ## Gotchas
 
-- Liveness is `GET /api/v1/health`. API docs are `/docs/api`. There is no
-  `/health` or `/docs` on the API port.
+- Liveness is `GET /api/v1/health`. API docs are `/docs/api` and ReDoc is
+  `/docs/redoc`. Both pages load Swagger UI and ReDoc from the local
+  `/static` mount, so a Content-Security-Policy can allow `'self'` instead of
+  a documentation CDN. ReDoc still requests one logo from `cdn.redoc.ly` and
+  hides it if that request fails. There is no `/health` or `/docs` on the
+  API port.
 - `POST /api/v1/auth/register` (and the UI form) require a `username` in
   addition to `email` / `password`.
 - With `DEBUG=true`, uvicorn hot-reloads on code changes. Restart the

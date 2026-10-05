@@ -112,6 +112,12 @@ Issues = "https://github.com/preloop/preloop/issues"
 where = ["backend"]
 include = ["preloop", "preloop.*"]
 
+# Vendored API documentation bundles served by the /static mount. Without this
+# a non-editable wheel would drop preloop/static/** and the docs pages would
+# 404 their assets.
+[tool.setuptools.package-data]
+preloop = ["static/**/*"]
+
 [project.scripts]
 preloop-sync = "preloop.sync.cli.commands:run"
 

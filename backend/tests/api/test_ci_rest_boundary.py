@@ -179,6 +179,7 @@ def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
     assert actual["GET /api/v1/auth/api-keys"] == "deny"
     assert actual["GET /docs/api"] == "deny"
     assert actual["MOUNT /mcp"] == "deny"
+    assert actual["MOUNT /static"] == "deny"
     assert {
         (name.split(" ", 1)[0], name.split(" ", 1)[1]): policy
         for name, policy in actual.items()
