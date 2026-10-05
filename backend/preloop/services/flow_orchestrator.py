@@ -30,6 +30,7 @@ from preloop.models.models.flow_execution import (
 )
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.db.session import release_transaction
 from preloop.agents import (
     create_executor_for_execution,
     AgentStatus,
@@ -3823,6 +3824,14 @@ class FlowExecutionOrchestrator:
     async def _sync_runtime_tool_activity_metrics(self) -> Optional[Dict[str, Any]]:
         """Sync persisted MCP activity into live metrics and detect tight loops."""
         persisted_tool_calls = self._get_runtime_tool_activity_count()
+        recent_signatures = self._get_recent_runtime_tool_activity_signatures()
+        # Both reads are materialized into plain values above. End the
+        # transaction before any await: this runs on every monitor poll, and
+        # a session left idle in transaction across the publish, the k8s
+        # status call and the poll sleep keeps an AccessShareLock on
+        # flow_execution and runtime_session_activity, which makes schema
+        # migrations time out on lock_timeout (see release_transaction).
+        release_transaction(self.db)
         if persisted_tool_calls > self.tool_calls_count:
             self.tool_calls_count = persisted_tool_calls
             logger.info(
@@ -3837,7 +3846,6 @@ class FlowExecutionOrchestrator:
             )
             await self._persist_live_metrics()
 
-        recent_signatures = self._get_recent_runtime_tool_activity_signatures()
         return self._detect_repeated_tool_cycle(recent_signatures)
 
     async def _listen_for_commands(self):
@@ -7024,7 +7032,8 @@ class FlowExecutionOrchestrator:
                             "result": result_artifact,
                         }
 
-                # Wait before next poll
+                # Wait before next poll, outside any transaction.
+                release_transaction(self.db)
                 await asyncio.sleep(poll_interval)
                 deadline.credit_sleep(poll_interval)
 

@@ -67,8 +67,33 @@ that is "idle in transaction" still holds an AccessShareLock on every table it
 read, for as long as it idles, so a single long-lived reader can block a
 migration indefinitely. Two paths used to do this and no longer do: the runner
 control websocket ends its transaction before waiting for the next heartbeat,
-and the tracker polling worker ends its transaction before calling a tracker
-API.
+the tracker polling worker ends its transaction before calling a tracker
+API, and the hosted-agent monitor on the flow-execution worker ends its
+transaction after the per-poll tool-activity read, before it publishes, asks
+the agent for its status or sleeps until the next poll.
+
+New code that awaits anything other than the database (HTTP, Kubernetes,
+NATS, embeddings, `asyncio.sleep`) while holding a `Session` should call
+`preloop.models.db.session.release_transaction(db)` first. Read ids or plain
+values, release, then do the slow work and any writes in short transactions.
+
+### `idle_in_transaction_session_timeout` as a backstop
+
+Postgres can terminate sessions that stay idle in a transaction for too long.
+This is a safety net for a regression, not the fix: when it fires, the
+application sees a dropped connection in the middle of its work, so the code
+path still has to release its transaction itself. If you set it, keep it well
+above any legitimate short transaction and scope it to the application role
+rather than to the whole cluster, so the migration role and manual `psql`
+sessions are unaffected:
+
+```sql
+ALTER ROLE preloop_app SET idle_in_transaction_session_timeout = '60s';
+```
+
+(`preloop_app` stands for whatever role the API and workers connect as.) The
+setting applies to new connections only, so it takes effect as pods recycle
+their pools.
 
 If a future migration stalls, this is the first thing to check:
 
