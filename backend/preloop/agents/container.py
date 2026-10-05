@@ -3433,8 +3433,14 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return len(pods.items) == 0
         docker = await self._get_docker_client()
-        container = await docker.containers.get(session_reference)
-        state = (await container.show())["State"]
+        try:
+            container = await docker.containers.get(session_reference)
+            state = (await container.show())["State"]
+        except DockerError as exc:
+            # A container that no longer exists is not running.
+            if getattr(exc, "status", None) == 404:
+                return True
+            raise
         return state.get("Running") is False and state.get("Status") in {
             "exited",
             "dead",
