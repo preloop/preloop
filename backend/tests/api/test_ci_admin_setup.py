@@ -510,3 +510,41 @@ def test_permission_denial_audit_contains_safe_attribution(
     assert record.details["key_id"] == own["key_id"]
     assert record.details["operation"] == "rotate"
     assert own["token"] not in json.dumps(record.details)
+
+
+def test_router_auth_protects_future_route_without_actor_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi import APIRouter, HTTPException
+
+    from preloop.api.app import create_app
+
+    router = APIRouter()
+    router.include_router(ci_identities.router)
+
+    @router.get(BASE.removeprefix("/api/v1") + "/synthetic-auth-probe/without-actor")
+    def probe() -> dict[str, bool]:
+        return {"reached": True}
+
+    def unauthenticated() -> None:
+        raise HTTPException(status_code=401, detail="Synthetic unauthenticated")
+
+    monkeypatch.setattr(ci_identities, "router", router)
+    app = create_app()
+    app.dependency_overrides[get_current_active_user] = unauthenticated
+    response = TestClient(app).get(BASE + "/synthetic-auth-probe/without-actor")
+    assert response.status_code == 401
+
+
+def test_v1_machine_route_expansion_requires_explicit_rollout_review(
+    ci_resources: tuple[Any, ...], client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    own = create(client, ci_resources)
+    policies = dict(ci_auth.CI_ROUTE_POLICIES)
+    policies[("GET", "/api/v1/synthetic-new-machine-route")] = CiAction.READ_EXECUTION
+    monkeypatch.setattr(ci_auth, "CI_ROUTE_POLICIES", policies)
+    assert client.get(BASE + "/capabilities").json()["available"] is False
+    assert (
+        client.post(f"{BASE}/{own['identity']['id']}/keys", json={}).status_code == 503
+    )
+    assert client.get(f"{BASE}/{own['identity']['id']}").status_code == 200

@@ -28,6 +28,11 @@ from preloop.schemas.ci_subscription import CiSubscriptionCreate
 
 logger = logging.getLogger(__name__)
 
+# The v1 machine ceiling is deliberately exactly ten routes over nine actions.
+# Changing enforcement coverage requires explicit contract/rollout review before
+# issuance resumes; extra routes must not silently broaden a deployed ceiling.
+_EXPECTED_V1_MACHINE_ROUTE_COUNT = 10
+
 
 class CRUDCiAdministration:
     """No machine credential can administer itself or inherit its human's roles."""
@@ -36,7 +41,7 @@ class CRUDCiAdministration:
         """Check complete operation coverage and migrated columns before issuance."""
         from preloop.api.middleware import ci_auth
 
-        if len(ci_auth.CI_ROUTE_POLICIES) != 10 or set(
+        if len(ci_auth.CI_ROUTE_POLICIES) != _EXPECTED_V1_MACHINE_ROUTE_COUNT or set(
             ci_auth.CI_ROUTE_POLICIES.values()
         ) != set(CiAction):
             return False
