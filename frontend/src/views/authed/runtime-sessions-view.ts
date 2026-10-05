@@ -1138,9 +1138,16 @@ export class RuntimeSessionsView extends LitElement {
         offset: current.items.length,
       });
       if (seq !== this.loadSequence) return;
+      // The list is ordered by a mutable activity timestamp with no
+      // tiebreaker, so an offset page can repeat a row already on screen.
+      // Drop those; a live refresh replaces the window if the order moved.
+      const seen = new Set(current.items.map((item) => item.id));
       this.sessions = {
         ...page,
-        items: [...current.items, ...(page.items ?? [])],
+        items: [
+          ...current.items,
+          ...(page.items ?? []).filter((item) => !seen.has(item.id)),
+        ],
       };
     } catch (error) {
       if (seq !== this.loadSequence) return;

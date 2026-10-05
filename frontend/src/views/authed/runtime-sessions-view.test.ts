@@ -2128,6 +2128,62 @@ describe('RuntimeSessionsView', () => {
       ).to.equal(null);
     });
 
+    it('does not append a session the next page repeats', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('/api/v1/runtime-sessions?')) {
+          const params = new URL(url, window.location.origin).searchParams;
+          const offset = Number(params.get('offset') ?? 0);
+          if (offset > 0) {
+            const repeated = sessionItem('runtime-session-49');
+            const fresh = sessionItem('runtime-session-50');
+            return new Response(
+              JSON.stringify({
+                period_start: '2026-02-08T00:00:00Z',
+                period_end: '2026-03-09T23:59:59Z',
+                query: null,
+                session_source_type: null,
+                status: 'all',
+                total: 51,
+                limit: 50,
+                offset,
+                items: [repeated, fresh],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          return listPage(51, 0, 50);
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+
+      loadMoreButton(element)!.click();
+      await waitUntil(
+        () => (element as any).sessions.items.length === 51,
+        'Load more did not settle'
+      );
+      await element.updateComplete;
+
+      const ids = (element as any).sessions.items.map(
+        (item: { id: string }) => item.id
+      );
+      expect(ids).to.have.length(51);
+      expect(new Set(ids).size).to.equal(51);
+      expect(ids[ids.length - 1]).to.equal('runtime-session-50');
+    });
+
     it('clears the loading flag when a refresh supersedes a load-more', async () => {
       let resolveMore: ((response: Response) => void) | null = null;
       fetchStub.callsFake(async (input: RequestInfo | URL) => {
