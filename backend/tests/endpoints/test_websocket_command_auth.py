@@ -219,3 +219,46 @@ def test_execution_socket_owner_with_permission_publishes(
     assert reply["status"] == "command_sent"
     nats.publish.assert_awaited_once()
     assert nats.publish.await_args.args[0] == f"flow-commands.{execution.id}"
+
+
+def test_execution_socket_command_failure_is_sanitized(
+    client, db_session, execution, test_user
+):
+    with _ws_env(db_session, test_user) as nats:
+        nats.publish.side_effect = RuntimeError("internal detail")
+        reply = _execution_socket_command(client, execution.id, "send_message")
+    assert reply == {
+        "type": "command_error",
+        "execution_id": str(execution.id),
+        "error": "failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_command_lookup_runs_off_loop_and_releases_transaction(
+    db_session, execution, test_user
+):
+    from preloop.api.endpoints import websockets as ws
+
+    calls = []
+
+    async def _off_loop(op):
+        calls.append("off_loop")
+        return op()
+
+    def _session():
+        yield db_session
+
+    nats = MagicMock(is_connected=True, publish=AsyncMock())
+    with (
+        patch(f"{WS}.get_db_session", _session),
+        patch(f"{WS}._safe_close_db_session", lambda db: None),
+        patch(f"{WS}.run_db_off_loop", _off_loop),
+        patch(f"{WS}.release_transaction", lambda db: calls.append("release")),
+        patch(f"{WS}.get_nats_client", AsyncMock(return_value=nats)),
+    ):
+        result = await ws._run_execution_command(
+            test_user, execution.id, {"command": "send_message"}
+        )
+    assert result == {"status": "command_sent"}
+    assert calls == ["off_loop", "release"]

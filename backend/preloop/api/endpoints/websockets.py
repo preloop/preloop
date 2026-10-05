@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid_sync
 from preloop.api.auth.key_scopes import api_key_allowed_on_channel
-from preloop.models.db.session import _safe_close_db_session, get_db_session
+from preloop.api.loop_safety import run_db_off_loop
+from preloop.models.db.session import (
+    _safe_close_db_session,
+    get_db_session,
+    release_transaction,
+)
 from preloop.services.db_executor import detach_user, run_db_async
 from preloop.services.flow_execution_stop import stop_execution
 from preloop.models.crud import crud_flow, crud_flow_execution
@@ -70,13 +75,20 @@ async def _run_execution_command(
 
     db = next(get_db_session())
     try:
-        try:
-            _execution_command_permission(current_user=user, db=db)
-        except HTTPException:
-            return None
-        execution = crud_flow_execution.get(
-            db=db, id=execution_uuid, account_id=user.account_id
-        )
+
+        def _authorize() -> Optional[models.FlowExecution]:
+            try:
+                _execution_command_permission(current_user=user, db=db)
+            except HTTPException:
+                return None
+            found = crud_flow_execution.get(
+                db=db, id=execution_uuid, account_id=user.account_id
+            )
+            # Do not hold the transaction open across NATS/runtime awaits.
+            release_transaction(db)
+            return found
+
+        execution = await run_db_off_loop(_authorize)
         if not execution:
             return None
 
@@ -376,13 +388,19 @@ async def flow_execution_websocket(
                     f"Received command '{command}' for execution {execution_id}"
                 )
 
-                result = await _run_execution_command(user, execution_id, data)
+                error = "unauthorized"
+                result = None
+                try:
+                    result = await _run_execution_command(user, execution_id, data)
+                except Exception as e:
+                    logger.error(f"Failed to run execution command: {e}")
+                    error = "failed"
                 if result is None:
                     await websocket.send_json(
                         {
                             "type": "command_error",
                             "execution_id": str(execution_id),
-                            "error": "unauthorized",
+                            "error": error,
                         }
                     )
                     continue
