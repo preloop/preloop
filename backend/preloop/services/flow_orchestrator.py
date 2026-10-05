@@ -6397,6 +6397,9 @@ class FlowExecutionOrchestrator:
 
         if self.execution_log is None:
             return None
+        # Commit below expires ORM state. Keep the id in a local so the log
+        # line cannot lazy-load and reopen a transaction across capture.
+        execution_id = self.execution_log.id
         park_request = self._read_pending_park_request()
         # End the read transaction before returning or awaiting anything:
         # both call sites go on to await the agent (status, result, artifact
@@ -6409,7 +6412,7 @@ class FlowExecutionOrchestrator:
         parked_status = crud_flow_execution.parked_status_for_kind(park_kind)
         logger.info(
             "Parking execution %s on %s %s (expires %s)",
-            self.execution_log.id,
+            execution_id,
             park_kind,
             park_request["request_id"],
             park_request.get("expires_at"),
@@ -6440,7 +6443,7 @@ class FlowExecutionOrchestrator:
         except Exception:
             logger.warning(
                 "Could not stop the runtime for parked execution %s",
-                self.execution_log.id,
+                execution_id,
                 exc_info=True,
             )
         await self._publish_update(
