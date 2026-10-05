@@ -220,6 +220,7 @@
   "GET /openai/v1/models": "deny",
   "HEAD /api/v1/openapi.json": "deny",
   "MOUNT /mcp": "deny",
+  "MOUNT /static": "deny",
   "PATCH /api/v1/account/details": "deny",
   "PATCH /api/v1/agents/discovery-candidates/{candidate_id}": "deny",
   "PATCH /api/v1/agents/{agent_id}": "deny",

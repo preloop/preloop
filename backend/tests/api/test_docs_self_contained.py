@@ -21,6 +21,11 @@ VENDOR_DIR = Path(__file__).resolve().parents[2] / "preloop" / "static" / "vendo
 # An absolute (``https://host``) or protocol-relative (``//host``) reference.
 _EXTERNAL_REFERENCE = re.compile(r"(?:https?:)?//[A-Za-z0-9]")
 
+# ReDoc 2.0.0 fetches this logo from inside the bundle and hides the image
+# on error. It is not part of the generated HTML, and get_redoc_html cannot
+# override it.
+_REDOC_LOGO_URL = "https://cdn.redoc.ly/redoc/logo-mini.svg"
+
 # Page path -> local asset that the rendered HTML must reference.
 _DOCS_ASSETS = {
     "/docs/api": (
@@ -62,6 +67,14 @@ def test_docs_assets_are_served_from_the_api_origin(
         response = client.get(asset)
         assert response.status_code == 200
         assert response.content, f"{asset} served an empty body"
+
+
+def test_redoc_bundle_has_one_known_off_origin_logo() -> None:
+    """The pinned ReDoc bundle keeps its single hidden default logo URL."""
+    bundle = (VENDOR_DIR / "redoc.standalone.js").read_text()
+
+    assert bundle.count(_REDOC_LOGO_URL) == 1
+    assert 'alt:"redocly logo",onError:' in bundle
 
 
 def test_vendored_assets_match_recorded_hashes() -> None:

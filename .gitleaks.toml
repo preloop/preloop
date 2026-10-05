@@ -94,3 +94,15 @@ paths = ['''^scripts/generate_example_session\.py$''']
 [[allowlists]]
 description = "gitleaks fingerprint baseline"
 paths = ['''(^|/)\.gitleaksignore$''']
+
+# ---------------------------------------------------------------------------
+# Pinned ReDoc bundle
+# ---------------------------------------------------------------------------
+# generic-api-key matches two minified identifiers beside matchParentKeys in
+# the hash-locked redoc@2.0.0 bundle. Each match is 8 characters with entropy
+# under 4: source syntax, not a credential. The bytes are verified by
+# SHA256SUMS, so the bundle is not edited to satisfy the scanner. Swagger UI
+# is not excluded; it does not trip the rule.
+[[allowlists]]
+description = "Minified identifiers in the pinned ReDoc bundle"
+paths = ['''^backend/preloop/static/vendor/redoc\.standalone\.js$''']

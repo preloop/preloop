@@ -27,6 +27,15 @@ the upstream file; note that `swagger-ui-dist@5.9.0` does not ship the
 `swagger-ui-bundle.js.LICENSE.txt` its banner refers to, so the package
 `LICENSE` and `NOTICE` are vendored instead.
 
+## Remaining off-origin request
+
+ReDoc 2.0.0 hardcodes a sidebar logo at
+`https://cdn.redoc.ly/redoc/logo-mini.svg` and hides the image when that
+request fails. FastAPI's `get_redoc_html` has no option for that URL, and the
+bundle stays the upstream bytes so `SHA256SUMS` still proves provenance. The
+docs page renders without the logo. `test_redoc_bundle_has_one_known_off_origin_logo`
+fails if a second copy of that URL appears.
+
 ## Updating
 
 1. Pick the new version and download each bundle from the CDN, e.g.

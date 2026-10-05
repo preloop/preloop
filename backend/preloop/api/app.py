@@ -1562,6 +1562,9 @@ def create_app() -> FastAPI:
             redoc_favicon_url="/static/vendor/favicon.png",
             # ReDoc injects a fonts.googleapis.com stylesheet by default; the
             # self-hosted bundle renders with system fonts instead.
+            # The pinned ReDoc 2.0.0 bundle also hardcodes a sidebar logo at
+            # cdn.redoc.ly and hides it on error. get_redoc_html cannot
+            # override that URL, and the page still renders without it.
             with_google_fonts=False,
         )
 
