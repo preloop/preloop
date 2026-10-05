@@ -13,7 +13,7 @@ from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.plugins import account_hooks
 from preloop.plugins.account_hooks import Decision
-from preloop.services.flow_execution_stop import MANUAL_STOP_MESSAGE
+from preloop.services.flow_execution_stop import MANUAL_STOP_MESSAGE, TeardownOutcome
 
 WS = "preloop.api.endpoints.websockets"
 
@@ -106,7 +106,10 @@ def _ws_env(db_session, token_user):
         patch(f"{WS}.session_manager") as sm,
         patch(f"{WS}.manager") as mgr,
         patch(f"{WS}._set_approval_visibility", AsyncMock()),
-        patch("preloop.services.flow_execution_stop._tear_down_runtime", AsyncMock()),
+        patch(
+            "preloop.services.flow_execution_stop._tear_down_runtime",
+            AsyncMock(return_value=TeardownOutcome(confirmed=True)),
+        ),
     ):
         sm.create_session = AsyncMock(return_value=session)
         sm.upgrade_session = AsyncMock()
