@@ -115,6 +115,20 @@ export class ApprovalsView extends AuthedElement {
   @state()
   private loading = true;
 
+  /** True while an older page of the history is in flight. */
+  @state()
+  private loadingMore = false;
+
+  /**
+   * True when the last fetched page came back full, so more rows may exist
+   * beyond the loaded window. Drives "Load older" and the honest count labels.
+   */
+  @state()
+  private hasMore = false;
+
+  @state()
+  private moreError: string | null = null;
+
   @state()
   private stats: ApprovalStats = {
     total: 0,
@@ -268,6 +282,18 @@ export class ApprovalsView extends AuthedElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);
+      }
+
+      .load-older {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        justify-content: center;
+        margin-top: var(--sl-spacing-medium);
+      }
+
+      .error {
+        color: var(--sl-color-danger-700);
       }
 
       .approval-item {
@@ -825,6 +851,10 @@ export class ApprovalsView extends AuthedElement {
               parseUTCDate(b.requested_at).getTime() -
               parseUTCDate(a.requested_at).getTime()
           );
+        // A full page means the window may be truncated; only a short page
+        // proves the whole account history is on screen.
+        this.hasMore =
+          (data as ApprovalRequest[]).length >= APPROVAL_REQUESTS_PAGE_LIMIT;
         this.applyFilters();
         this.markNewSinceLastVisit();
         this.calculateStats();
@@ -837,6 +867,54 @@ export class ApprovalsView extends AuthedElement {
         : "Couldn't load approval requests.";
     } finally {
       this.loading = false;
+    }
+  }
+
+  /**
+   * Append the next (older) page of the history.
+   *
+   * The endpoint is newest-first and paged by `skip`, so the next page starts
+   * at the current loaded count. Rows are normalized and deduplicated by id
+   * before appending: a live websocket insert that arrives while this fetch is
+   * in flight changes the list length and would otherwise make a stale `skip`
+   * re-read the same boundary row.
+   */
+  private async loadOlder(): Promise<void> {
+    if (this.loadingMore || !this.hasMore) return;
+    this.loadingMore = true;
+    this.moreError = null;
+    try {
+      const data = await this.fetchData(
+        `/api/v1/approval-requests?limit=${APPROVAL_REQUESTS_PAGE_LIMIT}&skip=${this.approvalRequests.length}`
+      );
+      if (!data || !Array.isArray(data)) {
+        this.moreError = 'Failed to load older requests.';
+        return;
+      }
+      const rows = (data as ApprovalRequest[])
+        .map((request) => normalizeApprovalRequest(request))
+        .sort(
+          (a, b) =>
+            parseUTCDate(b.requested_at).getTime() -
+            parseUTCDate(a.requested_at).getTime()
+        );
+      const known = new Set(this.approvalRequests.map((request) => request.id));
+      const appended = rows.filter((request) => !known.has(request.id));
+      if (appended.length) {
+        this.approvalRequests = [...this.approvalRequests, ...appended];
+      }
+      this.hasMore =
+        (data as ApprovalRequest[]).length >= APPROVAL_REQUESTS_PAGE_LIMIT;
+      this.applyFilters();
+      this.calculateStats();
+    } catch (error) {
+      console.error('Failed to load older approval requests:', error);
+      this.moreError =
+        error instanceof Error
+          ? error.message
+          : 'Failed to load older requests.';
+    } finally {
+      this.loadingMore = false;
     }
   }
 
@@ -1386,6 +1464,14 @@ export class ApprovalsView extends AuthedElement {
           >
             Showing ${this.filteredRequests.length} of
             ${this.approvalRequests.length} requests
+            ${
+              this.searchQuery.trim() && this.approvalRequests.length > 0
+                ? html`<span data-testid="search-scope">
+                    · Searching the latest ${this.approvalRequests.length}
+                    requests</span
+                  >`
+                : nothing
+            }
           </div>
 
           ${
@@ -1424,7 +1510,9 @@ export class ApprovalsView extends AuthedElement {
                         ${
                           this.approvalRequests.length === 0
                             ? 'No approval requests yet. Configure tools to require approval in the Tools section.'
-                            : 'No requests match your filters.'
+                            : this.hasMore
+                              ? `No requests match your filters in the latest ${this.approvalRequests.length} requests.`
+                              : 'No requests match your filters.'
                         }
                       </p>
                       ${
@@ -1452,19 +1540,51 @@ export class ApprovalsView extends AuthedElement {
                     )}
                   `
           }
+          ${this.renderLoadOlder()}
         </div>
       </div>
     `;
   }
 
   /**
-   * The counts on one hairline strip. The list fetches a single page, so the
-   * total is capped: when the page came back full the strip says "last 100"
-   * rather than presenting a page count as an account total.
+   * The "Load older" control under the history. Rendered whenever the loaded
+   * window may be truncated — including when every loaded row is filtered out
+   * — so a search that misses in the window can still page toward its match.
+   */
+  private renderLoadOlder() {
+    if (!this.hasMore) return nothing;
+    return html`
+      <div class="load-older">
+        <sl-button
+          size="small"
+          ?loading=${this.loadingMore}
+          @click=${() => this.loadOlder()}
+          data-testid="load-older"
+          >Load older</sl-button
+        >
+        ${
+          this.moreError
+            ? html`<span class="error" role="alert" data-testid="more-error"
+                >${this.moreError}</span
+              >`
+            : nothing
+        }
+      </div>
+    `;
+  }
+
+  /**
+   * The counts on one hairline strip. The list may only have part of the
+   * account's history loaded, so the total is capped to that window: while
+   * more pages may exist the strip says "last N" rather than presenting a
+   * partial count as the account total.
    */
   private renderStatStrip() {
     const stats = this.stats;
-    const capped = stats.total >= APPROVAL_REQUESTS_PAGE_LIMIT;
+    // The loaded window is the honest ceiling: "Last N" while more may exist,
+    // a bare total once a short page proves everything is on screen.
+    const loaded = stats.total;
+    const capped = this.hasMore;
     const avg =
       stats.avgResponseTimeMinutes > 0
         ? stats.avgResponseTimeMinutes < 60
@@ -1473,8 +1593,8 @@ export class ApprovalsView extends AuthedElement {
         : null;
     const facts: Array<unknown> = [
       capped
-        ? html`Last <strong>${APPROVAL_REQUESTS_PAGE_LIMIT}</strong> requests`
-        : html`<strong>${stats.total}</strong> requests`,
+        ? html`Last <strong>${loaded}</strong> requests`
+        : html`<strong>${loaded}</strong> requests`,
       html`<strong>${this.waitingRequests.length}</strong> waiting`,
       html`<strong>${stats.approved}</strong> approved`,
       html`<strong>${stats.declined}</strong> denied`,
