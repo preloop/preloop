@@ -16,7 +16,10 @@ Compatibility contract (preloop/preloop#1113)
    and ``(namespace, name)`` is one of the pairs Codex itself recognises in
    ``codex-rs/core/src/agent/control/sender_context.rs``:
    ``codex_app``/``codex_tui`` + ``send_message_to_thread`` and
-   ``cloud_threads`` + ``send_message``; AND the flattened output text is
+   ``cloud_threads`` + ``send_message``; plus ``codex_app``/``codex_tui`` +
+   ``create_thread``, which the TUI emits through the same delivery
+   mechanism (see "Sources" below for both, including why ``codex_app`` is
+   included without a public emitter); AND the flattened output text is
    exactly one complete, non-empty ``<codex_delegation>...</codex_delegation>``
    wrapper (leading and trailing whitespace ignored; nested or concatenated
    wrappers are rejected). Codex's own recogniser keys on the
@@ -42,6 +45,44 @@ Compatibility contract (preloop/preloop#1113)
    the user message, and content policy scans that text. Request logging, previews and budget
    preflight keep reading the raw client payload, which is the correct
    record of what the client sent; none of them pair call_ids.
+6. Diagnosis. A call_id-less or unmatched tool output that does not match
+   this contract is still rejected, but the 400 names the offending item
+   (index, type, name, namespace and whether its call_id is missing, null,
+   empty or unmatched), never its output, and the rejection is written to
+   the gateway audit log. See :func:`describe_input_item`.
+
+Sources (openai/codex tag ``rust-v0.162.0-alpha.16``)
+----------------------------------------------------
+
+* ``codex-rs/app-server-protocol/src/protocol/v2/turn.rs``: ``turn/start``
+  accepts ``tool_output: {name, namespace?, output}``, and
+  ``codex-rs/app-server/src/request_processors/turn_processor.rs`` turns it
+  into ``FunctionCallOutput { id: None, call_id: None, name, namespace }``.
+* ``codex-rs/core/src/session/turn_input.rs`` admits any call_id-less
+  ``FunctionCallOutput`` as standalone turn input and assigns it an ``id``.
+* ``codex-rs/tui/src/dynamic_tools.rs`` (namespace ``codex_tui``) emits two
+  such deliveries, both wrapped by ``delegated_prompt``: ``create_thread``
+  (the first prompt of a new background thread) and
+  ``send_message_to_thread``.
+* ``codex-rs/core/src/agent/control/sender_context.rs`` recognises the
+  ``send_message_to_thread``/``send_message`` pairs for provenance and
+  treats ``codex_app`` and ``codex_tui`` as interchangeable namespaces for
+  the same host thread tools.
+* ``codex_app``/``create_thread`` has no public emitter: ``codex_app`` is the
+  closed-source desktop host's namespace (the #1113 report carried
+  ``codex_app``/``send_message_to_thread``), and the desktop exposes the
+  same thread tools as the TUI. It is accepted on that inference; it still
+  needs the wrapper and a missing or null call_id, so a wrong guess can only
+  turn an already-wrapped delegation into labelled untrusted context.
+* ``codex-rs/core/src/agent/control/spawn.rs`` (``keep_forked_rollout_item``)
+  copies call_id-less outputs into a forked sub-agent's history, so a
+  sub-agent on another model replays the parent's deliveries.
+
+Multi-agent tools (``spawn_agent``, ``send_input``, ``wait``,
+``close_agent`` in namespace ``multi_agent_v1`` or the v2 ``collaboration``
+namespace) are ordinary model tool calls with a ``call_id``; inter-agent
+messages are rendered as ``agent_message`` or assistant ``message`` items.
+None of them is a call_id-less output, so none is covered here.
 """
 
 from __future__ import annotations
@@ -54,6 +95,10 @@ CROSSCHAT_DELIVERY_TOOLS = frozenset(
         ("codex_app", "send_message_to_thread"),
         ("codex_tui", "send_message_to_thread"),
         ("cloud_threads", "send_message"),
+        # A background thread started by the host's ``create_thread`` tool
+        # receives its first prompt the same way (#1113 recurrence).
+        ("codex_app", "create_thread"),
+        ("codex_tui", "create_thread"),
     }
 )
 
@@ -147,3 +192,42 @@ def rewrite_crosschat_responses_input(payload: Dict[str, Any]) -> Dict[str, Any]
             for item in raw_input
         ],
     }
+
+
+def _identifier(value: Any) -> str:
+    """Render a client identifier for a diagnostic, bounded and quoted."""
+    if value is None:
+        return "none"
+    text = str(value)
+    if len(text) > 64:
+        text = text[:64] + "..."
+    return repr(text)
+
+
+def describe_input_item(item: Any, index: int) -> str:
+    """Describe one Responses input item for a diagnostic.
+
+    Names the position, type, tool name, namespace and call_id state. It
+    never includes ``output``, ``arguments`` or message content.
+    """
+    if not isinstance(item, dict):
+        return f"index={index} type={type(item).__name__}"
+    parts = [f"index={index}", f"type={_identifier(item.get('type'))}"]
+    if "name" in item:
+        parts.append(f"name={_identifier(item.get('name'))}")
+    if "namespace" in item:
+        parts.append(f"namespace={_identifier(item.get('namespace'))}")
+    if "role" in item:
+        parts.append(f"role={_identifier(item.get('role'))}")
+    if "call_id" not in item:
+        call_id_state = "missing"
+    elif item["call_id"] is None:
+        call_id_state = "null"
+    elif item["call_id"] == "":
+        call_id_state = "empty"
+    else:
+        call_id_state = _identifier(item["call_id"])
+    parts.append(f"call_id={call_id_state}")
+    if item.get("id"):
+        parts.append(f"id={_identifier(item.get('id'))}")
+    return " ".join(parts)
