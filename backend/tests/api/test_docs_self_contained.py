@@ -8,6 +8,7 @@ fail if an external reference is reintroduced or the vendored bytes drift.
 
 import hashlib
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,9 @@ from fastapi.testclient import TestClient
 
 from preloop.api.app import create_app
 
-VENDOR_DIR = Path(__file__).resolve().parents[2] / "preloop" / "static" / "vendor"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+PACKAGE_DIR = Path(__file__).resolve().parents[2] / "preloop"
+VENDOR_DIR = PACKAGE_DIR / "static" / "vendor"
 
 # An absolute (``https://host``) or protocol-relative (``//host``) reference.
 _EXTERNAL_REFERENCE = re.compile(r"(?:https?:)?//[A-Za-z0-9]")
@@ -89,3 +92,52 @@ def test_vendored_assets_match_recorded_hashes() -> None:
     for filename, digest in recorded.items():
         actual = hashlib.sha256((VENDOR_DIR / filename).read_bytes()).hexdigest()
         assert actual == digest, f"{filename} does not match SHA256SUMS"
+
+
+def _packaged_static_paths() -> set[str]:
+    """Resolve the declared package-data globs to ``preloop``-relative paths.
+
+    Returns:
+        The package-relative POSIX paths that
+        ``[tool.setuptools.package-data]`` would include.
+    """
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    setuptools_config = config.get("tool", {}).get("setuptools", {})
+    assert "package-data" in setuptools_config, (
+        "pyproject.toml must declare [tool.setuptools.package-data] so a "
+        "non-editable wheel ships the vendored docs assets"
+    )
+
+    packaged: set[str] = set()
+    for package, patterns in setuptools_config["package-data"].items():
+        if package != "preloop" and not package.startswith("preloop."):
+            continue
+        package_dir = PACKAGE_DIR.parent / package.replace(".", "/")
+        for pattern in patterns:
+            for candidate in package_dir.glob(pattern):
+                if candidate.is_file():
+                    packaged.add(candidate.relative_to(PACKAGE_DIR).as_posix())
+    return packaged
+
+
+def test_vendored_assets_are_declared_in_package_data() -> None:
+    """A non-editable wheel ships every vendored docs asset.
+
+    The setuptools build backend only exists inside pip's isolated build
+    environment, so this resolves the declared ``package-data`` globs against
+    the source tree instead of building a wheel. It fails if the rule stops
+    covering a vendored file (``static/*`` would miss ``static/vendor/``);
+    ``test_vendored_assets_match_recorded_hashes`` guards the bytes packaged.
+    """
+    vendored = {
+        path.relative_to(PACKAGE_DIR).as_posix()
+        for path in VENDOR_DIR.rglob("*")
+        if path.is_file()
+    }
+    assert vendored, "no vendored docs assets found to package"
+
+    missing = sorted(vendored - _packaged_static_paths())
+    assert not missing, (
+        "[tool.setuptools.package-data] would drop vendored docs assets "
+        f"from a non-editable wheel: {missing}"
+    )
