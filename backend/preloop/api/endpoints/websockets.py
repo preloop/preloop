@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid_sync
 from preloop.api.auth.key_scopes import api_key_allowed_on_channel
+from preloop.models.db.session import _safe_close_db_session, get_db_session
 from preloop.services.db_executor import detach_user, run_db_async
+from preloop.services.flow_execution_stop import stop_execution
 from preloop.models.crud import crud_flow, crud_flow_execution
 from preloop.models import models
 from preloop.services.activity_tracker import handle_activity
@@ -41,6 +43,76 @@ async def _resolve_token_user(token: str) -> Optional[models.User]:
 def _approval_visibility(*, current_user: models.User, db: Session) -> bool:
     """Apply the same OSS, RBAC and account authorizer as approval REST reads."""
     return True
+
+
+@require_permission("execute_flows")
+def _execution_command_permission(*, current_user: models.User, db: Session) -> bool:
+    """Apply the same permission check as the HTTP execution command endpoint."""
+    return True
+
+
+async def _run_execution_command(
+    user: Optional[models.User], execution_id: object, data: dict
+) -> Optional[dict]:
+    """Authorize and run a command for an execution over a WebSocket.
+
+    Returns None, without publishing anything, unless ``user`` is authenticated,
+    has ``execute_flows`` and the execution belongs to ``user.account_id``.
+    ``stop`` goes through ``stop_execution`` like the HTTP endpoint.
+    """
+    command = data.get("command")
+    if user is None or not isinstance(command, str) or not command:
+        return None
+    try:
+        execution_uuid = uuid.UUID(str(execution_id))
+    except (TypeError, ValueError):
+        return None
+
+    db = next(get_db_session())
+    try:
+        try:
+            _execution_command_permission(current_user=user, db=db)
+        except HTTPException:
+            return None
+        execution = crud_flow_execution.get(
+            db=db, id=execution_uuid, account_id=user.account_id
+        )
+        if not execution:
+            return None
+
+        try:
+            nc = await get_nats_client()
+        except Exception as e:
+            logger.error(f"Failed to get NATS client: {e}")
+            nc = None
+
+        payload = data.get("payload") or {}
+        if command == "stop":
+            outcome = await stop_execution(
+                db,
+                execution,
+                account_id=user.account_id,
+                nats_client=nc,
+                command_payload=payload,
+            )
+            if outcome.stopped or outcome.status.upper() == "STOPPED":
+                return {"status": "stopped"}
+            return {"status": "not_running", "execution_status": outcome.status}
+
+        if nc is None or not nc.is_connected:
+            logger.warning("NATS not connected, cannot forward command")
+            return {"status": "command_not_sent"}
+        command_data = {
+            "command": command,
+            "payload": payload,
+            "message": data.get("message"),
+        }
+        await nc.publish(
+            f"flow-commands.{execution_uuid}", json.dumps(command_data).encode()
+        )
+        return {"status": "command_sent"}
+    finally:
+        _safe_close_db_session(db)
 
 
 async def _set_approval_visibility(connection_id: str, user: models.User) -> None:
@@ -304,9 +376,16 @@ async def flow_execution_websocket(
                     f"Received command '{command}' for execution {execution_id}"
                 )
 
-                # Publish command to NATS for orchestrator to handle
-                command_subject = f"flow-commands.{execution_id}"
-                await event_bus.nc.publish(command_subject, json.dumps(data).encode())
+                result = await _run_execution_command(user, execution_id, data)
+                if result is None:
+                    await websocket.send_json(
+                        {
+                            "type": "command_error",
+                            "execution_id": str(execution_id),
+                            "error": "unauthorized",
+                        }
+                    )
+                    continue
 
                 # Acknowledge command
                 await websocket.send_json(
@@ -314,6 +393,7 @@ async def flow_execution_websocket(
                         "type": "command_ack",
                         "command": command,
                         "message": f"Command '{command}' sent",
+                        **result,
                     }
                 )
 
@@ -527,37 +607,35 @@ async def unified_websocket(websocket: WebSocket):
                     # Handle commands for flow executions (stop, send_message, etc.)
                     command = data.get("command")
                     execution_id = data.get("execution_id")
-                    payload = data.get("payload")
 
                     logger.info(
                         f"Received command '{command}' from session {session.id} "
                         f"for execution {execution_id}"
                     )
 
-                    if execution_id and command:
-                        # Forward command to NATS for orchestrator to handle
-                        try:
-                            nc = await get_nats_client()
-                            if nc and nc.is_connected:
-                                command_subject = f"flow-commands.{execution_id}"
-                                command_data = {
-                                    "command": command,
-                                    "payload": payload or {},
-                                    "message": data.get("message"),  # For send_message
-                                }
-                                await nc.publish(
-                                    command_subject, json.dumps(command_data).encode()
-                                )
-                                logger.info(f"Published command to {command_subject}")
-                            else:
-                                logger.warning(
-                                    "NATS not connected, cannot forward command"
-                                )
-                        except Exception as e:
-                            logger.error(f"Failed to forward command to NATS: {e}")
+                    error = "unauthorized"
+                    result = None
+                    try:
+                        result = await _run_execution_command(user, execution_id, data)
+                    except Exception as e:
+                        logger.error(f"Failed to run execution command: {e}")
+                        error = "failed"
+                    if result is None:
+                        await websocket.send_json(
+                            {
+                                "type": "command_error",
+                                "execution_id": execution_id,
+                                "error": error,
+                            }
+                        )
                     else:
-                        logger.warning(
-                            f"Command missing execution_id or command: {data}"
+                        await websocket.send_json(
+                            {
+                                "type": "command_ack",
+                                "execution_id": execution_id,
+                                "command": command,
+                                **result,
+                            }
                         )
 
                 elif message_type == "subscribe":
