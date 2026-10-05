@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -119,6 +120,59 @@ func TestCIErrorBodyNeverReachesOutput(t *testing.T) {
 	}
 	if _, err = os.Stat(destination); !os.IsNotExist(err) {
 		t.Fatal("failed issuance reservation was not removed")
+	}
+}
+
+func TestCIGetAndDeleteOmitJSONNullBody(t *testing.T) {
+	var got []struct{ method, path, body string }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got = append(got, struct{ method, path, body string }{r.Method, r.URL.Path, string(raw)})
+		if r.Method == http.MethodPost {
+			_, _ = fmt.Fprintf(w, `{"token":"synthetic-issued-secret","key_id":"synthetic-key"}`)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	pointCLIAt(t, server.URL)
+	FlagToken = ""
+	t.Setenv("PRELOOP_TOKEN", "synthetic-human-token")
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+	principal := "00000000-0000-4000-8000-000000000001"
+	key := "00000000-0000-4000-8000-000000000002"
+	for _, args := range [][]string{
+		{"capabilities"},
+		{"list"},
+		{"show", principal},
+		{"revoke", principal, key},
+	} {
+		command := newCICommand(args[0])
+		command.SetOut(&bytes.Buffer{})
+		command.SetArgs(args[1:])
+		if err := command.Execute(); err != nil {
+			t.Fatal(args, err)
+		}
+	}
+	for _, item := range got {
+		if item.body != "" {
+			t.Fatalf("%s %s sent %q", item.method, item.path, item.body)
+		}
+	}
+	destination := filepath.Join(t.TempDir(), "token")
+	command := newCICommand("issue")
+	command.SetOut(&bytes.Buffer{})
+	command.SetArgs([]string{principal, "--secret-file", destination})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	issued := got[len(got)-1]
+	if issued.method != http.MethodPost || issued.body != "{}" {
+		t.Fatalf("issue body = %s %q", issued.method, issued.body)
 	}
 }
 

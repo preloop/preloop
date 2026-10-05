@@ -247,7 +247,15 @@ def test_inactive_binding_recovery(
     CRUDBase(models.Flow).update(
         db_session, db_obj=ci_resources[2], obj_in={"is_enabled": True}
     )
-    assert client.post(f"{BASE}/{pid}/keys", json={}).status_code == 400
+    recovered = client.patch(f"{BASE}/{pid}", json={"enabled": True})
+    assert recovered.status_code == 200, recovered.text
+    issued = client.post(f"{BASE}/{pid}/keys", json={})
+    assert issued.status_code == 201, issued.text
+    context = crud.crud_ci_principal.authenticate(
+        db_session, token=issued.json()["token"]
+    )
+    assert context is not None
+    assert str(context.principal_id) == pid
 
 
 def test_partial_rollout_denies_usable_issuance(

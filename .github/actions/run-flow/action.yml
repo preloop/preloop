@@ -70,7 +70,7 @@ runs:
         PRELOOP_ACTION_TOKEN: ${{ inputs.token }}
       run: |
         set -euo pipefail
-        case "$PRELOOP_ACTION_TOKEN" in
+        case "$(printf '%s' "$PRELOOP_ACTION_TOKEN" | tr -d '[:space:]')" in
           ci_*) echo "::error::restricted CI tokens require the dedicated hosted CI review example"; exit 1 ;;
         esac
         case "$MODE" in

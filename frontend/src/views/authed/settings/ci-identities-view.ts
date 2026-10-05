@@ -31,6 +31,7 @@ export class CiIdentitiesView extends LitElement {
   @state() private preview: CiPreview | null = null;
   @state() private secret = '';
   @state() private secretLabel = '';
+  @state() private secretError = '';
   @state() private editId = '';
   @state() private editActions: CiAction[] = [];
   @state() private subscriptionId = '';
@@ -131,6 +132,7 @@ export class CiIdentitiesView extends LitElement {
   private clearSecret(): void {
     this.secret = '';
     this.secretLabel = '';
+    this.secretError = '';
   }
   private disclose(value: string, label: string, lifecycle: number): void {
     if (this.isConnected && lifecycle === this.lifecycle) {
@@ -610,13 +612,19 @@ export class CiIdentitiesView extends LitElement {
                 credential file. Keep it out of logs, URLs, command history and
                 source control.
               </p>
-              <code class="ci-secret">${this.secret}</code
-              ><button
+              <code class="ci-secret">${this.secret}</code>
+              ${
+                this.secretError
+                  ? html`<p role="alert">${this.secretError}</p>`
+                  : nothing
+              }
+              <button
                 @click=${async () => {
                   try {
                     await navigator.clipboard.writeText(this.secret);
+                    this.secretError = '';
                   } catch {
-                    this.error =
+                    this.secretError =
                       'Copy failed. Select the secret and copy it manually.';
                   }
                 }}

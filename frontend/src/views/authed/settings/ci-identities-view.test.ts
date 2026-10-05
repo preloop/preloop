@@ -513,6 +513,43 @@ describe('restricted CI key and identity lifecycle controls', () => {
     expect(element.textContent).not.to.contain('rotated-ui-secret');
     expect(element.querySelector('dialog')).to.equal(null);
   });
+  it('shows a copy failure inside the open secret dialog', async () => {
+    const element = await render([
+      {
+        method: 'POST',
+        path: BASE + '/principal-a/keys/key-a/rotate',
+        body: {
+          key_id: 'key-b',
+          principal_id: 'principal-a',
+          token: 'rotated-ui-secret',
+        },
+      },
+    ]);
+    button(element, 'Rotate key').click();
+    await waitUntil(() => !!element.querySelector('dialog'));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new Error('denied')) },
+    });
+    button(element, 'Copy secret').click();
+    const dialog = element.querySelector('dialog')!;
+    await waitUntil(() => !!dialog.querySelector('[role="alert"]'));
+    await element.updateComplete;
+    expect(dialog.open).to.equal(true);
+    expect(dialog.querySelector('[role="alert"]')?.textContent).to.contain(
+      'Copy failed. Select the secret and copy it manually.'
+    );
+    expect(dialog.textContent).to.contain('rotated-ui-secret');
+    const outside = [...element.querySelectorAll('[role="alert"]')].filter(
+      (node) => !dialog.contains(node)
+    );
+    expect(outside).to.eql([]);
+    button(dialog, 'Close and forget secret').click();
+    await element.updateComplete;
+    expect(element.textContent).not.to.contain('Copy failed');
+    expect(element.textContent).not.to.contain('rotated-ui-secret');
+    expect(element.querySelector('dialog')).to.equal(null);
+  });
   it('revokes the real audit key without opening a token dialog', async () => {
     const element = await render([
       { method: 'DELETE', path: BASE + '/principal-a/keys/key-a', status: 204 },

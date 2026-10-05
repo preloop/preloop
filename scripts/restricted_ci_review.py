@@ -28,6 +28,10 @@ class VerificationError(Exception):
     """A safe public error, without headers, raw results or server response bodies."""
 
 
+class TransportError(VerificationError):
+    """The remote document was never fetched, so it cannot fail verification."""
+
+
 class NoCredentialRedirect(HTTPRedirectHandler):
     """Never forward credentials to a redirected endpoint."""
 
@@ -67,9 +71,9 @@ def request_json(
                 raise VerificationError("Redirected credential request rejected")
             return json.load(response)
     except HTTPError as error:
-        raise VerificationError(f"Remote request failed (HTTP {error.code})") from None
+        raise TransportError(f"Remote request failed (HTTP {error.code})") from None
     except (URLError, OSError, ValueError):
-        raise VerificationError("Remote request or JSON response failed") from None
+        raise TransportError("Remote request or JSON response failed") from None
 
 
 def verify_pr(pr: dict[str, Any], repository: str, head: str) -> None:
@@ -243,8 +247,15 @@ def run(args: argparse.Namespace) -> None:
     while True:
         detail = remote(f"/flows/executions/{execution_id}")
         verify_execution(detail, expected, execution_id)
+        # A transport failure never fetched a PR, so it must not stop the
+        # owned execution. A fetched PR that is no longer the approved head
+        # does. One failure ends this run; it is not retried.
         try:
-            verify_pr(github(pr_path), args.repository, args.head)
+            current_pr = github(pr_path)
+        except TransportError:
+            raise
+        try:
+            verify_pr(current_pr, args.repository, args.head)
         except VerificationError:
             remote(
                 f"/flows/executions/{execution_id}/command", "POST", {"command": "stop"}
@@ -310,7 +321,7 @@ def run(args: argparse.Namespace) -> None:
             (
                 item
                 for item in existing
-                if marker in item.get("body", "")
+                if marker in (item.get("body") or "")
                 and item.get("commit_id") == args.head
                 and item.get("user", {}).get("id") == author_id
                 and item.get("state") == "COMMENTED"
@@ -332,7 +343,7 @@ def run(args: argparse.Namespace) -> None:
         proof = github(pr_path + f"/reviews/{posted['id']}")
         if (
             proof.get("commit_id") != args.head
-            or marker not in proof.get("body", "")
+            or marker not in (proof.get("body") or "")
             or proof.get("user", {}).get("id") != author_id
             or proof.get("state") != "COMMENTED"
             or not isinstance(proof.get("submitted_at"), str)

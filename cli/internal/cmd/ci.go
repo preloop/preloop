@@ -131,8 +131,14 @@ func newCICommand(operation string) *cobra.Command {
 				return fmt.Errorf("cannot load human authentication")
 			}
 			method, suffix := ciRequestPath(operation, args)
+			// A typed nil map is a non-nil interface and marshals as JSON null.
+			// GET and DELETE have no payload; issue and rotate keep {}.
+			var body interface{}
+			if payload != nil {
+				body = payload
+			}
 			var result interface{}
-			if err = client.CIAdminRequest(method, suffix, payload, &result); err != nil {
+			if err = client.CIAdminRequest(method, suffix, body, &result); err != nil {
 				if destination != nil {
 					_ = destination.Close()
 					_ = os.Remove(secretPath)
