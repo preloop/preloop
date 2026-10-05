@@ -69,8 +69,9 @@ migration indefinitely. Two paths used to do this and no longer do: the runner
 control websocket ends its transaction before waiting for the next heartbeat,
 the tracker polling worker ends its transaction before calling a tracker
 API, and the hosted-agent monitor on the flow-execution worker ends its
-transaction after the per-poll tool-activity read, before it publishes, asks
-the agent for its status or sleeps until the next poll.
+transaction after each group of per-poll reads (stop and park requests,
+tool-activity counts), so the agent status call, the NATS publishes and the
+poll sleeps run with no transaction open.
 
 New code that awaits anything other than the database (HTTP, Kubernetes,
 NATS, embeddings, `asyncio.sleep`) while holding a `Session` should call

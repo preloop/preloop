@@ -6550,6 +6550,11 @@ class FlowExecutionOrchestrator:
                     self.db,
                     execution_id=self.execution_log.id,
                 )
+                # stop_request is a plain dict or None. End the read
+                # transaction before the executor calls and sleeps below, so
+                # the poll does not hold AccessShareLock on flow_execution
+                # across them and block migrations on lock_timeout.
+                release_transaction(self.db)
                 if stop_request:
                     # Persisted intent survives a worker restart and a quick
                     # scope re-enable. A runner halt flag is only a request.
@@ -6590,6 +6595,7 @@ class FlowExecutionOrchestrator:
                             self.execution_log.id,
                         )
                     if not already_terminal:
+                        release_transaction(self.db)
                         await asyncio.sleep(poll_interval)
                         deadline.credit_sleep(poll_interval)
                         continue
@@ -6603,6 +6609,9 @@ class FlowExecutionOrchestrator:
                 )
                 if parked_result is not None:
                     return parked_result
+                # The park check reads flow_execution; release before the
+                # status call and any sleep below.
+                release_transaction(self.db)
 
                 # Check if user requested stop
                 if self._stop_requested.is_set():
@@ -6626,6 +6635,7 @@ class FlowExecutionOrchestrator:
                             and await agent_executor.is_stopped(session_reference)
                             is not True
                         ):
+                            release_transaction(self.db)
                             await asyncio.sleep(poll_interval)
                             deadline.credit_sleep(poll_interval)
                             continue
@@ -6701,6 +6711,7 @@ class FlowExecutionOrchestrator:
                             }
 
                         # Continue polling for transient errors
+                        release_transaction(self.db)
                         await asyncio.sleep(poll_interval)
                         deadline.credit_sleep(poll_interval)
                         continue
