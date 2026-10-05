@@ -3949,6 +3949,8 @@ class TestPerFlowTimeoutBudget:
         assert timed_out[0]["details"] == {
             "timeout_seconds": 60,
             "timeout_source": "flow",
+            # Wall-clock seconds since launch, now part of the evidence.
+            "elapsed_seconds": 60,
         }
 
     _IDLE_WARN = (

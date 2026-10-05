@@ -107,3 +107,35 @@ async def test_malformed_placement_is_ignored_not_fatal(executor, monkeypatch):
     assert spec.runtime_class_name is None
     assert spec.node_selector is None
     assert spec.tolerations is None
+
+
+async def _captured_job(executor, monkeypatch, **context):
+    captured = {}
+
+    async def create(job, *, job_name, execution_id):
+        captured["job"] = job
+        return job_name
+
+    monkeypatch.setattr(executor, "_init_kubernetes_clients", AsyncMock())
+    monkeypatch.setattr(
+        executor, "_create_kubernetes_job", AsyncMock(side_effect=create)
+    )
+    await executor._start_kubernetes_pod(
+        {
+            "execution_id": str(uuid.uuid4()),
+            "flow_id": str(uuid.uuid4()),
+            "prompt": "does the Job carry a deadline?",
+            **context,
+        }
+    )
+    return captured["job"]
+
+
+async def test_job_carries_the_execution_deadline_as_backstop(executor, monkeypatch):
+    job = await _captured_job(executor, monkeypatch, runtime_deadline_seconds=480)
+    assert job.spec.active_deadline_seconds == 480
+
+
+async def test_job_without_a_deadline_in_context_has_none(executor, monkeypatch):
+    job = await _captured_job(executor, monkeypatch)
+    assert job.spec.active_deadline_seconds is None
