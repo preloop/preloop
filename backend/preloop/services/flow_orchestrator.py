@@ -6415,8 +6415,8 @@ class FlowExecutionOrchestrator:
 
         if self.execution_log is None:
             return None
-        # Commit below expires ORM state. Keep the id in a local so the log
-        # line cannot lazy-load and reopen a transaction across capture.
+        # The release below keeps loaded state. Keep the id in a local
+        # for the log line across capture.
         execution_id = self.execution_log.id
         park_request = self._read_pending_park_request()
         # End the read transaction before returning or awaiting anything:
