@@ -27,6 +27,7 @@ from preloop.services.flow_feedback_provider import feedback_tracker_options
 from preloop.services.issue_triage_controller import is_triage_flow
 from preloop.services.kill_switch import FlowHaltActiveError, flows_halted
 from preloop.services.model_routing import prepare_execution_routing
+from preloop.services.no_progress_guard import parse_retry_config
 from preloop.sync.event_normalizer import attach_trigger_subject
 from preloop.sync.exceptions import TrackerError, TrackerResponseError
 from preloop.sync.trackers.github import GitHubTracker
@@ -60,6 +61,7 @@ def _review_flow(db: Session, context: CiAuthorizationContext) -> models.Flow:
         or is_triage_flow(db, flow)
         or flow.callable_flows
         or feedback_policy(flow)
+        or parse_retry_config(getattr(flow, "agent_config", None)).enabled
     ):
         raise CiReviewDeniedError("Restricted CI requires a single review execution")
     if flows_halted(db, context.account_id):

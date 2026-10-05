@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import crud, models
 from preloop.models.crud.base import CRUDBase
+from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.plugins.ci_authorization import register_ci_machine_authorizer
 from preloop.schemas.ci_principal import CiAction
 from preloop.services.event_webhooks import outbox
@@ -667,7 +668,9 @@ async def test_worker_retry_rechecks_authority_and_current_secret(
         register_ci_machine_authorizer(None)
 
 
-@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED", "CANCELLED", "STOPPED"])
+@pytest.mark.parametrize(
+    "status", sorted(CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES)
+)
 def test_every_owned_terminal_status_queues_trusted_completion(
     db_session: Session, callback: tuple[Any, ...], status: str
 ) -> None:

@@ -271,6 +271,24 @@ async def test_gitlab_error_response_is_sanitized(
     assert "synthetic-provider-secret" not in caplog.text
 
 
+def test_retry_enabled_ci_flow_is_refused(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    """A no-progress retry would launch a second run outside CI ownership."""
+    _, _, flow, _ = ci_resources
+    _, _, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    assert context is not None
+    flow.agent_config = {"retry_on_no_progress": {"enabled": True}}
+    db_session.commit()
+    with pytest.raises(
+        service.CiReviewDeniedError,
+        match="Restricted CI requires a single review execution",
+    ):
+        service._review_flow(db_session, context)
+    assert crud.crud_ci_execution.count(db_session, context=context) == 0
+
+
 @pytest.mark.asyncio
 async def test_denied_provider_admission_has_no_execution_or_dispatch_side_effect(
     db_session: Session,

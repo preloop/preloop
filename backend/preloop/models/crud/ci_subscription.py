@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud.ci_principal import CiAuthorizationContext, crud_ci_principal
+from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.schemas.ci_execution import CiReviewBinding
 from preloop.schemas.ci_principal import CiAction
 from preloop.schemas.ci_subscription import (
@@ -306,12 +307,9 @@ class CRUDCiSubscription:
                 )
                 .first()
             )
-            if execution is None or execution.status not in {
-                "SUCCEEDED",
-                "FAILED",
-                "CANCELLED",
-                "STOPPED",
-            }:
+            if execution is None or execution.status not in (
+                CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES
+            ):
                 return None
             review = CiReviewBinding.model_validate(execution.ci_review_binding)
             if (
