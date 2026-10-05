@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- WebSocket execution commands now require authentication, the
+  `execute_flows` permission, and account ownership.
 - Scorecard's vulnerable-dependency list is reduced by moving patched
   transitive locks forward: `undici` 7.29.1 in the ClawHub CI lock, `hono`
   4.13.13 and `fast-uri` 3.1.8 in the Claude plugin, `urllib3` 2.8.0 in the
