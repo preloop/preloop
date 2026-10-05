@@ -70,6 +70,7 @@ from preloop.models.db.gateway_session import (
 from preloop.services.codex_crosschat import (
     crosschat_chat_message,
     is_unsolicited_crosschat_output,
+    describe_input_item,
     rewrite_crosschat_responses_input,
 )
 from preloop.services.codex_tool_compat import (
@@ -1919,7 +1920,9 @@ class OpenAIGatewayService:
             )
 
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
-        messages = self._normalize_responses_input(payload, ai_model=model)
+        messages = self._normalize_responses_input_recorded(
+            payload, ai_model=model, endpoint_kind="responses"
+        )
         started_at = time.perf_counter()
         self._reject_if_gateway_halted(
             endpoint="/openai/v1/responses",
@@ -3188,7 +3191,9 @@ class OpenAIGatewayService:
         self._begin_request_accounting()
         self._adopt_openai_native_session_id(payload)
         model = self._resolve_requested_model(payload.get("model"), provider="openai")
-        messages = self._normalize_responses_input(payload, ai_model=model)
+        messages = self._normalize_responses_input_recorded(
+            payload, ai_model=model, endpoint_kind="responses_stream"
+        )
         started_at = time.perf_counter()
         self._reject_if_gateway_halted(
             endpoint="/openai/v1/responses",
@@ -7958,6 +7963,40 @@ class OpenAIGatewayService:
             )
             return messages, payload
 
+    def _normalize_responses_input_recorded(
+        self,
+        payload: Dict[str, Any],
+        *,
+        ai_model: GatewayModel,
+        endpoint_kind: str,
+    ) -> List[Dict[str, Any]]:
+        """Normalize Responses input, auditing a rejection before raising.
+
+        A malformed history is rejected here, before any upstream call, so
+        without this the 400 left no ``model_gateway_request`` row and the
+        console could not show it (#1113). The diagnostic names the
+        offending item but never its content.
+        """
+        started_at = time.perf_counter()
+        try:
+            return self._normalize_responses_input(payload, ai_model=ai_model)
+        except ModelGatewayAPIError as exc:
+            self._record_gateway_request(
+                endpoint="/openai/v1/responses",
+                method="POST",
+                status_code=exc.status_code,
+                duration=time.perf_counter() - started_at,
+                ai_model=ai_model,
+                requested_model=payload.get("model"),
+                response_payload=None,
+                upstream_response=None,
+                endpoint_kind=endpoint_kind,
+                error_detail=exc.message,
+                error_class=exc.error_class,
+                request_payload=payload,
+            )
+            raise
+
     def _normalize_responses_input(
         self, payload: Dict[str, Any], *, ai_model: Optional[GatewayModel] = None
     ) -> List[Dict[str, Any]]:
@@ -7976,14 +8015,18 @@ class OpenAIGatewayService:
             messages.append({"role": "user", "content": raw_input})
         elif isinstance(raw_input, list):
             normalized_items = raw_input
+            source_indices: Optional[List[int]] = None
             if reasoning_bridge is not None:
-                normalized_items = [
-                    item
-                    for item in raw_input
+                source_indices = [
+                    index
+                    for index, item in enumerate(raw_input)
                     if not isinstance(item, dict) or item.get("type") != "reasoning"
                 ]
+                normalized_items = [raw_input[index] for index in source_indices]
             normalized_messages = self._normalize_responses_input_items(
-                normalized_items, preserve_reasoning=reasoning_bridge is not None
+                normalized_items,
+                preserve_reasoning=reasoning_bridge is not None,
+                source_indices=source_indices,
             )
             if reasoning_bridge is not None:
                 normalized_messages = reasoning_bridge.restore(
@@ -8000,29 +8043,63 @@ class OpenAIGatewayService:
         return messages
 
     def _normalize_responses_input_items(
-        self, items: List[Any], *, preserve_reasoning: bool = False
+        self,
+        items: List[Any],
+        *,
+        preserve_reasoning: bool = False,
+        source_indices: Optional[List[int]] = None,
     ) -> List[Dict[str, Any]]:
-        """Convert Responses API history into valid chat-completions messages."""
+        """Convert Responses API history into valid chat-completions messages.
+
+        Args:
+            items: Responses ``input`` items.
+            preserve_reasoning: Keep assistant ``reasoning_content``.
+            source_indices: Position of each item in the client's original
+                ``input`` when the caller filtered it, for diagnostics.
+        """
         messages: List[Dict[str, Any]] = []
         staged_tool_calls: List[Dict[str, Any]] = []
         pending_tool_call_ids: set[str] = set()
 
-        def tool_response_error() -> ModelGatewayAPIError:
+        def tool_response_error(
+            index: Optional[int] = None, reason: str = ""
+        ) -> ModelGatewayAPIError:
             missing_ids_set = pending_tool_call_ids or {
                 str(tool_call.get("id"))
                 for tool_call in staged_tool_calls
                 if tool_call.get("id")
             }
-            missing_ids = ", ".join(sorted(missing_ids_set))
+            missing_ids = ", ".join(sorted(missing_ids_set)) or "(none)"
+            # Name the offending item (never its content) so a rejection is
+            # diagnosable from the 400 and the audit row alone (#1113).
+            if index is None:
+                offender = f"end of input: {reason}"
+            else:
+                source_index = (
+                    source_indices[index]
+                    if source_indices is not None and index < len(source_indices)
+                    else index
+                )
+                offender = (
+                    f"{describe_input_item(items[index], source_index)}: {reason}"
+                )
             return ModelGatewayAPIError(
                 provider="openai",
                 status_code=400,
                 message=(
                     "An assistant message with 'tool_calls' must be followed by "
                     "tool messages responding to each 'tool_call_id'. "
-                    f"The following tool_call_ids did not have response messages: {missing_ids}"
+                    f"The following tool_call_ids did not have response messages: {missing_ids}. "
+                    f"Offending input item: {offender}"
                 ),
             )
+
+        def output_reason(call_id: Any) -> str:
+            if not call_id:
+                return "tool output without a call_id that is not a recognised Codex delivery"
+            if pending_tool_call_ids:
+                return "call_id does not match a pending tool call"
+            return "call_id does not match any earlier tool call awaiting a result"
 
         def flush_staged_tool_calls() -> None:
             nonlocal staged_tool_calls, pending_tool_call_ids
@@ -8038,14 +8115,16 @@ class OpenAIGatewayService:
             pending_tool_call_ids = {tool_call["id"] for tool_call in staged_tool_calls}
             staged_tool_calls = []
 
-        for item in items:
+        for index, item in enumerate(items):
             if not isinstance(item, dict):
                 continue
 
             item_type = item.get("type")
             if item_type in ("function_call", "custom_tool_call"):
                 if pending_tool_call_ids:
-                    raise tool_response_error()
+                    raise tool_response_error(
+                        index, "tool call before earlier calls received results"
+                    )
                 # Codex echoes its freeform calls back as `custom_tool_call`
                 # on every subsequent turn. Without this branch, turn 2 of any
                 # Codex session 400s here, on our own gateway, before it ever
@@ -8064,7 +8143,7 @@ class OpenAIGatewayService:
                 flush_staged_tool_calls()
                 call_id = custom_tool_call_output(item)
                 if not call_id or call_id not in pending_tool_call_ids:
-                    raise tool_response_error()
+                    raise tool_response_error(index, output_reason(call_id))
                 messages.append(
                     {
                         "role": "tool",
@@ -8081,7 +8160,10 @@ class OpenAIGatewayService:
                 # It must not satisfy (or slip between) a pending tool call.
                 if staged_tool_calls or pending_tool_call_ids:
                     flush_staged_tool_calls()
-                    raise tool_response_error()
+                    raise tool_response_error(
+                        index,
+                        "Codex delivery between a tool call and its result",
+                    )
                 messages.append(crosschat_chat_message(item))
                 continue
 
@@ -8089,7 +8171,7 @@ class OpenAIGatewayService:
                 flush_staged_tool_calls()
                 call_id = item.get("call_id")
                 if not call_id or call_id not in pending_tool_call_ids:
-                    raise tool_response_error()
+                    raise tool_response_error(index, output_reason(call_id))
                 messages.append(
                     {
                         "role": "tool",
@@ -8101,7 +8183,9 @@ class OpenAIGatewayService:
                 continue
 
             if staged_tool_calls or pending_tool_call_ids:
-                raise tool_response_error()
+                raise tool_response_error(
+                    index, "item between a tool call and its result"
+                )
 
             normalized = self._normalize_responses_message_item(item)
             if (
@@ -8115,10 +8199,7 @@ class OpenAIGatewayService:
 
         flush_staged_tool_calls()
         if pending_tool_call_ids:
-            raise tool_response_error()
-        if staged_tool_calls:
-            pending_tool_call_ids = {tool_call["id"] for tool_call in staged_tool_calls}
-            raise tool_response_error()
+            raise tool_response_error(reason="tool calls without results")
         return messages
 
     def _normalize_responses_tool_call_item(
