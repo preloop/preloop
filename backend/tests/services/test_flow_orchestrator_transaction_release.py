@@ -118,3 +118,40 @@ async def test_monitor_poll_holds_no_transaction_across_status_and_sleep(
         await orchestrator._monitor_agent_execution("session-1", executor)
 
     assert seen == {"status": [False], "sleep": [False]}
+
+
+@pytest.mark.asyncio
+async def test_park_check_leaves_no_open_transaction(db_session: Session) -> None:
+    """The terminal branch calls the park check and then awaits get_result."""
+    orchestrator = _orchestrator(db_session)
+
+    assert await orchestrator._park_if_requested(AsyncMock(), "session-1", 5) is None
+
+    assert not db_session.in_transaction()
+
+
+@pytest.mark.asyncio
+async def test_park_releases_before_artifact_capture(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator = _orchestrator(db_session)
+    orchestrator.execution_logger = SimpleNamespace(log_milestone=lambda *_a: None)
+    seen: List[bool] = []
+
+    def read_pending() -> dict:
+        crud_flow_execution.get_stop_request(
+            db_session, execution_id=orchestrator.execution_log.id
+        )
+        return {"request_id": uuid4(), "kind": "human", "expires_at": None}
+
+    async def capture(*_args, **_kwargs):
+        seen.append(db_session.in_transaction())
+        raise _StopMonitor()
+
+    monkeypatch.setattr(orchestrator, "_read_pending_park_request", read_pending)
+    monkeypatch.setattr(orchestrator, "_capture_result_artifact", capture)
+
+    with pytest.raises(_StopMonitor):
+        await orchestrator._park_if_requested(AsyncMock(), "session-1", 5)
+
+    assert seen == [False]
