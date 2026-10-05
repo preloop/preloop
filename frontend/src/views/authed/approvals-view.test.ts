@@ -1414,4 +1414,136 @@ describe('ApprovalsView', () => {
       }
     });
   });
+
+  describe('load older (paging)', () => {
+    /** A full page of approved rows, newest first, starting at `skip`. */
+    function pageAt(skip: number, count: number, toolName = 'example_tool') {
+      return Array.from({ length: count }, (_unused, index) =>
+        baseRequest({
+          id: `ar-${skip + index}`,
+          tool_name: toolName,
+          status: 'approved',
+          requested_at: new Date(
+            Date.now() - (skip + index) * 60_000
+          ).toISOString(),
+          resolved_at: new Date(
+            Date.now() - (skip + index) * 60_000 + 30_000
+          ).toISOString(),
+        })
+      );
+    }
+
+    function stubPagedApprovals(pages: Record<number, unknown[]>) {
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          if (url.includes('/api/v1/approval-requests') && method === 'GET') {
+            const skip = Number(
+              new URL(url, window.location.origin).searchParams.get('skip') ?? 0
+            );
+            return new Response(JSON.stringify(pages[skip] ?? []), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        });
+    }
+
+    function requestedSkips(): number[] {
+      return fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/api/v1/approval-requests')
+        )
+        .map((call) =>
+          Number(
+            new URL(
+              String(call.args[0]),
+              window.location.origin
+            ).searchParams.get('skip') ?? 0
+          )
+        );
+    }
+
+    it('appends the next page with skip=loaded and drops the control on a short page', async () => {
+      stubPagedApprovals({
+        0: pageAt(0, 100),
+        100: pageAt(100, 100),
+        200: pageAt(200, 30),
+      });
+      const element = (await fixture(
+        html`<approvals-view></approvals-view>`
+      )) as ApprovalsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Approvals view did not finish loading'
+      );
+      await element.updateComplete;
+
+      const loadOlder = () =>
+        element.shadowRoot!.querySelector('[data-testid="load-older"]');
+
+      expect((element as any).approvalRequests.length).to.equal(100);
+      expect(loadOlder()).to.not.equal(null);
+
+      loadOlder()!.click();
+      await waitUntil(
+        () => (element as any).approvalRequests.length === 200,
+        'Older page did not append'
+      );
+      await element.updateComplete;
+      expect(loadOlder()).to.not.equal(null);
+
+      loadOlder()!.click();
+      await waitUntil(
+        () => (element as any).approvalRequests.length === 230,
+        'Final short page did not append'
+      );
+      await element.updateComplete;
+      expect(loadOlder()).to.equal(null);
+      expect(requestedSkips()).to.deep.equal([0, 100, 200]);
+    });
+
+    it('scopes the client-side search and never claims a bare no-match while truncated', async () => {
+      stubPagedApprovals({
+        0: pageAt(0, 100, 'example_tool'),
+        100: pageAt(100, 5, 'needle_tool'),
+      });
+      const element = (await fixture(
+        html`<approvals-view></approvals-view>`
+      )) as ApprovalsView;
+
+      await waitUntil(
+        () => !(element as any).loading,
+        'Approvals view did not finish loading'
+      );
+      await element.updateComplete;
+
+      (element as any).searchQuery = 'needle';
+      (element as any).applyFilters();
+      await element.updateComplete;
+
+      const scope = element.shadowRoot!.querySelector(
+        '[data-testid="search-scope"]'
+      );
+      expect(scope).to.not.equal(null);
+      expect(scope!.textContent!.replace(/\s+/g, ' ').trim()).to.contain(
+        'Searching the latest 100 requests'
+      );
+
+      const empty = element.shadowRoot!.querySelector('.empty-state');
+      expect(empty).to.not.equal(null);
+      expect(empty!.textContent).to.contain('in the latest 100 requests');
+      expect(empty!.textContent).to.not.contain(
+        'No requests match your filters.'
+      );
+    });
+  });
 });

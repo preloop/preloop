@@ -19,13 +19,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
+from preloop.models import crud, models
+from preloop.models.crud.ci_subscription import is_ci_endpoint
 from preloop.models.models.webhook_endpoint import (
     DELIVERY_DEAD,
     DELIVERY_DELIVERED,
     DELIVERY_PENDING,
     SOURCE_ACCOUNT,
-    WebhookDelivery,
-    WebhookEndpoint,
 )
 from preloop.services.event_webhooks.events import (
     EVENT_TEST,
@@ -94,7 +94,7 @@ def retry_delay_seconds(
     return base * source.uniform(JITTER_MIN, JITTER_MAX)
 
 
-def circuit_probe_at(endpoint: WebhookEndpoint) -> Optional[datetime]:
+def circuit_probe_at(endpoint: models.WebhookEndpoint) -> Optional[datetime]:
     """When an open circuit may be probed, or None if the breaker is closed.
 
     Args:
@@ -109,7 +109,7 @@ def circuit_probe_at(endpoint: WebhookEndpoint) -> Optional[datetime]:
     return opened + timedelta(seconds=settings.webhook_circuit_cooldown_seconds)
 
 
-def endpoint_is_deliverable(endpoint: WebhookEndpoint, now: datetime) -> bool:
+def endpoint_is_deliverable(endpoint: models.WebhookEndpoint, now: datetime) -> bool:
     """Whether an endpoint may be attempted right now.
 
     Inactive endpoints never are. An open circuit blocks attempts until the
@@ -142,10 +142,10 @@ def _pending_count(db: Session, account_id: Any) -> int:
     return int(
         db.execute(
             select(func.count())
-            .select_from(WebhookDelivery)
+            .select_from(models.WebhookDelivery)
             .where(
-                WebhookDelivery.account_id == account_id,
-                WebhookDelivery.status == DELIVERY_PENDING,
+                models.WebhookDelivery.account_id == account_id,
+                models.WebhookDelivery.status == DELIVERY_PENDING,
             )
         ).scalar_one()
     )
@@ -154,7 +154,7 @@ def _pending_count(db: Session, account_id: Any) -> int:
 def _delivery_values(
     *,
     account_id: Any,
-    endpoint: WebhookEndpoint,
+    endpoint: models.WebhookEndpoint,
     event_id: uuid.UUID,
     event_type: str,
     occurred_at: datetime,
@@ -195,17 +195,17 @@ def _insert_deliveries(db: Session, rows: Sequence[dict[str, Any]]) -> list[uuid
     if not rows:
         return []
     statement = (
-        pg_insert(WebhookDelivery)
+        pg_insert(models.WebhookDelivery)
         .values(list(rows))
         .on_conflict_do_nothing(constraint="uq_webhook_delivery_event")
-        .returning(WebhookDelivery.id)
+        .returning(models.WebhookDelivery.id)
     )
     return [row[0] for row in db.execute(statement).fetchall()]
 
 
 def select_endpoints(
     db: Session, *, account_id: Any, event_type: str
-) -> list[WebhookEndpoint]:
+) -> list[models.WebhookEndpoint]:
     """Return the account endpoints subscribed to an event type.
 
     Shim endpoints (``source='approval_workflow'``) are excluded: they carry
@@ -221,10 +221,10 @@ def select_endpoints(
     """
     endpoints = (
         db.execute(
-            select(WebhookEndpoint).where(
-                WebhookEndpoint.account_id == account_id,
-                WebhookEndpoint.active.is_(True),
-                WebhookEndpoint.source == SOURCE_ACCOUNT,
+            select(models.WebhookEndpoint).where(
+                models.WebhookEndpoint.account_id == account_id,
+                models.WebhookEndpoint.active.is_(True),
+                models.WebhookEndpoint.source == SOURCE_ACCOUNT,
             )
         )
         .scalars()
@@ -246,7 +246,7 @@ def enqueue_event(
     occurred_at: Optional[datetime] = None,
     natural_key: Optional[str] = None,
     subject_id: Optional[Any] = None,
-    endpoints: Optional[Iterable[WebhookEndpoint]] = None,
+    endpoints: Optional[Iterable[models.WebhookEndpoint]] = None,
 ) -> EnqueueResult:
     """Record one event for every subscribed endpoint.
 
@@ -275,6 +275,24 @@ def enqueue_event(
             if endpoints is not None
             else select_endpoints(db, account_id=account_id, event_type=event_type)
         )
+        target_data = {}
+        eligible = []
+        for endpoint in targets:
+            safe_data = (
+                crud.crud_ci_subscription.callback_payload(
+                    db,
+                    endpoint=endpoint,
+                    account_id=account_id,
+                    event_type=event_type,
+                    subject_id=subject_id,
+                )
+                if is_ci_endpoint(endpoint)
+                else data
+            )
+            if safe_data is not None:
+                eligible.append(endpoint)
+                target_data[endpoint.id] = safe_data
+        targets = eligible
         result.endpoints_matched = len(targets)
         if not targets:
             return result
@@ -308,7 +326,15 @@ def enqueue_event(
                     event_id=event_id,
                     event_type=event_type,
                     occurred_at=occurred,
-                    payload=envelope,
+                    payload=build_envelope(
+                        event_id=event_id,
+                        event_type=event_type,
+                        account_id=account_id,
+                        data=target_data[endpoint.id],
+                        occurred_at=occurred_at or datetime.now(timezone.utc),
+                    )
+                    if is_ci_endpoint(endpoint)
+                    else envelope,
                     generation=0,
                     now=now,
                     subject_id=subject_id,
@@ -331,7 +357,7 @@ def enqueue_event(
 def enqueue_raw_delivery(
     db: Session,
     *,
-    endpoint: WebhookEndpoint,
+    endpoint: models.WebhookEndpoint,
     event_type: str,
     payload: Mapping[str, Any],
     natural_key: str,
@@ -355,6 +381,8 @@ def enqueue_raw_delivery(
         What was enqueued.
     """
     result = EnqueueResult()
+    if is_ci_endpoint(endpoint):
+        return result
     try:
         now = _utcnow()
         event_id = deterministic_event_id(natural_key)
@@ -410,12 +438,12 @@ def replay_event(
     now = _utcnow()
     existing = (
         db.execute(
-            select(WebhookDelivery)
+            select(models.WebhookDelivery)
             .where(
-                WebhookDelivery.account_id == account_id,
-                WebhookDelivery.event_id == event_id,
+                models.WebhookDelivery.account_id == account_id,
+                models.WebhookDelivery.event_id == event_id,
             )
-            .order_by(WebhookDelivery.generation.desc())
+            .order_by(models.WebhookDelivery.generation.desc())
         )
         .scalars()
         .all()
@@ -426,6 +454,10 @@ def replay_event(
     seen: set[uuid.UUID] = set()
     rows: list[dict[str, Any]] = []
     for delivery in existing:
+        if not crud.crud_ci_subscription.replay_allowed(
+            db, endpoint_id=delivery.endpoint_id
+        ):
+            continue
         if delivery.endpoint_id in seen:
             continue
         seen.add(delivery.endpoint_id)
@@ -452,7 +484,7 @@ def replay_event(
 
 def claim_due_deliveries(
     db: Session, *, limit: Optional[int] = None, now: Optional[datetime] = None
-) -> list[WebhookDelivery]:
+) -> list[models.WebhookDelivery]:
     """Claim a bounded batch of due deliveries for this worker.
 
     ``FOR UPDATE SKIP LOCKED`` keeps several API replicas from fighting over
@@ -472,14 +504,14 @@ def claim_due_deliveries(
     batch = limit or settings.webhook_delivery_batch_size
     rows = (
         db.execute(
-            select(WebhookDelivery)
+            select(models.WebhookDelivery)
             .where(
-                WebhookDelivery.status == DELIVERY_PENDING,
-                WebhookDelivery.next_attempt_at <= moment,
-                (WebhookDelivery.claimed_at.is_(None))
-                | (WebhookDelivery.claimed_at < lease_cutoff),
+                models.WebhookDelivery.status == DELIVERY_PENDING,
+                models.WebhookDelivery.next_attempt_at <= moment,
+                (models.WebhookDelivery.claimed_at.is_(None))
+                | (models.WebhookDelivery.claimed_at < lease_cutoff),
             )
-            .order_by(WebhookDelivery.next_attempt_at)
+            .order_by(models.WebhookDelivery.next_attempt_at)
             .limit(batch)
             .with_for_update(skip_locked=True)
         )
@@ -495,8 +527,8 @@ def claim_due_deliveries(
 def record_attempt(
     db: Session,
     *,
-    delivery: WebhookDelivery,
-    endpoint: WebhookEndpoint,
+    delivery: models.WebhookDelivery,
+    endpoint: models.WebhookEndpoint,
     success: bool,
     response_status: Optional[int] = None,
     error: Optional[str] = None,
@@ -568,10 +600,10 @@ def purge_terminal_deliveries(db: Session, *, now: Optional[datetime] = None) ->
         days=settings.webhook_delivery_retention_days
     )
     deleted = (
-        db.query(WebhookDelivery)
+        db.query(models.WebhookDelivery)
         .filter(
-            WebhookDelivery.status.in_((DELIVERY_DELIVERED, DELIVERY_DEAD)),
-            WebhookDelivery.updated_at < cutoff,
+            models.WebhookDelivery.status.in_((DELIVERY_DELIVERED, DELIVERY_DEAD)),
+            models.WebhookDelivery.updated_at < cutoff,
         )
         .delete(synchronize_session=False)
     )
@@ -582,10 +614,10 @@ async def _pending_count_async(db: Any, account_id: Any) -> int:
     """Async twin of :func:`_pending_count`."""
     result = await db.execute(
         select(func.count())
-        .select_from(WebhookDelivery)
+        .select_from(models.WebhookDelivery)
         .where(
-            WebhookDelivery.account_id == account_id,
-            WebhookDelivery.status == DELIVERY_PENDING,
+            models.WebhookDelivery.account_id == account_id,
+            models.WebhookDelivery.status == DELIVERY_PENDING,
         )
     )
     return int(result.scalar_one())
@@ -593,13 +625,13 @@ async def _pending_count_async(db: Any, account_id: Any) -> int:
 
 async def select_endpoints_async(
     db: Any, *, account_id: Any, event_type: str
-) -> list[WebhookEndpoint]:
+) -> list[models.WebhookEndpoint]:
     """Async twin of :func:`select_endpoints`."""
     result = await db.execute(
-        select(WebhookEndpoint).where(
-            WebhookEndpoint.account_id == account_id,
-            WebhookEndpoint.active.is_(True),
-            WebhookEndpoint.source == SOURCE_ACCOUNT,
+        select(models.WebhookEndpoint).where(
+            models.WebhookEndpoint.account_id == account_id,
+            models.WebhookEndpoint.active.is_(True),
+            models.WebhookEndpoint.source == SOURCE_ACCOUNT,
         )
     )
     return [
@@ -641,6 +673,30 @@ async def enqueue_event_async(
         targets = await select_endpoints_async(
             db, account_id=account_id, event_type=event_type
         )
+        target_data = {}
+        eligible = []
+        for endpoint in targets:
+            safe_data = data
+            if is_ci_endpoint(endpoint):
+                safe_data = (
+                    await db.run_sync(
+                        lambda sync_db, endpoint=endpoint: (
+                            crud.crud_ci_subscription.callback_payload(
+                                sync_db,
+                                endpoint=endpoint,
+                                account_id=account_id,
+                                event_type=event_type,
+                                subject_id=subject_id,
+                            )
+                        )
+                    )
+                    if hasattr(db, "run_sync")
+                    else None
+                )
+            if safe_data is not None:
+                eligible.append(endpoint)
+                target_data[endpoint.id] = safe_data
+        targets = eligible
         result.endpoints_matched = len(targets)
         if not targets:
             return result
@@ -666,7 +722,15 @@ async def enqueue_event_async(
                     event_id=event_id,
                     event_type=event_type,
                     occurred_at=_naive(occurred_at) or now,
-                    payload=envelope,
+                    payload=build_envelope(
+                        event_id=event_id,
+                        event_type=event_type,
+                        account_id=account_id,
+                        data=target_data[endpoint.id],
+                        occurred_at=occurred_at or datetime.now(timezone.utc),
+                    )
+                    if is_ci_endpoint(endpoint)
+                    else envelope,
                     generation=0,
                     now=now,
                     subject_id=subject_id,
@@ -681,10 +745,10 @@ async def enqueue_event_async(
             )
         if rows:
             inserted = await db.execute(
-                pg_insert(WebhookDelivery)
+                pg_insert(models.WebhookDelivery)
                 .values(rows)
                 .on_conflict_do_nothing(constraint="uq_webhook_delivery_event")
-                .returning(WebhookDelivery.id)
+                .returning(models.WebhookDelivery.id)
             )
             result.delivery_ids = [row[0] for row in inserted.fetchall()]
         return result
@@ -696,7 +760,7 @@ async def enqueue_event_async(
 async def enqueue_raw_delivery_async(
     db: Any,
     *,
-    endpoint: WebhookEndpoint,
+    endpoint: models.WebhookEndpoint,
     event_type: str,
     payload: Mapping[str, Any],
     natural_key: str,
@@ -705,6 +769,8 @@ async def enqueue_raw_delivery_async(
 ) -> EnqueueResult:
     """Async twin of :func:`enqueue_raw_delivery` for the approval shim."""
     result = EnqueueResult()
+    if is_ci_endpoint(endpoint):
+        return result
     try:
         now = _utcnow()
         event_id = deterministic_event_id(natural_key)
@@ -730,10 +796,10 @@ async def enqueue_raw_delivery_async(
             subject_id=subject_id,
         )
         inserted = await db.execute(
-            pg_insert(WebhookDelivery)
+            pg_insert(models.WebhookDelivery)
             .values([row])
             .on_conflict_do_nothing(constraint="uq_webhook_delivery_event")
-            .returning(WebhookDelivery.id)
+            .returning(models.WebhookDelivery.id)
         )
         result.delivery_ids = [item[0] for item in inserted.fetchall()]
         return result

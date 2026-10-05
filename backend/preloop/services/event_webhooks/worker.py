@@ -24,10 +24,10 @@ from typing import Any, Optional
 import httpx
 
 from preloop.config import settings
+from preloop.models import crud, models
+from preloop.models.crud.ci_subscription import is_ci_endpoint
 from preloop.models.models.webhook_endpoint import (
     SOURCE_APPROVAL_WORKFLOW,
-    WebhookDelivery,
-    WebhookEndpoint,
 )
 from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.signing import (
@@ -60,6 +60,7 @@ class PreparedDelivery:
     event_type: str
     attempt: int
     body: bytes
+    restricted_ci: bool = False
 
 
 @dataclass
@@ -80,7 +81,7 @@ def _open_worker_session():
 
 
 def prepare_claimed(
-    delivery: WebhookDelivery, endpoint: WebhookEndpoint
+    delivery: models.WebhookDelivery, endpoint: models.WebhookEndpoint
 ) -> Optional[PreparedDelivery]:
     """Render a claimed row into an immutable request description.
 
@@ -110,6 +111,7 @@ def prepare_claimed(
         event_type=delivery.event_type,
         attempt=delivery.attempt_count + 1,
         body=body,
+        restricted_ci=is_ci_endpoint(endpoint),
     )
 
 
@@ -198,7 +200,7 @@ def claim_batch(db, *, now: Optional[datetime] = None) -> list[PreparedDelivery]
     prepared: list[PreparedDelivery] = []
     probing: set[Any] = set()
     for delivery in claimed:
-        endpoint = db.get(WebhookEndpoint, delivery.endpoint_id)
+        endpoint = db.get(models.WebhookEndpoint, delivery.endpoint_id)
         if endpoint is None:
             delivery.status = "dead"
             delivery.last_error = "endpoint no longer exists"
@@ -241,10 +243,10 @@ def apply_outcomes(db, outcomes: list[AttemptOutcome]) -> None:
         outcomes: One per attempted delivery.
     """
     for outcome in outcomes:
-        delivery = db.get(WebhookDelivery, outcome.delivery_id)
+        delivery = db.get(models.WebhookDelivery, outcome.delivery_id)
         if delivery is None:
             continue
-        endpoint = db.get(WebhookEndpoint, delivery.endpoint_id)
+        endpoint = db.get(models.WebhookEndpoint, delivery.endpoint_id)
         if endpoint is None:
             continue
         status = outbox.record_attempt(
@@ -261,7 +263,7 @@ def apply_outcomes(db, outcomes: list[AttemptOutcome]) -> None:
 
 
 def _write_back_approval_state(
-    db, delivery: WebhookDelivery, status: str, outcome: AttemptOutcome
+    db, delivery: models.WebhookDelivery, status: str, outcome: AttemptOutcome
 ) -> None:
     """Keep ``approval_request.webhook_posted_at`` / ``webhook_error`` honest.
 
@@ -297,6 +299,56 @@ def _write_back_approval_state(
         logger.debug("Approval webhook write-back skipped", exc_info=True)
 
 
+def revalidate_ci_delivery(
+    db_factory: Any,
+    prepared: PreparedDelivery,
+) -> Optional[PreparedDelivery]:
+    """Own a separate short-lived session per send, after semaphore acquisition."""
+    db = None
+    try:
+        db = db_factory()
+        rows = crud.crud_ci_subscription.prepare_delivery(
+            db, delivery_id=prepared.delivery_id
+        )
+        if rows is None or not outbox.endpoint_is_deliverable(
+            rows[1], outbox._utcnow()
+        ):
+            crud.crud_ci_subscription.record_preparation_failure(
+                db, delivery_id=prepared.delivery_id
+            )
+            return None
+        refreshed = prepare_claimed(*rows)
+        if refreshed is None:
+            crud.crud_ci_subscription.record_preparation_failure(
+                db, delivery_id=prepared.delivery_id
+            )
+        return refreshed
+    except Exception as error:
+        logger.warning(
+            "Restricted CI callback %s preparation failed (%s)",
+            prepared.delivery_id,
+            type(error).__name__,
+        )
+        try:
+            if db is not None:
+                db.rollback()
+            else:
+                db = db_factory()
+            crud.crud_ci_subscription.record_preparation_failure(
+                db, delivery_id=prepared.delivery_id
+            )
+        except Exception as accounting_error:
+            logger.warning(
+                "Restricted CI callback %s failure accounting unavailable (%s)",
+                prepared.delivery_id,
+                type(accounting_error).__name__,
+            )
+        return None
+    finally:
+        if db is not None:
+            db.close()
+
+
 async def run_once(db_factory=_open_worker_session) -> int:
     """Run one full pass: claim, post, record.
 
@@ -321,20 +373,26 @@ async def run_once(db_factory=_open_worker_session) -> int:
 
     async def _send(item: PreparedDelivery, client: httpx.AsyncClient):
         async with semaphore:
+            if item.restricted_ci:
+                item = await asyncio.to_thread(revalidate_ci_delivery, db_factory, item)
+                if item is None:
+                    return None
             return await post_delivery(client, item)
 
+    outcomes = []
     try:
         async with httpx.AsyncClient(
             timeout=settings.webhook_delivery_timeout_seconds,
             follow_redirects=False,
         ) as client:
             outcomes = await asyncio.gather(*(_send(item, client) for item in prepared))
+        outcomes = [outcome for outcome in outcomes if outcome is not None]
         await asyncio.to_thread(apply_outcomes, db, list(outcomes))
     except Exception:  # noqa: BLE001 - claims lapse and the rows retry
         logger.warning("Webhook delivery pass failed", exc_info=True)
     finally:
         db.close()
-    return len(prepared)
+    return len(outcomes)
 
 
 class WebhookDeliveryWorker:

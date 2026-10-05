@@ -16,8 +16,25 @@ Two properties the automatic callers rely on:
   the status write is conditional on the row not being terminal.
 * **Says why.** An automatic stop records a sentence in ``stop_reason`` and a
   machine-readable ``stop_source`` (``pr_merged``, ``pr_closed``,
-  ``pr_superseded``). The orchestrator rewrites ``error_message`` when the
-  agent exits, so the reason lives in columns it does not touch.
+  ``pr_superseded``; ``manual`` for an operator's stop). The orchestrator
+  rewrites ``error_message`` when the agent exits, so the reason lives in
+  columns it does not touch.
+
+And two that make a stop durable rather than best effort:
+
+* **Recorded intent.** Every stop writes ``stop_requested_at``. Launch
+  admission refuses a row that carries it (or is already terminal), and the
+  orchestrator's monitor polls it, so a stop issued while the runtime is
+  still being prepared, when nobody is listening for the NATS command yet,
+  still prevents the run.
+* **Requested is not confirmed.** ``STOPPED`` says the stop was accepted.
+  ``stop_confirmed_at`` is only written once the runtime is verified gone
+  (``AgentExecutor.is_stopped``). When the teardown failed, or there was no
+  runtime reference to tear down yet, it stays null and ``stop_reason``
+  says why; the orchestrator (or the recovery pass that resumes it) confirms
+  termination later.
+
+Every call is written to the audit log as ``flow_execution_stop_requested``.
 """
 
 from __future__ import annotations
@@ -36,6 +53,9 @@ from preloop.services.runner_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Audit action written for every stop request, whoever issued it.
+STOP_REQUESTED_AUDIT_ACTION = "flow_execution_stop_requested"
 
 #: ``error_message`` written by an operator's stop.
 MANUAL_STOP_MESSAGE = "Manually stopped by user"
@@ -59,15 +79,46 @@ class StopOutcome:
     status: str
 
 
+@dataclass(frozen=True)
+class TeardownOutcome:
+    """What tearing the runtime down established.
+
+    Attributes:
+        confirmed: True only when the runtime is verified gone (or there
+            never was one to run, such as a queue slot).
+        unconfirmed_reason: Why termination could not be confirmed, when it
+            is worth recording (teardown raised, no runtime reference yet).
+            None when confirmation is simply pending (a Kubernetes Job still
+            deleting, a runner that has not acknowledged its halt yet).
+    """
+
+    confirmed: bool
+    unconfirmed_reason: Optional[str] = None
+    #: No runtime reference: confirmed after all when the row turns out
+    #: never to have been admitted (decided atomically by the status write).
+    confirm_if_never_launched: bool = False
+
+
+#: ``stop_reason`` suffix when the stop found no runtime reference to tear
+#: down: the orchestrator may still be creating it, and refuses or tears it
+#: down when it sees the stopped row.
+NO_RUNTIME_REFERENCE_REASON = (
+    "termination not confirmed: no runtime reference at stop time"
+)
+
+
 def _status(execution: Any) -> str:
     return str(getattr(execution, "status", "") or "")
 
 
-async def _tear_down_runtime(db: Any, execution: Any, *, account_id: Any) -> None:
+async def _tear_down_runtime(
+    db: Any, execution: Any, *, account_id: Any
+) -> TeardownOutcome:
     """Halt the runner job or stop the agent container behind an execution.
 
     Never raises: the status write that follows is the durable part of the
-    stop and must happen even when the runtime cannot be reached.
+    stop and must happen even when the runtime cannot be reached. What it
+    returns says whether the runtime is verified gone.
     """
     from preloop.agents.codex import CodexAgent
     from preloop.agents.container import ContainerAgentExecutor
@@ -90,18 +141,29 @@ async def _tear_down_runtime(db: Any, execution: Any, *, account_id: Any) -> Non
             logger.info(
                 "Requested halt on runner %s for execution %s", runner_id, execution_id
             )
-        return
+        # Confirmed when the runner acknowledges the halt (its terminal
+        # report confirms the stop).
+        return TeardownOutcome(confirmed=False)
     if queued_pool is not None:
         # Queued for a private pool: nothing runs yet, so there is no
         # container, Job, or runner to stop. The status write is all that is
         # needed.
-        return
+        return TeardownOutcome(confirmed=True)
     if not session_reference:
-        return
+        # Still being prepared: the orchestrator refuses admission or tears
+        # down what it created when it sees the stopped row, and confirms.
+        return TeardownOutcome(
+            confirmed=False,
+            unconfirmed_reason=NO_RUNTIME_REFERENCE_REASON,
+            confirm_if_never_launched=True,
+        )
     try:
         flow = crud_flow.get(db=db, id=execution.flow_id, account_id=account_id)
         if not flow:
-            return
+            return TeardownOutcome(
+                confirmed=False,
+                unconfirmed_reason="termination not confirmed: flow not found",
+            )
         use_kubernetes = (
             os.getenv("USE_KUBERNETES_FOR_AGENTS", "false").lower() == "true"
         )
@@ -143,12 +205,90 @@ async def _tear_down_runtime(db: Any, execution: Any, *, account_id: Any) -> Non
 
         await agent.stop(session_reference)
         logger.info(
-            "Stopped container %s for execution %s", session_reference, execution_id
+            "Stop requested for runtime %s of execution %s",
+            session_reference,
+            execution_id,
         )
     except Exception as error:
         logger.error(
             "Failed to stop container for execution %s: %s", execution_id, error
         )
+        return TeardownOutcome(
+            confirmed=False,
+            unconfirmed_reason=(
+                f"termination not confirmed: runtime teardown failed "
+                f"({type(error).__name__}: {error})"
+            )[:300],
+        )
+    # ``stop()`` returning is not termination: a Kubernetes Job deletion is
+    # only accepted, its pods still have their grace period. Ask the runtime.
+    try:
+        confirmed = await agent.is_stopped(session_reference) is True
+    except Exception as error:
+        logger.warning(
+            "Could not verify termination of %s for execution %s: %s",
+            session_reference,
+            execution_id,
+            error,
+        )
+        confirmed = False
+    return TeardownOutcome(confirmed=confirmed)
+
+
+def _audit_stop_request(
+    db: Any,
+    execution: Any,
+    *,
+    account_id: Any,
+    user_id: Any,
+    status_before: str,
+    outcome: StopOutcome,
+    stop_source: Optional[str],
+    teardown: Optional[TeardownOutcome],
+) -> None:
+    """Write the stop request to the audit log. Never raises."""
+    try:
+        from preloop.models.crud import crud_audit_log
+
+        crud_audit_log.log_action(
+            db,
+            account_id=account_id,
+            user_id=user_id,
+            action=STOP_REQUESTED_AUDIT_ACTION,
+            resource_type="flow_execution",
+            resource_id=str(execution.id),
+            status="success" if outcome.stopped else "noop",
+            details={
+                "flow_id": str(getattr(execution, "flow_id", "") or ""),
+                "status_before": status_before,
+                "status_after": outcome.status,
+                "stop_source": getattr(execution, "stop_source", None)
+                or stop_source
+                or (None if user_id is None else "manual"),
+                "stop_requested_at": _iso(
+                    getattr(execution, "stop_requested_at", None)
+                ),
+                "stop_confirmed_at": _iso(
+                    getattr(execution, "stop_confirmed_at", None)
+                ),
+                "termination_confirmed": getattr(execution, "stop_confirmed_at", None)
+                is not None,
+                "unconfirmed_reason": teardown.unconfirmed_reason
+                if teardown is not None
+                and getattr(execution, "stop_confirmed_at", None) is None
+                else None,
+            },
+        )
+    except Exception:
+        logger.exception("Failed to audit the stop of execution %s", execution.id)
+        try:
+            db.rollback()
+        except Exception:  # pragma: no cover - session already unusable
+            pass
+
+
+def _iso(value: Any) -> Optional[str]:
+    return value.isoformat() if isinstance(value, datetime) else None
 
 
 async def _stop_tree(
@@ -193,6 +333,7 @@ async def stop_execution(
     stop_reason: Optional[str] = None,
     stop_source: Optional[str] = None,
     command_payload: Optional[Dict[str, Any]] = None,
+    user_id: Any = None,
 ) -> StopOutcome:
     """Stop one execution, or do nothing when it already ended.
 
@@ -206,6 +347,7 @@ async def stop_execution(
             operator's stop.
         stop_source: Machine-readable cause of an automatic stop.
         command_payload: Payload forwarded with the NATS stop command.
+        user_id: Who asked, for the audit row; None for a platform stop.
 
     Returns:
         Whether this call stopped the execution, and its status afterwards.
@@ -227,7 +369,18 @@ async def stop_execution(
             await _stop_tree(
                 db, execution, account_id=account_id, nats_client=nats_client
             )
-        return StopOutcome(stopped=False, status=status_before)
+        outcome = StopOutcome(stopped=False, status=status_before)
+        _audit_stop_request(
+            db,
+            execution,
+            account_id=account_id,
+            user_id=user_id,
+            status_before=status_before,
+            outcome=outcome,
+            stop_source=stop_source,
+            teardown=None,
+        )
+        return outcome
 
     closed_park = False
     if stops_a_tree:
@@ -238,8 +391,9 @@ async def stop_execution(
             stop_source=stop_source,
         )
 
+    teardown: Optional[TeardownOutcome] = None
     if _status(execution) in RUNTIME_STATUSES:
-        await _tear_down_runtime(db, execution, account_id=account_id)
+        teardown = await _tear_down_runtime(db, execution, account_id=account_id)
 
     stopped = (
         crud_flow_execution.mark_stopped(
@@ -249,6 +403,14 @@ async def stop_execution(
             stop_reason=stop_reason,
             stop_source=stop_source,
             now=datetime.now(timezone.utc),
+            # A parked run holds no runtime: nothing is left to terminate.
+            confirmed=teardown.confirmed if teardown is not None else True,
+            unconfirmed_reason=(
+                teardown.unconfirmed_reason if teardown is not None else None
+            ),
+            confirm_if_never_launched=(
+                teardown.confirm_if_never_launched if teardown is not None else False
+            ),
         )
         or closed_park
     )
@@ -260,7 +422,29 @@ async def stop_execution(
     if not stopped:
         # The run ended on its own while the runtime was being torn down.
         # It keeps its result; there is nothing left to cascade or signal.
-        return StopOutcome(stopped=False, status=_status(execution))
+        outcome = StopOutcome(stopped=False, status=_status(execution))
+        _audit_stop_request(
+            db,
+            execution,
+            account_id=account_id,
+            user_id=user_id,
+            status_before=status_before,
+            outcome=outcome,
+            stop_source=stop_source,
+            teardown=teardown,
+        )
+        return outcome
+
+    _audit_stop_request(
+        db,
+        execution,
+        account_id=account_id,
+        user_id=user_id,
+        status_before=status_before,
+        outcome=StopOutcome(stopped=True, status="STOPPED"),
+        stop_source=stop_source,
+        teardown=teardown,
+    )
 
     if stops_a_tree:
         await _stop_tree(db, execution, account_id=account_id, nats_client=nats_client)

@@ -155,6 +155,62 @@ class SupplierDerivationTest(unittest.TestCase):
         self.assertEqual(source, "manual_override")
         self.assertEqual(supplier["name"], "paulirish")
 
+    def test_vendored_braces_names_its_upstream_author(self) -> None:
+        """Release indexing uses frontend/node_modules, where braces is a symlink.
+
+        ``generate_sbom.sh`` passes that root. cyclonedx-npm also attaches a
+        ``git+https`` ``vcs_url``. The vendored author has to win; a walk that
+        skips the symlink used to publish ``https:/github.com`` instead.
+        """
+        production = REPO_ROOT / "frontend" / "node_modules"
+        vendored = REPO_ROOT / "frontend" / "vendor" / "braces"
+        if (production / "braces").is_symlink():
+            root = production
+        else:
+            root = self._tmp() / "node_modules"
+            root.mkdir()
+            (root / "braces").symlink_to(vendored, target_is_directory=True)
+        index = sbom_metadata.MetadataIndex([], [root])
+        self.assertIsNotNone(index.npm_manifest("braces"))
+        purl = (
+            "pkg:npm/braces@3.0.4?vcs_url="
+            "git%2Bhttps%3A%2F%2Fgithub.com%2Fmicromatch%2Fbraces.git"
+        )
+        supplier, source = sbom_metadata.derive_supplier(
+            _component("braces", purl), index
+        )
+        self.assertEqual(source, "package_metadata_author")
+        self.assertEqual(supplier["name"], "Jon Schlinkert")
+
+    def test_git_plus_https_vcs_url_uses_the_github_org(self) -> None:
+        """A git+https vcs_url must not survive as the name ``https:/github.com``."""
+        index = sbom_metadata.MetadataIndex([], [])
+        purl = (
+            "pkg:npm/braces@3.0.4?vcs_url="
+            "git%2Bhttps%3A%2F%2Fgithub.com%2Fmicromatch%2Fbraces.git"
+        )
+        supplier, source = sbom_metadata.derive_supplier(
+            _component("braces", purl), index
+        )
+        self.assertEqual(source, "module_path")
+        self.assertEqual(supplier["name"], "micromatch")
+
+    def test_npm_index_follows_a_package_symlink_once(self) -> None:
+        """A file: install is a directory symlink, and a cycle must not hang."""
+        root = self._tmp()
+        modules = root / "node_modules"
+        real = root / "vendor" / "widget"
+        self._write_npm(real, "widget", author="Ada Lovelace")
+        modules.mkdir()
+        (modules / "widget").symlink_to(real, target_is_directory=True)
+        (real / "loop").symlink_to(modules, target_is_directory=True)
+        index = sbom_metadata.MetadataIndex([], [modules])
+        supplier, source = sbom_metadata.derive_supplier(
+            _component("widget", "pkg:npm/widget@1.2.3"), index
+        )
+        self.assertEqual(source, "package_metadata_author")
+        self.assertEqual(supplier["name"], "Ada Lovelace")
+
     def test_npm_repository_path_when_no_person_or_scope(self) -> None:
         root = self._tmp()
         modules = root / "node_modules"

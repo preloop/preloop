@@ -260,8 +260,9 @@ async def test_github_close_stops_every_run_bound_to_the_pr(
         assert row.stop_reason == reason
         assert row.error_message == reason
         assert row.end_time is not None
-        # Not the kill-switch path: that one reports an account halt.
-        assert row.stop_requested_at is None
+        # Durable like every stop; stop_source says it was not a kill
+        # switch.
+        assert row.stop_requested_at is not None
     for row, status in ((other_pr, "RUNNING"), (issue_run, "RUNNING")):
         db_session.refresh(row)
         assert row.status == status

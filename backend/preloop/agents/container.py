@@ -1144,6 +1144,31 @@ except ImportError:
     )
 
 
+#: ``execution_context`` key carrying the seconds an agent runtime may live.
+#: The orchestrator writes it; the Kubernetes executor reads it for the Job's
+#: ``activeDeadlineSeconds``. One constant so a rename cannot drop the backstop.
+RUNTIME_DEADLINE_CONTEXT_KEY = "runtime_deadline_seconds"
+
+
+def runtime_deadline_seconds(execution_context: Dict[str, Any]) -> Optional[int]:
+    """``activeDeadlineSeconds`` for an agent Job, or None for no deadline.
+
+    The orchestrator puts the execution's remaining wall-clock budget plus a
+    teardown grace into the context (``RUNTIME_DEADLINE_CONTEXT_KEY``). A
+    confirmation nudge writes its own timeout plus that grace instead. Anything
+    that is not a positive whole number leaves the Job without a deadline,
+    as before.
+    """
+    value = execution_context.get(RUNTIME_DEADLINE_CONTEXT_KEY)
+    if isinstance(value, bool):
+        return None
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
 class ContainerAgentExecutor(AgentExecutor):
     """
     Execute agents in isolated Docker containers or Kubernetes pods.
@@ -1872,6 +1897,10 @@ class ContainerAgentExecutor(AgentExecutor):
                 template=pod_template,
                 backoff_limit=0,  # Don't retry failed jobs
                 ttl_seconds_after_finished=ttl_seconds,  # Auto-cleanup after completion
+                # Backstop for the execution's wall-clock deadline: the
+                # orchestrator times the run out and stops the Job itself;
+                # this ends it when the orchestrator cannot.
+                active_deadline_seconds=runtime_deadline_seconds(execution_context),
             ),
         )
 
@@ -3433,8 +3462,14 @@ class ContainerAgentExecutor(AgentExecutor):
             )
             return len(pods.items) == 0
         docker = await self._get_docker_client()
-        container = await docker.containers.get(session_reference)
-        state = (await container.show())["State"]
+        try:
+            container = await docker.containers.get(session_reference)
+            state = (await container.show())["State"]
+        except DockerError as exc:
+            # A container that no longer exists is not running.
+            if getattr(exc, "status", None) == 404:
+                return True
+            raise
         return state.get("Running") is False and state.get("Status") in {
             "exited",
             "dead",

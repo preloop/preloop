@@ -319,6 +319,21 @@ def evaluate_delegation(
     Raises:
         DelegationRefusedError: The first rule that declined, with its reason.
     """
+    from preloop.models import models
+
+    if isinstance(parent_execution, models.FlowExecution) and any(
+        value is not None
+        for value in (
+            parent_execution.ci_principal_id,
+            parent_execution.ci_review_binding,
+            parent_execution.initiating_ci_key_id,
+        )
+    ):
+        raise DelegationRefusedError(
+            "restricted_ci",
+            "Restricted CI v1 permits one execution only",
+        )
+
     depth = int(getattr(parent_execution, "delegation_depth", 0) or 0) + 1
     root_execution_id = (
         getattr(parent_execution, "root_execution_id", None) or parent_execution.id

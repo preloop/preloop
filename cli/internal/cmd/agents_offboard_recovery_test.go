@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
@@ -17,6 +18,12 @@ import (
 
 // The gateway fixture rotates a synthetic lineage after enrollment.
 type offboardRecoveryFixture struct {
+	// mu guards fields the httptest handler writes while the test reads them.
+	// Hijacking the export connection does not synchronize those accesses.
+	// Every access to the fields below must hold mu while a request may
+	// still be in flight.
+	mu sync.Mutex
+
 	agent                                      AgentConfig
 	home, config, exportBody                   string
 	exportStatus, archiveStatus, cleanupStatus int
@@ -56,6 +63,8 @@ func newOffboardRecoveryFixture(t *testing.T, kinds ...string) *offboardRecovery
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
 		f.events = append(f.events, r.Method+" "+r.URL.Path)
 		detail := *detailWithModelForTest("model-1")
 		detail.Agent.SessionSourceID = runtimePrincipalIDForAgent(f.agent)
@@ -172,10 +181,14 @@ func assertRecoveryUntouched(t *testing.T, f *offboardRecoveryFixture, out strin
 	if err == nil {
 		t.Fatal("required recovery failure did not abort")
 	}
-	if f.archives != 0 || f.deletes != 0 || f.modelDeleted {
-		t.Errorf("remote mutation: %v", f.events)
+	f.mu.Lock()
+	archives, deletes, modelDeleted := f.archives, f.deletes, f.modelDeleted
+	events := append([]string(nil), f.events...)
+	f.mu.Unlock()
+	if archives != 0 || deletes != 0 || modelDeleted {
+		t.Errorf("remote mutation: %v", events)
 	}
-	for _, event := range f.events {
+	for _, event := range events {
 		if strings.Contains(event, "mcp-servers") || strings.Contains(event, "flows") {
 			t.Errorf("cleanup ran: %s", event)
 		}
@@ -243,10 +256,13 @@ func TestExecuteOffboardRecoveryFaultsAndRetry(t *testing.T) {
 			out, err := runRecoveryOffboard(t, f)
 			assertRecoveryUntouched(t, f, out, err)
 			// Clear only the injected fault: the remote live lineage and local
-			// enrollment survived the failed operation.
+			// enrollment survived the failed operation. The network case's
+			// handler can still be reading these fields when the client returns.
+			f.mu.Lock()
 			f.exportStatus = 200
 			f.dropExport = false
 			f.exportBody = `{"credential_type":"oauth_openai_codex","access":"synthetic-live-access","refresh":"synthetic-rotated-refresh","expires":1900000000000,"account_id":"synthetic-account"}`
+			f.mu.Unlock()
 			readCodexOffboardKeychain = func() (string, error) { return "", nil }
 			writeOffboardCredentialStoreFile = writeOffboardCredentialFile
 			authPath := filepath.Join(f.home, ".codex", "auth.json")

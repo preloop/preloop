@@ -43,6 +43,66 @@ ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED = "hosted_tariff_unconfigured"
 # proxy read timeout, an ingress hang-up — killed the request, whereas a
 # cancellation is normal client behaviour (user hit Ctrl-C, agent moved on).
 ERROR_CLASS_STREAM_ABANDONED = "stream_abandoned"
+# The gateway's own request translation failed before any upstream call:
+# LiteLLM raised a plain ``TypeError`` (e.g. ``unhashable type: 'dict'`` from
+# ``get_optional_params`` when a provider mapping hashes a dict-valued param)
+# or a ``ValueError`` while mapping parameters. The provider never received a
+# request, so recording this as ``upstream_error`` (502) blamed the customer's
+# endpoint in alerts (prod 2026-10-05, 38 identical failures). Deterministic:
+# retrying the same body fails the same way.
+ERROR_CLASS_GATEWAY_TRANSLATION = "gateway_translation_error"
+
+# Frames that only run while LiteLLM maps request parameters, i.e. before any
+# network I/O. A ``ValueError`` raised under one of these is ours.
+_PARAM_MAPPING_FRAMES = frozenset(
+    {
+        "get_optional_params",
+        "map_openai_params",
+        "pre_process_non_default_params",
+        "pre_process_optional_params",
+        "_build_completion_kwargs",
+    }
+)
+
+
+def is_gateway_translation_error(exc: BaseException) -> bool:
+    """Whether ``exc`` is a local request-translation bug, not an upstream fault.
+
+    Assumption: LiteLLM wraps provider and transport failures in its own
+    exception classes (``openai.APIError`` subclasses, or any type defined in
+    ``litellm``, ``openai``, ``httpx``, or ``json``). A bare ``TypeError``
+    whose class sits outside those modules is treated as local translation.
+    That includes a ``TypeError`` raised while LiteLLM transforms a provider
+    response, not only during parameter mapping. The rule stays that broad
+    on purpose: no current response-transform ``TypeError`` has been shown
+    to be a genuine upstream fault, and narrowing it would risk missing the
+    unhashable-dict param-mapping crash this class exists to catch.
+    ``ValueError`` is broader (``json.JSONDecodeError`` on an upstream body
+    is one), so it counts only when a param-mapping frame
+    (``get_optional_params`` and the other names in
+    ``_PARAM_MAPPING_FRAMES``) is on the traceback.
+
+    Args:
+        exc: The exception raised by the upstream call.
+
+    Returns:
+        True when the failure happened in request translation.
+    """
+    if not isinstance(exc, (TypeError, ValueError)):
+        return False
+    if any(
+        cls.__module__.split(".", 1)[0] in {"litellm", "openai", "httpx", "json"}
+        for cls in type(exc).__mro__
+    ):
+        return False
+    if isinstance(exc, TypeError):
+        return True
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name in _PARAM_MAPPING_FRAMES:
+            return True
+        tb = tb.tb_next
+    return False
 
 
 @dataclass(frozen=True)
@@ -98,6 +158,14 @@ _OVERLOAD_MARKERS = (
 HOSTED_TARIFF_UNCONFIGURED_MARKERS = (
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     "no operator tariff",
+)
+
+# The gateway failed to translate the request before any upstream call.
+# Classifiers that only see status plus detail would otherwise read the
+# deterministic 500 as a transient ``upstream_error``.
+_GATEWAY_TRANSLATION_MARKERS = (
+    ERROR_CLASS_GATEWAY_TRANSLATION,
+    "could not translate this request",
 )
 
 # Explicit capability errors are deterministic even when a provider reports
@@ -373,6 +441,7 @@ _NON_RETRYABLE_ERROR_CLASSES = frozenset(
         ERROR_CLASS_CLIENT_CANCELLED,
         ERROR_CLASS_STREAM_ABANDONED,
         ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
+        ERROR_CLASS_GATEWAY_TRANSLATION,
     }
 )
 
@@ -470,6 +539,8 @@ def classify_recorded_error(
     text = (error_detail or "").lower()
     if _contains(text, HOSTED_TARIFF_UNCONFIGURED_MARKERS):
         return ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED
+    if _contains(text, _GATEWAY_TRANSLATION_MARKERS):
+        return ERROR_CLASS_GATEWAY_TRANSLATION
     if status_code == 499:
         return ERROR_CLASS_CLIENT_CANCELLED
     if status_code == 429:

@@ -166,6 +166,12 @@ export class RuntimeSessionsView extends LitElement {
   private error: string | null = null;
 
   @state()
+  private loadingMore = false;
+
+  @state()
+  private moreError: string | null = null;
+
+  @state()
   private selectedSessionId: string | null = null;
 
   @state()
@@ -293,6 +299,18 @@ export class RuntimeSessionsView extends LitElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-small);
+      }
+
+      .more {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+        justify-content: center;
+        margin-top: var(--sl-spacing-medium);
+      }
+
+      .error {
+        color: var(--sl-color-danger-700);
       }
 
       .titles-upsell-hint {
@@ -1099,6 +1117,53 @@ export class RuntimeSessionsView extends LitElement {
     }
   }
 
+  /**
+   * Append the next page of the list to the rows already on screen.
+   *
+   * Offset, not cursor: the backend contract pages the session list by offset
+   * and returns the authoritative `total`, so "load more" just asks for the
+   * rows starting at the current count. Sequenced against `loadSequence` so a
+   * filter change or live refresh that replaces the list abandons the older
+   * page instead of splicing it onto a list it no longer belongs to.
+   */
+  private async loadMoreSessions(): Promise<void> {
+    const current = this.sessions;
+    if (!current || this.loadingMore) return;
+    const seq = this.loadSequence;
+    this.loadingMore = true;
+    this.moreError = null;
+    try {
+      const page = await getAccountRuntimeSessions({
+        ...this.buildListParams(),
+        offset: current.items.length,
+      });
+      if (seq !== this.loadSequence) return;
+      // The list is ordered by a mutable activity timestamp with no
+      // tiebreaker, so an offset page can repeat a row already on screen.
+      // Drop those; a live refresh replaces the window if the order moved.
+      const seen = new Set(current.items.map((item) => item.id));
+      this.sessions = {
+        ...page,
+        items: [
+          ...current.items,
+          ...(page.items ?? []).filter((item) => !seen.has(item.id)),
+        ],
+      };
+    } catch (error) {
+      if (seq !== this.loadSequence) return;
+      this.moreError =
+        error instanceof Error
+          ? error.message
+          : 'Could not load more sessions.';
+    } finally {
+      // Always clear: this flag tracks THIS request, and only one load-more
+      // can be in flight at a time. A superseding load (live refresh or
+      // filter change) bumps loadSequence and would otherwise leave the
+      // button stuck in its loading state forever.
+      this.loadingMore = false;
+    }
+  }
+
   private async loadDetail(isSoftRefresh = false) {
     if (!this.selectedSessionId) {
       this.detail = null;
@@ -1486,6 +1551,12 @@ export class RuntimeSessionsView extends LitElement {
       return '';
     }
     const total = this.sessions.total ?? this.sessions.items.length;
+    const shown = this.sessions.items.length;
+    // While a page is truncated the count must not claim rows it has not
+    // listed: "Showing 50 of 120", then "120 sessions" once every row is here.
+    if (shown < total) {
+      return `Showing ${this.formatNumber(shown)} of ${this.formatNumber(total)}`;
+    }
     return `${this.formatNumber(total)} session${total === 1 ? '' : 's'}`;
   }
 
@@ -2076,6 +2147,36 @@ export class RuntimeSessionsView extends LitElement {
           }}
         ></preloop-session-observer>
       </sl-card>
+    `;
+  }
+
+  /**
+   * The "Load more sessions" control, shown only while the list is truncated
+   * against the server's `total`. Mirrors the Artifacts list: a single button
+   * with a loading state and an inline error that keeps the rows already
+   * loaded.
+   */
+  private renderLoadMoreSessions() {
+    if (!this.sessions) return nothing;
+    const total = this.sessions.total ?? this.sessions.items.length;
+    if (this.sessions.items.length >= total) return nothing;
+    return html`
+      <div class="more">
+        <sl-button
+          size="small"
+          ?loading=${this.loadingMore}
+          @click=${() => this.loadMoreSessions()}
+          data-testid="load-more-sessions"
+          >Load more sessions</sl-button
+        >
+        ${
+          this.moreError
+            ? html`<span class="error" role="alert" data-testid="more-error"
+                >${this.moreError}</span
+              >`
+            : nothing
+        }
+      </div>
     `;
   }
 
@@ -2718,7 +2819,10 @@ export class RuntimeSessionsView extends LitElement {
                         </div>
                       </sl-card>
                     `
-                  : this.renderObserver(this.sessions?.items || [])
+                  : html`
+                      ${this.renderObserver(this.sessions?.items || [])}
+                      ${this.renderLoadMoreSessions()}
+                    `
             }
           </div>
         </div>

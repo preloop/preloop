@@ -181,7 +181,8 @@ async def test_stopping_a_parent_parked_on_three_children_leaves_none_running(
     db_session.refresh(parent)
     assert parent.status == "STOPPED"
     assert parent.end_time is not None
-    assert parent.stop_source is None
+    assert parent.stop_source == "manual"
+    assert parent.stop_confirmed_at is not None
     assert parent.error_message == "Manually stopped by user"
     for child in children:
         db_session.refresh(child)
@@ -530,7 +531,9 @@ async def test_stopping_a_parent_with_no_children_is_the_stop_it_always_was(
     assert parent.error_message == "Manually stopped by user"
     assert parent.trigger_event_details == before
     assert STOP_COVERAGE_KEY not in (parent.trigger_event_details or {})
-    assert parent.stop_source is None
+    # Every stop now records a durable, manual stop request.
+    assert parent.stop_source == "manual"
+    assert parent.stop_requested_at is not None
 
 
 async def test_a_run_that_never_waited_for_its_children_is_not_a_tree_stop(
@@ -587,7 +590,8 @@ async def test_stop_during_the_pre_park_window_stays_stopped(
     assert parent.status == "STOPPED"
     assert parent.stop_requested_at is not None
     assert parent.park_expires_at is None
-    assert parent.stop_source is None
+    assert parent.stop_source == "manual"
+    assert parent.stop_confirmed_at is not None
     crud_flow_execution.confirm_park(
         db_session,
         execution_id=parent.id,

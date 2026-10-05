@@ -299,4 +299,14 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert discovery.down_revision == "20261004_ci_copilot_merge"
     artifact_avail = script.get_revision("20261004_artifact_avail_idx")
     assert artifact_avail.down_revision == "20261003_discovery_candidates"
-    assert script.get_heads() == ["20261004_artifact_avail_idx"]
+    ci_execution = script.get_revision("20261004_ci_execution_binding")
+    assert ci_execution.down_revision == "20261003_discovery_candidates"
+    ci_execution_merge = script.get_revision("20261004_ci_exec_artifact_merge")
+    assert set(ci_execution_merge.down_revision) == {
+        "20261004_ci_execution_binding",
+        "20261004_artifact_avail_idx",
+    }
+    ci_subscription = script.get_revision("20261004_ci_subscription_binding")
+    assert ci_subscription is not None
+    assert ci_subscription.down_revision == "20261004_ci_exec_artifact_merge"
+    assert script.get_heads() == ["20261004_ci_subscription_binding"]

@@ -242,7 +242,7 @@ def test_real_routes_deny_valid_requests_without_side_effects(
         (
             "POST",
             f"/api/v1/flows/{flow.id}/trigger",
-            {"pull_request_number": 1, "head_sha": "a" * 40},
+            {"pr_number": 1, "head_sha": "a" * 40, "matrix": [{}]},
         ),
         ("GET", "/api/v1/runtime-sessions", None),
         ("GET", "/api/v1/runners", None),
@@ -250,8 +250,14 @@ def test_real_routes_deny_valid_requests_without_side_effects(
     ]
     for method, path, payload in requests:
         response = client.request(method, path, headers=headers, json=payload)
-        assert response.status_code == 403, (method, path, response.text)
-        assert response.json() == {"detail": "Restricted CI authorization denied"}
+        expected = 422 if path.endswith("/trigger") else 403
+        assert response.status_code == expected, (method, path, response.text)
+        detail = (
+            "Restricted CI requires PR number and exact head only"
+            if expected == 422
+            else "Restricted CI authorization denied"
+        )
+        assert response.json() == {"detail": detail}
     assert len(CRUDBase(models.ApiKey).get_multi(db_session, limit=10000)) == before
     assert crud.crud_api_key.get(db_session, id=key.id).is_active
     assert crud.crud_project.get(db_session, id=project.id).name == before_name

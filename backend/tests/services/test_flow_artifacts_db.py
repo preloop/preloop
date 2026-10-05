@@ -334,6 +334,7 @@ def test_uploaded_evidence_discoverable_via_execution_apis(
 ) -> None:
     """Private/hosted PUT is visible on result, evidence-status, and evidence APIs."""
     from preloop.api.auth import get_current_active_user
+    from preloop.api.auth.ci import get_current_actor
     from preloop.api.endpoints import flows as flow_endpoints
 
     body = _evidence_body()
@@ -343,6 +344,7 @@ def test_uploaded_evidence_discoverable_via_execution_apis(
     app.include_router(flow_endpoints.router)
     app.dependency_overrides[get_db_session] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
     client = TestClient(app)
     uploaded = client.put(
         f"/flows/executions/{scope['execution_id']}/artifacts",
@@ -407,6 +409,7 @@ def test_an_uploaded_evidence_pack_is_signed_at_capture(
     import hashlib
 
     from preloop.api.auth import get_current_active_user
+    from preloop.api.auth.ci import get_current_actor
     from preloop.api.endpoints import flows as flow_endpoints
     from preloop.services import record_signing
 
@@ -417,6 +420,7 @@ def test_an_uploaded_evidence_pack_is_signed_at_capture(
     app.include_router(flow_endpoints.router)
     app.dependency_overrides[get_db_session] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
     client = TestClient(app)
     uploaded = client.put(
         f"/flows/executions/{scope['execution_id']}/artifacts",

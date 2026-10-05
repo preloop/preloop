@@ -169,6 +169,7 @@ export class WebhooksView extends LitElement {
   }
 
   private async handleTest(endpoint: WebhookEndpoint) {
+    if (endpoint.restricted_ci === true) return;
     this.busyEndpointId = endpoint.id;
     try {
       await sendWebhookTest(endpoint.id);
@@ -260,6 +261,7 @@ export class WebhooksView extends LitElement {
   private renderEndpointRow(endpoint: WebhookEndpoint) {
     const state = this.endpointState(endpoint);
     const managed = endpoint.source === SHIM_SOURCE;
+    const restricted = endpoint.restricted_ci === true;
     const busy = this.busyEndpointId === endpoint.id;
     return html`
       <tr>
@@ -274,6 +276,14 @@ export class WebhooksView extends LitElement {
             managed
               ? html`<div class="muted">
                   Managed by an approval workflow. Edit it there.
+                </div>`
+              : nothing
+          }
+          ${
+            restricted
+              ? html`<div class="muted">
+                  CI completion callback. The event filter is fixed; synthetic
+                  tests are unavailable.
                 </div>`
               : nothing
           }
@@ -320,6 +330,7 @@ export class WebhooksView extends LitElement {
                   <sl-button
                     size="small"
                     ?loading=${busy}
+                    ?disabled=${restricted}
                     @click=${() => this.handleTest(endpoint)}
                     >Send test</sl-button
                   >
