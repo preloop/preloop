@@ -394,7 +394,7 @@ Install verification from PyPI, then the `preloop-nanobot-plugin` entry
 point. `verify` and `run` read `~/.nanobot/preloop.json`, so enroll first.
 Put `PRELOOP_ACCESS_TOKEN` in the environment. Do not pass it on the
 command line. `verify` also checks that the installed SDK is
-`nanobot-ai==0.1.4.post3` (the pin in `pyproject.toml` and
+`nanobot-ai==0.2.1` (the pin in `pyproject.toml` and
 `preloop-plugin.json`).
 
 ```bash

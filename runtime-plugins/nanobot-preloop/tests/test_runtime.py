@@ -17,6 +17,7 @@ from preloop_nanobot_plugin.runtime import (
     BoundedProvider,
     GovernedTools,
     NanobotRuntime,
+    _session,
     validate_document,
 )
 
@@ -126,6 +127,82 @@ async def test_tool_escaping_and_unowned_execution_blocked() -> None:
     assert "disabled" in await tools.execute("spawn", {})
     assert "unowned" in await tools.execute("exec", {})
     native.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_outbound_message_content_is_the_reply(tmp_path: Path) -> None:
+    """nanobot-ai 0.2 process_direct returns OutboundMessage, not a string."""
+    loop = FakeLoop()
+    loop._max_messages = 120
+    loop.process_direct.return_value = SimpleNamespace(
+        content="Completed local fixture."
+    )
+    runtime = NanobotRuntime(
+        validate_document(document()), loop, tmp_path / "state.json"
+    )
+    result = await runtime.handle_send_message(
+        OperatorCommand("one", "hello", session_mode="new")
+    )
+    assert result.reply_text == "Completed local fixture."
+    assert loop._max_messages == 40
+
+
+@pytest.mark.asyncio
+async def test_bounded_provider_stamps_session_on_lazy_client() -> None:
+    """0.2 leaves _client empty until _ensure_client; the session header still lands."""
+    built = SimpleNamespace(
+        with_options=lambda **kwargs: SimpleNamespace(headers=kwargs["default_headers"])
+    )
+    provider = SimpleNamespace(
+        _client=None,
+        chat=AsyncMock(
+            return_value=SimpleNamespace(
+                finish_reason="stop", usage={"total_tokens": 1}
+            )
+        ),
+    )
+
+    async def ensure() -> object:
+        provider._client = built
+        return built
+
+    provider._ensure_client = ensure
+    token = _session.set("sess-1")
+    try:
+        await BoundedProvider(provider).chat(messages=[])
+    finally:
+        _session.reset(token)
+    assert provider._client.headers["X-Preloop-Session-Id"] == "sess-1"
+
+
+@pytest.mark.asyncio
+async def test_retry_entry_point_stays_inside_the_budget() -> None:
+    """0.2 reaches the provider through chat_with_retry."""
+    retry = AsyncMock(
+        return_value=SimpleNamespace(finish_reason="stop", usage={"total_tokens": 3})
+    )
+    chat = AsyncMock()
+    provider = SimpleNamespace(chat=chat, chat_with_retry=retry)
+    await BoundedProvider(provider).chat_with_retry(
+        messages=[{"role": "user", "content": "hi"}]
+    )
+    retry.assert_awaited()
+    chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_token_budget_estimates_characters() -> None:
+    """A 32k token cap still admits the larger 0.2 prompt."""
+    chat = AsyncMock(
+        return_value=SimpleNamespace(finish_reason="stop", usage={"total_tokens": 10})
+    )
+    wrapper = BoundedProvider(SimpleNamespace(chat=chat))
+    wrapper.remaining_tokens = 32000
+    await wrapper.chat(messages=[{"role": "user", "content": "x" * 30000}])
+    chat.assert_awaited()
+    wrapper.remaining_tokens = 32000
+    with pytest.raises(ValueError, match="budget"):
+        await wrapper.chat(messages=[{"role": "user", "content": "x" * 130000}])
 
 
 @pytest.mark.asyncio

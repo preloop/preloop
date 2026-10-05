@@ -60,32 +60,57 @@ class BoundedProvider:
         return getattr(self.provider, name)
 
     async def chat(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._call_bounded(self.provider.chat, args, kwargs)
+
+    async def chat_with_retry(self, *args: Any, **kwargs: Any) -> Any:
+        """Model entry point used by nanobot-ai 0.2, under the same budget."""
+        method = getattr(self.provider, "chat_with_retry", None) or self.provider.chat
+        return await self._call_bounded(method, args, kwargs)
+
+    async def _call_bounded(
+        self, method: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> Any:
         messages = kwargs.get("messages", args[0] if args else [])
         if len(json.dumps(messages)) > 100000 or self.remaining_tokens <= 0:
             raise ValueError("model context/token budget exceeded")
+        # Same 4 characters per token estimate the control plane uses when
+        # it turns max_total_tokens into a character budget. Byte length
+        # would reject a normal 0.2 system prompt under a 32k token cap.
         prompt_bound = (
             len(
                 json.dumps(
                     {"messages": messages, "tools": kwargs.get("tools", [])}
                 ).encode("utf-8")
             )
+            // 4
             + 1024
         )
         available_output = self.remaining_tokens - prompt_bound
         if available_output <= 0:
             raise ValueError("model context/token budget exceeded")
-        kwargs["max_tokens"] = min(kwargs.get("max_tokens", 4096), available_output)
-        # AsyncOpenAI.with_options is a public SDK seam. Attribute access here
-        # is pinned to Nanobot CustomProvider, whose client owns model routing.
-        if hasattr(self.provider, "_client"):
-            self.provider._client = self.provider._client.with_options(
+        limit = kwargs.get("max_tokens", 4096)
+        if isinstance(limit, int):
+            kwargs["max_tokens"] = min(limit, available_output)
+        # AsyncOpenAI.with_options is a public SDK seam. nanobot-ai 0.2
+        # builds that client on first use, so ensure it exists before the
+        # session header is attached.
+        ensure = getattr(self.provider, "_ensure_client", None)
+        if ensure is not None:
+            await ensure()
+        client = getattr(self.provider, "_client", None)
+        if client is not None:
+            self.provider._client = client.with_options(
                 default_headers={"X-Preloop-Session-Id": _session.get()}
             )
-        result = await self.provider.chat(*args, **kwargs)
+        result = await method(*args, **kwargs)
         if result.finish_reason == "error":
             raise RuntimeError("Nanobot gateway model request failed")
         usage = result.usage or {}
-        used = usage.get("total_tokens", prompt_bound + kwargs["max_tokens"])
+        accounted = kwargs.get("max_tokens", 4096)
+        used = usage.get(
+            "total_tokens",
+            prompt_bound + (accounted if isinstance(accounted, int) else 4096),
+        )
         if type(used) is not int or used < 0:
             raise ValueError("invalid model usage")
         self.remaining_tokens -= used
@@ -423,12 +448,16 @@ class NanobotRuntime:
                 self.loop = scoped.loop
             if isinstance(self.loop.provider, BoundedProvider):
                 self.loop.provider.remaining_tokens = tokens
-            self.loop.memory_window = 40
+            # History replay cap. nanobot-ai 0.2 stores it on _max_messages.
+            if hasattr(self.loop, "_max_messages"):
+                self.loop._max_messages = 40
+            else:
+                self.loop.memory_window = 40
             self.loop.max_iterations = turns
             self.command_sessions[command.command_id] = reference
             token = _session.set(reference)
 
-            async def run_turn() -> str:
+            async def run_turn() -> Any:
                 try:
                     return await self.loop.process_direct(
                         command.text, session_key=reference
@@ -443,15 +472,15 @@ class NanobotRuntime:
             self.active[reference] = task
             try:
                 reply = await asyncio.wait_for(task, seconds)
-                if isinstance(reply, str) and (
-                    reply.startswith("Error:")
-                    or reply.startswith(
-                        "I reached the maximum number of tool call iterations"
-                    )
+                # process_direct returns OutboundMessage. Tests may return a string.
+                content = getattr(reply, "content", None)
+                text = content if isinstance(content, str) else str(reply)
+                if text.startswith("Error:") or text.startswith(
+                    "I reached the maximum number of tool call iterations"
                 ):
                     raise RuntimeError("Nanobot provider or runtime failed")
                 return AgentControlResult(
-                    reply_text=str(reply),
+                    reply_text=text,
                     session_reference=reference,
                     metadata={"native_session_id": reference},
                 )
@@ -483,7 +512,7 @@ def build_runtime(
     """Construct the pinned SDK runtime with gateway-only model and MCP routing."""
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
-    from nanobot.providers.custom_provider import CustomProvider
+    from nanobot.providers.openai_compat_provider import OpenAICompatProvider
 
     config = validate_document(document)
     endpoint = urlsplit(config.control_ws_url)
@@ -494,7 +523,7 @@ def build_runtime(
         raise ValueError("model must be nonempty")
     workspace = Path(document.get("workspace", "~/.nanobot/workspace")).expanduser()
     workspace.mkdir(parents=True, exist_ok=True)
-    provider = CustomProvider(
+    provider = OpenAICompatProvider(
         api_key=config.bearer_token,
         api_base=model_base_url or f"{base}/openai/v1",
         default_model=model,
@@ -514,7 +543,7 @@ def build_runtime(
         workspace=workspace,
         model=model,
         max_iterations=20,
-        memory_window=40,
+        max_messages=40,
         restrict_to_workspace=True,
         mcp_servers={name: MCPServerConfig(**value) for name, value in mcp.items()},
     )
