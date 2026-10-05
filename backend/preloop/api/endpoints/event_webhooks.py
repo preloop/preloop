@@ -23,24 +23,27 @@ part of this change.
 from __future__ import annotations
 
 import logging
-from typing import Annotated, List, Optional
+from typing import Annotated, Any, Callable, List, Optional, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.auth.ci import get_current_actor
 from preloop.api.common import get_account_for_user
+from preloop.models import crud, models
+from preloop.models.crud.ci_principal import CiAuthorizationContext
+from preloop.models.crud.ci_subscription import is_ci_endpoint
 from preloop.models.db.session import get_db_session
-from preloop.models.models.account import Account
-from preloop.models.models.user import User
 from preloop.models.models.webhook_endpoint import (
     DELIVERY_DEAD,
     SOURCE_ACCOUNT,
-    WebhookDelivery,
-    WebhookEndpoint,
 )
+from preloop.schemas.ci_principal import CiAction
+from preloop.schemas.ci_subscription import CiSubscriptionCreate, CiSubscriptionUpdate
 from preloop.schemas.webhook_endpoint import (
     WebhookCatalogue,
     WebhookDeliveryRead,
@@ -59,13 +62,13 @@ from preloop.services.event_webhooks.events import (
     EVENT_TYPE_DESCRIPTIONS,
     EVENT_TYPES_V1,
 )
-from preloop.services.event_webhooks.targets import blocked_target_reason
 from preloop.services.event_webhooks.signing import (
     DEFAULT_TOLERANCE_SECONDS,
     SIGNATURE_HEADER,
     generate_secret,
     secret_hint,
 )
+from preloop.services.event_webhooks.targets import blocked_target_reason
 from preloop.utils.encryption import encrypt_value
 from preloop.utils.permissions import require_permission
 
@@ -81,7 +84,51 @@ MANAGE_PERMISSION = "manage_policies"
 MAX_ENDPOINTS_PER_ACCOUNT = 20
 
 
-def _to_read(endpoint: WebhookEndpoint) -> WebhookEndpointRead:
+def _account_for_actor(
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
+    db: Session = Depends(get_db_session),
+) -> models.Account:
+    """Resolve an actor account without authenticating machines as humans."""
+    account = crud.crud_account.get(db, id=current_user.account_id)
+    if account is None:
+        raise HTTPException(401, "Account not found")
+    return account
+
+
+async def _raw_ci_body(request: Request) -> Any:
+    """Retain raw fields which permissive human schemas otherwise discard."""
+    if isinstance(getattr(request.state, "ci_context", None), CiAuthorizationContext):
+        body = await request.body()
+        try:
+            raw = await request.json() if body else {}
+            if request.method == "POST" and request.url.path.endswith("/endpoints"):
+                CiSubscriptionCreate.model_validate(raw)
+            elif request.method == "PATCH":
+                CiSubscriptionUpdate.model_validate(raw)
+            elif raw != {}:
+                raise ValueError("This operation accepts no body overrides")
+            return raw
+        except ValueError:
+            raise HTTPException(422, "Invalid callback request") from None
+    return None
+
+
+_OperationResult = TypeVar("_OperationResult")
+
+
+def _ci_operation(operation: Callable[[], _OperationResult]) -> _OperationResult:
+    """Translate safe CRUD failures without including provider/private values."""
+    try:
+        return operation()
+    except (ValidationError, ValueError):
+        raise HTTPException(422, "Invalid restricted CI subscription") from None
+    except PermissionError:
+        raise HTTPException(403, "Restricted CI authorization denied") from None
+    except LookupError:
+        raise HTTPException(404, "Webhook endpoint not found") from None
+
+
+def _to_read(endpoint: models.WebhookEndpoint) -> WebhookEndpointRead:
     """Render an endpoint row for the API, without its secret."""
     return WebhookEndpointRead(
         id=endpoint.id,
@@ -90,6 +137,7 @@ def _to_read(endpoint: WebhookEndpoint) -> WebhookEndpointRead:
         event_types=list(endpoint.event_types or []),
         active=bool(endpoint.active),
         source=endpoint.source,
+        restricted_ci=is_ci_endpoint(endpoint),
         secret_hint=endpoint.secret_hint,
         created_by_user_id=endpoint.created_by_user_id,
         consecutive_failures=endpoint.consecutive_failures or 0,
@@ -102,12 +150,12 @@ def _to_read(endpoint: WebhookEndpoint) -> WebhookEndpointRead:
     )
 
 
-def _get_owned(db: Session, account_id, endpoint_id: UUID) -> WebhookEndpoint:
+def _get_owned(db: Session, account_id, endpoint_id: UUID) -> models.WebhookEndpoint:
     """Fetch an endpoint or 404. Scoping to the account is mandatory."""
     endpoint = db.execute(
-        select(WebhookEndpoint).where(
-            WebhookEndpoint.id == endpoint_id,
-            WebhookEndpoint.account_id == account_id,
+        select(models.WebhookEndpoint).where(
+            models.WebhookEndpoint.id == endpoint_id,
+            models.WebhookEndpoint.account_id == account_id,
         )
     ).scalar_one_or_none()
     if endpoint is None:
@@ -130,7 +178,7 @@ def _reject_blocked_target(url: str) -> None:
         )
 
 
-def _reject_shim_edit(endpoint: WebhookEndpoint, verb: str) -> None:
+def _reject_shim_edit(endpoint: models.WebhookEndpoint, verb: str) -> None:
     """Shim rows mirror an approval workflow; they are edited over there."""
     if endpoint.source != SOURCE_ACCOUNT:
         raise HTTPException(
@@ -145,8 +193,8 @@ def _reject_shim_edit(endpoint: WebhookEndpoint, verb: str) -> None:
 @router.get("/catalogue", response_model=WebhookCatalogue)
 @require_permission(VIEW_PERMISSION)
 def get_webhook_catalogue(
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: User = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Return the subscribable events and the delivery contract."""
@@ -166,22 +214,31 @@ def get_webhook_catalogue(
 
 
 @router.get("/endpoints", response_model=List[WebhookEndpointRead])
-@require_permission(VIEW_PERMISSION)
+@require_permission(VIEW_PERMISSION, ci_action=CiAction.READ_SUBSCRIPTION)
 def list_webhook_endpoints(
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: User = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(_account_for_actor)],
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     db: Session = Depends(get_db_session),
+    raw_body: Any = Depends(_raw_ci_body),
 ):
     """List this account's webhook endpoints, newest first.
 
     Includes the read-only rows the approval-workflow shim owns, so an
     operator can see why a legacy approval webhook is failing.
     """
+    if isinstance(current_user, CiAuthorizationContext):
+        return [
+            _to_read(row)
+            for row in _ci_operation(
+                lambda: crud.crud_ci_subscription.list_owned(db, context=current_user)
+            )
+        ]
+
     rows = (
         db.execute(
-            select(WebhookEndpoint)
-            .where(WebhookEndpoint.account_id == account.id)
-            .order_by(WebhookEndpoint.created_at.desc())
+            select(models.WebhookEndpoint)
+            .where(models.WebhookEndpoint.account_id == account.id)
+            .order_by(models.WebhookEndpoint.created_at.desc())
         )
         .scalars()
         .all()
@@ -194,20 +251,32 @@ def list_webhook_endpoints(
     response_model=WebhookEndpointCreated,
     status_code=status.HTTP_201_CREATED,
 )
-@require_permission(MANAGE_PERMISSION)
+@require_permission(MANAGE_PERMISSION, ci_action=CiAction.CREATE_SUBSCRIPTION)
 def create_webhook_endpoint(
     payload: WebhookEndpointCreate,
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: User = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(_account_for_actor)],
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     db: Session = Depends(get_db_session),
+    raw_body: Any = Depends(_raw_ci_body),
 ):
     """Create an endpoint and return its signing secret, once."""
+    if isinstance(current_user, CiAuthorizationContext):
+        endpoint, secret = _ci_operation(
+            lambda: crud.crud_ci_subscription.create(
+                db,
+                context=current_user,
+                payload=CiSubscriptionCreate.model_validate(raw_body),
+                max_endpoints=MAX_ENDPOINTS_PER_ACCOUNT,
+            )
+        )
+        return WebhookEndpointCreated(**_to_read(endpoint).model_dump(), secret=secret)
+
     _reject_blocked_target(payload.url)
     existing = (
         db.execute(
-            select(WebhookEndpoint).where(
-                WebhookEndpoint.account_id == account.id,
-                WebhookEndpoint.source == SOURCE_ACCOUNT,
+            select(models.WebhookEndpoint).where(
+                models.WebhookEndpoint.account_id == account.id,
+                models.WebhookEndpoint.source == SOURCE_ACCOUNT,
             )
         )
         .scalars()
@@ -223,7 +292,7 @@ def create_webhook_endpoint(
         )
 
     secret = generate_secret()
-    endpoint = WebhookEndpoint(
+    endpoint = models.WebhookEndpoint(
         account_id=account.id,
         url=payload.url,
         description=payload.description,
@@ -242,19 +311,37 @@ def create_webhook_endpoint(
 
 
 @router.patch("/endpoints/{endpoint_id}", response_model=WebhookEndpointRead)
-@require_permission(MANAGE_PERMISSION)
+@require_permission(MANAGE_PERMISSION, ci_action=CiAction.UPDATE_SUBSCRIPTION)
 def update_webhook_endpoint(
     endpoint_id: UUID,
     payload: WebhookEndpointUpdate,
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: User = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(_account_for_actor)],
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     db: Session = Depends(get_db_session),
+    raw_body: Any = Depends(_raw_ci_body),
 ):
     """Update an endpoint's URL, filter, description or active flag."""
+    if isinstance(current_user, CiAuthorizationContext):
+        endpoint = _ci_operation(
+            lambda: crud.crud_ci_subscription.update_owned(
+                db,
+                context=current_user,
+                endpoint_id=endpoint_id,
+                payload=CiSubscriptionUpdate.model_validate(raw_body),
+            )
+        )
+        return _to_read(endpoint)
+
     endpoint = _get_owned(db, account.id, endpoint_id)
     _reject_shim_edit(endpoint, "Edit")
 
     fields = payload.model_dump(exclude_unset=True)
+    if (
+        is_ci_endpoint(endpoint)
+        and "event_types" in fields
+        and fields["event_types"] != endpoint.event_types
+    ):
+        raise HTTPException(422, "Restricted CI callback filter is immutable")
     if fields.get("url"):
         _reject_blocked_target(fields["url"])
     for name, value in fields.items():
@@ -271,14 +358,23 @@ def update_webhook_endpoint(
 
 
 @router.delete("/endpoints/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)
-@require_permission(MANAGE_PERMISSION)
+@require_permission(MANAGE_PERMISSION, ci_action=CiAction.DELETE_SUBSCRIPTION)
 def delete_webhook_endpoint(
     endpoint_id: UUID,
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: User = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(_account_for_actor)],
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     db: Session = Depends(get_db_session),
+    raw_body: Any = Depends(_raw_ci_body),
 ):
     """Delete an endpoint and its delivery history."""
+    if isinstance(current_user, CiAuthorizationContext):
+        _ci_operation(
+            lambda: crud.crud_ci_subscription.remove_owned(
+                db, context=current_user, endpoint_id=endpoint_id
+            )
+        )
+        return None
+
     endpoint = _get_owned(db, account.id, endpoint_id)
     _reject_shim_edit(endpoint, "Clear")
     db.delete(endpoint)
@@ -286,12 +382,45 @@ def delete_webhook_endpoint(
     return None
 
 
+@router.post(
+    "/endpoints/{endpoint_id}/secret/rotate", response_model=WebhookEndpointCreated
+)
+@require_permission(MANAGE_PERMISSION, ci_action=CiAction.ROTATE_SUBSCRIPTION_SECRET)
+def rotate_webhook_endpoint_secret(
+    endpoint_id: UUID,
+    account: Annotated[models.Account, Depends(_account_for_actor)],
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
+    db: Session = Depends(get_db_session),
+    raw_body: Any = Depends(_raw_ci_body),
+) -> WebhookEndpointCreated:
+    """Rotate the secret, returned once; queued sends use the current secret."""
+    if isinstance(current_user, CiAuthorizationContext):
+        if raw_body != {}:
+            raise HTTPException(422, "Secret rotation accepts no overrides")
+        endpoint, secret = _ci_operation(
+            lambda: crud.crud_ci_subscription.rotate_secret(
+                db,
+                context=current_user,
+                endpoint_id=endpoint_id,
+            )
+        )
+    else:
+        endpoint, secret = _ci_operation(
+            lambda: crud.crud_ci_subscription.rotate_human_secret(
+                db,
+                account_id=account.id,
+                endpoint_id=endpoint_id,
+            )
+        )
+    return WebhookEndpointCreated(**_to_read(endpoint).model_dump(), secret=secret)
+
+
 @router.post("/endpoints/{endpoint_id}/test", response_model=WebhookTestSendResult)
 @require_permission(MANAGE_PERMISSION)
 def test_webhook_endpoint(
     endpoint_id: UUID,
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: User = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Queue a ``webhook.test`` event for one endpoint.
@@ -306,6 +435,11 @@ def test_webhook_endpoint(
     # envelope posted there would tell the operator nothing about the
     # deliveries that endpoint actually gets.
     _reject_shim_edit(endpoint, "Test")
+    if is_ci_endpoint(endpoint):
+        raise HTTPException(
+            422,
+            "CI completion callbacks do not accept synthetic test events",
+        )
     result = outbox.enqueue_event(
         db,
         account_id=account.id,
@@ -333,20 +467,20 @@ def test_webhook_endpoint(
 @router.get("/deliveries/dead-letter", response_model=List[WebhookDeliveryRead])
 @require_permission(VIEW_PERMISSION)
 def list_dead_letter_deliveries(
-    account: Annotated[Account, Depends(get_account_for_user)],
+    account: Annotated[models.Account, Depends(get_account_for_user)],
     limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """List deliveries that exhausted their retries."""
     rows = (
         db.execute(
-            select(WebhookDelivery)
+            select(models.WebhookDelivery)
             .where(
-                WebhookDelivery.account_id == account.id,
-                WebhookDelivery.status == DELIVERY_DEAD,
+                models.WebhookDelivery.account_id == account.id,
+                models.WebhookDelivery.status == DELIVERY_DEAD,
             )
-            .order_by(WebhookDelivery.updated_at.desc())
+            .order_by(models.WebhookDelivery.updated_at.desc())
             .limit(limit)
         )
         .scalars()
@@ -358,13 +492,13 @@ def list_dead_letter_deliveries(
 @router.get("/deliveries", response_model=List[WebhookDeliveryRead])
 @require_permission(VIEW_PERMISSION)
 def list_webhook_deliveries(
-    account: Annotated[Account, Depends(get_account_for_user)],
+    account: Annotated[models.Account, Depends(get_account_for_user)],
     endpoint_id: Optional[UUID] = Query(None),
     delivery_status: Optional[str] = Query(
         None, description="pending, delivered or dead"
     ),
     limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """List recent deliveries, newest first.
@@ -372,13 +506,17 @@ def list_webhook_deliveries(
     Dead-lettered rows are visible here rather than only in a server log:
     they are the ones an operator needs to find and replay.
     """
-    query = select(WebhookDelivery).where(WebhookDelivery.account_id == account.id)
+    query = select(models.WebhookDelivery).where(
+        models.WebhookDelivery.account_id == account.id
+    )
     if endpoint_id is not None:
-        query = query.where(WebhookDelivery.endpoint_id == endpoint_id)
+        query = query.where(models.WebhookDelivery.endpoint_id == endpoint_id)
     if delivery_status:
-        query = query.where(WebhookDelivery.status == delivery_status)
+        query = query.where(models.WebhookDelivery.status == delivery_status)
     rows = (
-        db.execute(query.order_by(WebhookDelivery.created_at.desc()).limit(limit))
+        db.execute(
+            query.order_by(models.WebhookDelivery.created_at.desc()).limit(limit)
+        )
         .scalars()
         .all()
     )
@@ -389,8 +527,8 @@ def list_webhook_deliveries(
 @require_permission(MANAGE_PERMISSION)
 def replay_webhook_event(
     event_id: UUID,
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: User = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
     """Re-queue one event id to every endpoint that already received it.

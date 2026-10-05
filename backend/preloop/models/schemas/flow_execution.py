@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from preloop.schemas.gateway_usage import GatewayTokenUsage
 
@@ -334,7 +334,10 @@ class FlowExecutionBase(BaseModel):
 
 # Pydantic model for creating a FlowExecution (API input - likely internal)
 class FlowExecutionCreate(FlowExecutionBase):
-    pass  # Most fields will be set by the system during creation
+    # Internal creation only; public triggers never accept these fields.
+    ci_principal_id: Optional[uuid.UUID] = None
+    initiating_ci_key_id: Optional[uuid.UUID] = None
+    ci_review_binding: Optional[Dict[str, Any]] = None
 
 
 # Pydantic model for updating a FlowExecution (API input - likely internal for status changes)

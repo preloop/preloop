@@ -2609,6 +2609,7 @@ export interface WebhookEndpoint {
   event_types: string[];
   active: boolean;
   source: string;
+  restricted_ci?: boolean;
   secret_hint: string | null;
   created_by_user_id: string | null;
   consecutive_failures: number;

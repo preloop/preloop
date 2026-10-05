@@ -71,6 +71,7 @@ def test_upgrade_after_downgrade_rebuilds_the_original_orm_shape(db_session):
     expected_endpoint = {c.name for c in WebhookEndpoint.__table__.columns} - {
         "ci_principal_id",
         "initiating_ci_key_id",
+        "ci_subscription_binding",
     }
     expected_delivery = {c.name for c in WebhookDelivery.__table__.columns}
 

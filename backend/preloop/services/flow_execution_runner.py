@@ -8,6 +8,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional, Set, TypedDict
 
+from preloop.api.loop_safety import run_db_off_loop
+from preloop.models import crud, models
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue_lifecycle
 from preloop.models.db.session import get_db_session
 from preloop.models.schemas.flow_execution import FlowExecutionUpdate
@@ -54,6 +56,37 @@ async def run_existing_execution(
     """
     if orchestrator.execution_log is None:
         raise ValueError("execution_log must be set before run_existing_execution")
+    if isinstance(orchestrator.execution_log, models.FlowExecution):
+        from preloop.services.ci_execution import ensure_ci_dispatch_admission
+
+        try:
+            await ensure_ci_dispatch_admission(
+                orchestrator.db,
+                execution=orchestrator.execution_log,
+            )
+        except Exception as error:
+            error_type = type(error).__name__
+
+            def reject_and_log() -> None:
+                # Admission may expire the ORM row. Refresh and read identifiers
+                # in this off-loop callback, never on the async worker's loop.
+                crud.crud_ci_execution.reject_dispatch(
+                    orchestrator.db,
+                    execution=orchestrator.execution_log,
+                )
+                logger.warning(
+                    "Restricted CI execution admission blocked",
+                    extra={
+                        "execution_id": str(orchestrator.execution_log.id),
+                        "ci_principal_id": str(
+                            orchestrator.execution_log.ci_principal_id
+                        ),
+                        "ci_error_type": error_type,
+                    },
+                )
+
+            await run_db_off_loop(reject_and_log)
+            return
     await orchestrator.run()
 
 

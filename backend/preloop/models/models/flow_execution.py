@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy import (
@@ -13,9 +13,9 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    false as sa_false,
-    text,
 )
+from sqlalchemy import false as sa_false
+from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, query_expression, relationship
 
@@ -174,6 +174,7 @@ class FlowExecution(Base):
         nullable=True,
         index=True,
     )
+    ci_review_binding = Column(JSONB, nullable=True)
     flow_id = Column(
         UUID(as_uuid=True), ForeignKey("flow.id"), nullable=False, index=True
     )

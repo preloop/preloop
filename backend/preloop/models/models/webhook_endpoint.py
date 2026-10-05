@@ -55,6 +55,9 @@ class WebhookEndpoint(Base):
         nullable=True,
         index=True,
     )
+    ci_subscription_binding: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("account.id", ondelete="CASCADE"),
