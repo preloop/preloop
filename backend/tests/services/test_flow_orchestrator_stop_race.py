@@ -318,6 +318,8 @@ async def test_stop_while_runtime_starts_tears_the_runtime_down(
     assert row.error_message == "Manually stopped by user"
     assert row.agent_session_reference == "agent-race-starting"
     assert row.stop_confirmed_at is not None
+    # Confirmed termination must not keep the "not confirmed" sentence.
+    assert NO_RUNTIME_REFERENCE_REASON not in (row.stop_reason or "")
 
     audit = (
         db_session.query(AuditLog)
@@ -469,6 +471,10 @@ async def test_result_reported_after_a_stop_does_not_replace_it(
             "mcp_usage_logs": [],
         }
 
+    file_follow_ups = AsyncMock()
+    notify = AsyncMock()
+    commit_status = AsyncMock()
+    queued_followup = AsyncMock()
     with (
         patch(
             "preloop.services.flow_orchestrator.create_executor_for_execution",
@@ -476,6 +482,16 @@ async def test_result_reported_after_a_stop_does_not_replace_it(
         ),
         patch.object(
             FlowExecutionOrchestrator, "_monitor_agent_execution", side_effect=monitor
+        ),
+        patch.object(
+            FlowExecutionOrchestrator,
+            "_file_approved_follow_ups",
+            file_follow_ups,
+        ),
+        patch.object(FlowExecutionOrchestrator, "_notify_terminal", notify),
+        patch.object(FlowExecutionOrchestrator, "_update_commit_status", commit_status),
+        patch.object(
+            FlowExecutionOrchestrator, "_start_queued_followup", queued_followup
         ),
     ):
         await orchestrator.run()
@@ -485,3 +501,12 @@ async def test_result_reported_after_a_stop_does_not_replace_it(
     assert row.status == "STOPPED"
     assert row.error_message == "Manually stopped by user"
     assert row.stop_confirmed_at is not None
+    file_follow_ups.assert_not_awaited()
+    queued_followup.assert_not_awaited()
+    assert notify.await_args.kwargs["status"] == "STOPPED"
+    assert "success" not in {
+        call.kwargs.get("state") for call in commit_status.await_args_list
+    }
+    assert "failure" in {
+        call.kwargs.get("state") for call in commit_status.await_args_list
+    }

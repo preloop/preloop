@@ -328,6 +328,56 @@ def test_admission_refuses_a_terminal_row_and_leaves_it(db_session, flow, status
     assert execution.launch_requested_at is None
 
 
+def test_admission_does_not_overwrite_a_stop_committed_before_the_write(
+    db_session, flow
+):
+    """A stop that commits in the old read-then-flush window is not admitted.
+
+    Admission used to decide from a non-locking SELECT and then flush
+    ``status='STARTING'`` with no guard. A stop that committed between those
+    two statements was overwritten, and the runtime started anyway. The
+    decision is now the UPDATE's WHERE clause, so that stop matches nothing.
+    """
+    from sqlalchemy.orm import Query
+
+    execution = _execution(db_session, flow, "INITIALIZING")
+    db_session.commit()
+
+    original_update = Query.update
+    armed = {"done": False}
+
+    def update(query, values, *args, **kwargs):
+        status = None
+        for key, value in values.items():
+            if getattr(key, "key", None) == "status":
+                status = value
+        if status == "STARTING" and not armed["done"]:
+            armed["done"] = True
+            assert crud_flow_execution.mark_stopped(
+                db_session,
+                execution_id=execution.id,
+                error_message="Manually stopped by user",
+                unconfirmed_reason=(
+                    "termination not confirmed: no runtime reference at stop time"
+                ),
+                confirm_if_never_launched=True,
+            )
+        return original_update(query, values, *args, **kwargs)
+
+    with patch.object(Query, "update", update):
+        allowed = crud_flow_execution.admit_runtime_start(
+            db_session, execution_id=execution.id
+        )
+
+    assert armed["done"] is True
+    assert allowed is False
+    db_session.expire_all()
+    row = crud_flow_execution.get(db_session, id=execution.id)
+    assert row.status == "STOPPED"
+    assert row.launch_requested_at is None
+    assert row.stop_requested_at is not None
+
+
 def test_admission_refuses_a_stop_request(client, db_session, flow):
     execution = _execution(db_session, flow, "STARTING")
     db_session.commit()

@@ -6980,8 +6980,15 @@ class FlowExecutionOrchestrator:
 
         logger.info(f"Execution log created with ID: {self.execution_log.id}")
 
-    async def _update_execution_log(self, status: Optional[str] = None, **kwargs):
-        """Update the execution log and publish the update to NATS."""
+    async def _update_execution_log(
+        self, status: Optional[str] = None, **kwargs
+    ) -> Optional[str]:
+        """Update the execution log and publish the update to NATS.
+
+        Returns:
+            The status written, after a stop that landed first has been kept.
+            None when this update did not carry a status.
+        """
         logger.info(f"Updating execution log to status: {status}")
 
         if self.execution_log is not None and status is not None:
@@ -7070,6 +7077,7 @@ class FlowExecutionOrchestrator:
         await self._publish_update("status_update", status_payload)
 
         logger.debug(f"Execution log updated: status={status}")
+        return status
 
     def _guard_status_write(self, status: str, kwargs: Dict[str, Any]) -> str:
         """Keep a stop that landed first from being overwritten.
@@ -7170,7 +7178,17 @@ class FlowExecutionOrchestrator:
                     execution_id,
                 )
             if confirmed:
-                crud_flow_execution.confirm_stop(self.db, execution_id=execution_id)
+                from preloop.services.flow_execution_stop import (
+                    NO_RUNTIME_REFERENCE_REASON,
+                )
+
+                # The stop wrote this sentence because it had no runtime to
+                # check. Confirmation makes that sentence false.
+                crud_flow_execution.confirm_stop(
+                    self.db,
+                    execution_id=execution_id,
+                    drop_unconfirmed_reason=NO_RUNTIME_REFERENCE_REASON,
+                )
             self.execution_logger.log_milestone(
                 "launch_stopped",
                 {
@@ -8805,20 +8823,11 @@ class FlowExecutionOrchestrator:
                 )
                 return
 
-            # Follow up filing (issue #687): the other output of a review the
-            # agent has no tool to deliver. The rows a human approved at the
-            # gate become tracker issues here, on the control plane, after the
-            # agent process has exited and after the park check above, so a
-            # run still waiting for its answer files nothing. A run that did
-            # not succeed files nothing either: its result is not evidence.
-            if final_status == "SUCCEEDED":
-                await self._file_approved_follow_ups(merged_result)
-
             terminal_failure_category = self._terminal_failure_category(
                 final_status, agent_result
             )
 
-            await self._update_execution_log(
+            stored_status = await self._update_execution_log(
                 status=final_status,
                 model_output_summary=output_summary,
                 error_message=agent_result.get("error_message"),
@@ -8836,33 +8845,62 @@ class FlowExecutionOrchestrator:
                 total_tokens=self.total_tokens,
                 estimated_cost=self.estimated_cost,
             )
+            # A stop that landed first keeps STOPPED. Commit status, the
+            # terminal notification, follow-up filing and a queued resume
+            # follow that stored status, not the agent's local report.
+            if not stored_status:
+                stored_status = str(
+                    getattr(self.execution_log, "status", None) or final_status
+                )
+
+            # Follow up filing (issue #687): the other output of a review the
+            # agent has no tool to deliver. Filed only after the guarded
+            # write, and only when that write stayed SUCCEEDED, so a stopped
+            # run does not open tracker issues. The receipt is persisted
+            # afterwards because filing mutates the result the row already
+            # holds.
+            if stored_status == "SUCCEEDED":
+                await self._file_approved_follow_ups(merged_result)
+                if (
+                    isinstance(merged_result, dict)
+                    and FOLLOW_UP_FILING_RESULT_KEY in merged_result
+                ):
+                    await self._update_execution_log(result=merged_result)
             self._sync_runtime_session(ended_at=datetime.now(timezone.utc))
 
             # Update commit status to success/failure
-            status_state = "success" if final_status == "SUCCEEDED" else "failure"
+            status_state = "success" if stored_status == "SUCCEEDED" else "failure"
             status_description = (
                 f"Preloop review completed: {self.flow.name}"
                 if self.flow
                 else "Preloop review completed"
             )
-            if final_status != "SUCCEEDED":
-                status_description = f"Preloop review failed: {agent_result.get('error_message', 'Unknown error')[:80]}"
+            if stored_status == "STOPPED":
+                status_description = "Preloop execution was stopped"
+            elif stored_status != "SUCCEEDED":
+                detail = agent_result.get("error_message") or "Unknown error"
+                status_description = f"Preloop review failed: {str(detail)[:80]}"
             await self._update_commit_status(
                 state=status_state,
                 description=status_description,
             )
             await self._notify_terminal(
-                status=final_status,
+                status=stored_status,
                 result=merged_result,
             )
 
             logger.info(
-                f"Flow execution completed with status {final_status}: {self.execution_log.id}"
+                "Flow execution completed with status %s: %s",
+                stored_status,
+                self.execution_log.id,
             )
 
             # Comments that arrived while this run was going were queued as a
-            # single follow-up; start it now that the run is terminal.
-            await self._start_queued_followup()
+            # single follow-up; start it now that the run is terminal. A stop
+            # that replaced a success report does not start one: the run the
+            # comments were about was stopped, not completed.
+            if not (stored_status == "STOPPED" and final_status != "STOPPED"):
+                await self._start_queued_followup()
 
             # A run that produced nothing is the one failure a plain repeat
             # cannot fix, so the retry only happens when the flow asked for

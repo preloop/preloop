@@ -2082,7 +2082,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         Admission is also refused for a row that carries a stop request or
         already ended (an operator stopped it while it was being prepared):
         the row is left exactly as it is, and in particular is never moved
-        back to ``STARTING``.
+        back to ``STARTING``. That refusal is the UPDATE's WHERE clause, not
+        a read followed by an unconditional write: a stop that commits after
+        the account lock is taken and before this statement still matches
+        nothing.
         """
         from .account_halt import crud_account_halt
 
@@ -2098,28 +2101,33 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if account_id is None:
             raise ValueError("Execution flow not found")
         crud_account_halt.lock_account(db, account_id=account_id)
-        execution = self.get(db, id=execution_id, refresh=True)
-        allowed = (
-            execution is not None
-            and execution.stop_requested_at is None
-            and str(execution.status or "").upper()
-            not in self.TERMINAL_EXECUTION_STATUSES
-            and (
-                "flows"
-                not in crud_account_halt.active_scopes(db, account_id=account_id)
+        if "flows" in crud_account_halt.active_scopes(db, account_id=account_id):
+            if commit:
+                db.commit()
+            return False
+        moment = datetime.now(timezone.utc)
+        count = (
+            db.query(models.FlowExecution)
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.stop_requested_at.is_(None),
+                models.FlowExecution.status.notin_(
+                    sorted(self.TERMINAL_EXECUTION_STATUSES)
+                ),
+            )
+            .update(
+                {
+                    models.FlowExecution.launch_requested_at: func.coalesce(
+                        models.FlowExecution.launch_requested_at, moment
+                    ),
+                    models.FlowExecution.status: "STARTING",
+                },
+                synchronize_session=False,
             )
         )
-        if allowed:
-            from datetime import timezone
-
-            execution.launch_requested_at = (
-                execution.launch_requested_at or datetime.now(timezone.utc)
-            )
-            execution.status = "STARTING"
-            db.flush()
         if commit:
             db.commit()
-        return allowed
+        return bool(count)
 
     def cancel_unstarted_stop(self, db: Session, *, execution_id: Any) -> bool:
         """Complete a durable stop when no runtime was ever dispatched."""
@@ -2630,10 +2638,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         The park row is closed rather than left claimable: the expiry is
         cleared so no sweep looks at it again, while ``park_request_id`` and
         ``park_kind`` stay for the audit trail. ``stop_source`` is the
-        automatic cause when there is one (``pr_merged`` and the like, #1032)
-        and stays NULL for an operator's stop, which is the same provenance
-        as a plain stop. ``parent_stop`` is reserved for children this stop
-        ends.
+        automatic cause when the caller names one (``pr_merged`` and the
+        like, #1032). An operator's stop names none, so this write records
+        ``manual``, the same provenance as a plain stop: ``mark_stopped``
+        matches nothing once the row is already terminal. When that operator
+        stop has no runtime reference, ``stop_confirmed_at`` is set here too,
+        because nothing else will confirm a parked row. ``parent_stop`` is
+        reserved for children this stop ends.
         """
         moment = now or datetime.now(timezone.utc)
         values = {
@@ -2650,7 +2661,20 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             models.FlowExecution.orchestrator_heartbeat_at: None,
         }
         if stop_source:
-            values[models.FlowExecution.stop_source] = stop_source
+            values[models.FlowExecution.stop_source] = stop_source[:32]
+        else:
+            # The following mark_stopped misses a row this UPDATE just made
+            # terminal, so an operator's provenance has to land here.
+            values[models.FlowExecution.stop_source] = func.coalesce(
+                models.FlowExecution.stop_source, self.STOP_SOURCE_MANUAL
+            )
+            values[models.FlowExecution.stop_confirmed_at] = case(
+                (
+                    models.FlowExecution.agent_session_reference.is_(None),
+                    func.coalesce(models.FlowExecution.stop_confirmed_at, moment),
+                ),
+                else_=models.FlowExecution.stop_confirmed_at,
+            )
         count = (
             db.query(models.FlowExecution)
             .filter(
@@ -2963,19 +2987,48 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         }
 
     def confirm_stop(
-        self, db: Session, *, execution_id: Any, commit: bool = True
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        commit: bool = True,
+        drop_unconfirmed_reason: Optional[str] = None,
     ) -> None:
-        """Record confirmed terminal runtime evidence, never an optimistic request."""
+        """Record confirmed terminal runtime evidence, never an optimistic request.
+
+        ``drop_unconfirmed_reason``, when set, is removed from ``stop_reason``
+        in the same write. That sentence only explained why termination was
+        still outstanding, and it contradicts ``stop_confirmed_at``.
+        """
         from datetime import timezone
 
+        values: Dict[Any, Any] = {
+            models.FlowExecution.stop_confirmed_at: datetime.now(timezone.utc),
+        }
+        if drop_unconfirmed_reason:
+            stripped = func.nullif(
+                func.btrim(
+                    func.replace(
+                        func.coalesce(models.FlowExecution.stop_reason, ""),
+                        drop_unconfirmed_reason,
+                        "",
+                    ),
+                    "; ",
+                ),
+                "",
+            )
+            values[models.FlowExecution.stop_reason] = case(
+                (
+                    models.FlowExecution.stop_reason.contains(drop_unconfirmed_reason),
+                    stripped,
+                ),
+                else_=models.FlowExecution.stop_reason,
+            )
         db.query(models.FlowExecution).filter(
             models.FlowExecution.id == execution_id,
             models.FlowExecution.stop_requested_at.isnot(None),
             models.FlowExecution.stop_confirmed_at.is_(None),
-        ).update(
-            {models.FlowExecution.stop_confirmed_at: datetime.now(timezone.utc)},
-            synchronize_session=False,
-        )
+        ).update(values, synchronize_session=False)
         if commit:
             db.commit()
 
