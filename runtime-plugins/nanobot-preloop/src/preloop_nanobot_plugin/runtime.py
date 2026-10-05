@@ -448,11 +448,8 @@ class NanobotRuntime:
                 self.loop = scoped.loop
             if isinstance(self.loop.provider, BoundedProvider):
                 self.loop.provider.remaining_tokens = tokens
-            # History replay cap. nanobot-ai 0.2 stores it on _max_messages.
-            if hasattr(self.loop, "_max_messages"):
-                self.loop._max_messages = 40
-            else:
-                self.loop.memory_window = 40
+            # History replay cap. nanobot-ai 0.2.1 stores it on _max_messages.
+            self.loop._max_messages = 40
             self.loop.max_iterations = turns
             self.command_sessions[command.command_id] = reference
             token = _session.set(reference)
@@ -463,6 +460,7 @@ class NanobotRuntime:
                         command.text, session_key=reference
                     )
                 finally:
+                    # close_mcp() drains background work (_background_tasks).
                     close = getattr(self.loop, "close_mcp", None)
                     if close is not None:
                         await close()
@@ -485,13 +483,6 @@ class NanobotRuntime:
                     metadata={"native_session_id": reference},
                 )
             finally:
-                # Nanobot schedules memory consolidation separately. Do not
-                # let it continue under a later task's token budget or session.
-                pending = list(getattr(self.loop, "_consolidation_tasks", ()))
-                for background in pending:
-                    background.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
                 self.active.pop(reference, None)
                 self.command_sessions.pop(command.command_id, None)
                 _session.reset(token)
