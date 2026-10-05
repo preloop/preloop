@@ -1,28 +1,16 @@
 #!/usr/bin/env python3
-"""Generate the OpenVEX document for the Preloop CLI.
+"""Generate the OpenVEX document for the frontend SBOM.
 
-Why this exists: a scanner reading the CLI's SBOM will keep reporting
-golang.org/x/crypto advisories that the shipped binary cannot reach, because
-the module is required but the vulnerable packages are never imported. Saying
-so once, in a machine-readable form, turns recurring noise into a defensible
-statement. That is what VEX is for.
+The CLI document is gone. The CLI used to require ``golang.org/x/crypto``
+only for scrypt, and scanners kept matching ``GO-2026-5932``
+(``x/crypto/openpgp``) against that module even though the package was
+never imported. scrypt now lives in ``cli/internal/scrypt`` and the module
+is not required, so there is nothing left for those statements to cover.
 
-The claims here are not opinion. `govulncheck ./...` in the cli-vuln-scan CI
-job classifies every finding at one of three levels, and the x/crypto ones
-come back at MODULE level, which means the vulnerable package is not in the
-import graph at all. That is precisely the OpenVEX justification
-`vulnerable_code_not_present`. If that ever stops being true, govulncheck
-promotes the finding to package or symbol level and the CI job goes red,
-which is the signal to rewrite this file rather than to reissue it.
-
-Regenerate after any change to the statements below or to cli/go.mod:
-
-    python scripts/generate_vex.py
-
-The frontend document is separate. It states that ``undici-types`` ships
-only TypeScript declarations, so undici runtime advisories matched through
-the package repository URL do not apply, and that ``lodash.camelcase`` is
-not on the shipped frontend execute path:
+The frontend document states that ``undici-types`` ships only TypeScript
+declarations, so undici runtime advisories matched through the package
+repository URL do not apply, and that ``lodash.camelcase`` is not on the
+shipped frontend execute path:
 
     python scripts/generate_vex.py --frontend
 
@@ -35,78 +23,20 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT = REPO_ROOT / "security" / "vex" / "preloop-cli.openvex.json"
 FRONTEND_OUTPUT = REPO_ROOT / "security" / "vex" / "preloop-frontend.openvex.json"
 
 OPENVEX_CONTEXT = "https://openvex.dev/ns/v0.2.0"
 AUTHOR = "Preloop <security@preloop.ai>"
 TOOLING = "https://github.com/preloop/preloop/blob/main/scripts/generate_vex.py"
 
-# The one thing every statement here has in common: the CLI's only import
-# from golang.org/x/crypto is x/crypto/scrypt, in
-# cli/internal/cmd/agents_openclaw.go. Neither x/crypto/ssh nor
-# x/crypto/openpgp appears anywhere in the import graph.
-SHARED_EVIDENCE = (
-    "govulncheck reports this at module level, not package or symbol level, "
-    "so the vulnerable package is not in the CLI's import graph. The only "
-    "import from golang.org/x/crypto is golang.org/x/crypto/scrypt, in "
-    "cli/internal/cmd/agents_openclaw.go. Re-verified by the cli-vuln-scan "
-    "job in .github/workflows/ci.yml on every push and pull request."
-)
-
-# (advisory id, aliases, one-line title, extra impact note)
-ADVISORIES: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
-    (
-        "GO-2026-5932",
-        (),
-        "golang.org/x/crypto/openpgp is unmaintained and unsafe by design",
-        "There is no fixed version of this advisory and there will not be "
-        "one, so a version bump cannot clear it. The package is not imported.",
-    ),
-    (
-        "GO-2026-6303",
-        ("CVE-2026-56854",),
-        "Source-address critical option not enforced for non-public-key auth "
-        "callbacks in golang.org/x/crypto/ssh",
-        "Additionally fixed upstream in golang.org/x/crypto v0.55.0, which "
-        "the CLI is past. The package is not imported either way.",
-    ),
-    (
-        "GO-2026-6354",
-        ("CVE-2026-78662",),
-        "Prevent DoS on deadlocked undecided channel in golang.org/x/crypto/ssh",
-        "Additionally fixed upstream in golang.org/x/crypto v0.56.0, which "
-        "the CLI is on. The package is not imported either way.",
-    ),
-    (
-        "GO-2026-6355",
-        ("CVE-2026-56855",),
-        "Prevent DoS on deadlocked established channel in golang.org/x/crypto/ssh",
-        "Additionally fixed upstream in golang.org/x/crypto v0.56.0, which "
-        "the CLI is on. The package is not imported either way.",
-    ),
-)
-
 
 def read_product_version() -> str:
     return (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-
-
-def read_module_version(module: str) -> str:
-    """Read a module's version out of cli/go.mod so this cannot drift."""
-    go_mod = (REPO_ROOT / "cli" / "go.mod").read_text(encoding="utf-8")
-    match = re.search(rf"^\s*{re.escape(module)}\s+(v\S+)", go_mod, re.MULTILINE)
-    if not match:
-        raise SystemExit(
-            f"{module} not found in cli/go.mod; update scripts/generate_vex.py"
-        )
-    return match.group(1)
 
 
 def previous_version(path: Path) -> int:
@@ -117,56 +47,6 @@ def previous_version(path: Path) -> int:
         return int(json.loads(path.read_text(encoding="utf-8")).get("version", 0))
     except (ValueError, json.JSONDecodeError):
         return 0
-
-
-def build_document(timestamp: str, version: int) -> dict[str, Any]:
-    product_version = read_product_version()
-    crypto_version = read_module_version("golang.org/x/crypto")
-
-    product_purl = f"pkg:golang/github.com/preloop/preloop/cli@v{product_version}"
-    subcomponent_purl = f"pkg:golang/golang.org/x/crypto@{crypto_version}"
-
-    statements = []
-    for advisory, aliases, title, note in ADVISORIES:
-        vulnerability: dict[str, Any] = {
-            "@id": f"https://pkg.go.dev/vuln/{advisory}",
-            "name": advisory,
-            "description": title,
-        }
-        if aliases:
-            vulnerability["aliases"] = list(aliases)
-        statements.append(
-            {
-                "vulnerability": vulnerability,
-                "timestamp": timestamp,
-                "products": [
-                    {
-                        "@id": product_purl,
-                        "identifiers": {"purl": product_purl},
-                        "subcomponents": [
-                            {
-                                "@id": subcomponent_purl,
-                                "identifiers": {"purl": subcomponent_purl},
-                            }
-                        ],
-                    }
-                ],
-                "status": "not_affected",
-                "justification": "vulnerable_code_not_present",
-                "impact_statement": f"{note} {SHARED_EVIDENCE}",
-            }
-        )
-
-    return {
-        "@context": OPENVEX_CONTEXT,
-        "@id": f"https://preloop.ai/vex/preloop-cli-{product_version}-{version}",
-        "author": AUTHOR,
-        "timestamp": timestamp,
-        "last_updated": timestamp,
-        "version": version,
-        "tooling": TOOLING,
-        "statements": statements,
-    }
 
 
 # Versions are pinned here and checked against frontend/package-lock.json.
@@ -357,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         "-o",
         "--output",
         type=Path,
-        default=DEFAULT_OUTPUT,
+        default=FRONTEND_OUTPUT,
         help="where to write the document (default: %(default)s)",
     )
     parser.add_argument(
@@ -373,19 +253,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--frontend",
         action="store_true",
-        help="write the frontend document instead of the CLI document",
+        help="accepted for compatibility; the only document is the frontend one",
     )
     args = parser.parse_args(argv)
+    # --frontend remains so the documented command keeps working.
+    _ = args.frontend
 
     timestamp = args.timestamp or dt.datetime.now(dt.timezone.utc).replace(
         microsecond=0
     ).isoformat().replace("+00:00", "Z")
 
     output = args.output
-    if args.frontend and output == DEFAULT_OUTPUT:
-        output = FRONTEND_OUTPUT
-    builder = build_frontend_document if args.frontend else build_document
-    document = builder(timestamp, previous_version(output) + 1)
+    document = build_frontend_document(timestamp, previous_version(output) + 1)
     rendered = json.dumps(document, indent=2) + "\n"
 
     if args.stdout:

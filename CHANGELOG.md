@@ -12,12 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scorecard's vulnerable-dependency list is reduced by moving patched
   transitive locks forward: `undici` 7.29.1 in the ClawHub CI lock, `hono`
   4.13.13 and `fast-uri` 3.1.8 in the Claude plugin, `urllib3` 2.8.0 in the
-  build lock, and `virtualenv` 21.14.5 in the lint lock. `braces` 3.0.3 has
-  no release above the affected version. `GO-2026-5932` still matches
-  `golang.org/x/crypto` even though the CLI imports only `scrypt`.
-  `nanobot-ai` stays on 0.1.4.post3 because 0.2.1 removed the provider and
-  loop API this plugin calls. `brace-expansion` 5.0.9 stays inside the Pi
-  0.87.1 shrinkwrap, which npm overrides do not replace.
+  build lock, and `virtualenv` 21.14.5 in the lint lock. `nanobot-ai` stays
+  on 0.1.4.post3 because 0.2.1 removed the provider and loop API this plugin
+  calls.
+- `brace-expansion` in the Pi harness lock is 5.0.12 (GHSA-6j4f-fj2g-mc7p,
+  GHSA-qhr7-859c-m2p7, GHSA-q2hr-2g5m-vwhr). `braces` is a local 3.0.4 patch
+  of 3.0.3 with a nesting cap (GHSA-vfj7-8cjw-p6xm); upstream has no later
+  release. The CLI no longer requires `golang.org/x/crypto`: scrypt lives
+  in-tree, so GO-2026-5932 (`x/crypto/openpgp`) is not in the module graph.
 - The support period stated in SECURITY.md (security updates without charge
   until 31 December 2031, with the release-line table and the
   never-shortened extension rules) is signed off by the release manager as

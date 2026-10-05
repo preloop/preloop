@@ -147,10 +147,20 @@ def salt_ids(account_id: Any, db: Optional[Session] = None) -> List[str]:
     return [entry["salt_id"] for entry in _cached_salts(account_id, db)]
 
 
-def fingerprint(secret: bytes, payload: Any) -> str:
-    """HMAC-SHA256 over the canonical JSON of ``payload``."""
+def fingerprint(mac_key: bytes, payload: Any) -> str:
+    """HMAC-SHA256 over the canonical JSON of ``payload``.
+
+    This is a keyed reference fingerprint, not a password hash. The key is
+    a random 256-bit salt. SHA-256 is the HMAC hash function, which is the
+    right primitive for that job. Tool arguments can contain a password, so
+    a password-hashing query flags the digest; the suppression marks that
+    false positive.
+    """
     return hmac.new(
-        secret, HMAC_DOMAIN + canonical_manifest_json(payload), hashlib.sha256
+        mac_key,
+        # codeql[py/weak-sensitive-data-hashing]
+        HMAC_DOMAIN + canonical_manifest_json(payload),
+        hashlib.sha256,
     ).hexdigest()
 
 

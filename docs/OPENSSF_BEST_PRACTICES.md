@@ -75,11 +75,10 @@ all related criteria have been independently verified.
 
 The September 2026 dependency review found four actionable npm advisories in
 nanoid and Hono. Confirm their repairs have landed and scan the release being
-assessed. `GO-2026-5932` concerns `golang.org/x/crypto/openpgp`; the CLI uses
-`scrypt`, and package-aware `govulncheck` plus platform dependency lists found
-no imported OpenPGP package. Retain that applicability evidence instead of
-calling every module-level alert an exploitable vulnerability, or claiming
-that no vulnerabilities exist from one clean scan.
+assessed. `GO-2026-5932` concerns `golang.org/x/crypto/openpgp`. The CLI no
+longer requires that module: scrypt is in `cli/internal/scrypt`. Retain a
+fresh scan of the release being assessed instead of claiming that no
+vulnerabilities exist from one clean scan.
 
 ## Related improvements are separate evidence
 

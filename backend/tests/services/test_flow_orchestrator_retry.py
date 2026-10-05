@@ -129,6 +129,32 @@ def _build_orchestrator(db_session, test_flow, event_data, mock_nats_client):
     )
 
 
+class TestRetryStopReason:
+    """A terminal retry decision is a fixed sentence, not agent output."""
+
+    def test_published_url_is_not_part_of_the_reason(self):
+        orchestrator = FlowExecutionOrchestrator(
+            db=None,  # type: ignore[arg-type]
+            flow_id=uuid4(),
+            trigger_event_data={},
+            nats_client=None,  # type: ignore[arg-type]
+        )
+        secret_url = "https://github.com/example/repo/pull/9?token=secret-token"
+        orchestrator._opened_pr = {"url": secret_url}
+        reason = orchestrator._retry_decision(
+            {
+                "status": "FAILED",
+                "exit_code": 1,
+                "error_message": "push failed",
+            }
+        )
+        assert reason == (
+            "the post-execution publication block already ran; "
+            "relaunching would redo pushed work"
+        )
+        assert secret_url not in reason
+
+
 @pytest.mark.asyncio
 class TestTransientRetry:
     """Transient upstream failures get another attempt; others do not."""

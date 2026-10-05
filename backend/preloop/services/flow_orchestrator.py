@@ -7465,7 +7465,9 @@ class FlowExecutionOrchestrator:
         status = agent_result.get("status")
         if status != "FAILED":
             # STOPPED (user requested) and SUCCEEDED are never retried.
-            return f"status is {status}, not FAILED"
+            # The status value itself stays out of the log: agent results are
+            # tainted as secrets, and a fixed sentence says the same thing.
+            return "status is not FAILED"
 
         exit_code = agent_result.get("exit_code")
         if exit_code is None:
@@ -7481,9 +7483,12 @@ class FlowExecutionOrchestrator:
 
         published = self._publication_side_effect_evidence(agent_result)
         if published:
+            # ``published`` can include a pull-request URL. Log a fixed
+            # sentence so that URL, which may carry a credential, is not
+            # written in clear text.
             return (
-                "the post-execution publication block already ran "
-                f"({published}); relaunching would redo pushed work"
+                "the post-execution publication block already ran; "
+                "relaunching would redo pushed work"
             )
 
         if not self._failure_is_transient(agent_result):

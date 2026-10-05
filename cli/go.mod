@@ -12,7 +12,6 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/yosuke-furukawa/json5 v0.1.1
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	gopkg.in/ini.v1 v1.67.3
