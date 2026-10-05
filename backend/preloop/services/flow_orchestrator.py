@@ -5301,11 +5301,11 @@ class FlowExecutionOrchestrator:
             getattr(self, "_opened_pr_by_lookup", False)
             and self._publication_is_resume()
         ):
-            return f"a pull request is bound ({opened.get('url')})"
+            # The URL stays off this string. It is logged with the retry
+            # decision, and a pull-request URL can carry a credential.
+            return "a pull request is bound"
         if getattr(self, "_remote_branch_published", False):
-            return (
-                f"branch {self._publication_target_branch()} now exists on the remote"
-            )
+            return "the branch now exists on the remote"
         lines = [
             str(line) for line in self.execution_logger.get_agent_output_lines()[-400:]
         ]
@@ -7465,7 +7465,9 @@ class FlowExecutionOrchestrator:
         status = agent_result.get("status")
         if status != "FAILED":
             # STOPPED (user requested) and SUCCEEDED are never retried.
-            return f"status is {status}, not FAILED"
+            # The status value itself stays out of the log: agent results are
+            # tainted as secrets, and a fixed sentence says the same thing.
+            return "status is not FAILED"
 
         exit_code = agent_result.get("exit_code")
         if exit_code is None:

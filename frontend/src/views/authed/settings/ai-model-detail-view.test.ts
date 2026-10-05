@@ -1933,7 +1933,18 @@ describe('AIModelDetailView attention dismissals', () => {
     ];
 
     let element = await mount();
-    expect(attentionBadge(element).textContent!.trim()).to.equal('Attention');
+    // mount() clears loading when the model row arrives, before the summary
+    // and the dismissals read finish. The next mount asks for the same
+    // dismissals URL. If that read is still in flight, fetch coalescing
+    // hands it the response built from this one-item list.
+    await waitUntil(
+      () =>
+        attentionBadge(element)?.textContent?.trim() === 'Attention' &&
+        (element as unknown as { dismissals: unknown[] }).dismissals.length ===
+          1,
+      'the first alias dismissal never landed'
+    );
+    element.remove();
 
     dismissalsResponse = [
       ...dismissalsResponse,
@@ -1949,7 +1960,10 @@ describe('AIModelDetailView attention dismissals', () => {
       },
     ];
     element = await mount();
-    expect(attentionBadge(element).textContent!.trim()).to.equal('Healthy');
+    await waitUntil(
+      () => attentionBadge(element)?.textContent?.trim() === 'Healthy',
+      'the page stayed flagged after every alias was dismissed'
+    );
   });
 
   it('counts only the failures newer than an overtaken marker', async () => {

@@ -318,13 +318,15 @@ class TestRetryDecisionEvidence:
         orchestrator = _bare_orchestrator()
         orchestrator._opened_pr = {"url": PR_URL, "branch": BRANCH}
         reason = orchestrator._retry_decision(_failed(PRE_PUSH_TRANSIENT))
-        assert reason is not None and PR_URL in reason
+        assert reason is not None and "a pull request is bound" in reason
+        assert PR_URL not in reason
 
     def test_pushed_branch_blocks_the_retry(self):
         orchestrator = _bare_orchestrator()
         orchestrator._remote_branch_published = True
         reason = orchestrator._retry_decision(_failed(PRE_PUSH_TRANSIENT))
-        assert reason is not None and BRANCH in reason
+        assert reason is not None and "the branch now exists on the remote" in reason
+        assert BRANCH not in reason
 
     def test_genuine_pre_push_transient_failure_is_still_retried(self):
         orchestrator = _bare_orchestrator()
