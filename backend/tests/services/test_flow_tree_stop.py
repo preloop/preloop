@@ -530,7 +530,9 @@ async def test_stopping_a_parent_with_no_children_is_the_stop_it_always_was(
     assert parent.error_message == "Manually stopped by user"
     assert parent.trigger_event_details == before
     assert STOP_COVERAGE_KEY not in (parent.trigger_event_details or {})
-    assert parent.stop_source is None
+    # Every stop now records a durable, manual stop request.
+    assert parent.stop_source == "manual"
+    assert parent.stop_requested_at is not None
 
 
 async def test_a_run_that_never_waited_for_its_children_is_not_a_tree_stop(

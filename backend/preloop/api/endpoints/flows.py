@@ -2018,6 +2018,7 @@ async def send_execution_command(
             account_id=current_user.account_id,
             nats_client=nats_client,
             command_payload=command_data.payload,
+            user_id=current_user.id,
         )
         if outcome.stopped or outcome.status.upper() == "STOPPED":
             return {"status": "stopped"}

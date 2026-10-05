@@ -193,6 +193,23 @@ WAITING_FOR_HUMAN_STATUS = "WAITING_FOR_HUMAN"
 WAITING_FOR_CHILDREN_STATUS = "WAITING_FOR_CHILDREN"
 PARKED_STATUSES = frozenset({WAITING_FOR_HUMAN_STATUS, WAITING_FOR_CHILDREN_STATUS})
 
+# How long the orchestrator waits for a runtime it created after losing the
+# launch race to a stop to be verified gone before it leaves confirmation to
+# the recovery pass (the row keeps the reference and the stop request).
+LAUNCH_RACE_STOP_CONFIRM_ATTEMPTS = 12
+LAUNCH_RACE_STOP_CONFIRM_INTERVAL_SECONDS = 5
+
+
+class ExecutionStoppedError(RuntimeError):
+    """The execution was stopped while this orchestrator was launching it.
+
+    Raised by a launch status write (``INITIALIZING``/``STARTING``/
+    ``RUNNING``) that found the row already terminal, and by a refused
+    admission on a stopped row. The stop path already wrote the row; the
+    orchestrator only has to release what it holds and not overwrite it.
+    """
+
+
 # Terminal outcomes that leave a pending approval with nowhere to land.
 # SUCCEEDED ran the tool after a decision. STOPPED is an operator halt and
 # is left to the stop path. TIMEOUT is the spelling some monitors write;
@@ -3864,6 +3881,28 @@ class FlowExecutionOrchestrator:
                 crud_flow_execution.cancel_unstarted_stop(
                     self.db, execution_id=self.execution_log.id
                 )
+                stop_request = crud_flow_execution.get_stop_request(
+                    self.db, execution_id=self.execution_log.id
+                )
+                stored_status = crud_flow_execution.current_status(
+                    self.db, execution_id=self.execution_log.id
+                )
+                halted = (
+                    stop_request is None
+                    or stop_request.get("source")
+                    == crud_flow_execution.STOP_SOURCE_ACCOUNT_HALT
+                ) and (
+                    stop_request is not None
+                    or str(stored_status or "").upper()
+                    not in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+                )
+                if not halted:
+                    # Stopped (or otherwise ended) while it was being
+                    # prepared: the stop path owns the row.
+                    raise ExecutionStoppedError(
+                        f"Execution {self.execution_log.id} was stopped before "
+                        "its runtime was admitted"
+                    )
                 from preloop.services.kill_switch import FlowHaltActiveError
 
                 raise FlowHaltActiveError("Account kill switch prevented agent launch")
@@ -6259,6 +6298,17 @@ class FlowExecutionOrchestrator:
             },
         }
 
+    @staticmethod
+    def _durable_stop_message(stop_request: Dict[str, Any], elapsed: Any) -> str:
+        """``error_message`` of a run ended by a persisted stop request."""
+        source = stop_request.get("source")
+        if source in (None, crud_flow_execution.STOP_SOURCE_ACCOUNT_HALT):
+            return "Execution terminated after account kill-switch request"
+        if source == crud_flow_execution.STOP_SOURCE_MANUAL:
+            return f"Execution stopped by user request after {elapsed} seconds."
+        reason = stop_request.get("reason")
+        return reason or f"Execution stopped ({source}) after {elapsed} seconds."
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -6360,7 +6410,9 @@ class FlowExecutionOrchestrator:
                                 )
                                 return {
                                     "status": "STOPPED",
-                                    "error_message": "Execution terminated after account kill-switch request",
+                                    "error_message": self._durable_stop_message(
+                                        stop_request, elapsed
+                                    ),
                                     "actions_taken": self.execution_logger.get_actions_taken(),
                                     "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                                     "result": await self._capture_result_artifact(
@@ -6932,6 +6984,9 @@ class FlowExecutionOrchestrator:
         """Update the execution log and publish the update to NATS."""
         logger.info(f"Updating execution log to status: {status}")
 
+        if self.execution_log is not None and status is not None:
+            status = self._guard_status_write(status, kwargs)
+
         # Every terminal write goes through here, so this is the one place
         # that guarantees a failed execution carries a failure_category.
         # Callers that hold richer evidence (an agent result with a failure
@@ -7015,6 +7070,146 @@ class FlowExecutionOrchestrator:
         await self._publish_update("status_update", status_payload)
 
         logger.debug(f"Execution log updated: status={status}")
+
+    def _guard_status_write(self, status: str, kwargs: Dict[str, Any]) -> str:
+        """Keep a stop that landed first from being overwritten.
+
+        A launch status (``INITIALIZING``/``STARTING``/``RUNNING``) is only
+        written while the row is not terminal, through a conditional UPDATE
+        whose row lock is held until this update commits. When the row is
+        already terminal, the launch lost the race against a stop:
+        :class:`ExecutionStoppedError` is raised and nothing is written.
+
+        A terminal status other than ``STOPPED`` does not replace a stored
+        ``STOPPED``: an operator's stop stands even when the agent reports
+        success or failure afterwards. The rest of the update (result,
+        metrics, logs) is still written, but a missing ``error_message``
+        does not erase the stop's message.
+
+        Returns:
+            The status to write.
+        """
+        execution_id = self.execution_log.id
+        if status in crud_flow_execution.LIVE_LAUNCH_STATUSES:
+            if crud_flow_execution.claim_live_status(
+                self.db, execution_id=execution_id, status=status
+            ):
+                return status
+            self.db.commit()
+            try:
+                self.db.refresh(self.execution_log)
+            except Exception:  # pragma: no cover - detached row
+                logger.debug("Could not refresh stopped execution", exc_info=True)
+            stored = getattr(self.execution_log, "status", None)
+            logger.info(
+                "Execution %s is %s; not writing %s over it",
+                execution_id,
+                stored,
+                status,
+            )
+            raise ExecutionStoppedError(
+                f"Execution {execution_id} is {stored}; launch status {status} refused"
+            )
+        if status in TERMINAL_EXECUTION_STATUSES and status != "STOPPED":
+            stored = crud_flow_execution.current_status(
+                self.db, execution_id=execution_id, lock=True
+            )
+            if stored == "STOPPED":
+                logger.info(
+                    "Execution %s was stopped; keeping STOPPED instead of %s",
+                    execution_id,
+                    status,
+                )
+                if kwargs.get("error_message") is None:
+                    kwargs.pop("error_message", None)
+                kwargs.pop("failure_category", None)
+                return "STOPPED"
+        return status
+
+    async def _release_runtime_after_lost_launch(
+        self, session_reference: Optional[str], agent_executor: Any
+    ) -> None:
+        """Tear down a runtime created while the execution was being stopped.
+
+        The stop found no runtime reference to tear down, so this
+        orchestrator owns the teardown: record the reference on the row (so
+        the runtime stays counted against the account and the recovery pass
+        can finish the job), stop it, and confirm the stop once the runtime
+        reports it is gone. Never raises.
+        """
+        if self.execution_log is None:
+            return
+        execution_id = self.execution_log.id
+        if session_reference:
+            try:
+                crud_flow_execution.record_session_reference(
+                    self.db,
+                    execution_id=execution_id,
+                    session_reference=session_reference,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not record runtime %s of stopped execution %s",
+                    session_reference,
+                    execution_id,
+                )
+                self.db.rollback()
+            confirmed = False
+            try:
+                await agent_executor.stop(session_reference)
+                for attempt in range(LAUNCH_RACE_STOP_CONFIRM_ATTEMPTS):
+                    if await agent_executor.is_stopped(session_reference) is True:
+                        confirmed = True
+                        break
+                    if attempt + 1 < LAUNCH_RACE_STOP_CONFIRM_ATTEMPTS:
+                        await asyncio.sleep(LAUNCH_RACE_STOP_CONFIRM_INTERVAL_SECONDS)
+            except Exception:
+                logger.exception(
+                    "Failed to stop runtime %s created for stopped execution %s",
+                    session_reference,
+                    execution_id,
+                )
+            if confirmed:
+                crud_flow_execution.confirm_stop(self.db, execution_id=execution_id)
+            self.execution_logger.log_milestone(
+                "launch_stopped",
+                {
+                    "session_reference": session_reference,
+                    "termination_confirmed": confirmed,
+                },
+            )
+        try:
+            await agent_executor.cleanup()
+        except Exception as cleanup_error:
+            logger.warning(
+                "Error during agent cleanup after a stopped launch: %s", cleanup_error
+            )
+
+    async def _finish_stopped_launch(self) -> None:
+        """Wrap up a run whose launch was refused because it was stopped.
+
+        The stop path owns the row (status, end time, message); this only
+        releases what the orchestrator holds and tells listeners. When no
+        runtime was ever created, the stop is confirmed here.
+        """
+        if self.execution_log is None:
+            return
+        try:
+            self.db.refresh(self.execution_log)
+        except Exception:  # pragma: no cover - detached row
+            logger.debug("Could not refresh stopped execution", exc_info=True)
+        if not getattr(self.execution_log, "agent_session_reference", None):
+            # Nothing was dispatched: nothing is left to terminate.
+            crud_flow_execution.confirm_stop(
+                self.db, execution_id=self.execution_log.id
+            )
+        status = getattr(self.execution_log, "status", None) or "STOPPED"
+        await self._publish_update("status_update", {"status": status})
+        self._sync_runtime_session(ended_at=datetime.now(timezone.utc))
+        await self._update_commit_status(
+            state="failure",
+            description="Preloop execution was stopped before it started",
+        )
 
     def _cancel_pending_approvals(self, status: str) -> None:
         """Cancel pending approvals this execution can no longer deliver.
@@ -7583,10 +7778,18 @@ class FlowExecutionOrchestrator:
                     "error_message": "Account kill switch prevented agent launch",
                 }, None
 
-            await self._update_execution_log(
-                status="RUNNING",
-                agent_session_reference=session_reference,
-            )
+            try:
+                await self._update_execution_log(
+                    status="RUNNING",
+                    agent_session_reference=session_reference,
+                )
+            except ExecutionStoppedError:
+                # Stopped while the runtime was starting: the stop had no
+                # reference to tear down, so this runtime is ours to stop.
+                await self._release_runtime_after_lost_launch(
+                    session_reference, agent_executor
+                )
+                raise
             self._sync_runtime_session(session_reference=session_reference)
 
             agent_result = await self._monitor_agent_execution(
@@ -8666,6 +8869,11 @@ class FlowExecutionOrchestrator:
             # it and it changes something about the attempt (#851).
             await self._retry_after_no_progress(terminal_failure_category)
 
+        except ExecutionStoppedError as stopped_error:
+            # An operator stopped the run while it was being launched. The
+            # stop already wrote the row; do not turn it into FAILED.
+            logger.info("Flow execution launch abandoned: %s", stopped_error)
+            await self._finish_stopped_launch()
         except asyncio.CancelledError:
             # Deploy drain: the worker cancels in-flight handlers, releases the
             # claim and re-dispatches so a peer resumes monitoring the agent,

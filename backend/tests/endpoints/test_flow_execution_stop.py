@@ -108,9 +108,11 @@ def test_a_second_stop_is_idempotent(client, db_session, flow, send_command):
     db_session.refresh(execution)
     assert execution.status == "STOPPED"
     assert execution.error_message == "Manually stopped by user"
-    # An operator's stop carries no automatic reason.
+    # An operator's stop carries no automatic reason, but it is recorded as
+    # a durable, manual stop request.
     assert execution.stop_reason is None
-    assert execution.stop_source is None
+    assert execution.stop_source == "manual"
+    assert execution.stop_requested_at is not None
     first_end = execution.end_time
     assert first_end is not None
     assert send_command.await_count == 1
@@ -152,8 +154,11 @@ async def test_automatic_stop_records_why(db_session, flow, test_user, send_comm
     assert execution.stop_reason == reason
     assert execution.stop_source == "pr_merged"
     assert execution.error_message == reason
-    # Not a kill-switch request: that path reports an account halt.
-    assert execution.stop_requested_at is None
+    # The request is durable whatever its source; the source says it was
+    # not a kill switch.
+    assert execution.stop_requested_at is not None
+    # Never admitted, no runtime: nothing can be running.
+    assert execution.stop_confirmed_at is not None
     send_command.assert_awaited_once()
 
     again = await stop_execution(
@@ -196,3 +201,159 @@ async def test_run_that_ends_during_teardown_keeps_its_result(
     assert execution.status == "SUCCEEDED"
     assert execution.stop_source is None
     send_command.assert_not_awaited()
+
+
+def _runtime(*, stop_error=None, stopped=True):
+    runtime = MagicMock()
+    runtime.get_logs = AsyncMock(return_value=[])
+    runtime.stop = AsyncMock(side_effect=stop_error)
+    runtime.is_stopped = AsyncMock(return_value=stopped)
+    return runtime
+
+
+def test_operator_stop_is_durable_and_audited(client, db_session, flow, test_user):
+    """The API's stop records the request, confirms termination, and audits."""
+    from preloop.models.models.audit_log import AuditLog
+
+    execution = _execution(db_session, flow, "RUNNING")
+    execution.agent_session_reference = "agent-docker-1"
+    execution.launch_requested_at = execution.start_time
+    db_session.commit()
+    runtime = _runtime(stopped=True)
+
+    with patch("preloop.agents.codex.CodexAgent", return_value=runtime):
+        assert _stop(client, execution) == {"status": "stopped"}
+
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+    assert execution.stop_source == "manual"
+    assert execution.stop_requested_at is not None
+    assert execution.stop_confirmed_at is not None
+    assert execution.stop_requested_at <= execution.stop_confirmed_at
+    runtime.stop.assert_awaited_once_with("agent-docker-1")
+    runtime.is_stopped.assert_awaited_once_with("agent-docker-1")
+
+    rows = (
+        db_session.query(AuditLog)
+        .filter(
+            AuditLog.action == "flow_execution_stop_requested",
+            AuditLog.resource_id == str(execution.id),
+        )
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].user_id == test_user.id
+    assert rows[0].status == "success"
+    assert rows[0].details["status_before"] == "RUNNING"
+    assert rows[0].details["termination_confirmed"] is True
+
+    # The schema exposes both timestamps so a client can tell them apart.
+    body = client.get(f"/api/v1/flows/executions/{execution.id}").json()
+    assert body["stop_requested_at"] is not None
+    assert body["stop_confirmed_at"] is not None
+
+
+def test_failed_teardown_leaves_the_stop_unconfirmed(client, db_session, flow):
+    execution = _execution(db_session, flow, "RUNNING")
+    execution.agent_session_reference = "agent-k8s-1"
+    execution.launch_requested_at = execution.start_time
+    db_session.commit()
+    runtime = _runtime(stop_error=RuntimeError("apiserver unreachable"))
+
+    with patch("preloop.agents.codex.CodexAgent", return_value=runtime):
+        assert _stop(client, execution) == {"status": "stopped"}
+
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+    assert execution.stop_requested_at is not None
+    assert execution.stop_confirmed_at is None
+    assert "runtime teardown failed" in execution.stop_reason
+    assert "apiserver unreachable" in execution.stop_reason
+    runtime.is_stopped.assert_not_awaited()
+
+
+def test_accepted_kubernetes_deletion_is_not_confirmation(client, db_session, flow):
+    """``stop()`` returned (deletion accepted) but the pods are still there."""
+    execution = _execution(db_session, flow, "RUNNING")
+    execution.agent_session_reference = "agent-k8s-2"
+    execution.launch_requested_at = execution.start_time
+    db_session.commit()
+    runtime = _runtime(stopped=False)
+
+    with patch("preloop.agents.codex.CodexAgent", return_value=runtime):
+        assert _stop(client, execution) == {"status": "stopped"}
+
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+    assert execution.stop_requested_at is not None
+    assert execution.stop_confirmed_at is None
+    # Pending, not failed: no reason to record.
+    assert execution.stop_reason is None
+
+    # Deletion completes; the monitor (or the recovery pass resuming it)
+    # confirms through the shared helper.
+    crud_flow_execution.confirm_stop(db_session, execution_id=execution.id)
+    db_session.refresh(execution)
+    assert execution.stop_confirmed_at is not None
+
+
+def test_stop_of_an_admitted_launch_without_runtime_is_unconfirmed(
+    client, db_session, flow
+):
+    """STARTING, admitted, no reference yet: the runtime may be coming up."""
+    execution = _execution(db_session, flow, "STARTING")
+    execution.launch_requested_at = execution.start_time
+    db_session.commit()
+
+    assert _stop(client, execution) == {"status": "stopped"}
+
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+    assert execution.stop_requested_at is not None
+    assert execution.stop_confirmed_at is None
+    assert "no runtime reference" in execution.stop_reason
+
+
+@pytest.mark.parametrize("status", ["STOPPED", "FAILED", "SUCCEEDED", "CANCELLED"])
+def test_admission_refuses_a_terminal_row_and_leaves_it(db_session, flow, status):
+    execution = _execution(db_session, flow, status)
+    db_session.commit()
+
+    assert (
+        crud_flow_execution.admit_runtime_start(db_session, execution_id=execution.id)
+        is False
+    )
+    db_session.refresh(execution)
+    assert execution.status == status
+    assert execution.launch_requested_at is None
+
+
+def test_admission_refuses_a_stop_request(client, db_session, flow):
+    execution = _execution(db_session, flow, "STARTING")
+    db_session.commit()
+    assert _stop(client, execution) == {"status": "stopped"}
+
+    assert (
+        crud_flow_execution.admit_runtime_start(db_session, execution_id=execution.id)
+        is False
+    )
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+
+
+def test_launch_status_never_replaces_a_stop(client, db_session, flow):
+    execution = _execution(db_session, flow, "INITIALIZING")
+    db_session.commit()
+    assert _stop(client, execution) == {"status": "stopped"}
+
+    for status in ("INITIALIZING", "STARTING", "RUNNING"):
+        assert (
+            crud_flow_execution.claim_live_status(
+                db_session, execution_id=execution.id, status=status
+            )
+            is False
+        )
+    db_session.commit()
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+    assert execution.error_message == "Manually stopped by user"
