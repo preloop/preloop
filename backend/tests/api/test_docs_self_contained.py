@@ -34,8 +34,12 @@ _DOCS_ASSETS = {
     "/docs/api": (
         "/static/vendor/swagger-ui-bundle.js",
         "/static/vendor/swagger-ui.css",
+        "/static/vendor/favicon.png",
     ),
-    "/docs/redoc": ("/static/vendor/redoc.standalone.js",),
+    "/docs/redoc": (
+        "/static/vendor/redoc.standalone.js",
+        "/static/vendor/favicon.png",
+    ),
 }
 
 
