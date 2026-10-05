@@ -141,6 +141,7 @@ from preloop.services.model_gateway_errors import (
 from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
+    ERROR_CLASS_GATEWAY_TRANSLATION,
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_STREAM_ABANDONED,
@@ -149,6 +150,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     classify_recorded_error,
     classify_upstream_error,
+    is_gateway_translation_error,
     is_retryable_upstream_failure,
 )
 from preloop.services.gateway_error_alerts import (
@@ -8291,6 +8293,34 @@ class OpenAIGatewayService:
         quota-exhausted, overloaded, and auth failures get distinct HTTP
         statuses and ``error_class`` values (#116, #118, #114 gateway half).
         """
+        if is_gateway_translation_error(exc):
+            # Our translation broke before the provider saw a request. Do
+            # not page admins about the provider; log with the traceback so
+            # the bug is visible, and tell the client it is a gateway fault.
+            logger.error(
+                "Gateway request translation failed before the upstream call: "
+                "protocol=%s provider=%s model=%s error=%s",
+                provider,
+                getattr(ai_model, "provider_name", None),
+                getattr(ai_model, "model_identifier", None),
+                exc,
+                exc_info=exc,
+            )
+            # Same scrub and length cap as every other client-facing
+            # message in this function. The raw exception stays in the log
+            # above; it must not reach the body, usage row, or audit text.
+            surfaced = extract_upstream_error_detail(str(exc)).message
+            return ModelGatewayAPIError(
+                provider=provider,
+                status_code=500,
+                message=(
+                    "Gateway could not translate this request for the "
+                    f"configured model: {surfaced}"
+                ),
+                code=ERROR_CLASS_GATEWAY_TRANSLATION,
+                error_class=ERROR_CLASS_GATEWAY_TRANSLATION,
+                terminal=True,
+            )
         raw_message = (
             getattr(exc, "message", None)
             or getattr(exc, "detail", None)
@@ -10535,6 +10565,8 @@ class OpenAIGatewayService:
         """
         if error_class == ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED:
             return ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED
+        if error_class == ERROR_CLASS_GATEWAY_TRANSLATION:
+            return ERROR_CLASS_GATEWAY_TRANSLATION
         if status_code == 403 and is_model_not_allowed_detail(error_detail):
             return MODEL_NOT_ALLOWED_ERROR_CODE
         if (

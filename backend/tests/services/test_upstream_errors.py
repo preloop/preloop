@@ -17,6 +17,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     ERROR_CLASS_UPSTREAM_RATE_LIMITED,
     ERROR_CLASS_CLIENT_CANCELLED,
+    ERROR_CLASS_GATEWAY_TRANSLATION,
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     classify_recorded_error,
     classify_upstream_error,
@@ -275,3 +276,25 @@ def test_hosted_tariff_refusal_is_terminal_not_an_upstream_hiccup() -> None:
     )
     # An ordinary 503 is still a transient overload.
     assert is_terminal_error_class(ERROR_CLASS_UPSTREAM_OVERLOADED) is False
+
+
+def test_gateway_translation_error_is_terminal_in_the_shared_taxonomy() -> None:
+    """A recorded 500 must not look transient once translation failed.
+
+    The class is terminal inside the gateway retry loop. Callers that only
+    have a status and a detail string use this taxonomy instead.
+    """
+    assert is_terminal_error_class(ERROR_CLASS_GATEWAY_TRANSLATION) is True
+    sentence = (
+        "Gateway could not translate this request for the "
+        "configured model: unhashable type: 'dict'"
+    )
+    assert classify_recorded_error(500, sentence) == ERROR_CLASS_GATEWAY_TRANSLATION
+    assert (
+        classify_recorded_error(500, ERROR_CLASS_GATEWAY_TRANSLATION)
+        == ERROR_CLASS_GATEWAY_TRANSLATION
+    )
+    assert (
+        classify_recorded_error(500, "Internal server error")
+        == ERROR_CLASS_UPSTREAM_ERROR
+    )
