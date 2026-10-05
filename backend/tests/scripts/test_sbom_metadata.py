@@ -155,6 +155,16 @@ class SupplierDerivationTest(unittest.TestCase):
         self.assertEqual(source, "manual_override")
         self.assertEqual(supplier["name"], "paulirish")
 
+    def test_vendored_braces_names_its_upstream_author(self) -> None:
+        """The file: copy has no registry maintainer record to fall back on."""
+        root = REPO_ROOT / "frontend" / "vendor"
+        index = sbom_metadata.MetadataIndex([], [root])
+        supplier, source = sbom_metadata.derive_supplier(
+            _component("braces", "pkg:npm/braces@3.0.4"), index
+        )
+        self.assertEqual(source, "package_metadata_author")
+        self.assertEqual(supplier["name"], "Jon Schlinkert")
+
     def test_npm_repository_path_when_no_person_or_scope(self) -> None:
         root = self._tmp()
         modules = root / "node_modules"
