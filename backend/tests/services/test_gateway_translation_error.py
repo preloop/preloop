@@ -206,3 +206,34 @@ def test_is_gateway_translation_error_does_not_swallow_upstream_errors() -> None
         litellm.BadRequestError(message="bad", model="m", llm_provider="openai")
     )
     assert not is_gateway_translation_error(RuntimeError("boom"))
+
+
+def test_valueerror_inside_get_optional_params_is_gateway_translation_error() -> None:
+    """ValueError counts when the traceback passes through param mapping."""
+    with patch(
+        "litellm.utils.pre_process_non_default_params",
+        side_effect=ValueError("reasoning_effort must be a string"),
+    ):
+        with pytest.raises(ValueError) as caught:
+            get_optional_params(
+                model="qwen2.5-coder",
+                custom_llm_provider="ollama",
+            )
+    assert is_gateway_translation_error(caught.value) is True
+
+
+def test_translation_error_scrubs_secrets_from_the_client_body() -> None:
+    """Exception text that looks like a key must not reach the client."""
+    secret = "sk-testsecret1234567890extra"
+
+    def crash(**_kwargs: Any) -> Any:
+        raise TypeError(f"unhashable type: 'dict' {secret}")
+
+    error, record, _rest = _run_stream(crash)
+    body = error.to_payload()["error"]["message"]
+    detail = record.call_args.kwargs["error_detail"]
+    assert secret not in error.message
+    assert secret not in body
+    assert secret not in detail
+    assert "sk-[REDACTED]" in body
+    assert "unhashable type: 'dict'" in body

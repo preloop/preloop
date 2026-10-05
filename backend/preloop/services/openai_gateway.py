@@ -8306,12 +8306,16 @@ class OpenAIGatewayService:
                 exc,
                 exc_info=exc,
             )
+            # Same scrub and length cap as every other client-facing
+            # message in this function. The raw exception stays in the log
+            # above; it must not reach the body, usage row, or audit text.
+            surfaced = extract_upstream_error_detail(str(exc)).message
             return ModelGatewayAPIError(
                 provider=provider,
                 status_code=500,
                 message=(
                     "Gateway could not translate this request for the "
-                    f"configured model: {exc}"
+                    f"configured model: {surfaced}"
                 ),
                 code=ERROR_CLASS_GATEWAY_TRANSLATION,
                 error_class=ERROR_CLASS_GATEWAY_TRANSLATION,

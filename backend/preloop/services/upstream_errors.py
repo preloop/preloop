@@ -68,11 +68,19 @@ _PARAM_MAPPING_FRAMES = frozenset(
 def is_gateway_translation_error(exc: BaseException) -> bool:
     """Whether ``exc`` is a local request-translation bug, not an upstream fault.
 
-    LiteLLM wraps every provider/transport failure in its own exception
-    classes (``openai.APIError`` subclasses), so a bare ``TypeError`` out of
-    ``completion()`` can only come from local code. ``ValueError`` is broader
-    (``json.JSONDecodeError`` on an upstream body is one), so it counts only
-    when raised inside LiteLLM's parameter mapping.
+    Assumption: LiteLLM wraps provider and transport failures in its own
+    exception classes (``openai.APIError`` subclasses, or any type defined in
+    ``litellm``, ``openai``, ``httpx``, or ``json``). A bare ``TypeError``
+    whose class sits outside those modules is treated as local translation.
+    That includes a ``TypeError`` raised while LiteLLM transforms a provider
+    response, not only during parameter mapping. The rule stays that broad
+    on purpose: no current response-transform ``TypeError`` has been shown
+    to be a genuine upstream fault, and narrowing it would risk missing the
+    unhashable-dict param-mapping crash this class exists to catch.
+    ``ValueError`` is broader (``json.JSONDecodeError`` on an upstream body
+    is one), so it counts only when a param-mapping frame
+    (``get_optional_params`` and the other names in
+    ``_PARAM_MAPPING_FRAMES``) is on the traceback.
 
     Args:
         exc: The exception raised by the upstream call.
@@ -150,6 +158,14 @@ _OVERLOAD_MARKERS = (
 HOSTED_TARIFF_UNCONFIGURED_MARKERS = (
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     "no operator tariff",
+)
+
+# The gateway failed to translate the request before any upstream call.
+# Classifiers that only see status plus detail would otherwise read the
+# deterministic 500 as a transient ``upstream_error``.
+_GATEWAY_TRANSLATION_MARKERS = (
+    ERROR_CLASS_GATEWAY_TRANSLATION,
+    "could not translate this request",
 )
 
 # Explicit capability errors are deterministic even when a provider reports
@@ -425,6 +441,7 @@ _NON_RETRYABLE_ERROR_CLASSES = frozenset(
         ERROR_CLASS_CLIENT_CANCELLED,
         ERROR_CLASS_STREAM_ABANDONED,
         ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
+        ERROR_CLASS_GATEWAY_TRANSLATION,
     }
 )
 
@@ -522,6 +539,8 @@ def classify_recorded_error(
     text = (error_detail or "").lower()
     if _contains(text, HOSTED_TARIFF_UNCONFIGURED_MARKERS):
         return ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED
+    if _contains(text, _GATEWAY_TRANSLATION_MARKERS):
+        return ERROR_CLASS_GATEWAY_TRANSLATION
     if status_code == 499:
         return ERROR_CLASS_CLIENT_CANCELLED
     if status_code == 429:
