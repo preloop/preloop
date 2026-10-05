@@ -289,3 +289,13 @@ def test_reasoning_bridge_reports_the_clients_original_index():
         caught.value.message
     )
     assert SECRET not in caught.value.message
+
+
+def test_codex_backend_sanitizer_does_not_log_client_key_names(caplog):
+    caplog.set_level("DEBUG", logger="preloop.services.openai_gateway")
+    sanitized = _bare_service()._sanitize_openai_codex_payload(
+        {"model": "m", "input": [], "sk-client-secret-key-name": 1}
+    )
+    assert "sk-client-secret-key-name" not in sanitized
+    assert "Dropped 1 parameter(s)" in caplog.text
+    assert "sk-client-secret-key-name" not in caplog.text

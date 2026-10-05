@@ -4544,9 +4544,11 @@ class OpenAIGatewayService:
         # must be set to false"); force it regardless of client input.
         sanitized["store"] = False
         if dropped:
+            # Count only: client-chosen key names can carry credentials
+            # (``api_key``, custom headers) and must not reach logs.
             logger.debug(
-                "Dropped parameters unsupported by the OpenAI Codex backend: %s",
-                sorted(dropped),
+                "Dropped %d parameter(s) unsupported by the OpenAI Codex backend",
+                len(dropped),
             )
         return sanitized
 
