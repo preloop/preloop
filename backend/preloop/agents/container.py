@@ -1144,15 +1144,22 @@ except ImportError:
     )
 
 
+#: ``execution_context`` key carrying the seconds an agent runtime may live.
+#: The orchestrator writes it; the Kubernetes executor reads it for the Job's
+#: ``activeDeadlineSeconds``. One constant so a rename cannot drop the backstop.
+RUNTIME_DEADLINE_CONTEXT_KEY = "runtime_deadline_seconds"
+
+
 def runtime_deadline_seconds(execution_context: Dict[str, Any]) -> Optional[int]:
     """``activeDeadlineSeconds`` for an agent Job, or None for no deadline.
 
     The orchestrator puts the execution's remaining wall-clock budget plus a
-    teardown grace into the context (``runtime_deadline_seconds``). Anything
+    teardown grace into the context (``RUNTIME_DEADLINE_CONTEXT_KEY``). A
+    confirmation nudge writes its own timeout plus that grace instead. Anything
     that is not a positive whole number leaves the Job without a deadline,
     as before.
     """
-    value = execution_context.get("runtime_deadline_seconds")
+    value = execution_context.get(RUNTIME_DEADLINE_CONTEXT_KEY)
     if isinstance(value, bool):
         return None
     try:

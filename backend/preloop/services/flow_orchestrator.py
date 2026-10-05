@@ -24,7 +24,6 @@ from preloop.models.crud import (
 )
 from preloop.models.models.flow import Flow
 from preloop.models.models.flow_execution import (
-    FlowExecution,
     MATRIX_OVERRIDES_KEY,
     ROUTING_RECORD_KEY,
     resolve_execution_agent_selection,
@@ -35,7 +34,10 @@ from preloop.agents import (
     create_executor_for_execution,
     AgentStatus,
 )
-from preloop.agents.container import AGENT_SESSION_SUFFIX_KEY
+from preloop.agents.container import (
+    AGENT_SESSION_SUFFIX_KEY,
+    RUNTIME_DEADLINE_CONTEXT_KEY,
+)
 from preloop.agents.kubernetes import detect_kubernetes_environment
 from preloop.agents.cli_session import (
     AGENT_SESSION_MARKER,
@@ -523,11 +525,6 @@ FLOW_TIMEOUT_SECONDS_MAX = 86400
 #: the Job deadline is only the backstop for when the monitor cannot (worker
 #: gone, API server unreachable), so it leaves room for that teardown.
 RUNTIME_DEADLINE_GRACE_SECONDS = 300
-
-#: ``execution_context`` key carrying the seconds an agent runtime may live
-#: (the remaining budget plus the grace above). Read by the Kubernetes
-#: executor for the Job's ``activeDeadlineSeconds``.
-RUNTIME_DEADLINE_CONTEXT_KEY = "runtime_deadline_seconds"
 
 #: A retry needs at least this much of the deadline left after its backoff
 #: to be worth starting: less than this cannot cover a container start.
@@ -3980,13 +3977,25 @@ class FlowExecutionOrchestrator:
             # runners have no equivalent here and rely on the monitor.
             # Best effort: a backstop that cannot be computed never blocks
             # the launch; the monitor still enforces the deadline.
+            # The confirmation nudge re-enters this method on the same
+            # orchestrator, so the cached deadline is still the main run's.
+            # Its Job uses the nudge timeout plus grace. The main deadline
+            # would cut a longer nudge short.
             try:
-                execution_context[RUNTIME_DEADLINE_CONTEXT_KEY] = (
-                    self._execution_deadline(
-                        self._execution_timeout_budget()
-                    ).remaining_seconds()
-                    + RUNTIME_DEADLINE_GRACE_SECONDS
-                )
+                if execution_context.get("confirmation_nudge") is True:
+                    nudge_timeout = max(
+                        30,
+                        int(settings.flow_confirmation_nudge_timeout_seconds),
+                    )
+                    backstop = nudge_timeout + RUNTIME_DEADLINE_GRACE_SECONDS
+                else:
+                    backstop = (
+                        self._execution_deadline(
+                            self._execution_timeout_budget()
+                        ).remaining_seconds()
+                        + RUNTIME_DEADLINE_GRACE_SECONDS
+                    )
+                execution_context[RUNTIME_DEADLINE_CONTEXT_KEY] = backstop
             except Exception:
                 logger.warning(
                     "Could not compute the runtime deadline backstop",
@@ -6213,15 +6222,9 @@ class FlowExecutionOrchestrator:
         if execution is not None:
             stored: tuple = ()
             try:
-                row = (
-                    self.db.query(
-                        FlowExecution.launch_requested_at, FlowExecution.start_time
-                    )
-                    .filter(FlowExecution.id == execution.id)
-                    .first()
-                )
+                row = crud_flow_execution.get(self.db, id=execution.id, refresh=True)
                 if row is not None:
-                    stored = tuple(row)
+                    stored = (row.launch_requested_at, row.start_time)
             except Exception:
                 logger.debug("Could not read the launch time", exc_info=True)
             for candidate in (

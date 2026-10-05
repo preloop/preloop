@@ -18,7 +18,10 @@ import pytest
 from sqlalchemy.orm import Session
 
 from preloop.agents.base import AgentStatus
-from preloop.agents.container import runtime_deadline_seconds
+from preloop.agents.container import (
+    RUNTIME_DEADLINE_CONTEXT_KEY as CONTAINER_DEADLINE_KEY,
+    runtime_deadline_seconds,
+)
 from preloop.models.crud import crud_account, crud_flow, crud_user
 from preloop.models.models import Account, Flow
 from preloop.models.models.user import User
@@ -119,9 +122,7 @@ def clock(monkeypatch) -> FakeClock:
         "_sync_runtime_tool_activity_metrics",
         AsyncMock(return_value=None),
     )
-    monkeypatch.setattr(
-        FlowExecutionOrchestrator, "_update_commit_status", AsyncMock()
-    )
+    monkeypatch.setattr(FlowExecutionOrchestrator, "_update_commit_status", AsyncMock())
     return fake
 
 
@@ -311,7 +312,10 @@ async def test_agent_status_elapsed_is_wall_clock(db_session, flow, clock):
     assert published
     # Measured at the top of the first poll: the 120 s startup is in it.
     assert published[0]["elapsed"] >= SLOW_START - 1
-    gaps = [b["elapsed"] - a["elapsed"] for a, b in zip(published, published[1:])]
+    gaps = [
+        b["elapsed"] - a["elapsed"]
+        for a, b in zip(published, published[1:], strict=False)
+    ]
     assert gaps and all(gap >= SLOW_STATUS + POLL - 1 for gap in gaps)
 
 
@@ -397,7 +401,75 @@ async def test_kubernetes_job_deadline_is_the_remaining_budget_plus_grace(
     [(600, 600), ("900", 900), (0, None), (-5, None), (None, None), (True, None)],
 )
 def test_runtime_deadline_seconds_accepts_only_positive_seconds(value, expected):
-    assert runtime_deadline_seconds({"runtime_deadline_seconds": value}) == expected
+    assert runtime_deadline_seconds({CONTAINER_DEADLINE_KEY: value}) == expected
+
+
+def test_runtime_deadline_context_key_is_shared():
+    """The writer and the Kubernetes reader use one constant."""
+    assert CONTAINER_DEADLINE_KEY is RUNTIME_DEADLINE_CONTEXT_KEY
+    assert CONTAINER_DEADLINE_KEY == "runtime_deadline_seconds"
+    assert runtime_deadline_seconds({CONTAINER_DEADLINE_KEY: 480}) == 480
+
+
+@pytest.mark.asyncio
+async def test_confirmation_nudge_backstop_uses_nudge_timeout(monkeypatch):
+    """A near-deadline main run must not shorten a longer nudge Job.
+
+    The nudge re-enters ``_start_agent_session`` on the same orchestrator.
+    With 10 seconds left on the main deadline and a 600 second nudge timeout,
+    the nudge Job's backstop is 600 plus grace, not 10 plus grace.
+    """
+    clock = FakeClock()
+    monkeypatch.setattr(orchestrator_module, "_utcnow", clock)
+    monkeypatch.setattr(
+        orchestrator_module.settings,
+        "flow_confirmation_nudge_timeout_seconds",
+        600,
+    )
+    orchestrator = FlowExecutionOrchestrator(
+        db=MagicMock(),
+        flow_id=uuid4(),
+        trigger_event_data={"source": "github", "payload": {}},
+        nats_client=AsyncMock(),
+    )
+    orchestrator.execution_log = SimpleNamespace(id=uuid4())
+    orchestrator._deadline = ExecutionDeadline(
+        anchor=clock.now - timedelta(seconds=BUDGET - 10),
+        budget_seconds=BUDGET,
+    )
+    assert orchestrator._deadline.remaining_seconds() == 10
+
+    captured: List[dict] = []
+
+    async def start(context):
+        captured.append(dict(context))
+        return "agent-nudge-deadline"
+
+    executor = MagicMock()
+    executor.start = AsyncMock(side_effect=start)
+    base = {"agent_type": "codex", "agent_config": {}}
+    with (
+        patch.object(
+            orchestrator_module,
+            "create_executor_for_execution",
+            return_value=executor,
+        ),
+        patch.object(
+            orchestrator_module.crud_flow_execution,
+            "admit_runtime_start",
+            return_value=True,
+        ),
+    ):
+        await orchestrator._start_agent_session(dict(base))
+        await orchestrator._start_agent_session({**base, "confirmation_nudge": True})
+
+    assert (
+        captured[0][RUNTIME_DEADLINE_CONTEXT_KEY] == 10 + RUNTIME_DEADLINE_GRACE_SECONDS
+    )
+    assert (
+        captured[1][RUNTIME_DEADLINE_CONTEXT_KEY]
+        == 600 + RUNTIME_DEADLINE_GRACE_SECONDS
+    )
 
 
 def test_deadline_counts_real_time_not_just_sleeps(monkeypatch):
@@ -433,13 +505,18 @@ def test_resumed_monitoring_keeps_the_launch_anchor(monkeypatch):
         trigger_event_data={"source": "github", "payload": {}},
         nats_client=AsyncMock(),
     )
-    orchestrator.db.query.return_value.filter.return_value.first.return_value = (
-        launched,
-        launched - timedelta(seconds=30),
+    execution_id = uuid4()
+    row = SimpleNamespace(
+        launch_requested_at=launched,
+        start_time=launched - timedelta(seconds=30),
     )
-    orchestrator.execution_log = SimpleNamespace(id=uuid4())
-    deadline = orchestrator._execution_deadline(
-        TimeoutBudget(seconds=BUDGET, source="flow")
-    )
+    orchestrator.execution_log = SimpleNamespace(id=execution_id)
+    with patch.object(
+        orchestrator_module.crud_flow_execution, "get", return_value=row
+    ) as get_row:
+        deadline = orchestrator._execution_deadline(
+            TimeoutBudget(seconds=BUDGET, source="flow")
+        )
+    get_row.assert_called_once_with(orchestrator.db, id=execution_id, refresh=True)
     assert deadline.anchor == launched
     assert deadline.remaining_seconds() == 100
