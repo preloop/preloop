@@ -224,7 +224,7 @@ class TestTheShippedCatalog:
             assert created.is_preset is True
             assert created.is_enabled is False
 
-    def test_the_cra_presets_keep_their_three_day_window(self, sync):
+    def test_presets_keep_their_declared_approval_windows(self, sync):
         """006, 014, 015 and 017 declare a three-day window and 021 a one-day
         window (a person answers its hourly question); keep every one."""
         from preloop.flow_presets import FLOW_PRESETS
