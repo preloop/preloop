@@ -148,11 +148,10 @@ class TestRetryStopReason:
                 "error_message": "push failed",
             }
         )
-        assert reason == (
-            "the post-execution publication block already ran; "
-            "relaunching would redo pushed work"
-        )
+        assert reason is not None
+        assert "a pull request is bound" in reason
         assert secret_url not in reason
+        assert "secret-token" not in reason
 
 
 @pytest.mark.asyncio

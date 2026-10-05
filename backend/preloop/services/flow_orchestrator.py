@@ -5301,11 +5301,11 @@ class FlowExecutionOrchestrator:
             getattr(self, "_opened_pr_by_lookup", False)
             and self._publication_is_resume()
         ):
-            return f"a pull request is bound ({opened.get('url')})"
+            # The URL stays off this string. It is logged with the retry
+            # decision, and a pull-request URL can carry a credential.
+            return "a pull request is bound"
         if getattr(self, "_remote_branch_published", False):
-            return (
-                f"branch {self._publication_target_branch()} now exists on the remote"
-            )
+            return "the branch now exists on the remote"
         lines = [
             str(line) for line in self.execution_logger.get_agent_output_lines()[-400:]
         ]
@@ -7483,12 +7483,9 @@ class FlowExecutionOrchestrator:
 
         published = self._publication_side_effect_evidence(agent_result)
         if published:
-            # ``published`` can include a pull-request URL. Log a fixed
-            # sentence so that URL, which may carry a credential, is not
-            # written in clear text.
             return (
-                "the post-execution publication block already ran; "
-                "relaunching would redo pushed work"
+                "the post-execution publication block already ran "
+                f"({published}); relaunching would redo pushed work"
             )
 
         if not self._failure_is_transient(agent_result):
