@@ -17,7 +17,8 @@ import pytest
 from sqlalchemy.orm import Session
 
 from preloop.agents import AgentStatus
-from preloop.models.crud import crud_flow_execution
+from preloop.models import models
+from preloop.models.crud import crud_account, crud_flow_execution
 from preloop.services import flow_orchestrator as orchestrator_module
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
@@ -155,3 +156,53 @@ async def test_park_releases_before_artifact_capture(
         await orchestrator._park_if_requested(AsyncMock(), "session-1", 5)
 
     assert seen == [False]
+
+
+@pytest.mark.asyncio
+async def test_release_does_not_expire_execution_before_publish(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real execution row must not lazy-load (and reopen) after the release.
+
+    ``_publish_update`` reads ``execution_log.id``. With the default
+    expire-on-commit that read would refresh the row and hold a new
+    transaction across the NATS publish.
+    """
+    account = crud_account.create(
+        db_session, obj_in={"organization_name": f"Idle txn {uuid4().hex[:8]}"}
+    )
+    flow = models.Flow(
+        account_id=account.id,
+        name="Idle transaction flow",
+        prompt_template="Example",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(flow_id=flow.id)
+    db_session.add(execution)
+    db_session.commit()
+
+    nats = AsyncMock()
+    nats.is_connected = True
+    seen: List[bool] = []
+
+    async def publish(*_args, **_kwargs) -> None:
+        seen.append(db_session.in_transaction())
+
+    nats.publish = AsyncMock(side_effect=publish)
+    orchestrator = FlowExecutionOrchestrator(
+        db=db_session,
+        flow_id=flow.id,
+        trigger_event_data={"source": "test", "type": "test", "payload": {}},
+        nats_client=nats,
+    )
+    orchestrator.execution_log = execution
+    orchestrator.tool_calls_count = -1
+    monkeypatch.setattr(orchestrator, "_persist_live_metrics", AsyncMock())
+
+    await orchestrator._sync_runtime_tool_activity_metrics()
+
+    assert seen and not any(seen)
+    assert not db_session.in_transaction()
+    assert db_session.expire_on_commit is True

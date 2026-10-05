@@ -3831,7 +3831,7 @@ class FlowExecutionOrchestrator:
         # status call and the poll sleep keeps an AccessShareLock on
         # flow_execution and runtime_session_activity, which makes schema
         # migrations time out on lock_timeout (see release_transaction).
-        release_transaction(self.db)
+        self._end_read_transaction()
         if persisted_tool_calls > self.tool_calls_count:
             self.tool_calls_count = persisted_tool_calls
             logger.info(
@@ -6347,6 +6347,24 @@ class FlowExecutionOrchestrator:
             seconds=remaining, source=budget.source, consumed_seconds=consumed
         )
 
+    def _end_read_transaction(self) -> None:
+        """End the session transaction before a wait, keeping loaded state.
+
+        ``release_transaction`` commits, and a default commit expires every
+        loaded instance. The next ``self.execution_log.id`` (log lines,
+        ``_publish_update``) would then lazy-load the row and reopen a
+        transaction just before the NATS publish or agent call it was meant
+        to avoid. The monitor never relied on expiry between polls (it
+        committed rarely before this was added) and reads what must be fresh
+        with explicit queries, so the commit here keeps loaded state.
+        """
+        previous = self.db.expire_on_commit
+        self.db.expire_on_commit = False
+        try:
+            release_transaction(self.db)
+        finally:
+            self.db.expire_on_commit = previous
+
     def _read_pending_park_request(self) -> Optional[Dict[str, Any]]:
         """Return the unconfirmed park request for this execution, if any."""
         from preloop.models.crud import crud_flow_execution
@@ -6405,7 +6423,7 @@ class FlowExecutionOrchestrator:
         # both call sites go on to await the agent (status, result, artifact
         # capture), and an open read here holds AccessShareLock on
         # flow_execution across that wait, which blocks migrations.
-        release_transaction(self.db)
+        self._end_read_transaction()
         if park_request is None:
             return None
         park_kind = str(park_request.get("kind") or "human")
@@ -6571,7 +6589,7 @@ class FlowExecutionOrchestrator:
                 # transaction before the executor calls and sleeps below, so
                 # the poll does not hold AccessShareLock on flow_execution
                 # across them and block migrations on lock_timeout.
-                release_transaction(self.db)
+                self._end_read_transaction()
                 if stop_request:
                     # Persisted intent survives a worker restart and a quick
                     # scope re-enable. A runner halt flag is only a request.
@@ -6612,7 +6630,7 @@ class FlowExecutionOrchestrator:
                             self.execution_log.id,
                         )
                     if not already_terminal:
-                        release_transaction(self.db)
+                        self._end_read_transaction()
                         await asyncio.sleep(poll_interval)
                         deadline.credit_sleep(poll_interval)
                         continue
@@ -6628,7 +6646,7 @@ class FlowExecutionOrchestrator:
                     return parked_result
                 # The park check reads flow_execution; release before the
                 # status call and any sleep below.
-                release_transaction(self.db)
+                self._end_read_transaction()
 
                 # Check if user requested stop
                 if self._stop_requested.is_set():
@@ -6652,7 +6670,7 @@ class FlowExecutionOrchestrator:
                             and await agent_executor.is_stopped(session_reference)
                             is not True
                         ):
-                            release_transaction(self.db)
+                            self._end_read_transaction()
                             await asyncio.sleep(poll_interval)
                             deadline.credit_sleep(poll_interval)
                             continue
@@ -6728,7 +6746,7 @@ class FlowExecutionOrchestrator:
                             }
 
                         # Continue polling for transient errors
-                        release_transaction(self.db)
+                        self._end_read_transaction()
                         await asyncio.sleep(poll_interval)
                         deadline.credit_sleep(poll_interval)
                         continue
@@ -7061,7 +7079,7 @@ class FlowExecutionOrchestrator:
                         }
 
                 # Wait before next poll, outside any transaction.
-                release_transaction(self.db)
+                self._end_read_transaction()
                 await asyncio.sleep(poll_interval)
                 deadline.credit_sleep(poll_interval)
 
