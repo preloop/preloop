@@ -14,9 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scorecard's vulnerable-dependency list is reduced by moving patched
   transitive locks forward: `undici` 7.29.1 in the ClawHub CI lock, `hono`
   4.13.13 and `fast-uri` 3.1.8 in the Claude plugin, `urllib3` 2.8.0 in the
-  build lock, and `virtualenv` 21.14.5 in the lint lock. `nanobot-ai` stays
-  on 0.1.4.post3 because 0.2.1 removed the provider and loop API this plugin
-  calls.
+  build lock, and `virtualenv` 21.14.5 in the lint lock. The Nanobot
+  plugin now pins `nanobot-ai` 0.2.1 and calls `OpenAICompatProvider`.
 - `brace-expansion` in the Pi harness lock is 5.0.12 (GHSA-6j4f-fj2g-mc7p,
   GHSA-qhr7-859c-m2p7, GHSA-q2hr-2g5m-vwhr). `braces` is a local 3.0.4 patch
   of 3.0.3 with a nesting cap (GHSA-vfj7-8cjw-p6xm); upstream has no later

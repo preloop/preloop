@@ -65,14 +65,11 @@ async def main() -> None:
             )
             assert scoped.config.bearer_token == "synthetic-execution-token"
             assert scoped.loop.tools.config.bearer_token == "synthetic-execution-token"
-            assert (
-                scoped.loop.provider.provider._client.api_key
-                == "synthetic-execution-token"
-            )
-            assert (
-                str(scoped.loop.provider.provider._client.base_url)
-                == "https://gateway.example.com/openai/v1/"
-            )
+            # 0.2 constructs the HTTP client on first chat. The key and base
+            # are stored for that construction.
+            provider = scoped.loop.provider.provider
+            assert provider._api_key_for_client == "synthetic-execution-token"
+            assert provider._effective_base == "https://gateway.example.com/openai/v1"
             scoped.loop.provider.provider = OfflineProvider()
             scoped.loop._mcp_servers = {}
             return scoped

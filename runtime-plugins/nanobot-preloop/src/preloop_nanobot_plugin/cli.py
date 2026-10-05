@@ -15,9 +15,9 @@ import aiohttp
 
 from .runtime import ConcurrentControlClient, build_runtime, validate_document
 
-# verify() refuses any other nanobot-ai release. The README keeps this pin
-# because newer upstream versions changed the loop API.
-PINNED_NANOBOT_SDK = "0.1.4.post3"
+# verify() refuses any other nanobot-ai release. The adapter is written
+# against this SDK's AgentLoop and OpenAICompatProvider.
+PINNED_NANOBOT_SDK = "0.2.1"
 
 
 def discover(explicit: Path | None = None) -> Path:

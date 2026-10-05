@@ -1,10 +1,10 @@
 # Nanobot with Preloop
 
-This standalone process embeds **nanobot-ai 0.1.4.post3** through its Python
-`AgentLoop.process_direct`, `CustomProvider`, and `ToolRegistry.execute` seams.
-It does not claim a native Nanobot plugin API or modify an existing channel bot.
-The pinned version is intentional: newer upstream versions changed the loop API.
-Upstream reference: https://github.com/HKUDS/nanobot/tree/v0.1.4.post3/nanobot.
+This standalone process embeds **nanobot-ai 0.2.1** through its Python
+`AgentLoop.process_direct`, `OpenAICompatProvider`, and `ToolRegistry.execute`
+seams. It does not claim a native Nanobot plugin API or modify an existing
+channel bot. The pin is exact: `verify` refuses any other release.
+Upstream reference: https://github.com/HKUDS/nanobot/tree/v0.2.1/nanobot.
 
 Install into a dedicated virtual environment from the repository:
 

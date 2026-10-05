@@ -3,6 +3,14 @@
 # the same group starts; nothing starts when a PR closes, so its runs would
 # otherwise sit in the queue until a runner frees up and then run to
 # completion for a branch nobody is looking at.
+#
+# CodeQL is the exception, and only after a merge. Scorecard's SAST check
+# counts a merged commit only when the pull request head SHA has a completed
+# successful or neutral check from github-advanced-security. That check is
+# uploaded when the CodeQL workflow finishes. Cancelling it at merge leaves
+# the head unscanned, which is the "SAST tool detected but not run on all
+# commits" finding. A pull request closed without merging never contributes
+# that commit, so its CodeQL run is cancelled with the rest.
 name: Cancel runs for closed pull requests
 
 on:
@@ -27,6 +35,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGED: ${{ github.event.pull_request.merged }}
         run: |
           set -euo pipefail
           # Match on the PR number or the head SHA, not just the branch name:
@@ -35,15 +44,18 @@ jobs:
           # this PR. The head SHA is the fallback for runs with no PR linkage
           # yet, so closing a parent does not cancel a stacked child's runs
           # that happen to share the same commit.
-          # shellcheck disable=SC2016  # $pr/$sha/$self are jq variables
+          # shellcheck disable=SC2016  # $pr/$sha/$self/$merged are jq variables
+          # The name match follows codeql.yml's `name: CodeQL`. Spare that
+          # workflow only when this pull request merged.
           for run_status in queued in_progress; do
             gh api --paginate \
               "repos/$REPO/actions/runs" -X GET \
               -f branch="$HEAD_REF" -f status="$run_status" -F per_page=100 \
-            | jq -r --arg pr "$PR_NUMBER" --arg sha "$HEAD_SHA" --arg self "$GITHUB_RUN_ID" '
+            | jq -r --arg pr "$PR_NUMBER" --arg sha "$HEAD_SHA" --arg self "$GITHUB_RUN_ID" --arg merged "$MERGED" '
                 .workflow_runs[]
                 | select((.id | tostring) != $self)
                 | select(if ((.pull_requests // []) | length) > 0 then (.pull_requests | any(.number == ($pr | tonumber))) else .head_sha == $sha end)
+                | select(if $merged == "true" then .name != "CodeQL" else true end)
                 | "\(.id) \(.name)"' \
               || { echo "query for $run_status failed" >&2; continue; }
           done | sort -u | while read -r id name; do
