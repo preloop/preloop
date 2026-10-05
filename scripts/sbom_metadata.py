@@ -55,6 +55,7 @@ from email import policy
 from email.message import Message
 from pathlib import Path
 from typing import Any
+from typing import Iterator
 from urllib.parse import unquote
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -795,7 +796,7 @@ class MetadataIndex:
     def _index_npm(self, root: Path) -> None:
         if not root.is_dir():
             return
-        for manifest in root.rglob("package.json"):
+        for manifest in _npm_manifests(root):
             try:
                 data = json.loads(manifest.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -899,15 +900,55 @@ def _npm_scope_supplier(name: str) -> tuple[dict[str, Any], str] | None:
     return {"name": scope}, SOURCE_NPM_SCOPE
 
 
+def _npm_manifests(root: Path) -> Iterator[Path]:
+    """Yield ``package.json`` files under ``root``, following directory symlinks.
+
+    ``Path.rglob`` does not descend through symlinks. npm ``file:`` installs
+    are symlinks (``node_modules/braces`` points at ``vendor/braces``), so a
+    physical walk never sees the vendored manifest. Each resolved directory
+    is entered once, which stops a symlink cycle from recursing forever.
+    """
+    pending = [root]
+    seen: set[Path] = set()
+    while pending:
+        current = pending.pop()
+        try:
+            resolved = current.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    pending.append(entry)
+                    continue
+                if entry.name == "package.json" and entry.is_file():
+                    yield entry
+            except OSError:
+                continue
+
+
 def supplier_from_path(module_path: str) -> tuple[dict[str, Any], str] | None:
     """Apply the module-path rule to a Go module or a repository path.
 
     ``golang.org/x`` and ``std`` are The Go Authors. ``github.com/<org>``
     uses the org. Any other host uses the host plus the first path segment.
-    A shorthand ``org/repo`` is treated as GitHub.
+    A shorthand ``org/repo`` is treated as GitHub. Stacked ``git+`` and URL
+    prefixes, including ``git+https://``, are removed in full so the host
+    is parsed instead of a leftover ``https:`` name.
     """
     path = module_path.strip().strip("/")
-    path = re.sub(r"^(git\+|git:|https?://)", "", path)
+    while True:
+        stripped = re.sub(r"^(git\+|git:|https?://)", "", path)
+        if stripped == path:
+            break
+        path = stripped
     path = path.split("#", 1)[0].split("?", 1)[0]
     path = path.removesuffix(".git")
     if path.startswith("github:"):
