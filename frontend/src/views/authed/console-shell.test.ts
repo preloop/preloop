@@ -1287,16 +1287,17 @@ describe('ConsoleShell', () => {
       return el;
     }
 
-    it('highlights Approvals and opens Audit on a single approval', async () => {
+    it('highlights the top-level Approvals item on a single approval', async () => {
       // The deep-link target of every approval notification, Slack and email.
+      // Approvals is a top-level item, so the Audit group stays closed.
       window.history.replaceState({}, '', '/console/approval/req-123');
       const el = await loaded();
-      expect(
-        el.shadowRoot!.querySelector(
-          'a.sidebar-link.active[href="/console/approvals"]'
-        )
-      ).to.exist;
-      expect(auditSection(el)?.hasAttribute('open')).to.be.true;
+      const approvals = el.shadowRoot!.querySelector(
+        'a.sidebar-link.active[href="/console/approvals"]'
+      );
+      expect(approvals).to.exist;
+      expect(approvals?.closest('sl-details.nav-section')).to.equal(null);
+      expect(auditSection(el)?.hasAttribute('open')).to.be.false;
     });
 
     it('highlights Cost on the API usage page', async () => {
