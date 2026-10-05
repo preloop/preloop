@@ -30,6 +30,7 @@ from preloop.models.models.flow_execution import (
 )
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
+from preloop.models.db.session import release_transaction
 from preloop.agents import (
     create_executor_for_execution,
     AgentStatus,
@@ -3823,6 +3824,14 @@ class FlowExecutionOrchestrator:
     async def _sync_runtime_tool_activity_metrics(self) -> Optional[Dict[str, Any]]:
         """Sync persisted MCP activity into live metrics and detect tight loops."""
         persisted_tool_calls = self._get_runtime_tool_activity_count()
+        recent_signatures = self._get_recent_runtime_tool_activity_signatures()
+        # Both reads are materialized into plain values above. End the
+        # transaction before any await: this runs on every monitor poll, and
+        # a session left idle in transaction across the publish, the k8s
+        # status call and the poll sleep keeps an AccessShareLock on
+        # flow_execution and runtime_session_activity, which makes schema
+        # migrations time out on lock_timeout (see release_transaction).
+        self._end_read_transaction()
         if persisted_tool_calls > self.tool_calls_count:
             self.tool_calls_count = persisted_tool_calls
             logger.info(
@@ -3837,7 +3846,6 @@ class FlowExecutionOrchestrator:
             )
             await self._persist_live_metrics()
 
-        recent_signatures = self._get_recent_runtime_tool_activity_signatures()
         return self._detect_repeated_tool_cycle(recent_signatures)
 
     async def _listen_for_commands(self):
@@ -6339,6 +6347,51 @@ class FlowExecutionOrchestrator:
             seconds=remaining, source=budget.source, consumed_seconds=consumed
         )
 
+    def _end_read_transaction(self) -> None:
+        """End the session transaction before a wait, keeping loaded state.
+
+        ``release_transaction`` commits, and a default commit expires every
+        loaded instance. The next ``self.execution_log.id`` (log lines,
+        ``_publish_update``) would then lazy-load the row and reopen a
+        transaction just before the NATS publish or agent call it was meant
+        to avoid. The monitor never relied on expiry between polls (it
+        committed rarely before this was added) and reads what must be fresh
+        with explicit queries, so the commit here keeps loaded state.
+        """
+        previous = self.db.expire_on_commit
+        self.db.expire_on_commit = False
+        try:
+            release_transaction(self.db)
+        finally:
+            self.db.expire_on_commit = previous
+
+    def _read_pending_park_request(self) -> Optional[Dict[str, Any]]:
+        """Return the unconfirmed park request for this execution, if any."""
+        from preloop.models.crud import crud_flow_execution
+
+        # A stop in the pre-park window writes durable intent (and often
+        # STOPPED) before this monitor notices the agent exited. Confirming
+        # the park here would resurrect WAITING_FOR_CHILDREN over a row the
+        # operator just stopped.
+        if crud_flow_execution.get_stop_request(
+            self.db, execution_id=self.execution_log.id
+        ):
+            return None
+        current = crud_flow_execution.get(
+            self.db, id=self.execution_log.id, refresh=True
+        )
+        if current is not None and str(current.status or "").upper() in (
+            crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+        ):
+            return None
+        park_request = crud_flow_execution.get_park_request(
+            self.db,
+            execution_id=self.execution_log.id,
+        )
+        if not park_request or park_request.get("parked_at") is not None:
+            return None
+        return park_request
+
     async def _park_if_requested(
         self, agent_executor: Any, session_reference: str, elapsed: float
     ) -> Optional[Dict[str, Any]]:
@@ -6362,32 +6415,22 @@ class FlowExecutionOrchestrator:
 
         if self.execution_log is None:
             return None
-        # A stop in the pre-park window writes durable intent (and often
-        # STOPPED) before this monitor notices the agent exited. Confirming
-        # the park here would resurrect WAITING_FOR_CHILDREN over a row the
-        # operator just stopped.
-        if crud_flow_execution.get_stop_request(
-            self.db, execution_id=self.execution_log.id
-        ):
-            return None
-        current = crud_flow_execution.get(
-            self.db, id=self.execution_log.id, refresh=True
-        )
-        if current is not None and str(current.status or "").upper() in (
-            crud_flow_execution.TERMINAL_EXECUTION_STATUSES
-        ):
-            return None
-        park_request = crud_flow_execution.get_park_request(
-            self.db,
-            execution_id=self.execution_log.id,
-        )
-        if not park_request or park_request.get("parked_at") is not None:
+        # The release below keeps loaded state. Keep the id in a local
+        # for the log line across capture.
+        execution_id = self.execution_log.id
+        park_request = self._read_pending_park_request()
+        # End the read transaction before returning or awaiting anything:
+        # both call sites go on to await the agent (status, result, artifact
+        # capture), and an open read here holds AccessShareLock on
+        # flow_execution across that wait, which blocks migrations.
+        self._end_read_transaction()
+        if park_request is None:
             return None
         park_kind = str(park_request.get("kind") or "human")
         parked_status = crud_flow_execution.parked_status_for_kind(park_kind)
         logger.info(
             "Parking execution %s on %s %s (expires %s)",
-            self.execution_log.id,
+            execution_id,
             park_kind,
             park_request["request_id"],
             park_request.get("expires_at"),
@@ -6418,7 +6461,7 @@ class FlowExecutionOrchestrator:
         except Exception:
             logger.warning(
                 "Could not stop the runtime for parked execution %s",
-                self.execution_log.id,
+                execution_id,
                 exc_info=True,
             )
         await self._publish_update(
@@ -6542,6 +6585,11 @@ class FlowExecutionOrchestrator:
                     self.db,
                     execution_id=self.execution_log.id,
                 )
+                # stop_request is a plain dict or None. End the read
+                # transaction before the executor calls and sleeps below, so
+                # the poll does not hold AccessShareLock on flow_execution
+                # across them and block migrations on lock_timeout.
+                self._end_read_transaction()
                 if stop_request:
                     # Persisted intent survives a worker restart and a quick
                     # scope re-enable. A runner halt flag is only a request.
@@ -6582,6 +6630,7 @@ class FlowExecutionOrchestrator:
                             self.execution_log.id,
                         )
                     if not already_terminal:
+                        self._end_read_transaction()
                         await asyncio.sleep(poll_interval)
                         deadline.credit_sleep(poll_interval)
                         continue
@@ -6595,6 +6644,9 @@ class FlowExecutionOrchestrator:
                 )
                 if parked_result is not None:
                     return parked_result
+                # The park check reads flow_execution; release before the
+                # status call and any sleep below.
+                self._end_read_transaction()
 
                 # Check if user requested stop
                 if self._stop_requested.is_set():
@@ -6618,6 +6670,7 @@ class FlowExecutionOrchestrator:
                             and await agent_executor.is_stopped(session_reference)
                             is not True
                         ):
+                            self._end_read_transaction()
                             await asyncio.sleep(poll_interval)
                             deadline.credit_sleep(poll_interval)
                             continue
@@ -6693,6 +6746,7 @@ class FlowExecutionOrchestrator:
                             }
 
                         # Continue polling for transient errors
+                        self._end_read_transaction()
                         await asyncio.sleep(poll_interval)
                         deadline.credit_sleep(poll_interval)
                         continue
@@ -7024,7 +7078,8 @@ class FlowExecutionOrchestrator:
                             "result": result_artifact,
                         }
 
-                # Wait before next poll
+                # Wait before next poll, outside any transaction.
+                self._end_read_transaction()
                 await asyncio.sleep(poll_interval)
                 deadline.credit_sleep(poll_interval)
 
