@@ -9,6 +9,7 @@ the audit row the rejection now writes.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +20,12 @@ from preloop.services.codex_crosschat import (
 )
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 
-from tests.services.test_codex_crosschat import DELEGATION, _item, _normalize
+from tests.services.test_codex_crosschat import (
+    DELEGATION,
+    _bare_service,
+    _item,
+    _normalize,
+)
 from tests.services.test_openai_responses_passthrough import (
     _create_zen_model,
     _service,
@@ -258,3 +264,28 @@ def test_rejection_writes_failed_audit_row(db_session, test_user, stream):
     assert "name='some_host_tool'" in row["error_detail"]
     assert "call_id=missing" in row["error_detail"]
     assert SECRET not in row["error_detail"]
+
+
+def test_reasoning_bridge_reports_the_clients_original_index():
+    """DeepSeek's bridge drops reasoning items; the 400 must still name the
+    position in the client's own ``input``."""
+    model = SimpleNamespace(
+        id="model-1",
+        provider_name="deepseek",
+        model_identifier="deepseek-v4-flash",
+        api_endpoint=None,
+    )
+    payload = {
+        "input": [
+            {"type": "reasoning", "summary": []},
+            {"type": "message", "role": "user", "content": "hi"},
+            {"type": "reasoning", "summary": []},
+            {"type": "function_call_output", "call_id": "c7", "output": SECRET},
+        ]
+    }
+    with pytest.raises(ModelGatewayAPIError) as caught:
+        _bare_service()._normalize_responses_input(payload, ai_model=model)
+    assert "Offending input item: index=3 type='function_call_output'" in (
+        caught.value.message
+    )
+    assert SECRET not in caught.value.message

@@ -16,8 +16,10 @@ Compatibility contract (preloop/preloop#1113)
    and ``(namespace, name)`` is one of the pairs Codex itself recognises in
    ``codex-rs/core/src/agent/control/sender_context.rs``:
    ``codex_app``/``codex_tui`` + ``send_message_to_thread`` and
-   ``cloud_threads`` + ``send_message``, plus ``codex_app``/``codex_tui`` +
-   ``create_thread`` (see "Sources" below); AND the flattened output text is
+   ``cloud_threads`` + ``send_message``; plus ``codex_app``/``codex_tui`` +
+   ``create_thread``, which the TUI emits through the same delivery
+   mechanism (see "Sources" below for both, including why ``codex_app`` is
+   included without a public emitter); AND the flattened output text is
    exactly one complete, non-empty ``<codex_delegation>...</codex_delegation>``
    wrapper (leading and trailing whitespace ignored; nested or concatenated
    wrappers are rejected). Codex's own recogniser keys on the
@@ -63,7 +65,15 @@ Sources (openai/codex tag ``rust-v0.162.0-alpha.16``)
   (the first prompt of a new background thread) and
   ``send_message_to_thread``.
 * ``codex-rs/core/src/agent/control/sender_context.rs`` recognises the
-  ``send_message_to_thread``/``send_message`` pairs for provenance.
+  ``send_message_to_thread``/``send_message`` pairs for provenance and
+  treats ``codex_app`` and ``codex_tui`` as interchangeable namespaces for
+  the same host thread tools.
+* ``codex_app``/``create_thread`` has no public emitter: ``codex_app`` is the
+  closed-source desktop host's namespace (the #1113 report carried
+  ``codex_app``/``send_message_to_thread``), and the desktop exposes the
+  same thread tools as the TUI. It is accepted on that inference; it still
+  needs the wrapper and a missing or null call_id, so a wrong guess can only
+  turn an already-wrapped delegation into labelled untrusted context.
 * ``codex-rs/core/src/agent/control/spawn.rs`` (``keep_forked_rollout_item``)
   copies call_id-less outputs into a forked sub-agent's history, so a
   sub-agent on another model replays the parent's deliveries.
