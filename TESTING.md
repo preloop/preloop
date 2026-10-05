@@ -93,9 +93,9 @@ Significant progress has been made in increasing unit test coverage for the back
 ### CI/CD Integration
 
 GitHub Actions (`.github/workflows/ci.yml`) shards backend unit tests
-(`pytest -m "not integration"`) across eight jobs with
-[pytest-split](https://pypi.org/project/pytest-split/). Each shard has
-its own Postgres service. Coverage data is combined in a follow-up
+(`pytest -m "not integration"`) across eight jobs by recorded file
+duration (`scripts/select_backend_shard.py`). Each shard has its own
+Postgres service. Coverage data is combined in a follow-up
 **Backend Coverage** job before the 60% floor is applied; a single shard
 only exercises part of the tree, so `--cov-fail-under` cannot run there.
 Pull requests skip backend, frontend, CLI, plugin, and Helm jobs when

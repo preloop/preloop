@@ -433,16 +433,14 @@ jobs:
   # Eight shards, each with its own Postgres. GitLab splits this suite into
   # dozens of per-file jobs; that is a poor fit here because each GitHub
   # runner spends ~1.5m on checkout/pip/migrations before pytest starts.
-  # Four shards left group 1 (the first duration_based_chunks slice) as the
-  # wall-clock pole: ~7-9m vs ~3-4.5m for the others. Eight shards cut that
-  # first slice in half without going back to per-file jobs.
-  # pytest-split keeps new tests in the partition automatically. Use
-  # duration_based_chunks (not least_duration): without a timings file,
-  # least_duration round-robins individual tests across shards and breaks
-  # unittest setUp isolation plus tests that share a process-wide DB
-  # session. Chunks keep collection order, so files stay together. The 60%
-  # coverage floor is applied after shards are combined -- a single shard
-  # only sees part of the tree.
+  # Equal-count splits put the endpoint files on shard 2, about 23 minutes
+  # of tests against about 2-6 minutes for the others.
+  # scripts/select_backend_shard.py walks files in collection order and
+  # cuts on scripts/backend_test_durations.json, so each shard is about
+  # six minutes and a file stays on one runner. A test file that is not in
+  # the recording is added to the lightest shard. The 60% coverage floor is
+  # applied after shards are combined -- a single shard only sees part of
+  # the tree.
   #
   # Runner: ubuntu-latest is the default. pick-runner may send the last
   # N shards (idle self-hosted count) to private VMs as overflow. Public
@@ -519,14 +517,13 @@ jobs:
 
       - name: Run tests
         run: |
+          mapfile -t files < <(python scripts/select_backend_shard.py --splits 8 --group ${{ matrix.group }})
           pytest -v \
             -m "not integration" \
-            --splits 8 \
-            --group ${{ matrix.group }} \
-            --splitting-algorithm=duration_based_chunks \
             --cov=preloop \
             --cov-report= \
-            --junitxml=test-results.xml
+            --junitxml=test-results.xml \
+            "${files[@]}"
 
       - name: Upload coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -1,32 +1,22 @@
 """Guard GitHub Actions backend test sharding against config drift.
 
-The suite is split with pytest-split across a matrix of jobs, then coverage
-is combined before the 60% floor. ``--splits`` and the matrix group list
-must stay in lockstep, and the floor must not run on a single shard.
+The suite is split by recorded file duration across a matrix of jobs, then
+coverage is combined before the 60% floor. The selector's split count and
+the matrix group list must stay in lockstep, and the floor must not run on
+a single shard.
 """
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 from tests.ci_workflow import REPO_ROOT, load_ci_jobs, step_script
 
-PYPROJECT = REPO_ROOT / "pyproject.toml"
-
 BACKEND_TEST_SPLITS = 8
 
 
-def test_pytest_split_is_a_dev_dependency() -> None:
-    """CI installs ``.[dev]`` from the hash-pinned lock, so the plugin must be there."""
-    with PYPROJECT.open("rb") as handle:
-        data = tomllib.load(handle)
-    dev = data["project"]["optional-dependencies"]["dev"]
-    assert any(item.startswith("pytest-split") for item in dev)
-
-
-def test_backend_shards_partition_with_pytest_split() -> None:
-    """Each matrix group must match ``--splits N --group`` in the pytest invocation."""
+def test_backend_shards_partition_by_recorded_duration() -> None:
+    """Each matrix group must ask the duration selector for that group."""
     backend = load_ci_jobs()["test-backend"]
     groups = backend["strategy"]["matrix"]["group"]
     assert groups == list(range(1, BACKEND_TEST_SPLITS + 1))
@@ -36,10 +26,10 @@ def test_backend_shards_partition_with_pytest_split() -> None:
     assert backend["strategy"]["fail-fast"] is False
 
     script = step_script(backend, "Run tests")
+    assert "scripts/select_backend_shard.py" in script
     assert f"--splits {BACKEND_TEST_SPLITS}" in script
     assert "--group ${{ matrix.group }}" in script
-    assert "--splitting-algorithm=duration_based_chunks" in script
-    assert "--splitting-algorithm=least_duration" not in script
+    assert "--splits" not in script.split("pytest", 1)[-1]
     assert "--cov-fail-under" not in script
     coverage_upload = next(
         step for step in backend["steps"] if step.get("name") == "Upload coverage data"

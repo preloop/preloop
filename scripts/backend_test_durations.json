@@ -1,0 +1,3942 @@
+[
+  {
+    "path": "backend/tests/a2a/test_child_approval_routing.py",
+    "seconds": 0.048
+  },
+  {
+    "path": "backend/tests/a2a/test_delegation_shapes.py",
+    "seconds": 0.097
+  },
+  {
+    "path": "backend/tests/agents/test_agent_aider.py",
+    "seconds": 0.007
+  },
+  {
+    "path": "backend/tests/agents/test_agent_base.py",
+    "seconds": 0.018
+  },
+  {
+    "path": "backend/tests/agents/test_agent_codex.py",
+    "seconds": 0.212
+  },
+  {
+    "path": "backend/tests/agents/test_agent_container.py",
+    "seconds": 0.314
+  },
+  {
+    "path": "backend/tests/agents/test_agent_control_executor.py",
+    "seconds": 0.438
+  },
+  {
+    "path": "backend/tests/agents/test_agent_factory.py",
+    "seconds": 0.083
+  },
+  {
+    "path": "backend/tests/agents/test_agent_gemini.py",
+    "seconds": 0.104
+  },
+  {
+    "path": "backend/tests/agents/test_agent_harness.py",
+    "seconds": 0.073
+  },
+  {
+    "path": "backend/tests/agents/test_agent_images.py",
+    "seconds": 0.076
+  },
+  {
+    "path": "backend/tests/agents/test_agent_opencode.py",
+    "seconds": 2.929
+  },
+  {
+    "path": "backend/tests/agents/test_agent_openhands.py",
+    "seconds": 0.121
+  },
+  {
+    "path": "backend/tests/agents/test_agent_streaming.py",
+    "seconds": 59.145
+  },
+  {
+    "path": "backend/tests/agents/test_capture_shell_nounset.py",
+    "seconds": 0.609
+  },
+  {
+    "path": "backend/tests/agents/test_checkpoint_memory.py",
+    "seconds": 0.131
+  },
+  {
+    "path": "backend/tests/agents/test_checkpoint_oversized_skip.py",
+    "seconds": 0.01
+  },
+  {
+    "path": "backend/tests/agents/test_cli_session.py",
+    "seconds": 0.059
+  },
+  {
+    "path": "backend/tests/agents/test_codex_parent_session_recovery.py",
+    "seconds": 0.565
+  },
+  {
+    "path": "backend/tests/agents/test_completion_nudge.py",
+    "seconds": 0.195
+  },
+  {
+    "path": "backend/tests/agents/test_container.py",
+    "seconds": 2.443
+  },
+  {
+    "path": "backend/tests/agents/test_container_bitbucket.py",
+    "seconds": 2.4
+  },
+  {
+    "path": "backend/tests/agents/test_container_is_stopped.py",
+    "seconds": 0.025
+  },
+  {
+    "path": "backend/tests/agents/test_container_job_create.py",
+    "seconds": 0.099
+  },
+  {
+    "path": "backend/tests/agents/test_container_repository_binding.py",
+    "seconds": 0.013
+  },
+  {
+    "path": "backend/tests/agents/test_container_runtime_placement.py",
+    "seconds": 0.023
+  },
+  {
+    "path": "backend/tests/agents/test_container_termination.py",
+    "seconds": 0.062
+  },
+  {
+    "path": "backend/tests/agents/test_container_verification.py",
+    "seconds": 0.026
+  },
+  {
+    "path": "backend/tests/agents/test_failure_analysis.py",
+    "seconds": 0.117
+  },
+  {
+    "path": "backend/tests/agents/test_harness_docker_smoke.py",
+    "seconds": 0.004
+  },
+  {
+    "path": "backend/tests/agents/test_kubernetes.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/agents/test_kubernetes_placement.py",
+    "seconds": 0.085
+  },
+  {
+    "path": "backend/tests/agents/test_launch_payload_limits.py",
+    "seconds": 0.472
+  },
+  {
+    "path": "backend/tests/agents/test_native_session_images.py",
+    "seconds": 0.003
+  },
+  {
+    "path": "backend/tests/agents/test_native_wrapper_ordering.py",
+    "seconds": 0.056
+  },
+  {
+    "path": "backend/tests/agents/test_opencode_protocol_routing.py",
+    "seconds": 0.002
+  },
+  {
+    "path": "backend/tests/agents/test_opencode_wrapper_config.py",
+    "seconds": 0.009
+  },
+  {
+    "path": "backend/tests/agents/test_persistent_workspace.py",
+    "seconds": 0.816
+  },
+  {
+    "path": "backend/tests/agents/test_prompt_stdin_delivery.py",
+    "seconds": 0.104
+  },
+  {
+    "path": "backend/tests/agents/test_publication_auth_refresh.py",
+    "seconds": 2.414
+  },
+  {
+    "path": "backend/tests/agents/test_remote_runner.py",
+    "seconds": 0.082
+  },
+  {
+    "path": "backend/tests/agents/test_report_publication_shell.py",
+    "seconds": 2.311
+  },
+  {
+    "path": "backend/tests/agents/test_runner_launch.py",
+    "seconds": 0.352
+  },
+  {
+    "path": "backend/tests/agents/test_session_manifest.py",
+    "seconds": 0.205
+  },
+  {
+    "path": "backend/tests/agents/test_stream_recovery.py",
+    "seconds": 6.786
+  },
+  {
+    "path": "backend/tests/agents/test_unpublished_workspace_recovery.py",
+    "seconds": 0.504
+  },
+  {
+    "path": "backend/tests/agents/test_verification_gate_shell.py",
+    "seconds": 3.709
+  },
+  {
+    "path": "backend/tests/agents/test_workspace_snapshot.py",
+    "seconds": 0.115
+  },
+  {
+    "path": "backend/tests/api/endpoints/test_agent_deployments.py",
+    "seconds": 0.051
+  },
+  {
+    "path": "backend/tests/api/endpoints/test_core_budget_configuration.py",
+    "seconds": 0.829
+  },
+  {
+    "path": "backend/tests/api/test_agent_control_desktop.py",
+    "seconds": 2.17
+  },
+  {
+    "path": "backend/tests/api/test_api_key_scope_enforcement.py",
+    "seconds": 1.323
+  },
+  {
+    "path": "backend/tests/api/test_app_lifespan_settings.py",
+    "seconds": 0.002
+  },
+  {
+    "path": "backend/tests/api/test_app_memory_lifetime.py",
+    "seconds": 5.061
+  },
+  {
+    "path": "backend/tests/api/test_artifact_account_search.py",
+    "seconds": 28.389
+  },
+  {
+    "path": "backend/tests/api/test_artifact_deposit.py",
+    "seconds": 14.127
+  },
+  {
+    "path": "backend/tests/api/test_artifact_read_tools.py",
+    "seconds": 6.095
+  },
+  {
+    "path": "backend/tests/api/test_artifact_search_index.py",
+    "seconds": 18.688
+  },
+  {
+    "path": "backend/tests/api/test_audio_storage_settings.py",
+    "seconds": 9.159
+  },
+  {
+    "path": "backend/tests/api/test_audit_chain_api.py",
+    "seconds": 13.01
+  },
+  {
+    "path": "backend/tests/api/test_auth_me_identity.py",
+    "seconds": 1.665
+  },
+  {
+    "path": "backend/tests/api/test_browser_steps.py",
+    "seconds": 13.719
+  },
+  {
+    "path": "backend/tests/api/test_budget_configuration_gateway.py",
+    "seconds": 0.665
+  },
+  {
+    "path": "backend/tests/api/test_ci_admin_setup.py",
+    "seconds": 4.227
+  },
+  {
+    "path": "backend/tests/api/test_ci_callback_human_controls.py",
+    "seconds": 0.398
+  },
+  {
+    "path": "backend/tests/api/test_ci_execution.py",
+    "seconds": 0.845
+  },
+  {
+    "path": "backend/tests/api/test_ci_execution_http.py",
+    "seconds": 2.532
+  },
+  {
+    "path": "backend/tests/api/test_ci_execution_migration.py",
+    "seconds": 0.149
+  },
+  {
+    "path": "backend/tests/api/test_ci_principal.py",
+    "seconds": 1.836
+  },
+  {
+    "path": "backend/tests/api/test_ci_principal_migration.py",
+    "seconds": 0.112
+  },
+  {
+    "path": "backend/tests/api/test_ci_rest_boundary.py",
+    "seconds": 6.172
+  },
+  {
+    "path": "backend/tests/api/test_ci_subscription.py",
+    "seconds": 3.05
+  },
+  {
+    "path": "backend/tests/api/test_ci_subscription_migration.py",
+    "seconds": 0.038
+  },
+  {
+    "path": "backend/tests/api/test_common_bitbucket_dc.py",
+    "seconds": 0.076
+  },
+  {
+    "path": "backend/tests/api/test_common_compliance.py",
+    "seconds": 0.021
+  },
+  {
+    "path": "backend/tests/api/test_control_pool_isolation.py",
+    "seconds": 0.1
+  },
+  {
+    "path": "backend/tests/api/test_control_postgres_acceptance.py",
+    "seconds": 6.895
+  },
+  {
+    "path": "backend/tests/api/test_deposit_artifact_mcp.py",
+    "seconds": 2.57
+  },
+  {
+    "path": "backend/tests/api/test_docs_self_contained.py",
+    "seconds": 0.587
+  },
+  {
+    "path": "backend/tests/api/test_event_loop_pool_wait.py",
+    "seconds": 6.613
+  },
+  {
+    "path": "backend/tests/api/test_event_webhooks.py",
+    "seconds": 17.134
+  },
+  {
+    "path": "backend/tests/api/test_flow_artifact_capability_reply.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/api/test_flow_artifact_loop_safety.py",
+    "seconds": 0.522
+  },
+  {
+    "path": "backend/tests/api/test_gateway_import_footprint.py",
+    "seconds": 39.492
+  },
+  {
+    "path": "backend/tests/api/test_gateway_plugin_lifecycle.py",
+    "seconds": 0.033
+  },
+  {
+    "path": "backend/tests/api/test_init_test_data_import_path.py",
+    "seconds": 0.011
+  },
+  {
+    "path": "backend/tests/api/test_issue_lifecycle_loop_safety.py",
+    "seconds": 4.116
+  },
+  {
+    "path": "backend/tests/api/test_issue_triage_rest_boundary.py",
+    "seconds": 0.988
+  },
+  {
+    "path": "backend/tests/api/test_jira_registration_fix.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/api/test_log_cli_activity.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/api/test_managed_credentials.py",
+    "seconds": 0.002
+  },
+  {
+    "path": "backend/tests/api/test_notification_preferences_registration.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/api/test_notification_preferences_test_push.py",
+    "seconds": 0.047
+  },
+  {
+    "path": "backend/tests/api/test_notification_preferences_tokens.py",
+    "seconds": 0.006
+  },
+  {
+    "path": "backend/tests/api/test_oss_gateway_budget_enforcement.py",
+    "seconds": 3.294
+  },
+  {
+    "path": "backend/tests/api/test_publication_credentials.py",
+    "seconds": 0.268
+  },
+  {
+    "path": "backend/tests/api/test_resolve_user_permissions.py",
+    "seconds": 0.012
+  },
+  {
+    "path": "backend/tests/api/test_retention_api.py",
+    "seconds": 20.326
+  },
+  {
+    "path": "backend/tests/api/test_runtime_bearer_auth.py",
+    "seconds": 0.098
+  },
+  {
+    "path": "backend/tests/api/test_session_recordings.py",
+    "seconds": 0.612
+  },
+  {
+    "path": "backend/tests/api/test_shared_email_exact_user.py",
+    "seconds": 15.436
+  },
+  {
+    "path": "backend/tests/api/test_team_role_permissions.py",
+    "seconds": 0.347
+  },
+  {
+    "path": "backend/tests/api/test_webhook_embedding_lifetime.py",
+    "seconds": 0.117
+  },
+  {
+    "path": "backend/tests/api/test_webhook_pool_isolation.py",
+    "seconds": 0.065
+  },
+  {
+    "path": "backend/tests/compose/test_dev_compose_health.py",
+    "seconds": 0.053
+  },
+  {
+    "path": "backend/tests/cra/test_article14_reporting.py",
+    "seconds": 0.142
+  },
+  {
+    "path": "backend/tests/cra/test_ci.py",
+    "seconds": 0.233
+  },
+  {
+    "path": "backend/tests/cra/test_drift_envelope.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/cra/test_evidence_pack.py",
+    "seconds": 0.076
+  },
+  {
+    "path": "backend/tests/cra/test_ingestion.py",
+    "seconds": 0.04
+  },
+  {
+    "path": "backend/tests/cra/test_measured_persist.py",
+    "seconds": 0.067
+  },
+  {
+    "path": "backend/tests/cra/test_persist.py",
+    "seconds": 0.109
+  },
+  {
+    "path": "backend/tests/cra/test_persist_authority.py",
+    "seconds": 0.144
+  },
+  {
+    "path": "backend/tests/cra/test_project_scope.py",
+    "seconds": 0.127
+  },
+  {
+    "path": "backend/tests/cra/test_sbom_measure.py",
+    "seconds": 0.367
+  },
+  {
+    "path": "backend/tests/cra/test_score_coercion.py",
+    "seconds": 0.101
+  },
+  {
+    "path": "backend/tests/cra/test_validate.py",
+    "seconds": 0.638
+  },
+  {
+    "path": "backend/tests/cra/test_verdict_repair.py",
+    "seconds": 0.097
+  },
+  {
+    "path": "backend/tests/cra/test_verdict_semantics.py",
+    "seconds": 0.566
+  },
+  {
+    "path": "backend/tests/endpoints/test_account.py",
+    "seconds": 7.397
+  },
+  {
+    "path": "backend/tests/endpoints/test_account_agents.py",
+    "seconds": 43.18
+  },
+  {
+    "path": "backend/tests/endpoints/test_account_agents_filtering.py",
+    "seconds": 2.124
+  },
+  {
+    "path": "backend/tests/endpoints/test_account_details_schema.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/endpoints/test_account_hierarchy_hooks_api.py",
+    "seconds": 26.65
+  },
+  {
+    "path": "backend/tests/endpoints/test_account_usage_projection.py",
+    "seconds": 2.147
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_control.py",
+    "seconds": 35.057
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_control_lock_order.py",
+    "seconds": 0.076
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_control_persistence.py",
+    "seconds": 9.617
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_control_session_attach.py",
+    "seconds": 16.289
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_discovery.py",
+    "seconds": 26.726
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_kind_123.py",
+    "seconds": 13.961
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_onboarded_event.py",
+    "seconds": 19.253
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_permission_attach.py",
+    "seconds": 0.429
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_permission_check.py",
+    "seconds": 20.582
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_permission_session.py",
+    "seconds": 0.484
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_permission_session_cwd.py",
+    "seconds": 0.103
+  },
+  {
+    "path": "backend/tests/endpoints/test_agent_session_start.py",
+    "seconds": 3.658
+  },
+  {
+    "path": "backend/tests/endpoints/test_ai_model_credential_export.py",
+    "seconds": 0.137
+  },
+  {
+    "path": "backend/tests/endpoints/test_ai_models.py",
+    "seconds": 8.272
+  },
+  {
+    "path": "backend/tests/endpoints/test_ai_models_overview.py",
+    "seconds": 11.903
+  },
+  {
+    "path": "backend/tests/endpoints/test_anthropic_gateway.py",
+    "seconds": 19.892
+  },
+  {
+    "path": "backend/tests/endpoints/test_api_key_account_binding.py",
+    "seconds": 0.111
+  },
+  {
+    "path": "backend/tests/endpoints/test_api_key_summary_batch.py",
+    "seconds": 0.451
+  },
+  {
+    "path": "backend/tests/endpoints/test_api_keys.py",
+    "seconds": 0.131
+  },
+  {
+    "path": "backend/tests/endpoints/test_approval_decision_call_shapes.py",
+    "seconds": 29.54
+  },
+  {
+    "path": "backend/tests/endpoints/test_approval_requests.py",
+    "seconds": 1.049
+  },
+  {
+    "path": "backend/tests/endpoints/test_approval_workflow_webhook_secret.py",
+    "seconds": 7.333
+  },
+  {
+    "path": "backend/tests/endpoints/test_attention_dismissals.py",
+    "seconds": 16.606
+  },
+  {
+    "path": "backend/tests/endpoints/test_audio.py",
+    "seconds": 7.072
+  },
+  {
+    "path": "backend/tests/endpoints/test_auth.py",
+    "seconds": 0.414
+  },
+  {
+    "path": "backend/tests/endpoints/test_auth_comprehensive.py",
+    "seconds": 10.196
+  },
+  {
+    "path": "backend/tests/endpoints/test_available_models_key_handling.py",
+    "seconds": 15.999
+  },
+  {
+    "path": "backend/tests/endpoints/test_bitbucket_dc_webhook_setup.py",
+    "seconds": 0.103
+  },
+  {
+    "path": "backend/tests/endpoints/test_cli_sessions.py",
+    "seconds": 1.777
+  },
+  {
+    "path": "backend/tests/endpoints/test_comments.py",
+    "seconds": 0.249
+  },
+  {
+    "path": "backend/tests/endpoints/test_copilot_usage.py",
+    "seconds": 18.996
+  },
+  {
+    "path": "backend/tests/endpoints/test_copilot_user_mappings.py",
+    "seconds": 19.726
+  },
+  {
+    "path": "backend/tests/endpoints/test_cost.py",
+    "seconds": 18.605
+  },
+  {
+    "path": "backend/tests/endpoints/test_cost_health.py",
+    "seconds": 10.925
+  },
+  {
+    "path": "backend/tests/endpoints/test_cost_progressive.py",
+    "seconds": 15.684
+  },
+  {
+    "path": "backend/tests/endpoints/test_cost_reprice_backfill.py",
+    "seconds": 9.854
+  },
+  {
+    "path": "backend/tests/endpoints/test_dora_exports_api.py",
+    "seconds": 18.329
+  },
+  {
+    "path": "backend/tests/endpoints/test_embedding.py",
+    "seconds": 2.364
+  },
+  {
+    "path": "backend/tests/endpoints/test_employee_event_ingress.py",
+    "seconds": 8.28
+  },
+  {
+    "path": "backend/tests/endpoints/test_example_session_optimization.py",
+    "seconds": 4.718
+  },
+  {
+    "path": "backend/tests/endpoints/test_execution_cost_single_source.py",
+    "seconds": 0.449
+  },
+  {
+    "path": "backend/tests/endpoints/test_features.py",
+    "seconds": 0.236
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_callable_flows_api.py",
+    "seconds": 15.669
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_delete_response.py",
+    "seconds": 1.196
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_gateway_events_bound.py",
+    "seconds": 5.862
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_host_sessions.py",
+    "seconds": 3.794
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_lineage_response.py",
+    "seconds": 0.231
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_list_filters.py",
+    "seconds": 0.238
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_model_projection.py",
+    "seconds": 0.36
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_resume_lineage.py",
+    "seconds": 0.892
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_runner.py",
+    "seconds": 0.161
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_stop.py",
+    "seconds": 13.346
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_execution_totals.py",
+    "seconds": 0.733
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_executions_list_query_cost.py",
+    "seconds": 28.87
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_governance_api.py",
+    "seconds": 4.699
+  },
+  {
+    "path": "backend/tests/endpoints/test_flow_summaries.py",
+    "seconds": 0.52
+  },
+  {
+    "path": "backend/tests/endpoints/test_flows.py",
+    "seconds": 1.572
+  },
+  {
+    "path": "backend/tests/endpoints/test_gateway_kill_switch.py",
+    "seconds": 7.437
+  },
+  {
+    "path": "backend/tests/endpoints/test_gateway_pool_lifetime.py",
+    "seconds": 4.263
+  },
+  {
+    "path": "backend/tests/endpoints/test_gateway_streaming_accuracy.py",
+    "seconds": 7.691
+  },
+  {
+    "path": "backend/tests/endpoints/test_gateway_usage_summary.py",
+    "seconds": 29.085
+  },
+  {
+    "path": "backend/tests/endpoints/test_gateway_usage_summary_defaults.py",
+    "seconds": 0.005
+  },
+  {
+    "path": "backend/tests/endpoints/test_gateway_worker_ownership.py",
+    "seconds": 4.002
+  },
+  {
+    "path": "backend/tests/endpoints/test_gemini_gateway.py",
+    "seconds": 15.109
+  },
+  {
+    "path": "backend/tests/endpoints/test_harness_enrollment.py",
+    "seconds": 2.57
+  },
+  {
+    "path": "backend/tests/endpoints/test_harness_permission_identity.py",
+    "seconds": 0.054
+  },
+  {
+    "path": "backend/tests/endpoints/test_health.py",
+    "seconds": 0.098
+  },
+  {
+    "path": "backend/tests/endpoints/test_hot_path_query_budget.py",
+    "seconds": 2.934
+  },
+  {
+    "path": "backend/tests/endpoints/test_issue_compliance.py",
+    "seconds": 0.498
+  },
+  {
+    "path": "backend/tests/endpoints/test_issue_costs.py",
+    "seconds": 18.409
+  },
+  {
+    "path": "backend/tests/endpoints/test_issue_dependencies.py",
+    "seconds": 0.071
+  },
+  {
+    "path": "backend/tests/endpoints/test_issue_duplicates.py",
+    "seconds": 0.486
+  },
+  {
+    "path": "backend/tests/endpoints/test_issues.py",
+    "seconds": 51.594
+  },
+  {
+    "path": "backend/tests/endpoints/test_jwt.py",
+    "seconds": 3.165
+  },
+  {
+    "path": "backend/tests/endpoints/test_kill_switch.py",
+    "seconds": 12.985
+  },
+  {
+    "path": "backend/tests/endpoints/test_logout_session_hook.py",
+    "seconds": 0.826
+  },
+  {
+    "path": "backend/tests/endpoints/test_managed_agent_identity.py",
+    "seconds": 9.411
+  },
+  {
+    "path": "backend/tests/endpoints/test_managed_publication_decision.py",
+    "seconds": 4.057
+  },
+  {
+    "path": "backend/tests/endpoints/test_mcp.py",
+    "seconds": 2.363
+  },
+  {
+    "path": "backend/tests/endpoints/test_mcp_bitbucket.py",
+    "seconds": 0.425
+  },
+  {
+    "path": "backend/tests/endpoints/test_mcp_database_errors.py",
+    "seconds": 0.307
+  },
+  {
+    "path": "backend/tests/endpoints/test_mcp_server_secret_redaction.py",
+    "seconds": 9.197
+  },
+  {
+    "path": "backend/tests/endpoints/test_mcp_servers.py",
+    "seconds": 18.561
+  },
+  {
+    "path": "backend/tests/endpoints/test_mcp_session_lifecycle.py",
+    "seconds": 0.311
+  },
+  {
+    "path": "backend/tests/endpoints/test_notification_preferences.py",
+    "seconds": 19.518
+  },
+  {
+    "path": "backend/tests/endpoints/test_oauth_consent.py",
+    "seconds": 0.326
+  },
+  {
+    "path": "backend/tests/endpoints/test_oauth_server.py",
+    "seconds": 0.226
+  },
+  {
+    "path": "backend/tests/endpoints/test_openai_gateway.py",
+    "seconds": 28.058
+  },
+  {
+    "path": "backend/tests/endpoints/test_openai_gateway_embeddings.py",
+    "seconds": 22.455
+  },
+  {
+    "path": "backend/tests/endpoints/test_openai_gateway_usage_header.py",
+    "seconds": 0.081
+  },
+  {
+    "path": "backend/tests/endpoints/test_operator_notes_api.py",
+    "seconds": 29.476
+  },
+  {
+    "path": "backend/tests/endpoints/test_organizations.py",
+    "seconds": 0.106
+  },
+  {
+    "path": "backend/tests/endpoints/test_policies.py",
+    "seconds": 1.166
+  },
+  {
+    "path": "backend/tests/endpoints/test_policies_sensitive_data.py",
+    "seconds": 0.328
+  },
+  {
+    "path": "backend/tests/endpoints/test_policy_notices_endpoint.py",
+    "seconds": 3.484
+  },
+  {
+    "path": "backend/tests/endpoints/test_project_repository_transfer.py",
+    "seconds": 33.412
+  },
+  {
+    "path": "backend/tests/endpoints/test_projects.py",
+    "seconds": 0.234
+  },
+  {
+    "path": "backend/tests/endpoints/test_public_approval.py",
+    "seconds": 28.869
+  },
+  {
+    "path": "backend/tests/endpoints/test_pull_requests.py",
+    "seconds": 9.291
+  },
+  {
+    "path": "backend/tests/endpoints/test_roles.py",
+    "seconds": 2.412
+  },
+  {
+    "path": "backend/tests/endpoints/test_runner_completion_delivery.py",
+    "seconds": 0.925
+  },
+  {
+    "path": "backend/tests/endpoints/test_runner_delete_rotate.py",
+    "seconds": 1.575
+  },
+  {
+    "path": "backend/tests/endpoints/test_runner_ephemeral_register.py",
+    "seconds": 0.409
+  },
+  {
+    "path": "backend/tests/endpoints/test_runner_registration_profiles.py",
+    "seconds": 0.482
+  },
+  {
+    "path": "backend/tests/endpoints/test_runner_ws_transaction_release.py",
+    "seconds": 0.254
+  },
+  {
+    "path": "backend/tests/endpoints/test_runners_helpers.py",
+    "seconds": 0.437
+  },
+  {
+    "path": "backend/tests/endpoints/test_runtime_session_list_artifacts.py",
+    "seconds": 8.047
+  },
+  {
+    "path": "backend/tests/endpoints/test_runtime_session_list_filters.py",
+    "seconds": 16.567
+  },
+  {
+    "path": "backend/tests/endpoints/test_runtime_session_note_badges.py",
+    "seconds": 3.684
+  },
+  {
+    "path": "backend/tests/endpoints/test_runtime_session_requests.py",
+    "seconds": 17.634
+  },
+  {
+    "path": "backend/tests/endpoints/test_runtime_session_tokens.py",
+    "seconds": 22.055
+  },
+  {
+    "path": "backend/tests/endpoints/test_runtime_session_websocket.py",
+    "seconds": 10.479
+  },
+  {
+    "path": "backend/tests/endpoints/test_search.py",
+    "seconds": 0.151
+  },
+  {
+    "path": "backend/tests/endpoints/test_security_screen.py",
+    "seconds": 13.876
+  },
+  {
+    "path": "backend/tests/endpoints/test_session_embedding_setting_api.py",
+    "seconds": 29.027
+  },
+  {
+    "path": "backend/tests/endpoints/test_session_optimization_jobs.py",
+    "seconds": 14.394
+  },
+  {
+    "path": "backend/tests/endpoints/test_session_saved_search_api.py",
+    "seconds": 23.711
+  },
+  {
+    "path": "backend/tests/endpoints/test_session_search_api.py",
+    "seconds": 38.66
+  },
+  {
+    "path": "backend/tests/endpoints/test_session_search_audit_api.py",
+    "seconds": 11.938
+  },
+  {
+    "path": "backend/tests/endpoints/test_session_search_hybrid_api.py",
+    "seconds": 30.146
+  },
+  {
+    "path": "backend/tests/endpoints/test_session_similar_api.py",
+    "seconds": 15.439
+  },
+  {
+    "path": "backend/tests/endpoints/test_spend_outliers_api.py",
+    "seconds": 5.804
+  },
+  {
+    "path": "backend/tests/endpoints/test_tools.py",
+    "seconds": 1.098
+  },
+  {
+    "path": "backend/tests/endpoints/test_tools_summary.py",
+    "seconds": 0.361
+  },
+  {
+    "path": "backend/tests/endpoints/test_trackers.py",
+    "seconds": 83.408
+  },
+  {
+    "path": "backend/tests/endpoints/test_trackers_bitbucket.py",
+    "seconds": 21.003
+  },
+  {
+    "path": "backend/tests/endpoints/test_trackers_bitbucket_dc.py",
+    "seconds": 0.181
+  },
+  {
+    "path": "backend/tests/endpoints/test_usage_import.py",
+    "seconds": 23.486
+  },
+  {
+    "path": "backend/tests/endpoints/test_usage_ingest.py",
+    "seconds": 52.135
+  },
+  {
+    "path": "backend/tests/endpoints/test_version.py",
+    "seconds": 18.134
+  },
+  {
+    "path": "backend/tests/endpoints/test_webauthn_passkeys.py",
+    "seconds": 0.315
+  },
+  {
+    "path": "backend/tests/endpoints/test_webhook_issue_intake_race.py",
+    "seconds": 1.301
+  },
+  {
+    "path": "backend/tests/endpoints/test_webhooks.py",
+    "seconds": 1.294
+  },
+  {
+    "path": "backend/tests/endpoints/test_webhooks_bitbucket.py",
+    "seconds": 5.186
+  },
+  {
+    "path": "backend/tests/endpoints/test_webhooks_bitbucket_dc.py",
+    "seconds": 52.654
+  },
+  {
+    "path": "backend/tests/endpoints/test_websocket_command_auth.py",
+    "seconds": 11.561
+  },
+  {
+    "path": "backend/tests/endpoints/test_websocket_db.py",
+    "seconds": 0.07
+  },
+  {
+    "path": "backend/tests/endpoints/test_websockets.py",
+    "seconds": 8.872
+  },
+  {
+    "path": "backend/tests/helm/test_agent_isolation.py",
+    "seconds": 13.029
+  },
+  {
+    "path": "backend/tests/helm/test_agent_memory.py",
+    "seconds": 0.609
+  },
+  {
+    "path": "backend/tests/helm/test_agent_runtime_placement.py",
+    "seconds": 0.644
+  },
+  {
+    "path": "backend/tests/helm/test_aks_sizing.py",
+    "seconds": 1.332
+  },
+  {
+    "path": "backend/tests/helm/test_deployment_termination_grace.py",
+    "seconds": 1.09
+  },
+  {
+    "path": "backend/tests/helm/test_gateway_error_alert_interval.py",
+    "seconds": 0.532
+  },
+  {
+    "path": "backend/tests/helm/test_gateway_proxy_timeouts.py",
+    "seconds": 2.469
+  },
+  {
+    "path": "backend/tests/helm/test_migration_job_locks.py",
+    "seconds": 0.615
+  },
+  {
+    "path": "backend/tests/helm/test_model_gateway_url.py",
+    "seconds": 0.604
+  },
+  {
+    "path": "backend/tests/helm/test_native_checkpoint_overlay.py",
+    "seconds": 0.627
+  },
+  {
+    "path": "backend/tests/helm/test_otlp_env.py",
+    "seconds": 0.537
+  },
+  {
+    "path": "backend/tests/helm/test_placeholder_credentials.py",
+    "seconds": 1.076
+  },
+  {
+    "path": "backend/tests/helm/test_pod_labels_presets.py",
+    "seconds": 0.924
+  },
+  {
+    "path": "backend/tests/helm/test_private_cluster.py",
+    "seconds": 1.491
+  },
+  {
+    "path": "backend/tests/helm/test_worker_inflight_and_gateway_role.py",
+    "seconds": 0.914
+  },
+  {
+    "path": "backend/tests/integration/test_activity_tracking_integration.py",
+    "seconds": 0.654
+  },
+  {
+    "path": "backend/tests/integration/test_api_e2e_flows.py",
+    "seconds": 9.385
+  },
+  {
+    "path": "backend/tests/integration/test_gateway_e2e.py",
+    "seconds": 18.636
+  },
+  {
+    "path": "backend/tests/integration/test_proxied_tool_consecutive_calls.py",
+    "seconds": 0.002
+  },
+  {
+    "path": "backend/tests/integrations/agent_control/test_core.py",
+    "seconds": 0.042
+  },
+  {
+    "path": "backend/tests/integrations/test_agent_control_client.py",
+    "seconds": 0.038
+  },
+  {
+    "path": "backend/tests/integrations/test_browser_use_adapter_ingest.py",
+    "seconds": 2.68
+  },
+  {
+    "path": "backend/tests/integrations/test_skyvern_importer_ingest.py",
+    "seconds": 4.434
+  },
+  {
+    "path": "backend/tests/middleware/test_websocket_auth.py",
+    "seconds": 0.088
+  },
+  {
+    "path": "backend/tests/models/crud/test_account_crud.py",
+    "seconds": 0.214
+  },
+  {
+    "path": "backend/tests/models/crud/test_agent_control_command_crud.py",
+    "seconds": 0.524
+  },
+  {
+    "path": "backend/tests/models/crud/test_ai_model_azure_auth.py",
+    "seconds": 0.092
+  },
+  {
+    "path": "backend/tests/models/crud/test_ai_model_default_selection.py",
+    "seconds": 0.249
+  },
+  {
+    "path": "backend/tests/models/crud/test_ai_model_secret_repoint.py",
+    "seconds": 0.264
+  },
+  {
+    "path": "backend/tests/models/crud/test_api_usage_get_by_ids.py",
+    "seconds": 0.119
+  },
+  {
+    "path": "backend/tests/models/crud/test_api_usage_session_executions.py",
+    "seconds": 0.108
+  },
+  {
+    "path": "backend/tests/models/crud/test_api_usage_session_timeline.py",
+    "seconds": 0.207
+  },
+  {
+    "path": "backend/tests/models/crud/test_api_usage_summary_shape.py",
+    "seconds": 0.25
+  },
+  {
+    "path": "backend/tests/models/crud/test_approval_event_crud.py",
+    "seconds": 0.111
+  },
+  {
+    "path": "backend/tests/models/crud/test_approval_request_crud.py",
+    "seconds": 0.241
+  },
+  {
+    "path": "backend/tests/models/crud/test_approval_workflow_crud.py",
+    "seconds": 0.465
+  },
+  {
+    "path": "backend/tests/models/crud/test_attention_dismissal_crud.py",
+    "seconds": 0.112
+  },
+  {
+    "path": "backend/tests/models/crud/test_audit_log_crud.py",
+    "seconds": 0.827
+  },
+  {
+    "path": "backend/tests/models/crud/test_billing_preflight.py",
+    "seconds": 1.029
+  },
+  {
+    "path": "backend/tests/models/crud/test_budget_spend.py",
+    "seconds": 0.103
+  },
+  {
+    "path": "backend/tests/models/crud/test_budget_spend_atomic.py",
+    "seconds": 0.367
+  },
+  {
+    "path": "backend/tests/models/crud/test_checkout_customer_binding.py",
+    "seconds": 0.302
+  },
+  {
+    "path": "backend/tests/models/crud/test_comment.py",
+    "seconds": 0.365
+  },
+  {
+    "path": "backend/tests/models/crud/test_entitlement.py",
+    "seconds": 1.81
+  },
+  {
+    "path": "backend/tests/models/crud/test_execution_models_used.py",
+    "seconds": 0.33
+  },
+  {
+    "path": "backend/tests/models/crud/test_flow_execution.py",
+    "seconds": 0.107
+  },
+  {
+    "path": "backend/tests/models/crud/test_flow_execution_agent_control.py",
+    "seconds": 0.044
+  },
+  {
+    "path": "backend/tests/models/crud/test_flow_execution_existing_ids.py",
+    "seconds": 0.12
+  },
+  {
+    "path": "backend/tests/models/crud/test_flow_execution_log_scrubbing.py",
+    "seconds": 0.274
+  },
+  {
+    "path": "backend/tests/models/crud/test_flow_execution_tracker_object.py",
+    "seconds": 0.069
+  },
+  {
+    "path": "backend/tests/models/crud/test_gateway_digest_rankings.py",
+    "seconds": 0.975
+  },
+  {
+    "path": "backend/tests/models/crud/test_gateway_tool_usage_projection.py",
+    "seconds": 0.079
+  },
+  {
+    "path": "backend/tests/models/crud/test_gateway_usage_query_parity.py",
+    "seconds": 1.173
+  },
+  {
+    "path": "backend/tests/models/crud/test_gateway_usage_search_document.py",
+    "seconds": 0.125
+  },
+  {
+    "path": "backend/tests/models/crud/test_history_policy.py",
+    "seconds": 0.705
+  },
+  {
+    "path": "backend/tests/models/crud/test_hosted_launch.py",
+    "seconds": 0.283
+  },
+  {
+    "path": "backend/tests/models/crud/test_hosted_recovery.py",
+    "seconds": 0.883
+  },
+  {
+    "path": "backend/tests/models/crud/test_hosted_spend.py",
+    "seconds": 0.562
+  },
+  {
+    "path": "backend/tests/models/crud/test_imported_usage_crud.py",
+    "seconds": 0.573
+  },
+  {
+    "path": "backend/tests/models/crud/test_instance_crud.py",
+    "seconds": 0.345
+  },
+  {
+    "path": "backend/tests/models/crud/test_issue.py",
+    "seconds": 0.189
+  },
+  {
+    "path": "backend/tests/models/crud/test_issue_compliance_result.py",
+    "seconds": 0.261
+  },
+  {
+    "path": "backend/tests/models/crud/test_issue_duplicate.py",
+    "seconds": 0.145
+  },
+  {
+    "path": "backend/tests/models/crud/test_managed_agent_control_heartbeat.py",
+    "seconds": 0.083
+  },
+  {
+    "path": "backend/tests/models/crud/test_managed_agent_get_by_source.py",
+    "seconds": 0.153
+  },
+  {
+    "path": "backend/tests/models/crud/test_managed_agent_list_by_kind.py",
+    "seconds": 0.133
+  },
+  {
+    "path": "backend/tests/models/crud/test_managed_oauth.py",
+    "seconds": 4.035
+  },
+  {
+    "path": "backend/tests/models/crud/test_mcp_server_crud.py",
+    "seconds": 0.151
+  },
+  {
+    "path": "backend/tests/models/crud/test_mcp_tool_batch.py",
+    "seconds": 0.068
+  },
+  {
+    "path": "backend/tests/models/crud/test_mcp_tool_crud.py",
+    "seconds": 0.14
+  },
+  {
+    "path": "backend/tests/models/crud/test_oauth_app_installation_crud.py",
+    "seconds": 0.235
+  },
+  {
+    "path": "backend/tests/models/crud/test_oauth_mcp_client_crud.py",
+    "seconds": 0.36
+  },
+  {
+    "path": "backend/tests/models/crud/test_oauth_mcp_token_crud.py",
+    "seconds": 0.705
+  },
+  {
+    "path": "backend/tests/models/crud/test_oauth_token_crud.py",
+    "seconds": 0.241
+  },
+  {
+    "path": "backend/tests/models/crud/test_operator_note_crud.py",
+    "seconds": 0.741
+  },
+  {
+    "path": "backend/tests/models/crud/test_organization.py",
+    "seconds": 0.504
+  },
+  {
+    "path": "backend/tests/models/crud/test_permission_crud.py",
+    "seconds": 0.48
+  },
+  {
+    "path": "backend/tests/models/crud/test_plan_crud.py",
+    "seconds": 0.122
+  },
+  {
+    "path": "backend/tests/models/crud/test_plan_eligibility.py",
+    "seconds": 0.596
+  },
+  {
+    "path": "backend/tests/models/crud/test_plan_fit.py",
+    "seconds": 0.649
+  },
+  {
+    "path": "backend/tests/models/crud/test_policy_snapshot_crud.py",
+    "seconds": 2.171
+  },
+  {
+    "path": "backend/tests/models/crud/test_project.py",
+    "seconds": 0.3
+  },
+  {
+    "path": "backend/tests/models/crud/test_provider_billing_crud.py",
+    "seconds": 0.33
+  },
+  {
+    "path": "backend/tests/models/crud/test_publication_result_authority.py",
+    "seconds": 0.076
+  },
+  {
+    "path": "backend/tests/models/crud/test_registration_token_crud.py",
+    "seconds": 0.328
+  },
+  {
+    "path": "backend/tests/models/crud/test_replay_usage_exclusion.py",
+    "seconds": 0.31
+  },
+  {
+    "path": "backend/tests/models/crud/test_runtime_session.py",
+    "seconds": 0.57
+  },
+  {
+    "path": "backend/tests/models/crud/test_runtime_session_activity.py",
+    "seconds": 0.158
+  },
+  {
+    "path": "backend/tests/models/crud/test_runtime_session_listing.py",
+    "seconds": 0.302
+  },
+  {
+    "path": "backend/tests/models/crud/test_runtime_session_optimization_action.py",
+    "seconds": 0.229
+  },
+  {
+    "path": "backend/tests/models/crud/test_runtime_session_optimization_result.py",
+    "seconds": 0.164
+  },
+  {
+    "path": "backend/tests/models/crud/test_session_saved_search.py",
+    "seconds": 0.587
+  },
+  {
+    "path": "backend/tests/models/crud/test_session_search_backfill_state.py",
+    "seconds": 0.446
+  },
+  {
+    "path": "backend/tests/models/crud/test_session_search_document.py",
+    "seconds": 0.561
+  },
+  {
+    "path": "backend/tests/models/crud/test_session_search_ranking.py",
+    "seconds": 0.871
+  },
+  {
+    "path": "backend/tests/models/crud/test_session_search_vector.py",
+    "seconds": 0.596
+  },
+  {
+    "path": "backend/tests/models/crud/test_session_similarity_crud.py",
+    "seconds": 0.708
+  },
+  {
+    "path": "backend/tests/models/crud/test_tool_access_rule_crud.py",
+    "seconds": 0.309
+  },
+  {
+    "path": "backend/tests/models/crud/test_tool_configuration_crud.py",
+    "seconds": 0.174
+  },
+  {
+    "path": "backend/tests/models/crud/test_tool_cost_flag.py",
+    "seconds": 0.246
+  },
+  {
+    "path": "backend/tests/models/crud/test_tracker_credential_backfill.py",
+    "seconds": 0.145
+  },
+  {
+    "path": "backend/tests/models/crud/test_tracker_crud.py",
+    "seconds": 0.134
+  },
+  {
+    "path": "backend/tests/models/crud/test_tracker_scope_rule.py",
+    "seconds": 0.32
+  },
+  {
+    "path": "backend/tests/models/crud/test_tracker_unknown_project.py",
+    "seconds": 0.424
+  },
+  {
+    "path": "backend/tests/models/crud/test_unpriced_usage_reporting.py",
+    "seconds": 0.471
+  },
+  {
+    "path": "backend/tests/models/crud/test_user_deletion_crud.py",
+    "seconds": 0.409
+  },
+  {
+    "path": "backend/tests/models/crud/test_user_invitation_crud.py",
+    "seconds": 0.363
+  },
+  {
+    "path": "backend/tests/models/crud/test_webhook_crud.py",
+    "seconds": 0.195
+  },
+  {
+    "path": "backend/tests/models/test_account_durable_policy_migration.py",
+    "seconds": 0.46
+  },
+  {
+    "path": "backend/tests/models/test_account_halt_lock_compatibility.py",
+    "seconds": 0.348
+  },
+  {
+    "path": "backend/tests/models/test_account_hierarchy_migration.py",
+    "seconds": 1.001
+  },
+  {
+    "path": "backend/tests/models/test_account_hierarchy_schema.py",
+    "seconds": 1.174
+  },
+  {
+    "path": "backend/tests/models/test_account_model.py",
+    "seconds": 0.143
+  },
+  {
+    "path": "backend/tests/models/test_ai_model.py",
+    "seconds": 0.817
+  },
+  {
+    "path": "backend/tests/models/test_ai_model_updated_at_trigger.py",
+    "seconds": 0.106
+  },
+  {
+    "path": "backend/tests/models/test_alembic_single_head.py",
+    "seconds": 0.244
+  },
+  {
+    "path": "backend/tests/models/test_alias_collision_migration.py",
+    "seconds": 0.157
+  },
+  {
+    "path": "backend/tests/models/test_api_key.py",
+    "seconds": 0.289
+  },
+  {
+    "path": "backend/tests/models/test_api_usage.py",
+    "seconds": 2.216
+  },
+  {
+    "path": "backend/tests/models/test_api_usage_edge_cases.py",
+    "seconds": 0.068
+  },
+  {
+    "path": "backend/tests/models/test_api_usage_rate_limits.py",
+    "seconds": 1.19
+  },
+  {
+    "path": "backend/tests/models/test_approval_request_schema.py",
+    "seconds": 0.426
+  },
+  {
+    "path": "backend/tests/models/test_approval_rule_context_persistence.py",
+    "seconds": 0.13
+  },
+  {
+    "path": "backend/tests/models/test_audit_chain_migration.py",
+    "seconds": 0.553
+  },
+  {
+    "path": "backend/tests/models/test_audit_chain_state_concurrency.py",
+    "seconds": 0.259
+  },
+  {
+    "path": "backend/tests/models/test_audit_lookup_index_migration.py",
+    "seconds": 0.119
+  },
+  {
+    "path": "backend/tests/models/test_auth_generation_migration.py",
+    "seconds": 0.045
+  },
+  {
+    "path": "backend/tests/models/test_ci_administrator_permissions.py",
+    "seconds": 0.618
+  },
+  {
+    "path": "backend/tests/models/test_copilot_user_mapping_migration.py",
+    "seconds": 0.869
+  },
+  {
+    "path": "backend/tests/models/test_crud_lookup.py",
+    "seconds": 0.881
+  },
+  {
+    "path": "backend/tests/models/test_database_pool_settings.py",
+    "seconds": 0.062
+  },
+  {
+    "path": "backend/tests/models/test_db_session.py",
+    "seconds": 0.427
+  },
+  {
+    "path": "backend/tests/models/test_db_setup.py",
+    "seconds": 0.116
+  },
+  {
+    "path": "backend/tests/models/test_embedding.py",
+    "seconds": 0.793
+  },
+  {
+    "path": "backend/tests/models/test_event_webhook_migration.py",
+    "seconds": 0.256
+  },
+  {
+    "path": "backend/tests/models/test_flow.py",
+    "seconds": 0.428
+  },
+  {
+    "path": "backend/tests/models/test_flow_artifact_lock_compatibility.py",
+    "seconds": 0.439
+  },
+  {
+    "path": "backend/tests/models/test_flow_callable_flows.py",
+    "seconds": 0.219
+  },
+  {
+    "path": "backend/tests/models/test_flow_execution_lineage.py",
+    "seconds": 0.483
+  },
+  {
+    "path": "backend/tests/models/test_flow_execution_log_nul.py",
+    "seconds": 0.33
+  },
+  {
+    "path": "backend/tests/models/test_flow_execution_park_kind.py",
+    "seconds": 0.133
+  },
+  {
+    "path": "backend/tests/models/test_flow_runner_capabilities.py",
+    "seconds": 0.063
+  },
+  {
+    "path": "backend/tests/models/test_flow_runner_claim.py",
+    "seconds": 0.65
+  },
+  {
+    "path": "backend/tests/models/test_flow_runner_ephemeral.py",
+    "seconds": 0.3
+  },
+  {
+    "path": "backend/tests/models/test_growth_crud.py",
+    "seconds": 0.309
+  },
+  {
+    "path": "backend/tests/models/test_hosted_spend_migration.py",
+    "seconds": 0.063
+  },
+  {
+    "path": "backend/tests/models/test_issue_extid_unique_migration.py",
+    "seconds": 0.275
+  },
+  {
+    "path": "backend/tests/models/test_issue_relationship.py",
+    "seconds": 0.557
+  },
+  {
+    "path": "backend/tests/models/test_issue_set.py",
+    "seconds": 0.141
+  },
+  {
+    "path": "backend/tests/models/test_managed_oauth_migration.py",
+    "seconds": 0.261
+  },
+  {
+    "path": "backend/tests/models/test_mcp_server_schema.py",
+    "seconds": 0.127
+  },
+  {
+    "path": "backend/tests/models/test_migration_runtime.py",
+    "seconds": 2.509
+  },
+  {
+    "path": "backend/tests/models/test_migration_upgrade_smoke.py",
+    "seconds": 3.636
+  },
+  {
+    "path": "backend/tests/models/test_plan_schema.py",
+    "seconds": 0.354
+  },
+  {
+    "path": "backend/tests/models/test_resume_root_index_migration.py",
+    "seconds": 0.729
+  },
+  {
+    "path": "backend/tests/models/test_retention_legal_hold_migration.py",
+    "seconds": 0.33
+  },
+  {
+    "path": "backend/tests/models/test_runtime_session_legal_hold_migration.py",
+    "seconds": 0.11
+  },
+  {
+    "path": "backend/tests/models/test_runtime_session_parent_migration.py",
+    "seconds": 0.2
+  },
+  {
+    "path": "backend/tests/models/test_sentry.py",
+    "seconds": 0.092
+  },
+  {
+    "path": "backend/tests/models/test_session_embedding_migration.py",
+    "seconds": 0.156
+  },
+  {
+    "path": "backend/tests/models/test_session_embedding_scope_migration.py",
+    "seconds": 0.071
+  },
+  {
+    "path": "backend/tests/models/test_session_embedding_setting_crud.py",
+    "seconds": 1.069
+  },
+  {
+    "path": "backend/tests/models/test_timestamps.py",
+    "seconds": 0.252
+  },
+  {
+    "path": "backend/tests/models/test_triage_lock_pool.py",
+    "seconds": 0.13
+  },
+  {
+    "path": "backend/tests/models/test_user_model.py",
+    "seconds": 0.343
+  },
+  {
+    "path": "backend/tests/models/test_vector_types.py",
+    "seconds": 0.121
+  },
+  {
+    "path": "backend/tests/schemas/test_ai_model_credential_payload.py",
+    "seconds": 0.213
+  },
+  {
+    "path": "backend/tests/schemas/test_flow_limit_fields.py",
+    "seconds": 0.066
+  },
+  {
+    "path": "backend/tests/schemas/test_gateway_usage_validators.py",
+    "seconds": 0.085
+  },
+  {
+    "path": "backend/tests/schemas/test_installers.py",
+    "seconds": 0.016
+  },
+  {
+    "path": "backend/tests/schemas/test_invitation.py",
+    "seconds": 0.045
+  },
+  {
+    "path": "backend/tests/schemas/test_issue_cost_schema.py",
+    "seconds": 22.055
+  },
+  {
+    "path": "backend/tests/schemas/test_mcp_tool_schema.py",
+    "seconds": 0.012
+  },
+  {
+    "path": "backend/tests/schemas/test_operator_notes_schema.py",
+    "seconds": 0.069
+  },
+  {
+    "path": "backend/tests/schemas/test_retention_schema.py",
+    "seconds": 0.051
+  },
+  {
+    "path": "backend/tests/schemas/test_session_saved_search_schemas.py",
+    "seconds": 0.048
+  },
+  {
+    "path": "backend/tests/schemas/test_team.py",
+    "seconds": 0.045
+  },
+  {
+    "path": "backend/tests/schemas/test_user.py",
+    "seconds": 0.057
+  },
+  {
+    "path": "backend/tests/schemas/test_webhook_endpoint_schema.py",
+    "seconds": 0.083
+  },
+  {
+    "path": "backend/tests/security/test_account_scoped_lookups.py",
+    "seconds": 11.896
+  },
+  {
+    "path": "backend/tests/security/test_gap_register.py",
+    "seconds": 0.049
+  },
+  {
+    "path": "backend/tests/security/test_git_guard.py",
+    "seconds": 0.024
+  },
+  {
+    "path": "backend/tests/security/test_purl_enrich.py",
+    "seconds": 0.008
+  },
+  {
+    "path": "backend/tests/security/test_waivers.py",
+    "seconds": 0.089
+  },
+  {
+    "path": "backend/tests/services/event_webhooks/test_approval_shim.py",
+    "seconds": 0.267
+  },
+  {
+    "path": "backend/tests/services/event_webhooks/test_cra_reportable_emitter.py",
+    "seconds": 0.211
+  },
+  {
+    "path": "backend/tests/services/event_webhooks/test_events.py",
+    "seconds": 0.198
+  },
+  {
+    "path": "backend/tests/services/event_webhooks/test_outbox.py",
+    "seconds": 0.486
+  },
+  {
+    "path": "backend/tests/services/event_webhooks/test_signing.py",
+    "seconds": 0.05
+  },
+  {
+    "path": "backend/tests/services/event_webhooks/test_targets.py",
+    "seconds": 0.048
+  },
+  {
+    "path": "backend/tests/services/event_webhooks/test_worker.py",
+    "seconds": 0.416
+  },
+  {
+    "path": "backend/tests/services/policy/test_loader.py",
+    "seconds": 0.379
+  },
+  {
+    "path": "backend/tests/services/policy/test_loader_notify.py",
+    "seconds": 0.023
+  },
+  {
+    "path": "backend/tests/services/policy/test_schema.py",
+    "seconds": 0.13
+  },
+  {
+    "path": "backend/tests/services/prompt_resolvers/test_account.py",
+    "seconds": 0.063
+  },
+  {
+    "path": "backend/tests/services/prompt_resolvers/test_execution.py",
+    "seconds": 0.055
+  },
+  {
+    "path": "backend/tests/services/prompt_resolvers/test_project_resolver.py",
+    "seconds": 0.065
+  },
+  {
+    "path": "backend/tests/services/prompt_resolvers/test_trigger_event.py",
+    "seconds": 0.103
+  },
+  {
+    "path": "backend/tests/services/test_account_governance_cache.py",
+    "seconds": 0.222
+  },
+  {
+    "path": "backend/tests/services/test_account_governance_defaults.py",
+    "seconds": 0.099
+  },
+  {
+    "path": "backend/tests/services/test_account_hierarchy_hooks.py",
+    "seconds": 0.837
+  },
+  {
+    "path": "backend/tests/services/test_account_realtime.py",
+    "seconds": 0.009
+  },
+  {
+    "path": "backend/tests/services/test_account_setup_service.py",
+    "seconds": 0.132
+  },
+  {
+    "path": "backend/tests/services/test_activity_detached_instances.py",
+    "seconds": 0.022
+  },
+  {
+    "path": "backend/tests/services/test_activity_tracker.py",
+    "seconds": 0.109
+  },
+  {
+    "path": "backend/tests/services/test_agent_deployment.py",
+    "seconds": 0.626
+  },
+  {
+    "path": "backend/tests/services/test_agent_model_list.py",
+    "seconds": 0.106
+  },
+  {
+    "path": "backend/tests/services/test_agent_note_scope.py",
+    "seconds": 2.999
+  },
+  {
+    "path": "backend/tests/services/test_agent_permission_phase_contract.py",
+    "seconds": 0.013
+  },
+  {
+    "path": "backend/tests/services/test_agent_permission_service.py",
+    "seconds": 0.543
+  },
+  {
+    "path": "backend/tests/services/test_agent_permission_unknown_actions.py",
+    "seconds": 0.311
+  },
+  {
+    "path": "backend/tests/services/test_agent_send_note.py",
+    "seconds": 0.788
+  },
+  {
+    "path": "backend/tests/services/test_agent_session_parent_lineage.py",
+    "seconds": 2.106
+  },
+  {
+    "path": "backend/tests/services/test_agent_session_search.py",
+    "seconds": 0.586
+  },
+  {
+    "path": "backend/tests/services/test_ai_approval_service.py",
+    "seconds": 0.204
+  },
+  {
+    "path": "backend/tests/services/test_ai_model_catalog_sync.py",
+    "seconds": 0.081
+  },
+  {
+    "path": "backend/tests/services/test_ai_model_pricing.py",
+    "seconds": 1.231
+  },
+  {
+    "path": "backend/tests/services/test_ai_model_provider.py",
+    "seconds": 2.395
+  },
+  {
+    "path": "backend/tests/services/test_alibaba_discovery.py",
+    "seconds": 0.071
+  },
+  {
+    "path": "backend/tests/services/test_alibaba_gateway.py",
+    "seconds": 0.442
+  },
+  {
+    "path": "backend/tests/services/test_alibaba_price_catalog.py",
+    "seconds": 0.068
+  },
+  {
+    "path": "backend/tests/services/test_alibaba_pricing.py",
+    "seconds": 0.168
+  },
+  {
+    "path": "backend/tests/services/test_analytics_history.py",
+    "seconds": 4.372
+  },
+  {
+    "path": "backend/tests/services/test_anthropic_gateway.py",
+    "seconds": 0.181
+  },
+  {
+    "path": "backend/tests/services/test_anthropic_oauth_passthrough.py",
+    "seconds": 0.268
+  },
+  {
+    "path": "backend/tests/services/test_api_usage_recorder.py",
+    "seconds": 0.209
+  },
+  {
+    "path": "backend/tests/services/test_api_usage_refresh.py",
+    "seconds": 0.012
+  },
+  {
+    "path": "backend/tests/services/test_apns_service.py",
+    "seconds": 0.124
+  },
+  {
+    "path": "backend/tests/services/test_approval_attribution.py",
+    "seconds": 0.288
+  },
+  {
+    "path": "backend/tests/services/test_approval_bypass.py",
+    "seconds": 0.155
+  },
+  {
+    "path": "backend/tests/services/test_approval_helper.py",
+    "seconds": 2.314
+  },
+  {
+    "path": "backend/tests/services/test_approval_presence_and_risk.py",
+    "seconds": 0.016
+  },
+  {
+    "path": "backend/tests/services/test_approval_rule_context.py",
+    "seconds": 0.136
+  },
+  {
+    "path": "backend/tests/services/test_approval_service.py",
+    "seconds": 1.384
+  },
+  {
+    "path": "backend/tests/services/test_approval_service_push.py",
+    "seconds": 120.34
+  },
+  {
+    "path": "backend/tests/services/test_approval_session_hold.py",
+    "seconds": 0.217
+  },
+  {
+    "path": "backend/tests/services/test_approval_summary.py",
+    "seconds": 0.036
+  },
+  {
+    "path": "backend/tests/services/test_approval_timeline.py",
+    "seconds": 0.195
+  },
+  {
+    "path": "backend/tests/services/test_approval_webhook_dispatch.py",
+    "seconds": 0.096
+  },
+  {
+    "path": "backend/tests/services/test_approval_workflow_service.py",
+    "seconds": 0.079
+  },
+  {
+    "path": "backend/tests/services/test_approval_wrapper.py",
+    "seconds": 0.046
+  },
+  {
+    "path": "backend/tests/services/test_artifact_kinds_labels_db.py",
+    "seconds": 1.395
+  },
+  {
+    "path": "backend/tests/services/test_artifact_media.py",
+    "seconds": 0.193
+  },
+  {
+    "path": "backend/tests/services/test_artifact_shapes.py",
+    "seconds": 1.863
+  },
+  {
+    "path": "backend/tests/services/test_artifact_text.py",
+    "seconds": 0.074
+  },
+  {
+    "path": "backend/tests/services/test_ask_user_inband.py",
+    "seconds": 0.551
+  },
+  {
+    "path": "backend/tests/services/test_ask_user_structured.py",
+    "seconds": 0.757
+  },
+  {
+    "path": "backend/tests/services/test_audio_model.py",
+    "seconds": 0.006
+  },
+  {
+    "path": "backend/tests/services/test_audit_canonical_golden.py",
+    "seconds": 0.003
+  },
+  {
+    "path": "backend/tests/services/test_audit_chain.py",
+    "seconds": 0.475
+  },
+  {
+    "path": "backend/tests/services/test_aux_model_retry.py",
+    "seconds": 1.578
+  },
+  {
+    "path": "backend/tests/services/test_aux_openrouter_reasoning.py",
+    "seconds": 0.029
+  },
+  {
+    "path": "backend/tests/services/test_aux_reasoning_model.py",
+    "seconds": 0.102
+  },
+  {
+    "path": "backend/tests/services/test_azure_entra.py",
+    "seconds": 0.142
+  },
+  {
+    "path": "backend/tests/services/test_azure_openai.py",
+    "seconds": 0.08
+  },
+  {
+    "path": "backend/tests/services/test_background_pass_roles.py",
+    "seconds": 0.03
+  },
+  {
+    "path": "backend/tests/services/test_backport.py",
+    "seconds": 2.168
+  },
+  {
+    "path": "backend/tests/services/test_backport_config.py",
+    "seconds": 0.107
+  },
+  {
+    "path": "backend/tests/services/test_bitbucket_dc_webhook_triggers.py",
+    "seconds": 0.483
+  },
+  {
+    "path": "backend/tests/services/test_bitbucket_flow_wiring.py",
+    "seconds": 0.184
+  },
+  {
+    "path": "backend/tests/services/test_builtin_tool_optimizer.py",
+    "seconds": 0.22
+  },
+  {
+    "path": "backend/tests/services/test_cache_accounting.py",
+    "seconds": 0.077
+  },
+  {
+    "path": "backend/tests/services/test_chat_backend.py",
+    "seconds": 16.123
+  },
+  {
+    "path": "backend/tests/services/test_chat_providers.py",
+    "seconds": 0.058
+  },
+  {
+    "path": "backend/tests/services/test_ci_callback_contract.py",
+    "seconds": 3.3
+  },
+  {
+    "path": "backend/tests/services/test_ci_callback_failures.py",
+    "seconds": 0.733
+  },
+  {
+    "path": "backend/tests/services/test_ci_execution_admission.py",
+    "seconds": 1.086
+  },
+  {
+    "path": "backend/tests/services/test_ci_execution_dispatch.py",
+    "seconds": 0.102
+  },
+  {
+    "path": "backend/tests/services/test_claude_family_autoregister.py",
+    "seconds": 0.747
+  },
+  {
+    "path": "backend/tests/services/test_clear_text_agent_logs.py",
+    "seconds": 0.007
+  },
+  {
+    "path": "backend/tests/services/test_codex_crosschat.py",
+    "seconds": 0.23
+  },
+  {
+    "path": "backend/tests/services/test_codex_family_autoregister.py",
+    "seconds": 0.471
+  },
+  {
+    "path": "backend/tests/services/test_codex_tool_compat.py",
+    "seconds": 0.044
+  },
+  {
+    "path": "backend/tests/services/test_configuration_gating.py",
+    "seconds": 1.109
+  },
+  {
+    "path": "backend/tests/services/test_context_analysis.py",
+    "seconds": 0.168
+  },
+  {
+    "path": "backend/tests/services/test_context_analysis_edge_cases.py",
+    "seconds": 0.028
+  },
+  {
+    "path": "backend/tests/services/test_context_optimization.py",
+    "seconds": 0.119
+  },
+  {
+    "path": "backend/tests/services/test_control_credentials.py",
+    "seconds": 0.003
+  },
+  {
+    "path": "backend/tests/services/test_copilot_spend_source.py",
+    "seconds": 0.56
+  },
+  {
+    "path": "backend/tests/services/test_copilot_usage_import.py",
+    "seconds": 0.971
+  },
+  {
+    "path": "backend/tests/services/test_db_executor.py",
+    "seconds": 0.058
+  },
+  {
+    "path": "backend/tests/services/test_db_pool_hold_diagnostics.py",
+    "seconds": 0.074
+  },
+  {
+    "path": "backend/tests/services/test_db_pool_monitor.py",
+    "seconds": 0.05
+  },
+  {
+    "path": "backend/tests/services/test_deepseek_pricing.py",
+    "seconds": 0.266
+  },
+  {
+    "path": "backend/tests/services/test_deepseek_responses_reasoning.py",
+    "seconds": 0.166
+  },
+  {
+    "path": "backend/tests/services/test_discord_employee_bridge.py",
+    "seconds": 0.023
+  },
+  {
+    "path": "backend/tests/services/test_disposable_kubernetes_guard.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/services/test_dora_exports.py",
+    "seconds": 1.119
+  },
+  {
+    "path": "backend/tests/services/test_duplicate_detection.py",
+    "seconds": 0.025
+  },
+  {
+    "path": "backend/tests/services/test_dynamic_fastmcp.py",
+    "seconds": 0.778
+  },
+  {
+    "path": "backend/tests/services/test_dynamic_fastmcp_http.py",
+    "seconds": 0.018
+  },
+  {
+    "path": "backend/tests/services/test_dynamic_mcp_server.py",
+    "seconds": 0.11
+  },
+  {
+    "path": "backend/tests/services/test_effective_publication_policy.py",
+    "seconds": 0.03
+  },
+  {
+    "path": "backend/tests/services/test_employee_event_reservation.py",
+    "seconds": 0.01
+  },
+  {
+    "path": "backend/tests/services/test_employee_events.py",
+    "seconds": 0.056
+  },
+  {
+    "path": "backend/tests/services/test_employee_events_db.py",
+    "seconds": 0.07
+  },
+  {
+    "path": "backend/tests/services/test_employee_tool_credentials.py",
+    "seconds": 0.081
+  },
+  {
+    "path": "backend/tests/services/test_evidence_members.py",
+    "seconds": 0.506
+  },
+  {
+    "path": "backend/tests/services/test_evidence_transport.py",
+    "seconds": 1.042
+  },
+  {
+    "path": "backend/tests/services/test_example_optimization.py",
+    "seconds": 0.084
+  },
+  {
+    "path": "backend/tests/services/test_execution_cost_rollup.py",
+    "seconds": 0.267
+  },
+  {
+    "path": "backend/tests/services/test_execution_metrics.py",
+    "seconds": 0.962
+  },
+  {
+    "path": "backend/tests/services/test_execution_monitor.py",
+    "seconds": 2.306
+  },
+  {
+    "path": "backend/tests/services/test_execution_recovery.py",
+    "seconds": 0.197
+  },
+  {
+    "path": "backend/tests/services/test_execution_runner.py",
+    "seconds": 0.025
+  },
+  {
+    "path": "backend/tests/services/test_failed_publication_metadata.py",
+    "seconds": 0.068
+  },
+  {
+    "path": "backend/tests/services/test_fcm_service.py",
+    "seconds": 0.084
+  },
+  {
+    "path": "backend/tests/services/test_flow_artifacts.py",
+    "seconds": 0.187
+  },
+  {
+    "path": "backend/tests/services/test_flow_artifacts_db.py",
+    "seconds": 2.427
+  },
+  {
+    "path": "backend/tests/services/test_flow_child_wait.py",
+    "seconds": 1.012
+  },
+  {
+    "path": "backend/tests/services/test_flow_ci_feedback.py",
+    "seconds": 0.225
+  },
+  {
+    "path": "backend/tests/services/test_flow_continuation_adoption.py",
+    "seconds": 0.311
+  },
+  {
+    "path": "backend/tests/services/test_flow_continuation_navigation.py",
+    "seconds": 0.021
+  },
+  {
+    "path": "backend/tests/services/test_flow_delegation.py",
+    "seconds": 0.218
+  },
+  {
+    "path": "backend/tests/services/test_flow_delegation_budget.py",
+    "seconds": 4.97
+  },
+  {
+    "path": "backend/tests/services/test_flow_delegation_call.py",
+    "seconds": 1.685
+  },
+  {
+    "path": "backend/tests/services/test_flow_environment.py",
+    "seconds": 1.71
+  },
+  {
+    "path": "backend/tests/services/test_flow_execution_account_cap.py",
+    "seconds": 1.197
+  },
+  {
+    "path": "backend/tests/services/test_flow_execution_limits.py",
+    "seconds": 0.633
+  },
+  {
+    "path": "backend/tests/services/test_flow_execution_logger.py",
+    "seconds": 0.188
+  },
+  {
+    "path": "backend/tests/services/test_flow_execution_notifications.py",
+    "seconds": 0.202
+  },
+  {
+    "path": "backend/tests/services/test_flow_execution_read.py",
+    "seconds": 1.059
+  },
+  {
+    "path": "backend/tests/services/test_flow_execution_worker_orchestration.py",
+    "seconds": 0.556
+  },
+  {
+    "path": "backend/tests/services/test_flow_failure_category.py",
+    "seconds": 0.287
+  },
+  {
+    "path": "backend/tests/services/test_flow_feedback_durable.py",
+    "seconds": 11.808
+  },
+  {
+    "path": "backend/tests/services/test_flow_feedback_lifecycle.py",
+    "seconds": 0.868
+  },
+  {
+    "path": "backend/tests/services/test_flow_feedback_provider.py",
+    "seconds": 0.672
+  },
+  {
+    "path": "backend/tests/services/test_flow_governance.py",
+    "seconds": 0.26
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_backport.py",
+    "seconds": 0.085
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_deadline.py",
+    "seconds": 1.093
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_git_credentials.py",
+    "seconds": 0.174
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_model_list.py",
+    "seconds": 0.055
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_persistent.py",
+    "seconds": 0.086
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_repository_binding.py",
+    "seconds": 0.165
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_retry.py",
+    "seconds": 2.56
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_stop_race.py",
+    "seconds": 0.798
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_streaming.py",
+    "seconds": 1.138
+  },
+  {
+    "path": "backend/tests/services/test_flow_orchestrator_transaction_release.py",
+    "seconds": 0.106
+  },
+  {
+    "path": "backend/tests/services/test_flow_pr_binding.py",
+    "seconds": 0.2
+  },
+  {
+    "path": "backend/tests/services/test_flow_pr_binding_lookup.py",
+    "seconds": 0.937
+  },
+  {
+    "path": "backend/tests/services/test_flow_pr_loop.py",
+    "seconds": 1.143
+  },
+  {
+    "path": "backend/tests/services/test_flow_presets_service.py",
+    "seconds": 0.382
+  },
+  {
+    "path": "backend/tests/services/test_flow_retry_model_resolution.py",
+    "seconds": 0.032
+  },
+  {
+    "path": "backend/tests/services/test_flow_runtime_token_lifetime.py",
+    "seconds": 0.801
+  },
+  {
+    "path": "backend/tests/services/test_flow_tree_stop.py",
+    "seconds": 23.212
+  },
+  {
+    "path": "backend/tests/services/test_flow_trigger_label_events.py",
+    "seconds": 0.258
+  },
+  {
+    "path": "backend/tests/services/test_flow_trigger_local_dispatch.py",
+    "seconds": 0.194
+  },
+  {
+    "path": "backend/tests/services/test_flow_trigger_pr_lifecycle_stop.py",
+    "seconds": 1.278
+  },
+  {
+    "path": "backend/tests/services/test_flow_trigger_service.py",
+    "seconds": 1.825
+  },
+  {
+    "path": "backend/tests/services/test_follow_up_filing.py",
+    "seconds": 0.316
+  },
+  {
+    "path": "backend/tests/services/test_gateway_accounting_check.py",
+    "seconds": 0.072
+  },
+  {
+    "path": "backend/tests/services/test_gateway_alert_outages.py",
+    "seconds": 0.125
+  },
+  {
+    "path": "backend/tests/services/test_gateway_alias_collision.py",
+    "seconds": 0.444
+  },
+  {
+    "path": "backend/tests/services/test_gateway_custom_provider_routing.py",
+    "seconds": 0.108
+  },
+  {
+    "path": "backend/tests/services/test_gateway_db_lifetime.py",
+    "seconds": 0.488
+  },
+  {
+    "path": "backend/tests/services/test_gateway_error_alerts.py",
+    "seconds": 0.214
+  },
+  {
+    "path": "backend/tests/services/test_gateway_flow_totals.py",
+    "seconds": 0.012
+  },
+  {
+    "path": "backend/tests/services/test_gateway_index_memory.py",
+    "seconds": 0.041
+  },
+  {
+    "path": "backend/tests/services/test_gateway_late_usage_rollup.py",
+    "seconds": 0.026
+  },
+  {
+    "path": "backend/tests/services/test_gateway_policy_queries.py",
+    "seconds": 0.26
+  },
+  {
+    "path": "backend/tests/services/test_gateway_rate_limit_capture.py",
+    "seconds": 1.183
+  },
+  {
+    "path": "backend/tests/services/test_gateway_request_correlation.py",
+    "seconds": 0.046
+  },
+  {
+    "path": "backend/tests/services/test_gateway_shared_alerts.py",
+    "seconds": 0.346
+  },
+  {
+    "path": "backend/tests/services/test_gateway_stream_abandonment.py",
+    "seconds": 4.78
+  },
+  {
+    "path": "backend/tests/services/test_gateway_tool_activity.py",
+    "seconds": 0.126
+  },
+  {
+    "path": "backend/tests/services/test_gateway_translation_error.py",
+    "seconds": 0.065
+  },
+  {
+    "path": "backend/tests/services/test_gateway_usage_index_queue.py",
+    "seconds": 1.52
+  },
+  {
+    "path": "backend/tests/services/test_gateway_usage_search.py",
+    "seconds": 0.183
+  },
+  {
+    "path": "backend/tests/services/test_get_execution_tool.py",
+    "seconds": 0.722
+  },
+  {
+    "path": "backend/tests/services/test_host_exec.py",
+    "seconds": 0.141
+  },
+  {
+    "path": "backend/tests/services/test_host_exec_context.py",
+    "seconds": 0.058
+  },
+  {
+    "path": "backend/tests/services/test_host_exec_delivery.py",
+    "seconds": 0.085
+  },
+  {
+    "path": "backend/tests/services/test_host_exec_usage.py",
+    "seconds": 0.366
+  },
+  {
+    "path": "backend/tests/services/test_hosted_tariff_refusal.py",
+    "seconds": 0.026
+  },
+  {
+    "path": "backend/tests/services/test_initialize_mcp.py",
+    "seconds": 4.052
+  },
+  {
+    "path": "backend/tests/services/test_instance_service.py",
+    "seconds": 0.347
+  },
+  {
+    "path": "backend/tests/services/test_isolated_publication.py",
+    "seconds": 1.339
+  },
+  {
+    "path": "backend/tests/services/test_issue_cost_orchestrator_hook.py",
+    "seconds": 0.028
+  },
+  {
+    "path": "backend/tests/services/test_issue_cost_rollup.py",
+    "seconds": 11.222
+  },
+  {
+    "path": "backend/tests/services/test_issue_estimate.py",
+    "seconds": 0.079
+  },
+  {
+    "path": "backend/tests/services/test_issue_lifecycle.py",
+    "seconds": 5.565
+  },
+  {
+    "path": "backend/tests/services/test_issue_lifecycle_provider_limits.py",
+    "seconds": 0.052
+  },
+  {
+    "path": "backend/tests/services/test_issue_lifecycle_worker.py",
+    "seconds": 0.764
+  },
+  {
+    "path": "backend/tests/services/test_issue_references.py",
+    "seconds": 0.199
+  },
+  {
+    "path": "backend/tests/services/test_issue_triage_apply.py",
+    "seconds": 0.189
+  },
+  {
+    "path": "backend/tests/services/test_issue_triage_controller.py",
+    "seconds": 2.727
+  },
+  {
+    "path": "backend/tests/services/test_issue_triage_controller_review.py",
+    "seconds": 4.244
+  },
+  {
+    "path": "backend/tests/services/test_issue_triage_dispatch.py",
+    "seconds": 0.154
+  },
+  {
+    "path": "backend/tests/services/test_issue_triage_intake_race.py",
+    "seconds": 0.629
+  },
+  {
+    "path": "backend/tests/services/test_issue_triage_provider.py",
+    "seconds": 0.36
+  },
+  {
+    "path": "backend/tests/services/test_issue_triage_trigger.py",
+    "seconds": 0.225
+  },
+  {
+    "path": "backend/tests/services/test_jira_pr_writeback.py",
+    "seconds": 0.124
+  },
+  {
+    "path": "backend/tests/services/test_kill_switch.py",
+    "seconds": 0.17
+  },
+  {
+    "path": "backend/tests/services/test_kill_switch_durability.py",
+    "seconds": 0.768
+  },
+  {
+    "path": "backend/tests/services/test_kill_switch_enforcement.py",
+    "seconds": 0.478
+  },
+  {
+    "path": "backend/tests/services/test_kill_switch_protocol.py",
+    "seconds": 0.168
+  },
+  {
+    "path": "backend/tests/services/test_ledger_backfill.py",
+    "seconds": 0.256
+  },
+  {
+    "path": "backend/tests/services/test_ledger_csv_backfill.py",
+    "seconds": 0.139
+  },
+  {
+    "path": "backend/tests/services/test_legal_hold.py",
+    "seconds": 1.421
+  },
+  {
+    "path": "backend/tests/services/test_list_sessions_tool.py",
+    "seconds": 0.21
+  },
+  {
+    "path": "backend/tests/services/test_litellm_cost_map.py",
+    "seconds": 0.009
+  },
+  {
+    "path": "backend/tests/services/test_litellm_routing.py",
+    "seconds": 0.21
+  },
+  {
+    "path": "backend/tests/services/test_log_persistence_backpressure.py",
+    "seconds": 5.922
+  },
+  {
+    "path": "backend/tests/services/test_managed_credentials.py",
+    "seconds": 0.091
+  },
+  {
+    "path": "backend/tests/services/test_mcp_client_pool.py",
+    "seconds": 0.379
+  },
+  {
+    "path": "backend/tests/services/test_mcp_config_service.py",
+    "seconds": 0.093
+  },
+  {
+    "path": "backend/tests/services/test_mcp_http.py",
+    "seconds": 0.299
+  },
+  {
+    "path": "backend/tests/services/test_mcp_httpx_client.py",
+    "seconds": 0.108
+  },
+  {
+    "path": "backend/tests/services/test_mcp_tool_discovery.py",
+    "seconds": 0.571
+  },
+  {
+    "path": "backend/tests/services/test_model_allowlist.py",
+    "seconds": 0.191
+  },
+  {
+    "path": "backend/tests/services/test_model_api_protocol.py",
+    "seconds": 0.097
+  },
+  {
+    "path": "backend/tests/services/test_model_content_detectors.py",
+    "seconds": 0.03
+  },
+  {
+    "path": "backend/tests/services/test_model_content_policy.py",
+    "seconds": 0.256
+  },
+  {
+    "path": "backend/tests/services/test_model_content_policy_gateway.py",
+    "seconds": 0.073
+  },
+  {
+    "path": "backend/tests/services/test_model_content_policy_notify.py",
+    "seconds": 0.572
+  },
+  {
+    "path": "backend/tests/services/test_model_content_policy_sensitive_types.py",
+    "seconds": 0.556
+  },
+  {
+    "path": "backend/tests/services/test_model_content_reasoning.py",
+    "seconds": 0.189
+  },
+  {
+    "path": "backend/tests/services/test_model_context_limits.py",
+    "seconds": 0.127
+  },
+  {
+    "path": "backend/tests/services/test_model_credentials.py",
+    "seconds": 2.2
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_account_binding.py",
+    "seconds": 0.319
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_activity_isolation.py",
+    "seconds": 0.073
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_auth.py",
+    "seconds": 0.18
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_authorization.py",
+    "seconds": 0.775
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_budget.py",
+    "seconds": 2.608
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_errors.py",
+    "seconds": 0.181
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_events.py",
+    "seconds": 0.168
+  },
+  {
+    "path": "backend/tests/services/test_model_gateway_usage.py",
+    "seconds": 0.291
+  },
+  {
+    "path": "backend/tests/services/test_model_price_catalog.py",
+    "seconds": 0.188
+  },
+  {
+    "path": "backend/tests/services/test_model_price_map_refresh.py",
+    "seconds": 2.807
+  },
+  {
+    "path": "backend/tests/services/test_model_price_review_tools.py",
+    "seconds": 0.162
+  },
+  {
+    "path": "backend/tests/services/test_model_pricing.py",
+    "seconds": 9.071
+  },
+  {
+    "path": "backend/tests/services/test_model_routing.py",
+    "seconds": 18.584
+  },
+  {
+    "path": "backend/tests/services/test_model_runtime_resolver.py",
+    "seconds": 0.107
+  },
+  {
+    "path": "backend/tests/services/test_multi_repo_publication.py",
+    "seconds": 1.183
+  },
+  {
+    "path": "backend/tests/services/test_native_routing_integration.py",
+    "seconds": 0.071
+  },
+  {
+    "path": "backend/tests/services/test_no_progress_guard.py",
+    "seconds": 0.058
+  },
+  {
+    "path": "backend/tests/services/test_notification_payloads.py",
+    "seconds": 0.113
+  },
+  {
+    "path": "backend/tests/services/test_oauth_credential_recovery.py",
+    "seconds": 0.134
+  },
+  {
+    "path": "backend/tests/services/test_oauth_provider.py",
+    "seconds": 0.28
+  },
+  {
+    "path": "backend/tests/services/test_oauth_refresh_locking.py",
+    "seconds": 0.935
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway.py",
+    "seconds": 3.793
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_activity_touch.py",
+    "seconds": 0.083
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_attribution_sessions.py",
+    "seconds": 9.856
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_drop_params.py",
+    "seconds": 0.063
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_price_recovery.py",
+    "seconds": 0.014
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_retry.py",
+    "seconds": 0.979
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_stream_eos.py",
+    "seconds": 0.29
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_tool_calls.py",
+    "seconds": 0.023
+  },
+  {
+    "path": "backend/tests/services/test_openai_gateway_upstream_errors.py",
+    "seconds": 0.316
+  },
+  {
+    "path": "backend/tests/services/test_openai_responses_passthrough.py",
+    "seconds": 2.584
+  },
+  {
+    "path": "backend/tests/services/test_openai_responses_prefetch.py",
+    "seconds": 0.093
+  },
+  {
+    "path": "backend/tests/services/test_openrouter_generation_cost.py",
+    "seconds": 0.297
+  },
+  {
+    "path": "backend/tests/services/test_operator_notes_delivery.py",
+    "seconds": 0.759
+  },
+  {
+    "path": "backend/tests/services/test_optimization_gating.py",
+    "seconds": 0.042
+  },
+  {
+    "path": "backend/tests/services/test_orchestrator_verification.py",
+    "seconds": 0.105
+  },
+  {
+    "path": "backend/tests/services/test_otel_attributes.py",
+    "seconds": 0.058
+  },
+  {
+    "path": "backend/tests/services/test_otel_export.py",
+    "seconds": 0.124
+  },
+  {
+    "path": "backend/tests/services/test_permission_prompt.py",
+    "seconds": 0.752
+  },
+  {
+    "path": "backend/tests/services/test_playwright_steps.py",
+    "seconds": 0.927
+  },
+  {
+    "path": "backend/tests/services/test_policy_condition_type.py",
+    "seconds": 0.02
+  },
+  {
+    "path": "backend/tests/services/test_policy_evaluator.py",
+    "seconds": 0.297
+  },
+  {
+    "path": "backend/tests/services/test_policy_generation.py",
+    "seconds": 1.121
+  },
+  {
+    "path": "backend/tests/services/test_policy_loader_sensitive_data.py",
+    "seconds": 0.061
+  },
+  {
+    "path": "backend/tests/services/test_policy_notices.py",
+    "seconds": 1.438
+  },
+  {
+    "path": "backend/tests/services/test_policy_schema.py",
+    "seconds": 0.152
+  },
+  {
+    "path": "backend/tests/services/test_policy_schema_sensitive_data.py",
+    "seconds": 0.156
+  },
+  {
+    "path": "backend/tests/services/test_policy_version_service.py",
+    "seconds": 0.725
+  },
+  {
+    "path": "backend/tests/services/test_preset_content_hash_linking.py",
+    "seconds": 0.226
+  },
+  {
+    "path": "backend/tests/services/test_preset_runner.py",
+    "seconds": 0.392
+  },
+  {
+    "path": "backend/tests/services/test_pricing_overrides.py",
+    "seconds": 0.309
+  },
+  {
+    "path": "backend/tests/services/test_private_publication.py",
+    "seconds": 5.673
+  },
+  {
+    "path": "backend/tests/services/test_product_dossier.py",
+    "seconds": 0.031
+  },
+  {
+    "path": "backend/tests/services/test_product_provenance.py",
+    "seconds": 0.189
+  },
+  {
+    "path": "backend/tests/services/test_proxied_tool_error_audit.py",
+    "seconds": 1.473
+  },
+  {
+    "path": "backend/tests/services/test_publication_approval_gate.py",
+    "seconds": 1.49
+  },
+  {
+    "path": "backend/tests/services/test_publication_feedback_ancestry.py",
+    "seconds": 0.164
+  },
+  {
+    "path": "backend/tests/services/test_publication_hosted_verifier.py",
+    "seconds": 0.511
+  },
+  {
+    "path": "backend/tests/services/test_publication_runtime.py",
+    "seconds": 0.188
+  },
+  {
+    "path": "backend/tests/services/test_publication_worker.py",
+    "seconds": 0.733
+  },
+  {
+    "path": "backend/tests/services/test_push_notification_init.py",
+    "seconds": 0.078
+  },
+  {
+    "path": "backend/tests/services/test_push_proxy.py",
+    "seconds": 0.069
+  },
+  {
+    "path": "backend/tests/services/test_push_test_send.py",
+    "seconds": 0.077
+  },
+  {
+    "path": "backend/tests/services/test_push_token_validation.py",
+    "seconds": 0.082
+  },
+  {
+    "path": "backend/tests/services/test_question_schema.py",
+    "seconds": 0.247
+  },
+  {
+    "path": "backend/tests/services/test_rate_limit_telemetry.py",
+    "seconds": 0.092
+  },
+  {
+    "path": "backend/tests/services/test_record_signing.py",
+    "seconds": 0.618
+  },
+  {
+    "path": "backend/tests/services/test_replay_budget_headroom.py",
+    "seconds": 0.091
+  },
+  {
+    "path": "backend/tests/services/test_replay_harness.py",
+    "seconds": 0.069
+  },
+  {
+    "path": "backend/tests/services/test_replay_savings_service.py",
+    "seconds": 0.168
+  },
+  {
+    "path": "backend/tests/services/test_report_publication.py",
+    "seconds": 0.474
+  },
+  {
+    "path": "backend/tests/services/test_repository_binding.py",
+    "seconds": 3.611
+  },
+  {
+    "path": "backend/tests/services/test_repricing_jobs.py",
+    "seconds": 0.371
+  },
+  {
+    "path": "backend/tests/services/test_repricing_worker_dispatch.py",
+    "seconds": 0.154
+  },
+  {
+    "path": "backend/tests/services/test_retention_export.py",
+    "seconds": 0.965
+  },
+  {
+    "path": "backend/tests/services/test_retention_export_artifacts.py",
+    "seconds": 0.59
+  },
+  {
+    "path": "backend/tests/services/test_retention_policy.py",
+    "seconds": 0.064
+  },
+  {
+    "path": "backend/tests/services/test_retention_purge.py",
+    "seconds": 1.804
+  },
+  {
+    "path": "backend/tests/services/test_review_handoff_recovery.py",
+    "seconds": 0.097
+  },
+  {
+    "path": "backend/tests/services/test_reviewed_model_price_refresh.py",
+    "seconds": 9.506
+  },
+  {
+    "path": "backend/tests/services/test_run_flow_tool.py",
+    "seconds": 1.07
+  },
+  {
+    "path": "backend/tests/services/test_runner_completion_vocabulary.py",
+    "seconds": 0.005
+  },
+  {
+    "path": "backend/tests/services/test_runner_log_markers.py",
+    "seconds": 0.1
+  },
+  {
+    "path": "backend/tests/services/test_runner_service.py",
+    "seconds": 0.137
+  },
+  {
+    "path": "backend/tests/services/test_runtime_session_artifacts_db.py",
+    "seconds": 0.396
+  },
+  {
+    "path": "backend/tests/services/test_runtime_session_explorer.py",
+    "seconds": 0.441
+  },
+  {
+    "path": "backend/tests/services/test_runtime_session_summary.py",
+    "seconds": 0.386
+  },
+  {
+    "path": "backend/tests/services/test_savings_measurement.py",
+    "seconds": 0.063
+  },
+  {
+    "path": "backend/tests/services/test_sbom_upstream_resolver.py",
+    "seconds": 0.152
+  },
+  {
+    "path": "backend/tests/services/test_search_sessions_tool.py",
+    "seconds": 0.545
+  },
+  {
+    "path": "backend/tests/services/test_secret_service.py",
+    "seconds": 0.558
+  },
+  {
+    "path": "backend/tests/services/test_security_maintenance.py",
+    "seconds": 17.847
+  },
+  {
+    "path": "backend/tests/services/test_security_screen.py",
+    "seconds": 0.159
+  },
+  {
+    "path": "backend/tests/services/test_send_note_steering.py",
+    "seconds": 1.387
+  },
+  {
+    "path": "backend/tests/services/test_sensitive_data_detectors.py",
+    "seconds": 1.33
+  },
+  {
+    "path": "backend/tests/services/test_sensitive_data_redaction.py",
+    "seconds": 0.47
+  },
+  {
+    "path": "backend/tests/services/test_sensitive_data_reference_only.py",
+    "seconds": 3.205
+  },
+  {
+    "path": "backend/tests/services/test_sensitive_data_tool_policy.py",
+    "seconds": 0.974
+  },
+  {
+    "path": "backend/tests/services/test_session_approval_visibility.py",
+    "seconds": 0.024
+  },
+  {
+    "path": "backend/tests/services/test_session_artifact_budget.py",
+    "seconds": 0.76
+  },
+  {
+    "path": "backend/tests/services/test_session_embedding.py",
+    "seconds": 1.746
+  },
+  {
+    "path": "backend/tests/services/test_session_embedding_queue.py",
+    "seconds": 0.347
+  },
+  {
+    "path": "backend/tests/services/test_session_events.py",
+    "seconds": 0.083
+  },
+  {
+    "path": "backend/tests/services/test_session_live_metadata.py",
+    "seconds": 0.456
+  },
+  {
+    "path": "backend/tests/services/test_session_manager.py",
+    "seconds": 0.104
+  },
+  {
+    "path": "backend/tests/services/test_session_optimization.py",
+    "seconds": 3.716
+  },
+  {
+    "path": "backend/tests/services/test_session_saved_search.py",
+    "seconds": 0.34
+  },
+  {
+    "path": "backend/tests/services/test_session_search_audit.py",
+    "seconds": 0.254
+  },
+  {
+    "path": "backend/tests/services/test_session_search_backfill.py",
+    "seconds": 0.839
+  },
+  {
+    "path": "backend/tests/services/test_session_search_fusion.py",
+    "seconds": 0.03
+  },
+  {
+    "path": "backend/tests/services/test_session_search_index.py",
+    "seconds": 0.805
+  },
+  {
+    "path": "backend/tests/services/test_session_search_retention.py",
+    "seconds": 0.89
+  },
+  {
+    "path": "backend/tests/services/test_session_search_semantic.py",
+    "seconds": 0.532
+  },
+  {
+    "path": "backend/tests/services/test_session_similarity.py",
+    "seconds": 0.903
+  },
+  {
+    "path": "backend/tests/services/test_session_stream_filter.py",
+    "seconds": 0.038
+  },
+  {
+    "path": "backend/tests/services/test_spend_outlier_replay.py",
+    "seconds": 2.184
+  },
+  {
+    "path": "backend/tests/services/test_spend_outliers.py",
+    "seconds": 7.463
+  },
+  {
+    "path": "backend/tests/services/test_stale_claim_reaper.py",
+    "seconds": 1.12
+  },
+  {
+    "path": "backend/tests/services/test_stream_stall.py",
+    "seconds": 0.164
+  },
+  {
+    "path": "backend/tests/services/test_subject_governance.py",
+    "seconds": 0.012
+  },
+  {
+    "path": "backend/tests/services/test_supported_publication_approval.py",
+    "seconds": 1.523
+  },
+  {
+    "path": "backend/tests/services/test_telemetry_optout.py",
+    "seconds": 0.07
+  },
+  {
+    "path": "backend/tests/services/test_tls_verify.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/services/test_tool_schema_tokens.py",
+    "seconds": 0.022
+  },
+  {
+    "path": "backend/tests/services/test_tool_usage_stats.py",
+    "seconds": 0.055
+  },
+  {
+    "path": "backend/tests/services/test_tool_usage_stats_unit.py",
+    "seconds": 0.048
+  },
+  {
+    "path": "backend/tests/services/test_tracker_git_token.py",
+    "seconds": 0.07
+  },
+  {
+    "path": "backend/tests/services/test_tracker_tool_unlock.py",
+    "seconds": 0.03
+  },
+  {
+    "path": "backend/tests/services/test_trusted_publication.py",
+    "seconds": 0.507
+  },
+  {
+    "path": "backend/tests/services/test_unpriced_model_alert.py",
+    "seconds": 0.331
+  },
+  {
+    "path": "backend/tests/services/test_upstream_errors.py",
+    "seconds": 0.203
+  },
+  {
+    "path": "backend/tests/services/test_usage_fingerprint.py",
+    "seconds": 0.008
+  },
+  {
+    "path": "backend/tests/services/test_usage_import.py",
+    "seconds": 0.144
+  },
+  {
+    "path": "backend/tests/services/test_usage_repricing.py",
+    "seconds": 3.721
+  },
+  {
+    "path": "backend/tests/services/test_user_budget_api_keys.py",
+    "seconds": 0.401
+  },
+  {
+    "path": "backend/tests/services/test_verification_gate.py",
+    "seconds": 0.171
+  },
+  {
+    "path": "backend/tests/services/test_webhook_delivery_idempotency.py",
+    "seconds": 0.697
+  },
+  {
+    "path": "backend/tests/services/test_websocket_db_sessions.py",
+    "seconds": 0.024
+  },
+  {
+    "path": "backend/tests/services/test_websocket_manager.py",
+    "seconds": 2.348
+  },
+  {
+    "path": "backend/tests/services/test_workspace_baseline.py",
+    "seconds": 0.357
+  },
+  {
+    "path": "backend/tests/services/test_workspace_recovery_acceptance.py",
+    "seconds": 0.334
+  },
+  {
+    "path": "backend/tests/services/test_workspace_snapshot_cleanup.py",
+    "seconds": 0.072
+  },
+  {
+    "path": "backend/tests/services/test_zen_client_identity.py",
+    "seconds": 0.325
+  },
+  {
+    "path": "backend/tests/sync/api/test_tracker_integration.py",
+    "seconds": 0.587
+  },
+  {
+    "path": "backend/tests/sync/scanner/test_core.py",
+    "seconds": 0.425
+  },
+  {
+    "path": "backend/tests/sync/scanner/test_regression.py",
+    "seconds": 0.046
+  },
+  {
+    "path": "backend/tests/sync/scanner/test_repository_transfer_scan.py",
+    "seconds": 0.287
+  },
+  {
+    "path": "backend/tests/sync/scanner/test_transaction_release.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/sync/services/test_base.py",
+    "seconds": 0.025
+  },
+  {
+    "path": "backend/tests/sync/services/test_event_bus.py",
+    "seconds": 0.119
+  },
+  {
+    "path": "backend/tests/sync/services/test_manager.py",
+    "seconds": 0.076
+  },
+  {
+    "path": "backend/tests/sync/test_bitbucket_sync_wiring.py",
+    "seconds": 0.065
+  },
+  {
+    "path": "backend/tests/sync/test_cli.py",
+    "seconds": 0.05
+  },
+  {
+    "path": "backend/tests/sync/test_config.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/sync/test_copilot_usage_task.py",
+    "seconds": 0.038
+  },
+  {
+    "path": "backend/tests/sync/test_event_normalizer.py",
+    "seconds": 0.39
+  },
+  {
+    "path": "backend/tests/sync/test_event_normalizer_bitbucket.py",
+    "seconds": 0.056
+  },
+  {
+    "path": "backend/tests/sync/test_event_normalizer_bitbucket_dc.py",
+    "seconds": 0.127
+  },
+  {
+    "path": "backend/tests/sync/test_flow_pool_capacity_probe.py",
+    "seconds": 0.04
+  },
+  {
+    "path": "backend/tests/sync/test_flow_worker_inflight.py",
+    "seconds": 0.089
+  },
+  {
+    "path": "backend/tests/sync/test_jira_changelog_events.py",
+    "seconds": 0.176
+  },
+  {
+    "path": "backend/tests/sync/test_optimization_digest_schedule.py",
+    "seconds": 0.011
+  },
+  {
+    "path": "backend/tests/sync/test_policy_notice_digest.py",
+    "seconds": 0.056
+  },
+  {
+    "path": "backend/tests/sync/test_scheduled_model_catalog_sync.py",
+    "seconds": 0.028
+  },
+  {
+    "path": "backend/tests/sync/test_spend_outlier_replay_task.py",
+    "seconds": 1.98
+  },
+  {
+    "path": "backend/tests/sync/test_spend_outlier_schedule.py",
+    "seconds": 0.024
+  },
+  {
+    "path": "backend/tests/sync/test_subscription_reconcile_task.py",
+    "seconds": 0.035
+  },
+  {
+    "path": "backend/tests/sync/test_utils.py",
+    "seconds": 0.077
+  },
+  {
+    "path": "backend/tests/sync/test_webhook_ack_after_commit.py",
+    "seconds": 0.054
+  },
+  {
+    "path": "backend/tests/sync/test_webhook_issue_cost_hook.py",
+    "seconds": 0.312
+  },
+  {
+    "path": "backend/tests/sync/test_webhook_progress.py",
+    "seconds": 0.087
+  },
+  {
+    "path": "backend/tests/sync/test_worker_subject_filters.py",
+    "seconds": 0.098
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_backport_tracker_methods.py",
+    "seconds": 0.029
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_base_tracker.py",
+    "seconds": 0.024
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_bitbucket.py",
+    "seconds": 0.23
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_bitbucket_dc.py",
+    "seconds": 0.861
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_bitbucket_dc_boundaries.py",
+    "seconds": 0.245
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_bitbucket_dc_identity.py",
+    "seconds": 0.121
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_bitbucket_dc_webhooks.py",
+    "seconds": 0.043
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_github.py",
+    "seconds": 17.227
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_github_crud.py",
+    "seconds": 0.059
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_github_list_pull_requests.py",
+    "seconds": 0.012
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_github_pr_review.py",
+    "seconds": 22.539
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_gitlab.py",
+    "seconds": 4.286
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_gitlab_crud.py",
+    "seconds": 0.083
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_gitlab_list_merge_requests.py",
+    "seconds": 0.042
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_gitlab_mr_review.py",
+    "seconds": 14.386
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_gitlab_new_methods.py",
+    "seconds": 0.055
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_jira.py",
+    "seconds": 6.112
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_jira_new_methods.py",
+    "seconds": 0.129
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_tracker_branch_lookup.py",
+    "seconds": 0.075
+  },
+  {
+    "path": "backend/tests/sync/trackers/test_utils.py",
+    "seconds": 0.162
+  },
+  {
+    "path": "backend/tests/test_agent_failure_detection.py",
+    "seconds": 0.082
+  },
+  {
+    "path": "backend/tests/test_api_key_creation_bug.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/test_api_usage_action.py",
+    "seconds": 0.051
+  },
+  {
+    "path": "backend/tests/test_app.py",
+    "seconds": 17.754
+  },
+  {
+    "path": "backend/tests/test_approval_error_boundaries.py",
+    "seconds": 0.444
+  },
+  {
+    "path": "backend/tests/test_approval_link_routes.py",
+    "seconds": 0.16
+  },
+  {
+    "path": "backend/tests/test_approval_park.py",
+    "seconds": 0.447
+  },
+  {
+    "path": "backend/tests/test_approval_park_at_request_time.py",
+    "seconds": 0.102
+  },
+  {
+    "path": "backend/tests/test_approval_park_survives_agent_exit.py",
+    "seconds": 0.219
+  },
+  {
+    "path": "backend/tests/test_approval_request_session_scope.py",
+    "seconds": 0.108
+  },
+  {
+    "path": "backend/tests/test_artifacts_guide_drift.py",
+    "seconds": 0.02
+  },
+  {
+    "path": "backend/tests/test_async_approval.py",
+    "seconds": 0.122
+  },
+  {
+    "path": "backend/tests/test_auth_event_loop_resilience.py",
+    "seconds": 1.462
+  },
+  {
+    "path": "backend/tests/test_auth_integration.py",
+    "seconds": 3.298
+  },
+  {
+    "path": "backend/tests/test_auth_last_login.py",
+    "seconds": 0.053
+  },
+  {
+    "path": "backend/tests/test_auth_schema.py",
+    "seconds": 1.825
+  },
+  {
+    "path": "backend/tests/test_automated_issue_implementation_preset.py",
+    "seconds": 1.286
+  },
+  {
+    "path": "backend/tests/test_avatar.py",
+    "seconds": 0.293
+  },
+  {
+    "path": "backend/tests/test_bootstrap_registration.py",
+    "seconds": 11.374
+  },
+  {
+    "path": "backend/tests/test_bound_session.py",
+    "seconds": 1.169
+  },
+  {
+    "path": "backend/tests/test_ci_setup_review_regressions.py",
+    "seconds": 0.121
+  },
+  {
+    "path": "backend/tests/test_comment_schema.py",
+    "seconds": 0.068
+  },
+  {
+    "path": "backend/tests/test_common.py",
+    "seconds": 0.14
+  },
+  {
+    "path": "backend/tests/test_compatibility_policy.py",
+    "seconds": 0.02
+  },
+  {
+    "path": "backend/tests/test_component_due_diligence_preset.py",
+    "seconds": 0.476
+  },
+  {
+    "path": "backend/tests/test_compose_dev_credentials.py",
+    "seconds": 0.082
+  },
+  {
+    "path": "backend/tests/test_config_jwt_secret.py",
+    "seconds": 0.062
+  },
+  {
+    "path": "backend/tests/test_config_version.py",
+    "seconds": 0.011
+  },
+  {
+    "path": "backend/tests/test_copilot_coverage_boundaries.py",
+    "seconds": 0.021
+  },
+  {
+    "path": "backend/tests/test_cost_analytics_schema.py",
+    "seconds": 0.009
+  },
+  {
+    "path": "backend/tests/test_cra_result_json_contract.py",
+    "seconds": 0.731
+  },
+  {
+    "path": "backend/tests/test_dependency_manifest.py",
+    "seconds": 0.044
+  },
+  {
+    "path": "backend/tests/test_docs_currency_review_preset.py",
+    "seconds": 0.836
+  },
+  {
+    "path": "backend/tests/test_flow_commit_status.py",
+    "seconds": 0.82
+  },
+  {
+    "path": "backend/tests/test_flow_execution_schema.py",
+    "seconds": 0.046
+  },
+  {
+    "path": "backend/tests/test_flow_execution_tree.py",
+    "seconds": 11.154
+  },
+  {
+    "path": "backend/tests/test_flow_matrix_batch.py",
+    "seconds": 11.02
+  },
+  {
+    "path": "backend/tests/test_flow_orchestrator.py",
+    "seconds": 24.854
+  },
+  {
+    "path": "backend/tests/test_flow_presets.py",
+    "seconds": 1.308
+  },
+  {
+    "path": "backend/tests/test_flow_review_instructions.py",
+    "seconds": 0.025
+  },
+  {
+    "path": "backend/tests/test_flow_schedule_trigger.py",
+    "seconds": 1.131
+  },
+  {
+    "path": "backend/tests/test_flow_trigger_service.py",
+    "seconds": 0.151
+  },
+  {
+    "path": "backend/tests/test_gateway_usage_schema.py",
+    "seconds": 0.009
+  },
+  {
+    "path": "backend/tests/test_github_ci_backend_shards.py",
+    "seconds": 0.39
+  },
+  {
+    "path": "backend/tests/test_github_ci_self_hosted_runner.py",
+    "seconds": 1.767
+  },
+  {
+    "path": "backend/tests/test_guide_non_normative_pages.py",
+    "seconds": 0.046
+  },
+  {
+    "path": "backend/tests/test_issue_compliance_schema.py",
+    "seconds": 0.039
+  },
+  {
+    "path": "backend/tests/test_issue_triage_mcp_registration.py",
+    "seconds": 2.014
+  },
+  {
+    "path": "backend/tests/test_issue_triage_preset.py",
+    "seconds": 3.372
+  },
+  {
+    "path": "backend/tests/test_issue_triage_self_updates.py",
+    "seconds": 0.182
+  },
+  {
+    "path": "backend/tests/test_logging.py",
+    "seconds": 0.003
+  },
+  {
+    "path": "backend/tests/test_nginx_route_parity.py",
+    "seconds": 0.247
+  },
+  {
+    "path": "backend/tests/test_perl_agent_image.py",
+    "seconds": 0.055
+  },
+  {
+    "path": "backend/tests/test_permissions_fallback.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/test_plan_choice_signup.py",
+    "seconds": 8.488
+  },
+  {
+    "path": "backend/tests/test_plugin_system/test_argument_evaluator.py",
+    "seconds": 0.336
+  },
+  {
+    "path": "backend/tests/test_plugin_system/test_plugin_manager.py",
+    "seconds": 0.051
+  },
+  {
+    "path": "backend/tests/test_portfolio_review_preset.py",
+    "seconds": 7.044
+  },
+  {
+    "path": "backend/tests/test_prefer_system_python.py",
+    "seconds": 2.688
+  },
+  {
+    "path": "backend/tests/test_preloop_backend_test_venv.py",
+    "seconds": 0.051
+  },
+  {
+    "path": "backend/tests/test_preloop_flow_trigger_workflow.py",
+    "seconds": 0.444
+  },
+  {
+    "path": "backend/tests/test_preloop_perl_toolchain.py",
+    "seconds": 0.01
+  },
+  {
+    "path": "backend/tests/test_preset_sync_carries_every_field.py",
+    "seconds": 0.458
+  },
+  {
+    "path": "backend/tests/test_previous_result_baseline.py",
+    "seconds": 1.397
+  },
+  {
+    "path": "backend/tests/test_pull_request_reviewer_preset.py",
+    "seconds": 0.208
+  },
+  {
+    "path": "backend/tests/test_real_auth.py",
+    "seconds": 0.044
+  },
+  {
+    "path": "backend/tests/test_release_backport_preset.py",
+    "seconds": 0.028
+  },
+  {
+    "path": "backend/tests/test_release_workflow_guards.py",
+    "seconds": 0.298
+  },
+  {
+    "path": "backend/tests/test_repo_review_presets.py",
+    "seconds": 2.249
+  },
+  {
+    "path": "backend/tests/test_require_email_verification.py",
+    "seconds": 12.925
+  },
+  {
+    "path": "backend/tests/test_restricted_ci_review_example.py",
+    "seconds": 0.103
+  },
+  {
+    "path": "backend/tests/test_review_policy.py",
+    "seconds": 0.045
+  },
+  {
+    "path": "backend/tests/test_run_flow_action_guard.py",
+    "seconds": 0.116
+  },
+  {
+    "path": "backend/tests/test_secrets_history_parity.py",
+    "seconds": 0.009
+  },
+  {
+    "path": "backend/tests/test_security_audit_presets.py",
+    "seconds": 8.555
+  },
+  {
+    "path": "backend/tests/test_security_maintenance_preset.py",
+    "seconds": 0.024
+  },
+  {
+    "path": "backend/tests/test_server.py",
+    "seconds": 0.034
+  },
+  {
+    "path": "backend/tests/test_ssr.py",
+    "seconds": 0.013
+  },
+  {
+    "path": "backend/tests/test_system_roles.py",
+    "seconds": 6.76
+  },
+  {
+    "path": "backend/tests/test_templates_self_contained.py",
+    "seconds": 0.066
+  },
+  {
+    "path": "backend/tests/test_tokens_util.py",
+    "seconds": 0.073
+  },
+  {
+    "path": "backend/tests/test_trigger_seed_and_provenance_validation.py",
+    "seconds": 14.344
+  },
+  {
+    "path": "backend/tests/test_version.py",
+    "seconds": 0.006
+  },
+  {
+    "path": "backend/tests/test_version_schema.py",
+    "seconds": 0.018
+  },
+  {
+    "path": "backend/tests/test_webhook_triggers.py",
+    "seconds": 3.528
+  },
+  {
+    "path": "backend/tests/tools/issue/test_create_issue.py",
+    "seconds": 0.037
+  },
+  {
+    "path": "backend/tests/tools/issue/test_search_issues.py",
+    "seconds": 0.029
+  },
+  {
+    "path": "backend/tests/tools/project/test_connection.py",
+    "seconds": 0.009
+  },
+  {
+    "path": "backend/tests/tools/test_get_organization.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/utils/test_approval_origin.py",
+    "seconds": 0.006
+  },
+  {
+    "path": "backend/tests/utils/test_audit.py",
+    "seconds": 0.019
+  },
+  {
+    "path": "backend/tests/utils/test_bitbucket.py",
+    "seconds": 0.104
+  },
+  {
+    "path": "backend/tests/utils/test_bitbucket_dc_network_policy.py",
+    "seconds": 0.028
+  },
+  {
+    "path": "backend/tests/utils/test_email.py",
+    "seconds": 0.146
+  },
+  {
+    "path": "backend/tests/utils/test_encryption.py",
+    "seconds": 0.046
+  },
+  {
+    "path": "backend/tests/utils/test_execve_limits.py",
+    "seconds": 0.11
+  },
+  {
+    "path": "backend/tests/utils/test_git_credentials.py",
+    "seconds": 0.149
+  },
+  {
+    "path": "backend/tests/utils/test_hashing.py",
+    "seconds": 0.024
+  },
+  {
+    "path": "backend/tests/utils/test_jsonb_sanitize.py",
+    "seconds": 0.073
+  },
+  {
+    "path": "backend/tests/utils/test_permissions.py",
+    "seconds": 0.014
+  },
+  {
+    "path": "backend/tests/utils/test_pr_metadata.py",
+    "seconds": 0.02
+  },
+  {
+    "path": "backend/tests/utils/test_prompt_filters.py",
+    "seconds": 0.033
+  },
+  {
+    "path": "backend/tests/utils/test_redaction.py",
+    "seconds": 0.045
+  },
+  {
+    "path": "backend/tests/utils/test_repo_urls.py",
+    "seconds": 0.015
+  },
+  {
+    "path": "backend/tests/utils/test_reporting_window.py",
+    "seconds": 0.064
+  },
+  {
+    "path": "backend/tests/utils/test_request.py",
+    "seconds": 0.084
+  },
+  {
+    "path": "backend/tests/utils/test_schedule_text.py",
+    "seconds": 0.027
+  },
+  {
+    "path": "backend/tests/utils/test_secret_scrubbing.py",
+    "seconds": 0.197
+  },
+  {
+    "path": "backend/tests/utils/test_sentry_filters.py",
+    "seconds": 0.017
+  },
+  {
+    "path": "backend/tests/utils/test_workspace_baseline.py",
+    "seconds": 0.148
+  },
+  {
+    "path": "backend/tests/utils/test_workspace_seed.py",
+    "seconds": 0.211
+  }
+]
