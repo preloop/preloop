@@ -20,6 +20,8 @@ import (
 type offboardRecoveryFixture struct {
 	// mu guards fields the httptest handler writes while the test reads them.
 	// Hijacking the export connection does not synchronize those accesses.
+	// Every access to the fields below must hold mu while a request may
+	// still be in flight.
 	mu sync.Mutex
 
 	agent                                      AgentConfig
