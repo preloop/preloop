@@ -25,11 +25,11 @@ import (
 
 	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
 	"github.com/zalando/go-keyring"
-	"golang.org/x/crypto/scrypt"
 	ini "gopkg.in/ini.v1"
 
 	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
+	"github.com/preloop/preloop/cli/internal/scrypt"
 )
 
 const (

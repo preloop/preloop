@@ -1,0 +1,14 @@
+{
+  "name": "braces",
+  "version": "3.0.4",
+  "description": "Local patch of braces 3.0.3. Nesting deeper than MAX_BRACE_DEPTH is returned literally so GHSA-vfj7-8cjw-p6xm cannot overflow the stack. Upstream has no release after 3.0.3; this version is 3.0.4 so a scanner that treats 3.0.3 as last_affected stops matching it.",
+  "license": "MIT",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "lib"
+  ],
+  "dependencies": {
+    "fill-range": "^7.1.1"
+  }
+}

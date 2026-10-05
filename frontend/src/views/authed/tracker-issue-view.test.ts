@@ -242,6 +242,11 @@ describe('TrackerIssueView', () => {
         if (url.includes(`/api/v1/trackers/${trackerId}`)) {
           return json({ detail: 'missing' }, 404);
         }
+        // The element loads once from connectedCallback, before the test
+        // has route params. That request must still be in flight when the
+        // explicit load runs, or its empty 200 can land last and label the
+        // link GitHub.
+        await new Promise((resolve) => setTimeout(resolve, 80));
         return json({});
       });
 

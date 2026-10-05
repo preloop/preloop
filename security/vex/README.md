@@ -1,6 +1,6 @@
 # VEX statements
 
-Two [OpenVEX](https://openvex.dev) 0.2.0 documents live in this directory.
+One [OpenVEX](https://openvex.dev) 0.2.0 document lives in this directory.
 The release workflow copies every `security/vex/*.openvex.json` into the
 SBOM artifact and the GitHub release, next to the CycloneDX files.
 
@@ -11,42 +11,12 @@ reissue from an update.
 
 ## CLI
 
-`preloop-cli.openvex.json` asserts that the Preloop CLI is `not_affected`
-by the four `golang.org/x/crypto` advisories a scanner will otherwise keep
-reporting against its SBOM.
-
-Regenerate it with:
-
-```bash
-python scripts/generate_vex.py
-```
-
-### Why the claim holds
-
-The justification on every statement is `vulnerable_code_not_present`, and
-the evidence is `govulncheck`, which classifies a finding at one of three
-levels:
-
-| Level | Meaning | Gates CI |
-| --- | --- | --- |
-| Symbol | The code calls the vulnerable function | Yes |
-| Package | The package is imported, the symbol is not called | No |
-| Module | The module is required, the package is not imported | No |
-
-All four x/crypto advisories come back at module level. The CLI's only import
-from that module is `golang.org/x/crypto/scrypt`, in
-`cli/internal/cmd/agents_openclaw.go`. Neither `x/crypto/ssh` nor
-`x/crypto/openpgp` is in the import graph.
-
-The `cli-vuln-scan` job in `.github/workflows/ci.yml` reruns that check on
-every push and pull request with `-show verbose`, so the levels are in the
-log. If an import ever pulls `x/crypto/ssh` into the graph, govulncheck
-promotes the finding and the job goes red. That is the signal to rewrite this
-document, not to reissue it.
-
-Three of the four are also fixed upstream (0.55.0 and 0.56.0) and the CLI is
-past both. `GO-2026-5932` has no fix and never will, which is exactly the
-case VEX exists for: the only way to clear it is to say why it does not apply.
+There is no CLI OpenVEX document. The CLI used to require
+`golang.org/x/crypto` for scrypt, and scanners matched `GO-2026-5932`
+(`x/crypto/openpgp`) against the whole module. scrypt now lives in
+`cli/internal/scrypt`, using the standard-library PBKDF2, so
+`golang.org/x/crypto` is not a dependency. `govulncheck` in the
+`cli-vuln-scan` job still fails the build if a vulnerable symbol is called.
 
 ## Frontend
 

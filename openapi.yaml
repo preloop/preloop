@@ -35563,7 +35563,7 @@ components:
           maxLength: 128
           minLength: 16
           title: Args Hmac
-          description: Stored HMAC
+          description: Stored fingerprint (scrypt, or HMAC-SHA256 for older rows)
         salt_id:
           anyOf:
           - type: string

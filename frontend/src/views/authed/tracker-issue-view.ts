@@ -37,6 +37,7 @@ export class TrackerIssueView extends LitElement {
 
   private _trackerId = '';
   private _issueId = '';
+  private _loadGeneration = 0;
 
   static styles = [
     unsafeCSS(consoleStyles),
@@ -155,6 +156,7 @@ export class TrackerIssueView extends LitElement {
   }
 
   private async _load() {
+    const generation = ++this._loadGeneration;
     this._loading = true;
     this._error = null;
     try {
@@ -162,15 +164,19 @@ export class TrackerIssueView extends LitElement {
         getIssue(this._issueId),
         fetchWithAuth(`/api/v1/trackers/${this._trackerId}`),
       ]);
+      if (generation !== this._loadGeneration) return;
       this._issue = issue;
       this._tracker = trackerRes.ok
         ? ((await trackerRes.json()) as TrackerSummary)
         : null;
     } catch (error) {
+      if (generation !== this._loadGeneration) return;
       this._error =
         error instanceof Error ? error.message : 'Failed to load issue';
     } finally {
-      this._loading = false;
+      if (generation === this._loadGeneration) {
+        this._loading = false;
+      }
     }
   }
 

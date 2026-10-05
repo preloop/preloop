@@ -1057,10 +1057,11 @@ before and after the stamp (`lic0`, `lic1`).
 
 OpenVEX documents live in `security/vex/`. The release workflow copies
 every `security/vex/*.openvex.json` into the SBOM artifact and the GitHub
-release, next to the CycloneDX files. `preloop-cli.openvex.json` covers
-the CLI `golang.org/x/crypto` statements. `preloop-frontend.openvex.json`
+release, next to the CycloneDX files. `preloop-frontend.openvex.json`
 covers `undici-types` (declarations only) and `lodash.camelcase` (present
-in the test-runner install tree, absent from the shipped bundle).
+in the test-runner install tree, absent from the shipped bundle). The CLI
+does not ship an OpenVEX document: it no longer requires
+`golang.org/x/crypto`.
 
 ## What the platform measures itself
 

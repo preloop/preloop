@@ -630,8 +630,9 @@ def chain_segment(
     return {
         "account_id": str(account_id),
         "row_domain": ROW_DOMAIN.decode("utf-8"),
-        # Reference records in details carry args_hmac/result_hmac keyed by
-        # one of these salts. The ids are listed; the salts never are.
+        # Reference records in details carry fingerprints in args_hmac and
+        # result_hmac, keyed by one of these salts. The ids are listed; the
+        # salts never are.
         "reference_salt_ids": reference_salt_ids,
         "after_seq": int(after_seq),
         "head_seq": int(state.last_seq) if state else 0,

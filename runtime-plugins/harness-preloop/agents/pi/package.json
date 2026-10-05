@@ -4,5 +4,8 @@
   "description": "Pinned Pi coding agent for the harness image. Installed with npm ci.",
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.0"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.12"
   }
 }

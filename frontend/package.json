@@ -24,7 +24,8 @@
     "yaml": "2.9.0",
     "image-size": "npm:image-size-next@2.1.1",
     "fflate": "0.7.5",
-    "cookies": "0.9.2"
+    "cookies": "0.9.2",
+    "braces": "$braces"
   },
   "scripts": {
     "start": "npm run dev",
@@ -33,7 +34,7 @@
     "build:watch": "vite build --watch",
     "preview": "vite preview",
     "test": "npm run test:config && node scripts/check-unreferenced-todos.mjs && node scripts/check-custom-element-imports.mjs && node scripts/check-frontend-console.mjs && web-test-runner \"src/**/*.test.{ts,js}\"",
-    "test:config": "node --test scripts/test-concurrency.test.mjs scripts/shoelace-vendor.test.mjs",
+    "test:config": "node --test scripts/test-concurrency.test.mjs scripts/shoelace-vendor.test.mjs scripts/braces-depth.test.mjs",
     "test:coverage": "web-test-runner \"src/**/*.test.{ts,js}\" --coverage",
     "test:visual": "playwright test tests/visual/",
     "test:visual:update": "playwright test tests/visual/ --update-snapshots",
@@ -61,6 +62,7 @@
   },
   "devDependencies": {
     "@open-wc/testing": "^5.0.0",
+    "braces": "file:vendor/braces",
     "@playwright/test": "^1.63.0",
     "@types/mocha": "^10.0.10",
     "@types/sinon": "^22.0.0",
