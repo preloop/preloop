@@ -393,7 +393,9 @@ changed which field from what to what, and when. A request that changes
 nothing writes no row.
 
 `audio_retention_days` (default 30, at most the runtime-session retention)
-bounds how long raw audio is kept. The artifact janitor expires older audio:
+bounds how long raw audio is kept. The
+[audio transcription agent](flows/audio-transcription-agent.md) preset shows
+the whole loop. The artifact janitor expires older audio:
 its bytes are dropped, the row stays, and the byte route answers
 `410 {"availability": "expired"}`. Audio under a legal hold is kept.
 
