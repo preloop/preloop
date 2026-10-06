@@ -29,6 +29,10 @@ under *Scheduled*, review the options below and enable it.
    the request. The call is made only when the approval is granted; a denied
    or expired approval is recorded, not retried.
 7. Optionally `send_note` to the session that produced a transcript.
+   `send_note` reaches only the runs this run started. Noting another
+   agent's session needs a tool access rule on `send_note` that grants
+   the `account` scope; without it the note is refused and recorded, and
+   the run continues.
 8. One `document` artifact is deposited with labels
    `{report: transcript-evaluation, window_from, window_to, site}`. It links
    every evaluated transcript by its `resource_link` URI.
@@ -77,7 +81,8 @@ action tools you want the evaluator to use (for example `create_task` from a
 ticketing MCP server) to the flow's tool list. When an action tool is not on
 the list the finding becomes a suggestion. To make the approval binding
 rather than instructed, add a tool access rule that requires approval for
-those tools as well.
+those tools as well. `send_note` still reaches only the runs this run
+started unless a tool access rule on `send_note` grants the `account` scope.
 
 ## Result
 

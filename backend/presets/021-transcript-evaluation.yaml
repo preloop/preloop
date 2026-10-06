@@ -97,8 +97,9 @@ prompt_template: |
      - info: worth recording, nobody needs to act.
      - suggestion: a person should decide (for example a process change or
        a follow-up conversation).
-     - action: a concrete tool call you would make (for example create_task
-       on an operator tool such as create_task, or propose_workflow_change).
+     - action: a concrete tool call you would make (for example a
+       create_task tool on a ticketing MCP server, or
+       propose_workflow_change).
      Quote the transcript line each finding comes from and keep the
      artifact's resource_link uri with it.
 
@@ -119,7 +120,11 @@ prompt_template: |
         your tool list, record the action as a suggestion instead.
      c. Optional: when a finding concerns the agent that produced a
         transcript, send_note to that session (runtime_session_id from the
-        item) with one sentence and the artifact uri.
+        item) with one sentence and the artifact uri. send_note reaches
+        only the runs this run started. A transcript from another run is
+        refused unless a tool access rule on send_note grants the account
+        scope. If the note is refused, record that in the report and
+        continue.
 
   6. Always, when at least one transcript was evaluated, deposit exactly
      one report with deposit_artifact:

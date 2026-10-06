@@ -173,6 +173,11 @@ def test_prompt_states_the_run_rules(preset):
     assert "before every mutating tool call, call request_approval" in prompt
     assert "the quoted transcript excerpt and the artifact uri" in prompt
     assert "Make the call only if the approval is granted" in prompt
+    assert "create_task tool on a ticketing MCP server" in prompt
+    assert "on an operator tool such as create_task" not in prompt
+    # send_note defaults to runs this run started; other sessions need a grant.
+    assert "send_note reaches only the runs this run started" in prompt
+    assert "tool access rule on send_note grants the account scope" in prompt
     # Exactly one labelled document report linking every transcript.
     assert "deposit exactly one report with deposit_artifact" in prompt
     for label in (
