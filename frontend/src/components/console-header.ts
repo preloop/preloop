@@ -46,6 +46,14 @@ function decisionErrorMessage(
   return message || `Could not ${action} the request. Try again.`;
 }
 
+/**
+ * Carries the header's unexpired pending-approval count to the shell, which
+ * badges the Approvals nav item. Mirrors `ATTENTION_SUMMARY_EVENT`: the
+ * header already owns the approval fetch, so the shell reads the count
+ * instead of asking a second time.
+ */
+export const PENDING_APPROVALS_EVENT = 'preloop-pending-approvals';
+
 interface UserDetails {
   username: string;
   email: string;
@@ -507,6 +515,7 @@ export class ConsoleHeader extends LitElement {
     if (pending.length !== this._pendingApprovals.length) {
       this._pendingApprovals = pending;
     }
+    this.publishPendingApprovalsCount(pending.length);
     const nextExpiry = pending.reduce((earliest, approval) => {
       if (!approval.expires_at) return earliest;
       return Math.min(earliest, parseUTCDate(approval.expires_at).getTime());
@@ -519,6 +528,17 @@ export class ConsoleHeader extends LitElement {
         Math.min(Math.max(nextExpiry - Date.now(), 1), 2_147_483_647)
       );
     }
+  }
+
+  /**
+   * Tell the shell how many unexpired pending approvals this tab knows about,
+   * so the Approvals nav badge tracks the same count as the bell without a
+   * second approval fetch in the shell.
+   */
+  private publishPendingApprovalsCount(count: number): void {
+    window.dispatchEvent(
+      new CustomEvent<number>(PENDING_APPROVALS_EVENT, { detail: count })
+    );
   }
 
   private async loadRunningExecutions() {

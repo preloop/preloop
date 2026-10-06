@@ -13,6 +13,7 @@ import {
   unifiedWebSocketManager,
 } from '../services/unified-websocket-manager';
 import './console-header.ts';
+import { PENDING_APPROVALS_EVENT } from './console-header.ts';
 import type { ConsoleHeader } from './console-header.ts';
 import { publishAttentionSummary } from '../utils/attention-summary';
 import { loadShoelaceTokens } from '../utils/test-shoelace-theme';
@@ -1381,5 +1382,77 @@ describe('console-header system notifications', () => {
     expect(stored(el)[0].title).to.equal('Your role changed');
     expect(stored(el)[0].read).to.equal(false);
     expect(logSpy.called).to.equal(false);
+  });
+});
+
+/**
+ * The header owns the approval fetch; the shell only reads the count it
+ * publishes so the Approvals nav badge never needs a second request.
+ */
+describe('console-header pending-approvals publish', () => {
+  let restoreFetch: () => void;
+  let published: number[];
+
+  const onPending = (event: Event) => {
+    published.push((event as CustomEvent<number>).detail);
+  };
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    published = [];
+    window.addEventListener(PENDING_APPROVALS_EVENT, onPending);
+  });
+
+  afterEach(() => {
+    window.removeEventListener(PENDING_APPROVALS_EVENT, onPending);
+    restoreFetch();
+    localStorage.removeItem('accessToken');
+  });
+
+  it('publishes the unexpired pending count after the initial load', async () => {
+    restoreFetch = stubFetch(() => [
+      {
+        id: 'ar-1',
+        tool_name: 'write_file',
+        tool_args: {},
+        status: 'pending',
+        requested_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 600_000).toISOString(),
+        execution_id: 'exec-1',
+      },
+    ]);
+
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await waitUntil(() => published.includes(1), 'count never published', {
+      timeout: 2000,
+    });
+    expect(published).to.include(1);
+    el.remove();
+  });
+
+  it('publishes zero once expired rows are pruned', async () => {
+    restoreFetch = stubFetch(() => [
+      {
+        id: 'ar-expired',
+        tool_name: 'write_file',
+        tool_args: {},
+        status: 'pending',
+        requested_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() - 1_000).toISOString(),
+        execution_id: 'exec-1',
+      },
+    ]);
+
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await waitUntil(() => published.length > 0, 'count never published', {
+      timeout: 2000,
+    });
+    expect(published).to.include(0);
+    expect(published).to.not.include(1);
+    el.remove();
   });
 });
