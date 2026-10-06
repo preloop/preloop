@@ -138,6 +138,7 @@ from preloop.services.model_gateway_errors import (
     GatewayProvider,
     ModelGatewayAPIError,
     extract_upstream_error_detail,
+    summarize_upstream_body_for_alert,
 )
 from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.upstream_errors import (
@@ -8532,16 +8533,22 @@ class OpenAIGatewayService:
                     str(provider), status_code, incident_key=notification_key
                 )
                 if send_alert:
-                    scrubbed_trace = (scrub_secrets(str(exc)) or "")[:400]
+                    # The upstream body is foreign text (possibly another
+                    # service's multi-line traceback). Show one labelled line
+                    # so operators do not read it as a Preloop stack; the
+                    # usage/audit row keeps the full detail.
+                    upstream_body = summarize_upstream_body_for_alert(str(exc))
                     alert_body = (
                         "The AI Gateway experienced an upstream failure.\n\n"
                         f"Gateway protocol: {provider}\n"
                         f"Upstream provider: {getattr(ai_model, 'provider_name', None) or 'unknown'}\n"
                         f"Upstream model: {getattr(ai_model, 'model_identifier', None) or 'unknown'}\n"
                         f"Status: {status_code}\n"
-                        f"Message: {message}\nType: {error_type}\nCode: {code}\n"
+                        f"Message: {summarize_upstream_body_for_alert(message)}\n"
+                        f"Type: {error_type}\nCode: {code}\n"
                         f"Class: {classified.error_class if classified else None}\n\n"
-                        f"Trace:\n{scrubbed_trace}"
+                        "Upstream response body (relayed from the provider, "
+                        f"not a Preloop stack trace):\n{upstream_body}"
                     )
                     if outage_key:
                         alert_body = (

@@ -482,3 +482,58 @@ def test_anthropic_passthrough_error_keeps_model_incidents_separate() -> None:
                 500, '{"error":{"message":"unavailable"}}', ai_model=model
             )
         assert notify.call_count == 2
+
+
+_FOREIGN_TRACEBACK = (
+    "litellm.APIConnectionError: unhashable type: 'dict'\n"
+    "Traceback (most recent call last):\n"
+    '  File "/opt/litellm/venv/lib/python3.12/site-packages/litellm/main.py", '
+    "line 1573, in completion\n"
+    "    optional_params = get_optional_params(\n"
+    '  File "/opt/litellm/venv/lib/python3.12/site-packages/litellm/utils.py", '
+    "line 4570, in get_optional_params\n"
+    "TypeError: unhashable type: 'dict'\n"
+)
+
+
+def test_alert_renders_foreign_upstream_traceback_as_one_labelled_line() -> None:
+    """A relayed multi-line upstream traceback must not read like our stack."""
+    import httpx
+
+    service = _service()
+    model = SimpleNamespace(
+        provider_name="openai-compatible",
+        model_identifier="qwen2.5-coder",
+        api_endpoint="https://llm.customer.example/v1",
+        account_id="acct",
+        id="model",
+    )
+    exc = OpenAIGatewayService._openai_passthrough_raw_error(
+        500, _FOREIGN_TRACEBACK, httpx.Headers()
+    )
+    with patch("preloop.sync.tasks.notify_admins") as notify:
+        error = service._normalize_upstream_error("openai", exc, ai_model=model)
+    body = notify.call_args.kwargs["message"]
+    total = len(str(exc).strip())
+    assert total > 300
+    assert (
+        "Upstream response body (relayed from the provider, not a Preloop stack "
+        "trace):\nunhashable type: 'dict' "
+        f"(upstream body truncated, {total} chars)"
+    ) in body
+    assert "Traceback (most recent call last)" not in body
+    assert "/opt/litellm" not in body
+    assert "Trace:\n" not in body
+    # The error that feeds the usage/audit row keeps the multi-line detail.
+    assert "Traceback (most recent call last)" in error.message
+
+
+def test_alert_upstream_body_summary_caps_long_single_line() -> None:
+    from preloop.services.model_gateway_errors import (
+        summarize_upstream_body_for_alert,
+    )
+
+    assert summarize_upstream_body_for_alert("short failure") == "short failure"
+    assert summarize_upstream_body_for_alert("") == "(empty)"
+    summary = summarize_upstream_body_for_alert("y" * 1000)
+    assert summary == "y" * 300 + " (upstream body truncated, 1000 chars)"

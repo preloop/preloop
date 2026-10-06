@@ -124,6 +124,39 @@ def extract_upstream_error_detail(raw_message: str) -> UpstreamErrorDetail:
     )
 
 
+_MAX_ALERT_UPSTREAM_BODY_CHARS = 300
+
+
+def summarize_upstream_body_for_alert(
+    raw_body: Any, *, limit: int = _MAX_ALERT_UPSTREAM_BODY_CHARS
+) -> str:
+    """Render an upstream error body as one short line for operator alerts.
+
+    Upstream error bodies are relayed verbatim and can be multi-line foreign
+    stack traces (for example a customer-run LiteLLM proxy echoing its own
+    Python traceback). Printed whole in an alert they read like a Preloop
+    crash. Alerts therefore show only the first non-empty line, capped at
+    ``limit`` characters, with an explicit truncation note. The full body is
+    still recorded on the usage/audit row.
+
+    Args:
+        raw_body: The upstream text (any object; ``str()`` is applied).
+        limit: Maximum characters kept from the first line.
+
+    Returns:
+        The scrubbed one-line summary, suffixed with
+        ``(upstream body truncated, N chars)`` when anything was dropped.
+    """
+    full = (scrub_secrets(str(raw_body if raw_body is not None else "")) or "").strip()
+    if not full:
+        return "(empty)"
+    first_line = next((line.strip() for line in full.splitlines() if line.strip()), "")
+    summary = first_line[:limit]
+    if summary != full:
+        summary = f"{summary} (upstream body truncated, {len(full)} chars)"
+    return summary
+
+
 def _default_error_type(provider: GatewayProvider, status_code: int) -> str:
     if provider == "gemini":
         if status_code == 400:
