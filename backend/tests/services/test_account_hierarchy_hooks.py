@@ -371,12 +371,13 @@ def test_h3_mcp_tool_call_resolves_the_server_through_visible_servers() -> None:
     import inspect
 
     import preloop.services.dynamic_fastmcp as dynamic_fastmcp
-    from preloop.services import mcp_tool_discovery
+
+    from preloop.models.crud.mcp_server import CRUDMCPServer
 
     resolver = inspect.getsource(dynamic_fastmcp._resolve_proxied_tool_server)
-    assert "_get_proxied_tools_sync(" in resolver
-    discovery = inspect.getsource(mcp_tool_discovery._get_proxied_tools_sync)
-    assert "crud_mcp_server.get_active_visible_by_account(" in discovery
+    assert "crud_mcp_server.get_active_visible_for_tool(" in resolver
+    query = inspect.getsource(CRUDMCPServer.get_active_visible_for_tool)
+    assert "extra_visible_ids(db, account_id, VISIBLE_MCP_SERVER)" in query
 
 
 def test_h3_flow_list_includes_shared_flows_only_when_asked(
